@@ -2505,3 +2505,322 @@ describe('searchable multiselect filter contract (#189)', () => {
     expect(session.state.value.tiles.find((t) => t.tileId === 't2')!.status).toBe('unfilled');
   });
 });
+
+// #335: the public batch-commit surface. `applyFilters` commits several filters
+// atomically (the time-range control's From/To pair, #334 drag-to-select) in
+// ONE execution wave over the union of every changed parameter's targets. Any
+// unknown OR duplicate id aborts the whole call before any mutation; an
+// all-identical call is a true no-op (no publish, no wave).
+describe('applyFilters batch commit (#335)', () => {
+  const bothDoc = () => doc({
+    tiles: [tile('ta', 'qa'), tile('tb', 'qb'), tile('tboth', 'qboth')],
+    filters: [
+      { id: 'f1', parameter: 'p', defaultActive: false, defaultValue: '' },
+      { id: 'f2', parameter: 'q', defaultActive: false, defaultValue: '' },
+    ],
+  });
+  const bothQueries = () => [
+    query('qa', 'SELECT {p:String} AS n'),
+    query('qb', 'SELECT {q:String} AS n'),
+    query('qboth', 'SELECT {p:String} AS a, {q:String} AS b'),
+  ];
+
+  it('is atomic: an unknown id among the entries mutates nothing and runs no wave', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    const base = calls.length;
+    const snapshot = session.state.value;
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'nope', value: 'y', active: true },
+    ]);
+    expect(calls.length).toBe(base); // no wave
+    expect(session.state.value).toBe(snapshot); // no publish
+    expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
+    expect(session.state.value.filters[1]).toMatchObject({ value: '', active: false });
+  });
+
+  it('is atomic: a duplicate id in the call mutates nothing and runs no wave', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    const base = calls.length;
+    const snapshot = session.state.value;
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'f1', value: 'z', active: true },
+    ]);
+    expect(calls.length).toBe(base);
+    expect(session.state.value).toBe(snapshot);
+    expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
+  });
+
+  it('commits both filters active and reruns the UNION of their targets in exactly one wave (a tile consuming both runs once)', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    const base = calls.length;
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'f2', value: 'y', active: true },
+    ]);
+    // Both bounds committed + active.
+    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: true });
+    expect(session.state.value.filters[1]).toMatchObject({ value: 'y', active: true });
+    const added = calls.slice(base);
+    // Union of p's targets {ta, tboth} and q's targets {tb, tboth} = 3 tiles,
+    // each run EXACTLY once — the tile consuming BOTH params never runs twice.
+    expect(added.length).toBe(3);
+    const bothParamCalls = added.filter((c) => 'param_p' in c.params && 'param_q' in c.params);
+    expect(bothParamCalls.length).toBe(1);
+    expect(bothParamCalls[0].params).toMatchObject({ param_p: 'x', param_q: 'y' });
+    expect(added.filter((c) => 'param_p' in c.params && !('param_q' in c.params)).length).toBe(1);
+    expect(added.filter((c) => 'param_q' in c.params && !('param_p' in c.params)).length).toBe(1);
+  });
+
+  it('an identical-pair call (values + active equal to the committed state) publishes nothing and runs no wave', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'f2', value: 'y', active: true },
+    ]);
+    const base = calls.length;
+    const snapshot = session.state.value;
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'f2', value: 'y', active: true },
+    ]);
+    expect(calls.length).toBe(base); // no wave
+    expect(session.state.value).toBe(snapshot); // no publish
+  });
+
+  it('a mixed call (one entry changed, one identical) reruns ONLY the changed parameter\'s targets', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true },
+      { filterId: 'f2', value: 'y', active: true },
+    ]);
+    const base = calls.length;
+    await session.applyFilters([
+      { filterId: 'f1', value: 'x', active: true }, // identical — not in `changed`
+      { filterId: 'f2', value: 'z', active: true }, // changed
+    ]);
+    const added = calls.slice(base);
+    // Only q's targets {tb, tboth} rerun; ta (p only) does NOT.
+    expect(added.every((c) => 'param_q' in c.params)).toBe(true);
+    expect(added.some((c) => 'param_p' in c.params && !('param_q' in c.params))).toBe(false);
+    expect(added.length).toBe(2);
+    expect(session.state.value.filters[1].value).toBe('z');
+  });
+
+  it('a concurrent applyFilters wave is superseded by a newer commit (stale-wave guard) — the newer value wins', async () => {
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let n = 0;
+    const { exec } = makeExec(async (_sql, req) => {
+      n += 1;
+      const rows = [[req.params?.param_p]];
+      if (n === 1) { await gate; return { columns: [{ name: 'n' }], rows }; }
+      return { columns: [{ name: 'n' }], rows };
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t', 'q')], filters: [{ id: 'f1', parameter: 'p', defaultActive: false, defaultValue: '' }] }),
+      exec, queries: [query('q', 'SELECT {p:String} AS n')],
+    }));
+    await session.start();
+    const first = session.applyFilters([{ filterId: 'f1', value: 'A', active: true }]);
+    await flush();
+    const second = session.applyFilters([{ filterId: 'f1', value: 'B', active: true }]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    // The superseded 'A' run's result is discarded; the tile reflects 'B'.
+    expect(session.state.value.filters[0].value).toBe('B');
+    expect(session.state.value.tiles[0].rows).toEqual([['B']]);
+  });
+
+  it('is a no-op after destroy', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
+    await session.start();
+    session.destroy();
+    const base = calls.length;
+    await session.applyFilters([{ filterId: 'f1', value: 'x', active: true }]);
+    expect(calls.length).toBe(base);
+    expect(session.state.value.filters[0].value).toBe('');
+  });
+});
+
+// #335: `waveWallNowMs` — one wall-clock snapshot per execution wave, published
+// on state and threaded into every relative-token resolution the wave runs
+// (tiles AND filter sources), fixing the prior inconsistency where one refresh
+// took several independent `deps.wallNow()` snapshots.
+describe('waveWallNowMs single wave snapshot (#335)', () => {
+  // Two relative DateTime filters bound to tiles that run in DIFFERENT sub-
+  // phases of one refresh: `ts1` on an UNAFFECTED tile (first batch), `ts2` on
+  // a tile the source-backed `region` filter makes AFFECTED (second batch).
+  // With per-phase clock reads (the bug) they would resolve to different
+  // instants; a single snapshot makes them agree.
+  const splitDoc = () => doc({
+    tiles: [tile('una', 'qUna'), tile('aff', 'qAff')],
+    filters: [
+      { id: 'fts1', parameter: 'ts1', defaultActive: true, defaultValue: 'now' },
+      { id: 'fts2', parameter: 'ts2', defaultActive: true, defaultValue: 'now' },
+      { id: 'freg', parameter: 'region', sourceQueryId: 'srcq', defaultActive: true, defaultValue: 'R' },
+    ],
+  });
+  const splitQueries = () => [
+    query('qUna', 'SELECT {ts1:DateTime} AS s'),
+    query('qAff', 'SELECT {region:String} AS r, {ts2:DateTime} AS e'),
+    query('srcq', "SELECT ['R'] AS region /* source */", { dashboard: { role: 'filter' } }),
+  ];
+  const splitExec = () => makeExec((sql) => (sql.includes('/* source */')
+    ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['R']]] }
+    : { columns: [{ name: 'n' }], rows: [[1]] }));
+  const incWall = () => {
+    let n = 1_700_000_000_000;
+    const calls: number[] = [];
+    const wallNow = () => { n += 3_600_000; calls.push(n); return n; };
+    return { wallNow, calls };
+  };
+
+  it('is null before the first wave', () => {
+    const { exec } = splitExec();
+    const session = createDashboardViewerSession(makeDeps({ document: splitDoc(), exec, queries: splitQueries() }));
+    expect(session.state.value.waveWallNowMs).toBeNull();
+  });
+
+  it('captures ONE snapshot per refresh; both tiles\' relative tokens resolve against the same instant, published as waveWallNowMs', async () => {
+    const { exec, calls } = splitExec();
+    const { wallNow, calls: wallCalls } = incWall();
+    const session = createDashboardViewerSession(makeDeps({ document: splitDoc(), exec, queries: splitQueries(), wallNow }));
+    await session.start();
+    // Exactly ONE wall-clock read for the whole refresh (first batch, filter
+    // wave, second batch all share it) — the fix.
+    expect(wallCalls.length).toBe(1);
+    expect(session.state.value.waveWallNowMs).toBe(wallCalls[0]);
+    const unaCall = calls.find((c) => 'param_ts1' in c.params)!;
+    const affCall = calls.find((c) => 'param_ts2' in c.params)!;
+    expect(unaCall).toBeDefined();
+    expect(affCall).toBeDefined();
+    // `now` in the first-batch tile and `now` in the second-batch tile resolved
+    // to the SAME serialized instant.
+    expect(unaCall.params.param_ts1).toBe(affCall.params.param_ts2);
+  });
+
+  it('an applyFilters wave updates waveWallNowMs to its own fresh snapshot', async () => {
+    const { exec } = splitExec();
+    const { wallNow } = incWall();
+    const session = createDashboardViewerSession(makeDeps({ document: splitDoc(), exec, queries: splitQueries(), wallNow }));
+    await session.start();
+    const afterRefresh = session.state.value.waveWallNowMs!;
+    await session.applyFilters([{ filterId: 'fts1', value: '-1h', active: true }]);
+    const afterApply = session.state.value.waveWallNowMs!;
+    expect(afterApply).toBeGreaterThan(afterRefresh);
+  });
+
+  it('a commit with a dependent filter source shares one snapshot across the source wave and the affected-panel wave', async () => {
+    // `anchor` (root) feeds `srcq` (which depends on {anchor:DateTime}); the
+    // tile declares BOTH {anchor} (so the affected-panel wave targets it) and
+    // {reg} (the curated source-backed param). Committing `anchor` reruns the
+    // source AND the tile — both must bind `anchor` resolved against the SAME
+    // instant.
+    const { exec, calls } = makeExec((sql) => (sql.includes('/* source */')
+      ? { columns: [{ name: 'reg', type: 'Array(String)' }], rows: [[['R']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const { wallNow } = incWall();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('taff', 'qaff')],
+        filters: [
+          { id: 'fanchor', parameter: 'anchor', defaultActive: true, defaultValue: 'now' },
+          { id: 'freg', parameter: 'reg', sourceQueryId: 'srcq', defaultActive: true, defaultValue: 'R' },
+        ],
+      }),
+      exec, wallNow,
+      queries: [
+        query('qaff', 'SELECT {anchor:DateTime} AS a, {reg:String} AS r'),
+        query('srcq', "SELECT ['R'] AS reg FROM x WHERE ts >= {anchor:DateTime} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const base = calls.length;
+    await session.applyFilters([{ filterId: 'fanchor', value: '-1h', active: true }]);
+    const added = calls.slice(base);
+    const srcCall = added.find((c) => c.sql.includes('/* source */'))!;
+    const tileCall = added.find((c) => c.sql.includes('AS a'))!;
+    expect(srcCall).toBeDefined();
+    expect(tileCall).toBeDefined();
+    // The source's {anchor} and the tile's {anchor}, resolved in the source
+    // wave and the affected-panel wave of ONE commit, share the snapshot.
+    expect(srcCall.params.param_anchor).toBe(tileCall.params.param_anchor);
+    expect(session.state.value.waveWallNowMs).not.toBeNull();
+  });
+});
+
+// #335: the resolver seam wired into the session — `timeRangeGroups`, computed
+// ONCE at construction AFTER the #189 source-fallback loop, so `sourceQueryId`
+// is read post-fallback (a stripped source is a plain, groupable filter).
+describe('timeRangeGroups resolution (#335)', () => {
+  it('resolves a plain scalar date-like from/to pair into one group', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+      }),
+      queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2')],
+    }));
+    expect(session.timeRangeGroups.length).toBe(1);
+    expect(session.timeRangeGroups[0]).toMatchObject({
+      fromFilterId: 'ff', toFilterId: 'ft', fromParameter: 'from', toParameter: 'to',
+    });
+  });
+
+  it('excludes a curated (surviving source-backed) date-like filter from grouping', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [
+          { id: 'ff', parameter: 'from', sourceQueryId: 'srcf', defaultActive: true, defaultValue: 'x' },
+          { id: 'ft', parameter: 'to' },
+        ],
+      }),
+      queries: [
+        query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2'),
+        query('srcf', "SELECT ['x'] AS opt /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    // `from` keeps its source contract (curated) → never paired → no group.
+    expect(session.timeRangeGroups).toEqual([]);
+  });
+
+  it('does not group a non-date-like pair', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+      }),
+      queries: [query('q', 'SELECT {from:String} AS f, {to:String} AS t2')],
+    }));
+    expect(session.timeRangeGroups).toEqual([]);
+  });
+
+  it('is computed once at construction and not recomputed by a filter commit', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+      }),
+      exec, queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2')],
+    }));
+    await session.start();
+    const groups = session.timeRangeGroups;
+    await session.applyFilters([{ filterId: 'ff', value: '-1d', active: true }]);
+    expect(session.timeRangeGroups).toBe(groups); // same reference — never recomputed
+  });
+});
