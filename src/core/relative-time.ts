@@ -245,7 +245,14 @@ function formatDateUTC(epochMs: number): string {
 // (finding #3 — never rounds into the future), with a fractional suffix only
 // for `DateTime64(N>0)` and only when the remainder is non-zero — a preview
 // showing ".000" on every value would be more noise than signal.
-function formatPreviewInstant(epochMs: number, t: ParsedParamType): string {
+// Exported (additive — #335) so `core/time-range.ts` can format an ABSOLUTE
+// bound's resolved instant through this exact same convention, keeping the
+// time-range control's "resolved preview" line visually identical whether the
+// entered text was a relative token (via `formatPreview` above) or an
+// absolute value/epoch digit string (via `parseAbsoluteInstant` below) —
+// never a second, drifting formatter. Behavior is unchanged for every
+// existing caller of this module; this only adds a new export.
+export function formatPreviewInstant(epochMs: number, t: ParsedParamType): string {
   if (t.base === 'Date' || t.base === 'Date32') return formatDateUTC(epochMs);
   const d = new Date(Math.floor(epochMs / 1000) * 1000);
   const base = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1, 2)}-${pad(d.getUTCDate(), 2)} `
@@ -349,6 +356,118 @@ export function formatPreview(expr: string, type: string | ParsedParamType, nowM
   if (isParseError(parsed)) return { ok: false, error: parsed.error };
   const instant = resolveInstant(parsed, nowMs);
   return { ok: true, display: formatPreviewInstant(instant, t), matched: true };
+}
+
+// ── Absolute-value parsing (#335 time-range control) ─────────────────────
+//
+// The time-range popover's From/To fields accept exactly what a relative
+// expression doesn't claim: an absolute value for the bound's declared type.
+// This is a NEW acceptance surface (not previously validated anywhere in this
+// module — `resolveRelativeValue`/`formatPreview` both treat a non-relative
+// string as opaque passthrough) needed so the popover can show a resolved
+// preview line and reject `from > to` at the RESOLVED instant, not the raw
+// text. It stays in this module (never a second grammar file, per #335's
+// pinned contract) because it is exactly the absolute-value complement of the
+// relative grammar above, and reuses `formatPreviewInstant` for display so
+// both paths render through one convention.
+//
+// Accepted forms (UTC convention — matches `formatPreview`'s server-time
+// convention so a previously-rendered preview round-trips back through this
+// parser unchanged):
+//   - `YYYY-MM-DD` — any date-like type; time defaults to 00:00:00 UTC.
+//   - `YYYY-MM-DD HH:MM`, `YYYY-MM-DD HH:MM:SS`, and the same with 1-9
+//     fractional-second digits (`YYYY-MM-DD HH:MM:SS.fff`) — DateTime/
+//     DateTime64 only (a time part on Date/Date32 is an error); the `T`
+//     separator variant of each of these three forms is accepted too.
+//   - Bare digits, DateTime/DateTime64 only: 1-10 digits = epoch SECONDS,
+//     exactly 13 digits = epoch MILLISECONDS (any other digit-only length is
+//     rejected rather than guessed at).
+//   - Real calendar/time-of-day validation (`2026-02-30`, `24:00`, … all
+//     error) — never silently clamped.
+// Surrounding whitespace is trimmed. Anything else is a short, human
+// diagnostic — never a silent guess. Pure.
+
+/** `parseAbsoluteInstant`'s successful-parse shape. */
+export interface AbsoluteInstantOk {
+  ok: true;
+  instantMs: number;
+}
+
+/** `parseAbsoluteInstant`'s rejection shape — always a short, human-readable
+ *  diagnostic naming what was entered. */
+export interface AbsoluteInstantErr {
+  ok: false;
+  error: string;
+}
+
+const RE_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const RE_DATETIME = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?$/;
+const RE_DIGITS = /^\d+$/;
+
+// Real calendar validation: month in [1,12] and day within that month's
+// actual length (UTC — `Date.UTC(y, m, 0)` is the last day of month `m`
+// 1-indexed, i.e. the day count of month `m` itself), never a fixed 31/30/28
+// guess and never silently clamped by `Date`'s own rollover behavior.
+function isValidCalendarDate(y: number, month1: number, day: number): boolean {
+  if (month1 < 1 || month1 > 12) return false;
+  const daysInMonth = new Date(Date.UTC(y, month1, 0)).getUTCDate();
+  return day >= 1 && day <= daysInMonth;
+}
+
+/**
+ * Parse an ABSOLUTE (non-relative) value entered for a date-like `type` into
+ * a resolved epoch-ms instant — the absolute-input complement of the relative
+ * grammar above (#335). See this section's header comment for exactly which
+ * forms are accepted. Pure.
+ */
+export function parseAbsoluteInstant(
+  type: ParsedParamType | string,
+  text: string,
+): AbsoluteInstantOk | AbsoluteInstantErr {
+  const t = parsedType(type);
+  const s = String(text).trim();
+  const dateOnlyMatch = RE_DATE_ONLY.exec(s);
+  if (dateOnlyMatch) {
+    const y = Number(dateOnlyMatch[1]);
+    const month1 = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+    if (!isValidCalendarDate(y, month1, day)) {
+      return { ok: false, error: `"${s}" is not a valid calendar date.` };
+    }
+    return { ok: true, instantMs: Date.UTC(y, month1 - 1, day, 0, 0, 0, 0) };
+  }
+
+  const dateOnlyType = t.base === 'Date' || t.base === 'Date32';
+  if (dateOnlyType) {
+    return { ok: false, error: `"${s}" is not a valid date (expected YYYY-MM-DD).` };
+  }
+
+  const dtMatch = RE_DATETIME.exec(s);
+  if (dtMatch) {
+    const y = Number(dtMatch[1]);
+    const month1 = Number(dtMatch[2]);
+    const day = Number(dtMatch[3]);
+    const h = Number(dtMatch[4]);
+    const mi = Number(dtMatch[5]);
+    const se = dtMatch[6] !== undefined ? Number(dtMatch[6]) : 0;
+    const frac = dtMatch[7];
+    if (!isValidCalendarDate(y, month1, day)) {
+      return { ok: false, error: `"${s}" is not a valid calendar date.` };
+    }
+    if (h > 23 || mi > 59 || se > 59) {
+      return { ok: false, error: `"${s}" is not a valid time of day.` };
+    }
+    const ms = frac ? Number((frac + '000').slice(0, 3)) : 0;
+    return { ok: true, instantMs: Date.UTC(y, month1 - 1, day, h, mi, se, ms) };
+  }
+
+  if (RE_DIGITS.test(s)) {
+    if (s.length === 13) return { ok: true, instantMs: Number(s) };
+    if (s.length >= 1 && s.length <= 10) return { ok: true, instantMs: Number(s) * 1000 };
+    return { ok: false, error: `"${s}" is not a recognized epoch value (expected 1-10 digits for seconds, or 13 for milliseconds).` };
+  }
+
+  return { ok: false, error: `"${s}" is not a valid absolute value for ${t.base}.` };
 }
 
 /**
