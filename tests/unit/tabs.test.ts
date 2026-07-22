@@ -45,6 +45,23 @@ describe('renderTabs', () => {
     renderTabs(app);
     expect(app.dom.qtabsInner.querySelector('.close')).toBeNull();
   });
+  it('shows an external-change badge for conflict and deleted tabs (#343)', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false, externalState: 'conflict' } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: true, dirtySpec: false, externalState: 'deleted' } as QueryTab,
+      { id: 't3', name: 'C', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    renderTabs(app);
+    const tabs = app.dom.qtabsInner.querySelectorAll('.qtab');
+    const b1 = tabs[0].querySelector('.qtab-external') as HTMLElement;
+    expect(b1.classList.contains('conflict')).toBe(true);
+    expect(b1.title).toContain('changed in another tab');
+    const b2 = tabs[1].querySelector('.qtab-external') as HTMLElement;
+    expect(b2.classList.contains('deleted')).toBe(true);
+    expect(b2.title).toContain('deleted in another tab');
+    expect(tabs[2].querySelector('.qtab-external')).toBeNull(); // normal tab: no badge
+  });
   it('clicking a tab selects it; clicking close closes it', () => {
     const app = makeApp();
     app.state.tabs.value = [{ id: 't1', name: 'A' } as QueryTab, { id: 't2', name: 'B' } as QueryTab];
@@ -118,6 +135,12 @@ describe('newTab / loadIntoNewTab', () => {
     loadIntoNewTab(app, '', 'SELECT 2');
     expect(app.activeTab().name).toBe('Untitled');
     expect(app.activeTab().savedId).toBeNull();
+  });
+  it('loadIntoNewTab of an id-less query object stays unlinked with no baseline token (#343)', () => {
+    const app = makeApp();
+    loadIntoNewTab(app, { name: 'NoId', sql: 'SELECT x' });
+    expect(app.activeTab().savedId).toBeNull();
+    expect(app.activeTab().lastCommittedQueryToken).toBeUndefined();
   });
   it('activates an already-open savedId without replacing either draft', () => {
     const app = makeApp();

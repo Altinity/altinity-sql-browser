@@ -68,6 +68,16 @@ export interface WorkspaceChangedMessage {
   workspaceId: string;
 }
 
+/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
+ *  projected an externally committed workspace: the just-loaded workspace (or
+ *  `null` when the record was cleared) and whether the query collection changed
+ *  relative to the previous projection — the Dashboard route rebuilds its viewer
+ *  session on a query-only change even when the Dashboard document is identical. */
+export interface WorkspaceExternallyChangedInfo {
+  workspace: StoredWorkspaceV1 | null;
+  queriesChanged: boolean;
+}
+
 /** A schema entity reference — three real runtime shapes share this one loose
  * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
  * drag/click sources always send `{kind, db}` or `{kind, db, table}` —
@@ -530,6 +540,23 @@ export interface App {
    *  `refreshWorkspaceFromStore` scheduler. Never receives this tab's own
    *  broadcast. */
   onExternalWorkspaceChange(message: WorkspaceChangedMessage): void;
+  /** #343 step 4: reload the committed workspace and, when it changed under this
+   *  tab, project it + reconcile linked tabs — ordered through the same
+   *  `serializeWrite` queue as mutations (so it can't project an older read over
+   *  a newer local commit). A no-op when the store is unchanged since this tab's
+   *  last projection; a failed load keeps the projection, warns, and never
+   *  wedges the queue. The channel-receive + focus/visibility listeners drive a
+   *  coalesced version of this internally; this public entry is the direct,
+   *  un-coalesced one (tests + explicit callers). */
+  refreshWorkspaceFromStore(): Promise<void>;
+  /** #343 step 4: the route/surface refresh hook invoked AFTER a refresh
+   *  actually projected an external change — a mounted route (the standalone
+   *  Dashboard, a later step) overrides it to rebuild from the latest committed
+   *  workspace. `queriesChanged` reports whether the query collection moved
+   *  (a query-only change still needs a Dashboard viewer rebuild even when the
+   *  Dashboard document is byte-identical). Default no-op; the Workbench route's
+   *  own repaint is built into `refreshWorkspaceFromStore`. */
+  onWorkspaceExternallyChanged(info: WorkspaceExternallyChangedInfo): void;
 
   actions: ActionsRegistry;
 }

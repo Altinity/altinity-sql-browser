@@ -385,6 +385,8 @@ const appDefaults: App = {
   documentVisible: () => true,
   getLastCommittedToken: () => '',
   onExternalWorkspaceChange: () => {},
+  refreshWorkspaceFromStore: async () => {},
+  onWorkspaceExternallyChanged: () => {},
   // Inert passthrough — `base` overrides with a real per-instance queue.
   serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
   // #341: inert no-op — `base` overrides with the real per-instance flush that

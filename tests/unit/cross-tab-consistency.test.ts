@@ -9,7 +9,7 @@
 // These assert the PERSISTED outcome via the shared store (`loadCurrent`), not
 // UI refresh — the cross-tab invalidation/refresh wiring is #343 step 4+.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createApp } from '../../src/ui/app.js';
 import { createSavedQuery, commitSavedQuery, deleteSaved, renameSaved } from '../../src/state.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
@@ -182,5 +182,157 @@ describe('cross-tab read-before-write (#343)', () => {
 
     const final = await committed(a);
     expect(final.queries.find((q) => q.id === 'q1')).toBeUndefined(); // never recreated
+  });
+});
+
+// #343 steps 4/7/8 — the refresh + reconcile pipeline end-to-end across two
+// tabs sharing one store: another tab reloads and projects the latest workspace,
+// linked tabs adopt/conflict/detach/orphan, refresh coalesces + orders through
+// the write queue, and a failed reload never wedges it.
+describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
+  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV1 => ({
+    storageVersion: 1, id: 'w1', name: 'Team',
+    queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
+    dashboard: null,
+  });
+  /** Open q1 into a fresh linked tab on `app` (from its projected copy). */
+  const openQ1 = (app: App): void => {
+    app.actions.loadIntoNewTab({ ...app.state.savedQueries.find((q) => q.id === 'q1')! });
+  };
+  const linkedTab = (app: App) => app.state.tabs.value.find((t) => t.savedId === 'q1')!;
+
+  it('another Workbench tab reloads and projects the latest committed workspace', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    await renameSaved(a.state, 'q1', 'Renamed in A', undefined, a.mutateWorkspace);
+    // B still shows the old projection until it refreshes.
+    expect(b.state.savedQueries.find((q) => q.id === 'q1')!.spec.name).toBe('q1');
+    await b.refreshWorkspaceFromStore();
+    expect(b.state.savedQueries.find((q) => q.id === 'q1')!.spec.name).toBe('Renamed in A');
+  });
+
+  it('a clean linked tab adopts an externally changed query without becoming dirty', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    openQ1(b);
+    const bTab = linkedTab(b);
+    expect(bTab.dirtySql).toBe(false);
+    // A edits q1's SQL (a linked save).
+    const aTab = a.state.tabs.value[0];
+    aTab.savedId = 'q1';
+    aTab.sqlDraft = 'SELECT 42';
+    await commitSavedQuery(a.state, aTab, a.state.savedQueries[0].spec, a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(bTab.sqlDraft).toBe('SELECT 42'); // adopted
+    expect(bTab.savedId).toBe('q1'); // still linked
+    expect(bTab.dirtySql).toBe(false); // not dirty
+    expect(bTab.externalState ?? null).toBeNull();
+  });
+
+  it('a dirty linked tab preserves its draft and enters a conflict state', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    openQ1(b);
+    const bTab = linkedTab(b);
+    bTab.sqlDraft = 'SELECT my local draft';
+    bTab.dirtySql = true;
+    await renameSaved(a.state, 'q1', 'Changed in A', undefined, a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(bTab.sqlDraft).toBe('SELECT my local draft'); // draft preserved
+    expect(bTab.dirtySql).toBe(true);
+    expect(bTab.savedId).toBe('q1');
+    expect(bTab.externalState).toBe('conflict');
+  });
+
+  it('an externally deleted clean tab detaches; a dirty one stays as an unsaved deleted-flagged draft', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    openQ1(b);
+    const cleanTab = linkedTab(b);
+    // A second tab on B, dirty-linked to q1.
+    b.actions.loadIntoNewTab({ ...b.state.savedQueries[0], id: 'q1' });
+    // Both b tabs link q1; make the FIRST clean, add a dirty second.
+    b.actions.newTab();
+    const dirty = b.state.tabs.value[b.state.tabs.value.length - 1];
+    dirty.savedId = 'q1';
+    dirty.sqlDraft = 'SELECT unsaved work';
+    dirty.dirtySql = true;
+    dirty.lastCommittedQueryToken = cleanTab.lastCommittedQueryToken;
+    await deleteSaved(a.state, 'q1', a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(cleanTab.savedId).toBeNull(); // clean detaches
+    expect(cleanTab.externalState ?? null).toBeNull();
+    expect(dirty.savedId).toBeNull(); // dirty orphan — unlinked, not recreated
+    expect(dirty.sqlDraft).toBe('SELECT unsaved work'); // draft intact
+    expect(dirty.externalState).toBe('deleted');
+  });
+
+  it('is a no-op when the store is unchanged, and tolerates an externally cleared store', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    const before = b.state.savedQueries;
+    await b.refreshWorkspaceFromStore(); // token unchanged → no reproject
+    expect(b.state.savedQueries).toBe(before); // same reference, not reprojected
+    await b.workspace.clearCurrent(); // externally emptied
+    await b.refreshWorkspaceFromStore(); // loaded === null → keeps projection
+    expect(b.state.savedQueries).toBe(before);
+  });
+
+  it('coalesces duplicate invalidations into one store read', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    const spy = vi.spyOn(b.workspace, 'loadCurrentResult');
+    const poke = { type: 'workspace-changed' as const, sourceTabId: 'other', workspaceId: 'w1' };
+    b.onExternalWorkspaceChange(poke);
+    b.onExternalWorkspaceChange(poke);
+    b.onExternalWorkspaceChange(poke);
+    await b.flushWorkspaceWrites();
+    expect(spy).toHaveBeenCalledTimes(1);
+    void a;
+  });
+
+  it('works without a BroadcastChannel (null factory): refresh still projects', async () => {
+    const store = fakeIndexedDbFactory();
+    const mk = (): App => {
+      const root = document.createElement('div');
+      document.body.appendChild(root);
+      return createApp({ root, document, window, crypto: globalThis.crypto, indexedDB: store, broadcastChannel: () => null });
+    };
+    const a = mk(); const b = mk();
+    await seed(a, b, oneQuery());
+    await renameSaved(a.state, 'q1', 'No-channel rename', undefined, a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(b.state.savedQueries[0].spec.name).toBe('No-channel rename');
+  });
+
+  it('a refresh queued behind a local write reflects both, and a rejected load does not wedge the queue', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    // A commits an external change; B is notified, then B starts its own write.
+    await renameSaved(a.state, 'q1', 'A-rename', undefined, a.mutateWorkspace);
+    b.onExternalWorkspaceChange({ type: 'workspace-changed', sourceTabId: 'other', workspaceId: 'w1' });
+    const bTab = b.state.tabs.value[0];
+    bTab.sqlDraft = 'SELECT b-created';
+    const created = await createSavedQuery(b.state, bTab, 'B-new', '', b.mutateWorkspace);
+    expect(created.ok).toBe(true);
+    await b.flushWorkspaceWrites();
+    const final = await committed(a);
+    expect(final.queries.find((q) => q.id === 'q1')!.spec.name).toBe('A-rename'); // A's change survived
+    expect(final.queries.some((q) => q.spec.name === 'B-new')).toBe(true); // B's write landed on refreshed latest
+
+    // A rejected reload warns internally but never wedges: a later write succeeds.
+    const orig = b.workspace.loadCurrentResult.bind(b.workspace);
+    b.workspace.loadCurrentResult = vi.fn(async () => { throw new Error('idb down'); });
+    await b.refreshWorkspaceFromStore(); // swallowed
+    b.workspace.loadCurrentResult = orig;
+    const after = await b.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Recovered' } }));
+    expect(after.ok).toBe(true);
   });
 });

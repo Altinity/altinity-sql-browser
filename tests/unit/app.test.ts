@@ -19,6 +19,7 @@ import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
+import { renameSaved } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type { SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
@@ -656,6 +657,148 @@ describe('app cross-tab invalidation (#343)', () => {
     const app = createApp(env({ broadcastChannel: () => null }));
     const result = await app.mutateWorkspace(() => ({ candidate: seed() }));
     expect(result.ok).toBe(true);
+  });
+});
+
+// #343 steps 4/6/8 — workspace refresh through the write queue (focus/visibility
+// fallback), the linked-tab conflict resolution UI, and the Save-button state.
+describe('app workspace refresh + conflict UI (#343)', () => {
+  const q1ws = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV1 => ({
+    storageVersion: 1, id: 'w1', name: 'Team',
+    queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
+    dashboard: null,
+  });
+  const openQ1 = (app: App): QueryTab => {
+    app.actions.loadIntoNewTab({ ...app.state.savedQueries.find((q) => q.id === 'q1')! });
+    return app.state.tabs.value.find((t) => t.savedId === 'q1')!;
+  };
+
+  it('window focus schedules a refresh; a visible visibilitychange schedules another', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const spy = vi.spyOn(app.workspace, 'loadCurrentResult');
+    window.dispatchEvent(new Event('focus'));
+    await app.flushWorkspaceWrites();
+    expect(spy).toHaveBeenCalled();
+    const afterFocus = spy.mock.calls.length;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await app.flushWorkspaceWrites();
+    expect(spy.mock.calls.length).toBeGreaterThan(afterFocus);
+  });
+
+  it('visibilitychange does not refresh while the tab is hidden', async () => {
+    const app = createApp(env({ documentVisible: () => false }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const spy = vi.spyOn(app.workspace, 'loadCurrentResult');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await app.flushWorkspaceWrites();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a corrupt reload warns and keeps the projection without wedging the queue', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    vi.spyOn(app.workspace, 'loadCurrentResult').mockResolvedValueOnce({ status: 'corrupt', diagnostics: [] });
+    await app.refreshWorkspaceFromStore(); // warns internally, returns
+    expect(app.state.savedQueries[0].id).toBe('q1'); // projection intact
+    const after = await app.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Still works' } }));
+    expect(after.ok).toBe(true); // queue not wedged
+  });
+
+  it('back-fills the per-tab baseline token for a tab linked without one at projection', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const t = app.state.tabs.value[0];
+    t.savedId = 'q1';
+    t.lastCommittedQueryToken = undefined; // linked, but no baseline token yet
+    await app.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'again' } }));
+    expect(t.lastCommittedQueryToken).toBeTruthy(); // applyCommittedWorkspace filled it
+  });
+
+  it('shows "Resolve conflict" on the Save button for a conflicted tab', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.externalState = 'conflict';
+    app.updateSaveBtn();
+    expect(app.dom.saveBtn!.textContent).toContain('Resolve conflict');
+    expect(app.dom.saveBtn!.classList.contains('conflict')).toBe(true);
+    // Clearing the conflict restores the ordinary Save state.
+    t.externalState = null;
+    app.updateSaveBtn();
+    expect(app.dom.saveBtn!.classList.contains('conflict')).toBe(false);
+  });
+
+  it('Save on a conflicted tab opens the two-action chooser (once), not a silent overwrite', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT draft'; t.dirtySql = true; t.externalState = 'conflict';
+    const commitSpy = vi.spyOn(app.workspace, 'commit');
+    await app.actions.save();
+    await app.actions.save(); // second call is a no-op while the chooser is open
+    expect(document.querySelectorAll('.conflict-chooser')).toHaveLength(1);
+    expect(commitSpy).not.toHaveBeenCalled(); // nothing written yet
+  });
+
+  it('"Reload saved version" discards the draft and adopts the committed query', async () => {
+    const store = fakeIndexedDbFactory();
+    const app = createApp(env({ indexedDB: store }));
+    const other = createApp(env({ indexedDB: store }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws('SELECT 1') }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT local'; t.dirtySql = true;
+    // Another tab changes q1, then this tab's refresh detects the conflict.
+    await other.loadWorkspaceOnBoot();
+    await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
+    await app.refreshWorkspaceFromStore();
+    expect(t.externalState).toBe('conflict');
+    await app.actions.save(); // opens the chooser
+    (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    expect(t.dirtySql).toBe(false); // draft discarded
+    expect(t.name).toBe('External name'); // adopted the committed version
+    expect(t.externalState ?? null).toBeNull();
+  });
+
+  it('"Keep my draft" confirms, then saves the draft over the latest query and clears the conflict', async () => {
+    const store = fakeIndexedDbFactory();
+    const app = createApp(env({ indexedDB: store }));
+    const other = createApp(env({ indexedDB: store }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws('SELECT 1') }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT my kept draft'; t.dirtySql = true;
+    await other.loadWorkspaceOnBoot();
+    await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
+    await app.refreshWorkspaceFromStore();
+    expect(t.externalState).toBe('conflict');
+    await app.actions.save();
+    (document.querySelector('.conflict-chooser .cf-keep') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    (document.querySelector('.conflict-chooser .cf-overwrite') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    await app.flushWorkspaceWrites();
+    expect(t.externalState ?? null).toBeNull(); // conflict resolved
+    const persisted = await app.workspace.loadCurrent();
+    expect(persisted!.queries.find((q) => q.id === 'q1')!.sql).toBe('SELECT my kept draft');
+  });
+
+  it('the reload resolution is a no-op if the query vanished before it runs', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.externalState = 'conflict';
+    t.savedId = 'no-longer-present'; // savedForTab → null inside reloadSavedVersion
+    await app.actions.save();
+    expect(() => (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement)
+      .dispatchEvent(new Event('click', { bubbles: true }))).not.toThrow();
   });
 });
 

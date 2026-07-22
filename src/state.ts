@@ -30,6 +30,8 @@ import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV1 
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
 import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
+import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
+import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -226,6 +228,21 @@ export interface QueryTab {
    *  adapter's dynamic sources. */
   lastSuccessfulResultColumns: { name: string; type?: string }[];
   savedId: string | null;
+  /** #343: this tab's classification against the latest committed workspace once
+   *  it went stale — `'conflict'` (a dirty tab whose linked saved query changed
+   *  in another tab; ordinary Save must route to the resolution chooser, never
+   *  silently overwrite the external version) or `'deleted'` (a dirty tab whose
+   *  linked saved query was deleted in another tab; kept as an unsaved draft, so
+   *  Save follows the normal Save-as-new flow and never implicitly recreates it).
+   *  `null`/absent = normal (clean, or unsaved, or in sync). */
+  externalState?: 'conflict' | 'deleted' | null;
+  /** #343: the canonical `queryToken` of the committed saved query this tab was
+   *  last in sync with — recorded every time the tab syncs with a committed
+   *  query (open-from-saved / create / save / adopt). The linked-tab classifier
+   *  (`reconcileLinkedTabs`) compares it against the latest committed query's
+   *  token to decide whether the saved query changed in another tab. Absent for
+   *  unsaved tabs (`savedId === null`). */
+  lastCommittedQueryToken?: string;
   /** ClickHouse HTTP session id (lazily minted `sess-…` uid) — set
    *  post-construction (app.js) once a query has run on this tab. */
   chSession?: string;
@@ -706,8 +723,89 @@ export function reconcileTabsWithSavedQueries(
     if (tab.savedId && !savedIds.has(tab.savedId)) {
       tab.savedId = null;
       tab.editorMode = 'sql';
+      tab.lastCommittedQueryToken = undefined; // #343: no linked query ⇒ no in-sync baseline
     }
   }
+}
+
+/** Adopt a committed saved query wholesale into a linked tab (#343 §8): replace
+ *  its SQL, parsed Spec + Spec text, name, and saved version from `query`; keep
+ *  the link; clear both dirty flags and any external-change flag; and record the
+ *  query's token as this tab's new in-sync baseline. Used by the clean-tab
+ *  `adopt` reconcile action and by the "Reload saved version" conflict
+ *  resolution. Pure tab mutation — the caller re-syncs the editor + repaints. */
+export function adoptSavedIntoTab(
+  tab: QueryTab, query: SavedQueryV2,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): void {
+  tab.name = queryName(query);
+  tab.sqlDraft = query.sql;
+  tab.specVersion = query.specVersion;
+  setTabSpecDraft(tab, cloneJson(query.spec), { dirty: false, validationService });
+  tab.dirtySql = false;
+  tab.lastCommittedQueryToken = queryToken(query);
+  tab.externalState = null;
+}
+
+/** Summary of one linked-tab reconcile pass (`reconcileLinkedTabsToLatest`). */
+export interface LinkedTabReconcileSummary {
+  /** Any tab's content, link, or external-change flag changed — the caller must
+   *  repaint the tab strip and re-sync the editors from state. */
+  changed: boolean;
+  /** How many tabs are left in an unresolved `'conflict'` state after the pass. */
+  conflicts: number;
+}
+
+/** Reconcile every open linked tab against the latest committed workspace
+ *  (#343 §8): classify each tab with the pure `reconcileLinkedTabs` planner,
+ *  then apply the tab-side effect —
+ *   - `adopt`    (clean, its saved query changed): adopt the latest query;
+ *   - `conflict` (dirty, its saved query changed): keep the draft, flag it;
+ *   - `detach`   (clean, its saved query was deleted): drop the link, SQL mode;
+ *   - `orphan`   (dirty, its saved query was deleted): keep the draft as an
+ *                 unsaved tab, flag `'deleted'` (Save then follows Save-as-new,
+ *                 never recreating the query);
+ *   - `noop`: nothing.
+ *  Snapshots are taken from the CURRENT tabs, so the caller must run this
+ *  BEFORE projecting the loaded workspace — projection (via
+ *  `reconcileTabsWithSavedQueries`) nulls deleted links, which would otherwise
+ *  erase the orphan/detach distinction. Pure over the tab objects. */
+export function reconcileLinkedTabsToLatest(
+  state: Pick<AppState, 'tabs'>,
+  latest: StoredWorkspaceV1 | null,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): LinkedTabReconcileSummary {
+  const tabs = state.tabs.value;
+  const snapshots: LinkedTabSnapshot[] = tabs.map((tab) => ({
+    id: tab.id, savedId: tab.savedId,
+    dirtySql: tab.dirtySql, dirtySpec: tab.dirtySpec,
+    lastCommittedQueryToken: tab.lastCommittedQueryToken ?? '',
+  }));
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  let changed = false;
+  let conflicts = 0;
+  for (const plan of reconcileLinkedTabs(latest, snapshots)) {
+    const tab = byId.get(plan.tabId)!;
+    if (plan.action === 'adopt') {
+      adoptSavedIntoTab(tab, plan.query!, validationService);
+      changed = true;
+    } else if (plan.action === 'conflict') {
+      conflicts += 1;
+      if (tab.externalState !== 'conflict') { tab.externalState = 'conflict'; changed = true; }
+    } else if (plan.action === 'detach') {
+      tab.savedId = null;
+      tab.editorMode = 'sql';
+      tab.lastCommittedQueryToken = undefined;
+      tab.externalState = null;
+      changed = true;
+    } else if (plan.action === 'orphan') {
+      tab.savedId = null;
+      tab.lastCommittedQueryToken = undefined;
+      tab.externalState = 'deleted';
+      changed = true;
+    }
+  }
+  return { changed, conflicts };
 }
 
 /**
@@ -775,6 +873,11 @@ export async function createSavedQuery(
   tab.dirtySql = false;
   tab.name = queryName(saved);
   setTabSpecDraft(tab, saved.spec, { validationService });
+  // #343: the tab is now in sync with the just-committed query — record its
+  // token as the in-sync baseline and clear any deleted-elsewhere flag (a
+  // Save-as-new over an orphaned draft re-links this tab to a fresh query).
+  tab.lastCommittedQueryToken = queryToken(saved);
+  tab.externalState = null;
   state.libraryDirty.value = true;
   return { ok: true, entry: saved };
 }
@@ -823,6 +926,10 @@ export async function commitSavedQuery(
   tab.name = queryName(saved);
   tab.dirtySql = false;
   setTabSpecDraft(tab, saved.spec, { validationService });
+  // #343: back in sync with the committed query — refresh the baseline token and
+  // clear any conflict flag ("Keep my draft" resolves a conflict via this path).
+  tab.lastCommittedQueryToken = queryToken(saved);
+  tab.externalState = null;
   state.libraryDirty.value = true;
   return { ok: true, entry: saved };
 }
@@ -897,16 +1004,24 @@ export async function patchSavedSpec(
     // longer present in `latest` (deleted externally) aborts quietly (nothing to
     // patch), leaving the tab association to be refreshed.
     if (entryDiagnostics) return { ok: false, invalidTab: null, entry: null, diagnostics: entryDiagnostics };
-    if (blockedDraft) return { ok: false, invalidTab: blockedDraft.tab, entry: null, diagnostics: blockedDraft.diagnostics };
+    // `blockedDraft` is assigned inside a `for` loop nested in the `mutate`
+    // closure above; TS's control-flow narrowing loses the loop-nested closure
+    // assignment and collapses it to `never` at this read. The runtime value is
+    // the object-or-null the closure set, so re-assert its declared union.
+    const blocked = blockedDraft as { tab: QueryTab; diagnostics: SpecDiagnostic[] } | null;
+    if (blocked) return { ok: false, invalidTab: blocked.tab, entry: null, diagnostics: blocked.diagnostics };
     return { ok: false, invalidTab: null, entry: null };
   }
   // `mutateWorkspace` already projected the committed queries + Dashboard onto
   // `state` (single source of truth for whether/how tile membership landed).
   const built = outcome.data!;
   const saved = committedEntry(outcome.workspace.queries, built.id, built);
+  const savedToken = queryToken(saved);
   for (const update of draftUpdates) {
     setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
     update.tab.name = queryName({ spec: update.spec });
+    // #343: each linked tab is now measured against the freshly committed entry.
+    update.tab.lastCommittedQueryToken = savedToken;
   }
   state.libraryDirty.value = true;
   return { ok: true, invalidTab: null, entry: saved };

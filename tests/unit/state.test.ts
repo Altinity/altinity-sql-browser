@@ -4,11 +4,12 @@ import {
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
   sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
-  reconcileTabsWithSavedQueries,
+  reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../../src/state.js';
 import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
 } from '../../src/state.js';
+import { queryToken } from '../../src/workspace/workspace-sync.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
 import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
@@ -232,6 +233,8 @@ describe('saved queries', () => {
     expect(e1.spec).toMatchObject({ name: 'My query', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
+    // #343: create records the tab's in-sync baseline token against the committed query.
+    expect(tab.lastCommittedQueryToken).toBe(queryToken(e1));
     expect(s.savedQueries).toHaveLength(1);
     expect(mutate.commit).toHaveBeenCalledTimes(1);
     // Linked Save bypasses popover fields and commits the two drafts directly.
@@ -245,6 +248,8 @@ describe('saved queries', () => {
     expect(queryName(s.savedQueries[0])).toBe('My query v2');
     expect(tab.name).toBe('My query v2');
     expect(tabDirty(tab)).toBe(false);
+    // #343: the linked save refreshed the in-sync baseline token to the new commit.
+    expect(tab.lastCommittedQueryToken).toBe(queryToken(s.savedQueries[0]));
   });
   it('creation stores a description and linked commits normalize/clear it', async () => {
     const s = savedTestState();
@@ -705,6 +710,137 @@ describe('saved queries', () => {
     expect(s.savedQueries).toHaveLength(0);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(s.tabs.value[0].editorMode).toBe('sql');
+  });
+
+  it('reconcileTabsWithSavedQueries clears the in-sync baseline token on detach (#343)', () => {
+    const s = savedTestState();
+    s.savedQueries = [];
+    const t = newTabObj('t1');
+    t.savedId = 'gone';
+    t.lastCommittedQueryToken = 'stale-token';
+    s.tabs.value = [t];
+    reconcileTabsWithSavedQueries(s);
+    expect(t.savedId).toBeNull();
+    expect(t.lastCommittedQueryToken).toBeUndefined();
+  });
+});
+
+// #343: per-tab linked-query reconcile — adopt/conflict/detach/orphan over the
+// latest committed workspace, plus the in-sync baseline token maintenance the
+// classifier relies on.
+describe('linked-tab reconcile (#343)', () => {
+  const q = (id: string, sql: string, name = id): SavedQueryV2 => ({
+    id, sql, specVersion: 1, spec: { name, favorite: false },
+  } as SavedQueryV2);
+  const ws = (queries: SavedQueryV2[]): StoredWorkspaceV1 => ({
+    storageVersion: 1, id: 'w1', name: 'Team', queries, dashboard: null,
+  });
+  /** A tab linked to `query` and currently in sync with it. */
+  const linkedTab = (id: string, query: SavedQueryV2): QueryTab => {
+    const t = newTabObj(id);
+    t.savedId = query.id;
+    t.name = query.spec.name as string;
+    t.sqlDraft = query.sql;
+    setTabSpecDraft(t, { ...query.spec });
+    t.lastCommittedQueryToken = queryToken(query);
+    return t;
+  };
+
+  it('adoptSavedIntoTab replaces content, stays linked, clears dirty + flag, updates token', () => {
+    const query = q('q1', 'SELECT 2', 'Renamed');
+    const t = newTabObj('t1');
+    t.savedId = 'q1';
+    t.sqlDraft = 'SELECT 1';
+    t.dirtySql = true;
+    t.externalState = 'conflict';
+    adoptSavedIntoTab(t, query);
+    expect(t.sqlDraft).toBe('SELECT 2');
+    expect(t.name).toBe('Renamed');
+    expect(t.savedId).toBe('q1'); // stays linked
+    expect(t.dirtySql).toBe(false);
+    expect(t.dirtySpec).toBe(false);
+    expect(t.externalState).toBeNull();
+    expect(t.lastCommittedQueryToken).toBe(queryToken(query));
+  });
+
+  it('a CLEAN linked tab whose query changed externally ADOPTS without becoming dirty', () => {
+    const s = savedTestState();
+    const t = linkedTab('t1', q('q1', 'SELECT 1'));
+    s.tabs.value = [t];
+    const latest = ws([q('q1', 'SELECT 1 -- edited elsewhere')]);
+    const summary = reconcileLinkedTabsToLatest(s, latest);
+    expect(summary).toEqual({ changed: true, conflicts: 0 });
+    expect(t.sqlDraft).toBe('SELECT 1 -- edited elsewhere');
+    expect(t.savedId).toBe('q1');
+    expect(t.dirtySql).toBe(false);
+    expect(t.externalState).toBeNull();
+  });
+
+  it('a DIRTY linked tab whose query changed externally preserves its draft and enters conflict', () => {
+    const s = savedTestState();
+    const t = linkedTab('t1', q('q1', 'SELECT 1'));
+    t.sqlDraft = 'SELECT my draft';
+    t.dirtySql = true;
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([q('q1', 'SELECT external edit')]));
+    expect(summary).toEqual({ changed: true, conflicts: 1 });
+    expect(t.sqlDraft).toBe('SELECT my draft'); // draft preserved exactly
+    expect(t.dirtySql).toBe(true);
+    expect(t.savedId).toBe('q1'); // stays linked
+    expect(t.externalState).toBe('conflict');
+  });
+
+  it('re-running over an already-conflict tab keeps it conflict without reporting a change', () => {
+    const s = savedTestState();
+    const t = linkedTab('t1', q('q1', 'SELECT 1'));
+    t.sqlDraft = 'draft';
+    t.dirtySql = true;
+    t.externalState = 'conflict';
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([q('q1', 'SELECT external')]));
+    expect(summary.conflicts).toBe(1);
+    expect(summary.changed).toBe(false);
+    expect(t.externalState).toBe('conflict');
+  });
+
+  it('a CLEAN linked tab whose query was DELETED externally detaches (SQL mode, unlinked)', () => {
+    const s = savedTestState();
+    const t = linkedTab('t1', q('q1', 'SELECT 1'));
+    t.editorMode = 'spec';
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([]));
+    expect(summary).toEqual({ changed: true, conflicts: 0 });
+    expect(t.savedId).toBeNull();
+    expect(t.editorMode).toBe('sql');
+    expect(t.lastCommittedQueryToken).toBeUndefined();
+    expect(t.externalState).toBeNull();
+  });
+
+  it('a DIRTY linked tab whose query was DELETED externally becomes an unsaved draft flagged deleted', () => {
+    const s = savedTestState();
+    const t = linkedTab('t1', q('q1', 'SELECT 1'));
+    t.sqlDraft = 'SELECT still editing';
+    t.dirtySql = true;
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([]));
+    expect(summary).toEqual({ changed: true, conflicts: 0 });
+    expect(t.savedId).toBeNull(); // no implicit recreate — it's now unsaved
+    expect(t.sqlDraft).toBe('SELECT still editing'); // draft intact
+    expect(t.lastCommittedQueryToken).toBeUndefined();
+    expect(t.externalState).toBe('deleted');
+  });
+
+  it('an unsaved tab and an unchanged linked tab are no-ops', () => {
+    const s = savedTestState();
+    const unsaved = newTabObj('t1'); // savedId null
+    const query = q('q1', 'SELECT 1');
+    const inSync = linkedTab('t2', query);
+    s.tabs.value = [unsaved, inSync];
+    const summary = reconcileLinkedTabsToLatest(s, ws([query]));
+    expect(summary).toEqual({ changed: false, conflicts: 0 });
+    expect(unsaved.savedId).toBeNull();
+    expect(inSync.savedId).toBe('q1');
+    expect(inSync.externalState).toBeUndefined();
   });
 });
 
