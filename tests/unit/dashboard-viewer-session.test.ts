@@ -649,6 +649,60 @@ describe('shared filter-source runtime (#359)', () => {
     expect(optionsSeen.slice(firstFreshAt).every((o) => JSON.stringify(o) === JSON.stringify(fresh))).toBe(true);
   });
 
+  it('a superseded seventh queued filter-source worker exits before changing its provider or issuing a request', async () => {
+    let releaseOldWorkers!: () => void;
+    const oldWorkers = new Promise<void>((resolve) => { releaseOldWorkers = resolve; });
+    const sourceCount = new Map<number, number>();
+    const sourceQueries = Array.from({ length: VIEWER_TILE_CONCURRENCY + 1 }, (_, index) => {
+      const id = index + 1;
+      return query(`src${id}`, `SELECT ['V${id}'] AS p${id} /* source-${id} */`, { dashboard: { role: 'filter' } });
+    });
+    const panelQueries = Array.from({ length: VIEWER_TILE_CONCURRENCY + 1 }, (_, index) => {
+      const id = index + 1;
+      return query(`q${id}`, `SELECT {p${id}:String} AS n /* panel-${id} */`);
+    });
+    const { exec, calls } = makeExec((sql) => {
+      const sourceId = Number(sql.match(/source-(\d+)/)?.[1]);
+      if (sourceId) {
+        const count = (sourceCount.get(sourceId) ?? 0) + 1;
+        sourceCount.set(sourceId, count);
+        if (sourceId <= VIEWER_TILE_CONCURRENCY && count === 1) {
+          return oldWorkers.then(() => ({
+            columns: [{ name: `p${sourceId}`, type: 'Array(String)' }], rows: [[[`OLD-${sourceId}`]]],
+          }));
+        }
+        return {
+          columns: [{ name: `p${sourceId}`, type: 'Array(String)' }], rows: [[[`FRESH-${sourceId}`]]],
+        };
+      }
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        filters: sourceQueries.map((entry, index) => ({
+          id: `f${index + 1}`, parameter: `p${index + 1}`, sourceQueryId: entry.id,
+        })),
+        tiles: panelQueries.map((entry, index) => tile(`t${index + 1}`, entry.id)),
+      }),
+      exec, queries: [...panelQueries, ...sourceQueries],
+    }));
+
+    const oldWave = session.start();
+    await flush();
+    expect(calls).toHaveLength(VIEWER_TILE_CONCURRENCY);
+
+    await session.refresh();
+    const freshFilter = session.state.value.filters[VIEWER_TILE_CONCURRENCY];
+    expect(freshFilter).toMatchObject({
+      status: 'ready', options: [{ value: 'FRESH-7', label: 'FRESH-7' }],
+    });
+
+    releaseOldWorkers();
+    await oldWave;
+    expect(calls.filter((call) => call.sql.includes(`source-${VIEWER_TILE_CONCURRENCY + 1}`))).toHaveLength(1);
+    expect(session.state.value.filters[VIEWER_TILE_CONCURRENCY]).toEqual(freshFilter);
+  });
+
   it('destroy cancels a shared in-flight source exactly once, even with two consumers', async () => {
     const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
     const { exec } = makeExec((sql) => (sql.includes('source') ? new Promise(() => {}) : { columns: [{ name: 'n' }], rows: [[1]] }));
@@ -888,6 +942,40 @@ describe('per-tile control and lifecycle', () => {
     releaseTile();
     await Promise.all([first, second]);
     expect(session.state.value.tiles[0].columns).toEqual([{ name: 'fresh' }]);
+  });
+
+  it('a superseded seventh queued tile worker exits before mutating state or issuing a request', async () => {
+    let releaseOldWorkers!: () => void;
+    const oldWorkers = new Promise<void>((resolve) => { releaseOldWorkers = resolve; });
+    const tileQueries = Array.from({ length: VIEWER_TILE_CONCURRENCY + 1 }, (_, index) =>
+      query(`q${index + 1}`, `SELECT ${index + 1} /* tile-${index + 1} */`));
+    const { exec, calls } = makeExec((sql) => {
+      const id = Number(sql.match(/tile-(\d+)/)?.[1]);
+      if (id <= VIEWER_TILE_CONCURRENCY) {
+        return oldWorkers.then(() => ({ columns: [{ name: `old-${id}` }], rows: [[id]] }));
+      }
+      return { columns: [{ name: 'fresh-7' }], rows: [[7]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: tileQueries.map((entry, index) => tile(`t${index + 1}`, entry.id)) }),
+      exec, queries: tileQueries,
+    }));
+
+    const oldWave = session.start();
+    await flush();
+    expect(calls).toHaveLength(VIEWER_TILE_CONCURRENCY);
+
+    await session.refreshTile(`t${VIEWER_TILE_CONCURRENCY + 1}`);
+    const fresh = session.state.value.tiles[VIEWER_TILE_CONCURRENCY];
+    expect(fresh.status).toBe('ready');
+    expect(fresh.columns).toEqual([{ name: 'fresh-7' }]);
+
+    releaseOldWorkers();
+    await oldWave;
+    expect(calls.filter((call) => call.sql.includes(`tile-${VIEWER_TILE_CONCURRENCY + 1}`))).toHaveLength(1);
+    expect(session.state.value.tiles[VIEWER_TILE_CONCURRENCY]).toMatchObject({
+      status: 'ready', columns: [{ name: 'fresh-7' }], rows: [[7]],
+    });
   });
 
   it('destroy cancels in-flight work and turns later entry points into no-ops', async () => {

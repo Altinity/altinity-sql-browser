@@ -685,12 +685,14 @@ describe('renderResolvedPanel', () => {
     })).toBeNull();
   });
 
-  it('keeps configured log roles selected before a result schema is available', () => {
+  it('builds editable Logs controls before a result schema is available', () => {
     const app = makeApp();
     const controls = PANEL_TYPES.logs.controls({
       app, result: null, cfg: { type: 'logs', time: 'saved_time' }, onChange: () => {},
     })!;
-    expect(qs<HTMLSelectElement>(controls, 'select').value).toBe('saved_time');
+    const roles = qsa<HTMLSelectElement>(controls, 'select');
+    expect(roles).toHaveLength(3);
+    expect(roles.every((role) => !role.disabled)).toBe(true);
   });
 
   it('wraps a fallback resolution with its diagnostic note', () => {

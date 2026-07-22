@@ -896,6 +896,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   async function runTile(runtime: TileRuntime, source: PreparedSource, generation: number): Promise<void> {
+    if (runtime.gen !== generation) return;
     if (source.missing.length || source.invalid.length) {
       runtime.state.status = 'unfilled';
       runtime.state.unfilled = source.missing.concat(source.invalid);
@@ -1013,6 +1014,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   async function runFilterSource(
     source: FilterSourceRuntime, generation: number, waveMs: number,
   ): Promise<FilterProvider | null> {
+    if (source.gen !== generation) return null;
     if (!source.query) {
       // REUSE the static-validation code `filter-source-missing`
       // (workspace-semantics.ts) — this is the RUNTIME analog: the source

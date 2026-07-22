@@ -191,7 +191,6 @@ function logsRoleSelect(
   const state = logsRoleState(cfg[cfgName], result ? result.columns : null);
   const options: SelectOption[] = [
     { value: '', label: '(auto)' },
-    ...(!result && state.raw ? [{ value: state.raw, label: state.raw }] : []),
     ...(state.stale ? [{ value: state.raw, label: `${state.raw} (missing)`, disabled: true }] : []),
     ...(result ? result.columns.map((c) => ({ value: c.name, label: c.name })) : []),
   ];
