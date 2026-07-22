@@ -52,7 +52,9 @@ export interface RelativeTimePreset {
   label: string;
 }
 
-/** v1 preset list (#169 spec) — plain combobox option data. */
+/** v1 preset list (#169 spec) — plain combobox option data. Kept EXACTLY as
+ *  it was before #335 — bit-identical entries/order/labels — this field's
+ *  own preset dropdown is untouched by the time-range control's arrival. */
 export const RELATIVE_TIME_PRESETS: RelativeTimePreset[] = [
   { value: '-15m', label: '-15m — last 15 minutes' },
   { value: '-1h', label: '-1h — last hour' },
@@ -65,14 +67,56 @@ export const RELATIVE_TIME_PRESETS: RelativeTimePreset[] = [
   { value: 'now', label: 'now — this instant' },
 ];
 
+/**
+ * #335 time-range popover's per-field "constants" column — one plain-
+ * language relative-time token per row, distinct from (and a superset in
+ * spirit of, though not literally overlapping with) `RELATIVE_TIME_PRESETS`
+ * above, which stays exactly as it was. Order here is the pinned design
+ * order: `now` first, then ascending offsets grouped by unit (minutes,
+ * hours, days, the one month entry, then the 90-day outlier the design
+ * places last). Consumed by the time-range field UI (a later wave); this
+ * module only owns the data + the shared filter helper below.
+ */
+export const TIME_RANGE_CONSTANTS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'now', label: 'now — current time' },
+  { value: '-5m', label: '-5m — 5 minutes ago' },
+  { value: '-15m', label: '-15m — 15 minutes ago' },
+  { value: '-30m', label: '-30m — 30 minutes ago' },
+  { value: '-1h', label: '-1h — 1 hour ago' },
+  { value: '-3h', label: '-3h — 3 hours ago' },
+  { value: '-6h', label: '-6h — 6 hours ago' },
+  { value: '-12h', label: '-12h — 12 hours ago' },
+  { value: '-1d', label: '-1d — 1 day ago' },
+  { value: '-2d', label: '-2d — 2 days ago' },
+  { value: '-7d', label: '-7d — 7 days ago' },
+  { value: '-30d', label: '-30d — 30 days ago' },
+  { value: '-1M', label: '-1M — 1 month ago' },
+  { value: '-90d', label: '-90d — 90 days ago' },
+];
+
+/**
+ * Type-to-filter (#174 §1, generalized for #335): a blank query returns
+ * `list` itself (never a copy — callers/tests rely on referential identity
+ * when nothing was typed); otherwise a case-insensitive substring match
+ * against either a row's `value` or its `label`. Pure, and usable over any
+ * `{value, label}`-shaped list — `filterPresets` below is now a one-line
+ * wrapper over `RELATIVE_TIME_PRESETS`, behavior unchanged.
+ */
+export function filterTokenList<T extends { value: string; label: string }>(
+  list: readonly T[],
+  text: string | undefined,
+): readonly T[] {
+  const q = String(text || '').trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((item) => item.value.toLowerCase().includes(q) || item.label.toLowerCase().includes(q));
+}
+
 /** Type-to-filter (#174 §1): a blank query shows every preset; otherwise a
  * case-insensitive substring match against either the expression or its
  * label — matching "1" surfaces every preset built from a `1`, matching
  * "day" surfaces both `-1d` (via its label) and `-1d/d`. Pure. */
 export function filterPresets(text: string | undefined): RelativeTimePreset[] {
-  const q = String(text || '').trim().toLowerCase();
-  if (!q) return RELATIVE_TIME_PRESETS;
-  return RELATIVE_TIME_PRESETS.filter((p) => p.value.toLowerCase().includes(q) || p.label.toLowerCase().includes(q));
+  return filterTokenList(RELATIVE_TIME_PRESETS, text) as RelativeTimePreset[];
 }
 
 /** `buildRelativeTimeField`'s options bag. */

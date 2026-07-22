@@ -2766,6 +2766,143 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
   });
 });
 
+// #335: the compound time-range control, integrated end to end through the
+// REAL session — a from/to date-like filter pair forms a `DashboardTimeRangeGroup`
+// (session.timeRangeGroups), the bar renders one compound control in its "Time"
+// section (suppressing the pair's two individual fields), Apply commits both
+// bounds atomically via `session.applyFilters` in one wave, per-group recents
+// accumulate the OUTGOING committed pairs, and the closed trigger re-resolves
+// its label per wave (a live relative range) without a bar rebuild.
+describe('renderDashboard — compound time-range control (#335)', () => {
+  const PAIR = 'SELECT k, v FROM a WHERE ts >= {from:DateTime} AND ts < {to:DateTime}';
+  const clickEv = (): MouseEvent => new MouseEvent('click', { bubbles: true });
+  const inputEv = (): Event => new Event('input', { bubbles: true });
+  // Drive one full time-range Apply on the CURRENTLY-rendered trigger.
+  const applyRange = async (app: TestApp, from: string, to: string): Promise<void> => {
+    qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+    const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
+    inputs[0].value = from; inputs[0].dispatchEvent(inputEv());
+    inputs[1].value = to; inputs[1].dispatchEvent(inputEv());
+    qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
+    await flush();
+  };
+
+  it('renders one compound control for the from/to pair, suppressing the two individual fields, with Time/Filters labels', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', PAIR + ' AND r = {region:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.trf-trigger')).not.toBeNull();
+    expect(qsa(app.root, '.dash-filter-host .flabel').map((n) => n.textContent)).toEqual(['Time', 'Filters']);
+    // The pair's own two fields are gone; only the non-group field remains.
+    const names = qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name').map((n) => n.textContent);
+    expect(names).toEqual(['region']);
+  });
+
+  it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
+    const { app, calls } = dashApp({
+      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const before = calls.length;
+    await applyRange(app, '-1d', 'now');
+    const added = calls.slice(before).filter((c) => 'param_from' in c.params || 'param_to' in c.params);
+    expect(added.length).toBeGreaterThanOrEqual(1);
+    // One atomic wave binds BOTH parameters on every affected tile call.
+    expect(added.every((c) => 'param_from' in c.params && 'param_to' in c.params)).toBe(true);
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
+    // The bar rebuilt on the committed-value change and now shows a resolved,
+    // active range (not "Not set").
+    expect(qs(app.root, '.trf-trigger').textContent).not.toBe('Not set');
+    rootEl(app).remove();
+  });
+
+  it('pushes the OUTGOING committed pair to per-group recents on a changing re-apply, never on the first commit from unset', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    // First commit — the outgoing pair was unset/inactive, so nothing is pushed.
+    await applyRange(app, '-1d', 'now');
+    qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+    expect(qs(document.body, '.trf-empty')?.textContent).toContain('No recent ranges yet');
+    // Cancel out (never pushes).
+    qsa<HTMLButtonElement>(document.body, '.trf-btn')[0].dispatchEvent(clickEv()); // Cancel
+    // Second, CHANGING commit — the outgoing active pair (-1d → now) is pushed.
+    await applyRange(app, '-7d', 'now');
+    qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+    expect(qs(document.body, '.trf-recent').textContent).toBe('-1d → now');
+    rootEl(app).remove();
+  });
+
+  it('re-resolves the closed trigger label per wave WITHOUT rebuilding the bar (a relative range moves as `now` advances)', async () => {
+    let clock = 1000;
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', PAIR)],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          { id: 'from', parameter: 'from', defaultValue: '-1d', defaultActive: true },
+          { id: 'to', parameter: 'to', defaultValue: 'now', defaultActive: true },
+        ],
+      }),
+    });
+    app.wallNow = () => clock;
+    await render(app);
+    const trigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
+    const before = trigger.textContent;
+    expect(trigger.classList.contains('is-error')).toBe(false);
+    clock = 1000 + 3 * 86_400_000; // three days later
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    // No rebuild — the SAME trigger node, its label re-resolved in place.
+    expect(qs(app.root, '.trf-trigger')).toBe(trigger);
+    expect(trigger.textContent).not.toBe(before);
+    rootEl(app).remove();
+  });
+
+  it('restores focus onto the fresh time-range trigger after a commit-triggered rebuild', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const oldTrigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
+    oldTrigger.dispatchEvent(clickEv());
+    const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
+    inputs[0].value = '-1d'; inputs[0].dispatchEvent(inputEv());
+    inputs[1].value = 'now'; inputs[1].dispatchEvent(inputEv());
+    qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
+    // The synchronous applyFilters publish rebuilt the bar, detaching the old
+    // trigger — focus lands on the fresh one (never stranded at <body>).
+    const newTrigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
+    expect(newTrigger).not.toBe(oldTrigger);
+    expect(document.activeElement).toBe(newTrigger);
+    rootEl(app).remove();
+  });
+
+  it('renders and commits the time-range control in a read-only (detached) dashboard', async () => {
+    const detached = wsWith({
+      id: 'd', queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }],
+    });
+    const { app, calls } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    expect(qs(app.root, '.trf-trigger')).not.toBeNull();
+    const before = calls.length;
+    await applyRange(app, '-1d', 'now');
+    const added = calls.slice(before).filter((c) => 'param_from' in c.params && 'param_to' in c.params);
+    expect(added.length).toBeGreaterThanOrEqual(1);
+    rootEl(app).remove();
+  });
+});
+
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY
 // when a curated source's option VALUE CONTENT changes — including a clear to
 // null — never on an unchanged republish) and `filterDiagnostics` (its own

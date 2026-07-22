@@ -24,7 +24,8 @@ import type { ComboField } from './combobox.js';
 import { buildFilterOptionField } from './filter-option-field.js';
 import type { FilterFieldOption } from './filter-option-field.js';
 import { buildMultiSelectField } from './multi-select-field.js';
-import type { MultiSelectFieldHandle } from './multi-select-field.js';
+import { buildTimeRangeField } from './time-range-field.js';
+import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
@@ -66,6 +67,28 @@ export interface BuildFilterBarOptions {
    *  all) — `curated.selection` is never present then either, so the seam is
    *  simply never reached. */
   onApplyCurated?(name: string, next: string[], active: boolean): void;
+  /** #335: one entry per resolved `DashboardTimeRangeGroup` — the shell
+   *  (`dashboard.ts`) assembles these from `session.timeRangeGroups` +
+   *  `sview.filters` + `sview.waveWallNowMs`, and this bar renders one compound
+   *  `buildTimeRangeField` control per entry in a "Time" section AHEAD of the
+   *  per-param fields (the pair's own two individual fields are then SUPPRESSED
+   *  from the per-param loop — the compound control represents them). Left
+   *  undefined/empty by a caller with no groups (every workbench/detached
+   *  caller, or a dashboard whose filters form no date-like pair): the bar
+   *  then renders byte-identical DOM to the pre-#335 no-time-range path. */
+  timeRange?: Array<{
+    group: DashboardTimeRangeGroup;
+    fromValue: string;
+    toValue: string;
+    active: boolean;
+    waveNowMs: number | null;
+    recents: () => readonly TimeRangeRecent[];
+  }>;
+  /** #335: fires when a time-range control commits both bounds (its Apply, or
+   *  an immediate recents pick) — the caller (`dashboard.ts`) routes it to
+   *  `session.applyFilters` over the group's from/to filter ids. Only reached
+   *  when `timeRange` built at least one control. */
+  onApplyTimeRange?(group: DashboardTimeRangeGroup, from: string, to: string): void;
 }
 
 /** #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
@@ -106,10 +129,11 @@ interface CuratedFieldConfig extends CuratedFieldStatus {
   active?: boolean;
 }
 
-/** A built curated field's retained handle (#360) — kept in
- *  `buildFilterBar`'s `curatedHandles` map so a LATER status-only change can
- *  update this exact field's affordance in place (`applyFieldStatus`, via
- *  the returned `updateStatus`) without rebuilding the whole input — the
+/** A built curated field's retained handle (#360) — referenced by its
+ *  `FieldHandle` adapter in `buildFilterBar`'s unified handle map (#335) so a
+ *  LATER status-only change can update this exact field's affordance in place
+ *  (`applyFieldStatus`, via the returned `updateStatus`) without rebuilding
+ *  the whole input — the
  *  rebuild would otherwise blow away in-progress typing on every other field
  *  in the bar and drop this field's own combobox/focus state. `baseTitle`/
  *  `basePlaceholder` are this field's non-status tooltip/placeholder
@@ -123,6 +147,32 @@ interface CuratedFieldHandle {
   baseTitle: string;
   basePlaceholder: string;
   noteEl: HTMLElement | null;
+}
+
+/** #335 handle-map unification: the ONE contract every retained field control
+ *  in the bar is addressed through — replacing the two pre-#335 parallel maps
+ *  (`curatedHandles` + `multiSelectFields`) plus the new time-range controls
+ *  with a single `Map<string, FieldHandle>` keyed by an OPAQUE string: a
+ *  parameter name for a per-param field, `group:${group.key}` for a time-range
+ *  control (a ClickHouse parameter name can never contain `:`, so the two
+ *  key-spaces never collide). `buildMultiSelectField`/`buildTimeRangeField`
+ *  already return this shape directly; the data-bag curated scalar field is
+ *  wrapped in a small adapter. `el` is present only for controls that
+ *  participate in the popover focus-restore dance (multiselect + time-range) —
+ *  the curated scalar adapter omits it, so `focusedFieldKey` skips it exactly
+ *  as the pre-#335 `focusedMultiSelectParam` did. `refreshLabel` is carried
+ *  only by time-range handles (folded by `refreshTimeRangeLabels`). */
+interface FieldHandle {
+  el?: HTMLElement;
+  updateStatus(s: CuratedFieldStatus): void;
+  /** Present on the popover-bearing controls (multiselect + time-range); the
+   *  curated scalar adapter omits them (it has no popover, no focusable
+   *  trigger a rebuild restores, and nothing to tear down), so every fold over
+   *  the map that needs one uses optional chaining. */
+  isOpen?(): boolean;
+  focusTrigger?(): void;
+  dispose?(): void;
+  refreshLabel?(nowMs: number): void;
 }
 
 /**
@@ -234,9 +284,9 @@ export const FILTER_DEBOUNCE_MS = 500;
  *
  *  #360: `updateStatus` applies a per-param `CuratedFieldStatus`
  *  update to whichever curated fields this SAME bar instance already built
- *  (`curatedHandles`, keyed by parameter) — a param this bar never curated
- *  (absent from `curatedFields` at build time, or a plain field) is silently
- *  ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
+ *  (the unified handle map, keyed by parameter name for a per-param field —
+ *  #335) — a param this bar never curated (absent from `curatedFields` at
+ *  build time, or a plain field) is silently ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
  *  status-only change (e.g. `loading` → `ready`, no value/active/options
  *  change) instead of tearing down and rebuilding the whole bar — preserving
  *  in-progress typing on every OTHER field, and this field's own combobox/
@@ -245,42 +295,48 @@ export interface FilterBarHandle {
   el: HTMLElement;
   dispose(): void;
   updateStatus(states: Record<string, CuratedFieldStatus>): void;
-  /** #189, #189-F2b: the PARAMETER of a curated MULTISELECT field built by
-   *  THIS bar instance that currently has its popover open, or `null` when
-   *  none does (including a bar that built no multiselect field at all — the
-   *  empty-`params` bar too). The caller (`dashboard.ts`) reads this BEFORE
-   *  disposing an outgoing bar (a rebuild always disposes the old bar
-   *  outright) to decide whether a refresh announcement is owed — disposing
-   *  a multiselect field while its popover is open silently Cancels it (no
-   *  `onApply`, see multi-select-field.ts), so without an announcement the
-   *  user's open popover would simply vanish. Replaces the pre-F2b boolean
-   *  `hasOpenMultiSelect()` — the caller needs to know WHICH field, so it can
-   *  move focus to that same parameter's trigger on the freshly-built bar
-   *  (`focusMultiSelectTrigger` below) rather than leaving focus stranded at
-   *  `<body>`. */
-  openMultiSelectParam(): string | null;
-  /** Maintainer merge-gate fix (#189): the parameter of a curated MULTISELECT
-   *  field built by THIS bar instance whose trigger (or error-mode fallback
-   *  input) currently HOLDS FOCUS, popover open or not — or `null` when none
-   *  does. Distinct from `openMultiSelectParam` above: an ordinary Apply
-   *  closes its own popover BEFORE calling `onApply` (multi-select-field.ts),
-   *  so by the time a synchronous commit-triggered rebuild reaches this bar,
-   *  `openMultiSelectParam()` already reads `null` even though focus still
-   *  sits on that field's (about-to-be-detached) trigger — this is the only
-   *  remaining signal for which parameter's fresh trigger a rebuild should
-   *  refocus. The caller (`dashboard.ts`) reads BOTH before disposing the
-   *  outgoing bar and restores focus for whichever one is non-null
-   *  (`openMultiSelectParam() ?? focusedMultiSelectParam()`), so a plain
-   *  field mid-typing (focus outside every multiselect control) is never
-   *  disturbed. */
-  focusedMultiSelectParam(): string | null;
-  /** #189-F2b: focuses the named parameter's multiselect trigger (or its
-   *  error-mode fallback input, if erroring) — a no-op when this bar built no
-   *  multiselect field for that parameter. Used by `dashboard.ts` right after
-   *  building a FRESH bar, for whichever parameter `openMultiSelectParam()`
-   *  (or, absent that, `focusedMultiSelectParam()`) reported on the OUTGOING
-   *  bar just before disposing it. */
-  focusMultiSelectTrigger(name: string): void;
+  /** #189, #189-F2b, GENERALIZED (#335): the opaque KEY of a popover-bearing
+   *  control built by THIS bar instance that currently has its popover open,
+   *  or `null` when none does (including a bar that built no such control at
+   *  all — the empty-`params` bar too). The key is the parameter name for a
+   *  curated MULTISELECT field, `group:${group.key}` for a time-range control.
+   *  The caller (`dashboard.ts`) reads this BEFORE disposing an outgoing bar
+   *  (a rebuild always disposes the old bar outright) to decide whether a
+   *  refresh announcement is owed — disposing a control while its popover is
+   *  open silently Cancels it (no commit, see multi-select-field.ts /
+   *  time-range-field.ts), so without an announcement the user's open popover
+   *  would simply vanish — and to move focus to that same key's trigger on the
+   *  freshly-built bar (`focusFieldTrigger` below) rather than leaving focus
+   *  stranded at `<body>`. */
+  openPopoverKey(): string | null;
+  /** Maintainer merge-gate fix (#189), GENERALIZED (#335): the opaque KEY of a
+   *  field control built by THIS bar instance whose own root (`FieldHandle.el`
+   *  — a multiselect's trigger/error input, or a time-range control's trigger)
+   *  currently HOLDS FOCUS, popover open or not — or `null` when none does.
+   *  Distinct from `openPopoverKey` above: an ordinary Apply closes its own
+   *  popover BEFORE calling its commit callback (multi-select-field.ts /
+   *  time-range-field.ts, the shared `openAnchoredDialog` contract), so by the
+   *  time a synchronous commit-triggered rebuild reaches this bar,
+   *  `openPopoverKey()` already reads `null` even though focus still sits on
+   *  that field's (about-to-be-detached) trigger — this is the only remaining
+   *  signal for which control's fresh trigger a rebuild should refocus. The
+   *  caller (`dashboard.ts`) reads BOTH before disposing the outgoing bar and
+   *  restores focus for whichever is non-null (`openPopoverKey() ??
+   *  focusedFieldKey()`), so a plain field mid-typing (focus outside every
+   *  popover-bearing control) is never disturbed. */
+  focusedFieldKey(): string | null;
+  /** #189-F2b, GENERALIZED (#335): focuses the keyed control's trigger (a
+   *  multiselect's trigger/error-mode input, or a time-range control's
+   *  trigger) — a no-op when this bar built no such control for that key. Used
+   *  by `dashboard.ts` right after building a FRESH bar, for whichever key
+   *  `openPopoverKey()` (or, absent that, `focusedFieldKey()`) reported on the
+   *  OUTGOING bar just before disposing it. */
+  focusFieldTrigger(key: string): void;
+  /** #335: re-resolve every time-range control's closed-trigger label + aria
+   *  against a new wall-clock snapshot (per execution wave, no timers) — a
+   *  relative range (`-1d` → `now`) re-displays its absolute bounds without a
+   *  bar rebuild. A no-op when this bar built no time-range control. */
+  refreshTimeRangeLabels(nowMs: number): void;
 }
 
 /**
@@ -317,22 +373,27 @@ export function buildFilterBar(
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }),
       dispose: () => {}, updateStatus: () => {},
-      openMultiSelectParam: () => null, focusedMultiSelectParam: () => null,
-      focusMultiSelectTrigger: () => {},
+      openPopoverKey: () => null, focusedFieldKey: () => null,
+      focusFieldTrigger: () => {}, refreshTimeRangeLabels: () => {},
     };
   }
   const timerClears: Array<() => void> = [];
-  // #360: every curated (scalar single-select) field's retained handle,
-  // keyed by parameter — see `CuratedFieldHandle` and
-  // `FilterBarHandle.updateStatus`.
-  const curatedHandles = new Map<string, CuratedFieldHandle>();
-  // #189: every curated MULTISELECT field's own handle, keyed by parameter —
-  // a separate map (its `updateStatus`/`isOpen`/`dispose` are its own, not
-  // `CuratedFieldHandle`'s DOM-patching recipe) that `updateStatus`/`dispose`/
-  // `openMultiSelectParam`/`focusMultiSelectTrigger` below all fold in
-  // alongside `curatedHandles`.
-  const multiSelectFields = new Map<string, MultiSelectFieldHandle>();
-  const el = h('div', attrs, ...params.map((p) => {
+  // #335 handle-map unification: ONE map (see `FieldHandle`) keyed by the
+  // opaque control key — a parameter name for a per-param field (curated
+  // scalar, multiselect, or plain), `group:${group.key}` for a time-range
+  // control — replacing the pre-#335 parallel `curatedHandles` +
+  // `multiSelectFields` maps. `updateStatus`/`dispose`/`openPopoverKey`/
+  // `focusedFieldKey`/`focusFieldTrigger`/`refreshTimeRangeLabels` all fold
+  // over this one map.
+  const handles = new Map<string, FieldHandle>();
+  // #335: the time-range group entries, and the set of parameter names those
+  // groups OWN — those params are represented by the compound control and so
+  // are suppressed from the per-param loop below.
+  const timeRange = options.timeRange ?? [];
+  const suppressed = new Set<string>();
+  for (const tr of timeRange) { suppressed.add(tr.group.fromParameter); suppressed.add(tr.group.toParameter); }
+
+  const buildParamField = (p: FieldControl): HTMLElement => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
     // #173 acceptance (review F1): a type-conflicted param (declared with
@@ -383,7 +444,8 @@ export function buildFilterBar(
             onCommit(p.name);
           },
         });
-        multiSelectFields.set(p.name, msField);
+        // #335: a multiselect handle already satisfies `FieldHandle` directly.
+        handles.set(p.name, msField);
         return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
           h('span', { class: 'var-name' }, p.name), msField.el);
       }
@@ -431,7 +493,12 @@ export function buildFilterBar(
       // the handle so a LATER status-only change updates this same field in
       // place via `updateStatus`, never a rebuild.
       applyFieldStatus(handle, { status: curated.status, stale: curated.stale, waitingFor: curated.waitingFor });
-      curatedHandles.set(p.name, handle);
+      // #335: the data-bag curated scalar handle wrapped in a minimal
+      // `FieldHandle` adapter — only `updateStatus` (re-runs `applyFieldStatus`
+      // in place) is meaningful. No popover, no `el` (so `focusedFieldKey`
+      // skips it, exactly as the pre-#335 code did), nothing to dispose — the
+      // optional `isOpen`/`focusTrigger`/`dispose` are simply absent.
+      handles.set(p.name, { updateStatus: (s) => applyFieldStatus(handle, s) });
       return label;
     }
     const commitNow = (): void => {
@@ -502,44 +569,86 @@ export function buildFilterBar(
     applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo?.previewEl);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), combo.el);
-  }));
+  };
+
+  // #335: the "Time" section — a `.flabel` heading + one compound time-range
+  // control per group + a separator — rendered AHEAD of the per-param fields.
+  // Each control's handle is registered under `group:${group.key}` so it
+  // participates in the unified map's status/dispose/focus/refresh folds. Its
+  // Apply (and immediate recents pick) route through `onApplyTimeRange`.
+  const timeSection: (HTMLElement | null)[] = [];
+  if (timeRange.length) {
+    timeSection.push(h('span', { class: 'flabel' }, 'Time'));
+    for (const tr of timeRange) {
+      const trField = buildTimeRangeField({
+        document, group: tr.group,
+        fromValue: tr.fromValue, toValue: tr.toValue, active: tr.active,
+        waveNowMs: tr.waveNowMs, wallNow: app.wallNow, getRecents: tr.recents,
+        onApply: (from, to) => options.onApplyTimeRange?.(tr.group, from, to),
+      });
+      handles.set(`group:${tr.group.key}`, trField);
+      timeSection.push(trField.el);
+    }
+    timeSection.push(h('span', { class: 'trf-sep', 'aria-hidden': 'true' }));
+  }
+
+  // The per-param fields (every param NOT owned by a time-range group).
+  const perParamFields = params.filter((p) => !suppressed.has(p.name)).map(buildParamField);
+
+  // Compose: Time section, then a "Filters" section label (only when BOTH a
+  // Time section rendered AND at least one non-group field remains), then the
+  // per-param fields. With no time-range groups `timeSection` is empty and no
+  // "Filters" label renders, so the child list is byte-identical to the
+  // pre-#335 `...params.map(...)` output.
+  const children: (HTMLElement | null)[] = [...timeSection];
+  if (timeRange.length && perParamFields.length) children.push(h('span', { class: 'flabel' }, 'Filters'));
+  children.push(...perParamFields);
+  const el = h('div', attrs, ...children);
   return {
     el,
     dispose: () => {
       timerClears.forEach((clear) => clear());
-      // Disposing a multiselect field WHILE its popover is open is that
-      // field's own Cancel (no `onApply` call, see multi-select-field.ts) —
-      // a bar rebuild/teardown always tears every open popover down this way.
-      for (const msField of multiSelectFields.values()) msField.dispose();
+      // Disposing a control WHILE its popover is open is that control's own
+      // Cancel (no commit callback, see multi-select-field.ts /
+      // time-range-field.ts) — a bar rebuild/teardown always tears every open
+      // popover down this way. The curated scalar adapter has no `dispose`.
+      for (const handle of handles.values()) handle.dispose?.();
     },
     updateStatus: (states) => {
-      for (const [name, handle] of curatedHandles) {
-        const s = states[name];
-        if (s) applyFieldStatus(handle, s);
-      }
-      for (const [name, msField] of multiSelectFields) {
-        const s = states[name];
-        if (s) msField.updateStatus(s);
+      // #335: one loop over the unified map. A per-param field's key IS its
+      // parameter name, so `states[key]` finds its status; a time-range
+      // control's key is `group:…` (never a parameter name), so it never
+      // matches a status entry — and its `updateStatus` is a no-op regardless.
+      for (const [key, handle] of handles) {
+        const s = states[key];
+        if (s) handle.updateStatus(s);
       }
     },
-    // #189-F2b: read by the caller BEFORE disposing this bar (a rebuild), to
-    // decide whether an outgoing popover's forced Cancel deserves a refresh
-    // announcement AND which parameter's fresh trigger should receive focus
-    // — see `dashboard.ts`'s `rebuildFilterBar`.
-    openMultiSelectParam: () => {
-      for (const [name, msField] of multiSelectFields) if (msField.isOpen()) return name;
+    // #189-F2b, GENERALIZED (#335): read by the caller BEFORE disposing this
+    // bar (a rebuild), to decide whether an outgoing popover's forced Cancel
+    // deserves a refresh announcement AND which control's fresh trigger should
+    // receive focus — see `dashboard.ts`'s `rebuildFilterBar`.
+    openPopoverKey: () => {
+      for (const [key, handle] of handles) if (handle.isOpen?.()) return key;
       return null;
     },
-    // Maintainer merge-gate fix (#189): `.el` is each field's own control root
-    // (the single node hosting whichever of trigger/error-input is current —
-    // see multi-select-field.ts), so `.contains(activeElement)` catches focus
-    // on either one, regardless of popover state.
-    focusedMultiSelectParam: () => {
+    // `.el` is each popover-bearing control's own root (a multiselect's
+    // trigger/error-input node, a time-range control's trigger wrapper), so
+    // `.contains(activeElement)` catches focus on it regardless of popover
+    // state. The curated scalar adapter has no `el` and is skipped (its focus
+    // was never a rebuild restore target pre-#335 either).
+    focusedFieldKey: () => {
       const active = document.activeElement;
       if (!active) return null;
-      for (const [name, msField] of multiSelectFields) if (msField.el.contains(active)) return name;
+      for (const [key, handle] of handles) if (handle.el && handle.el.contains(active)) return key;
       return null;
     },
-    focusMultiSelectTrigger: (name) => { multiSelectFields.get(name)?.focusTrigger(); },
+    focusFieldTrigger: (key) => { handles.get(key)?.focusTrigger?.(); },
+    // #335: fold `refreshLabel` over the map — only time-range handles carry
+    // it; every other handle skips (optional chaining), so this is a no-op for
+    // a bar with no time-range controls.
+    refreshTimeRangeLabels: (nowMs) => {
+      for (const handle of handles.values()) handle.refreshLabel?.(nowMs);
+    },
   };
 }

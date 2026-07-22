@@ -30,6 +30,7 @@ import {
   formatPreview,
   isDateLikeType,
   resolveVarValues,
+  parseAbsoluteInstant,
 } from '../../src/core/relative-time.js';
 import type { ParsedRelativeExpr } from '../../src/core/relative-time.js';
 import type { ParsedParamType } from '../../src/core/param-type.js';
@@ -358,5 +359,112 @@ describe('formatPreview — human-readable UTC/server-time preview (review findi
   });
   it('Nullable(DateTime) unwraps and formats as DateTime', () => {
     expect(formatPreview('now', 'Nullable(DateTime)', now).display).toBe('2026-07-11 13:23:45');
+  });
+});
+
+// #335: the absolute-value complement of the relative grammar above — the
+// time-range control's From/To fields accept both. UTC convention throughout
+// (never the runtime's local `TZ`), matching `formatPreview`'s own preview
+// convention so a previously-rendered preview round-trips back through this
+// parser unchanged.
+describe('parseAbsoluteInstant — Date/Date32 (date-only)', () => {
+  it('accepts a bare YYYY-MM-DD, resolved at UTC midnight', () => {
+    expect(parseAbsoluteInstant('Date', '2026-07-11')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 0, 0, 0, 0) });
+    expect(parseAbsoluteInstant('Date32', '2026-07-11')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11) });
+  });
+  it('trims surrounding whitespace', () => {
+    expect(parseAbsoluteInstant('Date', '  2026-07-11  ')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11) });
+  });
+  it('rejects a time part present on a date-only type', () => {
+    const r = parseAbsoluteInstant('Date', '2026-07-11 09:00:00');
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/expected YYYY-MM-DD/);
+  });
+  it('rejects an invalid calendar date (Feb 30 does not exist)', () => {
+    const r = parseAbsoluteInstant('Date', '2026-02-30');
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/not a valid calendar date/);
+  });
+  it('rejects day 0 and a day beyond the month\'s length', () => {
+    expect(parseAbsoluteInstant('Date', '2026-07-00').ok).toBe(false);
+    expect(parseAbsoluteInstant('Date', '2026-04-31').ok).toBe(false); // April has 30 days
+  });
+  it('rejects an out-of-range month', () => {
+    expect(parseAbsoluteInstant('Date', '2026-13-01').ok).toBe(false);
+    expect(parseAbsoluteInstant('Date', '2026-00-01').ok).toBe(false);
+  });
+  it('a leap-year Feb 29 is valid; the following (non-leap) year is not', () => {
+    expect(parseAbsoluteInstant('Date', '2028-02-29').ok).toBe(true);
+    expect(parseAbsoluteInstant('Date', '2029-02-29').ok).toBe(false);
+  });
+  it('rejects years below 1900 — no ClickHouse date type reaches lower, and Date.UTC would silently remap 0–99 to 1900–1999', () => {
+    expect(parseAbsoluteInstant('Date', '0050-07-11').ok).toBe(false);
+    expect(parseAbsoluteInstant('DateTime', '1899-12-31 23:59:59').ok).toBe(false);
+    expect(parseAbsoluteInstant('Date32', '1900-01-01')).toEqual({ ok: true, instantMs: Date.UTC(1900, 0, 1) });
+  });
+  it('garbage text is rejected with a diagnostic naming the expected format', () => {
+    const r = parseAbsoluteInstant('Date', 'not-a-date');
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/expected YYYY-MM-DD/);
+  });
+});
+
+describe('parseAbsoluteInstant — DateTime/DateTime64 (date + time)', () => {
+  it('accepts a bare date, defaulting the time to UTC midnight', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11) });
+  });
+  it('accepts YYYY-MM-DD HH:MM (no seconds)', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 09:23')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 0, 0) });
+  });
+  it('accepts YYYY-MM-DD HH:MM:SS', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 09:23:45')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 0) });
+  });
+  it('accepts the "T" separator variant of each form', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11T09:23')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 0, 0) });
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11T09:23:45')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 0) });
+  });
+  it('DateTime64: fractional seconds, 1 to 9 digits, padded/truncated to ms resolution', () => {
+    expect(parseAbsoluteInstant('DateTime64(3)', '2026-07-11 09:23:45.1')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 100) });
+    expect(parseAbsoluteInstant('DateTime64(3)', '2026-07-11 09:23:45.123')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 123) });
+    expect(parseAbsoluteInstant('DateTime64(9)', '2026-07-11 09:23:45.123456789')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 123) });
+    expect(parseAbsoluteInstant('DateTime64(3)', '2026-07-11T09:23:45.123')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 23, 45, 123) });
+  });
+  it('rejects an invalid calendar date carried in a datetime form', () => {
+    const r = parseAbsoluteInstant('DateTime', '2026-02-30 09:00:00');
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/not a valid calendar date/);
+  });
+  it('rejects an out-of-range hour, minute, or second', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 24:00:00').ok).toBe(false);
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 09:60:00').ok).toBe(false);
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 09:00:60').ok).toBe(false);
+  });
+  it('accepts a valid boundary hour/minute/second (23:59:59)', () => {
+    expect(parseAbsoluteInstant('DateTime', '2026-07-11 23:59:59')).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 23, 59, 59, 0) });
+  });
+
+  describe('bare-digit epoch forms', () => {
+    it('1-10 digits resolve as epoch SECONDS', () => {
+      expect(parseAbsoluteInstant('DateTime', '1')).toEqual({ ok: true, instantMs: 1000 });
+      expect(parseAbsoluteInstant('DateTime', '1783772625')).toEqual({ ok: true, instantMs: 1783772625000 });
+    });
+    it('exactly 13 digits resolves as epoch MILLISECONDS', () => {
+      expect(parseAbsoluteInstant('DateTime64(3)', '1783772625123')).toEqual({ ok: true, instantMs: 1783772625123 });
+    });
+    it('11 or 12 digits is neither recognized length and is rejected', () => {
+      expect(parseAbsoluteInstant('DateTime', '17837726251').ok).toBe(false);
+      expect(parseAbsoluteInstant('DateTime', '178377262512').ok).toBe(false);
+    });
+  });
+
+  it('garbage text is rejected with a diagnostic naming the type', () => {
+    const r = parseAbsoluteInstant('DateTime', 'not-a-timestamp-at-all');
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toBeTruthy();
+  });
+
+  it('accepts a ParsedParamType object directly, not just a raw string', () => {
+    const r = parseAbsoluteInstant({ base: 'DateTime' } as ParsedParamType, '2026-07-11 09:00:00');
+    expect(r).toEqual({ ok: true, instantMs: Date.UTC(2026, 6, 11, 9, 0, 0, 0) });
   });
 });

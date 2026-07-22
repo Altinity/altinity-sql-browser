@@ -1,0 +1,215 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Time-range control harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <!-- The Dashboard viewer session (and the signals `effect` this harness uses
+       to rebuild the bar on a commit) import the signals runtime as a bare
+       specifier; the e2e server serves raw /src with no bundler, so map it to
+       the shipped ESM build (same as filter-source.html / editor.html). -->
+  <script type="importmap">
+    {
+      "imports": {
+        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+      }
+    }
+  </script>
+  <style>
+    body { padding: 24px; background: var(--bg, var(--bg-editor)); color: var(--fg); font-family: var(--ui); }
+    /* The dashboard filter bar's own scroll host — the compound control renders
+       into it exactly as it does on the real dashboard toolbar. */
+    .dash-filter-host { overflow-x: auto; padding: 6px 2px; }
+    .dash-filters { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; }
+  </style>
+</head>
+<body data-theme="dark">
+  <!-- #335: a REAL DashboardViewerSession whose two tiles consume {from:DateTime}
+       + {to:DateTime} (so `from`/`to` resolve to a scalar date-like pair and form
+       ONE time-range group), plus a third tile consuming {service:String} (a
+       non-group filter that keeps its own field). The real `buildFilterBar` is
+       mounted through the same glue `dashboard.ts`'s `rebuildFilterBar` uses:
+       the same `timeRange` assembly, the same `onApplyTimeRange`
+       (recents-push + `session.applyFilters` batch + live announcement), the
+       same focus-restore dance, driven off a signals `effect` on
+       `session.state`. This exercises the compound control end-to-end against
+       the actual pipeline — not a hand-built widget. -->
+  <div class="dash-filter-host"><main id="bar" aria-label="Dashboard filters host"></main></div>
+  <script type="module">
+    import { effect } from '@preact/signals-core';
+    import { buildFilterBar } from '/src/ui/filter-bar.js';
+    import { createDashboardViewerSession } from '/src/dashboard/application/dashboard-viewer-session.js';
+    import { pushRecentRange } from '/src/core/time-range.js';
+
+    // One fixed wall clock so every resolved preview/label is deterministic; a
+    // monotonic perf clock for tile footers.
+    const WALL = Date.parse('2026-07-22T12:00:00Z');
+    let perf = 1000;
+
+    const valueString = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+    const sigValue = (v) => (Array.isArray(v) ? JSON.stringify(v) : valueString(v));
+
+    // Exec tracker: each tile execution pushes its SQL so the spec can assert a
+    // wave ran exactly the affected tiles, once each.
+    window.__execLog = [];
+    window.__resetExec = () => { window.__execLog.length = 0; };
+    const exec = {
+      async executeRead(result, req) {
+        window.__execLog.push(req.sql);
+        if (req.onChunk) { result.progress.rows = 1; req.onChunk(); }
+        result.columns = [{ name: 'c', type: 'UInt64' }];
+        result.rows = [[1]];
+        result.progress.bytes = 10;
+        result.error = null;
+        result.cancelled = false;
+      },
+    };
+
+    const savedQuery = (id, sql) => ({ id, sql, specVersion: 1, spec: { name: id } });
+    const document_ = {
+      documentVersion: 1, id: 'd', title: 'D', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      filters: [
+        // The date-like pair — both start committed + active, so the compound
+        // trigger renders a resolved range immediately.
+        { id: 'f-from', parameter: 'from', label: 'from', defaultValue: '-1d', defaultActive: true },
+        { id: 'f-to', parameter: 'to', label: 'to', defaultValue: 'now', defaultActive: true },
+        // A non-group filter that keeps its own individual field.
+        { id: 'f-service', parameter: 'service', label: 'service' },
+      ],
+      tiles: [
+        { id: 't-a', queryId: 'qa' },
+        { id: 't-b', queryId: 'qb' },
+        { id: 't-c', queryId: 'qc' },
+      ],
+    };
+    const session = createDashboardViewerSession({
+      document: document_,
+      queries: [
+        savedQuery('qa', 'SELECT count() AS c FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-a */'),
+        savedQuery('qb', 'SELECT avg(x) AS a FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-b */'),
+        savedQuery('qc', 'SELECT count() AS c FROM logs WHERE service = {service:String} /* tile-c */'),
+      ],
+      exec,
+      connection: { ensureFreshToken: async () => true },
+      now: () => (perf += 5),
+      wallNow: () => WALL,
+    });
+
+    // ── Shell glue mirroring dashboard.ts's rebuildFilterBar ──────────────
+    const host = document.querySelector('#bar');
+    // Persistent sr-only announcer, a SIBLING of the bar host (survives the
+    // rebuild that a commit synchronously triggers) — like dashboard.ts's
+    // `filterRefreshLiveEl`.
+    const liveEl = document.createElement('div');
+    liveEl.className = 'sr-only'; liveEl.setAttribute('aria-live', 'polite');
+    host.after(liveEl);
+    window.__live = () => liveEl.textContent;
+
+    const draftValues = {};
+    const draftActive = {};
+    const filterBarApp = {
+      document,
+      state: { varValues: draftValues, filterActive: draftActive, varRecent: {} },
+      params: { saveVarValues() {}, saveFilterActive() {}, clearVarRecent() {} },
+      wallNow: () => WALL,
+    };
+    // Session-lifetime, per-group "Recently used" ranges (owner decision: not
+    // persisted) — the same shell-owned map dashboard.ts keeps.
+    const recents = new Map();
+    window.__recents = () => {
+      const g = session.timeRangeGroups[0];
+      return g ? (recents.get(g.key) ?? []) : [];
+    };
+
+    let currentBar = null;
+
+    function rebuildBar(sview) {
+      // #189-F2b/#335 focus-restore dance: read the outgoing bar's open/focused
+      // control BEFORE disposing it, restore focus to the same key afterwards.
+      const openKey = currentBar?.openPopoverKey() ?? null;
+      const focusedKey = currentBar?.focusedFieldKey() ?? null;
+      const restoreKey = openKey ?? focusedKey;
+      currentBar?.dispose();
+
+      const idByParam = new Map();
+      for (const f of sview.filters) {
+        draftValues[f.parameter] = valueString(f.value);
+        draftActive[f.parameter] = f.active;
+        idByParam.set(f.parameter, f.id);
+      }
+      const onCommit = (name) => {
+        const id = idByParam.get(name);
+        if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
+      };
+      const getField = (name, mode) => session.getFilterField(name, mode, draftValues, draftActive);
+
+      const filterById = new Map(sview.filters.map((f) => [f.id, f]));
+      const timeRange = session.timeRangeGroups.flatMap((group) => {
+        const fromF = filterById.get(group.fromFilterId);
+        const toF = filterById.get(group.toFilterId);
+        if (!fromF || !toF) return [];
+        return [{
+          group,
+          fromValue: valueString(fromF.value),
+          toValue: valueString(toF.value),
+          active: fromF.active && toF.active,
+          waveNowMs: sview.waveWallNowMs,
+          recents: () => recents.get(group.key) ?? [],
+        }];
+      });
+      const onApplyTimeRange = (group, from, to) => {
+        const fromF = filterById.get(group.fromFilterId);
+        const toF = filterById.get(group.toFilterId);
+        const outFrom = fromF ? valueString(fromF.value) : '';
+        const outTo = toF ? valueString(toF.value) : '';
+        const wasActive = !!(fromF?.active && toF?.active);
+        if (wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
+          recents.set(group.key, pushRecentRange(recents.get(group.key) ?? [], { from: outFrom, to: outTo }));
+        }
+        window.__lastApply = session.applyFilters([
+          { filterId: group.fromFilterId, value: from, active: true },
+          { filterId: group.toFilterId, value: to, active: true },
+        ]);
+        liveEl.textContent = `Time range applied: ${from} → ${to}`;
+      };
+
+      const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, {
+        document, timeRange, onApplyTimeRange,
+      });
+      host.replaceChildren(bar.el);
+      currentBar = bar;
+      if (restoreKey) bar.focusFieldTrigger(restoreKey);
+    }
+
+    // Rebuild the bar only when its signature actually changes (filter
+    // values/active/status, the resolved wave `now`, the control set) — exactly
+    // dashboard.ts's barSig gating, so an OPEN popover is never torn down by a
+    // rebuild while the user is merely interacting with it (no commit = no
+    // state change = no rebuild).
+    let lastSig = null;
+    effect(() => {
+      const sview = session.state.value;
+      const sig = JSON.stringify({
+        controls: session.controls.map((c) => c.name),
+        filters: sview.filters.map((f) => ({
+          p: f.parameter, v: sigValue(f.value), a: f.active, s: f.status, r: f.optionsRev,
+        })),
+        wave: sview.waveWallNowMs,
+      });
+      if (sig === lastSig) return;
+      lastSig = sig;
+      rebuildBar(sview);
+    });
+
+    window.__setTheme = (t) => { document.body.dataset.theme = t; };
+    window.__groups = () => session.timeRangeGroups.map((g) => ({ key: g.key, from: g.fromParameter, to: g.toParameter }));
+
+    await session.start();
+    // Ignore the tile runs from the initial full wave — the spec resets the log
+    // before it asserts on a filter-commit wave.
+    window.__resetExec();
+    window.__ready = true;
+  </script>
+</body>
+</html>

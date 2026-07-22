@@ -40,6 +40,8 @@ import type { FilterSourceAnalysis } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { resolveFilterSelection, sameSelection } from '../../core/filter-selection.js';
 import type { FilterSelectionFilterDef } from '../../core/filter-selection.js';
+import { resolveTimeRangeGroups } from '../../core/time-range.js';
+import type { DashboardTimeRangeGroup } from '../../core/time-range.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
 import type {
   FilterProvider, FilterHelperOption, FilterDiagnostic, MergeDashboardFilterHelpersResult,
@@ -184,6 +186,16 @@ export interface DashboardViewState {
    *  appear once by construction). Reset to `[]` at the start of each wave;
    *  a pre-wave publish (session construction) also reads `[]`. */
   filterDiagnostics: FilterDiagnostic[];
+  /** #335: the ONE wall-clock snapshot (`deps.wallNow()`) the latest execution
+   *  wave resolved its relative tokens against — `null` before the first wave.
+   *  Every wave that reruns tiles (`refresh`/`runAffectedWave`, and the
+   *  filter-source wave chain in `commitAndRerun`) captures a single snapshot
+   *  at entry and threads it through every `prepareBatch`/filter-source
+   *  resolution in that wave, so a relative token (`now`, `-1d`, …) borne by
+   *  two tiles run in different sub-phases of one wave still resolves to the
+   *  exact same instant. The time-range control's closed-trigger label
+   *  re-resolves against this value on each change — no ticking timers. */
+  waveWallNowMs: number | null;
 }
 
 // ── Narrow injected dependencies (no App / AppState / net imports) ────────────
@@ -253,6 +265,12 @@ export interface DashboardViewerSession {
   readonly state: ReadonlySignal<DashboardViewState>;
   /** The `{name:Type}` field controls the filter bar renders (structure only). */
   readonly controls: FieldControl[];
+  /** #335: the resolved time-range groups (pairs of scalar date-like filters,
+   *  curated-excluded) — computed ONCE at construction, AFTER the source-
+   *  fallback resolution loop, so a filter whose source fell back is treated
+   *  per its post-resolution (plain) state. Never recomputed across the
+   *  session; empty when no pair resolves. */
+  readonly timeRangeGroups: DashboardTimeRangeGroup[];
   /** One field's prepared #170 validation state against the filter bar's DRAFT
    *  values/active (in-progress typing) — for the shared invalid-field affordance. */
   getFilterField(
@@ -270,6 +288,15 @@ export interface DashboardViewerSession {
    *  which owns activation for optional/curated fields), then run the one
    *  affected-panel wave. */
   applyFilter(filterId: string, value: unknown, active: boolean): Promise<void>;
+  /** #335: commit MULTIPLE filters atomically (the time-range control's
+   *  From/To pair, and #334's drag-to-select) in ONE execution wave over the
+   *  union of every changed parameter's resolved targets. Every `filterId`
+   *  must resolve and be unique — an unknown OR duplicate id makes the whole
+   *  call a silent no-op (nothing mutated, no publish, no wave), matching
+   *  `applyFilter`'s posture (type-level value validation stays the pipeline's
+   *  job). A call in which nothing actually changes (values+active equal the
+   *  committed state) publishes nothing and runs no wave. */
+  applyFilters(entries: Array<{ filterId: string; value: string | string[]; active: boolean }>): Promise<void>;
   /** Deactivate one filter WITHOUT discarding its value (reactivation restores
    *  it); one affected-panel wave (#188 clear-one). */
   clearFilter(filterId: string): Promise<void>;
@@ -437,6 +464,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // outside `documentRef` — never read/written by any command, never
   // persisted. A fresh session always starts at 'tiles'.
   let gridRenderMode: GridRenderMode = 'tiles';
+  // #335: the single wall-clock snapshot the LATEST execution wave resolved its
+  // relative tokens against (published as `state.waveWallNowMs`). `null` until
+  // the first wave; every wave entry point (`refresh`/`runAffectedWave`/the
+  // `commitAndRerun` filter-source chain) captures ONE `deps.wallNow()` at
+  // entry, sets this, and threads that same instant into every `prepareBatch`/
+  // filter-source resolution it runs.
+  let waveWallNowMs: number | null = null;
 
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) {
@@ -723,6 +757,29 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     for (const id of resolveFilterTargets(filter.def)) affectedByFilterWave.add(id);
   }
 
+  // #335: resolve the dashboard's time-range groups ONCE, here — AFTER the
+  // #189 source-fallback loop above — so `sourceQueryId` reflects each
+  // filter's POST-resolution state (`filter.state.sourceId`), not the
+  // structural `def.sourceQueryId`. `inferTimeRangePairs` (inside
+  // `resolveTimeRangeGroups`) never pairs a filter carrying a non-null
+  // `sourceQueryId` (curated exclusion — owner decision), so a filter whose
+  // source SURVIVED resolution is excluded, while one that FELL BACK (stripped
+  // to `undefined`) is treated as the plain filter it now is and can group
+  // like any other date-like scalar pair. Every other input matches the #189
+  // machinery (`analysis`, `executableTileIds`, and the same selection def)
+  // so the gate's own `resolveFilterSelection` agrees with construction's.
+  const timeRangeGroups = resolveTimeRangeGroups({
+    filters: filters.map((filter) => ({
+      id: filter.def.id,
+      parameter: filter.def.parameter,
+      targets: Array.isArray(filter.def.targets) ? filter.def.targets : undefined,
+      selection: filter.def.selection,
+      sourceQueryId: filter.state.sourceId ?? null,
+    })),
+    analysis,
+    executableTileIds,
+  });
+
   // Curated option bundles from the last filter wave (param name → field).
   let curated: MergeDashboardFilterHelpersResult['fields'] = {};
   // The last filter wave's merge diagnostics (#359) — a closure var like
@@ -764,11 +821,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     mode: ValidationMode = 'execute',
     values: Record<string, unknown> = rawValues(),
     active: Record<string, boolean> = activeMap(),
+    // #335: the wave's shared wall-clock snapshot — every relative token in this
+    // batch resolves against it. Defaults to a FRESH `deps.wallNow()` so the
+    // keystroke-time `getFilterField` path (which passes no snapshot) keeps
+    // resolving previews against live wall-now; each execution-wave caller
+    // passes its own single snapshot instead.
+    wallNowMs: number = deps.wallNow(),
   ) => prepareParameterizedBatch(analysis, {
     values: Object.fromEntries(Object.entries(values).map(([name, value]) =>
       [name, curated[name] && !active[name] ? '' : value])),
     active: effectiveActive(values, active),
-    wallNowMs: deps.wallNow(), validationMode: mode,
+    wallNowMs, validationMode: mode,
   });
 
   /** One field's prepared #170 state against the caller's draft values/active
@@ -811,6 +874,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       // `filterDiagnostics` on every publish, rather than merged into that
       // mutable array, so nothing a wave does can ever drop them.
       filterDiagnostics: [...staticFilterDiagnostics, ...filterDiagnostics],
+      waveWallNowMs,
     };
   }
 
@@ -1223,10 +1287,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return applyFilterProviders(plan);
   }
 
-  async function runFilterWave(): Promise<SourceWaveResult> {
-    // One wall-clock reading for the WHOLE wave (mirrors the tile wave's own
-    // `deps.wallNow()` capture in `refresh()`).
-    const waveMs = deps.wallNow();
+  async function runFilterWave(waveMs: number): Promise<SourceWaveResult> {
+    // #335: `waveMs` is the ONE snapshot the whole refresh shares (tiles + this
+    // filter wave) — always supplied by `refresh`, never re-read here. Was a
+    // local `deps.wallNow()` here — that made the
+    // filter wave resolve relative dependency tokens against a DIFFERENT
+    // instant than the tiles in the same refresh, the latent bug #335 fixes.
     // Full refresh: every known source, keep options through loading (#359
     // no-flicker invariant), reset diagnostics immediately (see
     // `executeFilterSourcePlan`'s doc comment for the "why"). Unlike a
@@ -1252,14 +1318,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  caller (`commitAndRerun`) uses to fold the flipped parameter names into
    *  ONE combined affected-panel wave alongside `changedParams`, or to skip
    *  that wave entirely when this plan was superseded. */
-  async function runFilterSourceWave(changedParams: string[]): Promise<SourceWaveResult> {
+  async function runFilterSourceWave(
+    changedParams: string[], waveMs: number,
+  ): Promise<SourceWaveResult> {
     // Entered only from `commitAndRerun`'s affected path, which preflights ONCE
     // for the whole commit (source wave + affected-panel wave) — avoiding a
     // double `ensureFreshToken()`/`onAuthFailed` on a stale token — so this wave
     // never preflights itself. (`runAffectedWave` keeps its own `preflighted`
     // flag because it is ALSO reached directly on the no-affected-source fast
-    // path, where nothing has preflighted yet.)
-    const waveMs = deps.wallNow();
+    // path, where nothing has preflighted yet.) #335: the commit's single
+    // `waveMs` snapshot is passed in so this source wave and its sibling
+    // affected-panel wave resolve relative tokens against the same instant.
     const affected = [...filterSources.values()].filter((source) =>
       source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
     if (affected.length === 0) return { status: 'applied', flipped: [] };
@@ -1286,6 +1355,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   async function refresh(): Promise<void> {
     if (!(await preflight())) return;
+    // #335: ONE wall-clock snapshot for the WHOLE refresh — the unaffected-tile
+    // batch, the filter wave, AND the affected-tile batch all resolve their
+    // relative tokens against this single instant (fixing the prior latent
+    // inconsistency where each sub-phase took its own `deps.wallNow()`).
+    const waveMs = deps.wallNow();
+    waveWallNowMs = waveMs;
     markTextAndErrorTiles();
     const runnable = runnableTiles();
     // Reserve every runnable tile's generation up front (stale-wave guard).
@@ -1295,10 +1370,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     publish(true);
     // #235: launch the unaffected tiles NOW (with current values) in parallel
     // with the filter wave — they never wait for a source query.
-    const firstBatch = sourcesById(prepareBatch('execute').sources);
+    const firstBatch = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     const unaffectedWave = runPool(unaffected, VIEWER_TILE_CONCURRENCY,
       (runtime) => runTile(runtime, firstBatch.get(runtime.tile.id), generations.get(runtime.tile.id)!));
-    const filterResult = await runFilterWave();
+    const filterResult = await runFilterWave(waveMs);
     if (destroyed) { await unaffectedWave; return; }
     if (filterResult.status === 'superseded') {
       // A concurrent selective commit superseded this refresh's Filter wave
@@ -1317,8 +1392,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       publish(false, destroyed ? null : deps.now());
       return;
     }
-    // Affected tiles run AFTER the filter wave, with the merged/blanked values.
-    const secondBatch = sourcesById(prepareBatch('execute').sources);
+    // Affected tiles run AFTER the filter wave, with the merged/blanked values —
+    // against the SAME `waveMs` the unaffected batch and filter wave used.
+    const secondBatch = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     const affectedWave = runPool(affected, VIEWER_TILE_CONCURRENCY,
       (runtime) => runTile(runtime, secondBatch.get(runtime.tile.id), generations.get(runtime.tile.id)!));
     await Promise.all([unaffectedWave, affectedWave]);
@@ -1331,13 +1407,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const runtime = tiles.find((entry) => entry.tile.id === tileId);
     if (!runtime || !runtime.query || runtime.isText || runtime.presentationError) return;
     if (!(await preflight())) return;
+    // A single-tile refresh is a wave of one: it must publish its snapshot
+    // like every other wave, or the tile's re-resolved relative bounds drift
+    // from the closed time-range trigger label until the next full wave.
+    const waveMs = deps.wallNow();
+    waveWallNowMs = waveMs;
     const generation = supersede(runtime);
-    const prepared = sourcesById(prepareBatch('execute').sources);
+    const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     await runTile(runtime, prepared.get(tileId), generation);
   }
 
   // Re-run only the tiles some active filter parameter feeds into.
-  async function runAffectedWave(parameters: string[], preflighted = false): Promise<void> {
+  async function runAffectedWave(
+    parameters: string[], preflighted: boolean, waveMs: number,
+  ): Promise<void> {
     // Unconditional destroyed guard: the `preflighted: true` fast path (from
     // `commitAndRerun`'s affected branch) skips `preflight()` entirely below
     // — and `preflight()` was the ONLY place on this path that
@@ -1364,7 +1447,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     }
     const targets = runnableTiles().filter((runtime) => affectedIds.has(runtime.tile.id));
     const generations = new Map<string, number>(targets.map((runtime) => [runtime.tile.id, supersede(runtime)]));
-    const prepared = sourcesById(prepareBatch('execute').sources);
+    // #335: publish this wave's shared snapshot and resolve the batch's
+    // relative tokens against it (the same instant `commitAndRerun`'s source
+    // wave used, when there was one).
+    waveWallNowMs = waveMs;
+    const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     publish();
     await runPool(targets, VIEWER_TILE_CONCURRENCY,
       (runtime) => runTile(runtime, prepared.get(runtime.tile.id), generations.get(runtime.tile.id)!));
@@ -1389,18 +1476,23 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // `destroy()` bumps every source generation too, so a source wave racing a
   // `destroy()` is caught by the same check.
   async function commitAndRerun(changed: string[]): Promise<void> {
+    // #335: ONE wall-clock snapshot for the whole commit — the filter-source
+    // wave (when there is one) and the affected-panel wave both resolve their
+    // relative tokens against it, and it is published as `waveWallNowMs`.
+    const waveMs = deps.wallNow();
+    waveWallNowMs = waveMs;
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
-    if (!hasAffectedSource) { await runAffectedWave(changed); return; }
+    if (!hasAffectedSource) { await runAffectedWave(changed, false, waveMs); return; }
     if (!(await preflight())) return;
-    const result = await runFilterSourceWave(changed);
+    const result = await runFilterSourceWave(changed, waveMs);
     // A `'superseded'` result means `applyFilterProviders` returned BEFORE
     // merging anything (its own stale-wave guard, `applyFilterProviders`'s
     // doc comment) — no consumer state changed, so there is nothing new to
     // `publish()`; the wave that superseded this one owns publishing the
     // eventual settled state.
     if (destroyed || result.status === 'superseded') return;
-    await runAffectedWave([...new Set([...changed, ...result.flipped])], true);
+    await runAffectedWave([...new Set([...changed, ...result.flipped])], true, waveMs);
   }
 
   async function setFilter(filterId: string, value: unknown): Promise<void> {
@@ -1428,6 +1520,42 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     filter.state.active = active;
     publish();
     await commitAndRerun([filter.def.parameter]);
+  }
+
+  async function applyFilters(
+    entries: Array<{ filterId: string; value: string | string[]; active: boolean }>,
+  ): Promise<void> {
+    if (destroyed) return;
+    // Resolve EVERY id up front, all-or-nothing: an unknown OR duplicate id
+    // aborts the whole call before any mutation (atomicity — matches
+    // `applyFilter`'s unknown-id no-op, extended across the batch so a partial
+    // time-range commit can never leave one bound applied and the other not).
+    const resolved: { filter: FilterRuntime; value: unknown; active: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      const filter = filterById.get(entry.filterId);
+      if (!filter || seen.has(entry.filterId)) return;
+      seen.add(entry.filterId);
+      resolved.push({ filter, value: entry.value, active: entry.active });
+    }
+    // Mutate every resolved entry (the filter bar owns activation, like
+    // `applyFilter`; `copyValue` defends against aliasing the caller's array),
+    // collecting the changed parameter names via the same `sameSelection` +
+    // active comparison `clearAllFilters` uses.
+    const changed: string[] = [];
+    for (const { filter, value, active } of resolved) {
+      const nextValue = copyValue(value);
+      if (filter.state.active !== active || !sameSelection(filter.state.value, nextValue)) {
+        changed.push(filter.def.parameter);
+      }
+      filter.state.value = nextValue;
+      filter.state.active = active;
+    }
+    // Nothing actually differs from the committed state → no publish, no wave
+    // (an identical-pair Apply is a true no-op, never a spurious rerun).
+    if (!changed.length) return;
+    publish();
+    await commitAndRerun(changed);
   }
 
   async function clearFilter(filterId: string): Promise<void> {
@@ -1507,8 +1635,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
-    controls, getFilterField,
-    start, refresh, refreshTile, setFilter, applyFilter, clearFilter, clearAllFilters, cancelTile, syncDocument,
-    setGridRenderMode, destroy,
+    controls, timeRangeGroups, getFilterField,
+    start, refresh, refreshTile, setFilter, applyFilter, applyFilters, clearFilter, clearAllFilters,
+    cancelTile, syncDocument, setGridRenderMode, destroy,
   };
 }

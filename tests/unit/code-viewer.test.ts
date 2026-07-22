@@ -133,6 +133,16 @@ describe('read-only code viewer', () => {
     viewer.destroy();
   });
 
+  it('normalizes a viewer created with a parent from another document realm', () => {
+    const detached = document.implementation.createHTMLDocument('detached');
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const { viewer, view } = mounted({ document: detached, parent });
+    expect(view.root).toBe(detached);
+    expect(parent.querySelector('.cm-editor')).toBe(view.dom);
+    viewer.destroy();
+  });
+
   it('destroy is explicit and idempotent, and later method calls are safe no-ops', () => {
     const { parent, viewer } = mounted();
     viewer.destroy();

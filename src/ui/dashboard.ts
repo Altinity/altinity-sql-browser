@@ -55,6 +55,8 @@ import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
+import { pushRecentRange } from '../core/time-range.js';
+import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardViewerSession, DashboardViewState, ViewerTileState, ViewerFilterState,
@@ -666,27 +668,35 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // up. Replaced wholesale after every rebuild (never merged) — a filter that
   // disappears from `sview.filters` simply drops out.
   let lastBuiltOptionsRev = new Map<string, number>();
+  // #335: shell-owned, session-lifetime per-group "Recently used" ranges,
+  // keyed by `group.key`. NOT persisted in v1 (owner decision) and naturally
+  // discarded when this `renderDashboard` call's session is torn down or the
+  // dashboard switches (a fresh render builds a fresh map). Each successful,
+  // changing commit pushes the OUTGOING committed pair (see `onApplyTimeRange`
+  // in `rebuildFilterBar`).
+  const timeRangeRecents = new Map<string, TimeRangeRecent[]>();
 
   function rebuildFilterBar(sview: DashboardViewState): void {
-    // #189-F2b: ask the OUTGOING bar WHICH parameter's multiselect popover is
-    // open (if any) BEFORE disposing it — disposing while open is that
-    // field's own silent Cancel (multi-select-field.ts), so this is the only
-    // chance to notice it, tell an assistive-tech user their popover just
-    // closed out from under them (the shared `filterRefreshLiveEl`, never
-    // torn down by the rebuild), and move focus to that SAME parameter's
-    // trigger on the freshly-built bar below (never left stranded at
-    // `<body>` — F2 review finding).
-    const openMultiSelectParam = currentFilterBar?.openMultiSelectParam() ?? null;
+    // #189-F2b, GENERALIZED (#335): ask the OUTGOING bar WHICH control's
+    // popover is open (if any) BEFORE disposing it — disposing while open is
+    // that control's own silent Cancel (multi-select-field.ts /
+    // time-range-field.ts), so this is the only chance to notice it, tell an
+    // assistive-tech user their popover just closed out from under them (the
+    // shared `filterRefreshLiveEl`, never torn down by the rebuild), and move
+    // focus to that SAME control's trigger on the freshly-built bar below
+    // (never left stranded at `<body>` — F2 review finding). The key is a
+    // parameter name for a multiselect field, `group:…` for a time-range one.
+    const openPopoverKey = currentFilterBar?.openPopoverKey() ?? null;
     // Maintainer merge-gate fix (#189): an ordinary Apply already closed its
-    // OWN popover before its `onApply` reached `session.applyFilter` — by the
-    // time that commit's synchronous `publish()` gets here, `openMultiSelectParam`
-    // above already reads `null` for it. `focusedMultiSelectParam` still finds
-    // it (focus sits on that field's about-to-be-detached trigger), so focus
+    // OWN popover before its commit callback reached the session — by the
+    // time that commit's synchronous `publish()` gets here, `openPopoverKey`
+    // above already reads `null` for it. `focusedFieldKey` still finds it
+    // (focus sits on that control's about-to-be-detached trigger), so focus
     // restoration below has a signal to work with even when there was no open
     // popover to speak of — never used for the ANNOUNCE decision (only a
     // genuinely open popover's cancellation is ever worth announcing).
-    const focusedMultiSelectParam = currentFilterBar?.focusedMultiSelectParam() ?? null;
-    const restoreFocusParam = openMultiSelectParam ?? focusedMultiSelectParam;
+    const focusedFieldKey = currentFilterBar?.focusedFieldKey() ?? null;
+    const restoreFocusKey = openPopoverKey ?? focusedFieldKey;
     currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
     // #360: curation is gated on TOPOLOGY (`sourceId != null`, set once at
@@ -743,8 +753,58 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (id) session.applyFilter(id, next, active);
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
+    // #335: assemble the time-range option — one entry per resolved group,
+    // reading each bound's committed value/active straight off `sview.filters`
+    // (the from/to filters stay in the view regardless of presentation, so a
+    // time-range commit still flips `barSig` below and rebuilds this bar). The
+    // pair's two individual fields are suppressed by parameter name inside
+    // `buildFilterBar`. `waveNowMs` is this wave's shared `now` snapshot.
+    const filterById = new Map(sview.filters.map((f) => [f.id, f] as const));
+    const timeRange = session.timeRangeGroups.flatMap((group) => {
+      const fromF = filterById.get(group.fromFilterId);
+      const toF = filterById.get(group.toFilterId);
+      if (!fromF || !toF) return [];
+      return [{
+        group,
+        fromValue: valueString(fromF.value),
+        toValue: valueString(toF.value),
+        active: fromF.active && toF.active,
+        waveNowMs: sview.waveWallNowMs,
+        recents: (): readonly TimeRangeRecent[] => timeRangeRecents.get(group.key) ?? [],
+      }];
+    });
+    // #335: a time-range Apply (or immediate recents pick) commits BOTH bounds
+    // atomically through the session's batch API (one execution wave over the
+    // union of the pair's resolved targets), pushes the OUTGOING committed pair
+    // onto this group's recents, and announces the new range.
+    const onApplyTimeRange = (group: DashboardTimeRangeGroup, from: string, to: string): void => {
+      const fromF = filterById.get(group.fromFilterId);
+      const toF = filterById.get(group.toFilterId);
+      const outFrom = fromF ? valueString(fromF.value) : '';
+      const outTo = toF ? valueString(toF.value) : '';
+      const wasActive = !!(fromF?.active && toF?.active);
+      // Push the OUTGOING pair only when it was active + both bounds non-empty
+      // AND actually differs from the incoming pair — so a first commit from an
+      // unset/inactive range, and a no-op re-apply, both push nothing.
+      if (wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
+        timeRangeRecents.set(group.key,
+          pushRecentRange(timeRangeRecents.get(group.key) ?? [], { from: outFrom, to: outTo }));
+      }
+      void session.applyFilters([
+        { filterId: group.fromFilterId, value: from, active: true },
+        { filterId: group.toFilterId, value: to, active: true },
+      ]);
+      // Announce through the SAME persistent live region the #189 refresh
+      // announcement uses (a sibling of `filterHost`, so it survives the
+      // rebuild `applyFilters` synchronously triggers). Set AFTER the commit so
+      // the synchronous rebuild's own announce path (which never fires for a
+      // time-range key anyway — `group:…` is not a multiselect parameter) can
+      // never clobber it.
+      filterRefreshLiveEl.textContent = `Time range applied: ${from} → ${to}`;
+    };
     const bar = buildFilterBar(
-      filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc, onApplyCurated },
+      filterBarApp, session.controls, onCommit, getField,
+      { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange },
     );
     filterHost.replaceChildren(bar.el);
     currentFilterBar = bar;
@@ -757,23 +817,24 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // commit) never bumps `optionsRev`, so it never announces, even on the
     // rare chance this param's popover was still genuinely open when some
     // unrelated commit forced the whole bar to rebuild.
-    if (openMultiSelectParam) {
-      const prevRev = lastBuiltOptionsRev.get(openMultiSelectParam);
-      const nextRev = sview.filters.find((f) => f.parameter === openMultiSelectParam)?.optionsRev;
+    if (openPopoverKey) {
+      const prevRev = lastBuiltOptionsRev.get(openPopoverKey);
+      const nextRev = sview.filters.find((f) => f.parameter === openPopoverKey)?.optionsRev;
       if (nextRev !== undefined && nextRev !== prevRev) {
         filterRefreshLiveEl.textContent = 'Filter options were refreshed';
       }
     }
     lastBuiltOptionsRev = new Map(sview.filters.map((f) => [f.parameter, f.optionsRev]));
-    // #189-F2b: land focus on the NEW bar's corresponding trigger for
-    // whichever parameter the OUTGOING bar had open, or (absent that) had
-    // focus on its trigger (an Apply that already closed its own popover
-    // before reaching here) — a no-op if that parameter is no longer a
-    // multiselect field on the fresh bar (e.g. its curation topology itself
-    // changed) or there was no such parameter at all (a plain field mid-typing
-    // elsewhere is never disturbed), which simply leaves focus wherever it
-    // already was rather than throwing.
-    if (restoreFocusParam) bar.focusMultiSelectTrigger(restoreFocusParam);
+    // #189-F2b, GENERALIZED (#335): land focus on the NEW bar's corresponding
+    // trigger for whichever control key the OUTGOING bar had open, or (absent
+    // that) had focus on its trigger (an Apply that already closed its own
+    // popover before reaching here) — a no-op if that key is no longer a
+    // popover-bearing control on the fresh bar (e.g. its topology changed) or
+    // there was no such control at all (a plain field mid-typing elsewhere is
+    // never disturbed), which simply leaves focus wherever it already was
+    // rather than throwing. Works uniformly for multiselect (`param`) and
+    // time-range (`group:…`) keys.
+    if (restoreFocusKey) bar.focusFieldTrigger(restoreFocusKey);
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
@@ -1747,6 +1808,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // is detected here instead and applied to the EXISTING bar via
   // `filterBarUpdateStatus` (no rebuild).
   let statusSig = '';
+  // #335: the wave `now` the time-range controls' closed labels were last
+  // resolved against — a NON-rebuild publish whose wave `now` advanced
+  // re-resolves those labels in place (a live relative range, no timers),
+  // without disturbing anything else. Tracked separately from `barSig` so a
+  // tile-progress tick (same wave `now`) never churns the labels. Seeded from
+  // the session's initial state (`null` before the first wave).
+  let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
   const statusSigOf = (filters: readonly ViewerFilterState[]): string =>
     JSON.stringify(filters.map((f) => [f.parameter, f.status, !!f.stale, f.waitingFor ?? null]));
   const statesByParam = (filters: readonly ViewerFilterState[]): Record<string, {
@@ -1809,9 +1877,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const sig = JSON.stringify(sview.filters.map((f) =>
       [f.id, f.active, sigValue(f.value), f.optionsRev, f.sourceId != null]));
     const newStatusSig = statusSigOf(sview.filters);
+    let rebuilt = false;
     if (sig !== barSig) {
       barSig = sig;
       rebuildFilterBar(sview);
+      rebuilt = true;
       // A fresh rebuild already applies the CURRENT status to every curated
       // field (buildFilterBar applies it at build time) — refresh the stored
       // status signature too, so this same publish doesn't ALSO fire a
@@ -1821,6 +1891,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       statusSig = newStatusSig;
       filterBarUpdateStatus?.(statesByParam(sview.filters));
     }
+    // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
+    // rebuilt every time-range control against this wave's `now` (assembled
+    // into its `waveNowMs`); only a NON-rebuild publish whose wave `now`
+    // advanced needs the closed labels re-resolved in place — a committed
+    // relative range (`-1d` → `now`) moves per wave without any bar rebuild.
+    if (!rebuilt && sview.waveWallNowMs != null && sview.waveWallNowMs !== lastLabelWaveNowMs) {
+      currentFilterBar?.refreshTimeRangeLabels(sview.waveWallNowMs);
+    }
+    lastLabelWaveNowMs = sview.waveWallNowMs;
     // #303: persist committed filter value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
     const filterBag = persistBagOf(sview.filters);

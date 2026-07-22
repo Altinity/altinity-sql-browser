@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildRelativeTimeField, filterPresets, RELATIVE_TIME_PRESETS } from '../../src/ui/relative-time-field.js';
+import {
+  buildRelativeTimeField,
+  filterPresets,
+  RELATIVE_TIME_PRESETS,
+  TIME_RANGE_CONSTANTS,
+  filterTokenList,
+} from '../../src/ui/relative-time-field.js';
 import type { BuildRelativeTimeFieldOpts } from '../../src/ui/relative-time-field.js';
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
@@ -37,6 +43,47 @@ describe('RELATIVE_TIME_PRESETS / filterPresets', () => {
   });
   it('no match returns an empty list', () => {
     expect(filterPresets('zzz-nope')).toEqual([]);
+  });
+});
+
+// #335: TIME_RANGE_CONSTANTS is the popover's per-field constants column —
+// pinned exact 14-entry order from the contract, distinct from (and untouched
+// by) RELATIVE_TIME_PRESETS above.
+describe('TIME_RANGE_CONSTANTS', () => {
+  it('exports exactly the pinned 14 entries, in order', () => {
+    expect(TIME_RANGE_CONSTANTS.map((c) => c.value)).toEqual([
+      'now', '-5m', '-15m', '-30m', '-1h', '-3h', '-6h', '-12h',
+      '-1d', '-2d', '-7d', '-30d', '-1M', '-90d',
+    ]);
+  });
+  it('never overlaps with RELATIVE_TIME_PRESETS being touched — that list stays bit-identical', () => {
+    expect(RELATIVE_TIME_PRESETS.map((p) => p.value)).toEqual([
+      '-15m', '-1h', '-6h', '-1d', '-7d', '-1M', 'now/d', '-1d/d', 'now',
+    ]);
+  });
+});
+
+// #335: filterTokenList generalizes filterPresets' matching over any
+// {value,label} list; filterPresets itself becomes a one-line wrapper with
+// unchanged behavior (already covered above).
+describe('filterTokenList', () => {
+  it('a blank/whitespace/undefined query returns the SAME list reference (no copy)', () => {
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, '')).toBe(TIME_RANGE_CONSTANTS);
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, '   ')).toBe(TIME_RANGE_CONSTANTS);
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, undefined)).toBe(TIME_RANGE_CONSTANTS);
+  });
+  it('filters case-insensitively by value substring', () => {
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, '-1').map((c) => c.value)).toEqual(['-15m', '-1h', '-12h', '-1d', '-1M']);
+  });
+  it('filters by label substring too', () => {
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, 'current')).toEqual([{ value: 'now', label: 'now — current time' }]);
+  });
+  it('no match returns an empty list', () => {
+    expect(filterTokenList(TIME_RANGE_CONSTANTS, 'zzz-nope')).toEqual([]);
+  });
+  it('works over an arbitrary {value,label} list, not just the module\'s own constants', () => {
+    const custom = [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }];
+    expect(filterTokenList(custom, 'bet')).toEqual([{ value: 'b', label: 'Beta' }]);
   });
 });
 

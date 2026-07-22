@@ -71,6 +71,30 @@ describe('fixedAnchor', () => {
   it('handles zero and fractional coordinates', () => {
     expect(fixedAnchor({ bottom: 10.5, left: 50.25 }, { gap: 0, min: 0 })).toMatchObject({ top: 10.5, left: 50.25 });
   });
+
+  // #335: viewportW + panelW is the left-align right-edge CLAMP (distinct from
+  // viewportW alone, which still right-aligns). Pure arithmetic — testable with
+  // synthetic numbers since a headless realm's rects are all-zero anyway.
+  it('clamps the left inset so a panelW-wide panel stays inside the right edge', () => {
+    const a: AnchorResult = fixedAnchor({ bottom: 40, left: 900 }, { viewportW: 1000, panelW: 200 });
+    expect(a.top).toBe(46);
+    expect(a.left).toBe(792); // 1000 - 200 - 8(min); trigger.left 900 would overflow
+    expect(a.right).toBeUndefined();
+  });
+  it('does not lower the left inset when the panel already fits', () => {
+    const a: AnchorResult = fixedAnchor({ bottom: 40, left: 100 }, { viewportW: 1000, panelW: 200 });
+    expect(a.left).toBe(100); // min(100, 792) — the natural left wins
+  });
+  it('floors the clamped left inset at `min` even when the panel cannot fit', () => {
+    const a: AnchorResult = fixedAnchor({ bottom: 0, left: 5000 }, { viewportW: 100, panelW: 200 });
+    expect(a.left).toBe(8); // maxLeft floors at min(8); left = min(5000, 8)
+  });
+  it('ignores panelW when no viewportW is given (plain left-align, no clamp)', () => {
+    const a: AnchorResult = fixedAnchor({ bottom: 40, left: 100 }, { panelW: 50 });
+    expect(a.top).toBe(46);
+    expect(a.left).toBe(100);
+    expect(a.right).toBeUndefined();
+  });
 });
 
 describe('s (SVG namespace)', () => {
