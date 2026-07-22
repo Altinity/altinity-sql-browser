@@ -1599,7 +1599,20 @@ body.detached-tab .graph-overlay-panel {
 .ms-btn:hover { background: var(--bg-hover); }
 .ms-btn-clear { margin-right: auto; }
 .ms-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
-.ms-btn-primary:hover { filter: brightness(1.08); }
+/* The generic `.ms-btn:hover` rule is deliberately overridden here: it is
+   more specific than the base primary rule and otherwise turns Apply into a
+   faint neutral surface on hover. Keep every action state explicit so the
+   primary affordance remains distinct in both themes. */
+.ms-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
+.ms-btn-primary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg-panel, var(--bg-editor));
+}
+.ms-btn-primary:active:not(:disabled) { background: var(--accent-dim); transform: translateY(1px); }
+.ms-btn-primary:disabled {
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
+  cursor: not-allowed; opacity: 1;
+}
 /* Compound time-range control (#335, time-range-field.ts) — the SECOND
    consumer of the #364 dialog-popover pattern (openAnchoredDialog). The
    trigger reuses .var-input's sizing/border like .ms-trigger; the popover is

@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Multi-select control harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+  </style>
+</head>
+<body data-theme="dark">
+  <main id="root" aria-label="Multi-select control"></main>
+  <button type="button" class="ms-btn ms-btn-primary" disabled>Disabled Apply</button>
+  <script type="module">
+    import { buildMultiSelectField } from '/src/ui/multi-select-field.js';
+
+    const field = buildMultiSelectField({
+      document, name: 'city', label: 'City', value: [], active: false,
+      options: [{ value: 'mad', label: 'Madrid' }],
+      onApply: () => {}, onFallbackCommit: () => {},
+    });
+    document.querySelector('#root').append(field.el);
+    window.__ready = true;
+  </script>
+</body>
+</html>
