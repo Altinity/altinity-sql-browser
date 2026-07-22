@@ -19,7 +19,8 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
-import type { WorkspaceRepository, WorkspaceCommitResult } from '../workspace/workspace-repository.js';
+import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { HandoffStore } from '../workspace/handoff-store.types.js';
 import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
@@ -35,6 +36,47 @@ import type { SavedQueryService } from '../application/saved-query-service.js';
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
 type Json = Record<string, unknown>;
+
+/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
+ *  to commit (or `null` to abort committing nothing), plus optional
+ *  operation-specific `data` the primitive threads back to the caller after the
+ *  commit resolves (e.g. the created query id a tab must link to). Returning the
+ *  whole object as `null` also aborts. */
+export interface WorkspaceMutationInput<T = unknown> {
+  candidate: StoredWorkspaceV1 | null;
+  data?: T;
+}
+
+/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
+ *  already projected the committed workspace, recorded its snapshot token, and
+ *  broadcast one invalidation; the caller only synchronizes its own surface. An
+ *  aborted transform (null / null candidate) commits nothing; a failed commit
+ *  carries the validation/persistence diagnostics. `data` rides through all
+ *  three outcomes (undefined when the queued op rejected before the transform
+ *  ran). */
+export type WorkspaceMutationOutcome<T = unknown> =
+  | { ok: true; workspace: StoredWorkspaceV1; dashboardRevision: number | null; data?: T }
+  | { ok: false; aborted: true; data?: T }
+  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
+
+/** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
+ *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
+ *  broadcast; `workspaceId` scopes it to a specific aggregate. */
+export interface WorkspaceChangedMessage {
+  type: 'workspace-changed';
+  sourceTabId: string;
+  workspaceId: string;
+}
+
+/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
+ *  projected an externally committed workspace: the just-loaded workspace (or
+ *  `null` when the record was cleared) and whether the query collection changed
+ *  relative to the previous projection — the Dashboard route rebuilds its viewer
+ *  session on a query-only change even when the Dashboard document is identical. */
+export interface WorkspaceExternallyChangedInfo {
+  workspace: StoredWorkspaceV1 | null;
+  queriesChanged: boolean;
+}
 
 /** A schema entity reference — three real runtime shapes share this one loose
  * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
@@ -408,6 +450,13 @@ export interface App {
    *  once from the pathname). Lets shared post-commit logic repaint the right
    *  surface. */
   dashboardRoute: boolean;
+  /** #343 step 6 — true while the standalone Dashboard route is showing a
+   *  DETACHED/read-only view (a `?st=` handoff or a `?ws=` id that resolved only
+   *  in the detached-views store). Such a view renders from a detached snapshot,
+   *  not the primary workspace, so `refreshWorkspaceFromStore` must NOT project
+   *  primary-workspace invalidation over it. A Workbench tab and an editable
+   *  Dashboard leave it `false`; `renderDashboard` sets it per render. */
+  dashboardReadOnly: boolean;
   /** #302 — repaint the standalone Dashboard route after an in-tab import: point
    *  the URL at the (possibly new) current dashboard id, then re-render. */
   reloadDashboardRoute(): void;
@@ -478,9 +527,43 @@ export interface App {
    *  `undefined` aborts the op — nothing is committed and this resolves
    *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
    *  the queue itself never wedges. */
-  mutateWorkspace(
-    transform: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null | Promise<StoredWorkspaceV1 | null>,
-  ): Promise<WorkspaceCommitResult | null>;
+  mutateWorkspace<T = unknown>(
+    transform: (latest: StoredWorkspaceV1 | null) =>
+      WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
+  ): Promise<WorkspaceMutationOutcome<T>>;
+  /** #343 §5: this tab's random per-session id, minted through the crypto seam.
+   *  Stamped on every outgoing invalidation so a tab can ignore its own poke. */
+  sourceTabId: string;
+  /** #343 §6: whether this tab is currently visible (injected seam; see
+   *  `CreateAppEnv.documentVisible`). Read by the focus/visibility refresh. */
+  documentVisible(): boolean;
+  /** #343 §2: the snapshot-identity token of the workspace this tab last
+   *  committed/projected (`workspaceToken`), used only to detect whether a
+   *  later reload actually changed anything. `''` before the first commit. */
+  getLastCommittedToken(): string;
+  /** #343 §5/§6: invoked when another tab reports a workspace change (channel
+   *  receive, or a focus/visibility event). A no-op by default; the
+   *  cross-tab-refresh work (#343 step 4) replaces it with the coalesced
+   *  `refreshWorkspaceFromStore` scheduler. Never receives this tab's own
+   *  broadcast. */
+  onExternalWorkspaceChange(message: WorkspaceChangedMessage): void;
+  /** #343 step 4: reload the committed workspace and, when it changed under this
+   *  tab, project it + reconcile linked tabs — ordered through the same
+   *  `serializeWrite` queue as mutations (so it can't project an older read over
+   *  a newer local commit). A no-op when the store is unchanged since this tab's
+   *  last projection; a failed load keeps the projection, warns, and never
+   *  wedges the queue. The channel-receive + focus/visibility listeners drive a
+   *  coalesced version of this internally; this public entry is the direct,
+   *  un-coalesced one (tests + explicit callers). */
+  refreshWorkspaceFromStore(): Promise<void>;
+  /** #343 step 4: the route/surface refresh hook invoked AFTER a refresh
+   *  actually projected an external change — a mounted route (the standalone
+   *  Dashboard, a later step) overrides it to rebuild from the latest committed
+   *  workspace. `queriesChanged` reports whether the query collection moved
+   *  (a query-only change still needs a Dashboard viewer rebuild even when the
+   *  Dashboard document is byte-identical). Default no-op; the Workbench route's
+   *  own repaint is built into `refreshWorkspaceFromStore`. */
+  onWorkspaceExternallyChanged(info: WorkspaceExternallyChangedInfo): void;
 
   actions: ActionsRegistry;
 }

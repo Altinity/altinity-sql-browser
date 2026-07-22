@@ -5,10 +5,12 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { activeTab, allocTabId, newTabObj, setTabSpecDraft, tabDirty } from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
+import { queryToken } from '../workspace/workspace-sync.js';
 import { batch } from '@preact/signals-core';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import type { AppDom, ActionsRegistry } from './app.types.js';
 import type { AppState, QueryTab } from '../state.js';
+import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 
@@ -60,6 +62,16 @@ export function renderTabs(app: TabsApp): void {
       h('span', { class: 'name' }, t.name),
       effectiveDashboardRole(t.specParsed) === 'filter'
         ? filterRoleBadge(app, () => { selectTab(app, t.id); return t; })
+        : null,
+      // #343: a visible marker when this tab's linked saved query changed
+      // ('conflict') or was deleted ('deleted') in another browser tab.
+      t.externalState
+        ? h('span', {
+            class: 'qtab-external ' + t.externalState,
+            title: t.externalState === 'conflict'
+              ? 'This query changed in another tab — resolve the conflict to save'
+              : 'This query was deleted in another tab — Save will create a new one',
+          }, t.externalState === 'conflict' ? '!' : '⌫')
         : null,
       tabDirty(t) ? h('span', { class: 'dirty' }) : null,
       app.state.tabs.value.length > 1
@@ -122,6 +134,9 @@ export function loadIntoNewTab(app: TabsApp, queryOrName: QueryOrName, sql = '')
     tab.savedId = query.id || null;
     tab.specVersion = query.specVersion;
     setTabSpecDraft(tab, cloneJson(query.spec));
+    // #343: record the opened query's token as this tab's in-sync baseline so the
+    // linked-tab classifier can later tell whether it changed in another tab.
+    if (tab.savedId) tab.lastCommittedQueryToken = queryToken(query as unknown as SavedQueryV2);
   } else {
     tab.name = queryOrName || 'Untitled';
     tab.sqlDraft = sql;

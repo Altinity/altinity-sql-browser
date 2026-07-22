@@ -142,6 +142,14 @@ export interface DashboardApp {
   // producer's), never a route-local snapshot that another producer's
   // in-flight commit could make stale.
   mutateWorkspace: App['mutateWorkspace'];
+  // #343 step 6: set per render to mark a detached/read-only view (so the
+  // app-level cross-tab refresh skips projecting the primary workspace over it).
+  dashboardReadOnly: boolean;
+  // #343 step 6: the route/surface refresh hook — `renderDashboard` overrides it
+  // (per render) so an external workspace change rebuilds this viewer session from
+  // committed truth. Fires only AFTER the app-level refresh projected a real
+  // change; a detached read-only route no-ops it.
+  onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
   // #302 — the Dashboard page's own File-menu operations.
   actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openDashboardForViewing'>;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
@@ -384,6 +392,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const source = app.dashboardOpenSource;
   let workspace: StoredWorkspaceV1 | null;
   let readOnly = false;
+  // #343 step 6: default to suppressing the cross-tab refresh until the mode is
+  // resolved — an early not-found return then leaves this route inert w.r.t.
+  // primary-workspace invalidation (it has no session to rebuild). The editable
+  // branch flips it back to false once resolved. Known conservative-skip window
+  // (#343 review): a refresh op dequeuing during THIS render's own async load
+  // (e.g. a second external change landing mid-rebuild) sees `true`, skips, and
+  // schedules no follow-up — that change is only picked up by the next
+  // poke/focus/visibility refresh. A skip is always safe (never a misprojection)
+  // and within the issue's human-paced-editing scope.
+  app.dashboardReadOnly = true;
   if (source && source.kind === 'session-bundle') {
     workspace = await app.consumeDashboardHandoff();
     if (!workspace) { renderDashboardNotFound(app); return; }
@@ -398,6 +416,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   } else {
     workspace = await app.loadDashboardWorkspace();
   }
+  // #343 step 6: now that the mode is resolved, expose it to the app-level
+  // cross-tab refresh — an editable route (false) projects/rebuilds on an
+  // external change; a detached/read-only view (true) ignores it entirely.
+  app.dashboardReadOnly = readOnly;
   // Project the resolved workspace onto app.state so the Dashboard File menu's
   // export/import (which read app.state) operate on THIS dashboard, not the
   // tab's stale legacy-boot state.
@@ -916,10 +938,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
       return {
-        storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
-        dashboard: { ...committedDoc, revision: base.revision + 1 },
+        candidate: {
+          storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
+          dashboard: { ...committedDoc, revision: base.revision + 1 },
+        },
       };
-    }).then((result) => settleCommand(result, observed), () => {
+    }).then((outcome) => {
+      // #343: adapt the shared outcome back to this route's descriptor-based
+      // settle contract — `null` on a transform abort (this command no longer
+      // applies), the commit result otherwise. Projection already happened in
+      // `mutateWorkspace` on success.
+      const result: WorkspaceCommitResult | null = outcome.ok
+        ? { ok: true, workspace: outcome.workspace, dashboardRevision: outcome.dashboardRevision }
+        : outcome.aborted ? null : { ok: false, diagnostics: outcome.diagnostics };
+      settleCommand(result, observed);
+    }, () => {
       // The queued op itself REJECTED (blocked/quota/private-mode storage —
       // `loadCurrent`/the store threw, distinct from an `ok:false` commit).
       // Without this handler the rejection is unhandled and, worse, this
@@ -928,6 +961,45 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       settleCommand({ ok: false, diagnostics: [] }, observed);
     });
   }
+
+  // #350/#343 step 6: rebuild the WHOLE route from committed truth — a fresh
+  // `renderDashboard` re-reads `loadDashboardWorkspace` (both the Dashboard
+  // document AND the query collection), so it repairs what `session.syncDocument`
+  // cannot: a membership-RESTORING rebase (a tile record the session already
+  // dropped can't be reinstated), and an external query-only change (a tile's
+  // query SQL/Spec moved while the Dashboard document stayed byte-identical).
+  // Two callers funnel through here — settleCommand's membership-restore path and
+  // the external-workspace-change hook — so they can never double-render:
+  //  • deferred while commands are still pending (a resolution handler from THIS
+  //    render must not survive into the rebuilt one); the last settleCommand
+  //    re-checks `needsRebuild` and calls back once the queue drains;
+  //  • `rebuilding` makes it idempotent for THIS render — duplicate cross-tab
+  //    pokes (or a settle after the hook already triggered) coalesce into the one
+  //    rebuild the fresh render supersedes.
+  // It only ever RE-READS committed truth; it never commits.
+  let rebuilding = false;
+  function rebuildRouteFromCommitted(): void {
+    if (rebuilding || pendingCommands.length > 0) return;
+    rebuilding = true;
+    session.destroy();
+    void renderDashboard(app);
+  }
+
+  // #343 step 6: react to an external workspace change the app-level cross-tab
+  // refresh has ALREADY projected onto `app.state` (this hook fires only after a
+  // refresh projected a real change). An editable route rebuilds its viewer
+  // session from committed truth; a detached read-only view ignores primary-
+  // workspace invalidation entirely (the app-level refresh already skips
+  // projecting for it — this stays a no-op as the second line of defence).
+  // `needsRebuild` coalesces with the settleCommand path; `rebuildRouteFrom
+  // Committed` defers while commands are pending and never commits. `info` is
+  // unused: the hook fires only on a real change and the full rebuild re-reads
+  // everything, so a query-only change rebuilds even a byte-identical document.
+  app.onWorkspaceExternallyChanged = () => {
+    if (readOnly) return;
+    needsRebuild = true;
+    rebuildRouteFromCommitted();
+  };
 
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
@@ -939,9 +1011,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (result && result.ok) {
       committedWorkspace = result.workspace;
       committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
-      // Project committed truth onto app.state unconditionally — exports
-      // and any other consumer of `app.state` read it.
-      app.applyCommittedWorkspace(result.workspace);
+      // #343 §2: `app.mutateWorkspace` already projected committed truth onto
+      // `app.state` (exactly once). The route only refreshes its own caches.
     } else {
       // #344 review 2: refresh the route cache from the DEQUEUE-TIME truth
       // the transform observed — the truth that rejected/invalidated this
@@ -995,12 +1066,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // so no in-flight resolution handler from THIS render survives into the
     // rebuilt one.
     if (rebased.tiles.some((t) => !sessionTileIds().has(t.id))) needsRebuild = true;
-    if (needsRebuild) {
-      if (pendingCommands.length > 0) return; // rebuild once the queue drains
-      session.destroy();
-      void renderDashboard(app);
-      return;
-    }
+    if (needsRebuild) { rebuildRouteFromCommitted(); return; }
     session.syncDocument(withImplicitFilters(rebased));
     layoutSelect.sync();
   }

@@ -5,6 +5,7 @@ import type {
   QueryDocumentSessionDeps, QueryDocumentSessionHooks,
 } from '../../src/application/query-document-session.js';
 import { newTabObj, createSavedQuery } from '../../src/state.js';
+import { fakeMutateWorkspace } from '../helpers/fake-app.js';
 import type { QueryTab, AppState } from '../../src/state.js';
 import { createSpecValidatorRegistry, evaluateSpecText } from '../../src/core/spec-draft.js';
 import type { QuerySpecValidationService } from '../../src/core/spec-draft.js';
@@ -287,9 +288,7 @@ describe('resolveEditorMode', () => {
     // `savedForTab` (this session's own dependency) reads. #287 W4: the
     // aggregate commit is a trivial always-succeeds echo — this test only
     // needs a real linked entry, not real persistence semantics.
-    const result = await createSavedQuery(state, tab, 'My query', '', async (candidate) => ({
-      ok: true, workspace: candidate, dashboardRevision: null,
-    }), 0);
+    const result = await createSavedQuery(state, tab, 'My query', '', fakeMutateWorkspace(state), 0);
     expect(result.ok).toBe(true);
     const { deps } = makeDeps({ tab, state });
     const gate = createQueryDocumentSession(deps).resolveEditorMode(tab, 'spec');

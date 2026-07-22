@@ -9,6 +9,35 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Cross-tab workspace consistency: refresh before write and stale-tab
+  invalidation** (#343). Workbench and editable-Dashboard tabs editing the same
+  workspace now stay consistent under normal sequential editing. Every
+  interactive workspace mutation flows through the shared read-before-write
+  primitive (`app.mutateWorkspace`), which loads the latest committed
+  IndexedDB workspace inside the write queue, applies the operation as a
+  semantic transform over it, projects committed truth exactly once, and
+  broadcasts a small `workspace-changed` invalidation (never the workspace
+  body) on a `BroadcastChannel('asb:workspace')` seam; window focus /
+  visibility provide the fallback when the channel is absent or a message was
+  missed, and duplicate notifications coalesce into one queue-ordered reload
+  guarded by a snapshot-token compare. Saved-query create/save/rename/
+  delete/star no longer commit candidates built from stale in-memory state —
+  unrelated changes made in another tab survive, and operations whose target
+  was deleted externally abort instead of resurrecting it. On an external
+  change, a clean linked Workbench tab silently adopts the new version; a
+  dirty one keeps its draft and enters an explicit conflict state whose Save
+  button opens a two-action resolution chooser (**Reload saved version** /
+  **Keep my draft** behind an explicit Overwrite confirmation); a dirty tab
+  whose query was deleted elsewhere becomes an unsaved draft (Save-as-new
+  only). An editable Dashboard rebuilds its viewer session from committed
+  truth — even when only a referenced query changed and the Dashboard
+  document is byte-identical — deferring until pending command descriptors
+  settle and preserving per-Dashboard filter values; detached read-only
+  Dashboard views ignore primary-workspace invalidation entirely. No
+  repository CAS, schema change, or simultaneous-commit protection is
+  involved (#343 non-goals; membership semantics stay with #370).
+
 ### Fixed
 - **Hardened the development test stack** (#366). Vitest and its V8 coverage
   provider now use the patched 3.2.x line, Happy DOM now uses 20.11.0, and the

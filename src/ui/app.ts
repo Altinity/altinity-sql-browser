@@ -10,6 +10,7 @@ import {
   createState, activeTab,
   savedForTab, tabPanel,
   normalizeRowLimit, reconcileTabsWithSavedQueries,
+  adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
@@ -62,8 +63,8 @@ import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
-import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
-import type { CreateAppEnv } from '../env.types.js';
+import type { App, ActionsRegistry, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
+import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
@@ -78,11 +79,13 @@ import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-
 import { createIndexedDbHandoffStore } from '../workspace/indexeddb-handoff-store.js';
 import { createIndexedDbDetachedViewsStore } from '../workspace/indexeddb-detached-views-store.js';
 import { migrateLegacyWorkspaceIfNeeded } from '../workspace/legacy-migration.js';
+import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
+import { buildConflictChooser } from './conflict-resolution.js';
 import { isDashboardRoute } from '../core/dashboard.js';
 import { parseDashboardOpenSource, buildDashboardSearch } from '../dashboard/application/dashboard-open-source.js';
 import { buildViewHandoffRecord, materializeDetachedWorkspace } from '../dashboard/application/session-bundle.js';
 import { randomHandoffToken } from '../core/handoff-token.js';
-import { exportDashboardAction, triggerImportDashboard } from './file-menu.js';
+import { exportDashboardAction, triggerImportDashboard, renderDashboardNav } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -111,6 +114,8 @@ interface WindowExtras {
   FileReader?: typeof FileReader;
   URL?: typeof URL;
   Blob?: typeof Blob;
+  // #343 §5: the real cross-tab channel constructor, when the platform has it.
+  BroadcastChannel?: new (name: string) => BroadcastChannelPort;
 }
 
 /** `app.specValidators`'s full internal shape: the canonical schema +
@@ -134,6 +139,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   const fetchFn = env.fetch || win.fetch.bind(win);
   const cryptoObj = env.crypto || win.crypto;
   const ss = env.sessionStorage || win.sessionStorage;
+  // #343 §5/§6: cross-tab consistency seams (injected like matchMedia/
+  // showSaveFilePicker — "capability or null" / a defaulted reader). The
+  // channel factory yields `null` on a platform without BroadcastChannel; the
+  // focus/visibility fallback (#343 step 4) still provides consistency then.
+  const broadcastChannelFactory = env.broadcastChannel
+    || ((name: string): BroadcastChannelPort | null =>
+      (typeof win.BroadcastChannel === 'function' ? new win.BroadcastChannel(name) : null));
+  const documentVisible = env.documentVisible || (() => doc.visibilityState !== 'hidden');
 
   // Built up as a `Partial<App>` first (every field below has a real,
   // App-typed value already — `Partial` just lets this literal typecheck
@@ -233,6 +246,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // right surface — a Dashboard-page import re-renders the dashboard, not the
   // absent Workbench chrome.
   app.dashboardRoute = isDashboardRoute(loc.pathname);
+  // #343 step 6: set true by `renderDashboard` only while a DETACHED/read-only
+  // Dashboard is on screen. A Workbench tab (and an editable Dashboard) leaves it
+  // false, so the cross-tab refresh below projects normally; a detached view
+  // flips it so refresh skips projecting the primary workspace over its snapshot.
+  app.dashboardReadOnly = false;
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -328,7 +346,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     saveJSON,
     now: () => Date.now(),
     specValidators,
-    workspace: app.workspace,
+    // A thunk, not `app.mutateWorkspace` directly: the primitive is wired later
+    // in `createApp` (it depends on `serializeWrite`/`applyCommittedWorkspace`
+    // defined below), so defer resolution to call time when it's defined.
+    mutateWorkspace: (transform) => app.mutateWorkspace(transform),
   });
   app.saved = saved;
   app.sqlEditor.onDocChange((value) => {
@@ -1211,6 +1232,18 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.updateSaveBtn = () => {
     if (!app.dom.saveBtn) return;
     const tab = app.activeTab();
+    // #343: a tab whose linked saved query changed in another tab must not be
+    // silently re-saved. The Save button becomes "Resolve conflict" and opens
+    // the two-action chooser instead of committing.
+    if (tab.externalState === 'conflict') {
+      app.dom.saveBtn.classList.remove('saved');
+      app.dom.saveBtn.classList.add('conflict');
+      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, 'Resolve conflict'));
+      app.dom.saveBtn.disabled = false;
+      app.dom.saveBtn.title = 'This query changed in another tab — choose how to resolve it';
+      return;
+    }
+    app.dom.saveBtn.classList.remove('conflict');
     const entry = savedForTab(app.state, tab);
     const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
     const blocked = !!entry && specBlocked(tab);
@@ -1261,10 +1294,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    // Serialized with every other saved-query write so a save can't interleave
-    // with a concurrent star/delete and commit a stale whole-workspace candidate
-    // (#287 review fix — see `app.serializeWrite`).
-    const result = await app.serializeWrite(() => saved.commit(tab, evaluated));
+    // #343: `saved.commit` now runs its candidate-building transform through
+    // `app.mutateWorkspace`, which already enters the tab-local write queue and
+    // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
+    // wrapper needed (it would only double-queue).
+    const result = await saved.commit(tab, evaluated);
     if (!result.ok) {
       // 'rejected' (commit's own defensive re-check inside the service, OR the
       // aggregate strictly rejecting the whole-workspace commit — #287 W4)
@@ -1275,6 +1309,14 @@ export function createApp(env: CreateAppEnv = {}): App {
         flashToast('Fix Spec errors before saving', { document: doc });
       } else if (result.reason === 'empty') {
         flashToast('Nothing to save', { document: doc });
+      } else if (result.reason === 'deleted') {
+        // #343: the linked query vanished from the latest workspace (deleted in
+        // another tab) and the save aborted without recreating it. Refresh the
+        // tab association now — the reconcile turns this tab into an unsaved
+        // draft (dirty) or detaches it (clean) — instead of leaving a ghost
+        // link waiting for the next focus/visibility event.
+        flashToast('This query was deleted in another tab — your draft is kept as an unsaved query', { document: doc });
+        void app.refreshWorkspaceFromStore();
       } else if (result.diagnostics?.length) {
         flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
       }
@@ -1292,9 +1334,54 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   async function saveActiveQuery(): Promise<SavedQueryV2 | null | undefined> {
-    if (savedForTab(app.state, app.activeTab())) return commitLinkedQuery();
+    const tab = app.activeTab();
+    // #343: while a linked tab is in conflict, Save opens the resolution chooser
+    // rather than silently overwriting the externally changed query. A
+    // 'deleted'-flagged orphan has `savedId === null` already, so it falls
+    // through to the normal Save-as-new popover (never an implicit recreate).
+    if (tab.externalState === 'conflict') { openConflictChooser(); return undefined; }
+    if (savedForTab(app.state, tab)) return commitLinkedQuery();
     openSavePopover();
     return undefined;
+  }
+
+  // #343 §8: discard the active tab's local draft and adopt the latest committed
+  // version of its linked query — the "Reload saved version" conflict
+  // resolution. The committed query is already projected on `state.savedQueries`
+  // (a refresh ran to detect the conflict), so this reads it from there.
+  function reloadSavedVersion(): void {
+    const tab = app.activeTab();
+    const entry = savedForTab(app.state, tab);
+    if (!entry) {
+      // Deleted between opening the chooser and resolving — nothing to reload;
+      // refresh so the reconcile gives this tab its deleted-elsewhere treatment
+      // instead of leaving the stale conflict state in place (#343 review).
+      void app.refreshWorkspaceFromStore();
+      return;
+    }
+    adoptSavedIntoTab(tab, entry);
+    batch(() => { app.state.tabs.value = [...app.state.tabs.value]; }); // re-run the tab effect → editor + strip resync
+    app.updateSaveBtn();
+    app.actions.rerenderTabs();
+    renderSavedHistory(app);
+    flashToast('Reloaded the version saved in the other tab', { document: doc });
+  }
+
+  // #343 §8: the two-action conflict chooser, anchored under the Save button.
+  // "Reload saved version" fires immediately; "Keep my draft" confirms, then
+  // commits the full draft over the latest query via the normal linked-save path
+  // (`commitLinkedQuery` → `mutateWorkspace`), preserving unrelated workspace
+  // changes and clearing the conflict on success.
+  function openConflictChooser(): void {
+    if (app.dom.savePopover) return;
+    const tab = app.activeTab();
+    let close: () => void;
+    const chooser = buildConflictChooser({
+      queryName: tab.name,
+      onReloadSaved: () => { close(); reloadSavedVersion(); },
+      onKeepDraft: () => { close(); void commitLinkedQuery(); },
+    });
+    ({ close } = anchoredPopover(chooser, app.dom.saveBtn!, 'savePopover'));
   }
 
   // Creation-only Name/Description popover. Once linked, the textual Spec is
@@ -1314,7 +1401,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = async (): Promise<void> => {
       if (!input.value.trim()) return;
-      const result = await app.serializeWrite(() => saved.create(tab, input.value, descInput.value));
+      // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
+      // which already serializes + reads the latest committed aggregate — no
+      // outer `serializeWrite` wrapper needed.
+      const result = await saved.create(tab, input.value, descInput.value);
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
         return;
@@ -1478,10 +1568,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
     app.state.savedQueries = workspace.queries;
     reconcileTabsWithSavedQueries(app.state);
+    // #343: seed the in-sync baseline token for any still-linked tab that lacks
+    // one (e.g. a pre-existing session, or a tab linked without going through
+    // the open/create/save paths) so the linked-tab classifier can compare it on
+    // a later external refresh. Only fills gaps — never overwrites a token an
+    // adopt/open already set, so it can't mask a genuine external change.
+    for (const tab of app.state.tabs.value) {
+      if (tab.savedId && tab.lastCommittedQueryToken === undefined) {
+        const q = workspace.queries.find((query) => query.id === tab.savedId);
+        if (q) tab.lastCommittedQueryToken = queryToken(q);
+      }
+    }
     app.state.dashboard = workspace.dashboard;
     app.state.workspaceId = workspace.id;
     app.state.libraryName.value = workspace.name;
     app.state.libraryDirty.value = false;
+    // #343 §2: this projection IS now the tab's committed baseline — record its
+    // snapshot token so a later reload can cheaply tell whether anything changed.
+    // Every projection funnels through here (boot, mutateWorkspace, reset), so
+    // the token stays consistent with what's on screen.
+    lastCommittedToken = workspaceToken(workspace);
   };
   app.applyCommittedWorkspace = applyCommittedWorkspace;
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
@@ -1508,6 +1614,37 @@ export function createApp(env: CreateAppEnv = {}): App {
   // waits on this so a bundle is built from the latest committed workspace, never
   // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
   app.flushWorkspaceWrites = () => writeChain.then(() => undefined, () => undefined);
+  // #343 §5: this tab's random per-session id (crypto seam, like `uid`), stamped
+  // on every outgoing invalidation so a tab ignores its OWN broadcast.
+  const sourceTabId = uid('tab-');
+  app.sourceTabId = sourceTabId;
+  app.documentVisible = documentVisible;
+  // #343 §2: snapshot-identity of the workspace this tab last committed. Only
+  // used to detect whether a later reload actually changed anything (not CAS).
+  let lastCommittedToken = '';
+  app.getLastCommittedToken = () => lastCommittedToken;
+  // #343 §5/§6: the channel-receive + focus/visibility listeners only ever call
+  // THIS hook; it is wired to the coalesced refresh scheduler just below (once
+  // `refreshWorkspaceFromStore` and its dependencies are defined). A no-op until
+  // then so an inbound message arriving mid-construction can't fault.
+  app.onExternalWorkspaceChange = () => {};
+  // #343 step 4: the route/surface refresh hook a mounted route registers to
+  // react AFTER a refresh actually projected an external change — the standalone
+  // Dashboard route (a later step) overrides this to rebuild its viewer session
+  // from the latest committed workspace. Default no-op: the Workbench route's
+  // repaint is built into `refreshWorkspaceFromStore` itself.
+  app.onWorkspaceExternallyChanged = () => {};
+  // #343 §5: open the invalidation channel and route inbound pokes (that aren't
+  // our own) to the hook. Never carries the workspace body — only a signal.
+  const workspaceChannel = broadcastChannelFactory('asb:workspace');
+  if (workspaceChannel) {
+    workspaceChannel.onmessage = (event) => {
+      const msg = event.data as WorkspaceChangedMessage | null;
+      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId) return;
+      app.onExternalWorkspaceChange(msg);
+    };
+  }
+
   // #341/#344 review fix: the ONLY correct way to build a workspace-mutation
   // candidate. `serializeWrite` alone only serializes EXECUTION — a producer
   // that builds its whole candidate from `state`/`app.workspace` BEFORE
@@ -1518,12 +1655,122 @@ export function createApp(env: CreateAppEnv = {}): App {
   // is what makes it authoritative: every write is serialized through this
   // same queue, so by the time this op runs, `loadCurrent()` reflects every
   // write queued before it.
+  // #343 §2: on a SUCCESSFUL commit the primitive itself owns the projection
+  // (`applyCommittedWorkspace`, exactly once), records the snapshot token, and
+  // broadcasts ONE invalidation — callers no longer project. An aborted
+  // transform (null / null candidate) commits nothing and notifies no one; a
+  // failed commit surfaces its diagnostics without projecting or notifying.
   app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
     const latest = await app.workspace.loadCurrent();
-    const candidate = await transform(latest);
-    if (!candidate) return null;
-    return app.workspace.commit(candidate);
+    const input = await transform(latest);
+    if (!input || !input.candidate) {
+      return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+    }
+    const result = await app.workspace.commit(input.candidate);
+    if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+    app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
+    if (workspaceChannel) {
+      workspaceChannel.postMessage({
+        type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
+      });
+    }
+    return {
+      ok: true as const, workspace: result.workspace,
+      dashboardRevision: result.dashboardRevision, data: input.data,
+    };
   });
+
+  // #343 step 4: a non-destructive warning when a reload can't reach the store.
+  // The current projection stays on screen; the next focus/visibility event
+  // schedules another attempt (activation always refreshes), so this never
+  // wedges the workspace queue or discards data.
+  const warnRefreshFailed = (): void => {
+    flashToast(
+      'Couldn’t reload the latest workspace — showing the last known version; will retry when you return to this tab.',
+      { document: doc },
+    );
+  };
+
+  // #343 steps 4/7/8: reload the committed workspace and, if it changed under
+  // us, project it + reconcile linked tabs. Runs INSIDE `serializeWrite` so it
+  // orders behind any pending local mutation and a token compare stops it
+  // projecting an older read over a newer local commit. A failed load keeps the
+  // projection and warns; it never rejects the queued op (no wedge).
+  const runWorkspaceRefresh = async (): Promise<void> => {
+    // #343 step 6: a detached/read-only Dashboard renders from a detached
+    // snapshot, not the primary workspace — primary-workspace invalidation must
+    // never project over it (it would clobber `app.state` with a different
+    // aggregate). The Dashboard route sets `dashboardReadOnly` per render; a
+    // Workbench tab and an editable Dashboard leave it false.
+    if (app.dashboardReadOnly) return;
+    let loaded: StoredWorkspaceV1 | null;
+    try {
+      const result = await app.workspace.loadCurrentResult();
+      if (result.status === 'corrupt') { warnRefreshFailed(); return; }
+      loaded = result.status === 'ok' ? result.workspace : null;
+    } catch {
+      warnRefreshFailed();
+      return;
+    }
+    // Unchanged since this tab's last projection ⇒ cheap no-op (the common case
+    // for an activation refresh that raced no real external write). An external
+    // clear (had a workspace, now empty) also leaves the projection untouched.
+    if (workspaceToken(loaded) === lastCommittedToken || !loaded) return;
+    // Reconcile linked tabs from the CURRENT (pre-projection) snapshots so the
+    // orphan/detach distinction survives, THEN project committed truth (which
+    // reconciles tab links + fills tokens + records lastCommittedToken).
+    const queriesDidChange = queriesChanged(app.state.savedQueries, loaded.queries);
+    reconcileLinkedTabsToLatest(app.state, loaded);
+    applyCommittedWorkspace(loaded);
+    // Workbench surface repaint. The standalone Dashboard route has no Workbench
+    // chrome — it reacts through the `onWorkspaceExternallyChanged` hook instead.
+    if (!app.dashboardRoute) {
+      // Re-run the tab effect (editor doc re-sync for the active tab, parked
+      // reconcile for the rest, tab strip + Save button + var strip) by handing
+      // the tabs signal a fresh array reference.
+      batch(() => { app.state.tabs.value = [...app.state.tabs.value]; });
+      app.updateSaveBtn();
+      app.updateEditorModeUi?.();
+      renderSavedHistory(app);
+      renderDashboardNav(app);
+    }
+    app.onWorkspaceExternallyChanged({ workspace: loaded, queriesChanged: queriesDidChange });
+  };
+  // Public entry point (#343): a single refresh ordered through the write queue.
+  app.refreshWorkspaceFromStore = () => app.serializeWrite(runWorkspaceRefresh);
+
+  // #343 steps 4/6/7: coalesce every invalidation source (channel poke, window
+  // focus, tab becoming visible) into ONE queued refresh. `refreshPending` gates
+  // duplicates: pokes arriving while a refresh is already scheduled/in-flight
+  // collapse into that one; it clears the instant the queued op dequeues, so a
+  // poke landing during the actual store read schedules a fresh follow-up. The
+  // refresh is queued through `serializeWrite`, so a notification received mid
+  // local-write reloads only after that write settles (marks stale now, reloads
+  // in queue order).
+  let refreshPending = false;
+  const scheduleWorkspaceRefresh = (): void => {
+    if (refreshPending) return;
+    refreshPending = true;
+    void app.serializeWrite(async () => {
+      refreshPending = false;
+      await runWorkspaceRefresh();
+    });
+  };
+  app.onExternalWorkspaceChange = () => scheduleWorkspaceRefresh();
+  // #343 §6: focus/visibility fallback — required even with BroadcastChannel,
+  // because a poke can be missed while a tab is created/restored/suspended (or
+  // on a platform without the API). Activation ALWAYS schedules a refresh; the
+  // token compare inside makes an unchanged store a no-op. Works when
+  // `broadcastChannel` returned null (channel absent) too.
+  // Guarded so a stub `window`/`document` (some tests inject a minimal object
+  // without `addEventListener`) doesn't fault at construction — the seams stay
+  // optional, exactly like the BroadcastChannel "capability or null" default.
+  if (typeof win.addEventListener === 'function') {
+    win.addEventListener('focus', () => scheduleWorkspaceRefresh());
+  }
+  if (typeof doc.addEventListener === 'function') {
+    doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
+  }
 
   // #300: the Reset action offered on the corrupt-workspace toast below.
   // `loadCurrent()`/`clearCurrent()`'s callers rely on a corrupt record

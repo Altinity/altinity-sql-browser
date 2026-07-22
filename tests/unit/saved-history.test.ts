@@ -253,6 +253,48 @@ describe('renderSavedHistory', () => {
     expect(qs(document, '.share-toast').textContent).toBe('Couldn’t update favorite: boom');
   });
 
+  it('#343: star on a query deleted in another tab toasts and refreshes the workspace', async () => {
+    const app = makeApp();
+    // The latest committed workspace no longer contains s1 — the patch aborts.
+    app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
+      const input = await transform({ storageVersion: 1, id: 'w1', name: 'L', queries: [], dashboard: null });
+      expect(input).toBeNull(); // the planner found no target and aborted
+      return { ok: false as const, aborted: true as const, data: undefined };
+    }) as App['mutateWorkspace'];
+    const refresh = vi.fn(async () => {});
+    app.refreshWorkspaceFromStore = refresh;
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false); // never recreated/toggled
+    expect(qs(document, '.share-toast').textContent).toBe('This query was deleted in another tab');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
+    const app = makeApp();
+    app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
+      const input = await transform({ storageVersion: 1, id: 'w1', name: 'L', queries: [], dashboard: null });
+      expect(input).toBeNull();
+      return { ok: false as const, aborted: true as const, data: undefined };
+    }) as App['mutateWorkspace'];
+    const refresh = vi.fn(async () => {});
+    app.refreshWorkspaceFromStore = refresh;
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const nameInput = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    nameInput.value = 'New';
+    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+    expect(queryName(app.state.savedQueries[0])).toBe('Old'); // untouched
+    expect(qs(document, '.share-toast').textContent).toBe('This query was deleted in another tab');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('#287 W4: delete surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
     const commit = failingCommit();
     const app = makeApp({ workspace: { commit } });
@@ -565,11 +607,12 @@ describe('concurrent saved-query writes (#287 review fix)', () => {
       { id: 'q1', name: 'Q1', sql: 'SELECT 1', favorite: false },
       { id: 'q2', name: 'Q2', sql: 'SELECT 2' },
     ]);
-    // Fire a favorite-toggle on q1 and a delete on q2 in the same tick. Without
-    // app.serializeWrite both build a candidate from the same [q1,q2] snapshot
-    // and whichever commit lands last wins — resurrecting the deleted q2.
-    const pToggle = app.serializeWrite(() => toggleFavorite(app.state, 'q1', app.workspace.commit, app.genId, app.specValidators));
-    const pDelete = app.serializeWrite(() => deleteSaved(app.state, 'q2', app.workspace.commit));
+    // Fire a favorite-toggle on q1 and a delete on q2 in the same tick. #343:
+    // both run their candidate-building transform through app.mutateWorkspace,
+    // which serializes on one queue and reads the latest committed workspace at
+    // dequeue — so the delete can't resurrect q2 from a stale [q1,q2] snapshot.
+    const pToggle = toggleFavorite(app.state, 'q1', app.mutateWorkspace, app.genId, app.specValidators);
+    const pDelete = deleteSaved(app.state, 'q2', app.mutateWorkspace);
     await Promise.all([pToggle, pDelete]);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']); // q2 stays deleted
     expect(queryFavorite(app.state.savedQueries[0])).toBe(true);      // q1 toggle applied

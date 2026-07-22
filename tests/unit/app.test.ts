@@ -13,11 +13,13 @@ import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
+import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { encodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { decodeShare } from '../../src/core/share.js';
-import type { CreateAppEnv } from '../../src/env.types.js';
-import type { App } from '../../src/ui/app.types.js';
+import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
+import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
+import { renameSaved } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type { SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
@@ -490,7 +492,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
 
   it('the transform receives the latest COMMITTED aggregate at DEQUEUE time, not whatever was current when mutateWorkspace was called', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace());
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace() }));
     // A first write is pending in the queue (gated open manually, like
     // saved-history.test.ts's own concurrent-writes regression) — a SECOND
     // `mutateWorkspace` call fires while it's still pending.
@@ -500,7 +502,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
       await gate;
       return app.workspace.commit(seedWorkspace({ queries: [savedQuery({ id: 'q1', name: 'Q1' })] }));
     });
-    const second = app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'Renamed' } : null));
+    const second = app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, name: 'Renamed' } } : null));
     release();
     await Promise.all([first, second]);
     const finalWs = await app.workspace.loadCurrent();
@@ -511,24 +513,324 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     expect(finalWs?.name).toBe('Renamed');
   });
 
-  it('a null/undefined-returning transform aborts the commit — nothing is persisted, and the result resolves null', async () => {
+  it('a null/undefined-returning transform aborts — nothing persisted, resolves an aborted outcome', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
     const result = await app.mutateWorkspace(() => null);
-    expect(result).toBeNull();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.aborted).toBe(true);
     const ws = await app.workspace.loadCurrent();
     expect(ws?.name).toBe('Before'); // untouched
   });
 
+  it('a null CANDIDATE aborts too (and threads data back), committing nothing', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
+    const result = await app.mutateWorkspace(() => ({ candidate: null, data: 'why' }));
+    expect(result.ok).toBe(false);
+    expect(result.data).toBe('why');
+    expect((await app.workspace.loadCurrent())?.name).toBe('Before');
+  });
+
   it('a transform rejection propagates to the caller without wedging the queue for the next op', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
     await expect(app.mutateWorkspace(() => { throw new Error('boom'); })).rejects.toThrow('boom');
     // The queue still advances — a later op is not stuck behind the rejection.
-    const result = await app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'After' } : null));
-    expect(result?.ok).toBe(true);
+    const result = await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, name: 'After' } } : null));
+    expect(result.ok).toBe(true);
     const ws = await app.workspace.loadCurrent();
     expect(ws?.name).toBe('After');
+  });
+
+  it('projects the committed workspace exactly once on success, and threads operation data back', async () => {
+    const app = createApp(env());
+    const projected: string[] = [];
+    const orig = app.applyCommittedWorkspace;
+    app.applyCommittedWorkspace = (ws) => { projected.push(ws.name); orig(ws); };
+    const result = await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Proj' }), data: 42 }));
+    expect(result.ok && result.data).toBe(42);
+    expect(projected).toEqual(['Proj']); // exactly once
+    expect(app.state.libraryName.value).toBe('Proj'); // projection took effect
+    expect(app.getLastCommittedToken().length).toBeGreaterThan(0);
+  });
+
+  it('does not project on an aborted or failed commit', async () => {
+    const app = createApp(env());
+    let projections = 0;
+    const orig = app.applyCommittedWorkspace;
+    app.applyCommittedWorkspace = (ws) => { projections++; orig(ws); };
+    await app.mutateWorkspace(() => null); // abort
+    // Invalid candidate → commit fails (a query missing required fields).
+    const failed = await app.mutateWorkspace(() => ({
+      candidate: { storageVersion: 1, id: 'x', name: 'n', queries: [{ bad: true } as never], dashboard: null },
+    }));
+    expect(failed.ok).toBe(false);
+    expect(failed.ok === false && failed.aborted).toBeFalsy(); // a real failure, not an abort
+    expect(projections).toBe(0);
+    expect(app.getLastCommittedToken()).toBe(''); // never advanced
+  });
+});
+
+// #343 §5/§6: cross-tab invalidation seam. `createApp` opens `asb:workspace`,
+// stamps each commit's broadcast with this tab's `sourceTabId`, and ignores its
+// own poke on receipt; `documentVisible` is the injected visibility read the
+// focus/visibility fallback (step 4) consults.
+describe('app cross-tab invalidation (#343)', () => {
+  const seed = (over: Partial<StoredWorkspaceV1> = {}): StoredWorkspaceV1 => (
+    { storageVersion: 1, id: 'w1', name: 'Seed', queries: [], dashboard: null, ...over }
+  );
+
+  it('posts exactly one invalidation per successful commit, and none on abort or failure', async () => {
+    const posted: WorkspaceChangedMessage[] = [];
+    const factory = (name: string): BroadcastChannelPort => ({
+      onmessage: null,
+      postMessage: (m) => { if (name === 'asb:workspace') posted.push(m as WorkspaceChangedMessage); },
+      close: () => {},
+    });
+    const app = createApp(env({ broadcastChannel: factory }));
+    await app.mutateWorkspace(() => ({ candidate: seed({ name: 'One' }) }));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toEqual({ type: 'workspace-changed', sourceTabId: app.sourceTabId, workspaceId: 'w1' });
+    await app.mutateWorkspace(() => null); // abort
+    await app.mutateWorkspace(() => ({ candidate: { storageVersion: 1, id: 'x', name: 'n', queries: [{ bad: true } as never], dashboard: null } })); // fail
+    expect(posted).toHaveLength(1); // still just the one success
+  });
+
+  it('the sender ignores its OWN broadcast; another tab receives and processes it once', async () => {
+    const bus = fakeBroadcastBus();
+    const store = fakeIndexedDbFactory();
+    const a = createApp(env({ broadcastChannel: bus, indexedDB: store }));
+    const b = createApp(env({ broadcastChannel: bus, indexedDB: store }));
+    const aSeen: WorkspaceChangedMessage[] = [];
+    const bSeen: WorkspaceChangedMessage[] = [];
+    a.onExternalWorkspaceChange = (m) => aSeen.push(m);
+    // Wrap B's DEFAULT no-op so it still runs (coverage) while we observe.
+    const bDefault = b.onExternalWorkspaceChange;
+    b.onExternalWorkspaceChange = (m) => { bSeen.push(m); bDefault(m); };
+    await a.mutateWorkspace(() => ({ candidate: seed() }));
+    expect(aSeen).toHaveLength(0); // guard drops A's own poke
+    expect(bSeen).toEqual([{ type: 'workspace-changed', sourceTabId: a.sourceTabId, workspaceId: 'w1' }]);
+  });
+
+  it('ignores malformed or mistyped channel messages', async () => {
+    const bus = fakeBroadcastBus();
+    const a = createApp(env({ broadcastChannel: bus }));
+    const b = createApp(env({ broadcastChannel: bus }));
+    const seen: WorkspaceChangedMessage[] = [];
+    b.onExternalWorkspaceChange = (m) => seen.push(m);
+    // A raw port on the same bus posts junk — the app's handler must no-op.
+    const raw = bus('asb:workspace');
+    raw.postMessage(null);
+    raw.postMessage({ type: 'something-else', sourceTabId: 'z', workspaceId: 'w' });
+    expect(seen).toHaveLength(0);
+    void a;
+  });
+
+  it('defaults documentVisible to the document visibility, and honors an injected reader', () => {
+    expect(createApp(env()).documentVisible()).toBe(true); // happy-dom is "visible"
+    expect(createApp(env({ documentVisible: () => false })).documentVisible()).toBe(false);
+  });
+
+  it('opens a real BroadcastChannel when the platform provides one', async () => {
+    class FakeBC {
+      static made: FakeBC[] = [];
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      posted: unknown[] = [];
+      name: string;
+      constructor(name: string) { this.name = name; FakeBC.made.push(this); }
+      postMessage(m: unknown) { this.posted.push(m); }
+      close() {}
+    }
+    (window as unknown as { BroadcastChannel?: unknown }).BroadcastChannel = FakeBC;
+    try {
+      const app = createApp(env({ broadcastChannel: undefined }));
+      await app.mutateWorkspace(() => ({ candidate: seed() }));
+      const ch = FakeBC.made.find((c) => c.name === 'asb:workspace');
+      expect(ch?.posted).toHaveLength(1);
+    } finally {
+      delete (window as unknown as { BroadcastChannel?: unknown }).BroadcastChannel;
+    }
+  });
+
+  it('commits fine when no channel is available (null factory)', async () => {
+    const app = createApp(env({ broadcastChannel: () => null }));
+    const result = await app.mutateWorkspace(() => ({ candidate: seed() }));
+    expect(result.ok).toBe(true);
+  });
+});
+
+// #343 steps 4/6/8 — workspace refresh through the write queue (focus/visibility
+// fallback), the linked-tab conflict resolution UI, and the Save-button state.
+describe('app workspace refresh + conflict UI (#343)', () => {
+  const q1ws = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV1 => ({
+    storageVersion: 1, id: 'w1', name: 'Team',
+    queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
+    dashboard: null,
+  });
+  const openQ1 = (app: App): QueryTab => {
+    app.actions.loadIntoNewTab({ ...app.state.savedQueries.find((q) => q.id === 'q1')! });
+    return app.state.tabs.value.find((t) => t.savedId === 'q1')!;
+  };
+
+  it('Save on a linked tab whose query was deleted in another tab refreshes the association (#343 review)', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT my draft';
+    t.dirtySql = true;
+    // Another tab deletes q1: straight through the repository — this tab gets
+    // no poke (missed broadcast) and is already focused (no activation event).
+    await app.workspace.commit({ ...q1ws(), queries: [] });
+    const saved = await app.actions.save();
+    expect(saved).toBeNull(); // aborted — never recreated
+    await app.flushWorkspaceWrites(); // the triggered refresh settles
+    // The reconcile turned the ghost link into the orphan treatment: unsaved
+    // draft, deleted-elsewhere flag, draft preserved exactly.
+    expect(t.savedId).toBeNull();
+    expect(t.externalState).toBe('deleted');
+    expect(t.sqlDraft).toBe('SELECT my draft');
+    const persisted = await app.workspace.loadCurrent();
+    expect(persisted!.queries).toHaveLength(0); // still deleted
+  });
+
+  it('window focus schedules a refresh; a visible visibilitychange schedules another', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const spy = vi.spyOn(app.workspace, 'loadCurrentResult');
+    window.dispatchEvent(new Event('focus'));
+    await app.flushWorkspaceWrites();
+    expect(spy).toHaveBeenCalled();
+    const afterFocus = spy.mock.calls.length;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await app.flushWorkspaceWrites();
+    expect(spy.mock.calls.length).toBeGreaterThan(afterFocus);
+  });
+
+  it('visibilitychange does not refresh while the tab is hidden', async () => {
+    const app = createApp(env({ documentVisible: () => false }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const spy = vi.spyOn(app.workspace, 'loadCurrentResult');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await app.flushWorkspaceWrites();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a corrupt reload warns and keeps the projection without wedging the queue', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    vi.spyOn(app.workspace, 'loadCurrentResult').mockResolvedValueOnce({ status: 'corrupt', diagnostics: [] });
+    await app.refreshWorkspaceFromStore(); // warns internally, returns
+    expect(app.state.savedQueries[0].id).toBe('q1'); // projection intact
+    const after = await app.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Still works' } }));
+    expect(after.ok).toBe(true); // queue not wedged
+  });
+
+  it('back-fills the per-tab baseline token for a tab linked without one at projection', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    const t = app.state.tabs.value[0];
+    t.savedId = 'q1';
+    t.lastCommittedQueryToken = undefined; // linked, but no baseline token yet
+    await app.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'again' } }));
+    expect(t.lastCommittedQueryToken).toBeTruthy(); // applyCommittedWorkspace filled it
+  });
+
+  it('shows "Resolve conflict" on the Save button for a conflicted tab', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.externalState = 'conflict';
+    app.updateSaveBtn();
+    expect(app.dom.saveBtn!.textContent).toContain('Resolve conflict');
+    expect(app.dom.saveBtn!.classList.contains('conflict')).toBe(true);
+    // Clearing the conflict restores the ordinary Save state.
+    t.externalState = null;
+    app.updateSaveBtn();
+    expect(app.dom.saveBtn!.classList.contains('conflict')).toBe(false);
+  });
+
+  it('Save on a conflicted tab opens the two-action chooser (once), not a silent overwrite', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT draft'; t.dirtySql = true; t.externalState = 'conflict';
+    const commitSpy = vi.spyOn(app.workspace, 'commit');
+    await app.actions.save();
+    await app.actions.save(); // second call is a no-op while the chooser is open
+    expect(document.querySelectorAll('.conflict-chooser')).toHaveLength(1);
+    expect(commitSpy).not.toHaveBeenCalled(); // nothing written yet
+  });
+
+  it('"Reload saved version" discards the draft and adopts the committed query', async () => {
+    const store = fakeIndexedDbFactory();
+    const app = createApp(env({ indexedDB: store }));
+    const other = createApp(env({ indexedDB: store }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws('SELECT 1') }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT local'; t.dirtySql = true;
+    // Another tab changes q1, then this tab's refresh detects the conflict.
+    await other.loadWorkspaceOnBoot();
+    await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
+    await app.refreshWorkspaceFromStore();
+    expect(t.externalState).toBe('conflict');
+    await app.actions.save(); // opens the chooser
+    (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    expect(t.dirtySql).toBe(false); // draft discarded
+    expect(t.name).toBe('External name'); // adopted the committed version
+    expect(t.externalState ?? null).toBeNull();
+  });
+
+  it('"Keep my draft" confirms, then saves the draft over the latest query and clears the conflict', async () => {
+    const store = fakeIndexedDbFactory();
+    const app = createApp(env({ indexedDB: store }));
+    const other = createApp(env({ indexedDB: store }));
+    await app.mutateWorkspace(() => ({ candidate: q1ws('SELECT 1') }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT my kept draft'; t.dirtySql = true;
+    await other.loadWorkspaceOnBoot();
+    await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
+    await app.refreshWorkspaceFromStore();
+    expect(t.externalState).toBe('conflict');
+    await app.actions.save();
+    (document.querySelector('.conflict-chooser .cf-keep') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    (document.querySelector('.conflict-chooser .cf-overwrite') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
+    await app.flushWorkspaceWrites();
+    expect(t.externalState ?? null).toBeNull(); // conflict resolved
+    const persisted = await app.workspace.loadCurrent();
+    expect(persisted!.queries.find((q) => q.id === 'q1')!.sql).toBe('SELECT my kept draft');
+  });
+
+  it('the reload resolution on a vanished query refreshes the tab association instead of leaving the stale conflict (#343 review)', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.externalState = 'conflict';
+    await app.actions.save();
+    // Another tab deletes q1 AFTER the chooser opened: straight through the
+    // repository (no local projection), then drop it from the in-memory list so
+    // savedForTab misses inside reloadSavedVersion (the vanished-query guard).
+    await app.workspace.commit({ ...q1ws(), queries: [] });
+    app.state.savedQueries = [];
+    (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement)
+      .dispatchEvent(new Event('click', { bubbles: true }));
+    await app.flushWorkspaceWrites(); // the queued refreshWorkspaceFromStore settles
+    // The refresh projected the external delete and the reconcile gave this
+    // clean ghost-linked tab its detach treatment: no link, no stale badge.
+    expect(t.savedId).toBeNull();
+    expect(t.externalState ?? null).toBeNull();
   });
 });
 

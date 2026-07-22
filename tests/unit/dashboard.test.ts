@@ -5,6 +5,7 @@ import {
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../../src/core/dashboard.js';
 import { KEYS } from '../../src/state.js';
+import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
@@ -3927,7 +3928,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // `queries` through the shared `app.mutateWorkspace` queue.
     const extraQueryMutation = app.mutateWorkspace((latest) => {
       if (!latest) return null;
-      return { ...latest, queries: [...latest.queries, q('q3', 'SELECT 3')] };
+      return { candidate: { ...latest, queries: [...latest.queries, q('q3', 'SELECT 3')] } };
     });
     // Dispatch a Dashboard command while that mutation is still in flight
     // (both share the one `serializeWrite` chain, so this queues behind it).
@@ -3955,7 +3956,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // it moments before the command below dequeues. This never touches
     // `currentDoc`/the rendered session directly (only a later `runCommand`
     // resolution does) — the sanity check confirms it landed in the store.
-    await app.mutateWorkspace((latest) => (latest ? { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } : null));
+    await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } } : null));
     expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
     // Resize t1's placement through the UI — t1 is still present in this
     // route's OWN optimistic `currentDoc` (it hasn't seen the concurrent
@@ -4045,5 +4046,148 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(commit).toHaveBeenCalledTimes(2);
     expect(app.state.dashboard?.layout.preset).toBe('columns-3');
     expect(app.state.dashboard?.revision).toBe(2);
+  });
+});
+
+// ── #343 step 6: external-workspace rebuild ─────────────────────────────────
+// When another tab commits to the shared workspace, the app-level cross-tab
+// refresh projects it onto `app.state` and fires `app.onWorkspaceExternally
+// Changed`. An editable Dashboard route reacts by REBUILDING its viewer session
+// from committed truth — a full `renderDashboard` re-read (never just
+// `session.syncDocument`), because a referenced query's SQL/Spec may have moved
+// while the Dashboard document stayed byte-identical. The rebuild defers behind
+// any pending local command, coalesces duplicate notifications, preserves the
+// persisted per-Dashboard filter seed, and never commits. A detached read-only
+// view ignores primary-workspace invalidation entirely.
+describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
+  const twoTiles = () => wsWith({
+    queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 2')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  });
+  const tileNames = (app: TestApp): string[] =>
+    qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent || '');
+  const loadCalls = (fn: unknown): number => (fn as ReturnType<typeof vi.fn>).mock.calls.length;
+
+  it('an editable route rebuilds its viewer session when the Dashboard document changed externally', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    expect(tileNames(app)).toEqual(['q1', 'q2']);
+    // Another tab commits a tile removal — this advances the shared store and
+    // projects onto `app.state`, but does NOT rebuild this route's session.
+    await app.mutateWorkspace((latest) => {
+      const d = latest!.dashboard!;
+      return { candidate: { ...latest!, dashboard: {
+        ...d, revision: d.revision + 1, tiles: d.tiles.filter((t) => t.id !== 't2'),
+      } } };
+    });
+    expect(tileNames(app)).toEqual(['q1', 'q2']); // session still shows both tiles
+    // The app-level refresh fires the hook after projecting the external change.
+    app.onWorkspaceExternallyChanged({ workspace: await app.workspace.loadCurrent(), queriesChanged: false });
+    await flush(); await flush(); // the rebuild is itself an async render pass
+    expect(tileNames(app)).toEqual(['q1']); // rebuilt from committed truth
+  });
+
+  it('rebuilds on an external QUERY-ONLY change even when the Dashboard document is byte-identical', async () => {
+    const { app, calls } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    await flush();
+    // A query-only external commit: q1's SQL changes; the dashboard document is
+    // left byte-identical (same revision, tiles, layout). `session.syncDocument`
+    // alone would never re-run the tile — only a full rebuild does.
+    await app.mutateWorkspace((latest) => ({ candidate: {
+      ...latest!,
+      queries: latest!.queries.map((sq) => (sq.id === 'q1' ? { ...sq, sql: 'SELECT 999' } : sq)),
+    } }));
+    const before = calls.length;
+    app.onWorkspaceExternallyChanged({ workspace: await app.workspace.loadCurrent(), queriesChanged: true });
+    await flush(); await flush();
+    expect(calls.slice(before).some((c) => c.sql.includes('999'))).toBe(true); // re-executed with new SQL
+  });
+
+  it('a detached read-only view ignores primary-workspace invalidation (no rebuild)', async () => {
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    expect(app.dashboardReadOnly).toBe(true); // route resolved as read-only
+    const getBefore = loadCalls(app.detachedViews.get); // one read during the initial render
+    app.onWorkspaceExternallyChanged({ workspace: detached as never, queriesChanged: true });
+    await flush(); await flush();
+    // A rebuild would re-render → re-read the detached store; it stayed inert.
+    expect(loadCalls(app.detachedViews.get)).toBe(getBefore);
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(1); // unchanged
+  });
+
+  it('a stale rebuild waits until pending Dashboard command descriptors settle', async () => {
+    let resolveCommit!: () => void;
+    const commit = vi.fn((candidate: StoredWorkspaceV1) => new Promise((resolve) => {
+      resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboard!.revision });
+    }));
+    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as ReturnType<typeof vi.fn> });
+    await render(app);
+    const loadSpy = vi.spyOn(app, 'loadDashboardWorkspace');
+    pickLayout(app.root, 'columns-2'); // dispatch a command whose commit stays pending
+    for (let i = 0; i < 4; i++) await Promise.resolve(); // reach commit() — still unresolved
+    // An external change arrives WHILE the command is pending: the rebuild must
+    // defer (no resolution handler from this render may survive into the rebuilt one).
+    app.onWorkspaceExternallyChanged({ workspace: await app.workspace.loadCurrent(), queriesChanged: false });
+    await flush();
+    expect(loadSpy).not.toHaveBeenCalled(); // deferred behind the pending command
+    resolveCommit();
+    await flush(); await flush();
+    expect(loadSpy).toHaveBeenCalledTimes(1); // rebuilt once the queue drained
+  });
+
+  it('coalesces duplicate external notifications into a single rebuild', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const loadSpy = vi.spyOn(app, 'loadDashboardWorkspace');
+    const info = { workspace: await app.workspace.loadCurrent(), queriesChanged: false };
+    app.onWorkspaceExternallyChanged(info);
+    app.onWorkspaceExternallyChanged(info);
+    app.onWorkspaceExternallyChanged(info);
+    await flush(); await flush();
+    expect(loadSpy).toHaveBeenCalledTimes(1); // one rebuild, not three
+  });
+
+  it('preserves the persisted per-Dashboard filter seed (KEYS.dashFilters) across the rebuild', async () => {
+    const ws = wsWith({
+      id: 'dfx', queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
+    });
+    // `dashboard.ts` reads the persisted filter bag through `core/storage`'s
+    // `loadJSON` on EVERY render (initial + rebuild); seed just that key (the
+    // test env's localStorage is a read-only proxy, so mock the reader itself).
+    const realLoadJSON = storage.loadJSON;
+    const spy = vi.spyOn(storage, 'loadJSON').mockImplementation((key, fallback, store) => (
+      key === KEYS.dashFilters ? { dfx: { n: { value: '77', active: true } } } : realLoadJSON(key, fallback, store)
+    ));
+    try {
+      const { app } = dashApp({ workspace: ws });
+      await render(app);
+      const filterInput = (): HTMLInputElement => {
+        const field = qsa(app.root, '.dash-filter-host .var-field').find((f) => qs(f, '.var-name')?.textContent === 'n')!;
+        return qs<HTMLInputElement>(field, 'input');
+      };
+      expect(filterInput().value).toBe('77'); // seeded from the store, not the default 5
+      app.onWorkspaceExternallyChanged({ workspace: await app.workspace.loadCurrent(), queriesChanged: false });
+      await flush(); await flush();
+      expect(filterInput().value).toBe('77'); // still seeded after the rebuild re-reads the store
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('regression: an optimistic drag still applies immediately (no rebuild on the drag path)', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const down = pointerDragTo(cards, 1, tileCenter(0), { metaKey: true });
+    expect(down.defaultPrevented).toBe(true);
+    expect(tileNames(app)).toEqual(['q2', 'q1']); // reorder visible synchronously, before any commit
+    await flush();
+    expect(commit).toHaveBeenCalled();
   });
 });

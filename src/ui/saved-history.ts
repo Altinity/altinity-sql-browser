@@ -136,11 +136,27 @@ function renderSaved(app: App, list: HTMLElement): void {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
         e.stopPropagation();
-        const result = await app.serializeWrite(() => toggleFavorite(state, q.id, app.workspace.commit, app.genId, app.specValidators));
+        // #343: star = explicit desired membership over the LATEST workspace.
+        // `toggleFavorite` runs its transform through `app.mutateWorkspace`
+        // (serializes + reads latest at dequeue) — no `serializeWrite` wrapper.
+        const result = await toggleFavorite(state, q.id, app.mutateWorkspace, app.genId, app.specValidators);
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();
           app.specEditor.syncFromState();
+          // #343: the patch may have just flagged a lagging dirty tab as
+          // conflict OR adopted committed truth into a lagging clean tab —
+          // re-fire the tab effect (editor doc resync for the active tab) and
+          // reflect it on the Save button / tab badge immediately.
+          app.state.tabs.value = [...app.state.tabs.value];
+          app.updateSaveBtn();
+          app.actions.rerenderTabs();
+        } else if (result && !result.ok && result.deletedExternally) {
+          // #343 review: the query vanished from the latest workspace — refresh
+          // now so this dead Library row (and any linked tab) reconciles instead
+          // of lingering until the next activation.
+          flashToast('This query was deleted in another tab', { document: app.document });
+          void app.refreshWorkspaceFromStore();
         } else if (result && !result.ok && result.diagnostics?.length) {
           flashToast('Couldn’t update favorite: ' + result.diagnostics[0].message, { document: app.document });
         }
@@ -189,7 +205,8 @@ function renderSaved(app: App, list: HTMLElement): void {
           class: 'sv-act', title: 'Delete',
           onclick: async (e: Event) => {
             e.stopPropagation();
-            const result = await app.serializeWrite(() => deleteSaved(state, q.id, app.workspace.commit));
+            // #343: delete over the LATEST workspace via `app.mutateWorkspace`.
+            const result = await deleteSaved(state, q.id, app.mutateWorkspace);
             if (result.ok) {
               app.updateSaveBtn();
               app.updateEditorModeUi?.();
@@ -222,13 +239,22 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
     if (done) return;
     done = true;
     if (commit && nameInput.value.trim()) {
-      const result = await app.serializeWrite(() => renameSaved(state, q.id, nameInput.value, descInput.value, app.workspace.commit, app.specValidators));
+      // #343: rename/description over the LATEST workspace via `app.mutateWorkspace`.
+      const result = await renameSaved(state, q.id, nameInput.value, descInput.value, app.mutateWorkspace, app.specValidators);
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
-      else if (result && !result.ok && result.diagnostics?.length) {
+      else if (result && !result.ok && result.deletedExternally) {
+        // #343 review: target vanished — refresh so the dead row reconciles.
+        flashToast('This query was deleted in another tab', { document: app.document });
+        void app.refreshWorkspaceFromStore();
+      } else if (result && !result.ok && result.diagnostics?.length) {
         flashToast('Couldn’t rename: ' + result.diagnostics[0].message, { document: app.document });
       } else {
         app.queryDoc.revalidateSpecDrafts();
         app.specEditor.syncFromState();
+        // #343: a lagging tab may have just been conflict-flagged (dirty) or
+        // adopted committed truth (clean) — resync editor + button + badges.
+        app.state.tabs.value = [...app.state.tabs.value];
+        app.updateSaveBtn();
         app.actions.rerenderTabs();
       }
     }
