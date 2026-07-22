@@ -432,14 +432,24 @@ describe('saved queries', () => {
       expect(mutate.commit).toHaveBeenCalledTimes(1);
     });
 
-    it('favorite ON is idempotent when a tile already references the query', async () => {
+    it('a stale false flag with a tile toggles from canonical membership and removes it', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', favorite: false, dashboard: { role: 'panel' } })];
       s.dashboard = { ...blankDashboard(), tiles: [{ id: 't1', queryId: 'p1' }] };
       const mutate = fakeMutateWorkspace(s);
       await toggleFavorite(s, 'p1', mutate, genTileId());
+      expect(queryFavorite(s.savedQueries[0])).toBe(false);
+      expect(s.dashboard!.tiles).toEqual([]);
+    });
+
+    it('a stale true flag without a tile is repaired by one click that creates membership', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', favorite: true, dashboard: { role: 'panel' } })];
+      s.dashboard = blankDashboard();
+      const mutate = fakeMutateWorkspace(s);
+      await toggleFavorite(s, 'p1', mutate, genTileId());
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
-      expect(s.dashboard!.tiles).toEqual([{ id: 't1', queryId: 'p1' }]); // no duplicate
+      expect(s.dashboard!.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
     });
 
     it('favorite ON on a filter-role query never creates a tile', async () => {

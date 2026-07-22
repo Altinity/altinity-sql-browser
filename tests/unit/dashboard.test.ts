@@ -21,6 +21,7 @@ import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import { queryFavorite } from '../../src/core/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
@@ -3854,6 +3855,42 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
+  it('remove-tile atomically clears the final query favorite and every explicit filter target', async () => {
+    const workspace = wsWith({
+      queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      filters: [
+        { id: 'f1', parameter: 'x', targets: ['t1', 't2'] },
+        { id: 'f2', parameter: 'y', targets: ['t1'] },
+      ],
+      layout: { type: 'grafana-grid', version: 1, items: {} },
+    });
+    const { app, commit } = dashApp({ workspace });
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+    const candidate = commit.mock.calls[0][0];
+    expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(false);
+    expect(candidate.dashboard?.filters.map((filter) => filter.targets)).toEqual([['t2'], []]);
+    expect(candidate.dashboard?.revision).toBe(2);
+  });
+
+  it('remove-tile keeps favorite true when another tile instance references the query', async () => {
+    const workspace = wsWith({
+      queries: [q('q1', 'SELECT 1', { favorite: true })],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }],
+      layout: { type: 'grafana-grid', version: 1, items: {} },
+    });
+    const { app, commit } = dashApp({ workspace });
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+    const candidate = commit.mock.calls[0][0];
+    expect(candidate.dashboard?.tiles).toEqual([{ id: 't2', queryId: 'q1' }]);
+    expect(candidate.queries[0].spec.favorite).toBe(true);
+    expect(candidate.dashboard?.revision).toBe(2);
+  });
+
   it('no persisted aggregate (legacy/empty Dashboard): a command stays optimistic-only — never calls commit', async () => {
     const { app, commit } = dashApp({
       workspace: null, savedQueries: [q('q1', 'SELECT 1', { favorite: true })],
@@ -4061,7 +4098,13 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
       .mockImplementation(async (candidate: StoredWorkspaceV1) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
       ));
-    const { app } = dashApp({ workspace: twoTilesGrid(), commit });
+    const workspace = wsWith({
+      queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      filters: [{ id: 'f1', parameter: 'x', targets: ['t1'] }],
+      layout: { type: 'grafana-grid', version: 1, items: {} },
+    });
+    const { app } = dashApp({ workspace, commit });
     await render(app);
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // remove t1 — its commit fails
@@ -4074,6 +4117,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // truth), and nothing was persisted.
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
     expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(app.state.dashboard?.filters[0].targets).toEqual(['t1']);
+    expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'q1'))).toBe(true);
     expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
     // The rebuilt route is fully functional — a later command still commits.
     qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();

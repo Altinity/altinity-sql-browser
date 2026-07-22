@@ -21,6 +21,12 @@ import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { createEmptyDashboard } from './empty-dashboard.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
+export interface TileRemovalResult {
+  dashboard: DashboardDocumentV1;
+  queries: SavedQueryV2[];
+  queryId: string;
+}
+
 /** Remove every tile referencing `queryId`, and scrub those tile ids out of
  *  every filter's `targets` — the typed counterpart of saved-query-mutation.ts's
  *  `removeAffectedTiles` (that one operates on unknown/untyped documents). */
@@ -35,6 +41,45 @@ function removeTilesForQuery(dashboard: DashboardDocumentV1, queryId: string): D
       : filter
   ));
   return { ...dashboard, tiles, filters };
+}
+
+/** The Workbench star is canonical tile membership for panel-role queries.
+ * Filter/setup favorites retain their independent compatibility semantics. */
+export function queryMembershipFavorite(
+  dashboard: DashboardDocumentV1 | null,
+  query: SavedQueryV2,
+): boolean {
+  if (queryDashboardRole(query) !== 'panel') return query.spec.favorite === true;
+  return !!dashboard?.tiles.some((tile) => tile.queryId === query.id);
+}
+
+/** Remove ONE Dashboard tile and synchronize the affected panel query's
+ * compatibility favorite flag with its post-delete membership. Filter target
+ * cleanup, layout normalization and grid fallback regeneration are part of
+ * the same pure transform; revision ownership remains with the commit caller. */
+export function removeTileMembership(
+  dashboard: DashboardDocumentV1,
+  queries: SavedQueryV2[],
+  tileId: string,
+): TileRemovalResult | null {
+  const removedTile = dashboard.tiles.find((tile) => tile.id === tileId);
+  if (!removedTile) return null;
+  const tiles = dashboard.tiles.filter((tile) => tile.id !== tileId);
+  const filters = dashboard.filters.map((filter) => (
+    filter.targets
+      ? { ...filter, targets: filter.targets.filter((target) => target !== tileId) }
+      : filter
+  ));
+  const next = { ...dashboard, tiles, filters };
+  const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
+  regenerateGridFallback(normalized.layout, normalized.tiles);
+  const member = normalized.tiles.some((tile) => tile.queryId === removedTile.queryId);
+  const nextQueries = queries.map((query) => (
+    query.id === removedTile.queryId && queryDashboardRole(query) === 'panel'
+      ? { ...query, spec: { ...query.spec, favorite: member } }
+      : query
+  ));
+  return { dashboard: normalized, queries: nextQueries, queryId: removedTile.queryId };
 }
 
 /**

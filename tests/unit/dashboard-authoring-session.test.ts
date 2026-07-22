@@ -224,6 +224,55 @@ describe('DashboardAuthoringSession — membership, export, lifecycle', () => {
     expect(favOff && favOff.spec.favorite).toBe(false);
   });
 
+  it('raw remove-tile cleans targets and mirrors membership for final and remaining instances', async () => {
+    const query = {
+      ...panelQuery('q1'), sql: 'SELECT {x:String} AS a, 1 AS b',
+      spec: { ...panelQuery('q1').spec, favorite: true },
+    };
+    const workspace = workspaceFixture({
+      queries: [query],
+      dashboard: {
+        ...emptyDash(),
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'x', targets: ['t1', 't2'] }],
+      },
+    } as StoredWorkspaceV1);
+    const { session } = makeSession({ workspace });
+    expect((await session.execute({ type: 'remove-tile', tileId: 't1' })).ok).toBe(true);
+    let committed = await session.commit();
+    expect(committed.ok && committed.workspace.queries[0].spec.favorite).toBe(true);
+    expect(committed.ok && committed.workspace.dashboard!.filters[0].targets).toEqual(['t2']);
+    expect(committed.ok && committed.dashboardRevision).toBe(2);
+
+    expect((await session.execute({ type: 'remove-tile', tileId: 't2' })).ok).toBe(true);
+    committed = await session.commit();
+    expect(committed.ok && committed.workspace.queries[0].spec.favorite).toBe(false);
+    expect(committed.ok && committed.workspace.dashboard!.filters[0].targets).toEqual([]);
+    expect(committed.ok && committed.dashboardRevision).toBe(3);
+  });
+
+  it('a membership validation failure leaves both the Dashboard and favorite mirror unchanged', async () => {
+    const query = {
+      ...panelQuery('q1'), sql: 'SELECT {country:String} AS a, 1 AS b',
+      spec: { ...panelQuery('q1').spec, favorite: true },
+    };
+    const workspace = workspaceFixture({
+      queries: [query, filterQuery('source')],
+      dashboard: {
+        ...emptyDash(), tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'source', targets: ['t1'] }],
+      },
+    } as StoredWorkspaceV1);
+    const { session } = makeSession({ workspace });
+    const before = JSON.stringify(session.state.value.document);
+    const result = await session.execute({ type: 'remove-tile', tileId: 't1' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.diagnostics.some((d) => d.code === 'filter-selection-no-consumers')).toBe(true);
+    expect(JSON.stringify(session.state.value.document)).toBe(before);
+    expect(session.state.value.draftVersion).toBe(0);
+    expect(session.createPortableBundle().queries.find((q) => q.id === 'q1')?.spec.favorite).toBe(true);
+  });
+
   it('builds a portable bundle of only the dependency queries and never increments revision', async () => {
     const fixed = makeSession({ nowISO: () => '2020-01-01T00:00:00Z' });
     await fixed.session.execute({ type: 'add-query', queryId: 'q1' });

@@ -32,6 +32,7 @@ import { buildDashboardExportBundle } from '../model/dashboard-export.js';
 import { defaultLayoutRegistry } from '../layouts/layout-registry.js';
 import { applyCommand } from './dashboard-commands.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
+import { removeTileMembership } from './tile-membership.js';
 import { createEmptyDashboard } from './empty-dashboard.js';
 import { createQueryResolver } from './dashboard-query-resolver.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
@@ -108,9 +109,11 @@ export function createDashboardAuthoringSession(
   /** Validate a candidate dashboard as part of a complete candidate workspace:
    *  structure + references/roles/limits (stored-workspace pipeline), then —
    *  only when that passes — resolve and validate every panel presentation. */
-  function validateCandidate(dashboard: DashboardDocumentV1): WorkspaceDiagnostic[] {
+  function validateCandidate(
+    dashboard: DashboardDocumentV1, candidateQueries: SavedQueryV2[] = queries,
+  ): WorkspaceDiagnostic[] {
     const candidate: StoredWorkspaceV1 = {
-      storageVersion: 1, id: workspaceId, name: workspaceName, queries, dashboard,
+      storageVersion: 1, id: workspaceId, name: workspaceName, queries: candidateQueries, dashboard,
     };
     const structural = validateStoredWorkspaceDocument(candidate, codecOptions);
     if (structural.length) return structural;
@@ -151,11 +154,16 @@ export function createDashboardAuthoringSession(
     const applied = applyCommand(current.document, command, { resolver, genTileId: genId, plugin: resolved.plugin });
     if (!applied.ok) return returnFail<T>(applied.diagnostics, baseVersion);
 
-    const normalized = resolved.plugin.normalize(applied.dashboard);
-    const diagnostics = validateCandidate(normalized);
+    const membership = command.type === 'remove-tile'
+      ? removeTileMembership(current.document, queries, command.tileId)
+      : null;
+    const candidateQueries = membership?.queries ?? queries;
+    const normalized = resolved.plugin.normalize(membership?.dashboard ?? applied.dashboard);
+    const diagnostics = validateCandidate(normalized, candidateQueries);
     if (diagnostics.length) return returnFail<T>(diagnostics, baseVersion);
 
     const draftVersion = baseVersion + 1;
+    queries = candidateQueries;
     batch(() => {
       stateSignal.value = {
         document: normalized, draftVersion, dirty: true,

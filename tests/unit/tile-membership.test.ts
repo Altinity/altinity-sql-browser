@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { toggleTileMembership } from '../../src/dashboard/application/tile-membership.js';
+import {
+  queryMembershipFavorite, removeTileMembership, toggleTileMembership,
+} from '../../src/dashboard/application/tile-membership.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
 const panelQuery = (id: string): SavedQueryV2 => ({
@@ -140,6 +142,77 @@ describe('toggleTileMembership — grafana-grid@1 engine awareness (#291)', () =
     expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
     expect((next.layout as { fallback?: unknown }).fallback).toEqual({
       type: 'flow', version: 1, preset: 'columns-2', items: {},
+    });
+  });
+});
+
+describe('canonical membership and one-tile removal (#370)', () => {
+  it('reads panel favorites from tiles while preserving non-panel favorite flags', () => {
+    const panel = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
+    const filter = { ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true } };
+    expect(queryMembershipFavorite(dashboard(), panel)).toBe(false);
+    expect(queryMembershipFavorite(dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] }), panel)).toBe(true);
+    expect(queryMembershipFavorite(null, panel)).toBe(false);
+    expect(queryMembershipFavorite(null, filter)).toBe(true);
+  });
+
+  it('removes the final instance, cleans every explicit target, and clears the compatibility flag', () => {
+    const query = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
+    const input = dashboard({
+      tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
+      filters: [
+        { id: 'f1', parameter: 'x', targets: ['t1', 't2'] },
+        { id: 'f2', parameter: 'y', targets: ['t1'] },
+        { id: 'f3', parameter: 'z' },
+      ],
+    });
+    const result = removeTileMembership(input, [query, panelQuery('p2')], 't1')!;
+    expect(result.dashboard.tiles).toEqual([{ id: 't2', queryId: 'p2' }]);
+    expect(result.dashboard.filters).toEqual([
+      { id: 'f1', parameter: 'x', targets: ['t2'] },
+      { id: 'f2', parameter: 'y', targets: [] },
+      { id: 'f3', parameter: 'z' },
+    ]);
+    expect(result.queries[0].spec.favorite).toBe(false);
+    expect(input.tiles).toHaveLength(2);
+  });
+
+  it('removes only the selected instance and keeps favorite true while another remains', () => {
+    const query = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
+    const result = removeTileMembership(dashboard({
+      tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p1' }],
+    }), [query], 't1')!;
+    expect(result.dashboard.tiles).toEqual([{ id: 't2', queryId: 'p1' }]);
+    expect(result.queries[0].spec.favorite).toBe(true);
+  });
+
+  it('returns null for a missing tile and does not rewrite non-panel favorites', () => {
+    const filter = { ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true } };
+    expect(removeTileMembership(dashboard(), [filter], 'missing')).toBeNull();
+    const result = removeTileMembership(
+      dashboard({ tiles: [{ id: 't1', queryId: 'f1' }] }), [filter], 't1',
+    )!;
+    expect(result.queries[0]).toBe(filter);
+  });
+
+  it('normalizes grafana-grid primary and fallback placements after one-tile removal', () => {
+    const input = dashboard({
+      tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
+      layout: {
+        type: 'grafana-grid', version: 1,
+        items: { t1: { colStart: 0, span: 6, height: 2 }, t2: { colStart: 6, span: 6, height: 3 } },
+        fallback: {
+          type: 'flow', version: 1, preset: 'columns-2',
+          items: { t1: { span: 2, height: 'medium' }, t2: { span: 2, height: 'large' } },
+        },
+      },
+    });
+    const result = removeTileMembership(input, [panelQuery('p1'), panelQuery('p2')], 't1')!;
+    expect((result.dashboard.layout as { items: Record<string, unknown> }).items).toEqual({
+      t2: { colStart: 6, span: 6, height: 3 },
+    });
+    expect((result.dashboard.layout as { fallback: { items: Record<string, unknown> } }).fallback.items).toEqual({
+      t2: { span: 2, height: 'large' },
     });
   });
 });

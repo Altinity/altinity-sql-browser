@@ -248,6 +248,17 @@ describe('planImportQueries', () => {
     expect(plan.sourceDashboardId).toBeUndefined();
   });
 
+  it('imports a favorite panel query without inventing Dashboard membership', () => {
+    const dash = dashboardDoc({ tiles: [] });
+    const ws = workspace({ queries: [panelQuery('a')], dashboard: dash });
+    const favorite = panelQuery('b');
+    favorite.spec.favorite = true;
+    const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
+    expect(plan.candidateWorkspace?.queries.find((query) => query.id === 'b')?.spec.favorite).toBe(true);
+    expect(plan.candidateWorkspace?.dashboard?.tiles).toEqual([]);
+    expect(plan.candidateWorkspace?.dashboard).toBe(dash);
+  });
+
   it('overwrites the existing entry in place on a replace decision', () => {
     const ws = workspace({ queries: [panelQuery('a', 'old name')] });
     const decisions: QueryDecision[] = [{ sourceId: 'a', action: 'replace' }];
