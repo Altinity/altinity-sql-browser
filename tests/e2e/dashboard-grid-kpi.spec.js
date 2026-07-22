@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-// Grafana-grid KPI tile polish (#316): real-browser coverage for what
+// Grafana-grid KPI tile presentation (#340): real-browser coverage for what
 // happy-dom cannot see — actual geometry (footer collapse, frameless view
 // mode, equal-width card wrapping, container-query value typography, delta
 // bottom-alignment, and the 12/6/4/2 responsive column clamp applied to a
@@ -14,8 +14,8 @@ async function openWide(page) {
   await page.waitForFunction(() => window.__ready === true);
 }
 
-test.describe('Dashboard grafana-grid KPI tiles (#316)', () => {
-  test('edit mode: KPI tile footer is collapsed (no visible line) while a normal tile keeps its visible footer', async ({ page }) => {
+test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
+  test('edit mode: KPI tile is normally frameless with no grip/footer while a normal tile keeps its shell', async ({ page }) => {
     await openWide(page);
     const kpiFoot = page.locator('#editcmp-grid [data-tile-id="kpi-edit"] .dash-tile-foot');
     const normalFoot = page.locator('#editcmp-grid [data-tile-id="normal-edit"] .dash-tile-foot');
@@ -30,14 +30,54 @@ test.describe('Dashboard grafana-grid KPI tiles (#316)', () => {
     expect(normalFootBox.height).toBeGreaterThan(0);
     expect(await normalFoot.evaluate((node) => getComputedStyle(node).display)).toBe('flex');
 
-    // The KPI edit tile still has its header + edit affordances (title, grip,
-    // remove, resize) — only the footer is suppressed.
+    // The structural wrapper keeps overlay edit affordances, but no persistent
+    // header/grip. Delete and resize remain in the DOM and keyboard reachable.
     const kpiCard = page.locator('#editcmp-grid [data-tile-id="kpi-edit"]');
-    await expect(kpiCard.locator('.dash-tile-head')).toBeVisible();
+    const normal = await kpiCard.evaluate((node) => {
+      const cs = getComputedStyle(node);
+      return { border: cs.borderTopColor, bg: cs.backgroundColor, radius: cs.borderRadius, shadow: cs.boxShadow };
+    });
+    expect(normal).toEqual({ border: 'rgba(0, 0, 0, 0)', bg: 'rgba(0, 0, 0, 0)', radius: '0px', shadow: 'none' });
+    expect(await kpiCard.locator('.dash-tile-head').evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
     await expect(kpiCard.locator('.dash-tile-name')).toHaveText('Active users');
-    await expect(kpiCard.locator('.dash-gg-grip')).toHaveCount(1);
+    await expect(kpiCard.locator('.dash-gg-grip')).toHaveCount(0);
     await expect(kpiCard.locator('.dash-gg-del')).toHaveCount(1);
     await expect(kpiCard.locator('.dash-gg-resize')).toHaveCount(1);
+    await expect(kpiCard.locator('button.dash-gg-resize')).toHaveCount(1);
+    expect(await kpiCard.locator('.dash-tile-body').evaluate((node) => getComputedStyle(node).padding)).toBe('0px');
+  });
+
+  test('hover, focus, modifier hover, move, and resize expose overlay chrome without layout shift', async ({ page }) => {
+    await openWide(page);
+    const card = page.locator('#editcmp-grid [data-tile-id="kpi-edit"]');
+    const head = card.locator('.dash-tile-head');
+    const del = card.locator('.dash-gg-del');
+    const resize = card.locator('.dash-gg-resize');
+    const before = await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }));
+
+    await card.hover();
+    await expect(head).toBeVisible();
+    const hoveredOutline = await card.evaluate((node) => getComputedStyle(node, '::before').outlineColor);
+    expect(hoveredOutline).not.toBe('rgba(0, 0, 0, 0)');
+    expect(await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }))).toEqual(before);
+
+    await page.mouse.move(0, 0);
+    await del.focus();
+    await expect(head).toBeVisible();
+    await expect(del).toBeFocused();
+    await resize.focus();
+    await expect(resize).toBeFocused();
+
+    await page.keyboard.down('Control');
+    await card.hover();
+    await expect(head).toBeVisible();
+    await page.keyboard.up('Control');
+
+    await card.evaluate((node) => node.classList.add('dash-floating'));
+    expect(await card.evaluate((node) => getComputedStyle(node, '::before').outlineWidth)).toBe('2px');
+    await card.evaluate((node) => { node.classList.remove('dash-floating'); node.classList.add('dash-gg-resizing'); });
+    expect(await card.evaluate((node) => getComputedStyle(node, '::before').outlineWidth)).toBe('2px');
+    expect(await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }))).toEqual(before);
   });
 
   test('view mode: KPI tile is frameless (transparent border/background, hidden header) while a normal tile keeps its frame', async ({ page }) => {
@@ -53,7 +93,7 @@ test.describe('Dashboard grafana-grid KPI tiles (#316)', () => {
     expect(kpiStyle.bg).toBe('rgba(0, 0, 0, 0)');
     expect(kpiStyle.radius).toBe('0px');
     expect(kpiStyle.shadow).toBe('none');
-    await expect(kpiCard.locator('.dash-tile-head')).toBeHidden();
+    expect(await kpiCard.locator('.dash-tile-head').evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
     expect(await kpiCard.locator('.dash-tile-body').evaluate((node) => getComputedStyle(node).padding)).toBe('0px');
 
     // Accessible group name survives the hidden header.
@@ -257,7 +297,7 @@ test.describe('Dashboard grafana-grid KPI tiles (#316)', () => {
       });
       expect(style.border).toBe('rgba(0, 0, 0, 0)');
       expect(style.bg).toBe('rgba(0, 0, 0, 0)');
-      await expect(kpiCard.locator('.dash-tile-head')).toBeHidden();
+      expect(await kpiCard.locator('.dash-tile-head').evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
     }
   });
 });

@@ -354,13 +354,24 @@ const pickLayout = (root: ParentNode | null, value: string): void => {
 // core/tile-reorder.ts) — so a pointer-drag test must stub real geometry
 // first. Card `i` occupies a distinct, non-overlapping box:
 // x:[i*200, i*200+150], y:[0,50].
-function stubTileRects(cards: HTMLElement[]): void {
+function stubTileRects(cards: HTMLElement[], offset = 0): void {
   cards.forEach((card, i) => {
+    const slot = i + offset;
     const rect = {
-      left: i * 200, right: i * 200 + 150, top: 0, bottom: 50, width: 150, height: 50, x: i * 200, y: 0,
+      left: slot * 200, right: slot * 200 + 150, top: 0, bottom: 50, width: 150, height: 50, x: slot * 200, y: 0,
       toJSON: () => ({}),
     } as DOMRect;
     card.getBoundingClientRect = () => rect;
+  });
+}
+function stubKpiMemberRects(members: HTMLElement[]): void {
+  members.forEach((member, i) => {
+    const left = i * 200;
+    const child = qs<HTMLElement>(member, '.kpi-card, .dash-kpi-state-card');
+    child.getBoundingClientRect = () => ({
+      left, right: left + 150, top: 0, bottom: 50, width: 150, height: 50, x: left, y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
   });
 }
 /** The center point of `stubTileRects`'s rect for card index `i` — always
@@ -740,6 +751,45 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
+  it('lost pointer capture and a route rerender both cancel active movement and release gesture ownership', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    let cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    qs(app.root, '.dash-topbar').remove(); // auto-scroll target also supports no sticky chrome
+    const setCapture = vi.fn();
+    const releaseCapture = vi.fn();
+    cards[0].setPointerCapture = setCapture;
+    cards[0].hasPointerCapture = () => true;
+    cards[0].releasePointerCapture = releaseCapture;
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, pointerId: 7,
+      clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 7, clientX: start.x + 10, clientY: start.y }));
+    expect(setCapture).toHaveBeenCalledWith(7);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true); // only Escape cancels
+    cards[0].dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 7 }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(releaseCapture).toHaveBeenCalledWith(7);
+
+    // Arm a second gesture and rerender the route while it is active. The
+    // module-level teardown hook must synchronously cancel the old listeners.
+    cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, pointerId: 8,
+      clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 8, clientX: start.x + 10, clientY: start.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    await render(app);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('the dragged tile floats (position:fixed) and its transform follows the pointer during a flow drag', async () => {
     const { app } = dashApp({ workspace: twoTiles() });
     await render(app);
@@ -823,7 +873,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  it('a flow-engine KPI tile (detached card) is skipped from drop hit-testing (#332)', async () => {
+  it('a flow-engine KPI member participates in modifier movement and destination hit-testing (#340)', async () => {
     const { app, commit } = dashApp({
       responder: () => ({ columns: [{ name: 'k', type: 'String' }], rows: [['x']] }),
       workspace: wsWith({
@@ -837,16 +887,21 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
       }),
     });
     await render(app);
-    // The KPI tile renders inside the band; only the two table tiles are
-    // attached `.dash-tile` cards. The KPI tile's detached card must be skipped
-    // when capturing rects (its {0,0,0,0} rect would otherwise be a phantom
-    // drop target) — the drag between the two real tiles still works.
+    // The KPI tile renders through its `.dash-kpi-member`, not the detached
+    // cached `.dash-tile`. Its rendered host is now the movement surface and
+    // the hit-test rect for canonical ordering.
     const cards = qsa(app.root, '.dash-tile');
     expect(cards.length).toBe(2);
-    stubTileRects(cards);
-    dragTile(cards, 0, 1);
+    const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
+    const surfaces = [member, ...cards];
+    stubKpiMemberRects([member]);
+    stubTileRects(cards, 1);
+    const down = pointerDragTo(surfaces, 0, tileCenter(2), { metaKey: true });
+    expect(down.defaultPrevented).toBe(true);
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t1', 't2', 't0']);
+    expect(qsa(app.root, '.dash-kpi-member')).toHaveLength(1); // band regrouped after commit
   });
 
   it('read-only dashboard: ⌘-drag does not move and no drag listeners are wired', async () => {
@@ -1142,6 +1197,129 @@ describe('renderDashboard — KPI bands (#240)', () => {
     for (const member of members) expect(member.getAttribute('data-tile')).toBeTruthy();
     expect(qsa(app.root, '.dash-kpi-stream .kpi-card').length).toBe(2);
     for (const member of members) expect(qsa(member, '.kpi-card').length).toBe(1);
+    for (const member of members) {
+      expect(member.getAttribute('role')).toBe('group');
+      expect(member.getAttribute('aria-label')).toMatch(/^k[12]$/);
+    }
+    expect(qs(app.root, '.dash-kpi-band .dash-gg-grip')).toBeNull();
+  });
+
+  it.each(['report', 'columns-2', 'columns-3'] as const)(
+    'moves a KPI-band member with Command-drag in %s and commits once',
+    async (preset) => {
+      const { app, commit } = dashApp({
+        responder: () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] }),
+        workspace: wsWith({
+          queries: [
+            q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } }),
+            q('k2', 'SELECT 2 AS value', { panel: { cfg: { type: 'kpi' } } }),
+          ],
+          tiles: [{ id: 't1', queryId: 'k1' }, { id: 't2', queryId: 'k2' }],
+          layout: { type: 'flow', version: 1, preset, items: {} },
+        }),
+      });
+      await render(app);
+      const members = qsa<HTMLElement>(app.root, '.dash-kpi-member');
+      stubKpiMemberRects(members);
+      pointerDragTo(members, 1, tileCenter(0), { metaKey: true });
+      await flush();
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
+      expect(qsa<HTMLElement>(app.root, '.dash-kpi-member').map((member) => member.dataset.tile)).toEqual(['t2', 't1']);
+    },
+  );
+
+  it('plain KPI text drag remains selection-owned and dispatches no move', async () => {
+    const { app, commit } = dashApp({
+      responder: () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] }),
+      workspace: wsWith({
+        queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } }), q('k2', 'SELECT 2 AS value', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 't1', queryId: 'k1' }, { id: 't2', queryId: 'k2' }],
+      }),
+    });
+    await render(app);
+    const members = qsa<HTMLElement>(app.root, '.dash-kpi-member');
+    stubKpiMemberRects(members);
+    const value = qs<HTMLElement>(members[0], '.kpi-value');
+    const start = tileCenter(0);
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y,
+    });
+    value.dispatchEvent(down);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    expect(down.defaultPrevented).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(members[0].classList.contains('dash-floating')).toBe(false);
+  });
+
+  it('a moving display:contents KPI member gets a measured temporary box and cancellation restores every style', async () => {
+    const { app, commit } = dashApp({
+      responder: () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] }),
+      workspace: wsWith({
+        queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } }), q('k2', 'SELECT 2 AS value', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 't1', queryId: 'k1' }, { id: 't2', queryId: 'k2' }],
+      }),
+    });
+    await render(app);
+    const members = qsa<HTMLElement>(app.root, '.dash-kpi-member');
+    stubKpiMemberRects(members);
+    const original = window.getComputedStyle.bind(window);
+    const styleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((el) => {
+      const style = original(el);
+      return el === members[0] ? new Proxy(style, { get: (target, key) => key === 'display' ? 'contents' : Reflect.get(target, key) }) : style;
+    });
+    const start = tileCenter(0);
+    members[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: start.y + 5 }));
+    expect(members[0].classList.contains('dash-floating')).toBe(true);
+    expect(members[0].style.display).toBe('flex');
+    expect(members[0].style.width).toBe('150px');
+    expect(members[0].style.height).toBe('50px');
+    window.dispatchEvent(new PointerEvent('pointercancel'));
+    expect(members[0].classList.contains('dash-floating')).toBe(false);
+    expect(members[0].getAttribute('style') ?? '').toBe('');
+    expect(commit).not.toHaveBeenCalled();
+    styleSpy.mockRestore();
+  });
+
+  it('hit-tests the individual cards of a wrapped multi-card KPI member, not the empty holes in their union', async () => {
+    const { app, commit } = dashApp({
+      responder: (sql) => sql.includes('multi')
+        ? { columns: [{ name: 'a', type: 'UInt64' }, { name: 'b', type: 'UInt64' }], rows: [[1, 2]] }
+        : { columns: [{ name: 'c', type: 'UInt64' }], rows: [[3]] },
+      workspace: wsWith({
+        queries: [
+          q('k1', 'SELECT multi', { panel: { cfg: { type: 'kpi' } } }),
+          q('k2', 'SELECT single', { panel: { cfg: { type: 'kpi' } } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'k1' }, { id: 't2', queryId: 'k2' }],
+      }),
+    });
+    await render(app);
+    const [multi, single] = qsa<HTMLElement>(app.root, '.dash-kpi-member');
+    const multiCards = qsa<HTMLElement>(multi, '.kpi-card');
+    expect(multiCards).toHaveLength(2);
+    // The union of these two wrapped cards is x:0..350/y:0..150. The single
+    // tile occupies the otherwise-empty lower-right hole in that union.
+    const rect = (left: number, top: number): DOMRect => ({
+      left, right: left + 150, top, bottom: top + 50, width: 150, height: 50, x: left, y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+    multiCards[0].getBoundingClientRect = () => rect(200, 0);
+    multiCards[1].getBoundingClientRect = () => rect(0, 100);
+    qs<HTMLElement>(single, '.kpi-card').getBoundingClientRect = () => rect(200, 100);
+    multi.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: 275, clientY: 25, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 275, clientY: 125 }));
+    expect(single.classList.contains('dash-drop-target')).toBe(true);
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: 275, clientY: 125 }));
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
   });
 
   it('shows a KPI member state card for an errored or unfilled KPI source — error is role=alert, unfilled is role=status, both name their tile (#316)', async () => {
@@ -1343,10 +1521,9 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(footBack.hidden).toBe(true);
   });
 
-  // #316: the tile shell for a grafana-grid KPI tile — edit mode keeps the
-  // full editing chrome except the footer (which the generic KPI path never
-  // populates); view mode strips every visible frame, leaving only the KPI
-  // cards/state card, behind a still-placed, still-named wrapper.
+  // #340: the tile shell for a grafana-grid KPI tile is frameless in both edit
+  // and view modes. Edit title/delete/resize chrome remains in the DOM as an
+  // overlay, but KPI movement is modifier-only and therefore has no grip.
   const kpiGridWs = () => wsWith({
     queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
     tiles: [{ id: 't1', queryId: 'k1' }],
@@ -1354,20 +1531,51 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
   });
   const kpiResponder: ExecResponder = () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] });
 
-  it('edit mode: a KPI grid tile keeps its header and edit controls but hides the footer (#316)', async () => {
+  it('edit mode: a KPI grid tile has overlay controls, no grip, a named structural wrapper, and no footer (#340)', async () => {
     const { app } = dashApp({ responder: kpiResponder, workspace: kpiGridWs() });
     await render(app);
     const card = qs<HTMLElement>(app.root, '.dash-gg-tile');
     expect(card.classList.contains('is-kpi')).toBe(true);
     expect(card.classList.contains('is-view')).toBe(false); // edit mode — not the view-mode modifier
-    expect(qs(card, '.dash-tile-head')).not.toBeNull(); // header retained
+    expect(qs(card, '.dash-tile-head')).not.toBeNull(); // overlay host retained
     expect(qs(card, '.dash-tile-name')?.textContent).toBe('k1');
-    expect(qs(card, '.dash-gg-grip')).not.toBeNull(); // drag retained
+    expect(qs(card, '.dash-gg-grip')).toBeNull(); // modifier movement only
     expect(qs(card, '.dash-gg-del')).not.toBeNull(); // remove retained
-    expect(qs(card, '.dash-gg-resize')).not.toBeNull(); // resize retained
+    const resize = qs<HTMLElement>(card, '.dash-gg-resize');
+    expect(resize).not.toBeNull(); // resize retained
+    expect(resize.tagName).toBe('BUTTON');
+    expect(resize.tabIndex).toBe(0);
+    expect(card.getAttribute('role')).toBe('group');
+    expect(card.getAttribute('aria-label')).toBe('k1');
+    expect(card.title).toBe('Command/Ctrl-drag to move');
     const foot = qs<HTMLElement>(card, '.dash-tile-foot');
     expect(foot.hidden).toBe(true); // suppressed at the DOM level, not just visually
     expect(foot.childNodes.length).toBe(0);
+  });
+
+  it('grid KPI tiles move only with a modifier body drag and commit exactly once (#340)', async () => {
+    const { app, commit } = dashApp({
+      responder: kpiResponder,
+      workspace: wsWith({
+        queries: [
+          q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } }),
+          q('k2', 'SELECT 2 AS value', { panel: { cfg: { type: 'kpi' } } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'k1' }, { id: 't2', queryId: 'k2' }],
+        layout: { type: 'grafana-grid', version: 1, items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    expect(qsa(app.root, '.dash-gg-grip')).toHaveLength(0);
+    const plain = pointerDragTo(cards, 0, tileCenter(1), {});
+    expect(plain.defaultPrevented).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    gridDrag(cards, 0, 1, { viaGrip: false });
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
   });
 
   it('a non-KPI grid tile keeps its footer visible and populated (#316 — the KPI-only fix leaves ordinary tiles alone)', async () => {
@@ -1534,6 +1742,9 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
     const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / height unit 1 (120px), colStart 0
     const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+    const secondary = new PointerEvent('pointerdown', { button: 2, clientX: 0, clientY: 0, cancelable: true });
+    handle.dispatchEvent(secondary);
+    expect(secondary.defaultPrevented).toBe(false);
     handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
     expect(card.classList.contains('dash-gg-resizing')).toBe(true);
     // #291 review F3: the tile is PINNED to its rendered colStart (0 here) for
@@ -1557,6 +1768,106 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
     expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
     expect((after.style as CSSStyleDeclaration).height).toBe('296px');
+  });
+
+  it.each(['pointercancel', 'blur', 'Escape', 'lostpointercapture', 'rerender'] as const)(
+    'a resize cancelled by %s restores placement and never commits later',
+    async (reason) => {
+      const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+      await render(app);
+      const gridEl = qs(app.root, '.dash-gg-grid');
+      Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+      const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
+      const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+      const release = vi.fn();
+      handle.setPointerCapture = vi.fn();
+      handle.hasPointerCapture = () => true;
+      handle.releasePointerCapture = release;
+      handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 9, clientX: 0, clientY: 0 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 600, clientY: 280 }));
+      expect(card.classList.contains('dash-gg-resizing')).toBe(true);
+      if (reason === 'pointercancel') window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 9 }));
+      else if (reason === 'blur') window.dispatchEvent(new Event('blur'));
+      else if (reason === 'Escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      else if (reason === 'lostpointercapture') handle.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 9 }));
+      else await render(app);
+      expect(card.classList.contains('dash-gg-resizing')).toBe(false);
+      expect(card.style.gridColumn).toBe('span 4');
+      expect(card.style.height).toBe('120px');
+      expect(release).toHaveBeenCalledWith(9);
+      window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9 }));
+      await flush();
+      expect(commit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keyboard arrows resize a focused handle; Full view ignores horizontal arrows', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    let handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    const lastPlacement = (): { span: number; height: number } | undefined => {
+      const layout = commit.mock.calls.at(-1)?.[0].dashboard?.layout as { items?: Record<string, { span: number; height: number }> } | undefined;
+      return layout?.items?.t1;
+    };
+    const press = (key: string): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      handle.dispatchEvent(event);
+      return event;
+    };
+    expect(press('Home').defaultPrevented).toBe(false);
+    expect(press('ArrowRight').defaultPrevented).toBe(true);
+    await flush();
+    expect(lastPlacement()?.span).toBe(5);
+    handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    press('ArrowLeft');
+    await flush();
+    expect(lastPlacement()?.span).toBe(4);
+    handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    press('ArrowDown');
+    await flush();
+    expect(lastPlacement()?.height).toBe(2);
+    handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    press('ArrowUp');
+    await flush();
+    expect(lastPlacement()?.height).toBe(1);
+    handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    const atMinCount = commit.mock.calls.length;
+    expect(press('ArrowUp').defaultPrevented).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(atMinCount);
+
+    pickLayout(app.root, 'full');
+    await flush();
+    handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    const before = commit.mock.calls.length;
+    expect(press('ArrowRight').defaultPrevented).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(before);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await flush();
+    const fullPlacement = lastPlacement();
+    expect(fullPlacement).toEqual({ span: 4, height: 2 });
+  });
+
+  it('keyboard span resize preserves authored intent under a narrow responsive clamp', async () => {
+    const workspace = wsWith({
+      queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }],
+      layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 12, height: 2 } } },
+    });
+    const { app, commit } = dashApp({ workspace });
+    await render(app);
+    const gridEl = qs<HTMLElement>(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 600, configurable: true }); // effective 4 columns
+    window.dispatchEvent(new Event('resize'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(qs<HTMLElement>(app.root, '.dash-gg-tile').style.gridColumn).toBe('span 4');
+    const handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
+    const right = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    handle.dispatchEvent(right);
+    expect(right.defaultPrevented).toBe(true);
+    expect(commit).not.toHaveBeenCalled(); // authored span already at the 12-column maximum
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+    await flush();
+    const layout = commit.mock.calls[0][0].dashboard?.layout as unknown as { items: Record<string, { span: number }> };
+    expect(layout.items.t1.span).toBe(11); // authored 12→11, never effective 4→3
   });
 
   it('a mid-row tile dragged wider is clamped to the columns remaining at its pinned start, never past the grid edge (#291 review F3)', async () => {
@@ -1594,6 +1905,9 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     await render(app);
     const handle = qs<HTMLElement>(app.root, '.dash-gg-resize');
     handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    const key = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    handle.dispatchEvent(key);
+    expect(key.defaultPrevented).toBe(false);
     expect(commit).not.toHaveBeenCalled();
   });
 

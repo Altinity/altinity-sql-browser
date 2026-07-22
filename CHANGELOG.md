@@ -16,6 +16,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   reaches incompatible dependencies (#383).
 
 ### Changed
+- KPI queries now have one frameless Dashboard presentation in Grid Tiles,
+  Full view, Report, 2-column, and 3-column styles. Flow KPI-band members and
+  transparent grid wrappers move with Command/Ctrl-drag while plain dragging
+  continues to select text; movement reuses the shared floating preview,
+  destination resolution, auto-scroll, cancellation, and exact-once commit
+  path. Grid KPI title/delete/resize chrome appears transiently on hover or
+  keyboard focus without shifting content, and resize is keyboard-operable
+  with arrow keys (#340).
 - Consolidated the non-Iceberg examples into three responsive flagship
   dashboards: On-time flights, Shop analytics, and ClickHouse Operations.
   Each uses an authored `grafana-grid@1` layout with a complete `flow@1`
