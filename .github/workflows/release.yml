@@ -37,7 +37,7 @@ jobs:
       # Package the Helm chart and push it to GHCR as an OCI artifact — same
       # approach as altinity-mcp. The container image itself is built+pushed by
       # docker.yml (also on the v* tag).
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: latest
       - name: Package + push Helm chart to GHCR
