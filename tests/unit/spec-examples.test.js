@@ -8,6 +8,7 @@ import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bun
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
 import { filterExecution } from '../../src/core/filter-execution.js';
 import { effectiveDashboardRole } from '../../src/core/result-choice.js';
+import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -27,7 +28,11 @@ describe('schema artifacts and examples', () => {
 
   it('keeps every checked-in JSON example on portable bundle v1 with explicit Dashboard v1 documents', () => {
     const examples = resolve(root, 'examples');
-    for (const name of readdirSync(examples).filter((item) => item.endsWith('.json'))) {
+    const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
+    expect(names.filter((name) => !name.startsWith('iceberg'))).toEqual([
+      'clickhouse-operations.json', 'ontime-charts.json', 'shop-charts.json',
+    ]);
+    for (const name of names) {
       const text = readFileSync(resolve(examples, name), 'utf8');
       const bundle = decodeExample(text, name);
       expect(bundle.format, name).toBe('altinity-sql-browser/portable-bundle');
@@ -36,13 +41,68 @@ describe('schema artifacts and examples', () => {
       expect(() => assertValidExampleBundle(bundle), name).not.toThrow();
       for (const dashboard of bundle.dashboards) {
         expect(dashboard.documentVersion, name).toBe(1);
-        expect(dashboard.layout.type, name).toBe('flow');
+        expect(['flow', 'grafana-grid'], name).toContain(dashboard.layout.type);
         expect(dashboard.tiles.length, name).toBeGreaterThan(0);
+        const tileIds = new Set(dashboard.tiles.map((tile) => tile.id));
+        const queryIds = new Set(bundle.queries.map((query) => query.id));
+        for (const tile of dashboard.tiles) expect(queryIds.has(tile.queryId), `${name}:${tile.id}`).toBe(true);
+        for (const filter of dashboard.filters) {
+          if (filter.sourceQueryId) expect(queryIds.has(filter.sourceQueryId), `${name}:${filter.id}`).toBe(true);
+          for (const target of filter.targets || []) expect(tileIds.has(target), `${name}:${filter.id}`).toBe(true);
+        }
+        if (dashboard.layout.type === 'grafana-grid') {
+          expect(dashboard.layout.fallback?.type, name).toBe('flow');
+          expect(dashboard.layout.fallback?.version, name).toBe(1);
+          expect(Object.keys(dashboard.layout.items).sort(), name).toEqual([...tileIds].sort());
+          expect(Object.keys(dashboard.layout.fallback.items).sort(), name).toEqual([...tileIds].sort());
+        }
       }
     }
     expect(() => execFileSync(process.execPath, ['examples/mjs/normalize-examples.mjs', '--check'], {
       cwd: root, stdio: 'pipe',
     })).not.toThrow();
+  });
+
+  it('keeps every flagship dimensional filter on one inferred multiselect Array(T) contract', () => {
+    const expected = {
+      'ontime-charts.json': { carrier: 'Array(String)', origin: 'Array(String)' },
+      'shop-charts.json': { country: 'Array(String)', category: 'Array(String)' },
+      'clickhouse-operations.json': {
+        user: 'Array(String)', query_kind: 'Array(String)',
+        exception_code: 'Array(Int32)', query_hash: 'Array(UInt64)',
+      },
+    };
+    for (const [name, contracts] of Object.entries(expected)) {
+      const bundle = decodeExample(readFileSync(resolve(root, 'examples', name), 'utf8'), name);
+      const dashboard = bundle.dashboards[0];
+      const queryById = new Map(bundle.queries.map((query) => [query.id, query]));
+      for (const [parameter, type] of Object.entries(contracts)) {
+        const filter = dashboard.filters.find((item) => item.parameter === parameter);
+        expect(filter?.sourceQueryId, `${name}:${parameter}`).toBeTruthy();
+        expect(filter?.selection, `${name}:${parameter}`).toBeUndefined();
+        const targetIds = filter.targets || dashboard.tiles.map((tile) => tile.id);
+        const sources = targetIds.map((tileId) => {
+          const tile = dashboard.tiles.find((item) => item.id === tileId);
+          const query = tile && queryById.get(tile.queryId);
+          return query ? { id: tileId, sql: query.sql, bindPolicy: 'row-returning' } : null;
+        }).filter(Boolean);
+        const analysis = analyzeParameterizedSources(sources);
+        const declarations = analysis.fields[parameter]?.declarations.filter((item) => item.bound) || [];
+        expect(declarations.length, `${name}:${parameter}`).toBeGreaterThan(0);
+        expect([...new Set(declarations.map((item) => item.type))], `${name}:${parameter}`).toEqual([type]);
+      }
+    }
+  });
+
+  it('keeps authored analytical chart encodings pinned to result schema keys', () => {
+    for (const name of ['ontime-charts.json', 'shop-charts.json']) {
+      const bundle = decodeExample(readFileSync(resolve(root, 'examples', name), 'utf8'), name);
+      const visible = new Set(bundle.dashboards[0].tiles.map((tile) => tile.queryId));
+      for (const query of bundle.queries) {
+        if (!visible.has(query.id) || query.spec.panel?.cfg?.type === 'kpi') continue;
+        expect(query.spec.panel?.key, `${name}:${query.id}`).toMatch(/^[^:]+:.+/);
+      }
+    }
   });
 
   it('validates the generated Iceberg drilldown portable-bundle template', () => {

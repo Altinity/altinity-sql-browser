@@ -19,42 +19,17 @@ const examples = resolve(here, '..');
 const checkOnly = process.argv.includes('--check');
 
 const CONFIG = {
-  'kpi-panel.json': {
-    id: 'kpi-panel-example', title: 'KPI panel example', preset: 'report',
-    description: 'Scalar and named-tuple KPI presentation example.',
-  },
-  'text-log-panel.json': {
-    id: 'text-log-panel-example', title: 'Server log panel example', preset: 'report',
-    description: 'Parameterized system.text_log dashboard example.',
-  },
   'shop-charts.json': {
-    id: 'shop-charts', title: 'Shop analytics', preset: 'columns-2',
-    description: 'Chart examples over the sample shop dataset.',
+    id: 'shop-analytics', title: 'Shop analytics', authoredDashboard: true,
+    description: 'Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset.',
   },
-  'query-log-explorer.json': {
-    id: 'query-log-explorer', title: 'Query log explorer', preset: 'columns-2',
-    description: 'ClickHouse query-log health, performance, and usage dashboard.',
-    sourceByParameter: { user: 'qle-filter', query_kind: 'qle-filter' },
-  },
-  'grafana-clickhouse-ops-enhanced.json': {
-    id: 'clickhouse-ops-enhanced', title: 'ClickHouse operations', preset: 'columns-2',
-    description: 'Operational ClickHouse dashboard adapted from the Grafana dashboard.',
-    sourceByParameter: {
-      is_initial_query: 'gco-filter',
-      query_kind: 'gco-filter',
-      user: 'gco-filter',
-      exception_code: 'gco-filter',
-      query_hash: 'gco-filter',
-      metric: 'gco-filter',
-    },
+  'clickhouse-operations.json': {
+    id: 'clickhouse-operations', title: 'ClickHouse Operations', authoredDashboard: true,
+    description: 'Operator-first server overview, resources, background work, and investigation views.',
   },
   'ontime-charts.json': {
-    id: 'ontime-chart-gallery', title: 'On-time chart gallery', preset: 'columns-2', allPanels: true,
-    description: 'Chart gallery over the public ontime flight dataset.',
-  },
-  'system-explorer-charts.json': {
-    id: 'system-explorer', title: 'ClickHouse system explorer', preset: 'columns-2',
-    description: 'Operational views over ClickHouse system tables.',
+    id: 'ontime-flights', title: 'On-time flights', authoredDashboard: true,
+    description: 'Flight punctuality, volume, carriers, airports, delays, and cancellations with a shared 2023 slice.',
   },
   'iceberg-catalog-dashboard.json': {
     id: 'iceberg-catalog-explorer', title: 'Iceberg catalog explorer — BI', preset: 'columns-2',
@@ -111,7 +86,9 @@ function tileQueryIds(queries, config) {
 function normalizeDocument(name, document, config) {
   const queries = cleanStaleWording(queriesOf(document, name));
   const selectedIds = config.dashboard === false ? [] : tileQueryIds(queries, config);
-  const dashboards = selectedIds.length ? [buildDashboard({
+  const authored = config.authoredDashboard ? cleanStaleWording(document.dashboards?.[0]) : null;
+  if (config.authoredDashboard && !authored) throw new Error(`${name}: expected an authored Dashboard`);
+  const dashboards = authored ? [authored] : selectedIds.length ? [buildDashboard({
     id: config.id,
     title: config.title,
     description: config.description,

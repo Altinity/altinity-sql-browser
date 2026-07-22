@@ -16,7 +16,7 @@
 // `panel.key` exactly equals schemaKey(resultColumns) = "name:type|…"; a
 // wrong key silently re-derives axes (worse than none), so keys are derived
 // live from the real cluster through FORMAT JSON — same rationale as
-// build-system-explorer-charts.mjs.
+// the other example generators.
 //
 // Run:  node examples/mjs/build-iceberg-dashboards.mjs
 //       (needs the ice_meta_all views installed; ICE_CH_CMD overrides the
