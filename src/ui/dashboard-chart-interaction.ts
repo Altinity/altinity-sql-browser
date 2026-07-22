@@ -145,6 +145,11 @@ export function createDashboardChartInteractionController(opts: {
       win.removeEventListener('blur', cancel);
       opts.document.removeEventListener('keydown', onKey, true);
       chart.canvas.removeEventListener('lostpointercapture', cancel);
+      if (typeof chart.canvas.hasPointerCapture === 'function'
+        && typeof chart.canvas.releasePointerCapture === 'function'
+        && chart.canvas.hasPointerCapture(pe.pointerId)) {
+        chart.canvas.releasePointerCapture(pe.pointerId);
+      }
       if (selection?.chart === chart) selection = null;
       chart.draw();
     };
@@ -158,6 +163,7 @@ export function createDashboardChartInteractionController(opts: {
     win.addEventListener('blur', cancel);
     opts.document.addEventListener('keydown', onKey, true);
     chart.canvas.addEventListener('lostpointercapture', cancel);
+    if (typeof chart.canvas.setPointerCapture === 'function') chart.canvas.setPointerCapture(pe.pointerId);
   };
 
   const draw = (chart: InteractiveChart, registration: DashboardChartRegistration): void => {

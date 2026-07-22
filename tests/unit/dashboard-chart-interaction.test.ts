@@ -41,6 +41,12 @@ const group = (key = 'from\u0000to'): DashboardTimeRangeGroup => ({
 function chart(over: Partial<FakeChart> = {}): FakeChart {
   const canvas = document.createElement('canvas');
   canvas.width = 400; canvas.height = 200;
+  const captured = new Set<number>();
+  Object.defineProperties(canvas, {
+    setPointerCapture: { configurable: true, value: vi.fn((id: number) => captured.add(id)) },
+    hasPointerCapture: { configurable: true, value: vi.fn((id: number) => captured.has(id)) },
+    releasePointerCapture: { configurable: true, value: vi.fn((id: number) => captured.delete(id)) },
+  });
   vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
     x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 200, width: 400, height: 200, toJSON: () => ({}),
   });
@@ -193,12 +199,14 @@ describe('Dashboard chart interaction controller', () => {
     const p = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p.afterInit(c);
     c.canvas.dispatchEvent(pointer('pointerdown', { clientX: 300 }));
+    expect(c.canvas.setPointerCapture).toHaveBeenCalledWith(1);
     window.dispatchEvent(pointer('pointermove', { clientX: 250 }));
     p.afterDatasetsDraw(c);
     expect(c.ctx.fillRect).toHaveBeenCalled();
     expect(c.ctx.strokeRect).toHaveBeenCalled();
     expect(c.ctx.fillText).toHaveBeenCalledWith(`at ${chartScaleTimeToInstant(625, 'DateTime')}`, expect.any(Number), 18);
     window.dispatchEvent(pointer('pointerup', { clientX: 100 }));
+    expect(c.canvas.releasePointerCapture).toHaveBeenCalledWith(1);
     const selected = [250, 750].map((value) => chartScaleTimeToInstant(value, 'DateTime')!);
     expect(onSelect).toHaveBeenCalledWith(Math.min(...selected), Math.max(...selected));
     expect(c.draw).toHaveBeenCalled();

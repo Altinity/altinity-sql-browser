@@ -3104,6 +3104,21 @@ describe('timeRangeGroups resolution (#335)', () => {
     expect(session.state.value.timeRangeDiagnostics).toEqual([]);
   });
 
+  it('does not guess between multiple legacy time-range pairs for one tile', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [
+          { id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' },
+          { id: 'fs', parameter: 'start' }, { id: 'fe', parameter: 'end' },
+        ],
+      }),
+      queries: [query('q', 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}')],
+    }));
+    expect(session.timeRangeGroups).toEqual([]);
+    expect(session.state.value.timeRangeDiagnostics).toEqual([]);
+  });
+
   it('aggregates every tile declaring the same resolved filter pair into one group', () => {
     const session = createDashboardViewerSession(makeDeps({
       document: doc({

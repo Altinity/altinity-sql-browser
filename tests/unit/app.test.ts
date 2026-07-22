@@ -3310,6 +3310,19 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn!.textContent).toContain('Saved');
     expect(qs(document, '.save-popover')).toBeNull(); // closed
   });
+  it('successful create keeps Saved confirmation alongside an inference warning', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}';
+    app.actions.save();
+    qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Ambiguous range';
+    qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click'));
+    await flush();
+    expect(app.state.savedQueries).toHaveLength(1);
+    expect(app.state.savedQueries[0].spec.timeRanges).toBeUndefined();
+    expect(qs(document, '.share-toast').textContent)
+      .toContain('Saved — Several recognized time-range parameter pairs exist.');
+  });
   it('save popover keyboard handlers reject a blank name and commit from name or description', async () => {
     const app = createApp(env());
     app.renderApp();
@@ -3368,6 +3381,17 @@ describe('share + star + columns', () => {
     expect(app.state.savedQueries[0].sql).toBe('SELECT 9');
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to save');
     expect(app.activeTab().dirtySql).toBe(true);
+  });
+  it('successful linked Save keeps Saved confirmation alongside an inference warning', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
+    app.sqlEditor.replaceDocument('SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}');
+    await app.actions.save();
+    expect(app.state.savedQueries[0].spec.timeRanges).toBeUndefined();
+    expect(qs(document, '.share-toast').textContent)
+      .toContain('Saved — Several recognized time-range parameter pairs exist.');
   });
   it('#287 W4: the Save popover surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
     const app = createApp(env());

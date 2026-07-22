@@ -231,11 +231,16 @@ export function resolveAuthoredTimeRangeGroups(input: {
       // fail-closed, matching #335; saving/committing the query will persist an
       // explicit pair or [] and make the choice authoritative thereafter.
       const tileFilters = input.filters.filter((filter) => input.filterTargetTileIds.get(filter.id)?.has(tile.id));
+      const inferredPairs = inferTimeRangePairs(tileFilters);
+      // A legacy query with two distinct recognized pairs is just as
+      // ambiguous as it is during authoring. Never attach one tile to several
+      // groups and let the chart layer guess which pair its X scale means.
+      if (inferredPairs.length !== 1) continue;
       const inferred = resolveTimeRangeGroups({
         filters: input.filters,
         analysis: input.analysis,
         executableTileIds: input.executableTileIds,
-        pairs: inferTimeRangePairs(tileFilters),
+        pairs: inferredPairs,
       });
       for (const candidate of inferred) addGroup(candidate, tile.id);
       continue;

@@ -89,6 +89,25 @@ describe('authored time-range metadata defensive shapes', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  it('fails closed when one legacy tile has more than one recognized pair', () => {
+    const filters: TRFilterDef[] = [
+      { id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' },
+      { id: 'start', parameter: 'start' }, { id: 'end', parameter: 'end' },
+    ];
+    const ids = new Set(['tile']);
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([{
+        id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}',
+      }]),
+      executableTileIds: ids,
+      filterTargetTileIds: new Map(filters.map((filter) => [filter.id, ids])),
+      tiles: [{ id: 'tile', queryId: 'legacy-query' }],
+      queries: [{ id: 'legacy-query', spec: {} }],
+    });
+    expect(result).toEqual({ groups: [], diagnostics: [] });
+  });
+
   it('treats an own undefined timeRanges value as malformed authored metadata, never as legacy omission', () => {
     const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
     const result = resolveAuthoredTimeRangeGroups({
