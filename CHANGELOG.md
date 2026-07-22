@@ -39,6 +39,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   involved (#343 non-goals; membership semantics stay with #370).
 
 ### Fixed
+- **Dashboard tile deletion now keeps Workbench star membership consistent**
+  (#370). `dashboard.tiles[]` is the canonical favorite state for panel-role
+  queries: deleting the final tile clears the compatibility
+  `spec.favorite` flag, while deleting one of several instances keeps it set.
+  The same atomic workspace transform removes the selected tile from explicit
+  filter targets, normalizes the active layout/fallback, and advances the
+  Dashboard revision once. Legacy or imported `favorite: true` panel queries
+  without a tile now render unstarred and one click creates membership while
+  repairing the mirror flag; filter/setup favorites keep their independent
+  compatibility behavior.
 - **Migrated the development test stack to Vitest 4** (#372). Vitest and its
   V8 coverage provider now use the supported 4.x line, removed pool options
   have been migrated, stricter mock typings are explicit, and the more accurate

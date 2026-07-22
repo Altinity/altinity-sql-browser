@@ -70,6 +70,7 @@ import {
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
+import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import { resolveDashboardMode } from '../dashboard/application/session-bundle.js';
 import {
@@ -875,6 +876,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     };
   }
 
+  /** Apply a route command plus its workspace-level membership semantics. A
+   * raw remove-tile is first command-validated, then replaced by the shared
+   * transform that also cleans targets and synchronizes spec.favorite. */
+  function applyRouteCommand(
+    baseDoc: DashboardDocumentV1, command: DashboardCommand, queriesForResolver: SavedQueryV2[],
+  ) {
+    const applied = applyCommand(baseDoc, command, ctxFor(baseDoc, queriesForResolver));
+    if (!applied.ok) return applied;
+    if (command.type !== 'remove-tile') return { ...applied, queries: queriesForResolver };
+    const membership = removeTileMembership(baseDoc, queriesForResolver, command.tileId);
+    return membership
+      ? { ...applied, dashboard: membership.dashboard, queries: membership.queries }
+      : { ...applied, queries: queriesForResolver };
+  }
+
   // ── Structural commands (reorder via drag, preset) ────────────────────────
   // move-tile / update-placement / change-layout are the phase-3 authoring
   // commands; the dashboard UI drives only move-tile (drag) and change-layout
@@ -899,7 +915,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // RESULTING document's own engine, so a post-switch grid document is
     // pruned by the grid plugin (its own `items`), not flow's (which would
     // only ever see its own fallback surface).
-    const applied = applyCommand(currentDoc, command, ctxFor(currentDoc, queries));
+    const applied = applyRouteCommand(currentDoc, command, queries);
     // A UI-driven command (drag move-tile, preset change-layout, grid
     // resize/delete) is always valid; a rejected candidate is simply ignored
     // (no draft change).
@@ -936,12 +952,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       observed = latest;
       if (!latest || !latest.dashboard) return null;
       const base = latest.dashboard;
-      const reapplied = applyCommand(base, command, ctxFor(base, latest.queries));
+      const reapplied = applyRouteCommand(base, command, latest.queries);
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
       return {
         candidate: {
-          storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
+          storageVersion: 1, id: latest.id, name: latest.name, queries: reapplied.queries,
           dashboard: { ...committedDoc, revision: base.revision + 1 },
         },
       };
@@ -1051,7 +1067,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (!rebased) return;
     const rebaseQueries = committedWorkspace!.queries;
     for (const pending of pendingCommands) {
-      const r = applyCommand(rebased, pending, ctxFor(rebased, rebaseQueries));
+      const r = applyRouteCommand(rebased, pending, rebaseQueries);
       // A replay that no longer applies is simply skipped here — its own
       // queued `mutateWorkspace` call will independently null-abort and
       // toast when its turn comes.

@@ -199,6 +199,30 @@ describe('renderSavedHistory', () => {
     expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
   });
 
+  it('saved: panel stars and sorting use canonical tile membership, then repair a stale flag in one click', async () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [
+      { id: 'a', name: 'Stale flag', sql: '1', favorite: true },
+      { id: 'b', name: 'Real member', sql: '2', favorite: false },
+    ]);
+    app.state.dashboard = {
+      documentVersion: 1, id: 'd', title: 'D', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [{ id: 'tb', queryId: 'b' }],
+    };
+    renderSavedHistory(app);
+    const rows = qsa(savedList(app), '.saved-row');
+    expect(rows.map((row) => qs(row, '.name').textContent)).toEqual(['Real member', 'Stale flag']);
+    expect(qs(rows[0], '.sv-star').classList.contains('on')).toBe(true);
+    expect(qs(rows[1], '.sv-star').classList.contains('on')).toBe(false);
+
+    click(qs(rows[1], '.sv-star'));
+    await flush();
+    expect(app.state.dashboard.tiles.some((tile) => tile.queryId === 'a')).toBe(true);
+    expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'a'))).toBe(true);
+  });
+
   it('saved: favorite merges into a linked dirty valid Spec draft', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

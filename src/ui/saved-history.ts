@@ -15,7 +15,8 @@ import type { AppState, HistoryEntry } from '../state.js';
 import { flashToast } from './toast.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
-import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
+import { queryDescription, queryName, queryPanel, queryView } from '../core/saved-query.js';
+import { queryMembershipFavorite } from '../dashboard/application/tile-membership.js';
 import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
 import { filterRoleBadge } from './tabs.js';
 import type { App } from './app.types.js';
@@ -122,7 +123,7 @@ function renderSaved(app: App, list: HTMLElement): void {
   }
   for (const q of items) {
     if (app.state.editingSavedId.value === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
-    const favorite = queryFavorite(q);
+    const favorite = queryMembershipFavorite(state.dashboard, q);
     const name = queryName(q);
     const description = queryDescription(q);
     const panel = queryPanel(q);

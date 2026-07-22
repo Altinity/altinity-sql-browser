@@ -15,7 +15,9 @@ import {
   loadStr as loadStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
-import { toggleTileMembership } from './dashboard/application/tile-membership.js';
+import {
+  queryMembershipFavorite, toggleTileMembership,
+} from './dashboard/application/tile-membership.js';
 import type { ResultSort } from './core/sort.js';
 import {
   defaultSpecValidationService as defaultSpecValidationServiceUntyped,
@@ -1123,7 +1125,7 @@ export async function toggleFavorite(
   // the desired boolean from the query it displays, and the transform re-checks
   // applicability against `latest` — tile membership is derived from
   // `latest.dashboard` (passed as `dashboard` below), never stale `state.dashboard`.
-  const favorite = !queryFavorite(entry);
+  const favorite = !queryMembershipFavorite(state.dashboard, entry);
   return patchSavedSpec(state, id, { favorite }, mutate, validationService,
     (dashboard, patchedEntry) => toggleTileMembership(dashboard, patchedEntry, favorite, genId));
 }
@@ -1132,7 +1134,8 @@ export async function toggleFavorite(
 export function sortedSaved(state: AppState): SavedQueryV2[] {
   return state.savedQueries
     .map((q, i): [SavedQueryV2, number] => [q, i])
-    .sort((a, b) => (queryFavorite(b[0]) ? 1 : 0) - (queryFavorite(a[0]) ? 1 : 0) || a[1] - b[1])
+    .sort((a, b) => (queryMembershipFavorite(state.dashboard, b[0]) ? 1 : 0)
+      - (queryMembershipFavorite(state.dashboard, a[0]) ? 1 : 0) || a[1] - b[1])
     .map(([q]) => q);
 }
 
