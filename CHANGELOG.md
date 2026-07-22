@@ -9,6 +9,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- Declared Node.js 22 as the minimum source-development runtime, kept the
+  committed `.nvmrc` as the version-manager default, and enabled strict npm
+  engine checks so unsupported local installs fail before the test runner
+  reaches incompatible dependencies (#383).
+
 ### Changed
 - Consolidated the non-Iceberg examples into three responsive flagship
   dashboards: On-time flights, Shop analytics, and ClickHouse Operations.
