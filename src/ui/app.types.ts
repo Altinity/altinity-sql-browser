@@ -450,6 +450,13 @@ export interface App {
    *  once from the pathname). Lets shared post-commit logic repaint the right
    *  surface. */
   dashboardRoute: boolean;
+  /** #343 step 6 — true while the standalone Dashboard route is showing a
+   *  DETACHED/read-only view (a `?st=` handoff or a `?ws=` id that resolved only
+   *  in the detached-views store). Such a view renders from a detached snapshot,
+   *  not the primary workspace, so `refreshWorkspaceFromStore` must NOT project
+   *  primary-workspace invalidation over it. A Workbench tab and an editable
+   *  Dashboard leave it `false`; `renderDashboard` sets it per render. */
+  dashboardReadOnly: boolean;
   /** #302 — repaint the standalone Dashboard route after an in-tab import: point
    *  the URL at the (possibly new) current dashboard id, then re-render. */
   reloadDashboardRoute(): void;

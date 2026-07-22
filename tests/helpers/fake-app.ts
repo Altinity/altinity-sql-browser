@@ -369,6 +369,7 @@ const appDefaults: App = {
   },
   dashboardOpenSource: null,
   dashboardRoute: false,
+  dashboardReadOnly: false,
   reloadDashboardRoute: () => {},
   consumeDashboardHandoff: async () => null,
   loadDashboardWorkspace: async () => null,

@@ -246,6 +246,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // right surface — a Dashboard-page import re-renders the dashboard, not the
   // absent Workbench chrome.
   app.dashboardRoute = isDashboardRoute(loc.pathname);
+  // #343 step 6: set true by `renderDashboard` only while a DETACHED/read-only
+  // Dashboard is on screen. A Workbench tab (and an editable Dashboard) leaves it
+  // false, so the cross-tab refresh below projects normally; a detached view
+  // flips it so refresh skips projecting the primary workspace over its snapshot.
+  app.dashboardReadOnly = false;
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -1678,6 +1683,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // projecting an older read over a newer local commit. A failed load keeps the
   // projection and warns; it never rejects the queued op (no wedge).
   const runWorkspaceRefresh = async (): Promise<void> => {
+    // #343 step 6: a detached/read-only Dashboard renders from a detached
+    // snapshot, not the primary workspace — primary-workspace invalidation must
+    // never project over it (it would clobber `app.state` with a different
+    // aggregate). The Dashboard route sets `dashboardReadOnly` per render; a
+    // Workbench tab and an editable Dashboard leave it false.
+    if (app.dashboardReadOnly) return;
     let loaded: StoredWorkspaceV1 | null;
     try {
       const result = await app.workspace.loadCurrentResult();

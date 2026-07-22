@@ -297,6 +297,19 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     void a;
   });
 
+  it('a detached read-only Dashboard tab ignores primary-workspace invalidation at the app level', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    // Simulate this tab being a detached/read-only Dashboard route (renders from
+    // a detached snapshot, not the primary workspace).
+    a.dashboardReadOnly = true;
+    const before = a.state.savedQueries;
+    await renameSaved(b.state, 'q1', 'Changed by B', undefined, b.mutateWorkspace);
+    await a.refreshWorkspaceFromStore(); // guard: a read-only route projects nothing
+    expect(a.state.savedQueries).toBe(before); // same reference — never reprojected
+  });
+
   it('works without a BroadcastChannel (null factory): refresh still projects', async () => {
     const store = fakeIndexedDbFactory();
     const mk = (): App => {
