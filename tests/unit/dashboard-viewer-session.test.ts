@@ -2723,6 +2723,22 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
     expect(afterApply).toBeGreaterThan(afterRefresh);
   });
 
+  it('refreshTile is a wave of one: fresh snapshot published and bound into the tile', async () => {
+    const { exec, calls } = splitExec();
+    const { wallNow } = incWall();
+    const session = createDashboardViewerSession(makeDeps({ document: splitDoc(), exec, queries: splitQueries(), wallNow }));
+    await session.start();
+    const afterStart = session.state.value.waveWallNowMs!;
+    calls.length = 0;
+    await session.refreshTile('una');
+    const afterTile = session.state.value.waveWallNowMs!;
+    expect(afterTile).toBeGreaterThan(afterStart);
+    // The refreshed tile's relative token bound against the published snapshot,
+    // not a second untethered clock read.
+    const run = calls.find((c) => 'param_ts1' in c.params)!;
+    expect(run.params.param_ts1).toBe(String(Math.floor(afterTile / 1000)));
+  });
+
   it('a commit with a dependent filter source shares one snapshot across the source wave and the affected-panel wave', async () => {
     // `anchor` (root) feeds `srcq` (which depends on {anchor:DateTime}); the
     // tile declares BOTH {anchor} (so the affected-panel wave targets it) and

@@ -100,7 +100,7 @@ export interface MultiSelectFieldHandle {
   isOpen(): boolean;
   /** Focuses this control's own current interactive element (the trigger, or
    *  the error-mode fallback input when erroring) — #189 F2b: a caller
-   *  (`filter-bar.ts`'s `focusMultiSelectTrigger`) that just rebuilt the bar
+   *  (`filter-bar.ts`'s `focusFieldTrigger`) that just rebuilt the bar
    *  a still-open popover was force-closed out from under uses this to move
    *  focus onto the corresponding field of the FRESH bar (never left at
    *  `<body>`). A no-op-safe call before `applyStatus()` has ever run is not

@@ -397,6 +397,11 @@ describe('parseAbsoluteInstant — Date/Date32 (date-only)', () => {
     expect(parseAbsoluteInstant('Date', '2028-02-29').ok).toBe(true);
     expect(parseAbsoluteInstant('Date', '2029-02-29').ok).toBe(false);
   });
+  it('rejects years below 1900 — no ClickHouse date type reaches lower, and Date.UTC would silently remap 0–99 to 1900–1999', () => {
+    expect(parseAbsoluteInstant('Date', '0050-07-11').ok).toBe(false);
+    expect(parseAbsoluteInstant('DateTime', '1899-12-31 23:59:59').ok).toBe(false);
+    expect(parseAbsoluteInstant('Date32', '1900-01-01')).toEqual({ ok: true, instantMs: Date.UTC(1900, 0, 1) });
+  });
   it('garbage text is rejected with a diagnostic naming the expected format', () => {
     const r = parseAbsoluteInstant('Date', 'not-a-date');
     expect(r.ok).toBe(false);

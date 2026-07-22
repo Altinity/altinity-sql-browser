@@ -409,6 +409,10 @@ const RE_DIGITS = /^\d+$/;
 // 1-indexed, i.e. the day count of month `m` itself), never a fixed 31/30/28
 // guess and never silently clamped by `Date`'s own rollover behavior.
 function isValidCalendarDate(y: number, month1: number, day: number): boolean {
+  // Floor at 1900: no ClickHouse date type reaches lower (Date32 starts
+  // 1900-01-01), and it keeps `Date.UTC`'s legacy 0–99 → 1900–1999 year remap
+  // unreachable (a "0050" year would otherwise silently resolve as 1950).
+  if (y < 1900) return false;
   if (month1 < 1 || month1 > 12) return false;
   const daysInMonth = new Date(Date.UTC(y, month1, 0)).getUTCDate();
   return day >= 1 && day <= daysInMonth;

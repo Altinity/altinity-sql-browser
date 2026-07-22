@@ -188,6 +188,11 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
     const cols = h('div', { class: 'trf-cols' }, left, right);
 
     const rangeErrEl = h('div', { class: 'trf-range-error', hidden: true });
+    // Polite failure announcer: `aria-describedby` reads the preview lines on
+    // focus but does not re-announce as they change mid-typing — validation
+    // FAILURES must be announced (issue #335 accessibility), successes must
+    // not turn every keystroke into speech.
+    const liveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
     const cancelBtn = h('button', { type: 'button', class: 'trf-btn' }, 'Cancel');
     const applyBtn = h('button', { type: 'button', class: 'trf-btn trf-btn-primary' }, 'Apply');
     const footer = h('div', { class: 'trf-footer' }, cancelBtn, applyBtn);
@@ -218,6 +223,12 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
         rangeErrEl.hidden = true;
       }
       applyBtn.disabled = !res.applyEnabled;
+      const failure = !res.from.ok ? `From: ${res.from.error}`
+        : !res.to.ok ? `To: ${res.to.error}`
+        : res.rangeError ?? '';
+      // Only write on change — re-setting identical text would re-announce it
+      // on every keystroke.
+      if (liveEl.textContent !== failure) liveEl.textContent = failure;
     }
 
     // Render the contextual right column: recents (no field active) or the
@@ -260,6 +271,9 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
           constFilter = '';
           revalidate();
           renderRight();
+          // renderRight just detached the clicked button — without this the
+          // focus falls to <body>; the field input is where editing continues.
+          input.focus();
         });
         return b;
       }));
@@ -306,7 +320,7 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
     // display:contents wrapper — `openAnchoredDialog` appends ONE content
     // element, but `.trf-popover` is the flex column whose direct children
     // (cols/range-error/footer) carry the layout.
-    const content = h('div', { style: { display: 'contents' } }, cols, rangeErrEl, footer);
+    const content = h('div', { style: { display: 'contents' } }, cols, rangeErrEl, liveEl, footer);
 
     const handle = openAnchoredDialog({
       document: d,

@@ -1407,8 +1407,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const runtime = tiles.find((entry) => entry.tile.id === tileId);
     if (!runtime || !runtime.query || runtime.isText || runtime.presentationError) return;
     if (!(await preflight())) return;
+    // A single-tile refresh is a wave of one: it must publish its snapshot
+    // like every other wave, or the tile's re-resolved relative bounds drift
+    // from the closed time-range trigger label until the next full wave.
+    const waveMs = deps.wallNow();
+    waveWallNowMs = waveMs;
     const generation = supersede(runtime);
-    const prepared = sourcesById(prepareBatch('execute').sources);
+    const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     await runTile(runtime, prepared.get(tileId), generation);
   }
 
