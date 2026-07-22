@@ -310,13 +310,17 @@ async function commitWorkspace(
   app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null,
   successMsg?: string | (() => string),
 ): Promise<boolean> {
-  const result = await app.mutateWorkspace(build);
-  if (!result) return false; // `build` declined — its own toast (if any) already fired.
+  const result = await app.mutateWorkspace((latest) => {
+    const candidate = build(latest);
+    return candidate ? { candidate } : null;
+  });
   if (!result.ok) {
+    // `build` declined (aborted) — its own toast (if any) already fired.
+    if (result.aborted) return false;
     flashToast('✕ ' + first(result.diagnostics, 'Could not save workspace'), { document: app.document });
     return false;
   }
-  app.applyCommittedWorkspace(result.workspace);
+  // #343 §2: `mutateWorkspace` already projected the committed workspace.
   afterLibraryChange(app);
   // A function `successMsg` is evaluated AFTER the builder ran, so it can
   // report what the dequeue-time plan actually did (#344 review 3: the

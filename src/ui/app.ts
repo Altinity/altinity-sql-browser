@@ -62,8 +62,8 @@ import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
-import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
-import type { CreateAppEnv } from '../env.types.js';
+import type { App, ActionsRegistry, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
+import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
@@ -78,6 +78,7 @@ import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-
 import { createIndexedDbHandoffStore } from '../workspace/indexeddb-handoff-store.js';
 import { createIndexedDbDetachedViewsStore } from '../workspace/indexeddb-detached-views-store.js';
 import { migrateLegacyWorkspaceIfNeeded } from '../workspace/legacy-migration.js';
+import { workspaceToken } from '../workspace/workspace-sync.js';
 import { isDashboardRoute } from '../core/dashboard.js';
 import { parseDashboardOpenSource, buildDashboardSearch } from '../dashboard/application/dashboard-open-source.js';
 import { buildViewHandoffRecord, materializeDetachedWorkspace } from '../dashboard/application/session-bundle.js';
@@ -111,6 +112,8 @@ interface WindowExtras {
   FileReader?: typeof FileReader;
   URL?: typeof URL;
   Blob?: typeof Blob;
+  // #343 §5: the real cross-tab channel constructor, when the platform has it.
+  BroadcastChannel?: new (name: string) => BroadcastChannelPort;
 }
 
 /** `app.specValidators`'s full internal shape: the canonical schema +
@@ -134,6 +137,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   const fetchFn = env.fetch || win.fetch.bind(win);
   const cryptoObj = env.crypto || win.crypto;
   const ss = env.sessionStorage || win.sessionStorage;
+  // #343 §5/§6: cross-tab consistency seams (injected like matchMedia/
+  // showSaveFilePicker — "capability or null" / a defaulted reader). The
+  // channel factory yields `null` on a platform without BroadcastChannel; the
+  // focus/visibility fallback (#343 step 4) still provides consistency then.
+  const broadcastChannelFactory = env.broadcastChannel
+    || ((name: string): BroadcastChannelPort | null =>
+      (typeof win.BroadcastChannel === 'function' ? new win.BroadcastChannel(name) : null));
+  const documentVisible = env.documentVisible || (() => doc.visibilityState !== 'hidden');
 
   // Built up as a `Partial<App>` first (every field below has a real,
   // App-typed value already — `Partial` just lets this literal typecheck
@@ -1508,6 +1519,30 @@ export function createApp(env: CreateAppEnv = {}): App {
   // waits on this so a bundle is built from the latest committed workspace, never
   // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
   app.flushWorkspaceWrites = () => writeChain.then(() => undefined, () => undefined);
+  // #343 §5: this tab's random per-session id (crypto seam, like `uid`), stamped
+  // on every outgoing invalidation so a tab ignores its OWN broadcast.
+  const sourceTabId = uid('tab-');
+  app.sourceTabId = sourceTabId;
+  app.documentVisible = documentVisible;
+  // #343 §2: snapshot-identity of the workspace this tab last committed. Only
+  // used to detect whether a later reload actually changed anything (not CAS).
+  let lastCommittedToken = '';
+  app.getLastCommittedToken = () => lastCommittedToken;
+  // #343 §5/§6: default no-op hook. The cross-tab-refresh work (#343 step 4)
+  // replaces this with the coalesced `refreshWorkspaceFromStore` scheduler; the
+  // channel receive handler + focus/visibility listeners only ever call THIS.
+  app.onExternalWorkspaceChange = () => {};
+  // #343 §5: open the invalidation channel and route inbound pokes (that aren't
+  // our own) to the hook. Never carries the workspace body — only a signal.
+  const workspaceChannel = broadcastChannelFactory('asb:workspace');
+  if (workspaceChannel) {
+    workspaceChannel.onmessage = (event) => {
+      const msg = event.data as WorkspaceChangedMessage | null;
+      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId) return;
+      app.onExternalWorkspaceChange(msg);
+    };
+  }
+
   // #341/#344 review fix: the ONLY correct way to build a workspace-mutation
   // candidate. `serializeWrite` alone only serializes EXECUTION — a producer
   // that builds its whole candidate from `state`/`app.workspace` BEFORE
@@ -1518,11 +1553,30 @@ export function createApp(env: CreateAppEnv = {}): App {
   // is what makes it authoritative: every write is serialized through this
   // same queue, so by the time this op runs, `loadCurrent()` reflects every
   // write queued before it.
+  // #343 §2: on a SUCCESSFUL commit the primitive itself owns the projection
+  // (`applyCommittedWorkspace`, exactly once), records the snapshot token, and
+  // broadcasts ONE invalidation — callers no longer project. An aborted
+  // transform (null / null candidate) commits nothing and notifies no one; a
+  // failed commit surfaces its diagnostics without projecting or notifying.
   app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
     const latest = await app.workspace.loadCurrent();
-    const candidate = await transform(latest);
-    if (!candidate) return null;
-    return app.workspace.commit(candidate);
+    const input = await transform(latest);
+    if (!input || !input.candidate) {
+      return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+    }
+    const result = await app.workspace.commit(input.candidate);
+    if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+    app.applyCommittedWorkspace(result.workspace);
+    lastCommittedToken = workspaceToken(result.workspace);
+    if (workspaceChannel) {
+      workspaceChannel.postMessage({
+        type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
+      });
+    }
+    return {
+      ok: true as const, workspace: result.workspace,
+      dashboardRevision: result.dashboardRevision, data: input.data,
+    };
   });
 
   // #300: the Reset action offered on the corrupt-workspace toast below.

@@ -19,7 +19,8 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
-import type { WorkspaceRepository, WorkspaceCommitResult } from '../workspace/workspace-repository.js';
+import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { HandoffStore } from '../workspace/handoff-store.types.js';
 import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
@@ -35,6 +36,37 @@ import type { SavedQueryService } from '../application/saved-query-service.js';
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
 type Json = Record<string, unknown>;
+
+/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
+ *  to commit (or `null` to abort committing nothing), plus optional
+ *  operation-specific `data` the primitive threads back to the caller after the
+ *  commit resolves (e.g. the created query id a tab must link to). Returning the
+ *  whole object as `null` also aborts. */
+export interface WorkspaceMutationInput<T = unknown> {
+  candidate: StoredWorkspaceV1 | null;
+  data?: T;
+}
+
+/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
+ *  already projected the committed workspace, recorded its snapshot token, and
+ *  broadcast one invalidation; the caller only synchronizes its own surface. An
+ *  aborted transform (null / null candidate) commits nothing; a failed commit
+ *  carries the validation/persistence diagnostics. `data` rides through all
+ *  three outcomes (undefined when the queued op rejected before the transform
+ *  ran). */
+export type WorkspaceMutationOutcome<T = unknown> =
+  | { ok: true; workspace: StoredWorkspaceV1; dashboardRevision: number | null; data?: T }
+  | { ok: false; aborted: true; data?: T }
+  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
+
+/** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
+ *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
+ *  broadcast; `workspaceId` scopes it to a specific aggregate. */
+export interface WorkspaceChangedMessage {
+  type: 'workspace-changed';
+  sourceTabId: string;
+  workspaceId: string;
+}
 
 /** A schema entity reference — three real runtime shapes share this one loose
  * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
@@ -478,9 +510,26 @@ export interface App {
    *  `undefined` aborts the op — nothing is committed and this resolves
    *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
    *  the queue itself never wedges. */
-  mutateWorkspace(
-    transform: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null | Promise<StoredWorkspaceV1 | null>,
-  ): Promise<WorkspaceCommitResult | null>;
+  mutateWorkspace<T = unknown>(
+    transform: (latest: StoredWorkspaceV1 | null) =>
+      WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
+  ): Promise<WorkspaceMutationOutcome<T>>;
+  /** #343 §5: this tab's random per-session id, minted through the crypto seam.
+   *  Stamped on every outgoing invalidation so a tab can ignore its own poke. */
+  sourceTabId: string;
+  /** #343 §6: whether this tab is currently visible (injected seam; see
+   *  `CreateAppEnv.documentVisible`). Read by the focus/visibility refresh. */
+  documentVisible(): boolean;
+  /** #343 §2: the snapshot-identity token of the workspace this tab last
+   *  committed/projected (`workspaceToken`), used only to detect whether a
+   *  later reload actually changed anything. `''` before the first commit. */
+  getLastCommittedToken(): string;
+  /** #343 §5/§6: invoked when another tab reports a workspace change (channel
+   *  receive, or a focus/visibility event). A no-op by default; the
+   *  cross-tab-refresh work (#343 step 4) replaces it with the coalesced
+   *  `refreshWorkspaceFromStore` scheduler. Never receives this tab's own
+   *  broadcast. */
+  onExternalWorkspaceChange(message: WorkspaceChangedMessage): void;
 
   actions: ActionsRegistry;
 }

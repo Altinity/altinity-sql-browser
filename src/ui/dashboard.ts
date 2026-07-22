@@ -855,10 +855,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
       return {
-        storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
-        dashboard: { ...committedDoc, revision: base.revision + 1 },
+        candidate: {
+          storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
+          dashboard: { ...committedDoc, revision: base.revision + 1 },
+        },
       };
-    }).then((result) => settleCommand(result, observed), () => {
+    }).then((outcome) => {
+      // #343: adapt the shared outcome back to this route's descriptor-based
+      // settle contract — `null` on a transform abort (this command no longer
+      // applies), the commit result otherwise. Projection already happened in
+      // `mutateWorkspace` on success.
+      const result: WorkspaceCommitResult | null = outcome.ok
+        ? { ok: true, workspace: outcome.workspace, dashboardRevision: outcome.dashboardRevision }
+        : outcome.aborted ? null : { ok: false, diagnostics: outcome.diagnostics };
+      settleCommand(result, observed);
+    }, () => {
       // The queued op itself REJECTED (blocked/quota/private-mode storage —
       // `loadCurrent`/the store threw, distinct from an `ok:false` commit).
       // Without this handler the rejection is unhandled and, worse, this
@@ -878,9 +889,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (result && result.ok) {
       committedWorkspace = result.workspace;
       committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
-      // Project committed truth onto app.state unconditionally — exports
-      // and any other consumer of `app.state` read it.
-      app.applyCommittedWorkspace(result.workspace);
+      // #343 §2: `app.mutateWorkspace` already projected committed truth onto
+      // `app.state` (exactly once). The route only refreshes its own caches.
     } else {
       // #344 review 2: refresh the route cache from the DEQUEUE-TIME truth
       // the transform observed — the truth that rejected/invalidated this

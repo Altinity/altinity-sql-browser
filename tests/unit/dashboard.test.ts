@@ -3790,7 +3790,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // `queries` through the shared `app.mutateWorkspace` queue.
     const extraQueryMutation = app.mutateWorkspace((latest) => {
       if (!latest) return null;
-      return { ...latest, queries: [...latest.queries, q('q3', 'SELECT 3')] };
+      return { candidate: { ...latest, queries: [...latest.queries, q('q3', 'SELECT 3')] } };
     });
     // Dispatch a Dashboard command while that mutation is still in flight
     // (both share the one `serializeWrite` chain, so this queues behind it).
@@ -3818,7 +3818,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // it moments before the command below dequeues. This never touches
     // `currentDoc`/the rendered session directly (only a later `runCommand`
     // resolution does) — the sanity check confirms it landed in the store.
-    await app.mutateWorkspace((latest) => (latest ? { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } : null));
+    await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } } : null));
     expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
     // Resize t1's placement through the UI — t1 is still present in this
     // route's OWN optimistic `currentDoc` (it hasn't seen the concurrent

@@ -13,10 +13,11 @@ import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
+import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { encodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { decodeShare } from '../../src/core/share.js';
-import type { CreateAppEnv } from '../../src/env.types.js';
-import type { App } from '../../src/ui/app.types.js';
+import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
+import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type { SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
@@ -490,7 +491,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
 
   it('the transform receives the latest COMMITTED aggregate at DEQUEUE time, not whatever was current when mutateWorkspace was called', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace());
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace() }));
     // A first write is pending in the queue (gated open manually, like
     // saved-history.test.ts's own concurrent-writes regression) — a SECOND
     // `mutateWorkspace` call fires while it's still pending.
@@ -500,7 +501,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
       await gate;
       return app.workspace.commit(seedWorkspace({ queries: [savedQuery({ id: 'q1', name: 'Q1' })] }));
     });
-    const second = app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'Renamed' } : null));
+    const second = app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, name: 'Renamed' } } : null));
     release();
     await Promise.all([first, second]);
     const finalWs = await app.workspace.loadCurrent();
@@ -511,24 +512,150 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     expect(finalWs?.name).toBe('Renamed');
   });
 
-  it('a null/undefined-returning transform aborts the commit — nothing is persisted, and the result resolves null', async () => {
+  it('a null/undefined-returning transform aborts — nothing persisted, resolves an aborted outcome', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
     const result = await app.mutateWorkspace(() => null);
-    expect(result).toBeNull();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.aborted).toBe(true);
     const ws = await app.workspace.loadCurrent();
     expect(ws?.name).toBe('Before'); // untouched
   });
 
+  it('a null CANDIDATE aborts too (and threads data back), committing nothing', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
+    const result = await app.mutateWorkspace(() => ({ candidate: null, data: 'why' }));
+    expect(result.ok).toBe(false);
+    expect(result.data).toBe('why');
+    expect((await app.workspace.loadCurrent())?.name).toBe('Before');
+  });
+
   it('a transform rejection propagates to the caller without wedging the queue for the next op', async () => {
     const app = createApp(env());
-    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Before' }) }));
     await expect(app.mutateWorkspace(() => { throw new Error('boom'); })).rejects.toThrow('boom');
     // The queue still advances — a later op is not stuck behind the rejection.
-    const result = await app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'After' } : null));
-    expect(result?.ok).toBe(true);
+    const result = await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, name: 'After' } } : null));
+    expect(result.ok).toBe(true);
     const ws = await app.workspace.loadCurrent();
     expect(ws?.name).toBe('After');
+  });
+
+  it('projects the committed workspace exactly once on success, and threads operation data back', async () => {
+    const app = createApp(env());
+    const projected: string[] = [];
+    const orig = app.applyCommittedWorkspace;
+    app.applyCommittedWorkspace = (ws) => { projected.push(ws.name); orig(ws); };
+    const result = await app.mutateWorkspace(() => ({ candidate: seedWorkspace({ name: 'Proj' }), data: 42 }));
+    expect(result.ok && result.data).toBe(42);
+    expect(projected).toEqual(['Proj']); // exactly once
+    expect(app.state.libraryName.value).toBe('Proj'); // projection took effect
+    expect(app.getLastCommittedToken().length).toBeGreaterThan(0);
+  });
+
+  it('does not project on an aborted or failed commit', async () => {
+    const app = createApp(env());
+    let projections = 0;
+    const orig = app.applyCommittedWorkspace;
+    app.applyCommittedWorkspace = (ws) => { projections++; orig(ws); };
+    await app.mutateWorkspace(() => null); // abort
+    // Invalid candidate → commit fails (a query missing required fields).
+    const failed = await app.mutateWorkspace(() => ({
+      candidate: { storageVersion: 1, id: 'x', name: 'n', queries: [{ bad: true } as never], dashboard: null },
+    }));
+    expect(failed.ok).toBe(false);
+    expect(failed.ok === false && failed.aborted).toBeFalsy(); // a real failure, not an abort
+    expect(projections).toBe(0);
+    expect(app.getLastCommittedToken()).toBe(''); // never advanced
+  });
+});
+
+// #343 §5/§6: cross-tab invalidation seam. `createApp` opens `asb:workspace`,
+// stamps each commit's broadcast with this tab's `sourceTabId`, and ignores its
+// own poke on receipt; `documentVisible` is the injected visibility read the
+// focus/visibility fallback (step 4) consults.
+describe('app cross-tab invalidation (#343)', () => {
+  const seed = (over: Partial<StoredWorkspaceV1> = {}): StoredWorkspaceV1 => (
+    { storageVersion: 1, id: 'w1', name: 'Seed', queries: [], dashboard: null, ...over }
+  );
+
+  it('posts exactly one invalidation per successful commit, and none on abort or failure', async () => {
+    const posted: WorkspaceChangedMessage[] = [];
+    const factory = (name: string): BroadcastChannelPort => ({
+      onmessage: null,
+      postMessage: (m) => { if (name === 'asb:workspace') posted.push(m as WorkspaceChangedMessage); },
+      close: () => {},
+    });
+    const app = createApp(env({ broadcastChannel: factory }));
+    await app.mutateWorkspace(() => ({ candidate: seed({ name: 'One' }) }));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toEqual({ type: 'workspace-changed', sourceTabId: app.sourceTabId, workspaceId: 'w1' });
+    await app.mutateWorkspace(() => null); // abort
+    await app.mutateWorkspace(() => ({ candidate: { storageVersion: 1, id: 'x', name: 'n', queries: [{ bad: true } as never], dashboard: null } })); // fail
+    expect(posted).toHaveLength(1); // still just the one success
+  });
+
+  it('the sender ignores its OWN broadcast; another tab receives and processes it once', async () => {
+    const bus = fakeBroadcastBus();
+    const store = fakeIndexedDbFactory();
+    const a = createApp(env({ broadcastChannel: bus, indexedDB: store }));
+    const b = createApp(env({ broadcastChannel: bus, indexedDB: store }));
+    const aSeen: WorkspaceChangedMessage[] = [];
+    const bSeen: WorkspaceChangedMessage[] = [];
+    a.onExternalWorkspaceChange = (m) => aSeen.push(m);
+    // Wrap B's DEFAULT no-op so it still runs (coverage) while we observe.
+    const bDefault = b.onExternalWorkspaceChange;
+    b.onExternalWorkspaceChange = (m) => { bSeen.push(m); bDefault(m); };
+    await a.mutateWorkspace(() => ({ candidate: seed() }));
+    expect(aSeen).toHaveLength(0); // guard drops A's own poke
+    expect(bSeen).toEqual([{ type: 'workspace-changed', sourceTabId: a.sourceTabId, workspaceId: 'w1' }]);
+  });
+
+  it('ignores malformed or mistyped channel messages', async () => {
+    const bus = fakeBroadcastBus();
+    const a = createApp(env({ broadcastChannel: bus }));
+    const b = createApp(env({ broadcastChannel: bus }));
+    const seen: WorkspaceChangedMessage[] = [];
+    b.onExternalWorkspaceChange = (m) => seen.push(m);
+    // A raw port on the same bus posts junk — the app's handler must no-op.
+    const raw = bus('asb:workspace');
+    raw.postMessage(null);
+    raw.postMessage({ type: 'something-else', sourceTabId: 'z', workspaceId: 'w' });
+    expect(seen).toHaveLength(0);
+    void a;
+  });
+
+  it('defaults documentVisible to the document visibility, and honors an injected reader', () => {
+    expect(createApp(env()).documentVisible()).toBe(true); // happy-dom is "visible"
+    expect(createApp(env({ documentVisible: () => false })).documentVisible()).toBe(false);
+  });
+
+  it('opens a real BroadcastChannel when the platform provides one', async () => {
+    class FakeBC {
+      static made: FakeBC[] = [];
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      posted: unknown[] = [];
+      name: string;
+      constructor(name: string) { this.name = name; FakeBC.made.push(this); }
+      postMessage(m: unknown) { this.posted.push(m); }
+      close() {}
+    }
+    (window as unknown as { BroadcastChannel?: unknown }).BroadcastChannel = FakeBC;
+    try {
+      const app = createApp(env({ broadcastChannel: undefined }));
+      await app.mutateWorkspace(() => ({ candidate: seed() }));
+      const ch = FakeBC.made.find((c) => c.name === 'asb:workspace');
+      expect(ch?.posted).toHaveLength(1);
+    } finally {
+      delete (window as unknown as { BroadcastChannel?: unknown }).BroadcastChannel;
+    }
+  });
+
+  it('commits fine when no channel is available (null factory)', async () => {
+    const app = createApp(env({ broadcastChannel: () => null }));
+    const result = await app.mutateWorkspace(() => ({ candidate: seed() }));
+    expect(result.ok).toBe(true);
   });
 });
 

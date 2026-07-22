@@ -338,6 +338,12 @@ const appDefaults: App = {
   // post-commit projection.
   applyCommittedWorkspace: () => {},
   genId: () => 'gen-id',
+  // #343 §5/§6: inert cross-tab-consistency seams — a fixture exercising
+  // invalidation overrides these (or uses two real `createApp()` instances).
+  sourceTabId: 'tab-fake',
+  documentVisible: () => true,
+  getLastCommittedToken: () => '',
+  onExternalWorkspaceChange: () => {},
   // Inert passthrough — `base` overrides with a real per-instance queue.
   serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
   // #341: inert no-op — `base` overrides with the real per-instance flush that
@@ -349,9 +355,15 @@ const appDefaults: App = {
   // result is never actually persisted anywhere. `base` overrides with the
   // real per-instance queue backed by `workspaceRepo`.
   mutateWorkspace: async (transform) => {
-    const candidate = await transform(null);
-    if (!candidate) return null;
-    return appDefaults.workspace.commit(candidate);
+    const input = await transform(null);
+    if (!input || !input.candidate) {
+      return { ok: false, aborted: true, data: input ? input.data : undefined };
+    }
+    const result = await appDefaults.workspace.commit(input.candidate);
+    if (!result.ok) return { ok: false, diagnostics: result.diagnostics, data: input.data };
+    // #343 §2: the primitive owns projection now (inert here, but faithful).
+    appDefaults.applyCommittedWorkspace(result.workspace);
+    return { ok: true, workspace: result.workspace, dashboardRevision: result.dashboardRevision, data: input.data };
   },
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
@@ -504,6 +516,16 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // this exact object, not a fresh merge (`overrides.workspace` layers under
   // `appDefaults.workspace`, same three-way convention as `dom`/`conn`/etc.).
   const workspaceRepo: WorkspaceRepository = { ...appDefaults.workspace, ...(overrides.workspace ?? {}) };
+  // #287 W5 / #343 §2: the one state-backed projection both `applyCommittedWorkspace`
+  // and the `mutateWorkspace` success path share (mirrors app.ts, where the
+  // primitive projects exactly once so callers no longer do).
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
+    state.savedQueries = workspace.queries;
+    state.dashboard = workspace.dashboard;
+    state.workspaceId = workspace.id;
+    state.libraryName.value = workspace.name;
+    state.libraryDirty.value = false;
+  };
   const base = {
     state,
     root,
@@ -548,13 +570,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     // observes a coherent post-commit projection without overriding either.
     // `genId` mints a fresh, test-deterministic id per call — its own counter,
     // not `appDefaults`' shared placeholder, so ids never leak across tests.
-    applyCommittedWorkspace: (workspace: StoredWorkspaceV1) => {
-      state.savedQueries = workspace.queries;
-      state.dashboard = workspace.dashboard;
-      state.workspaceId = workspace.id;
-      state.libraryName.value = workspace.name;
-      state.libraryDirty.value = false;
-    },
+    applyCommittedWorkspace,
     genId: (() => { let n = 0; return () => 'gen-' + (++n); })(),
     // #287 review fix: a real per-instance serialization queue (mirrors app.ts)
     // so a test firing two overlapping CRUD ops observes them applied in order,
@@ -575,11 +591,21 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       // through) at DEQUEUE time, never a value captured at enqueue time, so a
       // mixed-producer test (a pending saved-query-style commit, then a
       // rename/import queued behind it) observes the first commit's effect.
+      // #343 §2: on success the primitive projects committed truth exactly once
+      // and threads `data` back — callers no longer project (mirrors app.ts).
       const mutateWorkspace: App['mutateWorkspace'] = (transform) => serializeWrite(async () => {
         const latest = await workspaceRepo.loadCurrent();
-        const candidate = await transform(latest);
-        if (!candidate) return null;
-        return workspaceRepo.commit(candidate);
+        const input = await transform(latest);
+        if (!input || !input.candidate) {
+          return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+        }
+        const result = await workspaceRepo.commit(input.candidate);
+        if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+        applyCommittedWorkspace(result.workspace);
+        return {
+          ok: true as const, workspace: result.workspace,
+          dashboardRevision: result.dashboardRevision, data: input.data,
+        };
       });
       return { serializeWrite, flushWorkspaceWrites, mutateWorkspace };
     })(),

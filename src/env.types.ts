@@ -10,6 +10,18 @@ import type { SpecEditorPort } from './editor/spec-editor.types.js';
 import type { CodeViewerFactory } from './editor/code-viewer.types.js';
 import type { DynamicSources } from './core/spec-completion.js';
 
+/** The minimal cross-tab notification port `createApp` addresses (#343 §5) —
+ * `BroadcastChannel` structurally satisfies it, so the real-browser default
+ * casts to it without an `unknown` bridge, and a test fake implements just
+ * these three members. The body carried is always an opaque invalidation
+ * signal, never the workspace itself, so `postMessage`/`onmessage` are typed
+ * `unknown`. */
+export interface BroadcastChannelPort {
+  postMessage(message: unknown): void;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  close(): void;
+}
+
 /** The env param of `createApp(env = {})`. Every field is optional — each has
  * a real-browser fallback (`win.*`) inside createApp. */
 export interface CreateAppEnv {
@@ -38,6 +50,18 @@ export interface CreateAppEnv {
   isSecureContext?: boolean;
   build?: string;
   matchMedia?: ((query: string) => MediaQueryList) | null;
+  /** #343 §5: cross-tab invalidation channel factory — mirrors the matchMedia/
+   *  showSaveFilePicker "capability or null" precedent. Defaults to a real
+   *  `new BroadcastChannel(name)` when the platform has it, else `null` (the
+   *  focus/visibility fallback still provides consistency). Tests inject a fake
+   *  bus so two `createApp()` instances can exchange invalidation signals
+   *  deterministically. */
+  broadcastChannel?: (name: string) => BroadcastChannelPort | null;
+  /** #343 §6: reads whether this tab is currently visible — the state a
+   *  focus/visibility refresh consults before reloading. Defaults to
+   *  `doc.visibilityState !== 'hidden'` (a getter in happy-dom, hence the seam
+   *  so tests can toggle it). */
+  documentVisible?: () => boolean;
   FileReader?: typeof FileReader;
   Editor?: (app: App) => EditorPort;
   SpecEditor?: (app: App) => SpecEditorPort;
