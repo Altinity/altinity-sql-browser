@@ -13,7 +13,7 @@
 // returned `workspace`) only after persistence succeeds; a failed write leaves
 // the previously stored workspace intact, does not touch the caller's draft,
 // and never increments any revision (the repository never mutates revision —
-// the authoring session that built the candidate owns that, Phase 3).
+// the caller that built the candidate owns that).
 
 import {
   decodeStoredWorkspaceJson, encodeStoredWorkspaceJson,

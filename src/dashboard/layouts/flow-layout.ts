@@ -32,7 +32,7 @@ type Path = (string | number)[];
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** The narrow layout-plugin contract the authoring session/commands use. */
+/** The narrow layout-plugin contract the authoring commands and callers use. */
 export interface DashboardLayoutPlugin {
   readonly type: string;
   readonly version: number;

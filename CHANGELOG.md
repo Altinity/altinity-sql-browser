@@ -823,7 +823,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     structure with its inputs.
   - `dashboard/model/presentation-resolver.ts` — the ONE canonical presentation
     resolver (base panel → selected/`defaultVariant` variant patch → tile
-    override → final validation), shared by the authoring session, saved-query
+    override → final validation), shared by Dashboard viewing, saved-query
     mutation validation, and tests. Enforces the #280 rules: a missing selected
     variant name fails (no silent fallback), neither a variant nor an override
     may change `panel.cfg.type`, deleting a required field fails final
@@ -834,23 +834,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     document normalization (orphan-placement pruning), size-hint-derived initial
     placement, and `resolveActiveLayoutPlugin` (flow@1, or an unsupported
     primary with a valid flow@1 fallback, else a load failure).
-  - `dashboard/application/dashboard-authoring-session.ts` +
-    `dashboard-commands.ts` + `dashboard-query-resolver.ts` — a
-    `DashboardAuthoringSession` owning one editable draft (a signal), its
-    in-memory `draftVersion`, dirty/selection state, and commit/export. Every
-    membership/placement/layout change is a fallible, atomic typed command
+  - `dashboard/application/dashboard-commands.ts` +
+    `dashboard-query-resolver.ts` — fallible, atomic typed commands for every
+    membership/placement/layout change
     (`add-query`, `add-query-instance`, `remove-tile`, `move-tile`,
     `update-tile`, `update-placement`, `change-layout`): clone the draft → apply
-    to an isolated candidate → normalize through the layout plugin → validate
-    the whole candidate workspace (structure/references/roles/limits, then
-    presentation resolution) → replace the draft only when valid; a failed
-    command leaves the previous draft byte-for-byte unchanged. `draftVersion`
-    guards stale async commands (`dashboard-command-stale`) and is separate from
-    the persisted `revision`, which increments once per successful repository
-    commit (never on a command, preview, or export). The **star rewires** to
-    `toggleMembership`, which maps to an `add-query`/`remove-tile` command and
-    dual-writes `spec.favorite` — no direct signal/document mutation of
-    membership anywhere.
+    to an isolated candidate → return diagnostics or the candidate without
+    mutating the input. The unused session wrapper was removed before gaining
+    a production caller; future non-DOM authoring must be built against the
+    shared `mutateWorkspace` pipeline.
   - `dashboard/application/saved-query-mutation.ts` — `planSavedQueryMutation`
     constructs and validates a complete candidate workspace for every
     saved-query mutation (delete or replace), rejecting an invalidating one
@@ -858,7 +850,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     switch to another variant, or remap references), then commits mutation +
     repair as one candidate.
   A new `check:arch` rule keeps `dashboard/application` off the Dashboard UI.
-  Live Workbench wiring of the session/star UI lands with the phase-4 viewer.
+  Live Workbench wiring consumes these commands through the shared workspace
+  mutation path.
 
 - **Dashboard read-only viewer runtime + normative `flow@1` layout** (#286,
   phase 4 of #280). New pure/application modules, gated at the per-file
