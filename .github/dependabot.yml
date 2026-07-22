@@ -11,16 +11,13 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
-    # Defer the Vitest 4 migration: @vitest/coverage-v8 v4 measures coverage
-    # differently and drops the suite below the 100%/90% per-file gate even with
-    # all tests passing. Stay on 2.x (and matching happy-dom) until that migration
-    # is done deliberately; minors/patches still flow.
+    # Defer the tracked Vitest 4 migration (#372): its V8 coverage remapping
+    # changes the existing per-file results, so it needs a deliberate coverage
+    # compatibility pass. Stay on the audited 3.x line; minors/patches flow.
     ignore:
       - dependency-name: "vitest"
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vitest/coverage-v8"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "happy-dom"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
