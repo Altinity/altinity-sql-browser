@@ -10,6 +10,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **Hardened the development test stack** (#366). Vitest and its V8 coverage
+  provider now use the patched 3.2.x line, Happy DOM now uses 20.11.0, and the
+  lockfile resolves the patched transitive dependency graph. `npm audit` is
+  clean; the change affects local/CI tooling only, never the shipped artifact.
 - **Dashboard tiles now respect an explicit saved `view: "table"`** (#368).
   The compatibility form resolves to a Table base presentation before runtime
   panel detection, while an explicit `panel` and its variants/overrides retain
