@@ -52,6 +52,8 @@
   <script type="module">
     import { buildRecentField } from '/src/ui/recent-field.js';
     import { buildRelativeTimeField } from '/src/ui/relative-time-field.js';
+    import { buildTimeRangeField } from '/src/ui/time-range-field.js';
+    import { parseParamType } from '/src/core/param-type.js';
     import { wireComboInput } from '/src/ui/combobox.js';
 
     const filters = document.querySelector('.dash-filters');
@@ -86,6 +88,36 @@
     timeLabel.innerHTML = '<span class="var-name">since</span>';
     timeLabel.append(timeField.el);
     filters.append(timeLabel);
+
+    // #335: one compound time-range control, built through the same leaf builder
+    // the filter bar uses (`buildTimeRangeField`), in its own "Time" section —
+    // real coverage that the wrapped/scrolled mobile bar layout includes the
+    // compound control without clipping, and that its wide resolved-range
+    // trigger sits on the same field row as the plain fields.
+    const trWall = Date.parse('2026-07-18T12:00:00Z');
+    const trField = buildTimeRangeField({
+      document,
+      group: {
+        key: 'mob-from\u0000mob-to',
+        fromFilterId: 'mob-from', toFilterId: 'mob-to',
+        fromParameter: 'from', toParameter: 'to',
+        fromType: parseParamType('DateTime'), toType: parseParamType('DateTime'),
+      },
+      fromValue: '-1d', toValue: 'now', active: true,
+      waveNowMs: trWall, wallNow: () => trWall,
+      getRecents: () => [], onApply: () => {},
+    });
+    const trSep = document.createElement('span');
+    trSep.className = 'trf-sep'; trSep.setAttribute('aria-hidden', 'true');
+    const trHeading = document.createElement('span');
+    trHeading.className = 'flabel'; trHeading.textContent = 'Time';
+    // Append the section (label, control, separator) to the row — same leaf-
+    // append style as every other field in this hand-built harness, and it
+    // leaves the existing fields' positions (region first) untouched so the
+    // pre-#335 layout assertions keep measuring exactly what they did before.
+    filters.append(trHeading);
+    filters.append(trField.el);
+    filters.append(trSep);
 
     window.__prefs = { dashLayout: 'report', dashCols: 3 };
     localStorage.setItem('asb:dashLayout', 'report');

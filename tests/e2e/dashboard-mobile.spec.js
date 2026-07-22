@@ -149,6 +149,57 @@ test.describe('Dashboard mobile layout', () => {
     await expect(first).toHaveValue('alpha');
   });
 
+  test('includes the compound time-range control in the scrolled filter row without clipping at 360px (#335)', async ({ page }) => {
+    await openAt(page, 360, 800);
+    await expect(page.locator('.trf-trigger')).toBeVisible();
+    // The "Time" section label sits in the same filter row, ahead of the fields.
+    await expect(page.locator('.dash-filters .flabel', { hasText: 'Time' })).toBeVisible();
+
+    const result = await page.locator('.dash-filter-host').evaluate((host) => {
+      const field = host.querySelector('.var-field.is-time-range');
+      const trigger = host.querySelector('.trf-trigger');
+      const tops = [...host.querySelectorAll('.var-field')].map((f) => f.getBoundingClientRect().top);
+      return {
+        hasField: !!field,
+        triggerText: trigger.textContent,
+        overflowX: getComputedStyle(host).overflowX,
+        flexWrap: getComputedStyle(host.querySelector('.dash-filters')).flexWrap,
+        scrolls: host.scrollWidth > host.clientWidth,
+        topsAligned: Math.max(...tops) - Math.min(...tops) < 2,
+        fieldWidth: field.getBoundingClientRect().width,
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    expect(result.hasField).toBe(true);
+    // The wave-resolved absolute range renders in the closed trigger.
+    expect(result.triggerText).toContain('→');
+    // The row scrolls (never wraps, never clips the page) — the compound
+    // control's wide trigger stays on the single field row with the others.
+    expect(result.overflowX).toBe('auto');
+    expect(result.flexWrap).toBe('nowrap');
+    expect(result.scrolls).toBe(true);
+    expect(result.topsAligned).toBe(true);
+    expect(result.fieldWidth).toBeGreaterThan(150);
+    expect(result.pageOverflow).toBeLessThanOrEqual(0);
+  });
+
+  test('keeps the time-range control on the field row without viewport overflow in landscape (~780px) (#335)', async ({ page }) => {
+    await openAt(page, 780, 420);
+    await expect(page.locator('.trf-trigger')).toBeVisible();
+    const result = await page.locator('.dash-filter-host').evaluate((host) => {
+      const trigger = host.querySelector('.trf-trigger').getBoundingClientRect();
+      const tops = [...host.querySelectorAll('.var-field')].map((f) => f.getBoundingClientRect().top);
+      return {
+        triggerOnRow: Math.max(...tops) - Math.min(...tops) < 2,
+        triggerWithinRow: trigger.top >= host.getBoundingClientRect().top - 1,
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    expect(result.triggerOnRow).toBe(true);
+    expect(result.triggerWithinRow).toBe(true);
+    expect(result.pageOverflow).toBeLessThanOrEqual(0);
+  });
+
   test('removes an empty toolbar at every viewport width (2026-07-18: the layout switcher no longer lives there, so an empty toolbar is never worth showing)', async ({ page }) => {
     await openAt(page, 390);
     await expect(page.locator('#no-filter-toolbar')).toBeHidden();

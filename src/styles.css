@@ -1600,6 +1600,92 @@ body.detached-tab .graph-overlay-panel {
 .ms-btn-clear { margin-right: auto; }
 .ms-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
 .ms-btn-primary:hover { filter: brightness(1.08); }
+/* Compound time-range control (#335, time-range-field.ts) — the SECOND
+   consumer of the #364 dialog-popover pattern (openAnchoredDialog). The
+   trigger reuses .var-input's sizing/border like .ms-trigger; the popover is
+   its own `position:fixed` two-column panel (staged From/To editors on the
+   left, a contextual recents/constants column on the right). All colours come
+   from the shared theme tokens so light + dark both work; D2 (filter-bar +
+   dashboard) may extend these rules. */
+.var-field.is-time-range { display: inline-flex; align-items: center; }
+.trf-trigger {
+  display: inline-flex; align-items: center;
+  width: auto; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left; cursor: pointer;
+}
+.trf-trigger:hover { border-color: var(--accent); }
+.trf-popover {
+  position: fixed; z-index: 70; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  background: var(--bg-panel, var(--bg-editor)); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4);
+  font-size: 12px; font-family: var(--mono);
+}
+.trf-cols { display: flex; gap: 12px; align-items: flex-start; }
+.trf-left { display: flex; flex-direction: column; gap: 8px; }
+.trf-row { display: flex; flex-direction: column; gap: 3px; }
+.trf-field-label { font-size: 11px; color: var(--fg-mute); }
+.trf-input-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.trf-input { width: 160px; }
+.trf-caret {
+  height: 24px; width: 24px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  background: transparent; color: var(--fg-mute);
+  border: 1px solid var(--border); border-radius: 5px; font-size: 11px; font-family: inherit;
+}
+.trf-caret:hover { background: var(--bg-hover); color: var(--fg); }
+.trf-caret[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.trf-preview {
+  font-size: 10.5px; color: var(--fg-mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px;
+}
+.trf-preview.is-error { color: var(--error-fg); }
+.trf-right {
+  width: 200px; display: flex; flex-direction: column; gap: 4px;
+  border-left: 1px solid var(--border-faint); padding-left: 12px;
+}
+.trf-right-header {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-faint);
+}
+.trf-right-body { display: flex; flex-direction: column; gap: 1px; max-height: 264px; overflow-y: auto; }
+.trf-const, .trf-recent {
+  display: flex; align-items: center; gap: 8px; justify-content: space-between; width: 100%;
+  padding: 5px 6px; border-radius: 5px; cursor: pointer;
+  background: transparent; border: none; color: var(--fg);
+  font: inherit; text-align: left;
+}
+.trf-const:hover, .trf-recent:hover { background: var(--bg-hover); }
+.trf-const-token { color: var(--accent); flex-shrink: 0; }
+.trf-const-label { color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trf-empty { font-size: 11px; color: var(--fg-mute); padding: 5px 6px; }
+.trf-range-error { font-size: 11px; color: var(--error-fg); }
+.trf-range-error[hidden] { display: none; }
+.trf-footer { display: flex; justify-content: flex-end; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border-faint); }
+.trf-btn {
+  height: 24px; padding: 0 10px; border-radius: 5px; cursor: pointer;
+  font: inherit; font-size: 11.5px;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+}
+.trf-btn:hover { background: var(--bg-hover); }
+.trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
+.trf-btn-primary:hover { filter: brightness(1.08); }
+.trf-btn-primary:disabled { opacity: .5; cursor: default; }
+.trf-btn-primary:disabled:hover { filter: none; }
+/* #335 D2 (filter-bar integration): the "Time"/"Filters" section labels and
+   the separator between the compound time-range control and the per-param
+   fields. Both sit in the same flex row as the fields (`.dash-filters`), so
+   they align to the field baseline and stay reachable when the bar scrolls/
+   wraps. All colours come from the shared theme tokens (light + dark). */
+.dash-filters .flabel {
+  align-self: center; flex-shrink: 0;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-faint); font-weight: 600; white-space: nowrap;
+}
+.dash-filters .trf-sep {
+  align-self: stretch; flex-shrink: 0;
+  width: 1px; min-height: 22px; background: var(--border-faint); margin: 2px 0;
+}
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;

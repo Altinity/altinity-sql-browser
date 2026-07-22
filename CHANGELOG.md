@@ -20,6 +20,34 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   their existing precedence.
 
 ### Added
+- **Compound time-range control for Dashboard filter bars** (#335). A pair of
+  scalar date-like filters whose parameter names match #334's recognized table
+  (`from`/`to`, `from_time`/`to_time`, `start`/`end`, `start_time`/`end_time`,
+  case-insensitive — never `start`/`stop`) and whose executable consumers agree
+  on date-like scalar contracts now renders as one compound control in a
+  **Time** section ahead of the other filters, replacing the pair's two
+  individual fields (source-backed/curated filters never group; every
+  non-group filter keeps its existing control). The closed trigger shows the
+  range resolved against the most recent execution wave's shared clock — no
+  ticking timers — with the raw tokens carried in the accessible name; the
+  popover stages token-or-absolute **From**/**To** edits with live resolved
+  previews, per-field relative-time constants (typing filters the list;
+  selecting stages, never commits), group-scoped session-only **Recently
+  used** ranges (immediate apply), and an explicit **Apply** gated on both
+  bounds resolving with `from ≤ to` (equal instants permitted). Apply commits
+  both bounds atomically through the new public
+  `DashboardViewerSession.applyFilters(entries)` batch API — one publish, one
+  execution wave over the union of both parameters' resolved targets; a
+  failed or identical draft commits nothing. Pair discovery sits behind a
+  resolver seam so #334's saved-query `timeRanges` metadata can replace the
+  interim name inference without touching the UI. Absolute bounds are now
+  validated locally (`parseAbsoluteInstant`: preview formats, ISO-`T`
+  variants, epoch digits for DateTime types, real calendar checks, years
+  from 1900). The popover chrome is a shared primitive
+  (`ui/popover.ts` `openAnchoredDialog`) extracted from the #189 multiselect
+  — both controls now consume it — and `fixedAnchor` gained an opt-in pure
+  viewport clamp for narrow screens.
+
 - **Searchable multiselect for query-backed Dashboard filters** (#189). A
   source-backed filter whose executable consumers agree on one `Array(T)`
   parameter type now renders a dedicated searchable-checklist control: the
@@ -107,6 +135,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the synthesized binding is never written back into the dashboard document.
 
 ### Fixed
+- **One wall-clock snapshot per Dashboard execution wave** (#335). Each wave
+  (initial load, Refresh, per-tile refresh, filter commits, dependent
+  filter-source waves) now captures a single `wallNow()` reading, threads it
+  through every relative-token resolution it performs, and publishes it as
+  `DashboardViewState.waveWallNowMs`. Previously one refresh took several
+  independent clock readings, so relative tokens (`now`, `-1d`) in different
+  sub-phases of the same wave could resolve to instants seconds apart.
 - **Saved-query, workspace, and Dashboard persistence stay consistent** (#365).
   Starring a panel query now creates the workspace's Dashboard and first tile
   atomically even when the committed aggregate previously held

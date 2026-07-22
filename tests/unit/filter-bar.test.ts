@@ -3,6 +3,8 @@ import { analyzeParameterizedSources, fieldControls } from '../../src/core/param
 import type { FieldControl, PreparedFieldState } from '../../src/core/param-pipeline.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from '../../src/ui/filter-bar.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
+import { parseParamType } from '../../src/core/param-type.js';
+import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../../src/core/time-range.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 // The field-family construction, debounce, commit, conflict, and optional
@@ -38,8 +40,8 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
     expect(() => bar.updateStatus({})).not.toThrow(); // no curated fields — a no-op
-    expect(bar.openMultiSelectParam()).toBeNull(); // no multiselect fields at all — always null
-    expect(() => bar.focusMultiSelectTrigger('x')).not.toThrow(); // unknown param — a no-op
+    expect(bar.openPopoverKey()).toBeNull(); // no multiselect fields at all — always null
+    expect(() => bar.focusFieldTrigger('x')).not.toThrow(); // unknown param — a no-op
   });
 
   it('defaults to app.document and no group role when no options are passed', () => {
@@ -454,7 +456,7 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(trigger.disabled).toBe(true);
     });
 
-    it('openMultiSelectParam() reflects an open popover\'s parameter, and dispose() cancels it with no onApplyCurated call', () => {
+    it('openPopoverKey() reflects an open popover\'s parameter, and dispose() cancels it with no onApplyCurated call', () => {
       const app = makeApp();
       const onApplyCurated = vi.fn();
       const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
@@ -467,9 +469,9 @@ describe('buildFilterBar (shared filter row)', () => {
         onApplyCurated,
       });
       document.body.appendChild(bar.el);
-      expect(bar.openMultiSelectParam()).toBeNull();
+      expect(bar.openPopoverKey()).toBeNull();
       bar.el.querySelector('.ms-trigger')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(bar.openMultiSelectParam()).toBe('x');
+      expect(bar.openPopoverKey()).toBe('x');
       expect(document.body.querySelector('.ms-popover')).not.toBeNull();
       bar.dispose();
       expect(document.body.querySelector('.ms-popover')).toBeNull();
@@ -477,7 +479,7 @@ describe('buildFilterBar (shared filter row)', () => {
       bar.el.remove();
     });
 
-    it('focusMultiSelectTrigger(name) focuses that parameter\'s trigger (#189 F2b)', () => {
+    it('focusFieldTrigger(key) focuses that parameter\'s trigger (#189 F2b)', () => {
       const app = makeApp();
       const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
         curatedFields: {
@@ -489,7 +491,7 @@ describe('buildFilterBar (shared filter row)', () => {
       });
       document.body.appendChild(bar.el);
       const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
-      bar.focusMultiSelectTrigger('x');
+      bar.focusFieldTrigger('x');
       expect(document.activeElement).toBe(trigger);
       bar.el.remove();
     });
@@ -551,6 +553,137 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(onApplyCurated).toHaveBeenCalledWith('x', ['a'], true);
       bar.el.querySelector('.var-combo-clear-inline')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(onApplyCurated).toHaveBeenCalledWith('x', [], false);
+      bar.el.remove();
+    });
+  });
+
+  // #335: the compound time-range control section + the handle-map
+  // unification's new/renamed seams. `buildTimeRangeField`'s own behavior
+  // (popover columns, staged editing, validation) is covered exhaustively by
+  // time-range-field.test.ts — these exercise buildFilterBar's INTEGRATION of
+  // it: the "Time" section ahead of the fields, pair suppression, the unified
+  // key-space (`group:…`), and `refreshTimeRangeLabels` delegation.
+  describe('time-range section + unified handle map (#335)', () => {
+    const dt = parseParamType('DateTime');
+    const dtGroup = (): DashboardTimeRangeGroup => ({
+      key: 'from to', fromFilterId: 'from', toFilterId: 'to',
+      fromParameter: 'from', toParameter: 'to', fromType: dt, toType: dt,
+    });
+    const trEntry = (over: Partial<{
+      fromValue: string; toValue: string; active: boolean; waveNowMs: number | null;
+      recents: () => readonly TimeRangeRecent[];
+    }> = {}) => ({
+      group: dtGroup(), fromValue: '', toValue: '', active: false, waveNowMs: 0 as number | null,
+      recents: (): readonly TimeRangeRecent[] => [], ...over,
+    });
+    // from/to (grouped) + region (plain) — the group owns from/to.
+    const groupParams = paramsFor('SELECT k FROM t WHERE d >= {from:DateTime} AND d < {to:DateTime} AND r = {region:String}');
+
+    it('renders a "Time" section (label + control + separator) AHEAD of the fields, suppresses the pair, and labels the rest "Filters"', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      // Two section labels, in order: Time then Filters.
+      expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time', 'Filters']);
+      // Exactly one compound control, one separator.
+      expect(bar.el.querySelectorAll('.var-field.is-time-range').length).toBe(1);
+      expect(bar.el.querySelector('.trf-trigger')).not.toBeNull();
+      expect(bar.el.querySelectorAll('.trf-sep').length).toBe(1);
+      // The pair's own two individual fields are gone; only the non-group field remains.
+      const names = [...bar.el.querySelectorAll('.dash-filters > .var-field:not(.is-time-range) .var-name')].map((n) => n.textContent);
+      expect(names).toEqual(['region']);
+      // DOM order: Time label, control, separator, Filters label, region field.
+      const order = [...bar.el.children].map((c) => c.className.split(' ')[0] + (c.classList.contains('flabel') ? ':' + c.textContent : ''));
+      expect(order).toEqual(['flabel:Time', 'var-field', 'trf-sep', 'flabel:Filters', 'var-field']);
+    });
+
+    it('omits the "Filters" label when every remaining param is grouped (no non-group field left)', () => {
+      const app = makeApp();
+      const params = paramsFor('SELECT k FROM t WHERE d >= {from:DateTime} AND d < {to:DateTime}');
+      const bar = buildFilterBar(app, params, () => {}, okField, { timeRange: [trEntry()] });
+      expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time']);
+      expect(bar.el.querySelector('.var-field:not(.is-time-range)')).toBeNull();
+    });
+
+    it('renders no time section (no flabel/trf-sep) when timeRange is absent or empty — the plain path', () => {
+      const app = makeApp();
+      const absent = buildFilterBar(app, groupParams, () => {}, okField);
+      expect(absent.el.querySelector('.flabel')).toBeNull();
+      expect(absent.el.querySelector('.trf-sep')).toBeNull();
+      expect(absent.el.querySelector('.trf-trigger')).toBeNull();
+      // All three params render as ordinary fields (nothing suppressed).
+      expect([...absent.el.querySelectorAll('.var-name')].map((n) => n.textContent)).toEqual(['from', 'to', 'region']);
+      const empty = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [] });
+      expect(empty.el.querySelector('.flabel')).toBeNull();
+    });
+
+    it('openPopoverKey()/focusFieldTrigger() speak the group key-space; dispose() cancels an open time-range popover', () => {
+      const app = makeApp();
+      const onApplyTimeRange = vi.fn();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
+      document.body.appendChild(bar.el);
+      const key = 'group:from to';
+      expect(bar.openPopoverKey()).toBeNull();
+      const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(document.body.querySelector('.trf-popover')).not.toBeNull();
+      expect(bar.openPopoverKey()).toBe(key);
+      // focusFieldTrigger addresses the same key-space.
+      bar.focusFieldTrigger(key);
+      expect(document.activeElement).toBe(trigger);
+      // dispose while open is a silent Cancel: no onApply, popover gone.
+      bar.dispose();
+      expect(document.body.querySelector('.trf-popover')).toBeNull();
+      expect(onApplyTimeRange).not.toHaveBeenCalled();
+      bar.el.remove();
+    });
+
+    it('an Apply routes through onApplyTimeRange with the group + trimmed bounds', () => {
+      const app = makeApp();
+      const onApplyTimeRange = vi.fn();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
+      document.body.appendChild(bar.el);
+      (bar.el.querySelector('.trf-trigger') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const inputs = [...document.body.querySelectorAll('.trf-input')] as HTMLInputElement[];
+      inputs[0].value = '-1d'; inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+      inputs[1].value = 'now'; inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+      (document.body.querySelector('.trf-btn-primary') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(onApplyTimeRange).toHaveBeenCalledTimes(1);
+      const [group, from, to] = onApplyTimeRange.mock.calls[0];
+      expect(group.key).toBe('from to');
+      expect(from).toBe('-1d');
+      expect(to).toBe('now');
+      bar.el.remove();
+    });
+
+    it('refreshTimeRangeLabels(nowMs) re-resolves every time-range control label in place; a no-op with no controls', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, {
+        timeRange: [trEntry({ fromValue: '-1d', toValue: 'now', active: true, waveNowMs: 0 })],
+      });
+      const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
+      const before = trigger.textContent;
+      // A day later — the relative range's resolved absolute bounds move.
+      bar.refreshTimeRangeLabels(86_400_000);
+      expect(trigger.textContent).not.toBe(before);
+      // No time-range controls at all → a harmless no-op.
+      const plain = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
+      expect(() => plain.refreshTimeRangeLabels(1)).not.toThrow();
+    });
+
+    it('recents pick applies immediately through onApplyTimeRange after closing', () => {
+      const app = makeApp();
+      const onApplyTimeRange = vi.fn();
+      const recents: TimeRangeRecent[] = [{ from: '-7d', to: 'now' }];
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, {
+        timeRange: [trEntry({ recents: () => recents })], onApplyTimeRange,
+      });
+      document.body.appendChild(bar.el);
+      (bar.el.querySelector('.trf-trigger') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const recentBtn = document.body.querySelector('.trf-recent') as HTMLButtonElement;
+      expect(recentBtn.textContent).toBe('-7d → now');
+      recentBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(document.body.querySelector('.trf-popover')).toBeNull(); // closed first
+      expect(onApplyTimeRange).toHaveBeenCalledWith(expect.objectContaining({ key: 'from to' }), '-7d', 'now');
       bar.el.remove();
     });
   });
