@@ -41,8 +41,8 @@ export default defineConfig({
     environment: 'happy-dom',
     include: ['tests/unit/**/*.test.{js,ts}'],
     setupFiles: ['tests/setup.ts'],
-    // Run workers as threads, not child processes. Vitest 2.x defaults to
-    // `pool: 'forks'`, which fans out to (cpus-1) child *node processes* via
+    // Run workers as threads, not child processes. The `forks` pool fans out
+    // to child *node processes* via
     // tinypool; on normal exit those should be reaped, but a detached swarm can
     // survive a run and pile up across runs until it pins the machine. Threads
     // live inside the single vitest process, so they die with the parent and
@@ -50,7 +50,7 @@ export default defineConfig({
     // happy-dom (no native deps), so threads are safe. Cap parallelism so one
     // run can't peg every core.
     pool: 'threads',
-    poolOptions: { threads: { maxThreads: 4, minThreads: 1 } },
+    maxWorkers: 4,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],

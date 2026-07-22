@@ -22,6 +22,13 @@ describe('dashboardDependencyQueryIds', () => {
     expect(dashboardDependencyQueryIds({ tiles: [null, { queryId: 5 }, { queryId: 'q1' }], filters: [null, { sourceQueryId: 7 }] }))
       .toEqual(['q1']);
   });
+
+  it('ignores scalar dashboard members and empty query ids', () => {
+    expect(dashboardDependencyQueryIds({
+      tiles: 'not-an-array', filters: [{ sourceQueryId: '' }, 5],
+    })).toEqual(['']);
+    expect(dashboardDependencyQueryIds({ tiles: [5], filters: 'not-an-array' })).toEqual([]);
+  });
 });
 
 describe('sortDashboardsCanonically', () => {
@@ -42,6 +49,12 @@ describe('sortDashboardsCanonically', () => {
     expect(sorted).toHaveLength(2);
     expect(input[0]).toBe(composed); // untouched
   });
+
+  it('keeps equal string ids stable and orders id-bearing objects before id-less values', () => {
+    const first = { id: 'same', marker: 1 };
+    const second = { id: 'same', marker: 2 };
+    expect(sortDashboardsCanonically([null, first, second])).toEqual([first, second, null]);
+  });
 });
 
 describe('orderBundleQueries', () => {
@@ -57,6 +70,14 @@ describe('orderBundleQueries', () => {
     const queries = [q('q1'), q('q1'), q('q2')]; // duplicate catalog entry
     const dashboards = [dashboard('d1', ['q2', 'missing'])];
     expect(orderBundleQueries(queries, dashboards).map((x) => x.id)).toEqual(['q2', 'q1']);
+  });
+
+  it('preserves id-less catalog entries while deduplicating string ids', () => {
+    const anonymousA = { sql: 'SELECT 1' };
+    const anonymousB = null;
+    expect(orderBundleQueries([anonymousA, anonymousB, { id: 'q1' }], [])).toEqual([
+      anonymousA, anonymousB, { id: 'q1' },
+    ]);
   });
 });
 

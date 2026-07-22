@@ -1613,7 +1613,10 @@ export function createApp(env: CreateAppEnv = {}): App {
   // #341: resolve once every write accepted BEFORE this call has settled (export
   // waits on this so a bundle is built from the latest committed workspace, never
   // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
-  app.flushWorkspaceWrites = () => writeChain.then(() => undefined, () => undefined);
+  // `writeChain` itself is always rejection-swallowed by `serializeWrite`, so
+  // awaiting it is sufficient; callers still observe their own operation's
+  // rejection through the separately returned `run` promise.
+  app.flushWorkspaceWrites = async () => { await writeChain; };
   // #343 §5: this tab's random per-session id (crypto seam, like `uid`), stamped
   // on every outgoing invalidation so a tab ignores its OWN broadcast.
   const sourceTabId = uid('tab-');

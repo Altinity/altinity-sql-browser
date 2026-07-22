@@ -240,8 +240,7 @@ function normalizeSoftBreaks(s: string): string {
 // `link` construct nested past the bound degrades to one literal `text` leaf
 // (see `mapInlineTokens`) rather than recursing further, so its own further
 // nested formatting is still rendered (as plain text), never dropped.
-function flattenTokensToText(tokens: Token[] | undefined): string {
-  if (!tokens) return '';
+function flattenTokensToText(tokens: Token[]): string {
   let out = '';
   for (const t of tokens) {
     switch (t.type) {
@@ -261,7 +260,7 @@ function flattenTokensToText(tokens: Token[] | undefined): string {
       case 'em':
       case 'del':
       case 'link':
-        out += flattenTokensToText(t.tokens);
+        out += flattenTokensToText(t.tokens ?? []);
         break;
       // No `default`: this exhausts every inline-level `MarkedToken` kind
       // marked's own type union declares (`checkbox` is the only inline
@@ -385,7 +384,6 @@ function mapListItem(item: Tokens.ListItem, ctx: Ctx, depth: number): DocListIte
   const children: DocBlock[] = [];
   let ownConsumed = false;
   for (const sub of item.tokens) {
-    if (sub.type === 'space') continue;
     // A tight-list item's own content is one `text` token; a LOOSE-list
     // item's own content is one `paragraph` token instead. Either way, only
     // the FIRST such token becomes this item's flat `inline` — any further

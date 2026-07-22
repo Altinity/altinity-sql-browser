@@ -161,8 +161,7 @@ export function resolveTimeRangeGroups(input: {
 
     const fromRes = resolveFilterSelection(fromFilter, analysis, executableTileIds);
     const toRes = resolveFilterSelection(toFilter, analysis, executableTileIds);
-    if (fromRes.diagnostics.length || toRes.diagnostics.length) continue;
-    if (!fromRes.contract || !toRes.contract) continue;
+    if (fromRes.diagnostics.length || toRes.diagnostics.length || !fromRes.contract || !toRes.contract) continue;
     if (fromRes.contract.array || toRes.contract.array) continue;
     if (!isDateLikeType(fromRes.contract.type) || !isDateLikeType(toRes.contract.type)) continue;
 

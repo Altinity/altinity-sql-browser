@@ -1,6 +1,6 @@
-# Dependency update alerts/PRs. The two runtime deps (Chart.js, @dagrejs/dagre)
-# are inlined into the shipped dist/sql.html, so a vuln in them ships to every
-# browser that loads the page — keep them watched, alongside devDeps and Actions.
+# Dependency update alerts/PRs. Runtime dependencies are inlined into the
+# shipped dist/sql.html, so a vulnerability in them ships to every browser that
+# loads the page — keep them watched alongside dev dependencies and Actions.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -11,14 +11,6 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
-    # Defer the tracked Vitest 4 migration (#372): its V8 coverage remapping
-    # changes the existing per-file results, so it needs a deliberate coverage
-    # compatibility pass. Stay on the audited 3.x line; minors/patches flow.
-    ignore:
-      - dependency-name: "vitest"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@vitest/coverage-v8"
-        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

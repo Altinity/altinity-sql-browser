@@ -155,6 +155,18 @@ describe('applyCommand — update-placement / change-layout', () => {
     const result = run(seeded(), { type: 'change-layout', layout }, [query('q')]);
     expect(result.ok && result.dashboard.layout.preset).toBe('columns-2');
   });
+
+  it('ignores malformed tile entries while deriving a grid layout', () => {
+    const malformed = draft({
+      tiles: [null, { id: 5 }, { id: 't1', queryId: 'q' }] as never,
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2 } } } as never,
+    });
+    const result = run(malformed, {
+      type: 'change-layout', layout: { type: 'grafana-grid', version: 1, items: {} } as never,
+    }, [query('q')], grafanaGridLayoutPlugin);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.dashboard.layout.items).toEqual({ t1: { span: 6, height: 2 } });
+  });
 });
 
 const gridDraft = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => draft({

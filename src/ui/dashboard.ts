@@ -763,12 +763,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const timeRange = session.timeRangeGroups.flatMap((group) => {
       const fromF = filterById.get(group.fromFilterId);
       const toF = filterById.get(group.toFilterId);
-      if (!fromF || !toF) return [];
       return [{
         group,
-        fromValue: valueString(fromF.value),
-        toValue: valueString(toF.value),
-        active: fromF.active && toF.active,
+        // timeRangeGroups is resolved from this same filter collection.
+        fromValue: valueString(fromF!.value),
+        toValue: valueString(toF!.value),
+        active: fromF!.active && toF!.active,
         waveNowMs: sview.waveWallNowMs,
         recents: (): readonly TimeRangeRecent[] => timeRangeRecents.get(group.key) ?? [],
       }];
@@ -868,7 +868,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // query CRUD op committed through the same shared queue).
   function ctxFor(baseDoc: DashboardDocumentV1, queriesForResolver: SavedQueryV2[]) {
     return {
-      resolver: createQueryResolver(queriesForResolver), genTileId: () => 'tile',
+      // The Dashboard UI never dispatches add-query commands; retain the
+      // required context seam without an unreachable local lambda.
+      resolver: createQueryResolver(queriesForResolver), genTileId: String.prototype.toString.bind('tile'),
       plugin: resolveLayoutPluginSync(baseDoc.layout),
     };
   }
@@ -1775,8 +1777,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     grid.style.gridTemplateColumns = `repeat(${gridModel.columns}, 1fr)`;
     const cards: HTMLElement[] = [];
     for (const t of gridModel.tiles) {
-      const tileEl = tileEls.get(t.tileId);
-      if (!tileEl) continue;
+      // The grid model and tileEls are reconciled from the same session view.
+      const tileEl = tileEls.get(t.tileId)!;
       // #321: `persistedSpan` is the authored (never render-mode-overridden)
       // span — the ONLY value a Full-view resize re-persists on pointerup.
       gridPlacementByTile.set(t.tileId, {

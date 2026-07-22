@@ -41,6 +41,15 @@ describe('Spec JSON parsing', () => {
   it.each(cases)('rejects %j with a concise diagnostic', (text, message) => {
     expect(parseSpecJson(text).diagnostic!.message).toBe(message);
   });
+
+  it('accepts escaped control characters and an empty array root', () => {
+    expect(parseSpecJson('"line\\nfeed"')).toEqual({ value: 'line\nfeed', diagnostic: null });
+    expect(parseSpecJson('[]')).toEqual({ value: [], diagnostic: null });
+  });
+
+  it('reports a minus sign not followed by a digit as an invalid number', () => {
+    expect(parseSpecJson('-x').diagnostic?.message).toBe('Invalid number');
+  });
 });
 
 describe('Spec semantic validation', () => {

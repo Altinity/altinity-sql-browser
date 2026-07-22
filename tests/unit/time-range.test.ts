@@ -207,6 +207,16 @@ describe('resolveTimeRangeGroups — contract gating', () => {
     const analysis = analysisFor([]);
     expect(resolveTimeRangeGroups({ filters: [], analysis, executableTileIds: new Set() })).toEqual([]);
   });
+
+  it('skips an explicit pair whose filters have no executable consumer contract', () => {
+    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+    expect(resolveTimeRangeGroups({
+      filters,
+      analysis: analysisFor([]),
+      executableTileIds: new Set(),
+      pairs: [{ fromFilterId: 'f-from', toFilterId: 'f-to' }],
+    })).toEqual([]);
+  });
 });
 
 describe('validateTimeRangeDraft', () => {

@@ -97,5 +97,35 @@ describe('tolerant Spec JSON cursor context', () => {
     expect(at('{"view":"\\|"}').context).toMatchObject({
       path: ['view'], positionKind: 'property-value', quoted: true,
     });
+    expect(at('{"view":"bad\\q|"}').context).toMatchObject({
+      path: ['view'], positionKind: 'property-value', partial: 'bad\\q', quoted: true,
+    });
+    expect(at('["bad\\q|]').context).toMatchObject({
+      path: [0], positionKind: 'array-item', partial: 'bad\\q', quoted: true,
+    });
+  });
+
+  it('extends token ranges around the cursor and recognizes whitespace-delimited insertion points', () => {
+    expect(at('{"favorite":fa|lse}').context).toMatchObject({
+      path: ['favorite'], positionKind: 'property-value', from: 12, to: 17, partial: 'fa',
+    });
+    expect(at('{|"name":"Q"}').context).toMatchObject({
+      positionKind: 'property-name', quoted: true, from: 1,
+    });
+    expect(at('{"name":"Q", |}').context).toMatchObject({
+      positionKind: 'property-name', quoted: false, existingKeys: ['name'],
+    });
+  });
+
+  it('stays total across malformed JSON fragments at every cursor offset', () => {
+    const fragments = [
+      '{"bad\\q":1}', '{"bad\n":1}', '{"x":abcDEF}', '{"x":"bad\\q"}',
+      '{  "x": 1  }', '{"x":1,   "y":2}', '["bad\\q", tru, 2]',
+      '{"x": [1,,3]}', '{"x": {"y": }}', '{"x": "unterminated}',
+    ];
+    for (const doc of fragments) {
+      const state = EditorState.create({ doc, extensions: [json()] });
+      for (let pos = 0; pos <= doc.length; pos++) expect(() => specJsonContext(state, pos)).not.toThrow();
+    }
   });
 });

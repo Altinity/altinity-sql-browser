@@ -214,6 +214,7 @@ describe('prepareExportSql', () => {
     expect(prepareExportSql('SELECT 1 FORMAT CSV // note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
     expect(prepareExportSql('SELECT 1 FORMAT CSV #! note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
     expect(prepareExportSql('SELECT 1 FORMAT CSV /* a /* b */ c */')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+    expect(prepareExportSql('SELECT 1 FORMAT CSV /* first */ /* second */')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
   });
   it('peels a comment that follows the terminating ; (#182)', () => {
     expect(prepareExportSql('SELECT 1; // note')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });

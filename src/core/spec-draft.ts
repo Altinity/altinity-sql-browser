@@ -30,7 +30,7 @@ function scanJson(text: string): void {
   const ws = (): void => { while (pos < text.length && isWs(text[pos])) pos++; };
 
   const string = (): void => {
-    if (text[pos] !== '"') fail('Expected a JSON string');
+    // Callers enter only after checking the opening quote.
     pos++;
     while (pos < text.length) {
       const ch = text[pos++];

@@ -506,5 +506,44 @@ describe('resolveDocTarget — #315 Phase 3 structured contexts', () => {
       const sql = 'SELECT * FROM system.toDateTime';
       expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'system-table', name: 'toDateTime' });
     });
+
+    it('rejects dotted names with a missing, wrong, or unrelated qualifier keyword', () => {
+      for (const sql of ['SELECT x.tables', 'SELECT system.tables', 'SELECT x.system.tables']) {
+        expect(resolveDocTarget(sql, caretIn(sql, 'tables'), FUNCTIONS)).toBeNull();
+      }
+    });
+  });
+
+  describe('malformed structural contexts', () => {
+    it('does not infer types from an unterminated CREATE list or a list before TABLE', () => {
+      const unclosed = 'CREATE TABLE t (id UInt32';
+      expect(resolveDocTarget(unclosed, caretIn(unclosed, 'UInt32'), FUNCTIONS)).toBeNull();
+      const beforeTable = 'CREATE something (TABLE t UInt32)';
+      expect(resolveDocTarget(beforeTable, caretIn(beforeTable, 'UInt32'), FUNCTIONS)).toBeNull();
+    });
+
+    it('ignores malformed ENGINE and CODEC shapes while continuing safely', () => {
+      const engine = 'CREATE TABLE t (id UInt32) ENGINE MergeTree SETTINGS x = 1';
+      expect(resolveDocTarget(engine, caretIn(engine, 'x'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'x' });
+      const codec = 'CREATE TABLE t (id UInt32 CODEC ZSTD) ENGINE = Memory';
+      expect(resolveDocTarget(codec, caretIn(codec, 'ZSTD'), FUNCTIONS)).toBeNull();
+    });
+
+    it('rejects non-DDL engines and malformed casts without hiding a later function target', () => {
+      const engine = 'SELECT ENGINE = Memory';
+      expect(resolveDocTarget(engine, caretIn(engine, 'Memory'), FUNCTIONS)).toEqual({ kind: 'table-engine', name: 'Memory' });
+      for (const sql of ['SELECT CAST x, toDateTime()', 'SELECT x::5, toDateTime()']) {
+        expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'function', name: 'toDateTime' });
+      }
+    });
+
+    it('skips nested tokens when finding SETTINGS and rejects non-head codec words', () => {
+      const setting = 'SELECT 1 SETTINGS a = tuple(inner), x = 1';
+      expect(resolveDocTarget(setting, caretIn(setting, 'x'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'x' });
+      const outside = 'CREATE TABLE t (x UInt32 CODEC(ZSTD), y UInt32) ENGINE = Memory';
+      expect(resolveDocTarget(outside, caretIn(outside, 'y'), FUNCTIONS)).toBeNull();
+      const nonHead = 'CREATE TABLE t (x UInt32 CODEC(ZSTD foo)) ENGINE = Memory';
+      expect(resolveDocTarget(nonHead, caretIn(nonHead, 'foo'), FUNCTIONS)).toBeNull();
+    });
   });
 });

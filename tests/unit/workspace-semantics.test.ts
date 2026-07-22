@@ -152,6 +152,10 @@ describe('validateDashboardSemantics', () => {
     expect(validateDashboardSemantics(dashboard, { queries })).toEqual([]);
   });
 
+  it('skips malformed query entries while constructing the lookup', () => {
+    expect(validateDashboardSemantics(dashboardDoc(), { queries: [null, 'bad', panelQuery('p1')] })).toEqual([]);
+  });
+
   it('returns nothing for a non-object dashboard and fails closed on a bad documentVersion', () => {
     expect(validateDashboardSemantics(null)).toEqual([]);
     const diagnostics = validateDashboardSemantics(dashboardDoc({ documentVersion: 2 }));
@@ -432,6 +436,16 @@ describe('validateDashboardSemantics', () => {
     const d = validateDashboardSemantics(dashboard);
     expect(has(d, 'filter-parameter-undeclared')).toBe(false);
     expect(has(d, 'dashboard-tile-query-missing')).toBe(true);
+  });
+
+  it('does not duplicate a missing-query diagnostic during plain-filter declaration checks', () => {
+    const dashboard = dashboardDoc({
+      tiles: [tile('t1', 'gone')], layout: flowLayout({ t1: {} }),
+      filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
+    });
+    const d = validateDashboardSemantics(dashboard);
+    expect(d.filter((x) => x.code === 'dashboard-tile-query-missing')).toHaveLength(1);
+    expect(has(d, 'filter-parameter-undeclared')).toBe(false);
   });
 
   it('enforces filter-count and serialized filter-default byte limits', () => {

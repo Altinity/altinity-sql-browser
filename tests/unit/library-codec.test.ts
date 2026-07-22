@@ -79,6 +79,7 @@ describe('parsing and complete validation', () => {
     for (const [document, path, code] of cases) {
       expect(validateLibraryDocument(document)[0]).toMatchObject({ path, code });
     }
+    expect(validateLibraryDocument(library([null]))[0]).toMatchObject({ path: ['queries', 0] });
   });
 
   it('collects independent safe diagnostics while pruning unsupported-branch noise', () => {
@@ -110,6 +111,8 @@ describe('parsing and complete validation', () => {
     expect(validateLibraryDocument(library(many))[0]).toMatchObject({ path: ['queries'], code: 'schema-array-size' });
     expect(validateLibraryDocument({ format: LIBRARY_FORMAT, version: 1, queries: many })[0])
       .toMatchObject({ path: ['queries'], code: 'schema-array-size' });
+    expect(validateLibraryDocument({ format: LIBRARY_FORMAT, version: 1, queries: {} })[0])
+      .toMatchObject({ path: ['queries'], code: 'schema-invalid-type' });
   });
 
   it('attributes nested diagnostics to the schema that owns the failing value', () => {
@@ -277,6 +280,10 @@ describe('historical localStorage ingress', () => {
     expect(source[0]).not.toHaveProperty('spec');
   });
 
+  it('trims an id carried by a legacy stored row', () => {
+    expect(okValue(decodeStoredSavedQueries([{ id: ' legacy ', name: 'Legacy', sql: '1' }]))[0].id).toBe('legacy');
+  });
+
   it('fails closed without mutating corrupt/future storage', () => {
     const future = [{ id: 'q', sql: '1', specVersion: 9, spec: {} }];
     const result = decodeStoredSavedQueries(future);
@@ -311,5 +318,13 @@ describe('historical localStorage ingress', () => {
       expect(error.message).toBe('no');
       expect(error.diagnostics).toHaveLength(1);
     }
+  });
+
+  it('uses a suffixed default id when a repaired id collides with an existing row', () => {
+    const result = decodeStoredSavedQueries([
+      { id: 'stored-2', sql: '1', specVersion: 1, spec: {} },
+      { name: 'missing id', sql: '2' },
+    ]);
+    expect(okValue(result).map((item) => item.id)).toEqual(['stored-2', 'stored-2-1']);
   });
 });

@@ -322,6 +322,41 @@ describe('schema lookup', () => {
     expect(() => look({ properties: { x: { $ref: '#/$defs/nope' } }, $defs: {} })).toThrow('Unresolved schema reference');
     expect(() => look({ properties: { x: { $ref: '#/$defs/a' } }, $defs: { a: { $ref: '#/$defs/a' } } })).toThrow('Cyclic schema reference');
     expect(() => look({ properties: { x: { $ref: '#/$defs/a' } }, $defs: { a: 1 } })).not.toThrow();
+    expect(() => look({ properties: { x: { $ref: '#/$defs/a/deeper' } }, $defs: { a: 1 } })).toThrow('Unresolved schema reference');
+  });
+
+  it('evaluates every conditional composition keyword when selecting a schema branch', () => {
+    const selected = (condition: unknown, value: unknown) => createSpecSchemaService({
+      schema: { if: condition, then: { title: 'matched' }, else: { title: 'rejected' } },
+      validateCompiled: () => true,
+    }).schemaAtPath({ root: value }).common.title;
+
+    expect(selected({ type: ['object', 'null'] }, null)).toBe('matched');
+    expect(selected(true, 'anything')).toBe('matched');
+    expect(selected({ enum: ['yes'] }, 'no')).toBe('rejected');
+    expect(selected({ required: ['needed'] }, {})).toBe('rejected');
+    expect(selected({ not: { const: 'blocked' } }, 'blocked')).toBe('rejected');
+    expect(selected({ allOf: [{ type: 'string' }, { const: 'yes' }] }, 'no')).toBe('rejected');
+    expect(selected({ anyOf: [{ const: 'a' }, { const: 'b' }] }, 'c')).toBe('rejected');
+    expect(selected({ oneOf: [{ type: 'string' }, { const: 'x' }] }, 'x')).toBe('rejected');
+
+    const primitiveChild = createSpecSchemaService({
+      schema: { properties: { x: false } }, validateCompiled: () => true,
+    });
+    expect(primitiveChild.schemaAtPath({ root: { x: false }, path: ['x', 'deeper'] }))
+      .toEqual({ common: {}, candidates: [] });
+
+    const discriminator = createSpecSchemaService({
+      schema: { properties: { choice: {
+        'x-altinity-discriminator': 'kind',
+        anyOf: [false, { properties: { kind: { const: 'x' } } }],
+      } } },
+      validateCompiled: () => true,
+    });
+    expect(discriminator.propertiesAtPath({ root: { choice: { kind: 'x' } }, path: ['choice'] })
+      .map((item) => item.name)).toContain('kind');
+    expect(discriminator.variantsAtPath({ root: { choice: { kind: 'x' } }, path: ['choice', 'kind'] })
+      .map((item) => item.value)).toEqual(['x']);
   });
 });
 

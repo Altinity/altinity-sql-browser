@@ -143,6 +143,14 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ ctrlKey: true, altKey: true, key: '2' }), app)).toBe('specMode');
     expect(app.actions.setEditorMode).toHaveBeenLastCalledWith('spec');
   });
+
+  it('does not switch editor mode while signed out', () => {
+    const app = makeApp({ conn: { isSignedIn: () => false } });
+    const e = ev({ metaKey: true, altKey: true, key: '1' });
+    expect(handleKeydown(e, app)).toBeNull();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(app.actions.setEditorMode).not.toHaveBeenCalled();
+  });
   it('⌘⇧S shares only from SQL mode; ⌘S saves either document', () => {
     const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'S' }), app)).toBe('share');

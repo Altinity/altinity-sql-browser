@@ -220,6 +220,32 @@ describe('saved queries', () => {
     expect(await createSavedQuery(s, s.tabs.value[0], '  ', '', mutate)).toEqual({ ok: false, entry: null });
     expect(mutate.commit).not.toHaveBeenCalled();
   });
+
+  it('createSavedQuery rejects an already-linked tab and semantic validation errors', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    tab.sqlDraft = 'SELECT 1';
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Existing', sql: 'SELECT 1' })];
+    tab.savedId = 's1';
+    const mutate = fakeMutateWorkspace(s);
+    expect(await createSavedQuery(s, tab, 'Duplicate', '', mutate)).toEqual({ ok: false, entry: null });
+    tab.savedId = null;
+    const validationService: SpecValidationService = {
+      validate: () => [{ code: 'blocked', severity: 'error', message: 'blocked' }],
+    };
+    expect(await createSavedQuery(s, tab, 'Blocked', '', mutate, 1, validationService)).toEqual({ ok: false, entry: null });
+    expect(mutate.commit).not.toHaveBeenCalled();
+  });
+
+  it('commitSavedQuery rejects a missing link or Spec before mutation', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    const mutate = fakeMutateWorkspace(s);
+    expect(await commitSavedQuery(s, tab, tab.specParsed, mutate)).toEqual({ ok: false, entry: null });
+    tab.savedId = 's1';
+    expect(await commitSavedQuery(s, tab, null, mutate)).toEqual({ ok: false, entry: null });
+    expect(mutate.commit).not.toHaveBeenCalled();
+  });
   it('creates an unsaved query, then atomically commits linked SQL + authoritative Spec', async () => {
     const s = savedTestState();
     const mutate = fakeMutateWorkspace(s);
@@ -642,6 +668,17 @@ describe('saved queries', () => {
     expect(patchSpecDraft(tab, { name: 'Recovered' })).toMatchObject({ ok: true });
     expect(tab.specParsed).toMatchObject({ name: 'Recovered' });
   });
+  it('patchSpecDraft leaves the tab untouched when semantic validation blocks the patch', () => {
+    const tab = newTabObj('t1');
+    const validationService: SpecValidationService = {
+      validate: () => [{ code: 'blocked', severity: 'error', message: 'blocked' }],
+    };
+    const before = tab.specText;
+    expect(patchSpecDraft(tab, { name: 'Rejected' }, { validationService })).toMatchObject({
+      ok: false, invalidTab: tab, diagnostics: [{ code: 'blocked' }],
+    });
+    expect(tab.specText).toBe(before);
+  });
   it('an invalid linked Spec makes atomic Save persist nothing and retain both dirty flags', async () => {
     const s = savedTestState();
     const tab = s.tabs.value[0];
@@ -776,6 +813,12 @@ describe('saved queries', () => {
     expect(s.savedQueries).toHaveLength(0);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(s.tabs.value[0].editorMode).toBe('sql');
+  });
+
+  it('deleteSaved maps the defensive aborted mutation arm to empty diagnostics', async () => {
+    const s = savedTestState();
+    const mutate = vi.fn(async () => ({ ok: false as const, aborted: true as const }));
+    expect(await deleteSaved(s, 'missing', mutate)).toEqual({ ok: false, diagnostics: [] });
   });
 
   it('reconcileTabsWithSavedQueries clears the in-sync baseline token on detach (#343)', () => {

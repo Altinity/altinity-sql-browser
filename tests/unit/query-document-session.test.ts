@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mocked } from 'vitest';
 import { signal } from '@preact/signals-core';
 import { createQueryDocumentSession } from '../../src/application/query-document-session.js';
 import type {
@@ -18,13 +18,13 @@ import type { QuerySpecValidationService } from '../../src/core/spec-draft.js';
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
-function makeHooks(): QueryDocumentSessionHooks & { [K in keyof QueryDocumentSessionHooks]: ReturnType<typeof vi.fn> } {
+function makeHooks(): Mocked<QueryDocumentSessionHooks> {
   return {
-    setDiagnostics: vi.fn(),
-    revealDiagnostic: vi.fn(),
-    rerenderTabs: vi.fn(),
-    updateSaveBtn: vi.fn(),
-    updateEditorModeUi: vi.fn(),
+    setDiagnostics: vi.fn<QueryDocumentSessionHooks['setDiagnostics']>(),
+    revealDiagnostic: vi.fn<QueryDocumentSessionHooks['revealDiagnostic']>(),
+    rerenderTabs: vi.fn<QueryDocumentSessionHooks['rerenderTabs']>(),
+    updateSaveBtn: vi.fn<QueryDocumentSessionHooks['updateSaveBtn']>(),
+    updateEditorModeUi: vi.fn<QueryDocumentSessionHooks['updateEditorModeUi']>(),
   };
 }
 

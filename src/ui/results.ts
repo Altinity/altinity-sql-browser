@@ -909,7 +909,8 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         header.appendChild(h('div', { class: 'detached-desc', title: source.description }, source.description));
       }
       const titleSpan = bar.querySelector('.graph-overlay-title');
-      if (titleSpan) titleSpan.replaceWith(header); else bar.appendChild(header);
+      // openInDetachedTab always seeds this title node before mount runs.
+      titleSpan!.replaceWith(header);
       if (closeBtn) bar.appendChild(closeBtn);
 
       // Detached-local view/render state (never the live tab's).

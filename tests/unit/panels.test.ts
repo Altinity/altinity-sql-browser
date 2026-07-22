@@ -260,6 +260,27 @@ describe('Panel drawer tab', () => {
     expect(app.state.resultView.value).toBe('panel');
     expect(region(app).querySelector('.chart-view')).not.toBeNull();
   });
+  it('ignores a synthetic picker value that is not a registered result choice', () => {
+    const app = panelApp(chartResult());
+    renderResults(app);
+    const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
+    const before = app.activeTab().specParsed;
+    const unknown = document.createElement('option');
+    unknown.value = 'panel:not-registered';
+    unknown.textContent = 'Unknown';
+    sel.appendChild(unknown);
+    sel.value = 'panel:not-registered';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.activeTab().specParsed).toBe(before);
+    expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
+  });
+  it('role selection tolerates unrelated Spec diagnostics', () => {
+    const app = panelApp(chartResult());
+    app.activeTab().specDiagnostics = [{ code: 'warning-only', message: 'warning' }];
+    renderResults(app);
+    pickType(app, 'role:filter');
+    expect(app.activeTab().specParsed!.dashboard?.role).toBe('filter');
+  });
   it('a panel control merges into a linked dirty valid Spec draft', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
     const tab = app.activeTab();
@@ -657,6 +678,23 @@ describe('Panel drawer tab', () => {
 
 // ── renderResolvedPanel notes + fallback ─────────────────────────────────────
 describe('renderResolvedPanel', () => {
+  it('text controls are hidden on readonly surfaces', () => {
+    const app = makeApp();
+    expect(PANEL_TYPES.text.controls({
+      app, result: null, cfg: { type: 'text', content: 'hello' }, readonly: true, onChange: () => {},
+    })).toBeNull();
+  });
+
+  it('builds editable Logs controls before a result schema is available', () => {
+    const app = makeApp();
+    const controls = PANEL_TYPES.logs.controls({
+      app, result: null, cfg: { type: 'logs', time: 'saved_time' }, onChange: () => {},
+    })!;
+    const roles = qsa<HTMLSelectElement>(controls, 'select');
+    expect(roles).toHaveLength(3);
+    expect(roles.every((role) => !role.disabled)).toBe(true);
+  });
+
   it('wraps a fallback resolution with its diagnostic note', () => {
     const app = makeApp();
     const r = chartResult();

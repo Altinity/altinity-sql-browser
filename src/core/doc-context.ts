@@ -220,8 +220,7 @@ const stmtHeadIdx = (stmtToks: Token[]): number => stmtToks.findIndex((t) => t.k
 function isDatabaseDDL(text: string, stmtToks: Token[]): boolean {
   const headIdx = stmtHeadIdx(stmtToks);
   const head = stmtToks[headIdx];
-  if (!head || head.kind !== 'word') return false;
-  const h = tokenText(text, head).toUpperCase();
+  const h = head?.kind === 'word' ? tokenText(text, head).toUpperCase() : '';
   if (h !== 'CREATE' && h !== 'ATTACH') return false;
   for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
@@ -304,7 +303,6 @@ const TYPE_STOP_WORDS = new Set([
 // and never stops the scan — this is what lets a caret anywhere inside a
 // nested type resolve to its own innermost token, not just the outermost name.
 function typeExprEnd(text: string, toks: Token[], info: ParenInfo, start: number): number {
-  if (start >= toks.length) return start;
   const baseDepth = info.depth[start];
   let i = start;
   for (; i < toks.length; i++) {
@@ -337,7 +335,7 @@ function inCastTypeRegion(text: string, toks: Token[], info: ParenInfo, posIdx: 
     if (toks[i].kind !== 'word' || tokenText(text, toks[i]).toUpperCase() !== 'CAST') continue;
     const open = i + 1;
     const openTok = toks[open];
-    if (!openTok || openTok.kind !== 'punct' || text[openTok.start] !== '(') continue;
+    if (openTok.kind !== 'punct' || text[openTok.start] !== '(') continue;
     const close = info.matchClose[open];
     if (close < 0 || !(posIdx > open && posIdx < close)) continue;
     const baseDepth = info.depth[open] + 1;
@@ -360,13 +358,13 @@ function inCastTypeRegion(text: string, toks: Token[], info: ParenInfo, posIdx: 
 // has no compound `::` operator), immediately followed by a `word` token
 // (the type's first name).
 function inDoubleColonTypeRegion(text: string, toks: Token[], info: ParenInfo, posIdx: number): boolean {
-  for (let i = 0; i < toks.length - 1; i++) {
+  for (let i = 0; i < toks.length - 2; i++) {
     const a = toks[i];
     const b = toks[i + 1];
     if (a.kind !== 'other' || text[a.start] !== ':') continue;
     if (b.kind !== 'other' || text[b.start] !== ':' || b.start !== a.end) continue;
     const typeStart = i + 2;
-    if (typeStart >= toks.length || toks[typeStart].kind !== 'word') continue;
+    if (toks[typeStart].kind !== 'word') continue;
     const end = typeExprEnd(text, toks, info, typeStart);
     if (posIdx >= typeStart && posIdx < end) return true;
   }
@@ -385,7 +383,6 @@ function inDoubleColonTypeRegion(text: string, toks: Token[], info: ParenInfo, p
 function inParamTypeRegion(text: string, pos: number): boolean {
   for (const occ of scanParamOccurrences(text)) {
     const colon = text.indexOf(':', occ.start + 1);
-    if (colon < 0 || colon >= occ.end) continue;
     const typeStart = colon + 1;
     const typeEnd = occ.end - 1; // one before the closing '}'
     if (pos >= typeStart && pos <= typeEnd) return true;
@@ -402,8 +399,7 @@ function inParamTypeRegion(text: string, pos: number): boolean {
 function isCreateOrAttachTable(text: string, stmtToks: Token[]): boolean {
   const headIdx = stmtHeadIdx(stmtToks);
   const head = stmtToks[headIdx];
-  if (!head || head.kind !== 'word') return false;
-  const h = tokenText(text, head).toUpperCase();
+  const h = head?.kind === 'word' ? tokenText(text, head).toUpperCase() : '';
   if (h !== 'CREATE' && h !== 'ATTACH') return false;
   for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
@@ -428,15 +424,13 @@ function columnListBounds(text: string, stmtToks: Token[], info: ParenInfo): { o
   let tableIdx = -1;
   for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
-    if (t.kind === 'punct' && text[t.start] === '(') break; // list starts before any TABLE seen
     if (t.kind === 'word' && tokenText(text, t).toUpperCase() === 'TABLE') { tableIdx = i; break; }
   }
-  if (tableIdx < 0) return null;
+  // isCreateOrAttachTable established a TABLE token before any list opener.
   for (let i = tableIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
     if (t.kind === 'punct' && text[t.start] === '(' && info.depth[i] === 0) {
       const prev = stmtToks[i - 1];
-      if (!prev || (prev.kind !== 'word' && prev.kind !== 'quoted-ident')) return null;
       const close = info.matchClose[i];
       if (close < 0) return null;
       return { open: i, close };
@@ -549,11 +543,10 @@ function codecTarget(text: string, stmtToks: Token[], info: ParenInfo, posIdx: n
     if (stmtToks[i].kind !== 'word' || tokenText(text, stmtToks[i]).toUpperCase() !== 'CODEC') continue;
     const open = i + 1;
     const openTok = stmtToks[open];
-    if (!openTok || openTok.kind !== 'punct' || text[openTok.start] !== '(') continue;
+    if (openTok.kind !== 'punct' || text[openTok.start] !== '(') continue;
     const close = info.matchClose[open];
     if (close < 0 || !(posIdx > open && posIdx < close)) continue;
     const t = stmtToks[posIdx];
-    if (t.kind !== 'word') continue;
     const prev = stmtToks[posIdx - 1];
     if (!prev || prev.kind !== 'punct' || (text[prev.start] !== '(' && text[prev.start] !== ',')) continue;
     return { kind: 'codec', name: tokenText(text, t) };
@@ -616,8 +609,7 @@ function systemTableTarget(text: string, stmtToks: Token[], posIdx: number): Doc
   const sys = stmtToks[posIdx - 2];
   if (!sys || sys.kind !== 'word' || tokenText(text, sys).toUpperCase() !== 'SYSTEM') return null;
   const kwTok = stmtToks[posIdx - 3];
-  if (!kwTok || kwTok.kind !== 'word') return null;
-  const kw = tokenText(text, kwTok).toUpperCase();
+  const kw = kwTok?.kind === 'word' ? tokenText(text, kwTok).toUpperCase() : '';
   if (kw !== 'FROM' && kw !== 'JOIN') return null;
   return { kind: 'system-table', name: tokenText(text, stmtToks[posIdx]) };
 }

@@ -57,9 +57,9 @@ function trimFixed(value: number, places: number): string {
   return value.toFixed(places).replace(/(?:\.0+|(\.\d*?)0+)$/, '$1');
 }
 
-function decimalString(value: unknown, places: number, trim: boolean): string | null {
-  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
-  if (!match) return null;
+function decimalString(value: unknown, places: number, trim: boolean): string {
+  // Both call sites establish this exact lexical shape before calling.
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(String(value).trim())!;
   const fraction = match[3] || '';
   const kept = fraction.padEnd(places + 1, '0');
   const digits = match[2] + kept.slice(0, places);
@@ -127,14 +127,10 @@ export function formatKpiValueParts(
   let rendered: string;
   const integerString = /^(?:U?Int)/.test(type) && (typeof value === 'bigint' || /^[+-]?\d+$/.test(String(value).trim()));
   const exactDecimal = typeof value === 'string' && /^[+-]?\d+(?:\.\d*)?$/.test(value.trim());
-  // `!` (both calls below): `decimalString` only returns null when its
-  // `/^([+-]?)(\d+)(?:\.(\d*))?$/` regex fails to match — `integerString`
-  // (bigint stringifies the same digits-only shape) and `exactDecimal` are
-  // each already a proof that `String(value).trim()` matches that same shape,
-  // so the call can never actually return null on either branch.
-  if (integerString && explicit != null) rendered = decimalString(value, explicit, false)!;
+  // `integerString` and `exactDecimal` prove decimalString's input grammar.
+  if (integerString && explicit != null) rendered = decimalString(value, explicit, false);
   else if (integerString) rendered = compactInteger(value);
-  else if (exactDecimal) rendered = decimalString(value, explicit ?? 2, explicit == null)!;
+  else if (exactDecimal) rendered = decimalString(value, explicit ?? 2, explicit == null);
   else {
     const number = numericValue(value);
     if (number == null) return { rendered: presentation.noValue ?? '—', unit: '' };

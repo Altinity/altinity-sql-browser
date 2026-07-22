@@ -70,6 +70,15 @@ describe('renderKpiPanel', () => {
     expect(node.querySelector('.kpi-delta')!.textContent).toBe('↓ 9007199254740993');
     expect(node.querySelector('.kpi-delta')!.getAttribute('aria-label')).toContain('9007199254740993');
   });
+
+  it('formats positive and negative bigint deltas without losing precision', () => {
+    for (const [delta, arrow] of [[2n, '↑'], [-2n, '↓']] as const) {
+      const node = renderKpiPanel({
+        items: [item({ delta, deltaType: 'Int64' })], diagnostics: [],
+      });
+      expect(node.querySelector('.kpi-delta')!.textContent).toBe(`${arrow} 2`);
+    }
+  });
 });
 
 describe('renderKpiCards', () => {

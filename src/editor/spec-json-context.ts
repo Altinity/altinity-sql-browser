@@ -97,7 +97,9 @@ function decodeNode(doc: Text, node: SyntaxNode | null | undefined, omitted?: Sy
     }
     return value;
   }
-  try { return JSON.parse(doc.sliceString(node.from, node.to)); } catch { return INVALID; }
+  // Lezer only classifies complete, valid JSON primitives as VALUE_NAMES;
+  // malformed scalar fragments are error nodes and never reach this branch.
+  return JSON.parse(doc.sliceString(node.from, node.to)) as JsonValue;
 }
 
 function rootValueNode(state: EditorState): SyntaxNode | null {
@@ -186,12 +188,6 @@ function significantBefore(doc: Text, pos: number, floor: number): { at: number;
   let at = pos - 1;
   while (at >= floor && /\s/.test(doc.sliceString(at, at + 1))) at--;
   return at >= floor ? { at, char: doc.sliceString(at, at + 1) } : { at: floor - 1, char: '' };
-}
-
-function significantAfter(doc: Text, pos: number, ceiling: number): { at: number; char: string } {
-  let at = pos;
-  while (at < ceiling && /\s/.test(doc.sliceString(at, at + 1))) at++;
-  return at < ceiling ? { at, char: doc.sliceString(at, at + 1) } : { at: ceiling, char: '' };
 }
 
 function contextResult(
@@ -294,16 +290,10 @@ export function specJsonContext(state: EditorState, pos: number = state.selectio
     }
 
     const before = significantBefore(doc, at, container.from);
-    const after = significantAfter(doc, at, container.to);
     if (before.char === '{' || before.char === ',') {
-      let from = at;
-      let quoted = false;
-      if (after.char === '"' && after.at === at) quoted = true;
-      const prefixStart = doc.sliceString(before.at + 1, at).lastIndexOf('"');
-      if (prefixStart >= 0) { from = before.at + 1 + prefixStart; quoted = true; }
       return contextResult({
-        path, positionKind: 'property-name', from, to: at,
-        partial: quoted ? doc.sliceString(from + 1, at) : '', quoted,
+        path, positionKind: 'property-name', from: at, to: at,
+        partial: '', quoted: false,
         existingKeys, existingItems: [], containerKind: 'object',
       }, root, doc, null);
     }

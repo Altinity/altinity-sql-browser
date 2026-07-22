@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mocked } from 'vitest';
 import { createWorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import type {
   WorkbenchParameterSessionDeps, WorkbenchParameterSessionHooks,
@@ -18,11 +18,11 @@ import type { PreparedFieldState, FieldControl } from '../../src/core/param-pipe
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
-function makeHooks(): WorkbenchParameterSessionHooks & {
-  onGateBlocked: ReturnType<typeof vi.fn>;
-  saveVarRecent: ReturnType<typeof vi.fn>;
-} {
-  return { onGateBlocked: vi.fn(), saveVarRecent: vi.fn() };
+function makeHooks(): Mocked<WorkbenchParameterSessionHooks> {
+  return {
+    onGateBlocked: vi.fn<WorkbenchParameterSessionHooks['onGateBlocked']>(),
+    saveVarRecent: vi.fn<WorkbenchParameterSessionHooks['saveVarRecent']>(),
+  };
 }
 
 /** Mutable backing store for the accessor closures below — mirrors a real

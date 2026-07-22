@@ -494,7 +494,7 @@ function panelContext(app: App, r: PanelResult | null): PanelContext {
 
 interface PanelWritePayload { cfg: PanelCfg; key?: string | null }
 
-function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload, activate = false): void {
+function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload): void {
   const tab = app.activeTab();
   const result = patchSpecDraft(tab, (spec: QuerySpecDraft | null): QuerySpecDraft => patchQueryPanel(
     { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
@@ -509,7 +509,6 @@ function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload, act
   }
   app.queryDoc.revalidateSpecDrafts();
   app.specEditor.syncFromState();
-  if (activate) app.state.resultView.value = 'panel';
   hooks.markDirty();
   hooks.rerender();
 }
