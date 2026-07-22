@@ -50,6 +50,8 @@ import {
 import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeline.js';
 import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
+import { queryFavorite } from '../core/saved-query.js';
+import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
@@ -232,6 +234,14 @@ interface TileEl {
 /** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
  *  that no explicit filter already targets — so a migrated Dashboard (whose
  *  persisted `filters` is empty) still surfaces its implicit param filters.
+ *
+ *  #189/#364 (Bug 3): when a favorited `filter`-role saved query outputs a
+ *  column whose name equals the parameter, the synthesized filter also gets
+ *  that query's `sourceQueryId`, so its option list attaches automatically (the
+ *  field becomes a curated combobox instead of a plain text box). A parameter
+ *  produced by EXACTLY ONE favorited filter source binds; zero or more than one
+ *  (ambiguous) leaves the filter plain — ambiguity degrades gracefully, never
+ *  guesses.
  *  Runtime-only; never persisted. */
 function synthesizeImplicitFilters(
   doc: DashboardDocumentV1, queryById: Map<string, SavedQueryV2>,
@@ -242,9 +252,23 @@ function synthesizeImplicitFilters(
     .filter((query): query is SavedQueryV2 => !!query && queryDashboardRole(query) === 'panel')
     .map((query, index) => ({ id: 't' + index, kind: 'tile', sql: query.sql, bindPolicy: 'row-returning' }));
   const analysis = analyzeParameterizedSources(panelSources);
+  // column name -> the favorited filter-role source ids that output it.
+  const columnSources = new Map<string, Set<string>>();
+  for (const source of queryById.values()) {
+    if (queryDashboardRole(source) !== 'filter' || !queryFavorite(source)) continue;
+    for (const column of selectOutputColumns(source.sql)) {
+      let ids = columnSources.get(column);
+      if (!ids) { ids = new Set(); columnSources.set(column, ids); }
+      ids.add(source.id);
+    }
+  }
   const out: DashboardFilterDefinitionV1[] = [];
   for (const control of fieldControls(analysis)) {
-    if (!declared.has(control.name)) out.push({ id: control.name, parameter: control.name });
+    if (declared.has(control.name)) continue;
+    const def: DashboardFilterDefinitionV1 = { id: control.name, parameter: control.name };
+    const ids = columnSources.get(control.name);
+    if (ids && ids.size === 1) def.sourceQueryId = [...ids][0];
+    out.push(def);
   }
   return out;
 }

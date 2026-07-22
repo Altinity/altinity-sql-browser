@@ -2503,6 +2503,89 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
   });
 });
 
+// #189/#364 (Bug 3): a favorited `filter`-role saved query whose OUTPUT COLUMN
+// name matches an implicit (undeclared) panel-tile parameter auto-binds its
+// options to that parameter — `synthesizeImplicitFilters` sets `sourceQueryId`,
+// so the field upgrades from a plain text box to a curated combobox WITHOUT any
+// explicit `doc.filters` entry. Exactly one favorited source binds; zero or
+// more than one (ambiguous) leaves the field plain.
+describe('renderDashboard — auto-bind favorited filter source by column name (#364)', () => {
+  // A panel tile whose only parameter is `user1: Array(String)` — the implicit
+  // filter target these tests wire (or decline to wire) a source to.
+  const CONSUMER = 'SELECT k, v FROM a WHERE has(user1, {user1:Array(String)})';
+  const optionsResponder: ExecResponder = (sql) => (sql.includes('opts')
+    ? { columns: [{ name: 'user1', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+    : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] });
+
+  it('binds a favorited filter source that outputs the same column name (field becomes curated)', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(field).not.toBeNull();
+    expect(qs(field, '.var-name').textContent).toBe('user1');
+  });
+
+  it('leaves the field plain when NO favorited filter source outputs the column', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          // A favorited filter source, but it outputs a DIFFERENT column.
+          q('src', 'SELECT groupArray(region) AS someOther FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    // The user1 field still renders, just not curated (no source attached).
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+
+  it('does NOT bind when two favorited filter sources output the same column (ambiguous)', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('srcA', 'SELECT groupArray(region) AS user1 FROM a -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+          q('srcB', 'SELECT groupArray(region) AS user1 FROM b -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+
+  it('ignores a NON-favorited filter-role query that outputs the column', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: false }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+});
+
 // #189: the searchable multiselect (an Array(...) consumer contract, default
 // `selection.mode`) and the single-select-on-Array wrap (`selection.mode:
 // 'single'` against the same Array contract) — both new curated shapes,

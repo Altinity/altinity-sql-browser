@@ -83,6 +83,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `examples/query-log-explorer.json`'s `qle-filter` source is migrated to a
   `{from:DateTime}` / optional `{to:DateTime}` window (matching its panels, where
   `to` is optional and means "up to now") as a worked example.
+- **Favoriting a Filter-source query auto-binds it to a matching Dashboard
+  filter** (#189/#364). A favorited `filter`-role saved query whose top-level
+  output column name equals an (otherwise implicit) panel-tile parameter now
+  attaches its option list to that parameter automatically — the field upgrades
+  from a plain text box to the query-backed control with no authored
+  `DashboardFilterDefinitionV1` and no per-filter settings (single vs.
+  multiselect is still inferred from the consumer type). Binding is pure
+  name-matching against the source's parsed output columns
+  (`core/select-columns.ts`): a parameter produced by exactly one favorited
+  source binds; a parameter produced by zero or by two-or-more (ambiguous)
+  favorited sources stays a plain input rather than guessing. Runtime-only —
+  the synthesized binding is never written back into the dashboard document.
 
 ### Fixed
 - **Saved-query, workspace, and Dashboard persistence stay consistent** (#365).
