@@ -10,6 +10,7 @@ import { migrateLibraryV1ToV2, migrateSequential } from './library-migrations.js
 import type { MigratedLibraryV2, MigrateSequentialResult } from './library-migrations.js';
 import { migrateSavedQuerySpec as migrateSpec } from './spec-migrations.js';
 import type { MigratedSavedQuery } from './spec-migrations.js';
+import { hasSameTimeRangeParameter } from './query-time-range.js';
 
 export const LIBRARY_FORMAT = 'altinity-sql-browser/saved-queries';
 export const CURRENT_LIBRARY_VERSION = 2;
@@ -57,6 +58,12 @@ const diagnostic = (path: (string | number)[], code: string, message: string): L
 type FailResult = { ok: false; diagnostics: LibraryDiagnostic[] };
 const resultError = (...diagnostics: (LibraryDiagnostic | LibraryDiagnostic[])[]): FailResult =>
   ({ ok: false, diagnostics: diagnostics.flat() });
+
+const timeRangeSemanticDiagnostics = (spec: unknown, path: (string | number)[] = []): LibraryDiagnostic[] =>
+  hasSameTimeRangeParameter(spec)
+    ? [diagnostic([...path, 'timeRanges', 0, 'to'], 'time-range-same-parameter',
+      'Time-range From and To parameters must be different.')]
+    : [];
 
 function validateLegacyLibraryV1(document: unknown): LibraryDiagnostic[] {
   // Version identification establishes the v1 envelope before this codec runs.
@@ -152,8 +159,11 @@ function validateLibraryV2Source(document: unknown, options?: unknown): LibraryD
           ? SAVED_QUERY_V2_SCHEMA_ID
           : LIBRARY_V2_SCHEMA_ID,
     }));
+  const semantics = queries ? queries.flatMap((query, index) =>
+    isPlainObject(query) && !unsupportedIndexes.has(index)
+      ? timeRangeSemanticDiagnostics(query.spec, ['queries', index, 'spec']) : []) : [];
   const duplicates = queries ? duplicateIdDiagnostics(queries) : [];
-  return [...unsupportedSpecs, ...structural, ...duplicates];
+  return [...unsupportedSpecs, ...structural, ...semantics, ...duplicates];
 }
 
 /** One saved-query Spec version's codec — `library-migrations.ts`'s
@@ -174,7 +184,10 @@ export const SPEC_CODECS: Map<number, SpecCodecEntry> = new Map([
       // same as `validateLibraryV2Source` above.
       const { validationService = jsonSchemaValidationService } =
         options as { validationService?: JsonSchemaValidationService };
-      return validationService.validate(QUERY_SPEC_V1_SCHEMA_ID, value);
+      return [
+        ...validationService.validate(QUERY_SPEC_V1_SCHEMA_ID, value),
+        ...timeRangeSemanticDiagnostics(value),
+      ];
     },
     migrateToNext: null,
   }],
@@ -225,10 +238,12 @@ export function validateSavedQueryDocument(
     return [diagnostic(['specVersion'], 'spec-version-unsupported',
       `specVersion uses unsupported saved-query Spec version ${query.specVersion}`)];
   }
-  return validationService.validate(SAVED_QUERY_V2_SCHEMA_ID, query).map((item) => ({
+  const structural = validationService.validate(SAVED_QUERY_V2_SCHEMA_ID, query).map((item) => ({
     ...item,
     schemaId: item.path[0] === 'spec' ? QUERY_SPEC_V1_SCHEMA_ID : SAVED_QUERY_V2_SCHEMA_ID,
   }));
+  const semantics = isPlainObject(query) ? timeRangeSemanticDiagnostics(query.spec, ['spec']) : [];
+  return [...structural, ...semantics];
 }
 
 export function validateLibraryDocument(

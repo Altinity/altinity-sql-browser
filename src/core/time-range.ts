@@ -1,5 +1,5 @@
-// Dashboard time-range control (#335) — a pure resolver that (a) discovers
-// candidate From/To filter-id pairs by #334's interim name-pair table, (b)
+// Dashboard time-range control (#335) — pure validation and grouping support
+// for the authoritative saved-query metadata introduced by #334. It (a)
 // gates a candidate pair into a `DashboardTimeRangeGroup` only when BOTH
 // filters resolve to a scalar, date-like consumer contract (reusing
 // `filter-selection.ts`'s #189 consumer-resolution machinery rather than
@@ -8,10 +8,9 @@
 // session-scoped "Recently used" list. No DOM, no globals, no fetch — `nowMs`
 // is always injected (the repo's keystroke rule).
 //
-// Pair discovery is a SEAM (`resolveTimeRangeGroups`'s optional `pairs`
-// argument), not a hard dependency on `inferTimeRangePairs`: #334's saved-
-// query `timeRanges` metadata is meant to replace the inference source
-// without touching this module's gating logic or any UI built on top of it.
+// Pair discovery remains a seam (`resolveTimeRangeGroups`'s optional `pairs`
+// argument); runtime callers derive those pairs from saved-query `timeRanges`
+// metadata without coupling that persistence concern to the validation logic.
 //
 // Group formation never mutates anything — it's a pure re-derivation over the
 // dashboard's current filter defs, analysis, and executable-tile set, exactly
@@ -21,11 +20,12 @@ import { resolveFilterSelection } from './filter-selection.js';
 import type { FilterSelectionFilterDef } from './filter-selection.js';
 import type { ParameterAnalysis } from './param-pipeline.js';
 import type { ParsedParamType } from './param-type.js';
-import { parseParamType } from './param-type.js';
+import { dateTimeTimeZone, isSupportedTimeRangeParamType, parseParamType } from './param-type.js';
 import {
   parseRelativeExpr,
   resolveInstant,
   formatPreviewInstant,
+  formatTimeParamValue,
   parseAbsoluteInstant,
   isDateLikeType,
 } from './relative-time.js';
@@ -59,6 +59,19 @@ export interface DashboardTimeRangeGroup {
   toParameter: string;
   fromType: ParsedParamType;
   toType: ParsedParamType;
+  /** Every Dashboard tile whose saved query authoritatively declares this
+   * pair, irrespective of panel family. */
+  tileIds: string[];
+  /** Live-compatible charts are registered by the Dashboard interaction
+   * controller after real result columns/scales exist. */
+  interactiveChartTileIds: string[];
+}
+
+export interface TimeRangeGroupDiagnostic {
+  tileId: string;
+  queryId: string;
+  code: 'time-range-filter-unresolved' | 'time-range-contract-invalid';
+  message: string;
 }
 
 /** One candidate pair of filter ids — `inferTimeRangePairs`'s output, and the
@@ -138,7 +151,7 @@ export function inferTimeRangePairs(
  * resolution will supply instead, without this gating logic changing. A pair
  * forms a group ONLY when BOTH filters resolve via `resolveFilterSelection`
  * with zero diagnostics, a non-null contract, `contract.array === false`, and
- * `isDateLikeType(contract.type)` — a filter missing from `input.filters`
+ * `isSupportedTimeRangeParamType(contract.type)` — a filter missing from `input.filters`
  * (only possible when a caller supplies its own `pairs`) is skipped rather
  * than throwing. Emitted in `pairs`' own order. Pure — never mutates
  * `input.filters`/`input.analysis`.
@@ -163,7 +176,8 @@ export function resolveTimeRangeGroups(input: {
     const toRes = resolveFilterSelection(toFilter, analysis, executableTileIds);
     if (fromRes.diagnostics.length || toRes.diagnostics.length || !fromRes.contract || !toRes.contract) continue;
     if (fromRes.contract.array || toRes.contract.array) continue;
-    if (!isDateLikeType(fromRes.contract.type) || !isDateLikeType(toRes.contract.type)) continue;
+    if (!isSupportedTimeRangeParamType(fromRes.contract.type.raw)
+      || !isSupportedTimeRangeParamType(toRes.contract.type.raw)) continue;
 
     groups.push({
       key: `${fromFilter.id}\u0000${toFilter.id}`,
@@ -173,9 +187,72 @@ export function resolveTimeRangeGroups(input: {
       toParameter: toFilter.parameter,
       fromType: fromRes.contract.type,
       toType: toRes.contract.type,
+      tileIds: [],
+      interactiveChartTileIds: [],
     });
   }
   return groups;
+}
+
+/** Resolve saved-query time-range metadata to Dashboard filter identities,
+ * then aggregate every participating tile by that ordered identity pair.
+ * Filter targeting is supplied by the viewer session's single authoritative
+ * resolver; this core function never reimplements target semantics. */
+export function resolveAuthoredTimeRangeGroups(input: {
+  filters: ReadonlyArray<FilterSelectionFilterDef & { sourceQueryId?: string | null }>;
+  analysis: ParameterAnalysis;
+  executableTileIds: ReadonlySet<string>;
+  filterTargetTileIds: ReadonlyMap<string, ReadonlySet<string>>;
+  tiles: ReadonlyArray<{ id: string; queryId: string }>;
+  queries: ReadonlyArray<{ id: string; spec?: { timeRanges?: unknown } }>;
+}): { groups: DashboardTimeRangeGroup[]; diagnostics: TimeRangeGroupDiagnostic[] } {
+  const queryById = new Map(input.queries.map((query) => [query.id, query] as const));
+  const groupsByKey = new Map<string, DashboardTimeRangeGroup>();
+  const diagnostics: TimeRangeGroupDiagnostic[] = [];
+
+  for (const tile of input.tiles) {
+    const query = queryById.get(tile.queryId);
+    const ranges = query?.spec?.timeRanges;
+    if (ranges === undefined || (Array.isArray(ranges) && ranges.length === 0)) continue;
+    const malformed = (): void => {
+      diagnostics.push({
+        tileId: tile.id, queryId: tile.queryId, code: 'time-range-contract-invalid',
+        message: `Time range metadata for ${tile.queryId} is invalid and cannot participate in a Dashboard group.`,
+      });
+    };
+    if (!Array.isArray(ranges) || ranges.length !== 1) { malformed(); continue; }
+    const raw = ranges[0];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { malformed(); continue; }
+    const pair = raw as Record<string, unknown>;
+    if (typeof pair.from !== 'string' || typeof pair.to !== 'string' || pair.from === pair.to) { malformed(); continue; }
+    const matching = (parameter: string) => input.filters.filter((filter) => filter.parameter === parameter
+      && input.filterTargetTileIds.get(filter.id)?.has(tile.id));
+    const from = matching(pair.from);
+    const to = matching(pair.to);
+    if (from.length !== 1 || to.length !== 1 || from[0].id === to[0].id) {
+      diagnostics.push({
+        tileId: tile.id, queryId: tile.queryId, code: 'time-range-filter-unresolved',
+        message: `Time range for ${tile.queryId} could not resolve both parameters to one targeted Dashboard filter each.`,
+      });
+      continue;
+    }
+    const resolved = resolveTimeRangeGroups({
+      filters: input.filters, analysis: input.analysis, executableTileIds: input.executableTileIds,
+      pairs: [{ fromFilterId: from[0].id, toFilterId: to[0].id }],
+    });
+    if (resolved.length !== 1) {
+      diagnostics.push({
+        tileId: tile.id, queryId: tile.queryId, code: 'time-range-contract-invalid',
+        message: `Time range for ${tile.queryId} does not resolve to two compatible scalar date/time filter contracts.`,
+      });
+      continue;
+    }
+    const candidate = resolved[0];
+    const existing = groupsByKey.get(candidate.key);
+    if (existing) existing.tileIds.push(tile.id);
+    else groupsByKey.set(candidate.key, { ...candidate, tileIds: [tile.id] });
+  }
+  return { groups: [...groupsByKey.values()], diagnostics };
 }
 
 // ── Draft validation ─────────────────────────────────────────────────────
@@ -255,6 +332,88 @@ export function validateTimeRangeDraft(input: {
   }
 
   return { from, to, rangeOk, rangeError, applyEnabled: from.ok && to.ok && rangeOk };
+}
+
+/** Convert Chart.js's local-wall-clock epoch convention back to the UTC
+ * server-wall-clock convention used by the existing date/time parameter
+ * pipeline, then format each bound for its own declared type. Date/Date32
+ * retain the selected calendar digits directly (no hidden day adjustment). */
+export function formatChartTimeRange(input: {
+  fromMs: number;
+  toMs: number;
+  fromType: ParsedParamType | string;
+  toType: ParsedParamType | string;
+}): { ok: true; from: string; to: string; fromLabel: string; toLabel: string } | { ok: false; error: string } {
+  if (!Number.isFinite(input.fromMs) || !Number.isFinite(input.toMs)) {
+    return { ok: false, error: 'The selected time range is invalid.' };
+  }
+  const lo = Math.min(input.fromMs, input.toMs);
+  const hi = Math.max(input.fromMs, input.toMs);
+  const format = (ms: number, type: ParsedParamType | string): string => {
+    const parsed = typeof type === 'string' ? parseParamType(type) : type;
+    if (parsed.base === 'Date' || parsed.base === 'Date32') {
+      const scaleValue = instantToChartScaleTime(ms, parsed);
+      return formatTimeParamValue(scaleValue ?? ms, parsed);
+    }
+    return formatTimeParamValue(ms, parsed);
+  };
+  const from = format(lo, input.fromType);
+  const to = format(hi, input.toType);
+  const fromType = typeof input.fromType === 'string' ? parseParamType(input.fromType) : input.fromType;
+  const toType = typeof input.toType === 'string' ? parseParamType(input.toType) : input.toType;
+  return {
+    ok: true, from, to,
+    fromLabel: formatPreviewInstant(lo, fromType),
+    toLabel: formatPreviewInstant(hi, toType),
+  };
+}
+
+function zonedParts(epochMs: number, timeZone: string): number[] | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA-u-hc-h23', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(epochMs));
+    const value = (name: string): number => Number(parts.find((part) => part.type === name)?.value);
+    const out = ['year', 'month', 'day', 'hour', 'minute', 'second'].map(value);
+    return out.every(Number.isFinite) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Convert Chart.js's local-wall-clock scale convention into one canonical
+ * epoch instant, honoring an explicit ClickHouse timezone when present. */
+export function chartScaleTimeToInstant(ms: number, type: ParsedParamType | string): number | null {
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  const desired = [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
+  const desiredUtc = Date.UTC(desired[0], desired[1] - 1, desired[2], desired[3], desired[4], desired[5], d.getMilliseconds());
+  const zone = dateTimeTimeZone(type) || 'UTC';
+  let candidate = desiredUtc;
+  for (let i = 0; i < 2; i++) {
+    const shown = zonedParts(candidate, zone);
+    if (!shown) return null;
+    const shownUtc = Date.UTC(shown[0], shown[1] - 1, shown[2], shown[3], shown[4], shown[5], d.getMilliseconds());
+    candidate += desiredUtc - shownUtc;
+  }
+  return candidate;
+}
+
+/** Convert a canonical instant to the pseudo-local epoch expected by the
+ * existing Chart.js wall-clock parser for a declared ClickHouse timezone. */
+export function instantToChartScaleTime(ms: number, type: ParsedParamType | string): number | null {
+  if (!Number.isFinite(ms)) return null;
+  const shown = zonedParts(ms, dateTimeTimeZone(type) || 'UTC');
+  if (!shown) return null;
+  return new Date(shown[0], shown[1] - 1, shown[2], shown[3], shown[4], shown[5], new Date(ms).getUTCMilliseconds()).getTime();
+}
+
+/** Human label for one Chart.js time-scale value, preserving the server's
+ * wall-clock digits across browser timezones. */
+export function formatChartTimeLabel(ms: number, type: ParsedParamType | string): string {
+  const parsed = typeof type === 'string' ? parseParamType(type) : type;
+  return formatPreviewInstant(ms, parsed);
 }
 
 // ── Recently used ────────────────────────────────────────────────────────

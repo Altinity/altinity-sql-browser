@@ -23,6 +23,7 @@ function grp(overrides: Partial<DashboardTimeRangeGroup> = {}): DashboardTimeRan
     key: 'f1\u0000f2', fromFilterId: 'f1', toFilterId: 'f2',
     fromParameter: 'from', toParameter: 'to',
     fromType: DT, toType: DT,
+    tileIds: [], interactiveChartTileIds: [],
     ...overrides,
   };
 }

@@ -2,6 +2,18 @@
 // query-spec v1 — https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json
 
 /**
+ * Time-range parameter pair
+ *
+ * The exact saved-query parameter names used as the lower and upper bounds of one time range.
+ */
+export interface QueryTimeRangeV1 {
+  /** From parameter */
+  from: string;
+  /** To parameter */
+  to: string;
+}
+
+/**
  * Result column
  *
  * Exact top-level ClickHouse result-column name.
@@ -558,6 +570,12 @@ export interface QuerySpecV1 {
   view?: "table" | "json" | "panel";
   panel?: Panel;
   dashboard?: QueryDashboardPresentationV1;
+  /**
+   * Time-range parameter semantics
+   *
+   * Zero or one authoritative From/To parameter pair. Omission allows conservative authoring inference; an empty array explicitly disables inference.
+   */
+  timeRanges?: [] | [QueryTimeRangeV1];
   [k: string]: unknown;
 }
 

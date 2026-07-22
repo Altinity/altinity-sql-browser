@@ -45,6 +45,16 @@ describe('canonical query.spec schema', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'future-gauge', custom: true } } })).toEqual([]);
   });
 
+  it('enforces the zero-or-one closed time-range metadata shape', () => {
+    expect(querySpecSchemaService.validate({})).toEqual([]);
+    expect(querySpecSchemaService.validate({ timeRanges: [] })).toEqual([]);
+    expect(querySpecSchemaService.validate({ timeRanges: [{ from: 'from', to: 'to' }] })).toEqual([]);
+    for (const value of [
+      [{ from: 'a', to: 'b' }, { from: 'c', to: 'd' }],
+      [{ from: '', to: 'to' }], [{ from: 'from' }], [{ from: 'from', to: 'to', extra: true }],
+    ]) expect(querySpecSchemaService.validate({ timeRanges: value }).length).toBeGreaterThan(0);
+  });
+
   it('validates the KPI presentation contract and rejects malformed known metadata', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'kpi', extension: true }, fieldConfig: {
       defaults: { displayName: 'Value', description: 'Current', unit: '%', decimals: 2, color: '#123', noValue: '—', hidden: false, delta: { displayName: 'Change', unit: ' pp', decimals: 1, positiveIsGood: true, show: true, future: true } },

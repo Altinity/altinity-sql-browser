@@ -20,11 +20,11 @@ const complete = (over: Partial<CompleteSpecArgs> = {}) => completeSpec({
 describe('pure Spec completion', () => {
   it('offers canonical root keys in order, filters prefixes, and omits existing keys', () => {
     expect(complete().map((item) => item.label)).toEqual([
-      'name', 'description', 'favorite', 'view', 'panel', 'dashboard',
+      'name', 'description', 'favorite', 'view', 'panel', 'dashboard', 'timeRanges',
     ]);
     expect(complete({ partial: 'pa' }).map((item) => item.label)).toEqual(['panel']);
     expect(complete({ existingKeys: ['name', 'panel'] }).map((item) => item.label))
-      .toEqual(['description', 'favorite', 'view', 'dashboard']);
+      .toEqual(['description', 'favorite', 'view', 'dashboard', 'timeRanges']);
   });
 
   it('picks up the QueryDashboardPresentationV1 fields under dashboard (#283)', () => {

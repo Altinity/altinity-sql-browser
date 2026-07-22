@@ -115,6 +115,9 @@ describe('multi-schema build', () => {
     expect(block('LibraryV2')).not.toContain('[k: string]');
     expect(block('SavedQueryV2')).not.toContain('[k: string]');
     expect(block('QuerySpecV1')).toContain('[k: string]: unknown;');
+    expect(types).toContain('export interface QueryTimeRangeV1');
+    expect(block('QueryTimeRangeV1')).not.toContain('[k: string]');
+    expect(block('QuerySpecV1')).toContain('timeRanges?: [] | [QueryTimeRangeV1];');
     // The single saved-query oneOf branch merges into one closed interface.
     expect(block('SavedQueryV2')).toContain('specVersion: 1;');
     expect(block('SavedQueryV2')).toContain('spec: QuerySpecV1;');

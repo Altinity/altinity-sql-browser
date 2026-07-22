@@ -93,6 +93,28 @@ describe('create', () => {
     expect(result.entry.id.startsWith('s1700000000000')).toBe(true); // deps.now() feeds the minted id
   });
 
+  it('propagates inferred metadata and an ambiguity warning from the authoring create path', async () => {
+    const inferredTab = newTabObj('t1');
+    inferredTab.sqlDraft = 'SELECT {FROM_TIME:DateTime}, {to_time:DateTime64(3)}';
+    const inferredDeps = makeDeps();
+    const inferred = await createSavedQueryService(inferredDeps.deps).create(inferredTab, 'Timed', '');
+    expect(inferred.ok).toBe(true);
+    if (!inferred.ok) throw new Error('unreachable');
+    expect(inferred.entry.spec.timeRanges).toEqual([{ from: 'FROM_TIME', to: 'to_time' }]);
+    expect(inferred.diagnostics).toBeUndefined();
+
+    const ambiguousTab = newTabObj('t2');
+    ambiguousTab.sqlDraft = 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}';
+    const ambiguousDeps = makeDeps();
+    const ambiguous = await createSavedQueryService(ambiguousDeps.deps).create(ambiguousTab, 'Ambiguous', '');
+    expect(ambiguous.ok).toBe(true);
+    if (!ambiguous.ok) throw new Error('unreachable');
+    expect(Object.hasOwn(ambiguous.entry.spec, 'timeRanges')).toBe(false);
+    expect(ambiguous.diagnostics).toEqual([expect.objectContaining({
+      code: 'time-range-inference-ambiguous', severity: 'warning', path: ['timeRanges'],
+    })]);
+  });
+
   it('rejects (no persistence) a tab already linked to a saved query', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
@@ -259,6 +281,40 @@ describe('commit', () => {
     expect(s.savedQueries[0]).toEqual(result.entry);
     expect(s.libraryDirty.value).toBe(true);
     expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('infers on SQL-dirty commit only, preserving absent metadata on a Spec-only commit', async () => {
+    const tab = newTabObj('t1');
+    tab.sqlDraft = 'SELECT {start_time:Date}, {end_time:Date32}';
+    const state = linkedState(tab, tab.sqlDraft);
+    const { deps } = makeDeps({ state });
+    const service = createSavedQueryService(deps);
+
+    tab.dirtySpec = true;
+    const specOnly = await service.commit(tab, validEvaluated({ name: 'Spec only', favorite: false }));
+    expect(specOnly.ok).toBe(true);
+    if (!specOnly.ok) throw new Error('unreachable');
+    expect(Object.hasOwn(specOnly.entry.spec, 'timeRanges')).toBe(false);
+
+    tab.dirtySql = true;
+    const sqlDirty = await service.commit(tab, validEvaluated({ name: 'SQL update', favorite: false }));
+    expect(sqlDirty.ok).toBe(true);
+    if (!sqlDirty.ok) throw new Error('unreachable');
+    expect(sqlDirty.entry.spec.timeRanges).toEqual([{ from: 'start_time', to: 'end_time' }]);
+
+  });
+
+  it('propagates ambiguity from a SQL-dirty linked commit', async () => {
+    const sql = 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}';
+    const tab = newTabObj('t1');
+    tab.sqlDraft = sql; tab.dirtySql = true;
+    const state = linkedState(tab, 'SELECT 1');
+    const { deps } = makeDeps({ state });
+    const result = await createSavedQueryService(deps).commit(tab, validEvaluated({ name: 'Ambiguous', favorite: false }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(Object.hasOwn(result.entry.spec, 'timeRanges')).toBe(false);
+    expect(result.diagnostics?.[0]).toMatchObject({ code: 'time-range-inference-ambiguous' });
   });
 });
 

@@ -56,7 +56,11 @@ import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
+import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
+import { chartColors } from '../core/chart-data.js';
+import { createDashboardChartInteractionController } from './dashboard-chart-interaction.js';
+import type { DashboardChartInteractionController } from './dashboard-chart-interaction.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardViewerSession, DashboardViewState, ViewerTileState, ViewerFilterState,
@@ -118,6 +122,7 @@ const formatBytes: (n: number | null | undefined) => string = formatBytesUntyped
 export interface DashboardApp {
   document: Document;
   state: AppState;
+  cssVar(name: string): string;
   dom: AppDom;
   root: Element | null;
   toggleTheme(): void;
@@ -191,6 +196,8 @@ let installedModifierListeners:
 // route render must cancel it before replacing the page so no stale gesture can
 // commit into the newly-rendered Dashboard.
 let installedGestureCancel: (() => void) | null = null;
+let installedDashboardChartInteraction: DashboardChartInteractionController | null = null;
+let installedDashboardCleanup: (() => void) | null = null;
 
 /**
  * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
@@ -388,6 +395,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     installedModifierListeners = null;
   }
   if (installedGestureCancel) installedGestureCancel();
+  installedDashboardCleanup?.();
+  installedDashboardCleanup = null;
 
   // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
   // the parsed open-source (ADR-0003). `current-workspace` (?ws=&dash=) verifies
@@ -682,6 +691,50 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // changing commit pushes the OUTGOING committed pair (see `onApplyTimeRange`
   // in `rebuildFilterBar`).
   const timeRangeRecents = new Map<string, TimeRangeRecent[]>();
+  const timeRangeApplyGeneration = new Map<string, number>();
+  const groupByTileId = new Map(session.timeRangeGroups.flatMap((group) => group.tileIds.map((tileId) => [tileId, group] as const)));
+
+  const applyTimeRange = async (
+    group: DashboardTimeRangeGroup, from: string, to: string, recordOutgoing: boolean,
+  ): Promise<void> => {
+    const generation = (timeRangeApplyGeneration.get(group.key) ?? 0) + 1;
+    timeRangeApplyGeneration.set(group.key, generation);
+    const filterById = new Map(session.state.value.filters.map((filter) => [filter.id, filter] as const));
+    const fromF = filterById.get(group.fromFilterId);
+    const toF = filterById.get(group.toFilterId);
+    const outFrom = fromF ? valueString(fromF.value) : '';
+    const outTo = toF ? valueString(toF.value) : '';
+    const wasActive = !!(fromF?.active && toF?.active);
+    const result = await session.applyFilters([
+      { filterId: group.fromFilterId, value: from, active: true },
+      { filterId: group.toFilterId, value: to, active: true },
+    ]);
+    if (timeRangeApplyGeneration.get(group.key) !== generation) return;
+    /* v8 ignore next 3 -- the mounted controls and chart formatter prevalidate;
+       retained for a stale/destroyed-session race so failure is announced. */
+    if (!result.ok) {
+      filterRefreshLiveEl.textContent = `Time range was not changed: ${result.error}`;
+      return;
+    }
+    if (result.changed && recordOutgoing && wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
+      timeRangeRecents.set(group.key,
+        pushRecentRange(timeRangeRecents.get(group.key) ?? [], { from: outFrom, to: outTo }));
+    }
+    filterRefreshLiveEl.textContent = `Time range applied: ${from} → ${to}`;
+  };
+
+  const chartInteraction = createDashboardChartInteractionController({
+    document: doc,
+    formatLabel: formatChartTimeLabel,
+    colors: () => {
+      const colors = chartColors(app.cssVar);
+      return {
+        crosshair: colors.accent, selectionFill: 'rgba(0, 121, 173, 0.18)', selectionStroke: colors.accent,
+        labelBackground: colors.bgModal, labelText: colors.fg,
+      };
+    },
+  });
+  installedDashboardChartInteraction = chartInteraction;
 
   function rebuildFilterBar(sview: DashboardViewState): void {
     // #189-F2b, GENERALIZED (#335): ask the OUTGOING bar WHICH control's
@@ -785,29 +838,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // union of the pair's resolved targets), pushes the OUTGOING committed pair
     // onto this group's recents, and announces the new range.
     const onApplyTimeRange = (group: DashboardTimeRangeGroup, from: string, to: string): void => {
-      const fromF = filterById.get(group.fromFilterId);
-      const toF = filterById.get(group.toFilterId);
-      const outFrom = fromF ? valueString(fromF.value) : '';
-      const outTo = toF ? valueString(toF.value) : '';
-      const wasActive = !!(fromF?.active && toF?.active);
-      // Push the OUTGOING pair only when it was active + both bounds non-empty
-      // AND actually differs from the incoming pair — so a first commit from an
-      // unset/inactive range, and a no-op re-apply, both push nothing.
-      if (wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
-        timeRangeRecents.set(group.key,
-          pushRecentRange(timeRangeRecents.get(group.key) ?? [], { from: outFrom, to: outTo }));
-      }
-      void session.applyFilters([
-        { filterId: group.fromFilterId, value: from, active: true },
-        { filterId: group.toFilterId, value: to, active: true },
-      ]);
-      // Announce through the SAME persistent live region the #189 refresh
-      // announcement uses (a sibling of `filterHost`, so it survives the
-      // rebuild `applyFilters` synchronously triggers). Set AFTER the commit so
-      // the synchronous rebuild's own announce path (which never fires for a
-      // time-range key anyway — `group:…` is not a multiselect parameter) can
-      // never clobber it.
-      filterRefreshLiveEl.textContent = `Time range applied: ${from} → ${to}`;
+      void applyTimeRange(group, from, to, true);
     };
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
@@ -1673,6 +1704,26 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const key = JSON.stringify(columns.map((c) => c.name + ':' + c.type));
     if (!tileEl.panelState || tileEl.panelState.key !== key) tileEl.panelState = { key };
     const result = { columns, rows } as Parameters<typeof renderResolvedPanel>[2];
+    const timeRangeGroup = groupByTileId.get(ts.tileId);
+    const xIndex = (resolved.cfg as { x?: unknown }).x;
+    const xType = Number.isInteger(xIndex) ? columns[Number(xIndex)]?.type ?? 'DateTime' : 'DateTime';
+    const chartPlugins = timeRangeGroup ? [chartInteraction.pluginFor({
+      group: timeRangeGroup,
+      tileId: ts.tileId,
+      xType,
+      onSelect: (fromMs, toMs) => {
+        const formatted = formatChartTimeRange({
+          fromMs, toMs, fromType: timeRangeGroup.fromType, toType: timeRangeGroup.toType,
+        });
+        /* v8 ignore next 3 -- controller invokes onSelect only with finite
+           scale values; retained as a defensive contract boundary. */
+        if (!formatted.ok) {
+          filterRefreshLiveEl.textContent = `Time range was not changed: ${formatted.error}`;
+          return;
+        }
+        void applyTimeRange(timeRangeGroup, formatted.from, formatted.to, false);
+      },
+    })] : undefined;
     const out = renderResolvedPanel(app as unknown as App, resolved, result, {
       surface: 'dashboard', state: tileEl.panelState, rerender: () => paintForce(ts, tileEl),
       readonly: true, cap: DASH_TABLE_DISPLAY_CAP,
@@ -1680,6 +1731,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // cell-detail drawer, in THIS dashboard's document. openCellDetail is
       // already document-agnostic (results.ts) — no Workbench-tab coupling.
       onCell: (name, type, value) => openCellDetail(app as unknown as ResultsApp, name, type, value, doc),
+      chartPlugins,
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
@@ -1968,7 +2020,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // default-filled published bag and persist defaults on first open, freezing
   // them against later Spec-editor changes to a filter's default.
   let lastFilterPersistSig = filterBagSignature(persistBagOf(session.state.value.filters));
-  effect(() => {
+  const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
     // A breakpoint flip after the last publish needs a fresh flow model —
@@ -2034,6 +2086,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // leaves its target tiles in their normal unfilled state.
     filterDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
+      ...sview.timeRangeDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
       // #359: the shared-source filter wave's own merge diagnostics
       // (info/warning/error), separate from the presentation diagnostics
       // above — each severity maps directly to its `is-*` class.
@@ -2067,6 +2120,19 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' }, header, toolbar),
     filterDiagnosticsHost, empty, grid));
+
+  // Own every route-scoped resource in one teardown. An in-place Dashboard
+  // rebuild must not leave Chart.js observers, signal effects, popovers, or
+  // viewer requests attached to the replaced page.
+  installedDashboardCleanup = () => {
+    currentFilterBar?.dispose();
+    currentFilterBar = null;
+    disposeDashboardEffect();
+    for (const tileEl of tileEls.values()) destroyChart(tileEl);
+    chartInteraction.destroy();
+    if (installedDashboardChartInteraction === chartInteraction) installedDashboardChartInteraction = null;
+    session.destroy();
+  };
 
   // #291: measure the grid host's real width now that it is mounted — BEFORE
   // `session.start()`'s first publish — so the initial grafana-grid render

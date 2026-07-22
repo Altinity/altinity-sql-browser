@@ -15,12 +15,17 @@
       }
     }
   </script>
+  <script src="/node_modules/chart.js/dist/chart.umd.js"></script>
+  <script src="/node_modules/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
   <style>
     body { padding: 24px; background: var(--bg, var(--bg-editor)); color: var(--fg); font-family: var(--ui); }
     /* The dashboard filter bar's own scroll host — the compound control renders
        into it exactly as it does on the real dashboard toolbar. */
     .dash-filter-host { overflow-x: auto; padding: 6px 2px; }
     .dash-filters { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; }
+    .chart-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+    .chart-box { min-width: 0; height: 260px; }
+    @media (max-width: 600px) { .chart-row { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body data-theme="dark">
@@ -35,11 +40,18 @@
        `session.state`. This exercises the compound control end-to-end against
        the actual pipeline — not a hand-built widget. -->
   <div class="dash-filter-host"><main id="bar" aria-label="Dashboard filters host"></main></div>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="chart-a"></canvas></div>
+    <div class="chart-box"><canvas id="chart-b"></canvas></div>
+    <div class="chart-box"><canvas id="chart-c"></canvas></div>
+  </div>
   <script type="module">
     import { effect } from '@preact/signals-core';
     import { buildFilterBar } from '/src/ui/filter-bar.js';
     import { createDashboardViewerSession } from '/src/dashboard/application/dashboard-viewer-session.js';
     import { pushRecentRange } from '/src/core/time-range.js';
+    import { formatChartTimeLabel, formatChartTimeRange } from '/src/core/time-range.js';
+    import { createDashboardChartInteractionController } from '/src/ui/dashboard-chart-interaction.js';
 
     // One fixed wall clock so every resolved preview/label is deterministic; a
     // monotonic perf clock for tile footers.
@@ -65,7 +77,7 @@
       },
     };
 
-    const savedQuery = (id, sql) => ({ id, sql, specVersion: 1, spec: { name: id } });
+    const savedQuery = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec: { name: id, ...spec } });
     const document_ = {
       documentVersion: 1, id: 'd', title: 'D', revision: 1,
       layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
@@ -86,8 +98,10 @@
     const session = createDashboardViewerSession({
       document: document_,
       queries: [
-        savedQuery('qa', 'SELECT count() AS c FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-a */'),
-        savedQuery('qb', 'SELECT avg(x) AS a FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-b */'),
+        savedQuery('qa', 'SELECT count() AS c FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-a */',
+          { timeRanges: [{ from: 'from', to: 'to' }] }),
+        savedQuery('qb', 'SELECT avg(x) AS a FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-b */',
+          { timeRanges: [{ from: 'from', to: 'to' }] }),
         savedQuery('qc', 'SELECT count() AS c FROM logs WHERE service = {service:String} /* tile-c */'),
       ],
       exec,
@@ -95,6 +109,53 @@
       now: () => (perf += 5),
       wallNow: () => WALL,
     });
+
+    // Real Chart.js + real time adapter. The controller is the same
+    // Dashboard-scoped plugin used by dashboard.ts; the two charts use
+    // different sample intervals so hover synchronization cannot accidentally
+    // be nearest-row snapping.
+    const chartInteraction = createDashboardChartInteractionController({
+      document,
+      formatLabel: formatChartTimeLabel,
+      colors: () => ({
+        crosshair: '#00a8e8', selectionFill: 'rgba(0,168,232,.2)', selectionStroke: '#00a8e8',
+        labelBackground: '#1a1a20', labelText: '#fff',
+      }),
+    });
+    const rangeGroup = session.timeRangeGroups[0];
+    window.__selected = null;
+    const selected = async (fromMs, toMs) => {
+      window.__selected = [fromMs, toMs];
+      const formatted = formatChartTimeRange({ fromMs, toMs, fromType: rangeGroup.fromType, toType: rangeGroup.toType });
+      if (!formatted.ok) return;
+      window.__lastApply = session.applyFilters([
+        { filterId: rangeGroup.fromFilterId, value: formatted.from, active: true },
+        { filterId: rangeGroup.toFilterId, value: formatted.to, active: true },
+      ]);
+      liveEl.textContent = `Time range applied: ${formatted.from} → ${formatted.to}`;
+      await window.__lastApply;
+    };
+    const series = (canvas, tileId, stepHours, type = 'line', fill = false) => new window.Chart(canvas, {
+      type,
+      data: { datasets: [{ label: tileId, data: Array.from({ length: 9 }, (_, i) => ({
+        x: new Date(2026, 6, 21, i * stepHours, 0, 0).getTime(), y: i + (tileId === 't-b' ? 2 : 0),
+      })), fill }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, parsing: false,
+        interaction: { mode: 'nearest', intersect: false }, scales: { x: { type: 'time' } },
+      },
+      plugins: [chartInteraction.pluginFor({ group: rangeGroup, tileId, xType: 'DateTime', onSelect: selected })],
+    });
+    const chartA = series(document.querySelector('#chart-a'), 't-a', 3);
+    const chartB = series(document.querySelector('#chart-b'), 't-b', 2, 'bar');
+    const chartC = series(document.querySelector('#chart-c'), 'visual-area', 4, 'line', true);
+    let peerDraws = 0;
+    for (const chart of [chartB, chartC]) {
+      const peerDraw = chart.draw.bind(chart);
+      chart.draw = (...args) => { peerDraws++; return peerDraw(...args); };
+    }
+    window.__charts = { a: chartA, b: chartB, c: chartC };
+    window.__peerDraws = () => peerDraws;
 
     // ── Shell glue mirroring dashboard.ts's rebuildFilterBar ──────────────
     const host = document.querySelector('#bar');

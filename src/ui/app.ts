@@ -1329,7 +1329,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     renderSavedHistory(app);
     renderResults(app);
     app.updateEditorModeUi!();
-    flashToast('Saved', { document: doc });
+    flashToast(result.diagnostics?.[0]?.message || 'Saved', { document: doc });
     return result.entry;
   }
 
@@ -1416,7 +1416,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.updateEditorModeUi!();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
-      flashToast('Saved', { document: doc });
+      flashToast(result.diagnostics?.[0]?.message || 'Saved', { document: doc });
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.

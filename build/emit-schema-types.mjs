@@ -19,13 +19,14 @@ const IGNORED_KEYWORDS = new Set([
   ...ANNOTATION_KEYWORDS,
   '$schema', '$id', 'title', 'description', 'default', 'examples', 'deprecated',
   'minLength', 'maxLength', 'pattern', 'format',
-  'minItems', 'maxItems', 'uniqueItems',
+  'uniqueItems',
   'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
   'minProperties', 'maxProperties', 'propertyNames',
 ]);
 const HANDLED_KEYWORDS = new Set([
   'type', 'const', 'enum', 'anyOf', 'oneOf', 'allOf', 'not', '$ref',
   'properties', 'required', 'additionalProperties', 'unevaluatedProperties', 'items',
+  'minItems', 'maxItems',
 ]);
 
 const pascalCase = (name) => String(name).split(/[^A-Za-z0-9]+/).filter(Boolean)
@@ -76,7 +77,8 @@ function renderJsdoc(doc, extra = []) {
 // branch's maxItems refinement of the inherited measure list). Merging keeps
 // the earlier, richer declaration instead.
 function isConstraintOnly(schema) {
-  const keys = Object.keys(schema).filter((key) => !IGNORED_KEYWORDS.has(key));
+  const keys = Object.keys(schema).filter((key) => !IGNORED_KEYWORDS.has(key)
+    && key !== 'minItems' && key !== 'maxItems');
   return keys.length === 1 && keys[0] === 'type' && schema.type === 'array' && schema.items === undefined;
 }
 
@@ -179,6 +181,12 @@ export function buildSchemaTypes(records) {
     if (type === 'array') {
       if (schema.items === undefined) return 'unknown[]';
       const item = typeExpr(schema.items, record, `${where}.items`);
+      if (schema.maxItems === 1) {
+        if (schema.minItems !== undefined && schema.minItems !== 0 && schema.minItems !== 1) {
+          throw new Error(`Unsupported minItems ${JSON.stringify(schema.minItems)} with maxItems 1 at ${where}`);
+        }
+        return schema.minItems === 1 ? `[${item}]` : `[] | [${item}]`;
+      }
       return /[|&(]| /.test(item) ? `(${item})[]` : `${item}[]`;
     }
     if (type === 'object') return objectExpr(schema, record, where);

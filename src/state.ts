@@ -34,6 +34,8 @@ import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
 import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
+import { materializeQueryTimeRange } from './core/query-time-range.js';
+import type { QueryTimeRangeInferenceDiagnostic } from './core/query-time-range.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -95,7 +97,7 @@ export type MutateWorkspace = <T = unknown>(
  *  validation). Either way NOTHING is mutated — no `state`/`tabs` write happens
  *  until the mutation resolves `ok: true`. */
 export type SavedEntryResult =
-  | { ok: true; entry: SavedQueryV2 }
+  | { ok: true; entry: SavedQueryV2; diagnostics?: QueryTimeRangeInferenceDiagnostic[] }
   /** `deletedExternally: true` marks the one abort where the transform found
    *  the target query missing from `latest.queries` (#343 — deleted in another
    *  tab). Callers must surface it and refresh the tab association; every other
@@ -864,7 +866,8 @@ export async function createSavedQuery(
     panel: panel || undefined,
     view,
   });
-  const entry = asSavedEntry(withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec)));
+  const inferred = materializeQueryTimeRange(draft.spec, sql);
+  const entry = asSavedEntry(withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(inferred.spec)));
   if (hasBlockingSpecErrors(validationService.validate(entry.spec, { sql, query: entry, tab }))) {
     return { ok: false, entry: null };
   }
@@ -897,7 +900,7 @@ export async function createSavedQuery(
   tab.lastCommittedQueryToken = queryToken(saved);
   tab.externalState = null;
   state.libraryDirty.value = true;
-  return { ok: true, entry: saved };
+  return { ok: true, entry: saved, ...(inferred.diagnostics.length ? { diagnostics: inferred.diagnostics } : {}) };
 }
 
 /** Atomically persist both documents of a linked tab in one strict aggregate
@@ -918,7 +921,11 @@ export async function commitSavedQuery(
   // only the captured tab/spec (never `latest`), so they run before queueing.
   const view = state.resultView.value;
   const persistedView = SAVED_VIEWS.has(view) ? view as 'table' | 'json' | 'panel' : null;
-  const normalized = normalizeSpec(persistedView ? { ...spec, view: persistedView } : spec);
+  const sourceSpec = persistedView ? { ...spec, view: persistedView } : spec;
+  const inferred = tab.dirtySql
+    ? materializeQueryTimeRange(sourceSpec, String(tab.sqlDraft || ''))
+    : { spec: sourceSpec, inferred: false, diagnostics: [] };
+  const normalized = normalizeSpec(inferred.spec);
   const sql = String(tab.sqlDraft || '');
   const diagnostics = validationService.validate(normalized, { sql, tab });
   if (hasBlockingSpecErrors(diagnostics)) return { ok: false, entry: null };
@@ -956,7 +963,7 @@ export async function commitSavedQuery(
   tab.lastCommittedQueryToken = queryToken(saved);
   tab.externalState = null;
   state.libraryDirty.value = true;
-  return { ok: true, entry: saved };
+  return { ok: true, entry: saved, ...(inferred.diagnostics.length ? { diagnostics: inferred.diagnostics } : {}) };
 }
 
 /** A pure transform folded into the SAME commit candidate as a `patchSavedSpec`

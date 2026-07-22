@@ -41,6 +41,7 @@ import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { encodeShare } from '../core/share.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
+import type { QueryTimeRangeInferenceDiagnostic } from '../core/query-time-range.js';
 
 // ── Construction deps ────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ export interface SavedQueryServiceDeps {
 // ── Result types ─────────────────────────────────────────────────────────────
 
 export type CreateSavedResult =
-  | { ok: true; entry: SavedQueryV2 }
+  | { ok: true; entry: SavedQueryV2; diagnostics?: QueryTimeRangeInferenceDiagnostic[] }
   /** `createSavedQuery` itself rejected the entry — either a pre-commit
    *  compute guard (still-linked tab, blank SQL on a non-text panel, blank
    *  name, or a blocking validation diagnostic — the pre-#287 inline code
@@ -89,7 +90,7 @@ export type CreateSavedResult =
   | { ok: false; diagnostics?: WorkspaceDiagnostic[] };
 
 export type CommitLinkedResult =
-  | { ok: true; entry: SavedQueryV2 }
+  | { ok: true; entry: SavedQueryV2; diagnostics?: QueryTimeRangeInferenceDiagnostic[] }
   | {
     ok: false;
     reason:
@@ -160,7 +161,9 @@ export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQuery
     const result = await createSavedQuery(
       deps.state, tab, name, description, deps.mutateWorkspace, deps.now(), deps.specValidators,
     );
-    return result.ok ? { ok: true, entry: result.entry } : { ok: false, diagnostics: result.diagnostics };
+    return result.ok
+      ? { ok: true, entry: result.entry, ...(result.diagnostics?.length ? { diagnostics: result.diagnostics } : {}) }
+      : { ok: false, diagnostics: result.diagnostics };
   }
 
   async function commit(
@@ -176,7 +179,10 @@ export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQuery
     const result = await commitSavedQuery(
       deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.mutateWorkspace, deps.specValidators,
     );
-    if (result.ok) return { ok: true, entry: result.entry };
+    if (result.ok) return {
+      ok: true, entry: result.entry,
+      ...(result.diagnostics?.length ? { diagnostics: result.diagnostics } : {}),
+    };
     return result.deletedExternally
       ? { ok: false, reason: 'deleted' }
       : { ok: false, reason: 'rejected', diagnostics: result.diagnostics };

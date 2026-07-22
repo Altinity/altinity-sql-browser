@@ -277,6 +277,64 @@ describe('saved queries', () => {
     // #343: the linked save refreshed the in-sync baseline token to the new commit.
     expect(tab.lastCommittedQueryToken).toBe(queryToken(s.savedQueries[0]));
   });
+  it('materializes timeRanges on create and only on SQL-dirty linked saves while the property is absent', async () => {
+    const s = savedTestState();
+    const mutate = fakeMutateWorkspace(s);
+    const tab = s.tabs.value[0];
+    tab.sqlDraft = 'SELECT {From:DateTime}, {TO:DateTime64(3)}';
+
+    const created = okEntry(await createSavedQuery(s, tab, 'Timed', '', mutate, 100));
+    expect(created.spec.timeRanges).toEqual([{ from: 'From', to: 'TO' }]);
+
+    // Explicit metadata is authoritative, including the empty opt-out.
+    tab.sqlDraft = 'SELECT {start:Date}, {end:Date32}';
+    tab.specParsed = { ...tab.specParsed!, timeRanges: [] };
+    tab.dirtySql = true;
+    const optedOut = okEntry(await commitSavedQuery(s, tab, tab.specParsed, mutate));
+    expect(optedOut.spec.timeRanges).toEqual([]);
+
+    // A Spec-only save/view of SQL that happens to contain a recognized pair
+    // must not author metadata as a side effect.
+    tab.specParsed = { name: 'Timed', favorite: false };
+    tab.dirtySql = false;
+    tab.dirtySpec = true;
+    const specOnly = okEntry(await commitSavedQuery(s, tab, tab.specParsed, mutate));
+    expect(Object.hasOwn(specOnly.spec, 'timeRanges')).toBe(false);
+
+    tab.dirtySql = true;
+    const sqlUpdated = okEntry(await commitSavedQuery(s, tab, tab.specParsed, mutate));
+    expect(sqlUpdated.spec.timeRanges).toEqual([{ from: 'start', to: 'end' }]);
+  });
+  it('commits ambiguous authoring without guessing and returns the warning', async () => {
+    const s = savedTestState();
+    const mutate = fakeMutateWorkspace(s);
+    const tab = s.tabs.value[0];
+    tab.sqlDraft = 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}';
+
+    const result = await createSavedQuery(s, tab, 'Ambiguous', '', mutate, 100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(Object.hasOwn(result.entry.spec, 'timeRanges')).toBe(false);
+    expect(result.diagnostics).toEqual([expect.objectContaining({
+      path: ['timeRanges'], severity: 'warning', code: 'time-range-inference-ambiguous',
+    })]);
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
+  });
+  it('returns the ambiguity warning on a SQL-dirty linked commit without materializing metadata', async () => {
+    const s = savedTestState();
+    const mutate = fakeMutateWorkspace(s);
+    const tab = s.tabs.value[0];
+    tab.sqlDraft = 'SELECT 1';
+    okEntry(await createSavedQuery(s, tab, 'Ambiguous update', '', mutate, 100));
+    tab.sqlDraft = 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}';
+    tab.specParsed = { name: 'Ambiguous update', favorite: false };
+    tab.dirtySql = true;
+    const result = await commitSavedQuery(s, tab, tab.specParsed, mutate);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(Object.hasOwn(result.entry.spec, 'timeRanges')).toBe(false);
+    expect(result.diagnostics?.[0]).toMatchObject({ code: 'time-range-inference-ambiguous' });
+  });
   it('creation stores a description and linked commits normalize/clear it', async () => {
     const s = savedTestState();
     const mutate = fakeMutateWorkspace(s);

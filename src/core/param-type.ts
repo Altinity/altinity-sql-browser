@@ -169,6 +169,41 @@ export function parseParamType(raw?: string | null): ParsedParamType {
   return { ...fromNode(node), raw: text };
 }
 
+/** Strict declaration predicate for saved-query time-range metadata. Unlike
+ * the permissive value pipeline, this accepts only syntactically valid scalar
+ * ClickHouse date/time declarations, valid wrapper ordering, DateTime's
+ * optional timezone, and DateTime64 precision 0..9 plus optional timezone. */
+export function isSupportedTimeRangeParamType(raw?: string | null): boolean {
+  const node = parseClickHouseType(String(raw || '').trim());
+  if (!node) return false;
+  const mods = analyzeTypeModifiers(node);
+  if (!mods.valid) return false;
+  const value = mods.valueType;
+  if (value.name === 'Date' || value.name === 'Date32') return value.args.length === 0;
+  if (value.name === 'DateTime') {
+    return value.args.length === 0
+      || (value.args.length === 1 && value.args[0].kind === 'string' && value.args[0].value.trim().length > 0);
+  }
+  if (value.name !== 'DateTime64' || value.args.length < 1 || value.args.length > 2) return false;
+  const precision = value.args[0];
+  if (precision.kind !== 'number' || !/^\d+$/.test(precision.value)) return false;
+  const n = Number(precision.value);
+  if (!Number.isInteger(n) || n < 0 || n > 9) return false;
+  return value.args.length === 1
+    || (value.args[1].kind === 'string' && value.args[1].value.trim().length > 0);
+}
+
+/** Explicit IANA timezone carried by a valid DateTime/DateTime64 declaration,
+ * or null when the type uses the existing server-timezone default. */
+export function dateTimeTimeZone(type: string | ParsedParamType): string | null {
+  const parsed = typeof type === 'string' ? parseParamType(type) : type;
+  if (!parsed.node) return null;
+  const value = analyzeTypeModifiers(parsed.node).valueType;
+  if (value.name === 'DateTime' && value.args.length === 1 && value.args[0].kind === 'string') return value.args[0].value;
+  if (value.name === 'DateTime64' && value.args.length === 2 && value.args[1].kind === 'string') return value.args[1].value;
+  return null;
+}
+
 /**
  * The lexical family of a parsed (or raw) type, deciding how the typed
  * serializer emits an array *element* of that type:

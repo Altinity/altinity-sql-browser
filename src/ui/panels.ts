@@ -66,6 +66,7 @@ interface RenderChartOpts {
   fieldConfig?: FieldConfig;
   hideGrid?: boolean;
   running?: boolean;
+  chartPlugins?: readonly unknown[];
 }
 // chart-render.js is untyped; renderChart reads only `.columns`/`.rows` off
 // its result argument (never rawText/error/panelState — see chart-render.js).
@@ -249,6 +250,7 @@ interface PanelRenderArgs {
   onCell?: (name: string, type: string, value: unknown) => void;
   onCfgChange?: (cfg: PanelCfg) => void;
   setChart?: (chart: PanelChartInstance) => void;
+  chartPlugins?: readonly unknown[];
 }
 
 interface PanelArm {
@@ -274,10 +276,11 @@ const chartArm: PanelArm = {
   // bar (X/Y/Series/All-measures; its Type select is suppressed — the Panel
   // tab's picker owns type). No separate controls() row.
   controls: () => null,
-  renderPanel({ app, result, cfg, fieldConfig, surface, rerender, readonly, onCfgChange, setChart }: {
+  renderPanel({ app, result, cfg, fieldConfig, surface, rerender, readonly, onCfgChange, setChart, chartPlugins }: {
     app: App; result: PanelResult; cfg: PanelCfg; fieldConfig?: FieldConfig;
     surface?: 'workbench' | 'dashboard'; rerender?: () => void; readonly?: boolean;
     onCfgChange?: (cfg: PanelCfg) => void; setChart?: (chart: PanelChartInstance) => void;
+    chartPlugins?: readonly unknown[];
   }): PanelRenderResult {
     let inst: PanelChartInstance | null = null;
     const node = renderChart(app, result, {
@@ -290,6 +293,7 @@ const chartArm: PanelArm = {
       fieldConfig,
       hideGrid: surface === 'dashboard',
       running: false, // the caller gates on run state before dispatching
+      chartPlugins,
     });
     return { node, destroy: () => { if (inst) { inst.destroy(); inst = null; } } };
   },
@@ -414,6 +418,7 @@ interface RenderResolvedPanelOpts {
   onCell?: (name: string, type: string, value: unknown) => void;
   onCfgChange?: (cfg: PanelCfg) => void;
   setChart?: (chart: PanelChartInstance) => void;
+  chartPlugins?: readonly unknown[];
 }
 
 /**

@@ -77,6 +77,15 @@ describe('validateQueryCollectionSemantics', () => {
     expect(validateQueryCollectionSemantics([panelQuery('q1'), panelQuery('q2')])).toEqual([]);
   });
 
+  it('rejects persisted time-range metadata with identical bounds', () => {
+    const diagnostics = validateQueryCollectionSemantics([
+      panelQuery('q1', { timeRanges: [{ from: 'ts', to: 'ts' }] }),
+    ]);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      path: ['queries', 0, 'spec', 'timeRanges', 0, 'to'], code: 'time-range-same-parameter', resource: 'q1',
+    }));
+  });
+
   it('flags duplicate ids and skips non-object entries', () => {
     const diagnostics = validateQueryCollectionSemantics([panelQuery('dup'), 'nope', panelQuery('dup')]);
     expect(has(diagnostics, 'workspace-duplicate-query-id')).toBe(true);

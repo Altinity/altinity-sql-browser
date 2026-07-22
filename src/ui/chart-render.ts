@@ -80,6 +80,7 @@ export interface RenderChartOpts {
   controls?: boolean;
   fieldConfig?: FieldConfig;
   hideGrid?: boolean;
+  chartPlugins?: readonly unknown[];
 }
 
 /**
@@ -210,12 +211,16 @@ export function renderChart(
   // contradicting the "first N rows" note. It would also sort up to the display
   // cap's rows just to discard all but the first `cap`.
   const ChartCtor = app.Chart as ChartConstructor;
-  const chart = new ChartCtor(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), {
+  const baseConfig = chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), {
     fieldConfig: opts.fieldConfig,
     hideGrid: opts.hideGrid,
     measures,
     data: chartData, // aggregated once above — don't re-aggregate for the config
-  }));
+  });
+  const chartConfig = opts.chartPlugins?.length
+    ? { ...baseConfig, plugins: [...opts.chartPlugins] }
+    : baseConfig;
+  const chart = new ChartCtor(canvas, chartConfig);
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,
   // ResizeObserver) bound to the window the Chart.js module itself runs in —

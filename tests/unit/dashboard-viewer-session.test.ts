@@ -2420,6 +2420,42 @@ describe('searchable multiselect filter contract (#189)', () => {
     expect(byId(session, 'f-region').value).toEqual(['west']);
   });
 
+  it('does not cancel an in-flight consumer tile when source reconciliation leaves its selection unchanged', async () => {
+    let holdTile = false; let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { exec } = makeExec(async (sql) => {
+      if (sql.includes('source')) {
+        return { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['west', 'east']]] };
+      }
+      if (holdTile) await gate;
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'qt')],
+        filters: [
+          { id: 'root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+          { id: 'region', parameter: 'region', sourceQueryId: 'src', defaultActive: true, defaultValue: ['east', 'west'] },
+        ],
+      }),
+      exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('src', "SELECT ['west','east'] AS region WHERE x = {from:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    holdTile = true;
+    const pendingTile = session.refreshTile('t');
+    await flush();
+    expect(session.state.value.tiles[0].status).toBe('loading');
+    await session.setFilter('root', 'v1');
+    expect(session.state.value.tiles[0].status).toBe('loading');
+    release();
+    await pendingTile;
+    expect(session.state.value.tiles[0].status).toBe('ready');
+  });
+
   it('clearAllFilters compares an array value/default STRUCTURALLY (sameSelection) — a no-op reset issues no wave, a real change issues exactly one', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
@@ -2702,6 +2738,111 @@ describe('applyFilters batch commit (#335)', () => {
     expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
   });
 
+  it('validates the complete typed batch before mutation and reports failure', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [
+          { id: 'from', parameter: 'from', defaultActive: false, defaultValue: '' },
+          { id: 'to', parameter: 'to', defaultActive: false, defaultValue: '' },
+        ],
+      }),
+      exec, queries: [query('q', 'SELECT {from:DateTime}, {to:DateTime}')],
+    }));
+    await session.start();
+    const base = calls.length;
+    const result = await session.applyFilters([
+      { filterId: 'from', value: '1700000000', active: true },
+      { filterId: 'to', value: 'now-nope', active: true },
+    ]);
+    expect(result).toMatchObject({ ok: false });
+    expect(session.state.value.filters).toMatchObject([
+      { value: '', active: false }, { value: '', active: false },
+    ]);
+    expect(calls).toHaveLength(base);
+  });
+
+  it('validates against a filter own explicit consumers, ignoring an untargeted conflicting declaration', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('date', 'qd'), tile('string', 'qs')],
+        filters: [{ id: 'f', parameter: 'p', targets: ['date'], defaultActive: false, defaultValue: '' }],
+      }),
+      exec, queries: [query('qd', 'SELECT {p:DateTime}'), query('qs', 'SELECT {p:String}')],
+    }));
+    await session.start();
+    expect(await session.applyFilters([{ filterId: 'f', value: '1700000000', active: true }]))
+      .toEqual({ ok: true, changed: true });
+    expect(session.state.value.filters[0]).toMatchObject({ value: '1700000000', active: true });
+  });
+
+  it('allows inactive undeclared values but rejects activating a filter with no parameter contract', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'orphan', parameter: 'missing', defaultActive: false, defaultValue: '' }],
+      }),
+      exec, queries: [query('q', 'SELECT 1')],
+    }));
+    await session.start();
+    expect(await session.applyFilters([{ filterId: 'orphan', value: 'kept', active: false }]))
+      .toEqual({ ok: true, changed: true });
+    expect(await session.applyFilters([{ filterId: 'orphan', value: 'bad', active: true }]))
+      .toEqual({ ok: false, error: 'missing is not a valid filter value.' });
+    expect(session.state.value.filters[0]).toMatchObject({ value: 'kept', active: false });
+  });
+
+  it('hardens incomplete values and validates arrays through the same scoped execution pipeline', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('int', 'qi'), tile('array', 'qa')],
+        filters: [
+          { id: 'int-filter', parameter: 'i', targets: ['int'], defaultActive: false, defaultValue: '' },
+          { id: 'array-filter', parameter: 'a', targets: ['array'], defaultActive: false, defaultValue: [] },
+        ],
+      }),
+      exec, queries: [query('qi', 'SELECT {i:Int32}'), query('qa', 'SELECT {a:Array(UInt8)}')],
+    }));
+    await session.start();
+    expect(await session.applyFilters([{ filterId: 'int-filter', value: '-', active: true }]))
+      .toMatchObject({ ok: false });
+    expect(await session.applyFilters([{ filterId: 'array-filter', value: ['1', '2'], active: true }]))
+      .toEqual({ ok: true, changed: true });
+    expect(session.state.value.filters[1]).toMatchObject({ value: ['1', '2'], active: true });
+  });
+
+  it('settles an aborted loading tile when reserved work cannot pass token preflight', async () => {
+    let hold = false; let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let tokenOk = true;
+    const { exec } = makeExec(async () => {
+      if (hold) await gate;
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'f', parameter: 'p', defaultActive: true, defaultValue: '1700000000' }],
+      }),
+      exec, connection: { ensureFreshToken: async () => tokenOk },
+      queries: [query('q', 'SELECT {p:DateTime}')],
+    }));
+    await session.start();
+    hold = true;
+    const old = session.refreshTile('t');
+    await flush();
+    expect(session.state.value.tiles[0].status).toBe('loading');
+    tokenOk = false;
+    await session.applyFilters([{ filterId: 'f', value: '1800000000', active: true }]);
+    expect(session.state.value.tiles[0].status).toBe('idle');
+    release(); await old;
+    expect(session.state.value.tiles[0].status).toBe('idle');
+  });
+
   it('commits both filters active and reruns the UNION of their targets in exactly one wave (a tile consuming both runs once)', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
@@ -2934,12 +3075,84 @@ describe('timeRangeGroups resolution (#335)', () => {
         tiles: [tile('t', 'q')],
         filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
       }),
-      queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2')],
+      queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2', {
+        timeRanges: [{ from: 'from', to: 'to' }],
+      })],
     }));
     expect(session.timeRangeGroups.length).toBe(1);
     expect(session.timeRangeGroups[0]).toMatchObject({
       fromFilterId: 'ff', toFilterId: 'ft', fromParameter: 'from', toParameter: 'to',
+      tileIds: ['t'],
     });
+  });
+
+  it('does not form a runtime group when timeRanges is absent or explicitly empty', () => {
+    const document = doc({
+      tiles: [tile('absent', 'q-absent'), tile('opted-out', 'q-empty')],
+      filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document,
+      queries: [
+        query('q-absent', 'SELECT {from:DateTime}, {to:DateTime}'),
+        query('q-empty', 'SELECT {from:DateTime}, {to:DateTime}', { timeRanges: [] }),
+      ],
+    }));
+    expect(session.timeRangeGroups).toEqual([]);
+    expect(session.state.value.timeRangeDiagnostics).toEqual([]);
+  });
+
+  it('aggregates every tile declaring the same resolved filter pair into one group', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('a', 'qa'), tile('b', 'qb')],
+        filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+      }),
+      queries: [
+        query('qa', 'SELECT {from:DateTime}, {to:DateTime}', { timeRanges: [{ from: 'from', to: 'to' }] }),
+        query('qb', 'SELECT {from:DateTime}, {to:DateTime}', { timeRanges: [{ from: 'from', to: 'to' }] }),
+      ],
+    }));
+    expect(session.timeRangeGroups).toHaveLength(1);
+    expect(session.timeRangeGroups[0]).toMatchObject({
+      fromFilterId: 'ff', toFilterId: 'ft', tileIds: ['a', 'b'],
+    });
+    expect(session.state.value.timeRangeDiagnostics).toEqual([]);
+  });
+
+  it('keeps a non-executing Text tile in group membership using its saved SQL contract', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('chart', 'qc'), tile('text', 'qt')],
+        filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
+      }),
+      queries: [
+        query('qc', 'SELECT {from:DateTime}, {to:DateTime}', { timeRanges: [{ from: 'from', to: 'to' }] }),
+        query('qt', 'SELECT {from:DateTime}, {to:DateTime}', {
+          timeRanges: [{ from: 'from', to: 'to' }], panel: { cfg: { type: 'text', content: 'note' } },
+        }),
+      ],
+    }));
+    expect(session.timeRangeGroups[0].tileIds).toEqual(['chart', 'text']);
+  });
+
+  it('diagnoses unresolved authored metadata without partially forming a group', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'q')],
+        filters: [{ id: 'ff', parameter: 'from' }],
+      }),
+      queries: [query('q', 'SELECT {from:DateTime}, {to:DateTime}', {
+        timeRanges: [{ from: 'from', to: 'to' }],
+      })],
+    }));
+    expect(session.timeRangeGroups).toEqual([]);
+    expect(session.state.value.timeRangeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'time-range-filter-unresolved', resource: 't',
+        message: expect.stringContaining('could not resolve both parameters'),
+      }),
+    ]);
   });
 
   it('excludes a curated (surviving source-backed) date-like filter from grouping', () => {
@@ -2966,7 +3179,9 @@ describe('timeRangeGroups resolution (#335)', () => {
         tiles: [tile('t', 'q')],
         filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
       }),
-      queries: [query('q', 'SELECT {from:String} AS f, {to:String} AS t2')],
+      queries: [query('q', 'SELECT {from:String} AS f, {to:String} AS t2', {
+        timeRanges: [{ from: 'from', to: 'to' }],
+      })],
     }));
     expect(session.timeRangeGroups).toEqual([]);
   });
@@ -2978,7 +3193,9 @@ describe('timeRangeGroups resolution (#335)', () => {
         tiles: [tile('t', 'q')],
         filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
       }),
-      exec, queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2')],
+      exec, queries: [query('q', 'SELECT {from:DateTime} AS f, {to:DateTime} AS t2', {
+        timeRanges: [{ from: 'from', to: 'to' }],
+      })],
     }));
     await session.start();
     const groups = session.timeRangeGroups;

@@ -598,6 +598,7 @@ describe('buildFilterBar (shared filter row)', () => {
     const dtGroup = (): DashboardTimeRangeGroup => ({
       key: 'from to', fromFilterId: 'from', toFilterId: 'to',
       fromParameter: 'from', toParameter: 'to', fromType: dt, toType: dt,
+      tileIds: [], interactiveChartTileIds: [],
     });
     const trEntry = (over: Partial<{
       fromValue: string; toValue: string; active: boolean; waveNowMs: number | null;

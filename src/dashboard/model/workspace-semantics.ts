@@ -18,6 +18,7 @@ import { analyzeParameterizedSources } from '../../core/param-pipeline.js';
 import type { ParameterAnalysis, ParameterizedSourceInput } from '../../core/param-pipeline.js';
 import { resolveFilterSelection } from '../../core/filter-selection.js';
 import type { FilterSelectionFilterDef, FilterSelectionDiagnostic } from '../../core/filter-selection.js';
+import { hasSameTimeRangeParameter } from '../../core/query-time-range.js';
 import { resolvePresentation } from './presentation-resolver.js';
 
 export const FLOW_LAYOUT_V1_SCHEMA_ID =
@@ -188,6 +189,10 @@ export function validateQueryCollectionSemantics(
     }
     const spec = query.spec;
     if (!isObject(spec)) continue;
+    if (hasSameTimeRangeParameter(spec)) {
+      out.push(diagnostic([...path, index, 'spec', 'timeRanges', 0, 'to'], 'time-range-same-parameter',
+        'Time-range From and To parameters must be different.', id));
+    }
     if (typeof spec.name === 'string' && spec.name.length > PORTABLE_LIMITS.maxNameLength) {
       out.push(diagnostic([...path, index, 'spec', 'name'], 'limit-name-length',
         `Query name is ${spec.name.length} characters; the maximum is ${PORTABLE_LIMITS.maxNameLength}`, id));

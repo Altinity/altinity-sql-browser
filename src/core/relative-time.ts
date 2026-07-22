@@ -218,7 +218,8 @@ export function isDateLikeType(type: string | ParsedParamType): boolean {
   return base === 'Date' || base === 'Date32' || base === 'DateTime' || base === 'DateTime64';
 }
 
-function formatByType(epochMs: number, t: ParsedParamType): string {
+export function formatTimeParamValue(epochMs: number, type: ParsedParamType | string): string {
+  const t = parsedType(type);
   if (t.base === 'Date' || t.base === 'Date32') return formatDate(epochMs);
   if (t.base === 'DateTime64') {
     const n = t.inner ? parseInt(t.inner, 10) || 0 : 0;
@@ -316,7 +317,7 @@ export function resolveRelativeValue(expr: string, type: string | ParsedParamTyp
   // hand by this point; see `param-pipeline.ts`'s `resolveRelativeExpr` seam
   // comment for the one caller that deliberately leaves it optional.
   const instant = resolveInstant(parsed, nowMs!);
-  return { ok: true, value: formatByType(instant, t), matched: true };
+  return { ok: true, value: formatTimeParamValue(instant, t), matched: true };
 }
 
 /** `formatPreview`'s successful-resolution shape — see `ResolveRelativeOk`
