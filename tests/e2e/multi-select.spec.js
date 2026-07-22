@@ -11,8 +11,8 @@ test.describe('Multi-select Apply action states (#386)', () => {
       await page.locator('body').evaluate((el, nextTheme) => { el.dataset.theme = nextTheme; }, theme);
       await page.getByRole('button', { name: 'City filter, 0 selected' }).click();
 
-      const apply = page.getByRole('button', { name: 'Apply' });
-      const disabled = page.getByRole('button', { name: 'Disabled Apply' });
+      const apply = page.getByRole('button', { name: 'Apply', exact: true });
+      const disabled = page.getByRole('button', { name: 'Disabled Apply', exact: true });
       const styles = (target) => target.evaluate((el) => {
         const css = getComputedStyle(el);
         return { background: css.backgroundColor, color: css.color, outline: css.outlineStyle, transform: css.transform };
@@ -25,7 +25,12 @@ test.describe('Multi-select Apply action states (#386)', () => {
       expect(hovered.background).not.toBe(enabled.background);
       expect(await styles(disabled)).not.toEqual(hovered);
 
-      await apply.focus();
+      // Enter focus through keyboard navigation so :focus-visible is the
+      // state under test; programmatic focus intentionally does not promise
+      // that modality in browsers.
+      for (let i = 0; i < 10 && !(await apply.evaluate((el) => el === document.activeElement)); i++) {
+        await page.keyboard.press('Tab');
+      }
       expect((await styles(apply)).outline).not.toBe('none');
 
       const box = await apply.boundingBox();
