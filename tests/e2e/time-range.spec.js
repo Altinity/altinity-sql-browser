@@ -191,6 +191,26 @@ test.describe('Dashboard compound time-range control', () => {
     await expect(page.locator('.trf-trigger')).toBeVisible();
   });
 
+  for (const theme of ['dark', 'light']) {
+    test(`keeps enabled, hover, and disabled Apply states distinct in ${theme} theme`, async ({ page }) => {
+      await page.evaluate((nextTheme) => window.__setTheme(nextTheme), theme);
+      await open(page);
+      const apply = applyBtn(page);
+      const styles = () => apply.evaluate((el) => {
+        const css = getComputedStyle(el);
+        return { background: css.backgroundColor, color: css.color, opacity: css.opacity };
+      });
+      const enabled = await styles();
+      await apply.hover();
+      const hovered = await styles();
+      expect(hovered.background).not.toBe(enabled.background);
+
+      await fromBox(page).fill('not-a-time');
+      await expect(apply).toBeDisabled();
+      expect(await styles()).not.toEqual(hovered);
+    });
+  }
+
   test('keeps the popover inside the viewport at a 360px width', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.reload();
@@ -275,6 +295,12 @@ test.describe('Dashboard compound time-range control', () => {
 
     // Modified drag is reserved for Dashboard tile movement and never starts
     // a chart selection.
+    await expect(page.locator('#chart-a')).toHaveCSS('cursor', 'crosshair');
+    await page.locator('.chart-row').evaluate((el) => el.classList.add('dash-grid', 'modkey'));
+    await expect(page.locator('#chart-a')).toHaveCSS('cursor', 'grab');
+    await page.locator('.chart-row').evaluate((el) => el.classList.add('dash-reordering'));
+    await expect(page.locator('#chart-a')).toHaveCSS('cursor', 'grabbing');
+    await page.locator('.chart-row').evaluate((el) => el.classList.remove('modkey', 'dash-reordering', 'dash-grid'));
     await page.evaluate(() => { window.__selected = null; window.__resetExec(); });
     await page.keyboard.down('Control');
     await page.mouse.move(geometry.endX, geometry.y);

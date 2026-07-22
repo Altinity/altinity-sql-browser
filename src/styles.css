@@ -1599,21 +1599,6 @@ body.detached-tab .graph-overlay-panel {
 }
 .ms-btn:hover { background: var(--bg-hover); }
 .ms-btn-clear { margin-right: auto; }
-.ms-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
-/* The generic `.ms-btn:hover` rule is deliberately overridden here: it is
-   more specific than the base primary rule and otherwise turns Apply into a
-   faint neutral surface on hover. Keep every action state explicit so the
-   primary affordance remains distinct in both themes. */
-.ms-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
-.ms-btn-primary:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: 2px;
-  box-shadow: 0 0 0 2px var(--bg-panel, var(--bg-editor));
-}
-.ms-btn-primary:active:not(:disabled) { background: var(--accent-dim); transform: translateY(1px); }
-.ms-btn-primary:disabled {
-  border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
-  cursor: not-allowed; opacity: 1;
-}
 /* Compound time-range control (#335, time-range-field.ts) — the SECOND
    consumer of the #364 dialog-popover pattern (openAnchoredDialog). The
    trigger reuses .var-input's sizing/border like .ms-trigger; the popover is
@@ -1682,10 +1667,22 @@ body.detached-tab .graph-overlay-panel {
   border: 1px solid var(--border); background: transparent; color: var(--fg);
 }
 .trf-btn:hover { background: var(--bg-hover); }
-.trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
-.trf-btn-primary:hover { filter: brightness(1.08); }
-.trf-btn-primary:disabled { opacity: .5; cursor: default; }
-.trf-btn-primary:disabled:hover { filter: none; }
+/* Shared primary-action state model for both filter popovers (#386 follow-up).
+   This block follows BOTH generic button hover rules so neutral hover chrome
+   can never wash an enabled Apply button into a disabled-looking surface. */
+.ms-btn-primary, .trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
+.ms-btn-primary:hover:not(:disabled), .trf-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
+.ms-btn-primary:focus-visible, .trf-btn-primary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg-panel, var(--bg-editor));
+}
+.ms-btn-primary:active:not(:disabled), .trf-btn-primary:active:not(:disabled) {
+  background: var(--accent-dim); transform: translateY(1px);
+}
+.ms-btn-primary:disabled, .trf-btn-primary:disabled {
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
+  cursor: not-allowed; opacity: 1;
+}
 /* #335 D2 (filter-bar integration): the "Time"/"Filters" section labels and
    the separator between the compound time-range control and the per-param
    fields. Both sit in the same flex row as the fields (`.dash-filters`), so
@@ -2601,8 +2598,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    grid shows the grab affordance (mirrors the schema graph's `.modkey` cue).
    During a move text selection is suppressed for the gesture's duration. */
 .dash-grid.modkey .dash-tile { cursor: grab; }
+.dash-grid.modkey .dash-time-chart { cursor: grab; }
 .dash-grid.dash-reordering { user-select: none; cursor: grabbing; }
 .dash-grid.dash-reordering .dash-tile { cursor: grabbing; }
+.dash-grid.dash-reordering .dash-time-chart { cursor: grabbing; }
 /* Flow-engine path: the hovered destination tile is outlined (point-hit-test,
    no live grid reflow/placeholder — flow's KPI band has no grid slot). The
    dragged tile itself floats via `.dash-floating` below, same as grid. */
