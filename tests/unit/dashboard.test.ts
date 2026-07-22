@@ -2503,6 +2503,268 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
   });
 });
 
+// #189/#364 (Bug 3): a favorited `filter`-role saved query whose OUTPUT COLUMN
+// name matches an implicit (undeclared) panel-tile parameter auto-binds its
+// options to that parameter — `synthesizeImplicitFilters` sets `sourceQueryId`,
+// so the field upgrades from a plain text box to a curated combobox WITHOUT any
+// explicit `doc.filters` entry. Exactly one favorited source binds; zero or
+// more than one (ambiguous) leaves the field plain.
+describe('renderDashboard — auto-bind favorited filter source by column name (#364)', () => {
+  // A panel tile whose only parameter is `user1: Array(String)` — the implicit
+  // filter target these tests wire (or decline to wire) a source to.
+  const CONSUMER = 'SELECT k, v FROM a WHERE has(user1, {user1:Array(String)})';
+  const optionsResponder: ExecResponder = (sql) => (sql.includes('opts')
+    ? { columns: [{ name: 'user1', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+    : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] });
+
+  it('binds a favorited filter source that outputs the same column name (field becomes curated)', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(field).not.toBeNull();
+    expect(qs(field, '.var-name').textContent).toBe('user1');
+  });
+
+  it('leaves the field plain when NO favorited filter source outputs the column', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          // A favorited filter source, but it outputs a DIFFERENT column.
+          q('src', 'SELECT groupArray(region) AS someOther FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    // The user1 field still renders, just not curated (no source attached).
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+
+  it('does NOT bind when two favorited filter sources output the same column (ambiguous)', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('srcA', 'SELECT groupArray(region) AS user1 FROM a -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+          q('srcB', 'SELECT groupArray(region) AS user1 FROM b -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+
+  it('ignores a NON-favorited filter-role query that outputs the column', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: false }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+  });
+});
+
+// #189: the searchable multiselect (an Array(...) consumer contract, default
+// `selection.mode`) and the single-select-on-Array wrap (`selection.mode:
+// 'single'` against the same Array contract) — both new curated shapes,
+// wired end to end through the REAL session's `applyFilter` (never a bare
+// callback spy), so a committed value is a genuine array all the way through
+// `param-serialize.ts`'s wire format.
+describe('renderDashboard — searchable multiselect + array-wrapped curated filters (#189)', () => {
+  it('an Array(...) consumer contract renders a multiselect field; Apply commits an array through the real session', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('opts')
+        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(field).not.toBeNull();
+    expect(qs(field, '.ms-field')).not.toBeNull(); // the multiselect control, not the scalar combobox
+    const before = calls.length;
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const cb = qs<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]');
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+    qs(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(added.length).toBe(1); // one affected-panel wave
+    expect(added[0].params.param_p).toBe("['x']"); // a real ClickHouse array literal, not a joined string
+  });
+
+  it('a single-select curated field over an Array(...) contract commits a WRAPPED [value] (never a bare scalar), through the real session', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('opts')
+        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', selection: { mode: 'single' } }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(qs(field, '.var-combo')).not.toBeNull(); // stays the scalar combobox, not a multiselect
+    const before = calls.length;
+    qs<HTMLInputElement>(field, 'input').dispatchEvent(new Event('focus'));
+    qs(field, '[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(added.length).toBe(1);
+    expect(added[0].params.param_p).toBe("['x']"); // wrapped, never the bare scalar "'x'"
+  });
+
+  // #189 review (F2): a NEW option generation while the popover is open must
+  // force-close it as a silent Cancel (never a committed value from the open
+  // draft), announce the closure, and move focus to the FRESH bar's trigger
+  // for the same parameter — driven end to end through the real session (a
+  // refresh that reruns the shared source with DIFFERENT option content).
+  it('a NEW option generation while the multiselect popover is open force-closes it with no applyFilter call, announces the refresh, and focuses the new trigger', async () => {
+    let srcCalls = 0;
+    const { app, calls } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('opts')) {
+          srcCalls++;
+          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[srcCalls === 2 ? ['a', 'b', 'c'] : ['x', 'y']]] };
+        }
+        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
+      }),
+    });
+    await render(app);
+    // `app.root` (fake-app.ts) is a detached div by default — connect it so a
+    // real `.focus()` inside it actually becomes `document.activeElement`
+    // (the popover itself is already appended straight to the real
+    // `document.body` by `multi-select-field.ts`, unaffected either way).
+    document.body.appendChild(rootEl(app));
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(qs(document.body, '.ms-popover')).not.toBeNull();
+    // Mutate the OPEN DRAFT only — check the second option ('y') too, so the
+    // draft becomes ['x','y'] — never Apply.
+    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
+    draftCb.checked = true;
+    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
+    const before = calls.length;
+    // Refresh reruns the shared source, which returns a DIFFERENT option set
+    // (same length as the #359 rebuild trigger) — a new option generation.
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    // The popover was force-closed as a silent Cancel — no call anywhere
+    // reflects the open draft's ['x','y'] pick (the real seam that would
+    // carry it, `applyFilter`, is never reached).
+    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(false);
+    expect(document.body.querySelector('.ms-popover')).toBeNull();
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Filter options were refreshed');
+    // The committed value ['x'] (never touched by the draft) is now dormant
+    // against the NEW option set — the merge deactivates it (existing
+    // dormant-value self-heal behavior, unrelated to this fix) — the fresh
+    // bar's trigger reads "Not set", never "2 selected" (which only a
+    // committed ['x','y'] — i.e. the discarded draft — would have produced).
+    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(newTrigger.textContent).toBe('Not set');
+    expect(document.activeElement).toBe(newTrigger);
+    rootEl(app).remove();
+  });
+
+  // Maintainer merge-gate finding: an ORDINARY Apply — the user's own commit,
+  // not an outgoing bar's popover getting force-cancelled by someone/something
+  // else — must never announce "Filter options were refreshed". Driven end to
+  // end through the real session: the shared source republishes the SAME
+  // option content on every rerun (no genuine option-generation change), so
+  // `optionsRev` never bumps and the announcement must stay silent even though
+  // `session.applyFilter`'s synchronous `publish()` forces this exact
+  // multiselect's own bar to rebuild out from under its own (already-closed)
+  // popover.
+  it('a normal Apply commits through the real session without announcing "Filter options were refreshed", and focuses the fresh trigger', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('opts')) {
+          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] };
+        }
+        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
+      }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(qs(document.body, '.ms-popover')).not.toBeNull();
+    const liveRegionBefore = qs(app.root, '.dash-toolbar > .sr-only').textContent;
+    // Check the second option ('y') too, then Apply — a real value change.
+    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
+    draftCb.checked = true;
+    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
+    const before = calls.length;
+    qs<HTMLButtonElement>(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // The popover is torn down synchronously (multi-select-field.ts's Apply
+    // handler closes before calling `onApply`) — no macrotask/microtask flush
+    // needed to observe it gone.
+    expect(document.body.querySelector('.ms-popover')).toBeNull();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(true); // the commit went through
+    // The live region is untouched — no false "refreshed" announcement.
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe(liveRegionBefore);
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
+    // Focus lands on the FRESH bar's trigger for the same parameter (the old
+    // one, focused by `close()`, was detached by the synchronous rebuild).
+    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(document.activeElement).toBe(newTrigger);
+    rootEl(app).remove();
+  });
+});
+
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY
 // when a curated source's option VALUE CONTENT changes — including a clear to
 // null — never on an unchanged republish) and `filterDiagnostics` (its own
@@ -2550,25 +2812,42 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     const { app } = dashApp({
       responder: (sql) => {
         if (sql.includes('optsinfo')) return { columns: [{ name: 'pinfo', type: 'Array(String)' }], rows: [[['x', 'x']]] };
-        if (sql.includes('optswarn')) return { columns: [{ name: 'pwarn', type: 'Array(String)' }], rows: [[['a', 'b']]] };
+        if (sql.includes('optswarn')) {
+          return {
+            columns: [{ name: 'pwarn2', type: 'Array(String)' }, { name: 'pwarn', type: 'Array(String)' }],
+            rows: [[['a', 'b'], ['c', 'd']]],
+          };
+        }
         return {};
       },
       workspace: wsWith({
         queries: [
-          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String}'),
+          // #189: every source-backed filter below needs a real EXECUTABLE
+          // consumer declaring its own parameter (a scalar type) — otherwise
+          // `resolveFilterSelection` sees zero consumers and the strict
+          // fallback strips it from its source's `consumers` before the
+          // source ever runs, at construction (never a benign carve-out
+          // anymore — see `dashboard-viewer-session.ts`'s
+          // `resolveFilterSelection` wiring). `t1` declares all three so
+          // every one of `ferr`/`fwarn`/`finfo`'s sources still executes.
+          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String} AND w = {pwarn2:String} AND z = {perr:String}'),
           // A duplicate option value ('x' twice) → an 'info' diagnostic
           // (`filter-duplicate-option`) from readFilterOptions.
           q('srcInfo', "SELECT ['x','x'] AS pinfo -- optsinfo", { dashboard: { role: 'filter' } }),
-          // 'pwarn' has no Panel consumer → a 'warning' diagnostic
+          // 'pwarn2' is the REAL, consumed filter parameter (keeps this
+          // shared source alive); 'pwarn' is an extra returned column no
+          // filter definition even names — a genuinely-unmatched helper
+          // column (not a no-consumer filter — #189 would have stripped
+          // that before the source ever ran) → a 'warning' diagnostic
           // (`filter-helper-unused`) from the merge.
-          q('srcWarn', "SELECT ['a','b'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
+          q('srcWarn', "SELECT ['a','b'] AS pwarn2, ['c','d'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
         ],
         tiles: [{ id: 't1', queryId: 'q1' }],
         filters: [
           // An unresolvable source query id → an 'error' diagnostic
           // (`filter-source-missing`).
           { id: 'ferr', parameter: 'perr', sourceQueryId: 'nope' },
-          { id: 'fwarn', parameter: 'pwarn', sourceQueryId: 'srcWarn' },
+          { id: 'fwarn', parameter: 'pwarn2', sourceQueryId: 'srcWarn' },
           { id: 'finfo', parameter: 'pinfo', sourceQueryId: 'srcInfo' },
         ],
       }),

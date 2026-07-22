@@ -56,6 +56,23 @@ describe('validatePortableBundleDocument', () => {
     }));
     expect(has(d, 'workspace-duplicate-query-id')).toBe(true);
   });
+
+  it('validates dashboard filter selection-mode overrides (#189)', () => {
+    const withSelection = (selection: unknown) => bundle({
+      dashboards: [dashboardDoc({
+        filters: [{ id: 'flt', parameter: 'p', selection }],
+      })],
+    });
+    expect(validatePortableBundleDocument(withSelection({ mode: 'single' }))).toEqual([]);
+    expect(validatePortableBundleDocument(withSelection({ mode: 'multiple' }))).toEqual([]);
+    expect(validatePortableBundleDocument(withSelection({}))).toEqual([]);
+
+    const badMode = validatePortableBundleDocument(withSelection({ mode: 'bogus' }));
+    expect(has(badMode, 'schema-invalid-enum')).toBe(true);
+
+    const unknownProp = validatePortableBundleDocument(withSelection({ mode: 'single', extra: true }));
+    expect(has(unknownProp, 'schema-unknown-property')).toBe(true);
+  });
 });
 
 describe('decodePortableBundleJson', () => {

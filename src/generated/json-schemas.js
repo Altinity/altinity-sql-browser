@@ -1601,6 +1601,22 @@ export const dashboardV1Schema = {
           "title": "Active by default",
           "description": "Whether the filter starts active.",
           "type": "boolean"
+        },
+        "selection": {
+          "title": "Selection mode override",
+          "description": "Optional explicit selection-mode override for searchable multiselect filters (#189). Omitted means the runtime infers the mode from the agreed consumer parameter type across target queries: a scalar T infers single selection, an Array(T) infers multiselect. Inference is runtime-only and is never persisted here.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "title": "Selection mode",
+              "description": "Explicit override for the inferred selection mode: \"single\" forces one active value, \"multiple\" forces a searchable multiselect.",
+              "enum": [
+                "single",
+                "multiple"
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false,
@@ -1611,7 +1627,8 @@ export const dashboardV1Schema = {
         "sourceQueryId",
         "targets",
         "defaultValue",
-        "defaultActive"
+        "defaultActive",
+        "selection"
       ]
     },
     "dashboardLayoutFallbackV1": {

@@ -1542,6 +1542,64 @@ body.detached-tab .graph-overlay-panel {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
+/* Multiselect Dashboard Filter control (#189, multi-select-field.ts) — a
+   dedicated dialog popover rather than the single-select combobox
+   (.var-combo/.var-combo-list) forced into multiselect ARIA roles. The
+   trigger reuses .var-input's sizing/border so it sits flush with every
+   other filter field; the popover is its own `position:fixed` panel, same
+   escape-the-scrolling-strip trick as .var-combo-list/.file-menu. */
+.ms-field { grid-column: 2; display: inline-flex; }
+.ms-trigger {
+  display: inline-flex; align-items: center;
+  width: calc(var(--var-input-ch, 16) * 1ch); max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left; cursor: pointer;
+}
+.ms-trigger:hover:not(:disabled) { border-color: var(--accent); }
+.ms-trigger:disabled { cursor: default; }
+.ms-trigger.is-waiting { border-style: dashed; }
+.ms-trigger.is-stale { opacity: 0.55; font-style: italic; }
+.ms-field .var-input.is-error { width: calc(var(--var-input-ch, 16) * 1ch); }
+.ms-popover {
+  position: fixed; z-index: 70; width: 260px; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--bg-panel, var(--bg-editor)); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4);
+  font-size: 12px; font-family: var(--mono);
+}
+.ms-overlay { position: fixed; inset: 0; z-index: 60; }
+.ms-search {
+  height: 24px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 5px; font: inherit;
+}
+.ms-search:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
+.ms-select-all {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 2px 4px; color: var(--fg-mute); font-size: 11px;
+  border-bottom: 1px solid var(--border-faint);
+}
+.ms-select-all-cb, .ms-option input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.ms-options { display: flex; flex-direction: column; max-height: 220px; overflow-y: auto; gap: 1px; }
+.ms-option {
+  display: flex; align-items: center; gap: 6px; padding: 5px 4px;
+  border-radius: 5px; cursor: pointer; color: var(--fg);
+}
+.ms-option:hover { background: var(--bg-hover); }
+.ms-option[hidden] { display: none; }
+.ms-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-footer { display: flex; justify-content: flex-end; gap: 6px; padding-top: 4px; border-top: 1px solid var(--border-faint); }
+.ms-btn {
+  height: 24px; padding: 0 10px; border-radius: 5px; cursor: pointer;
+  font: inherit; font-size: 11.5px;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+}
+.ms-btn:hover { background: var(--bg-hover); }
+.ms-btn-clear { margin-right: auto; }
+.ms-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: 600; }
+.ms-btn-primary:hover { filter: brightness(1.08); }
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;

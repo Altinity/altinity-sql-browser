@@ -50,6 +50,8 @@ import {
 import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeline.js';
 import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
+import { queryFavorite } from '../core/saved-query.js';
+import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
@@ -152,6 +154,13 @@ export interface DashboardApp {
 const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
+/** #189: an array-safe stand-in for `valueString`, used ONLY by the filter-bar
+ *  rebuild signature below — an array JSON-encodes (so a committed
+ *  `['a','b']` is distinct from the joined string `"a,b"`, which
+ *  `valueString`'s `String()` fallback would otherwise collapse it to);
+ *  every other value keeps `valueString`'s own coercion, unchanged. */
+const sigValue = (value: unknown): string => (Array.isArray(value) ? JSON.stringify(value) : valueString(value));
+
 /** #291 review F4: `renderDashboard` can run more than once against the SAME
  *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
  *  an import-commit while already on `/dashboard` (file-menu.ts's Import
@@ -225,6 +234,14 @@ interface TileEl {
 /** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
  *  that no explicit filter already targets — so a migrated Dashboard (whose
  *  persisted `filters` is empty) still surfaces its implicit param filters.
+ *
+ *  #189/#364 (Bug 3): when a favorited `filter`-role saved query outputs a
+ *  column whose name equals the parameter, the synthesized filter also gets
+ *  that query's `sourceQueryId`, so its option list attaches automatically (the
+ *  field becomes a curated combobox instead of a plain text box). A parameter
+ *  produced by EXACTLY ONE favorited filter source binds; zero or more than one
+ *  (ambiguous) leaves the filter plain — ambiguity degrades gracefully, never
+ *  guesses.
  *  Runtime-only; never persisted. */
 function synthesizeImplicitFilters(
   doc: DashboardDocumentV1, queryById: Map<string, SavedQueryV2>,
@@ -235,9 +252,23 @@ function synthesizeImplicitFilters(
     .filter((query): query is SavedQueryV2 => !!query && queryDashboardRole(query) === 'panel')
     .map((query, index) => ({ id: 't' + index, kind: 'tile', sql: query.sql, bindPolicy: 'row-returning' }));
   const analysis = analyzeParameterizedSources(panelSources);
+  // column name -> the favorited filter-role source ids that output it.
+  const columnSources = new Map<string, Set<string>>();
+  for (const source of queryById.values()) {
+    if (queryDashboardRole(source) !== 'filter' || !queryFavorite(source)) continue;
+    for (const column of selectOutputColumns(source.sql)) {
+      let ids = columnSources.get(column);
+      if (!ids) { ids = new Set(); columnSources.set(column, ids); }
+      ids.add(source.id);
+    }
+  }
   const out: DashboardFilterDefinitionV1[] = [];
   for (const control of fieldControls(analysis)) {
-    if (!declared.has(control.name)) out.push({ id: control.name, parameter: control.name });
+    if (declared.has(control.name)) continue;
+    const def: DashboardFilterDefinitionV1 = { id: control.name, parameter: control.name };
+    const ids = columnSources.get(control.name);
+    if (ids && ids.size === 1) def.sourceQueryId = [...ids][0];
+    out.push(def);
   }
   return out;
 }
@@ -575,6 +606,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // #294's own retained-count acceptance criterion) — `session.clearAllFilters()`
   // stays a tested application-level operation with no UI trigger.
   const filterHost = h('div', { class: 'dash-filter-host' });
+  // #189: a PERSISTENT sr-only announcer, a SIBLING of `filterHost` (never a
+  // child — `filterHost.replaceChildren` below only ever replaces the bar's
+  // own root) so it survives the very rebuild that fires it: when a rebuild
+  // disposes an outgoing bar that had a multiselect popover open, the dispose
+  // silently Cancels that popover (see multi-select-field.ts), and this is
+  // the only trace of that left for an assistive-tech user.
+  const filterRefreshLiveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
   // The draft value/active bag the shared filter bar reads + mutates; re-seeded
   // from committed filter state on each (re)build. Recents come from the real
   // app — the viewer never touches AppState.
@@ -590,14 +628,44 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     },
     wallNow: () => app.wallNow(),
   };
-  let filterBarDispose: (() => void) | null = null;
+  // #189: the retained bar itself (not just its `dispose`) — `hasOpenMultiSelect`
+  // is read off it right before a rebuild disposes it (see below).
+  let currentFilterBar: FilterBarHandle | null = null;
   // #360: the retained bar's `updateStatus` — a status-only publish (below,
   // the `barSig`/status-signal split) calls this directly instead of tearing
   // down and rebuilding the whole bar.
   let filterBarUpdateStatus: FilterBarHandle['updateStatus'] | null = null;
+  // Maintainer merge-gate fix (#189): each parameter's `optionsRev` as of the
+  // CURRENTLY-RETAINED bar's own build — compared, below, against the
+  // incoming view's `optionsRev` for whichever parameter had an open (or
+  // just-closed) multiselect popover, so the refresh announcement fires only
+  // when that parameter's options actually changed content, never merely
+  // because a rebuild happened to run while (or right after) its popover was
+  // up. Replaced wholesale after every rebuild (never merged) — a filter that
+  // disappears from `sview.filters` simply drops out.
+  let lastBuiltOptionsRev = new Map<string, number>();
 
   function rebuildFilterBar(sview: DashboardViewState): void {
-    filterBarDispose?.();
+    // #189-F2b: ask the OUTGOING bar WHICH parameter's multiselect popover is
+    // open (if any) BEFORE disposing it — disposing while open is that
+    // field's own silent Cancel (multi-select-field.ts), so this is the only
+    // chance to notice it, tell an assistive-tech user their popover just
+    // closed out from under them (the shared `filterRefreshLiveEl`, never
+    // torn down by the rebuild), and move focus to that SAME parameter's
+    // trigger on the freshly-built bar below (never left stranded at
+    // `<body>` — F2 review finding).
+    const openMultiSelectParam = currentFilterBar?.openMultiSelectParam() ?? null;
+    // Maintainer merge-gate fix (#189): an ordinary Apply already closed its
+    // OWN popover before its `onApply` reached `session.applyFilter` — by the
+    // time that commit's synchronous `publish()` gets here, `openMultiSelectParam`
+    // above already reads `null` for it. `focusedMultiSelectParam` still finds
+    // it (focus sits on that field's about-to-be-detached trigger), so focus
+    // restoration below has a signal to work with even when there was no open
+    // popover to speak of — never used for the ANNOUNCE decision (only a
+    // genuinely open popover's cancellation is ever worth announcing).
+    const focusedMultiSelectParam = currentFilterBar?.focusedMultiSelectParam() ?? null;
+    const restoreFocusParam = openMultiSelectParam ?? focusedMultiSelectParam;
+    currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
     // #360: curation is gated on TOPOLOGY (`sourceId != null`, set once at
     // construction from the filter definition's `sourceQueryId`), never on
@@ -612,24 +680,78 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       status: ViewerFilterState['status'];
       stale?: boolean;
       waitingFor?: string[];
+      selection?: ViewerFilterState['selection'];
+      value?: unknown;
+      active?: boolean;
     }> = {};
     for (const f of sview.filters) {
-      draftValues[f.parameter] = valueString(f.value);
+      // #189: the draft bag (`app.state.varValues`, `Record<string,string>`)
+      // cannot hold an array — a MULTISELECT filter never reads it at all
+      // (stays `''`); a single-select-on-Array-contract filter seeds it with
+      // the committed array's FIRST element, for display only (its own
+      // commit bypasses the draft bag entirely — see filter-bar.ts's
+      // `onApplyCurated`/`wrapsArray`). Every other filter keeps the
+      // pre-#189 `valueString(f.value)` seed unchanged.
+      if (f.selection?.mode === 'multiple') {
+        draftValues[f.parameter] = '';
+      } else if (f.selection?.mode === 'single' && f.selection.array) {
+        const arr = Array.isArray(f.value) ? f.value as string[] : [];
+        draftValues[f.parameter] = arr.length ? arr[0] : '';
+      } else {
+        draftValues[f.parameter] = valueString(f.value);
+      }
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
       if (f.sourceId != null) {
-        curatedFields[f.parameter] = { options: f.options ?? [], status: f.status, stale: f.stale, waitingFor: f.waitingFor };
+        curatedFields[f.parameter] = {
+          options: f.options ?? [], status: f.status, stale: f.stale, waitingFor: f.waitingFor,
+          selection: f.selection, value: f.value, active: f.active,
+        };
       }
     }
     const onCommit = (name: string): void => {
       const id = idByParam.get(name);
       if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
     };
+    // #189: the array-committing seam (multiselect Apply, single-on-array
+    // pick/clear) — bypasses the scalar draft bag entirely, straight to
+    // `session.applyFilter` with the already-built array value/active.
+    const onApplyCurated = (name: string, next: string[], active: boolean): void => {
+      const id = idByParam.get(name);
+      if (id) session.applyFilter(id, next, active);
+    };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
-    const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc });
+    const bar = buildFilterBar(
+      filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc, onApplyCurated },
+    );
     filterHost.replaceChildren(bar.el);
-    filterBarDispose = bar.dispose;
+    currentFilterBar = bar;
     filterBarUpdateStatus = bar.updateStatus;
+    // Maintainer merge-gate fix (#189): announce the refresh ONLY when the
+    // open param's options actually changed content between the OUTGOING
+    // bar's own last build (`lastBuiltOptionsRev`) and this incoming view —
+    // a rebuild triggered by a plain value/active commit (this field's own
+    // Apply, already closed by the time it gets here, or any OTHER field's
+    // commit) never bumps `optionsRev`, so it never announces, even on the
+    // rare chance this param's popover was still genuinely open when some
+    // unrelated commit forced the whole bar to rebuild.
+    if (openMultiSelectParam) {
+      const prevRev = lastBuiltOptionsRev.get(openMultiSelectParam);
+      const nextRev = sview.filters.find((f) => f.parameter === openMultiSelectParam)?.optionsRev;
+      if (nextRev !== undefined && nextRev !== prevRev) {
+        filterRefreshLiveEl.textContent = 'Filter options were refreshed';
+      }
+    }
+    lastBuiltOptionsRev = new Map(sview.filters.map((f) => [f.parameter, f.optionsRev]));
+    // #189-F2b: land focus on the NEW bar's corresponding trigger for
+    // whichever parameter the OUTGOING bar had open, or (absent that) had
+    // focus on its trigger (an Apply that already closed its own popover
+    // before reaching here) — a no-op if that parameter is no longer a
+    // multiselect field on the fresh bar (e.g. its curation topology itself
+    // changed) or there was no such parameter at all (a plain field mid-typing
+    // elsewhere is never disturbed), which simply leaves focus wherever it
+    // already was rather than throwing.
+    if (restoreFocusParam) bar.focusMultiSelectTrigger(restoreFocusParam);
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
@@ -1566,9 +1688,23 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   }> => Object.fromEntries(filters.map((f) => [f.parameter, { status: f.status, stale: f.stale, waitingFor: f.waitingFor }]));
   // #303: the committed-filter bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
+  // #189: a committed multiselect/single-on-array value is a REAL string
+  // array — persisted as one (`DashboardFilterEntry.value: string | string[]`),
+  // never coerced through `valueString`'s `String()` fallback (which would
+  // turn `['a','b']` into the literal text `"a,b"`, indistinguishable from an
+  // actual scalar `"a,b"` value on the next load). Non-string elements are
+  // dropped defensively, the same posture `dashboard-filter-store.ts`'s own
+  // `coerceValue` takes when READING this same persisted shape back.
   const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
     const bag: DashboardFilterBag = {};
-    for (const f of filters) bag[f.id] = { value: valueString(f.value), active: f.active };
+    for (const f of filters) {
+      bag[f.id] = {
+        value: Array.isArray(f.value)
+          ? (f.value as unknown[]).filter((v): v is string => typeof v === 'string')
+          : valueString(f.value),
+        active: f.active,
+      };
+    }
     return bag;
   };
   // #303: a SEPARATE signature from `barSig` above — that one also flips when
@@ -1605,7 +1741,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // own invariant that an unchanged republish never disturbs in-progress
     // typing.
     const sig = JSON.stringify(sview.filters.map((f) =>
-      [f.id, f.active, valueString(f.value), f.optionsRev, f.sourceId != null]));
+      [f.id, f.active, sigValue(f.value), f.optionsRev, f.sourceId != null]));
     const newStatusSig = statusSigOf(sview.filters);
     if (sig !== barSig) {
       barSig = sig;
@@ -1661,7 +1797,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
   });
 
-  const toolbar = h('div', { class: 'dash-toolbar' + (session.state.value.filters.length ? ' has-filters' : '') }, filterHost);
+  const toolbar = h('div', { class: 'dash-toolbar' + (session.state.value.filters.length ? ' has-filters' : '') },
+    filterHost, filterRefreshLiveEl);
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },

@@ -829,6 +829,12 @@ export interface DashboardFilterDefinitionV1 {
    * Whether the filter starts active.
    */
   defaultActive?: boolean;
+  /**
+   * Selection mode override
+   *
+   * Optional explicit selection-mode override for searchable multiselect filters (#189). Omitted means the runtime infers the mode from the agreed consumer parameter type across target queries: a scalar T infers single selection, an Array(T) infers multiselect. Inference is runtime-only and is never persisted here.
+   */
+  selection?: { mode?: "single" | "multiple"; };
 }
 
 /**

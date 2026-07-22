@@ -4,6 +4,7 @@ import type { ParsedParamType } from './param-type.js';
 import { diagnostic } from './diagnostics.js';
 import type { Diagnostic } from './diagnostics.js';
 import type { FieldControl } from './param-pipeline.js';
+import { reconcileSelection } from './filter-selection.js';
 
 // `param-serialize.js` is unconverted (checkJs:false) — the same narrow
 // result contract `param-pipeline.ts` declares for the same function.
@@ -146,7 +147,33 @@ export function mergeDashboardFilterHelpers({
   const changed: string[] = [];
   for (const [name, field] of Object.entries(fields)) {
     if (!active[name]) continue;
-    if (field.options.some((option) => option.value === String(values[name] ?? ''))) continue;
+    const committed = values[name];
+    if (Array.isArray(committed)) {
+      // #189: a multiselect (Array-contract) filter's committed value is a
+      // real string array — it must NEVER go through the scalar `String(...)`
+      // comparison below (which would stringify `['a','b']` as `"a,b"` and
+      // never match any option). `reconcileSelection` (filter-selection.ts)
+      // is the same pure decision core the multiselect control itself uses
+      // for this exact refresh.
+      const reconciled = reconcileSelection(committed as string[], field.options);
+      if (reconciled.deactivate) {
+        // Every previously-selected value is gone: deactivate, but KEEP the
+        // dormant array untouched (`nextValues[name]` stays the ORIGINAL
+        // committed array) — matches the scalar path's own reactivation
+        // policy (a cleared filter keeps its retained value).
+        nextActive[name] = false;
+        changed.push(name);
+      } else {
+        // Non-empty intersection: the value updates to the canonical (fresh
+        // option order) survivors — even a pure reorder/label-only refresh
+        // (`waveNeeded: false`) still updates the value, it just isn't a
+        // change a caller needs to re-run anything for.
+        nextValues[name] = reconciled.value;
+        if (reconciled.waveNeeded) changed.push(name);
+      }
+      continue;
+    }
+    if (field.options.some((option) => option.value === String(committed ?? ''))) continue;
     nextActive[name] = false;
     changed.push(name);
   }

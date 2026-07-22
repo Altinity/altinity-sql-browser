@@ -426,10 +426,15 @@ describe('saved queries', () => {
         savedQuery({ id: 'p1', sql: 'SELECT a WHERE c={country:String}', favorite: true, dashboard: { role: 'panel' } }),
         savedQuery({ id: 'f1', sql: "SELECT ['a','b'] AS country", dashboard: { role: 'filter' } }),
       ];
+      // A PLAIN filter (no `sourceQueryId`) — this test is about tile/target
+      // pruning when the LAST tile referencing a query is removed, not
+      // filter-selection contract validity (#189/#360); a source-backed
+      // filter left with zero executable consumers here would now (correctly)
+      // fail `workspace-semantics.ts`'s new selection-contract check.
       s.dashboard = {
         ...blankDashboard(),
         tiles: [{ id: 't1', queryId: 'p1' }],
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+        filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
       };
       const commit = fakeWorkspaceCommit();
       const result = await toggleFavorite(s, 'p1', commit, genTileId());

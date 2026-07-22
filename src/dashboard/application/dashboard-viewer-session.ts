@@ -38,6 +38,8 @@ import { panelExecution } from '../../core/panel-execution.js';
 import { analyzeFilterSource, prepareFilterSource } from '../../core/filter-execution.js';
 import type { FilterSourceAnalysis } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
+import { resolveFilterSelection, sameSelection } from '../../core/filter-selection.js';
+import type { FilterSelectionFilterDef } from '../../core/filter-selection.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
 import type {
   FilterProvider, FilterHelperOption, FilterDiagnostic, MergeDashboardFilterHelpersResult,
@@ -141,6 +143,19 @@ export interface ViewerFilterState {
    *  renderer for a source-backed filter by construction rather than by
    *  inferring it from a transient status value. */
   sourceId?: string;
+  /** #189: the agreed searchable-multiselect contract for a SOURCE-BACKED
+   *  filter, set once at construction from `resolveFilterSelection`
+   *  (`core/filter-selection.ts`) — present iff that resolution's
+   *  diagnostics were empty (a curated helper is actually offered); absent
+   *  otherwise (including for every plain root filter, which never gets a
+   *  contract at all) — the plain string-input fallback then applies, same
+   *  as a filter with no source. `mode` is the EFFECTIVE selection mode
+   *  (`selection.mode` table); `array` mirrors the agreed contract's own
+   *  arity, independent of `mode` (a scalar contract with `selection.mode:
+   *  "single"`-on-Array still reports `array: true` here — see the mode
+   *  table). TOPOLOGY, not transport state — like `sourceId`, it never
+   *  changes across a session. */
+  selection?: { mode: 'single' | 'multiple'; array: boolean };
 }
 
 /** The Dashboard's per-render layout view (#291) — a discriminated union over
@@ -347,6 +362,34 @@ const cfgType = (panel: unknown): string | undefined =>
 const toValueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
+/** #189: array-safe replacement for `toValueString` at every seam that feeds
+ *  `prepareParameterizedBatch`/`prepareFilterSource` (`rawValues`,
+ *  `committedRootValues`) — a committed multiselect value is a REAL string
+ *  array, and the pipeline/serializer already understand `Array(...)`-typed
+ *  params, so it must reach them un-stringified.
+ *
+ *  Merge-gate review (Finding B): value and activation are INDEPENDENT — an
+ *  array, EMPTY OR NOT, passes through as a DEFENSIVE COPY (never the live
+ *  array a caller might still hold), never coerced to `''`. `emptyValue`
+ *  (`param-pipeline.ts`) already treats a present `[]` as neither `null` nor
+ *  `''`, so the missing/required gate and the serializer (`'[]'` for an
+ *  empty array) both already do the right thing once a real array — never a
+ *  blanked string — reaches them; activation is decided exclusively by the
+ *  active flag/map (`setFilter`'s own value-implies-active by length,
+ *  `effectiveActive`, or an explicit `applyFilter` active flag), never by
+ *  this function collapsing the value first. Every other shape keeps
+ *  `toValueString`'s existing coercion, unchanged. */
+const toParamValue = (value: unknown): unknown =>
+  (Array.isArray(value) ? value.slice() : toValueString(value));
+
+/** #189: defensive array copy for every seat that STORES a filter's raw
+ *  committed value (`filter.state.value`, an `initialFilters` seed, a
+ *  `def.defaultValue`) — never `toParamValue`'s job, which additionally
+ *  coerces non-array shapes to a string for the execution pipeline. Runtime
+ *  state must never alias an array a caller (the document, the persisted
+ *  seed, `setFilter`/`applyFilter`'s own caller) still holds a reference to. */
+const copyValue = (value: unknown): unknown => (Array.isArray(value) ? value.slice() : value);
+
 /** Local copy of `effectiveFilterActive` (state.ts is off-limits to this
  *  layer): a param with an explicit activation entry uses it; otherwise a
  *  non-empty value counts as active. */
@@ -436,15 +479,32 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // One runtime record per tile, in semantic (dashboard.tiles) order.
   const tiles: TileRuntime[] = (Array.isArray(documentRef.tiles) ? documentRef.tiles : []).map(buildTileRuntime);
 
+  // A tile is EXECUTABLE/runnable when it has a query and is neither a text
+  // panel nor a presentation error — structural, fixed for the session, so
+  // both `runnableTiles()` (below) and the #189 selection-contract resolver
+  // (which needs the id SET, not the records) derive it from this ONE
+  // predicate and can never drift apart.
+  const isRunnableTileRuntime = (runtime: TileRuntime): boolean =>
+    !!runtime.query && !runtime.isText && !runtime.presentationError;
+  const executableTileIds = new Set(tiles.filter(isRunnableTileRuntime).map((runtime) => runtime.tile.id));
+
   // Filter runtime records, in filter order.
   const filters: FilterRuntime[] = (Array.isArray(documentRef.filters) ? documentRef.filters : []).map((def) => {
-    const defaultValue = def.defaultValue ?? '';
-    const defaultActive = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
+    const defaultValue = copyValue(def.defaultValue ?? '');
+    // Merge-gate review (Finding B): array-aware — an omitted `defaultActive`
+    // infers INACTIVE from an empty array default (`[]`, matching `''`), and
+    // ACTIVE from a non-empty one, the same length-based rule `setFilter`'s
+    // own value-implies-active already applies to a committed array.
+    const defaultActive = def.defaultActive ?? (Array.isArray(def.defaultValue)
+      ? def.defaultValue.length > 0
+      : (def.defaultValue != null && def.defaultValue !== ''));
     // #303: a persisted seed for this filter's id overrides the pure-default
     // init above (untouched when `initialFilters` is absent/empty, or has no
-    // entry for `def.id`).
+    // entry for `def.id`). #189: `copyValue` defends against aliasing the
+    // caller's own seed/document array (a persisted multiselect value, or a
+    // `defaultValue` array literal on the document).
     const seed = deps.initialFilters ? deps.initialFilters[def.id] : undefined;
-    const value = seed !== undefined ? (seed.value ?? defaultValue) : defaultValue;
+    const value = copyValue(seed !== undefined ? (seed.value ?? defaultValue) : defaultValue);
     const active = seed !== undefined ? !!seed.active : defaultActive;
     const sourceId = typeof def.sourceQueryId === 'string' ? def.sourceQueryId : undefined;
     const state: ViewerFilterState = {
@@ -498,21 +558,169 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   })));
   const controls: FieldControl[] = fieldControls(analysis);
 
-  // #235 overlap: the set of tile IDs a SOURCE-backed filter targets. A filter
-  // with `targets` names them explicitly; an absent `targets` means every
-  // panel tile whose query declares the filter's parameter. Only source-backed
-  // filters gate — a plain value filter's value is already known.
+  // Every tile id the document actually declares — `resolveFilterTargets`
+  // (#189) validates a filter's explicit `def.targets` against this set
+  // (dropping unknown ids defensively) rather than trusting authored config.
+  const knownTileIds = new Set(tiles.map((runtime) => runtime.tile.id));
+
+  /** #189: one filter DEFINITION's own resolved target tile set — explicit
+   *  `def.targets` (validated against `knownTileIds`) when present, else
+   *  every tile whose SQL declares `def.parameter` (`requiredIn`/`optionalIn`
+   *  from the tile parameter `analysis`). The ONE shared resolution both
+   *  `affectedByFilterWave` (#235's source-backed-only pre-wave
+   *  classification, below) and `targetsByParameter` (the general #189
+   *  affected-panel planner `runAffectedWave` consults) derive from, so the
+   *  two "explicit targets else declared" computations can never drift
+   *  apart. An explicit `targets: []` (present but empty) deliberately
+   *  resolves to affecting NOTHING — it does not fall back to the declared
+   *  set — preserving the pre-#189 `affectedByFilterWave` behavior exactly. */
+  function resolveFilterTargets(def: DashboardFilterDefinitionV1): Set<string> {
+    if (Array.isArray(def.targets)) return new Set(def.targets.filter((id) => knownTileIds.has(id)));
+    const field = analysis.fields[def.parameter];
+    return field ? new Set(field.requiredIn.concat(field.optionalIn)) : new Set();
+  }
+
+  // #189: the general affected-panel planner `runAffectedWave` consults for
+  // EVERY committed parameter (root or source-backed) — every filter
+  // definition's own resolved targets, unioned per PARAMETER (two filter
+  // definitions sharing one parameter union their target sets, since
+  // committing that parameter must satisfy both).
+  const targetsByParameter = new Map<string, Set<string>>();
+  for (const filter of filters) {
+    const set = targetsByParameter.get(filter.def.parameter) || new Set<string>();
+    for (const id of resolveFilterTargets(filter.def)) set.add(id);
+    targetsByParameter.set(filter.def.parameter, set);
+  }
+
+  // #189: `resolveFilterSelection`'s own documented contract (see its return
+  // type's doc comment) is strict — the curated helper is exposed IFF
+  // `diagnostics` is empty, full stop. Issue #189's fallback list is explicit
+  // that "targets that do not declare the parameter" and "target-less or
+  // non-executable configurations where no consumer contract can be
+  // resolved" (i.e. `filter-selection-target-missing-declaration`,
+  // `filter-selection-target-not-executable`, `filter-selection-no-consumers`)
+  // are must-fall-back cases, not benign ones: "do not execute or expose the
+  // query-backed helper as authoritative; render the ordinary parameter
+  // string input; show a visible diagnostic; leave unrelated filters and
+  // panels functional." So there is no carve-out here — EVERY non-empty
+  // `diagnostics` result (whatever the code) falls a filter all the way back
+  // to the plain string-input path: no `selection` contract is published, no
+  // `sourceId` is kept, and the filter is dropped from its source's
+  // `consumers` so the shared source query is never executed on its behalf
+  // (matching #189's "do not execute... the query-backed helper").
+
+  // #189: resolve every SOURCE-BACKED filter's searchable-multiselect
+  // contract once, at construction (structural — never revisited). A filter
+  // whose resolution surfaces ANY diagnostic falls all the way back to the
+  // plain string-input filter: it is stripped from `state.sourceId` (the
+  // UI's own curation gate) and from its `FilterSourceRuntime`'s `consumers`
+  // — its helper must never execute. `staticFilterDiagnostics` is emitted
+  // ALONGSIDE (never instead of) the per-wave `filterDiagnostics` — see
+  // `buildState`'s doc comment for why these need to be two separate arrays.
+  //
+  // Merge-gate review: the per-wave merge (`mergeDashboardFilterHelpers`,
+  // `core/dashboard-filters.ts`) makes its own conflict/type decision from
+  // whatever `FieldControl` it is fed for a curated parameter's name
+  // (`control.conflict` → reject, `control.type` → validate/serialize each
+  // option). Feeding it the dashboard-wide `fieldControls(analysis)` entry —
+  // every TILE's declaration, unscoped — let a declaration OUTSIDE this
+  // filter's own resolved executable-consumer set (a presentation-error
+  // tile, a non-targeted tile: anything `gatherExecutableConsumers` itself
+  // already excludes) permanently reject a helper `resolveFilterSelection`
+  // legitimately agreed on. A prior review round "fixed" this by re-gating
+  // CONSTRUCTION on that same dashboard-wide `control.conflict`
+  // (`filter-selection-dashboard-type-conflict`) — the maintainer rejected
+  // that: it fell a filter back to the plain string input for a conflict
+  // that was never actually reachable from its own resolved consumers. The
+  // real fix is `curatedControls` below: for every filter that keeps a
+  // resolved contract, it holds a `FieldControl` whose `type` is that
+  // contract's own agreed VALUE type (the array's element type for an
+  // `Array(...)` contract) and no `conflict` — built from the SAME
+  // resolution `gatherExecutableConsumers` produced, so the merge can never
+  // see a wider (or narrower) consumer set than construction did. One
+  // consumer definition, fed to both layers — never a second, broader gate.
+  const controlsByName = new Map(controls.map((control): [string, FieldControl] => [control.name, control]));
+  const staticFilterDiagnostics: FilterDiagnostic[] = [];
+  const curatedControls = new Map<string, FieldControl>();
+  for (const filter of filters) {
+    if (!filter.sourceId) continue; // plain root filter — no contract, untouched
+    const source = filterSources.get(filter.sourceId)!; // built above for every sourceId-bearing filter
+    // A Filter source is NEVER an executable consumer of its own filter's
+    // parameter (#360's single-layer cascading rule already forbids any
+    // Filter source from depending on a SOURCE-BACKED parameter — this
+    // filter's own parameter always qualifies, since it has a `sourceId` —
+    // so a source that structurally declared it would already carry its own
+    // `filter-source-cascading` diagnostic and never run). See
+    // `gatherExecutableConsumers`'s doc comment in `core/filter-selection.ts`
+    // for the one shared "executable consumer" definition this resolution
+    // (and the semantic validator's own construction-time re-check) both use.
+    const filterSelectionDef: FilterSelectionFilterDef = {
+      id: filter.def.id, parameter: filter.def.parameter,
+      targets: Array.isArray(filter.def.targets) ? filter.def.targets : undefined,
+      selection: filter.def.selection,
+    };
+    const resolution = resolveFilterSelection(filterSelectionDef, analysis, executableTileIds);
+    if (resolution.diagnostics.length) {
+      for (const d of resolution.diagnostics) staticFilterDiagnostics.push(d as FilterDiagnostic);
+      filter.state.sourceId = undefined;
+      source.consumers = source.consumers.filter((consumer) => consumer !== filter);
+    } else {
+      filter.state.selection = { mode: resolution.mode!, array: resolution.contract!.array };
+      // Feed the MERGE layer this filter's own resolved contract's value
+      // type — never the dashboard-wide declaration (see the doc comment
+      // above this loop) — so a declaration outside
+      // `gatherExecutableConsumers`'s resolved set can never suppress this
+      // valid helper. `optional` is untouched — it is not part of the
+      // type/conflict decision this moves; the dashboard-wide value (always
+      // present here — any bound executable-consumer declaration already
+      // guarantees a `fieldControls` entry for this name) carries over as-is.
+      curatedControls.set(filter.def.parameter, {
+        name: filter.def.parameter,
+        type: resolution.contract!.type.raw,
+        optional: controlsByName.get(filter.def.parameter)?.optional ?? true,
+      });
+    }
+  }
+  // Merge-gate review: only CURATED (source-backed, contract-resolved)
+  // parameter names are overridden with their resolved-consumer control
+  // above — every other name (a plain root filter's field, or a Filter
+  // helper column with no surviving contract at all) keeps its
+  // dashboard-wide `FieldControl` untouched, exactly as before.
+  // `mergeDashboardFilterHelpers` itself stays pure; only what the session
+  // FEEDS it (`applyFilterProviders`, below) changes.
+  const mergeControls: FieldControl[] = controls.map((control) => curatedControls.get(control.name) || control);
+  // A `FilterSourceRuntime` left with zero consumers (every filter that
+  // named it fell back to the string-input path above) must never execute —
+  // both `runFilterWave` (every KNOWN source) and `runFilterSourceWave` (the
+  // `dependsOn`-filtered selective rerun) iterate `filterSources.values()`,
+  // so removing it here is the one place that guarantees it forever, rather
+  // than re-deriving a "has consumers" gate at every call site.
+  for (const [id, source] of filterSources) {
+    if (source.consumers.length === 0) filterSources.delete(id);
+  }
+
+  // #235 overlap: the set of tile IDs a SOURCE-backed filter targets. Only
+  // source-backed filters gate — a plain value filter's value is already
+  // known, so tiles it feeds never need to wait for the filter/source wave.
+  //
+  // Review finding (minor): this MUST be computed AFTER the #189
+  // resolution/fallback loop above, gated on the POST-resolution
+  // `filter.state.sourceId` — not the structural `filter.def.sourceQueryId`.
+  // A filter whose resolution fell back (dropped from `state.sourceId` and
+  // from its source's `consumers`, possibly deleting the source runtime
+  // entirely just above) has nothing left to defer against: its target tiles
+  // must not be needlessly classified "affected" and deferred behind a
+  // filter/source wave that either never runs the source at all, or runs it
+  // for other, still-healthy consumers only. Gating on the stale
+  // `def.sourceQueryId` instead would defer those tiles forever for no
+  // reason. `targetsByParameter` (above) stays keyed on every filter
+  // definition regardless of resolution outcome — it feeds the general
+  // affected-panel planner (`runAffectedWave`), which is orthogonal to this
+  // pre-wave overlap classification.
   const affectedByFilterWave = new Set<string>();
   for (const filter of filters) {
-    if (!filter.def.sourceQueryId) continue;
-    const explicitTargets = Array.isArray(filter.def.targets) ? filter.def.targets : null;
-    if (explicitTargets) {
-      for (const id of explicitTargets) affectedByFilterWave.add(id);
-      continue;
-    }
-    const field = analysis.fields[filter.def.parameter];
-    if (!field) continue;
-    for (const sourceId of field.requiredIn.concat(field.optionalIn)) affectedByFilterWave.add(sourceId);
+    if (!filter.state.sourceId) continue;
+    for (const id of resolveFilterTargets(filter.def)) affectedByFilterWave.add(id);
   }
 
   // Curated option bundles from the last filter wave (param name → field).
@@ -521,11 +729,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // `curated`, reset to `[]` at the START of `runFilterWave` and set (as-is,
   // no dedupe) in `applyFilterProviders`. `buildState` reads it on every
   // publish, so tile-progress publishes mid-wave carry the PREVIOUS wave's
-  // diagnostics and a pre-wave publish (construction) sees `[]`.
+  // diagnostics and a pre-wave publish (construction) sees `[]`. #189's
+  // `staticFilterDiagnostics` (construction-time constants) are concatenated
+  // in ON TOP of this at every publish (`buildState`) — never reset,
+  // never touched by a wave — so a filter's selection-resolution failure
+  // stays visible forever, through every refresh/commit.
   let filterDiagnostics: FilterDiagnostic[] = [];
 
   const rawValues = (): Record<string, unknown> =>
-    Object.fromEntries(filters.map((filter) => [filter.def.parameter, toValueString(filter.state.value)]));
+    Object.fromEntries(filters.map((filter) => [filter.def.parameter, toParamValue(filter.state.value)]));
   const activeMap = (): Record<string, boolean> =>
     Object.fromEntries(filters.map((filter) => [filter.def.parameter, filter.state.active]));
 
@@ -540,7 +752,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const out: Record<string, unknown> = {};
     for (const filter of filters) {
       if (filter.sourceId) continue;
-      out[filter.def.parameter] = filter.state.active ? toValueString(filter.state.value) : '';
+      out[filter.def.parameter] = filter.state.active ? toParamValue(filter.state.value) : '';
     }
     return out;
   };
@@ -593,7 +805,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       filters: filters.map((filter) => ({ ...filter.state })),
       layout,
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
-      running, updatedAt, diagnostics: presentationDiagnostics, filterDiagnostics,
+      running, updatedAt, diagnostics: presentationDiagnostics,
+      // #189: construction-time selection-resolution diagnostics are PERSISTENT
+      // (never reset by a wave) — concatenated ahead of the per-wave
+      // `filterDiagnostics` on every publish, rather than merged into that
+      // mutable array, so nothing a wave does can ever drop them.
+      filterDiagnostics: [...staticFilterDiagnostics, ...filterDiagnostics],
     };
   }
 
@@ -691,9 +908,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   // A tile is runnable when it has a query and is neither a text panel nor a
-  // presentation error.
-  const runnableTiles = (): TileRuntime[] =>
-    tiles.filter((runtime) => runtime.query && !runtime.isText && !runtime.presentationError);
+  // presentation error — `isRunnableTileRuntime`, the same predicate
+  // `executableTileIds` (#189) is built from.
+  const runnableTiles = (): TileRuntime[] => tiles.filter(isRunnableTileRuntime);
 
   // ── Filter wave ─────────────────────────────────────────────────────────
 
@@ -852,7 +1069,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       providers: [...filterSources.values()]
         .map((source) => source.provider)
         .filter((provider): provider is FilterProvider => provider !== null),
-      controls, values: rawValues(), active: effectiveActive(rawValues(), activeMap()),
+      controls: mergeControls, values: rawValues(), active: effectiveActive(rawValues(), activeMap()),
     });
     curated = merged.fields;
     // Published as-is (never deduped — a shared source runs once per wave), plus
@@ -922,8 +1139,31 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // `affectedByFilterWave` — no separate union step is needed for the FULL
     // wave; a selective (#360) caller still folds `changed` into its own
     // affected-panel wave via the returned array below.
+    //
+    // #189: a scalar reconciliation only EVER pushes a name onto `changed`
+    // alongside deactivating it — `merged.active[parameter]` is always
+    // `false` there, so reading it (rather than hardcoding `false`) is
+    // behaviorally identical for scalars. An ARRAY reconciliation's PARTIAL
+    // narrowing (some, not all, selected values survive) also pushes onto
+    // `changed` — to join the affected-panel wave — while the filter STAYS
+    // active with its narrowed value; hardcoding `false` here would
+    // incorrectly deactivate it, so this reads the merge's own decided
+    // `active` state instead.
     for (const parameter of merged.changed) {
-      for (const filter of filters) if (filter.def.parameter === parameter) filter.state.active = false;
+      for (const filter of filters) if (filter.def.parameter === parameter) filter.state.active = merged.active[parameter];
+    }
+    // #189: an array-typed (multiselect) filter's reconciled value — reordered
+    // to the fresh canonical option order, or narrowed to the surviving
+    // subset — comes back via `merged.values` (`mergeDashboardFilterHelpers`
+    // owns the reconciliation DECISION; this just applies its result). Guarded
+    // on the CURRENT value already being an array before ever reading
+    // `merged.values`, so a scalar filter's committed value (a string/number)
+    // is never touched here — `mergeDashboardFilterHelpers`'s scalar
+    // reconciliation branch never rewrites `values` at all, only `active`.
+    for (const filter of filters) {
+      if (!Array.isArray(filter.state.value)) continue;
+      const updated = merged.values[filter.def.parameter];
+      if (Array.isArray(updated)) filter.state.value = updated;
     }
     return { status: 'applied', flipped: merged.changed };
   }
@@ -1106,11 +1346,21 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // generations and issue requests after teardown.
     if (destroyed) return;
     if (!preflighted && !(await preflight())) return;
+    // #189: consult each parameter's RESOLVED targets (explicit `def.targets`
+    // else declared-in tiles, `targetsByParameter` — built once at
+    // construction, over EVERY filter definition, from the same
+    // `resolveFilterTargets` `affectedByFilterWave` uses) rather than blindly
+    // rerunning every tile that merely declares the parameter name. Every
+    // parameter this function is ever called with belongs to some existing
+    // filter definition (it always originates from a committed `filter.def.
+    // parameter` or a reconciliation's `merged.changed`, itself gated on
+    // that same filter set being active) — so `targetsByParameter` always has
+    // an entry, possibly an EMPTY one (an explicit `targets: []` affecting
+    // nothing); the `?? []` is a cheap defensive guard only, never expected
+    // to be exercised.
     const affectedIds = new Set<string>();
     for (const parameter of parameters) {
-      const field = analysis.fields[parameter];
-      if (!field) continue;
-      for (const sourceId of field.requiredIn.concat(field.optionalIn)) affectedIds.add(sourceId);
+      for (const id of targetsByParameter.get(parameter) ?? []) affectedIds.add(id);
     }
     const targets = runnableTiles().filter((runtime) => affectedIds.has(runtime.tile.id));
     const generations = new Map<string, number>(targets.map((runtime) => [runtime.tile.id, supersede(runtime)]));
@@ -1157,8 +1407,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     if (destroyed) return;
     const filter = filterById.get(filterId);
     if (!filter) return;
-    filter.state.value = value;
-    filter.state.active = value != null && value !== '';
+    // #189: `copyValue` defends against aliasing the caller's own array;
+    // a non-empty array counts as a value (active) the same way any
+    // non-empty/non-null scalar does — an EMPTY array reads like `''`.
+    const stored = copyValue(value);
+    filter.state.value = stored;
+    filter.state.active = Array.isArray(stored) ? stored.length > 0 : stored != null && stored !== '';
     publish();
     await commitAndRerun([filter.def.parameter]);
   }
@@ -1169,7 +1423,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     if (!filter) return;
     // The filter bar owns activation for optional/curated fields, so value and
     // active are set independently (unlike setFilter's value-implies-active).
-    filter.state.value = value;
+    // #189: `copyValue` defends against aliasing the caller's own array.
+    filter.state.value = copyValue(value);
     filter.state.active = active;
     publish();
     await commitAndRerun([filter.def.parameter]);
@@ -1190,8 +1445,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const changed: string[] = [];
     for (const filter of filters) {
       const nextActive = filter.def.defaultActive ?? false;
-      const nextValue = filter.def.defaultValue ?? '';
-      if (filter.state.active !== nextActive || filter.state.value !== nextValue) changed.push(filter.def.parameter);
+      // #189: `copyValue` defends the default against aliasing (a
+      // `defaultValue` array literal on the document); `sameSelection`
+      // (filter-selection.ts) compares STRUCTURALLY so an array value/default
+      // never falls through the old `!==` reference check into a spurious
+      // "changed" on every reset.
+      const nextValue = copyValue(filter.def.defaultValue ?? '');
+      if (filter.state.active !== nextActive || !sameSelection(filter.state.value, nextValue)) {
+        changed.push(filter.def.parameter);
+      }
       filter.state.active = nextActive;
       filter.state.value = nextValue;
     }

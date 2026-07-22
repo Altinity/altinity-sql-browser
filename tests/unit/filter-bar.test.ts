@@ -38,6 +38,8 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
     expect(() => bar.updateStatus({})).not.toThrow(); // no curated fields — a no-op
+    expect(bar.openMultiSelectParam()).toBeNull(); // no multiselect fields at all — always null
+    expect(() => bar.focusMultiSelectTrigger('x')).not.toThrow(); // unknown param — a no-op
   });
 
   it('defaults to app.document and no group role when no options are passed', () => {
@@ -244,6 +246,11 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(input.placeholder).toBe('Waiting for: ');
     });
 
+    // #189 review (F4, coordinator ruling — REVERTED): this is the STRICT
+    // single-select curated combobox (#160 — blur/Enter reverts non-option
+    // text), so leaving it enabled while erroring was a dishonest affordance
+    // (looks editable, silently discards everything typed). Disabled again on
+    // every error status, same as before #189.
     it.each(['source-error', 'helper-error', 'missing-helper'])(
       'status: "%s" disables the field and adds is-error, without the waiting note', (status) => {
         const app = makeApp();
@@ -331,6 +338,7 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(bar.el.querySelector('input')).toBe(input);
       expect(label.classList.contains('is-error')).toBe(true);
       expect(label.classList.contains('is-waiting')).toBe(false);
+      // #189 F4 revert: error disables the field again (see the it.each above).
       expect(input.disabled).toBe(true);
       // The waiting note is removed once the field leaves 'waiting'.
       expect(label.querySelector('.var-field-note')).toBeNull();
@@ -365,6 +373,185 @@ describe('buildFilterBar (shared filter row)', () => {
       const input = bar.el.querySelector('input') as HTMLInputElement;
       expect(() => bar.updateStatus({})).not.toThrow();
       expect(input.disabled).toBe(false); // still ready — never touched
+    });
+  });
+
+  // #189: the curated MULTISELECT field (selection.mode: 'multiple') and the
+  // single-select-on-Array wrap (selection.mode: 'single', array: true) —
+  // both new curated shapes wired through `onApplyCurated`.
+  describe('multiselect / array-wrapped curated fields (#189)', () => {
+    it('renders buildMultiSelectField (not the combobox) for selection.mode "multiple", and Apply routes through onApplyCurated', () => {
+      const app = makeApp();
+      const onApplyCurated = vi.fn();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: {
+            options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Bravo' }],
+            selection: { mode: 'multiple', array: true }, value: ['a'], active: true,
+          },
+        },
+        onApplyCurated,
+      });
+      document.body.appendChild(bar.el);
+      expect(bar.el.querySelector('.ms-field')).not.toBeNull();
+      expect(bar.el.querySelector('.var-combo')).toBeNull(); // not the scalar combobox path
+      bar.el.querySelector('.ms-trigger')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const cbs = [...document.body.querySelectorAll('.ms-option input[type="checkbox"]')] as HTMLInputElement[];
+      cbs[1].checked = true;
+      cbs[1].dispatchEvent(new Event('change', { bubbles: true }));
+      document.body.querySelector('.ms-btn-primary')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(onApplyCurated).toHaveBeenCalledWith('x', ['a', 'b'], true);
+      bar.el.remove();
+    });
+
+    it('does NOT render a multiselect field for a scalar (absent or single, non-array) selection contract', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
+      });
+      expect(bar.el.querySelector('.ms-field')).toBeNull();
+      expect(bar.el.querySelector('.var-combo')).not.toBeNull();
+    });
+
+    it('a multiselect field in an error status falls back to the SAME plain-commit seam a non-curated field uses', () => {
+      const app = makeApp();
+      const onCommit = vi.fn();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, {
+        curatedFields: {
+          x: {
+            options: [], selection: { mode: 'multiple', array: true }, value: ['a'], active: true,
+            status: 'source-error',
+          },
+        },
+      });
+      document.body.appendChild(bar.el);
+      const errInput = bar.el.querySelector('input.is-error') as HTMLInputElement;
+      expect(errInput).not.toBeNull();
+      errInput.value = 'raw text';
+      errInput.dispatchEvent(new Event('input', { bubbles: true }));
+      errInput.dispatchEvent(new Event('blur', { bubbles: true }));
+      expect(app.state.varValues.x).toBe('raw text');
+      expect(app.state.filterActive.x).toBe(true);
+      expect(app.params.saveVarValues).toHaveBeenCalled();
+      expect(app.params.saveFilterActive).toHaveBeenCalled();
+      expect(onCommit).toHaveBeenCalledWith('x');
+      bar.el.remove();
+    });
+
+    it('updateStatus patches a multiselect field in place (same trigger instance, no rebuild)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: {
+            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
+            value: [], active: false, status: 'ready',
+          },
+        },
+      });
+      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
+      bar.updateStatus({ x: { status: 'loading' } });
+      expect(bar.el.querySelector('.ms-trigger')).toBe(trigger);
+      expect(trigger.disabled).toBe(true);
+    });
+
+    it('openMultiSelectParam() reflects an open popover\'s parameter, and dispose() cancels it with no onApplyCurated call', () => {
+      const app = makeApp();
+      const onApplyCurated = vi.fn();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: {
+            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
+            value: [], active: false,
+          },
+        },
+        onApplyCurated,
+      });
+      document.body.appendChild(bar.el);
+      expect(bar.openMultiSelectParam()).toBeNull();
+      bar.el.querySelector('.ms-trigger')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(bar.openMultiSelectParam()).toBe('x');
+      expect(document.body.querySelector('.ms-popover')).not.toBeNull();
+      bar.dispose();
+      expect(document.body.querySelector('.ms-popover')).toBeNull();
+      expect(onApplyCurated).not.toHaveBeenCalled();
+      bar.el.remove();
+    });
+
+    it('focusMultiSelectTrigger(name) focuses that parameter\'s trigger (#189 F2b)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: {
+            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
+            value: [], active: false,
+          },
+        },
+      });
+      document.body.appendChild(bar.el);
+      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
+      bar.focusMultiSelectTrigger('x');
+      expect(document.activeElement).toBe(trigger);
+      bar.el.remove();
+    });
+
+    it('an absent (undefined) committed value falls back to an empty array, not the raw string passthrough', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [], selection: { mode: 'multiple', array: true } } },
+      });
+      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
+      expect(trigger.textContent).toBe('Not set'); // required (not optional) + empty/inactive
+    });
+
+    it('a raw-string committed value (#189 F1 error-mode fallback) passes through instead of dropping to an empty array', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: {
+            options: [], selection: { mode: 'multiple', array: true }, value: 'typed raw', active: true,
+            status: 'ready',
+          },
+        },
+      });
+      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
+      expect(trigger.textContent).toBe('typed raw');
+    });
+
+    it('marks the multiselect field is-optional when its param is optional, same as the scalar curated field (T2)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(
+        app,
+        paramsFor('SELECT {y:String} FROM t /*[ AND x = {x:String} ]*/'),
+        () => {}, okField,
+        {
+          curatedFields: {
+            y: { options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true }, value: [] },
+            x: { options: [{ value: 'b', label: 'Beta' }], selection: { mode: 'multiple', array: true }, value: [] },
+          },
+        },
+      );
+      const fields = [...bar.el.querySelectorAll('.var-field')];
+      expect(fields.map((f) => f.querySelector('.var-name')!.textContent)).toEqual(['y', 'x']);
+      expect(fields.map((f) => f.classList.contains('is-optional'))).toEqual([false, true]);
+      expect(fields.every((f) => f.querySelector('.ms-field') !== null)).toBe(true);
+    });
+
+    it('a single-select curated field over an Array(...) contract commits a WRAPPED [value]/[] instead of a bare scalar', () => {
+      const app = makeApp();
+      const onApplyCurated = vi.fn();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: {
+          x: { options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'single', array: true } },
+        },
+        onApplyCurated,
+      });
+      document.body.appendChild(bar.el);
+      bar.el.querySelector('input')!.dispatchEvent(new Event('focus'));
+      bar.el.querySelector('[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      expect(onApplyCurated).toHaveBeenCalledWith('x', ['a'], true);
+      bar.el.querySelector('.var-combo-clear-inline')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(onApplyCurated).toHaveBeenCalledWith('x', [], false);
+      bar.el.remove();
     });
   });
 

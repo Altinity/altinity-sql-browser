@@ -93,7 +93,16 @@ describe('planSavedQueryMutation — rejection without repair', () => {
 
 describe('planSavedQueryMutation — atomic repair', () => {
   it('removes affected tiles (and prunes their placements and filter targets)', () => {
-    const plan = planSavedQueryMutation(baseWorkspace(),
+    // A PLAIN filter (no `sourceQueryId`) here deliberately — this test is
+    // about tile/target PRUNING mechanics (`removeAffectedTiles`), not
+    // filter-selection contract validity (#189/#360, `workspace-semantics.ts`
+    // now runs `resolveFilterSelection` for every SOURCE-BACKED filter). A
+    // source-backed filter left with zero executable consumers once its only
+    // tile is gone is itself a real `filter-selection-no-consumers` — exactly
+    // what the app SHOULD flag — and orthogonal to what this test checks.
+    const workspace = baseWorkspace();
+    workspace.dashboard!.filters = [{ id: 'flt', parameter: 'country', targets: ['t1'] }];
+    const plan = planSavedQueryMutation(workspace,
       { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboard!;
@@ -104,10 +113,15 @@ describe('planSavedQueryMutation — atomic repair', () => {
 
   it('removes affected filters when a parameter change invalidates a target', () => {
     // p1 no longer declares `country`; the filter targeting its tile breaks.
+    // Since `flt` is source-backed (`sourceQueryId: 'f1'`), `t1` failing to
+    // declare `country` now surfaces through `resolveFilterSelection`'s own
+    // (bound-aware) `filter-selection-target-missing-declaration` — which
+    // subsumes the older unbound `filter-parameter-undeclared` check for a
+    // source-backed filter's explicit targets (workspace-semantics.ts).
     const plan = planSavedQueryMutation(baseWorkspace(),
       { type: 'replace-query', queryId: 'p1', query: panelQuery('p1', 'SELECT a,b') });
     expect(plan.ok).toBe(false);
-    expect(codes(plan.diagnostics)).toContain('filter-parameter-undeclared');
+    expect(codes(plan.diagnostics)).toContain('filter-selection-target-missing-declaration');
 
     const repaired = planSavedQueryMutation(baseWorkspace(),
       { type: 'replace-query', queryId: 'p1', query: panelQuery('p1', 'SELECT a,b') },
@@ -145,14 +159,23 @@ describe('planSavedQueryMutation — atomic repair', () => {
   });
 
   it('supports remove-affected (tiles and filters together)', () => {
-    const plan = planSavedQueryMutation(baseWorkspace(),
+    // A PLAIN filter here too (see the "removes affected tiles" test above
+    // for why) — `removeAffectedFilters` composed after `removeAffectedTiles`
+    // recomputes its "targets an affected tile" check against the
+    // ALREADY-tile-pruned dashboard, so the filter survives regardless of
+    // `sourceQueryId`; a source-backed filter left with zero consumers here
+    // would instead (correctly) fail the new selection-contract check.
+    const workspace = baseWorkspace();
+    workspace.dashboard!.filters = [{ id: 'flt', parameter: 'country', targets: ['t1'] }];
+    const plan = planSavedQueryMutation(workspace,
       { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected' },
       { validationService: jsonSchemaValidationService, schemaService: querySpecSchemaService });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboard!;
     expect(dashboard.tiles).toEqual([]);
-    // The filter is sourced from f1 (not p1), so it survives with its now-empty
-    // target list — remove-affected removed the affected tile and its target ref.
+    // The filter survives (not targeting p1's query directly), with its
+    // now-empty target list — remove-affected removed the affected tile and
+    // its target ref.
     expect(dashboard.filters[0].targets).toEqual([]);
   });
 });
@@ -227,13 +250,17 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
 
 describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', () => {
   it('normalizes through the ACTIVE grid plugin and regenerates the flow@1 fallback on a tile-removing repair', () => {
+    // A PLAIN filter (no `sourceQueryId`) — this test is about grid-layout
+    // normalization/fallback regeneration, not filter-selection contract
+    // validity; see the "removes affected tiles" test above for why a
+    // source-backed filter left with zero tiles would (correctly) now fail.
     const workspace: StoredWorkspaceV1 = {
       storageVersion: 1, id: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
         layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 8 } } },
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+        filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
         tiles: [{ id: 't1', queryId: 'p1' }],
       },
     } as StoredWorkspaceV1;

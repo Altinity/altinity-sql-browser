@@ -339,6 +339,89 @@ describe('validateDashboardSemantics', () => {
     expect(has(d, 'filter-parameter-type-conflict')).toBe(true); // String vs UInt32
   });
 
+  // #189/#360 merge-gate follow-up: `validateDashboardSemantics` now runs the
+  // SAME `resolveFilterSelection` the viewer session uses, for every
+  // SOURCE-BACKED filter, translating its diagnostics to exact dashboard JSON
+  // paths (mode-table → `selection.mode`, per-target → `targets[j]`,
+  // contract/agreement → `parameter`).
+  describe('source-backed filter selection-contract validation (#189/#360)', () => {
+    it('selection.mode "multiple" against a scalar-only contract → diagnostic at filters[i].selection.mode', () => {
+      const q = panelQuery('p1'); q.sql = 'SELECT {country:String}';
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', selection: { mode: 'multiple' } }],
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
+      const diag = d.find((x) => x.code === 'filter-selection-mode-requires-array');
+      expect(diag).toBeDefined();
+      expect(diag!.path).toEqual(['filters', 0, 'selection', 'mode']);
+    });
+
+    it('an explicit target not declaring the parameter → diagnostic at filters[i].targets[j]', () => {
+      const q = panelQuery('p1'); // default sql 'SELECT 1' — declares nothing
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
+      const diag = d.find((x) => x.code === 'filter-selection-target-missing-declaration');
+      expect(diag).toBeDefined();
+      expect(diag!.path).toEqual(['filters', 0, 'targets', 0]);
+      // The older unbound check is subsumed for a source-backed filter — no
+      // duplicate `filter-parameter-undeclared` on top.
+      expect(has(d, 'filter-parameter-undeclared')).toBe(false);
+    });
+
+    it('implicit targets (none declared) mixing scalar/Array across two tiles → diagnostic at filters[i].parameter', () => {
+      const qScalar = panelQuery('a'); qScalar.sql = 'SELECT {country:String}';
+      const qArray = panelQuery('b'); qArray.sql = 'SELECT {country:Array(String)}';
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'a'), tile('t2', 'b')], layout: flowLayout({ t1: {}, t2: {} }),
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1' }], // no targets
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [qScalar, qArray, filterQuery('f1')] });
+      const diag = d.find((x) => x.code === 'filter-selection-mixed-arity');
+      expect(diag).toBeDefined();
+      expect(diag!.path).toEqual(['filters', 0, 'parameter']);
+    });
+
+    it('a nested Array(Array(...)) declaration → diagnostic at filters[i].parameter', () => {
+      const q = panelQuery('p1'); q.sql = 'SELECT {country:Array(Array(String))}';
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1' }],
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
+      const diag = d.find((x) => x.code === 'filter-selection-nested-array');
+      expect(diag).toBeDefined();
+      expect(diag!.path).toEqual(['filters', 0, 'parameter']);
+    });
+
+    it('a VALID Array(T) setup produces no selection diagnostics', () => {
+      const q = panelQuery('p1'); q.sql = 'SELECT {tags:Array(String)}';
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
+        filters: [{ id: 'flt', parameter: 'tags', sourceQueryId: 'f1', selection: { mode: 'multiple' } }],
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
+      expect(d.filter((x) => x.code.startsWith('filter-selection-'))).toEqual([]);
+    });
+
+    it('a Filter source declaring the SAME parameter (even conflicting) does NOT poison an otherwise-valid contract', () => {
+      const q = panelQuery('p1'); q.sql = 'SELECT {shared:String}';
+      // f1's own SQL declares {shared:UInt64} — a conflicting type — but f1 is
+      // a Filter SOURCE, never a tile, so it is excluded from the tile-side
+      // ParameterAnalysis entirely and cannot influence the contract.
+      const sourceQuery = filterQuery('f1', 'SELECT {shared:UInt64} AS x');
+      const dashboard = dashboardDoc({
+        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
+        filters: [{ id: 'flt', parameter: 'shared', sourceQueryId: 'f1' }],
+      });
+      const d = validateDashboardSemantics(dashboard, { queries: [q, sourceQuery] });
+      expect(d.filter((x) => x.code.startsWith('filter-selection-'))).toEqual([]);
+    });
+  });
+
   it('skips target parameter checks when parameter is absent and tolerates unknown target queries', () => {
     const dashboard = dashboardDoc({
       tiles: [tile('t1', 'gone')], layout: flowLayout({ t1: {} }),
