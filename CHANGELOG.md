@@ -9,6 +9,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Dashboard tiles now respect an explicit saved `view: "table"`** (#368).
+  The compatibility form resolves to a Table base presentation before runtime
+  panel detection, while an explicit `panel` and its variants/overrides retain
+  their existing precedence.
+
 ### Added
 - **Searchable multiselect for query-backed Dashboard filters** (#189). A
   source-backed filter whose executable consumers agree on one `Array(T)`
