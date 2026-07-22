@@ -23,15 +23,20 @@ held at **100% test coverage**.
 
 See the [**feature tour, deployment guide and screenshots**](https://docs.altinity.com/altinity-sql-browser/)
 on the project site. Try it live on the Antalya demo cluster: **https://antalya.demo.altinity.cloud/sql**.
-The [**ontime chart demo**](docs/ONTIME-CHART-DEMO.md) is a ready-made library of 10
-queries (load [`examples/ontime-charts.json`](examples/ontime-charts.json) via
-**File ▾ → Import queries**) that walks through every chart type and feature against the public
-`ontime` flight dataset. The [**system explorer demo**](docs/SYSTEM-EXPLORER-DEMO.md)
-is a 14-query library (load [`examples/system-explorer-charts.json`](examples/system-explorer-charts.json)
-via **File ▾ → Import queries**) that introspects ClickHouse's own `system` database —
-running queries, merges/replication health, and historical query/part/error
-activity — with a shared From/To filter driving every time-ranged Dashboard tile
-at once.
+Three flagship bundles cover the main workflows without a pile of one-feature
+fixtures:
+
+- [**On-time flights**](docs/ONTIME-CHART-DEMO.md) — seven analytical tiles,
+  a KPI band, a shared 2023 date range, and carrier/airport multiselects over
+  the public `ontime` dataset.
+- [**Shop analytics**](docs/SHOP-ANALYTICS-DEMO.md) — seven business tiles over
+  the schema, sample data, materialized views, and dictionary created by
+  [`examples/shop-demo.sql`](examples/shop-demo.sql).
+- [**ClickHouse Operations**](docs/CLICKHOUSE-OPERATIONS-DEMO.md) — sixteen
+  operator-first tiles for live health, resources, background work, and
+  investigation, with the remaining operational queries kept in the Library.
+
+Load the corresponding portable bundle from `examples/` with **File ▾ → Open…**.
 The [**Iceberg catalog explorer**](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md) is a
 distributable installer + two dashboards for Iceberg data-lake catalogs:
 [`examples/iceberg-install.json`](examples/iceberg-install.json) generates the
@@ -92,9 +97,9 @@ ordinary `.kpi-panel` grid, while a **favorited, explicitly-KPI-typed** Dashboar
 query instead joins a full-width **KPI band** — a flat, wrapping card stream
 with no per-favorite name, description, or statistics footer, spanning every
 flow Dashboard layout (Report/2/3 columns). Consecutive explicit KPI
-favorites merge into one shared band. The complete
-[`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
-**File ▾ → Import queries** to see both.
+favorites merge into one shared band. The On-time, Shop, and Operations
+flagship dashboards all include a production
+KPI band alongside charts, tables, and logs.
 When constructing a named tuple from expressions, either enable alias-derived
 member names for the query:
 
@@ -492,14 +497,10 @@ nested option values, limits each helper to 1,000 options, and falls back to the
 ordinary parameter field when a source, consumer type, or provider conflicts.
 Filter sources run and reconcile saved values before any Panel query starts.
 
-The complete [`query-log-explorer.json`](examples/query-log-explorer.json)
-Library example (load via **File ▾ → Import queries**) demonstrates every filter
-variant against `system.query_log` on any cluster: three Filter sources, one
-per option shape (`Array(Tuple(value, label))`, `Map(String, String)`, plain
-`Array(T)`), alongside plain auto-detected numeric/text fields — a KPI panel,
-four analytical Panels adapted from the Altinity KB's ["Handy queries for
-system.query_log"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/),
-a Logs panel, and a Text panel explaining the demo.
+The flagship bundles demonstrate the same contracts in context: readable
+`Array(Tuple(value, label))` airport options in On-time, targeted country and
+category filters in Shop, and inferred `Array(T)` multiselects for operational
+query-log dimensions in ClickHouse Operations.
 
 ```sql
 SELECT

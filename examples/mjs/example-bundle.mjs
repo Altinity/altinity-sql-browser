@@ -47,6 +47,14 @@ function placementFor(query, preset) {
   return { span: 1, height: 'large' };
 }
 
+function flowLayout(selected, tiles, preset, placements = {}) {
+  const items = Object.fromEntries(selected.map((query, index) => [
+    tiles[index].id,
+    placements[query.id] || placementFor(query, preset),
+  ]));
+  return { type: 'flow', version: 1, preset, items };
+}
+
 function scanParameterNames(sql) {
   const names = [];
   const seen = new Set();
@@ -68,6 +76,10 @@ export function buildDashboard({
   tileQueryIds,
   sourceByParameter = {},
   preset = 'columns-2',
+  filters: authoredFilters,
+  grid,
+  flowPlacements = {},
+  revision = 1,
 }) {
   if (!id || !title) throw new Error('Dashboard id and title are required');
   if (!['report', 'columns-2', 'columns-3'].includes(preset)) {
@@ -85,10 +97,7 @@ export function buildDashboard({
   });
 
   const tiles = selected.map((query) => ({ id: `tile-${query.id}`, queryId: query.id }));
-  const items = Object.fromEntries(selected.map((query, index) => [
-    tiles[index].id,
-    placementFor(query, preset),
-  ]));
+  const fallback = flowLayout(selected, tiles, preset, flowPlacements);
 
   const parameterNames = [];
   const seenParameters = new Set();
@@ -101,19 +110,32 @@ export function buildDashboard({
     }
   }
 
-  const filters = parameterNames.map((parameter) => ({
+  const inferredFilters = parameterNames.map((parameter) => ({
     id: `filter-${parameter}`,
     parameter,
     ...(sourceByParameter[parameter] ? { sourceQueryId: sourceByParameter[parameter] } : {}),
   }));
+
+  const filters = authoredFilters === undefined ? inferredFilters : clone(authoredFilters);
+  const layout = grid
+    ? {
+        type: 'grafana-grid',
+        version: 1,
+        items: Object.fromEntries(selected.map((query, index) => [
+          tiles[index].id,
+          grid[query.id] || { span: 6, height: 2 },
+        ])),
+        fallback,
+      }
+    : fallback;
 
   return {
     documentVersion: 1,
     id,
     title,
     ...(description ? { description } : {}),
-    revision: 1,
-    layout: { type: 'flow', version: 1, preset, items },
+    revision,
+    layout,
     filters,
     tiles,
   };
@@ -190,8 +212,15 @@ export function assertValidExampleBundle(document) {
     if (!Array.isArray(dashboard.tiles) || !Array.isArray(dashboard.filters)) {
       throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} requires tiles and filters arrays`);
     }
-    if (dashboard.layout?.type !== 'flow' || dashboard.layout?.version !== 1) {
-      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} must use flow@1`);
+    const layout = dashboard.layout;
+    const supportedLayout = layout?.version === 1
+      && (layout.type === 'flow' || layout.type === 'grafana-grid');
+    if (!supportedLayout) {
+      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} must use flow@1 or grafana-grid@1`);
+    }
+    if (layout.type === 'grafana-grid'
+      && (layout.fallback?.type !== 'flow' || layout.fallback?.version !== 1)) {
+      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} grafana-grid@1 layout requires a flow@1 fallback`);
     }
     for (const tile of dashboard.tiles) {
       if (!queryIds.has(tile.queryId)) {

@@ -9,6 +9,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- Consolidated the non-Iceberg examples into three responsive flagship
+  dashboards: On-time flights, Shop analytics, and ClickHouse Operations.
+  Each uses an authored `grafana-grid@1` layout with a complete `flow@1`
+  fallback, shared filters, and focused visible tiles; useful secondary
+  analyses remain untiled Library entries. Removed the superseded KPI, logs,
+  query-log, System Explorer, and earlier Grafana-port fixtures and generator.
+
 ### Added
 - **Cross-tab workspace consistency: refresh before write and stale-tab
   invalidation** (#343). Workbench and editable-Dashboard tabs editing the same

@@ -2,20 +2,96 @@
   "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
   "version": 1,
-  "exportedAt": "2026-06-28T00:00:00.000Z",
+  "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
     "name": "Shop analytics",
-    "description": "Chart examples over the sample shop dataset."
+    "description": "Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset."
   },
   "queries": [
     {
+      "id": "shop-kpis",
+      "sql": "SELECT round(sumIf(amount, event_type = 'purchase'), 2) AS revenue, countIf(event_type = 'purchase') AS purchases, uniqIf(user_id, event_type = 'purchase') AS active_buyers, round(100 * countIf(event_type = 'purchase') / count(), 1) AS conversion_rate\nFROM shop.events_raw\nWHERE event_time BETWEEN {from:DateTime} AND {to:DateTime}\n/*[ AND country IN {country:Array(String)} ]*/\n/*[ AND has({category:Array(String)}, dictGet('shop.products_dict', 'category', toUInt64(product_id))) ]*/",
+      "specVersion": 1,
+      "spec": {
+        "name": "Sales KPIs",
+        "description": "Revenue, purchases, active buyers, and purchase conversion for the selected slice.",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "kpi"
+          },
+          "fieldConfig": {
+            "columns": {
+              "revenue": {
+                "displayName": "Revenue",
+                "unit": " USD",
+                "decimals": 2
+              },
+              "purchases": {
+                "displayName": "Purchases",
+                "decimals": 0
+              },
+              "active_buyers": {
+                "displayName": "Active buyers",
+                "decimals": 0
+              },
+              "conversion_rate": {
+                "displayName": "Conversion rate",
+                "unit": "%",
+                "decimals": 1
+              }
+            }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "shop-daily-revenue",
+      "sql": "SELECT day, sum(revenue) AS revenue FROM shop.daily_sales WHERE day BETWEEN toDate({from:DateTime}) AND toDate({to:DateTime})\n/*[ AND country IN {country:Array(String)} ]*/\nGROUP BY day ORDER BY day",
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily revenue",
+        "description": "",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "day:Date|revenue:Decimal(38, 2)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
+        }
+      }
+    },
+    {
       "id": "shop-revenue-by-country",
-      "sql": "SELECT country, sum(revenue) AS revenue\nFROM shop.daily_sales\nGROUP BY country\nORDER BY revenue DESC",
+      "sql": "SELECT country, sum(revenue) AS revenue FROM shop.daily_sales WHERE day BETWEEN toDate({from:DateTime}) AND toDate({to:DateTime})\n/*[ AND has({country:Array(String)}, country) ]*/\nGROUP BY country ORDER BY revenue DESC",
       "specVersion": 1,
       "spec": {
         "name": "Revenue by country",
+        "description": "",
         "favorite": true,
-        "description": "Total revenue per country from the daily_sales aggregate (fed by the mv_daily_sales materialized view). A LowCardinality category on the X axis → horizontal Bar.",
         "view": "panel",
         "panel": {
           "cfg": {
@@ -39,35 +115,13 @@
       }
     },
     {
-      "id": "shop-daily-revenue",
-      "sql": "SELECT day, sum(revenue) AS revenue\nFROM shop.daily_sales\nGROUP BY day\nORDER BY day",
-      "specVersion": 1,
-      "spec": {
-        "name": "Daily revenue",
-        "favorite": false,
-        "description": "Revenue per day across the last ~90 days, from daily_sales. A Date X axis is auto-detected as a time series → filled Area chart.",
-        "view": "panel",
-        "panel": {
-          "cfg": {
-            "type": "area",
-            "x": 0,
-            "y": [
-              1
-            ],
-            "series": null
-          },
-          "key": "day:Date|revenue:Decimal(38, 2)"
-        }
-      }
-    },
-    {
       "id": "shop-revenue-by-category",
-      "sql": "SELECT category, sum(revenue) AS revenue\nFROM shop.category_revenue\nGROUP BY category\nORDER BY revenue DESC",
+      "sql": "SELECT category, sum(revenue) AS revenue FROM shop.category_revenue WHERE day BETWEEN toDate({from:DateTime}) AND toDate({to:DateTime})\n/*[ AND has({category:Array(String)}, category) ]*/\nGROUP BY category ORDER BY revenue DESC",
       "specVersion": 1,
       "spec": {
         "name": "Revenue by category",
+        "description": "",
         "favorite": true,
-        "description": "Revenue per product category from category_revenue — the mv_category_revenue view derives the category with dictGet() against the products_dict dictionary. A small breakdown → Pie.",
         "view": "panel",
         "panel": {
           "cfg": {
@@ -91,35 +145,13 @@
       }
     },
     {
-      "id": "shop-event-mix",
-      "sql": "SELECT event_type, count() AS events\nFROM shop.events_raw\nGROUP BY event_type\nORDER BY events DESC",
-      "specVersion": 1,
-      "spec": {
-        "name": "Event type mix",
-        "favorite": false,
-        "description": "Share of raw events by type (purchase / view / cart) straight from events_raw. A small categorical split → Pie with a legend.",
-        "view": "panel",
-        "panel": {
-          "cfg": {
-            "type": "pie",
-            "x": 0,
-            "y": [
-              1
-            ],
-            "series": null
-          },
-          "key": "event_type:LowCardinality(String)|events:UInt64"
-        }
-      }
-    },
-    {
       "id": "shop-top-products",
-      "sql": "SELECT p.name AS product, round(sum(e.amount)) AS revenue\nFROM shop.events_raw AS e\nINNER JOIN shop.products AS p ON p.product_id = e.product_id\nWHERE e.event_type = 'purchase'\nGROUP BY product\nORDER BY revenue DESC\nLIMIT 15",
+      "sql": "SELECT dictGet('shop.products_dict', 'name', toUInt64(product_id)) AS product, round(sum(amount), 2) AS revenue FROM shop.events_raw WHERE event_type = 'purchase' AND event_time BETWEEN {from:DateTime} AND {to:DateTime}\n/*[ AND country IN {country:Array(String)} ]*/\n/*[ AND has({category:Array(String)}, dictGet('shop.products_dict', 'category', toUInt64(product_id))) ]*/\nGROUP BY product ORDER BY revenue DESC LIMIT 12",
       "specVersion": 1,
       "spec": {
-        "name": "Top 15 products by revenue",
-        "favorite": false,
-        "description": "Joins events_raw to the products dimension table for readable names, summing purchase amounts. Horizontal Bar of the top 15.",
+        "name": "Top products",
+        "description": "",
+        "favorite": true,
         "view": "panel",
         "panel": {
           "cfg": {
@@ -131,50 +163,6 @@
             "series": null
           },
           "key": "product:String|revenue:Decimal(38, 2)"
-        }
-      }
-    },
-    {
-      "id": "shop-daily-active-users",
-      "sql": "SELECT toDate(hour) AS day, uniqMerge(users) AS users\nFROM shop.hourly_active_users\nGROUP BY day\nORDER BY day",
-      "specVersion": 1,
-      "spec": {
-        "name": "Daily active users",
-        "favorite": false,
-        "description": "Distinct users per day, merged from the hourly_active_users AggregatingMergeTree with uniqMerge() — shows how an AggregateFunction state is finalized. Date axis → Line.",
-        "view": "panel",
-        "panel": {
-          "cfg": {
-            "type": "line",
-            "x": 0,
-            "y": [
-              1
-            ],
-            "series": null
-          },
-          "key": "day:Date|users:UInt64"
-        }
-      }
-    },
-    {
-      "id": "shop-revenue-trend-by-country",
-      "sql": "SELECT day, country, sum(revenue) AS revenue\nFROM shop.daily_sales\nWHERE country IN ('US', 'GB', 'DE', 'JP')\nGROUP BY day, country\nORDER BY day",
-      "specVersion": 1,
-      "spec": {
-        "name": "Revenue trend by country",
-        "favorite": true,
-        "description": "Daily revenue for four countries at once — the country column drives the Series, producing one Line per country with a legend.",
-        "view": "panel",
-        "panel": {
-          "cfg": {
-            "type": "line",
-            "x": 0,
-            "y": [
-              2
-            ],
-            "series": 1
-          },
-          "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)"
         },
         "dashboard": {
           "role": "panel",
@@ -187,13 +175,43 @@
       }
     },
     {
-      "id": "shop-orders-by-hour",
-      "sql": "SELECT toHour(event_time) AS hour, count() AS events\nFROM shop.events_raw\nGROUP BY hour\nORDER BY hour",
+      "id": "shop-daily-active-users",
+      "sql": "SELECT toDate(hour) AS day, uniqMerge(users) AS users FROM shop.hourly_active_users WHERE hour BETWEEN {from:DateTime} AND {to:DateTime}\n/*[ AND country IN {country:Array(String)} ]*/\nGROUP BY day ORDER BY day",
       "specVersion": 1,
       "spec": {
-        "name": "Traffic by hour of day",
-        "favorite": false,
-        "description": "Event volume by hour of day (0–23) from events_raw. A numeric ordinal X axis → vertical Column chart.",
+        "name": "Daily active users",
+        "description": "",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "day:Date|users:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
+        }
+      }
+    },
+    {
+      "id": "shop-traffic-by-hour",
+      "sql": "SELECT toHour(event_time) AS hour, count() AS events FROM shop.events_raw WHERE event_time BETWEEN {from:DateTime} AND {to:DateTime}\n/*[ AND country IN {country:Array(String)} ]*/\n/*[ AND has({category:Array(String)}, dictGet('shop.products_dict', 'category', toUInt64(product_id))) ]*/\nGROUP BY hour ORDER BY hour",
+      "specVersion": 1,
+      "spec": {
+        "name": "Traffic by hour",
+        "description": "",
+        "favorite": true,
         "view": "panel",
         "panel": {
           "cfg": {
@@ -205,6 +223,49 @@
             "series": null
           },
           "key": "hour:UInt8|events:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
+        }
+      }
+    },
+    {
+      "id": "shop-country-revenue-trend",
+      "sql": "SELECT day, country, sum(revenue) AS revenue FROM shop.daily_sales WHERE day BETWEEN toDate({from:DateTime}) AND toDate({to:DateTime}) GROUP BY day, country ORDER BY day, country",
+      "specVersion": 1,
+      "spec": {
+        "name": "Country revenue trends",
+        "description": "Additional Library analysis retained outside the flagship grid.",
+        "favorite": false,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1
+          },
+          "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)"
+        }
+      }
+    },
+    {
+      "id": "shop-filter-options",
+      "sql": "SELECT (SELECT arraySort(groupUniqArray(country)) FROM shop.events_raw) AS country, (SELECT arraySort(groupUniqArray(category)) FROM shop.products) AS category",
+      "specVersion": 1,
+      "spec": {
+        "name": "Shop dimensions",
+        "description": "Country and product-category choices for the Shop dashboard.",
+        "favorite": false,
+        "dashboard": {
+          "role": "filter"
         }
       }
     }
@@ -212,31 +273,152 @@
   "dashboards": [
     {
       "documentVersion": 1,
-      "id": "shop-charts",
+      "id": "shop-analytics",
       "title": "Shop analytics",
-      "description": "Chart examples over the sample shop dataset.",
+      "description": "Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset.",
       "revision": 1,
       "layout": {
-        "type": "flow",
+        "type": "grafana-grid",
         "version": 1,
-        "preset": "columns-2",
         "items": {
+          "tile-shop-kpis": {
+            "span": 12,
+            "height": 2
+          },
+          "tile-shop-daily-revenue": {
+            "span": 8,
+            "height": 3
+          },
           "tile-shop-revenue-by-country": {
-            "span": 1,
-            "height": "large"
+            "span": 4,
+            "height": 3
           },
           "tile-shop-revenue-by-category": {
-            "span": 1,
-            "height": "large"
+            "span": 4,
+            "height": 3
           },
-          "tile-shop-revenue-trend-by-country": {
-            "span": 1,
-            "height": "large"
+          "tile-shop-top-products": {
+            "span": 8,
+            "height": 3
+          },
+          "tile-shop-daily-active-users": {
+            "span": 8,
+            "height": 3
+          },
+          "tile-shop-traffic-by-hour": {
+            "span": 4,
+            "height": 3
+          }
+        },
+        "fallback": {
+          "type": "flow",
+          "version": 1,
+          "preset": "columns-2",
+          "items": {
+            "tile-shop-kpis": {
+              "span": 2,
+              "height": "compact"
+            },
+            "tile-shop-daily-revenue": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-shop-revenue-by-country": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-shop-revenue-by-category": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-shop-top-products": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-shop-daily-active-users": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-shop-traffic-by-hour": {
+              "span": 1,
+              "height": "large"
+            }
           }
         }
       },
-      "filters": [],
+      "filters": [
+        {
+          "id": "shop-from",
+          "parameter": "from",
+          "label": "From",
+          "defaultValue": "-90d",
+          "defaultActive": true,
+          "targets": [
+            "tile-shop-kpis",
+            "tile-shop-daily-revenue",
+            "tile-shop-revenue-by-country",
+            "tile-shop-revenue-by-category",
+            "tile-shop-top-products",
+            "tile-shop-daily-active-users",
+            "tile-shop-traffic-by-hour"
+          ]
+        },
+        {
+          "id": "shop-to",
+          "parameter": "to",
+          "label": "To",
+          "defaultValue": "now",
+          "defaultActive": true,
+          "targets": [
+            "tile-shop-kpis",
+            "tile-shop-daily-revenue",
+            "tile-shop-revenue-by-country",
+            "tile-shop-revenue-by-category",
+            "tile-shop-top-products",
+            "tile-shop-daily-active-users",
+            "tile-shop-traffic-by-hour"
+          ]
+        },
+        {
+          "id": "shop-country",
+          "parameter": "country",
+          "label": "Country",
+          "sourceQueryId": "shop-filter-options",
+          "defaultValue": [],
+          "defaultActive": false,
+          "targets": [
+            "tile-shop-kpis",
+            "tile-shop-daily-revenue",
+            "tile-shop-revenue-by-country",
+            "tile-shop-top-products",
+            "tile-shop-daily-active-users",
+            "tile-shop-traffic-by-hour"
+          ]
+        },
+        {
+          "id": "shop-category",
+          "parameter": "category",
+          "label": "Category",
+          "sourceQueryId": "shop-filter-options",
+          "defaultValue": [],
+          "defaultActive": false,
+          "targets": [
+            "tile-shop-kpis",
+            "tile-shop-revenue-by-category",
+            "tile-shop-top-products",
+            "tile-shop-traffic-by-hour"
+          ]
+        }
+      ],
       "tiles": [
+        {
+          "id": "tile-shop-kpis",
+          "queryId": "shop-kpis"
+        },
+        {
+          "id": "tile-shop-daily-revenue",
+          "queryId": "shop-daily-revenue"
+        },
         {
           "id": "tile-shop-revenue-by-country",
           "queryId": "shop-revenue-by-country"
@@ -246,8 +428,16 @@
           "queryId": "shop-revenue-by-category"
         },
         {
-          "id": "tile-shop-revenue-trend-by-country",
-          "queryId": "shop-revenue-trend-by-country"
+          "id": "tile-shop-top-products",
+          "queryId": "shop-top-products"
+        },
+        {
+          "id": "tile-shop-daily-active-users",
+          "queryId": "shop-daily-active-users"
+        },
+        {
+          "id": "tile-shop-traffic-by-hour",
+          "queryId": "shop-traffic-by-hour"
         }
       ]
     }

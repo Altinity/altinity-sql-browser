@@ -2,18 +2,64 @@
   "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
   "version": 1,
-  "exportedAt": "2026-06-24T13:22:11.940Z",
+  "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
-    "name": "On-time chart gallery",
-    "description": "Chart gallery over the public ontime flight dataset."
+    "name": "On-time flights",
+    "description": "Flight punctuality, volume, carriers, airports, delays, and cancellations with a shared 2023 slice."
   },
   "queries": [
     {
-      "id": "s1",
-      "sql": "SELECT\n    a.DisplayAirportName AS airport,\n    count() AS flights\nFROM ontime.fact_ontime AS f\nINNER JOIN ontime.dim_airports AS a\n    ON a.AirportCode = f.OriginCode AND a.IsLatest = 1\nWHERE f.Year = 2023\nGROUP BY airport\nORDER BY flights DESC\nLIMIT 15",
+      "id": "ontime-kpis",
+      "sql": "SELECT count() AS flights, round(100 * countIf(f.ArrDel15 = 0) / count(), 1) AS on_time_pct, countIf(f.Cancelled = 1) AS cancellations, round(avg(f.DepDelayMinutes), 1) AS avg_departure_delay\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/",
       "specVersion": 1,
       "spec": {
-        "name": "Busiest origin airports — 2023",
+        "name": "Flight KPIs",
+        "description": "Flight volume, punctuality, cancellations, and mean departure delay for the selected slice.",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "kpi"
+          },
+          "fieldConfig": {
+            "columns": {
+              "flights": {
+                "displayName": "Flights",
+                "decimals": 0
+              },
+              "on_time_pct": {
+                "displayName": "On time",
+                "unit": "%",
+                "decimals": 1
+              },
+              "cancellations": {
+                "displayName": "Cancellations",
+                "decimals": 0
+              },
+              "avg_departure_delay": {
+                "displayName": "Avg departure delay",
+                "unit": " min",
+                "decimals": 1
+              }
+            }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "s1",
+      "sql": "SELECT a.DisplayAirportName AS airport, count() AS flights\nFROM ontime.fact_ontime AS f\nINNER JOIN ontime.dim_airports AS a ON a.AirportCode = f.OriginCode AND a.IsLatest = 1\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/\nGROUP BY airport ORDER BY flights DESC LIMIT 15",
+      "specVersion": 1,
+      "spec": {
+        "name": "Busiest origins",
         "favorite": true,
         "description": "Top 15 departure airports by flight count (joined to dim_airports for readable names). Horizontal Bar — hover any bar, long or short, to read its exact value.",
         "view": "panel",
@@ -44,7 +90,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Flights by month — 2023",
-        "favorite": true,
+        "favorite": false,
         "description": "Monthly US flight volume. A numeric column named \"month\" is detected as an ordinal axis → vertical Column chart, with K/M-humanised value ticks.",
         "view": "panel",
         "panel": {
@@ -70,10 +116,10 @@
     },
     {
       "id": "s3",
-      "sql": "SELECT FlightDate AS date, count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY date\nORDER BY date",
+      "sql": "SELECT f.FlightDate AS date, count() AS flights\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/\nGROUP BY date ORDER BY date",
       "specVersion": 1,
       "spec": {
-        "name": "Daily flights — 2023",
+        "name": "Daily flights",
         "favorite": true,
         "description": "One point per day across 2023 (~365 rows). A Date X axis is auto-detected as a time series → Line chart.",
         "view": "panel",
@@ -100,10 +146,10 @@
     },
     {
       "id": "s4",
-      "sql": "SELECT\n    FlightDate AS date,\n    round(100 * countIf(ArrDel15 = 0) / count(), 1) AS on_time_pct\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY date\nORDER BY date",
+      "sql": "SELECT f.FlightDate AS date, round(100 * countIf(f.ArrDel15 = 0) / count(), 1) AS on_time_pct\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/\nGROUP BY date ORDER BY date",
       "specVersion": 1,
       "spec": {
-        "name": "Daily on-time rate — 2023",
+        "name": "On-time rate",
         "favorite": true,
         "description": "Share of flights arriving on time (< 15 min late) per day, as a percentage. Rendered as a filled Area chart.",
         "view": "panel",
@@ -130,10 +176,10 @@
     },
     {
       "id": "s5",
-      "sql": "SELECT\n    multiIf(CancellationCode = 'A', 'Carrier',\n            CancellationCode = 'B', 'Weather',\n            CancellationCode = 'C', 'National Air System',\n            CancellationCode = 'D', 'Security', 'Other') AS reason,\n    count() AS cancellations\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND Cancelled = 1\nGROUP BY reason\nORDER BY cancellations DESC",
+      "sql": "SELECT multiIf(f.CancellationCode = 'A', 'Carrier', f.CancellationCode = 'B', 'Weather', f.CancellationCode = 'C', 'National Air System', f.CancellationCode = 'D', 'Security', 'Other') AS reason, count() AS cancellations\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/ AND f.Cancelled = 1\nGROUP BY reason ORDER BY cancellations DESC",
       "specVersion": 1,
       "spec": {
-        "name": "Cancellation reasons — 2023",
+        "name": "Cancellation reasons",
         "favorite": true,
         "description": "Why flights were cancelled in 2023 (carrier / weather / national air system / security). A small categorical breakdown → Pie chart with a legend.",
         "view": "panel",
@@ -160,10 +206,10 @@
     },
     {
       "id": "s6",
-      "sql": "SELECT\n    Month AS month,\n    Carrier AS carrier,\n    count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND Carrier IN ('WN', 'AA', 'DL', 'UA')\nGROUP BY month, carrier\nORDER BY month, carrier",
+      "sql": "SELECT toStartOfMonth(f.FlightDate) AS month, f.Carrier AS carrier, count() AS flights\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/\nGROUP BY month, carrier ORDER BY month, carrier",
       "specVersion": 1,
       "spec": {
-        "name": "Monthly flights by carrier — 2023",
+        "name": "Monthly carrier volume",
         "favorite": true,
         "description": "Flights per month split across four major carriers (WN, AA, DL, UA). The \"carrier\" column is used as the Series, producing grouped bars with a per-carrier legend.",
         "view": "panel",
@@ -176,7 +222,7 @@
             ],
             "series": 1
           },
-          "key": "month:UInt8|carrier:LowCardinality(String)|flights:UInt64"
+          "key": "month:Date|carrier:LowCardinality(String)|flights:UInt64"
         },
         "dashboard": {
           "role": "panel",
@@ -190,10 +236,10 @@
     },
     {
       "id": "s7",
-      "sql": "SELECT\n    Carrier AS carrier,\n    round(avg(CarrierDelay), 1) AS carrier_delay,\n    round(avg(WeatherDelay), 1) AS weather_delay,\n    round(avg(NASDelay), 1) AS nas_delay,\n    round(avg(LateAircraftDelay), 1) AS late_aircraft_delay\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND ArrDel15 = 1\nGROUP BY carrier\nORDER BY carrier_delay DESC\nLIMIT 12",
+      "sql": "SELECT f.Carrier AS carrier, round(avg(f.CarrierDelay), 1) AS carrier_delay, round(avg(f.WeatherDelay), 1) AS weather_delay, round(avg(f.NASDelay), 1) AS nas_delay, round(avg(f.LateAircraftDelay), 1) AS late_aircraft_delay\nFROM ontime.fact_ontime AS f\nWHERE f.FlightDate BETWEEN {from:Date} AND {to:Date}\n/*[ AND has({carrier:Array(String)}, f.Carrier) ]*/\n/*[ AND has({origin:Array(String)}, f.OriginCode) ]*/ AND f.ArrDel15 = 1\nGROUP BY carrier ORDER BY carrier_delay DESC LIMIT 12",
       "specVersion": 1,
       "spec": {
-        "name": "Average delay breakdown by carrier — 2023",
+        "name": "Delay causes by carrier",
         "favorite": true,
         "description": "Mean minutes of each delay cause (carrier, weather, NAS, late aircraft) for delayed flights, per carrier. Four measures plotted at once (\"All measures\") as grouped columns.",
         "view": "panel",
@@ -227,7 +273,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Daily flights since 2022",
-        "favorite": true,
+        "favorite": false,
         "description": "Every day from 2022 onward (~1,460 points). The chart plots the first 500 and shows a \"first 500 of N rows\" note — the table view still has them all.",
         "view": "panel",
         "panel": {
@@ -257,7 +303,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Flights by day of week — 2023",
-        "favorite": true,
+        "favorite": false,
         "description": "Volume by day of week (1 = Monday … 7 = Sunday). \"dayofweek\" is recognised as an ordinal axis → Column chart.",
         "view": "panel",
         "panel": {
@@ -287,7 +333,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Worst average departure delay by airport — 2023",
-        "favorite": true,
+        "favorite": false,
         "description": "Airports with the highest mean departure delay (minutes) among those with ≥ 10,000 departures in 2023. Horizontal Bar of a non-count measure, joined for names.",
         "view": "panel",
         "panel": {
@@ -310,71 +356,169 @@
           }
         }
       }
+    },
+    {
+      "id": "ontime-filter-options",
+      "sql": "SELECT\n  (SELECT arraySort(groupUniqArray(Carrier)) FROM ontime.fact_ontime WHERE Carrier != '') AS carrier,\n  (SELECT groupArray((AirportCode AS value, DisplayAirportName AS label)) FROM (SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName)) AS origin",
+      "specVersion": 1,
+      "spec": {
+        "name": "On-time dimensions",
+        "description": "Carrier codes and airport-code values with readable airport labels.",
+        "favorite": false,
+        "dashboard": {
+          "role": "filter"
+        }
+      }
     }
   ],
   "dashboards": [
     {
       "documentVersion": 1,
-      "id": "ontime-chart-gallery",
-      "title": "On-time chart gallery",
-      "description": "Chart gallery over the public ontime flight dataset.",
+      "id": "ontime-flights",
+      "title": "On-time flights",
+      "description": "Flight punctuality, volume, carriers, airports, delays, and cancellations with a shared 2023 slice.",
       "revision": 1,
       "layout": {
-        "type": "flow",
+        "type": "grafana-grid",
         "version": 1,
-        "preset": "columns-2",
         "items": {
-          "tile-s1": {
-            "span": 1,
-            "height": "large"
-          },
-          "tile-s2": {
-            "span": 1,
-            "height": "large"
+          "tile-ontime-kpis": {
+            "span": 12,
+            "height": 2
           },
           "tile-s3": {
-            "span": 1,
-            "height": "large"
+            "span": 8,
+            "height": 3
           },
           "tile-s4": {
-            "span": 1,
-            "height": "large"
+            "span": 4,
+            "height": 3
           },
-          "tile-s5": {
-            "span": 1,
-            "height": "large"
+          "tile-s1": {
+            "span": 6,
+            "height": 3
           },
           "tile-s6": {
-            "span": 1,
-            "height": "large"
+            "span": 6,
+            "height": 3
           },
           "tile-s7": {
-            "span": 1,
-            "height": "large"
+            "span": 8,
+            "height": 3
           },
-          "tile-s8": {
-            "span": 1,
-            "height": "large"
-          },
-          "tile-s9": {
-            "span": 1,
-            "height": "large"
-          },
-          "tile-s10": {
-            "span": 1,
-            "height": "large"
+          "tile-s5": {
+            "span": 4,
+            "height": 3
+          }
+        },
+        "fallback": {
+          "type": "flow",
+          "version": 1,
+          "preset": "columns-2",
+          "items": {
+            "tile-ontime-kpis": {
+              "span": 2,
+              "height": "compact"
+            },
+            "tile-s3": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-s4": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-s1": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-s6": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-s7": {
+              "span": 1,
+              "height": "large"
+            },
+            "tile-s5": {
+              "span": 1,
+              "height": "large"
+            }
           }
         }
       },
-      "filters": [],
-      "tiles": [
+      "filters": [
         {
-          "id": "tile-s1",
-          "queryId": "s1"
+          "id": "ontime-date-from",
+          "parameter": "from",
+          "label": "From",
+          "defaultValue": "2023-01-01",
+          "defaultActive": true,
+          "targets": [
+            "tile-ontime-kpis",
+            "tile-s3",
+            "tile-s4",
+            "tile-s1",
+            "tile-s6",
+            "tile-s7",
+            "tile-s5"
+          ]
         },
         {
-          "id": "tile-s2",
-          "queryId": "s2"
+          "id": "ontime-date-to",
+          "parameter": "to",
+          "label": "To",
+          "defaultValue": "2023-12-31",
+          "defaultActive": true,
+          "targets": [
+            "tile-ontime-kpis",
+            "tile-s3",
+            "tile-s4",
+            "tile-s1",
+            "tile-s6",
+            "tile-s7",
+            "tile-s5"
+          ]
+        },
+        {
+          "id": "ontime-carrier",
+          "parameter": "carrier",
+          "label": "Carrier",
+          "sourceQueryId": "ontime-filter-options",
+          "defaultValue": [],
+          "defaultActive": false,
+          "targets": [
+            "tile-ontime-kpis",
+            "tile-s3",
+            "tile-s4",
+            "tile-s1",
+            "tile-s6",
+            "tile-s7",
+            "tile-s5"
+          ]
+        },
+        {
+          "id": "ontime-origin",
+          "parameter": "origin",
+          "label": "Origin airport",
+          "sourceQueryId": "ontime-filter-options",
+          "defaultValue": [],
+          "defaultActive": false,
+          "targets": [
+            "tile-ontime-kpis",
+            "tile-s3",
+            "tile-s4",
+            "tile-s1",
+            "tile-s6",
+            "tile-s7",
+            "tile-s5"
+          ]
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-ontime-kpis",
+          "queryId": "ontime-kpis"
         },
         {
           "id": "tile-s3",
@@ -385,8 +529,8 @@
           "queryId": "s4"
         },
         {
-          "id": "tile-s5",
-          "queryId": "s5"
+          "id": "tile-s1",
+          "queryId": "s1"
         },
         {
           "id": "tile-s6",
@@ -397,16 +541,8 @@
           "queryId": "s7"
         },
         {
-          "id": "tile-s8",
-          "queryId": "s8"
-        },
-        {
-          "id": "tile-s9",
-          "queryId": "s9"
-        },
-        {
-          "id": "tile-s10",
-          "queryId": "s10"
+          "id": "tile-s5",
+          "queryId": "s5"
         }
       ]
     }

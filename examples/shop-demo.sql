@@ -1,7 +1,11 @@
+-- Required setup for examples/shop-charts.json. Load this file once with:
+--   clickhouse-client --multiquery < examples/shop-demo.sql
+-- The portable dashboard bundle intentionally does not duplicate schema/data.
+--
 -- shop — a tiny demo schema that EXISTS to show the data-flow graph:
 -- a raw events table feeding 3 materialized views into aggregate targets,
 -- a dictionary sourced from a dimension table, and a view on an aggregate.
--- Generated data is intentionally small (50 products, 20k events).
+-- Generated data is intentionally small (50 products, 300k events / ~90 days).
 --
 -- On a replicated antalya cluster, wrap each statement in ON CLUSTER '{cluster}'
 -- and use Replicated* engines so every replica has it; shown single-node here.
