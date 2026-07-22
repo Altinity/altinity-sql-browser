@@ -31,7 +31,7 @@ export function languageExtension(language = 'text'): Extension {
 
 export const createCodeViewer: CodeViewerFactory = ({
   parent,
-  document: targetDocument = parent && parent.ownerDocument,
+  document: targetDocument = parent.ownerDocument,
   text = '',
   language = 'text',
   wrap = false,
