@@ -695,7 +695,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const groupByTileId = new Map(session.timeRangeGroups.flatMap((group) => group.tileIds.map((tileId) => [tileId, group] as const)));
 
   const applyTimeRange = async (
-    group: DashboardTimeRangeGroup, from: string, to: string, recordOutgoing: boolean,
+    group: DashboardTimeRangeGroup, from: string, to: string,
   ): Promise<void> => {
     const generation = (timeRangeApplyGeneration.get(group.key) ?? 0) + 1;
     timeRangeApplyGeneration.set(group.key, generation);
@@ -716,7 +716,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       filterRefreshLiveEl.textContent = `Time range was not changed: ${result.error}`;
       return;
     }
-    if (result.changed && recordOutgoing && wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
+    if (result.changed && wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
       timeRangeRecents.set(group.key,
         pushRecentRange(timeRangeRecents.get(group.key) ?? [], { from: outFrom, to: outTo }));
     }
@@ -841,7 +841,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // union of the pair's resolved targets), pushes the OUTGOING committed pair
     // onto this group's recents, and announces the new range.
     const onApplyTimeRange = (group: DashboardTimeRangeGroup, from: string, to: string): void => {
-      void applyTimeRange(group, from, to, true);
+      void applyTimeRange(group, from, to);
     };
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
@@ -1725,7 +1725,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           filterRefreshLiveEl.textContent = `Time range was not changed: ${formatted.error}`;
           return;
         }
-        void applyTimeRange(timeRangeGroup, formatted.from, formatted.to, false);
+        void applyTimeRange(timeRangeGroup, formatted.from, formatted.to);
       },
     })] : undefined;
     const out = renderResolvedPanel(app as unknown as App, resolved, result, {
