@@ -1672,6 +1672,20 @@ body.detached-tab .graph-overlay-panel {
 .trf-btn-primary:hover { filter: brightness(1.08); }
 .trf-btn-primary:disabled { opacity: .5; cursor: default; }
 .trf-btn-primary:disabled:hover { filter: none; }
+/* #335 D2 (filter-bar integration): the "Time"/"Filters" section labels and
+   the separator between the compound time-range control and the per-param
+   fields. Both sit in the same flex row as the fields (`.dash-filters`), so
+   they align to the field baseline and stay reachable when the bar scrolls/
+   wraps. All colours come from the shared theme tokens (light + dark). */
+.dash-filters .flabel {
+  align-self: center; flex-shrink: 0;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-faint); font-weight: 600; white-space: nowrap;
+}
+.dash-filters .trf-sep {
+  align-self: stretch; flex-shrink: 0;
+  width: 1px; min-height: 22px; background: var(--border-faint); margin: 2px 0;
+}
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;
