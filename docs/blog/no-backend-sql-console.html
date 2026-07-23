@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The SQL console with no backend — Altinity® SQL Browser</title>
-<meta name="description" content="Most database UIs are a service you deploy and babysit. This one is a single HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, zero third-party requests, a strict CSP.">
+<meta name="description" content="Most database UIs are a service you deploy and babysit. This one is a single HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, bundled dependencies, and a strict CSP.">
 <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/site.css">
 </head>
@@ -63,11 +63,11 @@
       <figcaption>Sign in with your IdP (or a saved connection). The “Target” line shows exactly where queries will go.</figcaption>
     </figure>
 
-    <h2>Zero third-party requests</h2>
+    <h2>No third-party asset loads</h2>
     <p>Open the network tab while you use it. You'll see calls to ClickHouse and to your IdP — and
       nothing else. No CDN, no analytics, no web fonts; it renders in your OS font. Everything the app
-      needs is inlined into that one file at build time, including the two libraries it leans on (Chart.js
-      for the chart view, dagre for the graph layout). I'd rather ship one ~440&nbsp;KB file I can diff than a
+      needs is inlined into that one file at build time, including CodeMirror, Chart.js and its date
+      adapter, dagre, signals-core, and marked. I'd rather ship one file I can diff than a
       tree of packages I can't.</p>
 
     <p>That's a security property too, and it's enforced rather than hoped for. The handler ships a strict

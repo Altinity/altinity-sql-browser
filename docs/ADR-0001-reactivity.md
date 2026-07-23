@@ -19,7 +19,7 @@ a dependent → stale UI. This is an *absence-of-reactivity* problem, distinct f
 a *component-model* problem.
 
 Three hard constraints frame any solution: a single self-contained HTML artifact
-with zero third-party requests (CLAUDE.md rule 4 — deliberate deps only), the
+with no third-party asset loads (CLAUDE.md rule 4 — deliberate deps only), the
 per-file 100/100/100/100 coverage gate (rule 1), and the injected-seam layering
 (rule 2).
 
@@ -40,8 +40,8 @@ memoized `computed()` — none of which the naive synchronous prototype provides
 It costs one small, zero-transitive-dependency package and **+1.4 KB gzip** to
 the artifact (vs +0.45 KB hand-rolled), in exchange for not owning ~70 lines +
 ~180 test lines of correctness-critical reactive code. Per CLAUDE.md rule 4 this
-is a deliberate dependency; it is still inlined, so the artifact makes zero
-third-party requests.
+is a deliberate dependency; it is still inlined, so the artifact makes no
+third-party asset request for it.
 
 ## Options considered (all measured)
 
@@ -122,8 +122,8 @@ re-opening this ADR's "no framework" line for *complex panels only*.
 
 **What it cost (measured / observed):**
 - **Bundle: +6.8 KB gzip** (148,044 → 154,873 B; raw 457,892 → 474,440) — close
-  to this ADR's +5.9 KB estimate. ~+4.6% of the artifact, still zero third-party
-  requests (inlined).
+  to this ADR's +5.9 KB estimate. ~+4.6% of the artifact, still with no
+  third-party asset loads (inlined).
 - **A second paradigm.** signals-core `effect()`s drive the rest of `createApp`
   (tabs/results/title); the schema tree is Preact. Two render models coexist —
   the main ongoing cost.
@@ -321,8 +321,8 @@ Three further observations:
   rewrite of ~9 k LOC of `src/ui/` and its 100%-covered tests.
 - Grafana/Superset use React for reasons this project does not have — a
   third-party plugin ecosystem and a very large contributor surface. This
-  project's differentiator is the opposite: one self-contained file, zero
-  third-party requests.
+  project's differentiator is the opposite: one self-contained file with no
+  third-party asset loads.
 - ADR-0002 (incremental strict TypeScript) further reduces the framework pull:
   a typed `h()` hyperscript and a typed `app` controller surface recover much
   of the edit-time DX people reach for a framework to get.
