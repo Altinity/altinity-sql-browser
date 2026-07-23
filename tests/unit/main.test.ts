@@ -49,6 +49,7 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
       isSignedIn: () => !!self.token,
       ...connOver,
     },
+    catalog: { loadVersion: vi.fn(async () => {}) },
     renderCurrentSurface: vi.fn(),
     syncSqlRoute: vi.fn(),
     showLogin: vi.fn(),
@@ -101,12 +102,14 @@ describe('bootstrap', () => {
     const app = fakeApp();
     const out = await bootstrap(app, fakeEnv());
     expect(app.showLogin).toHaveBeenCalledWith(null);
+    expect(app.catalog.loadVersion).not.toHaveBeenCalled();
     expect(out.signedIn).toBe(false);
   });
 
   it('renders the app when already signed in', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv());
+    expect(app.catalog.loadVersion).toHaveBeenCalledOnce();
     expect(app.renderCurrentSurface).toHaveBeenCalled();
   });
 
@@ -410,6 +413,7 @@ describe('bootstrap', () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv({ location: dashLoc() }));
     expect(app.loadWorkspaceOnBoot).toHaveBeenCalledOnce();
+    expect(app.catalog.loadVersion).toHaveBeenCalledOnce();
     expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
   });
 

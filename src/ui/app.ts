@@ -232,9 +232,21 @@ export function createApp(env: CreateAppEnv = {}): App {
   // is shared by Workbench and Dashboard.
   let routeSearch = loc.search;
   let routeLoadGeneration = 0;
+  let surfaceGeneration = 0;
   app.sqlRoute = parseSqlRoute(routeSearch);
   app.currentWorkspace = null;
   app.workspaceRouteStatus = 'ready';
+  app.captureSurfaceGeneration = () => surfaceGeneration;
+  app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
+  app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
+    if (generation === surfaceGeneration) return true;
+    const routeKey = app.sqlRoute.workspaceKey;
+    if (committed && app.workspaceRouteStatus === 'ready' && app.currentWorkspace
+      && (routeKey === null || routeKey === app.currentWorkspace.key)) {
+      app.renderCurrentSurface();
+    }
+    return false;
+  };
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -1236,6 +1248,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // button, Esc + click-outside close (capture listeners), stored at
   // app.dom[refKey] and cleared on close. Returns { close }.
   const anchoredPopoverClosers = new Set<() => void>();
+  const closeAnchoredPopovers = (): void => {
+    for (const close of [...anchoredPopoverClosers]) close();
+  };
   function anchoredPopover(
     node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
   ): { close: () => void } {
@@ -1283,6 +1298,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
+    const surfaceGeneration = app.captureSurfaceGeneration();
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     // #343: `saved.commit` now runs its candidate-building transform through
@@ -1290,6 +1306,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
     // wrapper needed (it would only double-queue).
     const result = await saved.commit(tab, evaluated);
+    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
+      return result.ok ? result.entry : null;
+    }
     if (!result.ok) {
       // 'rejected' (commit's own defensive re-check inside the service, OR the
       // aggregate strictly rejecting the whole-workspace commit — #287 W4)
@@ -1392,10 +1411,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = async (): Promise<void> => {
       if (!input.value.trim()) return;
+      const surfaceGeneration = app.captureSurfaceGeneration();
       // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
       // which already serializes + reads the latest committed aggregate — no
       // outer `serializeWrite` wrapper needed.
       const result = await saved.create(tab, input.value, descInput.value);
+      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
         return;
@@ -1507,6 +1528,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   let disposeWorkbenchMount: (() => void) | null = null;
   const ignoreExternalWorkspaceChange = (): void => {};
   app.renderDashboard = () => {
+    surfaceGeneration += 1;
+    closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeWorkbenchMount?.();
     disposeWorkbenchMount = null;
@@ -1514,10 +1537,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     return renderDashboard(app);
   };
   const disposeCurrentSurface = (): void => {
+    surfaceGeneration += 1;
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
       'button, input, select, textarea',
     ) ?? []) control.disabled = true;
-    for (const close of [...anchoredPopoverClosers]) close();
+    closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();
     disposeWorkbenchMount?.();
@@ -1965,7 +1989,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     // workspace resolution runs for a username/password session. Without it,
     // basic auth would keep rendering the placeholder workspace instead of the
     // requested or last-used persisted workspace.
-    connect: async (input) => { await conn.connectBasic(input); await app.loadWorkspaceOnBoot(); app.renderCurrentSurface(); },
+    connect: async (input) => {
+      await conn.connectBasic(input);
+      void app.catalog.loadVersion();
+      await app.loadWorkspaceOnBoot();
+      app.renderCurrentSurface();
+    },
     share,
     copyResult,
     // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
@@ -2013,6 +2042,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.renderApp = () => {
+    surfaceGeneration += 1;
+    closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;

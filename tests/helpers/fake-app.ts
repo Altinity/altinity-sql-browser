@@ -432,6 +432,9 @@ const appDefaults: App = {
   sqlRoute: { surface: 'workspace', workspaceKey: null },
   currentWorkspace: null,
   workspaceRouteStatus: 'ready',
+  captureSurfaceGeneration: () => 0,
+  isSurfaceGenerationCurrent: (generation) => generation === 0,
+  refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
   navigateSqlRoute: async () => {},
   handleSqlPopState: async () => {},
   syncSqlRoute: () => {},
@@ -645,6 +648,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   };
   const base = {
     state,
+    sqlRoute: { surface: 'workspace', workspaceKey: state.workspaceKey } as App['sqlRoute'],
     root,
     document,
     Chart: FakeChart,

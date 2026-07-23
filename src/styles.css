@@ -2364,6 +2364,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
   .logo-name, .env-chip, .app-header .hd-divider, .conn-status, .hd-hide-mobile { display: none; }
+  .dashboard-app-header { gap: 6px; padding: 0 8px; }
+  .dashboard-app-header .dash-layout-label,
+  .dashboard-app-header .dash-updated,
+  .dashboard-app-header .dash-refresh-label { display: none; }
   /* #302: the header Dashboard control keeps its icon but drops its label on
      narrow screens (its accessible name stays on the button). */
   .hd-hide-mobile-label { display: none; }
@@ -2496,14 +2500,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* The dashboard's own scroll container: #root is a fixed overflow:hidden flex
    column (the workbench shell), so the dashboard fills it and scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
-/* Header + layout toolbar share one sticky top bar (#149 D2) so the
-   Arrange/Report switcher stays visible while the grid scrolls. */
+/* The one-row application header and optional filter toolbar share one sticky
+   top bar so Dashboard controls stay visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }
-.dash-contextbar {
-  display: flex; align-items: center;
-  min-height: 36px; gap: 10px; padding: 4px 14px; background: var(--bg-header);
-  border-bottom: 1px solid var(--border); flex-wrap: nowrap;
-}
 /* Filter toolbar (#149 D2, now filters-only since the layout switcher moved to
    the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): filters
    used to wrap the toolbar onto extra rows once several `{name:Type}` params
@@ -2519,7 +2518,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* The flow preset switcher (2026-07-18: a `.result-panel-select` dropdown in
    the header's top row, replacing the old `.dash-seg` segmented button group
    that lived in the filter toolbar — see dashboard.ts). */
-.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.dash-layout-wrap { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.dash-layout-label {
+  height: 26px; padding-left: 8px; display: inline-flex; align-items: center;
+  color: var(--fg-mute); font-size: 12.5px; font-weight: 500;
+}
+.dashboard-app-header .dash-layout-select { padding-left: 4px; }
 /* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
    workbench's var-field/var-name/var-input classes.
    #294: the field region IS its own horizontally-scrolling viewport
@@ -2553,15 +2557,23 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-back:hover { background: var(--bg-hover); color: var(--fg); }
 .dash-back svg { transform: scaleX(-1); }
-.dash-title { font-size: 16px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; }
+.dash-title {
+  flex: 1 1 auto; min-width: 36px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; font-weight: 500; color: var(--fg);
+}
 .dash-chip {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
   color: var(--fg-mute); background: var(--bg-chip); padding: 3px 9px; border-radius: 20px;
 }
-.dash-fav { color: var(--accent); }
+.dash-fav { color: var(--accent); flex-shrink: 0; white-space: nowrap; }
 .dash-src { font-family: var(--mono); }
 .dash-dot { width: 6px; height: 6px; border-radius: 6px; background: #22C55E; }
-.dash-updated { font-size: 11px; color: var(--fg-faint); font-family: var(--mono); }
+.dash-updated {
+  flex-shrink: 0; white-space: nowrap;
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+.dash-refresh { flex-shrink: 0; white-space: nowrap; }
 .dash-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
   background: var(--bg-chip); color: var(--fg); border: 1px solid var(--border);
@@ -2779,9 +2791,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    their fixed-position popovers. These are CSS-only overrides, so widening
    restores the persisted desktop layout without writing preferences. */
 @media (max-width: 768px) {
-  .dash-contextbar {
-    flex-wrap: nowrap; gap: 8px; padding: 8px 10px;
-  }
   .dash-back {
     width: 30px; height: 30px; padding: 0; justify-content: center; flex-shrink: 0;
   }

@@ -429,6 +429,15 @@ export interface App {
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV2 | null;
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  /** Renderer lifetime, distinct from workspace-load ordering. Any surface
+   * teardown/remount advances it so obsolete async callbacks can finish their
+   * durable work without settling against a replacement renderer. */
+  captureSurfaceGeneration(): number;
+  isSurfaceGenerationCurrent(generation: number): boolean;
+  /** Return true while the caller still owns the mounted renderer. A stale
+   * caller gets no settlement rights; after a successful durable commit, the
+   * currently selected ready surface is refreshed from shared projection. */
+  refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
   /** Navigate within the single artifact. Surface changes use push; mode and
    * canonicalization use replace. */
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;

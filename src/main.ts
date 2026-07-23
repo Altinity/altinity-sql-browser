@@ -38,6 +38,7 @@ import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
  *  its real name on `ConnectionSession`). */
 export interface BootstrapApp {
   state: Pick<State, 'tabs' | 'resultView'>;
+  catalog: { loadVersion(): Promise<void> };
   conn: Pick<ConnectionSession,
     'basePath' | 'isSignedIn' | 'resolveConfig' | 'setTokens' | 'ensureConfig'>;
   renderCurrentSurface(): void;
@@ -184,6 +185,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
+    void app.catalog.loadVersion();
     await app.loadWorkspaceOnBoot();
     app.renderCurrentSurface();
   } else {

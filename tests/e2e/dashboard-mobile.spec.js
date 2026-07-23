@@ -42,7 +42,7 @@ test.describe('Dashboard mobile layout', () => {
 
   test('keeps title and actions reachable without viewport overflow at 360px', async ({ page }) => {
     await openAt(page, 360, 800);
-    const result = await page.locator('.dash-contextbar').evaluate((header) => {
+    const result = await page.locator('.dashboard-app-header').evaluate((header) => {
       const title = header.querySelector('.dash-title').getBoundingClientRect();
       const refresh = header.querySelector('.dash-refresh').getBoundingClientRect();
       return {
@@ -53,6 +53,25 @@ test.describe('Dashboard mobile layout', () => {
       };
     });
     expect(result).toEqual({ wraps: false, titleBeforeActions: true, actionsInside: true, pageOverflow: 0 });
+  });
+
+  test('keeps every visible Dashboard header control reachable just above the mobile breakpoint', async ({ page }) => {
+    await openAt(page, 820, 700);
+    const result = await page.locator('.dashboard-app-header').evaluate((header) => {
+      const visible = [...header.children].filter((child) => getComputedStyle(child).display !== 'none');
+      const rects = visible.map((child) => child.getBoundingClientRect());
+      return {
+        oneRow: Math.max(...rects.map((rect) => rect.top + rect.height / 2))
+          - Math.min(...rects.map((rect) => rect.top + rect.height / 2)) < 2,
+        inside: rects.every((rect) => rect.left >= 0 && rect.right <= innerWidth),
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+        outside: visible.flatMap((child, index) => (
+          rects[index].left < 0 || rects[index].right > innerWidth
+            ? [`${child.className}:${rects[index].left}-${rects[index].right}`] : []
+        )),
+      };
+    });
+    expect(result).toEqual({ oneRow: true, inside: true, pageOverflow: 0, outside: [] });
   });
 
   test('visually normalizes every saved layout on mobile and restores desktop CSS on resize', async ({ page }) => {
@@ -262,23 +281,26 @@ test.describe('Dashboard mobile layout', () => {
     await expect(lastField).toBeInViewport();
   });
 
-  test('the layout switcher is a compact select in the header, right after the tile-count chip, matching the workbench panel-picker style (2026-07-18)', async ({ page }) => {
+  test('the Style picker follows File in the one-row Dashboard header', async ({ page }) => {
     await openAt(page, 1100, 800);
     const select = page.locator('.dash-layout-select');
     await expect(select).toBeVisible();
     await expect(select).toHaveClass(/result-panel-select/);
     // No more four-button segmented control.
     await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
+    await expect(page.locator('.dash-contextbar')).toHaveCount(0);
 
     const geometry = await page.evaluate(() => {
-      const header = document.querySelector('.dash-contextbar');
+      const header = document.querySelector('.dashboard-app-header');
       const children = [...header.children];
       const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
+      const fileIndex = children.findIndex((c) => c.classList.contains('dash-file-btn'));
       const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));
       const layoutWrap = children[layoutWrapIndex];
       const tileCount = children[tileCountIndex];
       return {
-        layoutRightAfterTileCount: layoutWrapIndex === tileCountIndex + 1,
+        tileCountBeforeFile: fileIndex === tileCountIndex + 1,
+        styleRightAfterFile: layoutWrapIndex === fileIndex + 1,
         inHeaderNotToolbar: !document.querySelector('.dash-toolbar .dash-layout-wrap'),
         sameRow: Math.abs(
           (layoutWrap.getBoundingClientRect().top + layoutWrap.getBoundingClientRect().height / 2)
@@ -286,7 +308,10 @@ test.describe('Dashboard mobile layout', () => {
         ) < 2,
       };
     });
-    expect(geometry).toEqual({ layoutRightAfterTileCount: true, inHeaderNotToolbar: true, sameRow: true });
+    expect(geometry).toEqual({
+      tileCountBeforeFile: true, styleRightAfterFile: true,
+      inHeaderNotToolbar: true, sameRow: true,
+    });
 
     await select.selectOption('columns-2');
     expect(await select.inputValue()).toBe('columns-2');

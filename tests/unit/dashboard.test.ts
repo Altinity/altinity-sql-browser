@@ -263,6 +263,13 @@ function dashApp(opts: {
     workspaceRouteStatus: current ? 'ready' : 'not-found',
     sqlRoute: { surface: 'dashboard', workspaceKey: current?.key ?? 'workspace', mode: 'edit' },
   }) as TestApp;
+  let surfaceGeneration = 0;
+  app.captureSurfaceGeneration = () => surfaceGeneration;
+  app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
+  app.renderDashboard = () => {
+    surfaceGeneration += 1;
+    void renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+  };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
   const loadActive = async (): Promise<StoredWorkspaceV2> => {
@@ -3159,6 +3166,36 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     rootEl(app).remove();
   });
 
+  it('does not settle a time-range Apply into an obsolete Dashboard renderer', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    let surfaceGeneration = 0;
+    app.captureSurfaceGeneration = () => surfaceGeneration;
+    app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const originalExecute = app.exec.executeRead as App['exec']['executeRead'];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let delayNext = true;
+    (app.exec as App['exec']).executeRead = async (result, request) => {
+      if (delayNext) { delayNext = false; await gate; }
+      return originalExecute(result, request);
+    };
+    qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+    const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
+    inputs[0].value = '-1d'; inputs[0].dispatchEvent(inputEv());
+    inputs[1].value = 'now'; inputs[1].dispatchEvent(inputEv());
+    qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
+    await flush();
+    surfaceGeneration += 1;
+    release();
+    await flush();
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('');
+    rootEl(app).remove();
+  });
+
   it('pushes the OUTGOING committed pair to per-group recents on a changing re-apply, never on the first commit from unset', async () => {
     const { app } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -3946,7 +3983,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     );
   });
 
-  it('uses the shared compact application header and keeps Dashboard details below it', async () => {
+  it('puts all Dashboard chrome in the shared compact application header', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     app.state.serverVersion = '26.3.10.4';
     await render(app);
@@ -3956,9 +3993,17 @@ describe('renderDashboard — unified live modes (#407)', () => {
       .toEqual(['SQL Browser', 'Dashboard']);
     expect(qsa(header, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
-    expect(qs(header, '.dash-title')).toBeNull();
-    expect(qs(header, '.conn-status').textContent).toBe('ClickHouse 26.3.10');
-    expect(qs(app.root, '.dash-contextbar .dash-title')).not.toBeNull();
+    expect(qs(header, '.dash-title').textContent).toBe('My Dash');
+    expect(qs(header, '.dash-fav')).not.toBeNull();
+    expect(qs(header, '.dash-file-btn')).not.toBeNull();
+    expect(qs(header, '.dash-layout-wrap')).not.toBeNull();
+    expect(qs(header, '.dash-updated')).not.toBeNull();
+    expect(qs(header, '.dash-refresh')).not.toBeNull();
+    expect(qs(header, '.conn-status')).toBeNull();
+    expect(qs(header, '[title="View examples"]')).toBeNull();
+    expect(qs(header, '[title^="Keyboard shortcuts"]')).toBeNull();
+    expect(qs(header, '.user-btn')).toBeNull();
+    expect(qs(app.root, '.dash-contextbar')).toBeNull();
   });
 
   it('an old Dashboard refresh hook is inert after the route leaves Dashboard', async () => {
@@ -3967,6 +4012,17 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const page = app.root!.firstChild;
     const staleHook = app.onWorkspaceExternallyChanged;
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'workspace' };
+    staleHook({ workspace: app.currentWorkspace!, queriesChanged: true });
+    await flush();
+    expect(app.root!.firstChild).toBe(page);
+  });
+
+  it('an obsolete Dashboard refresh hook cannot rebuild its replaced renderer', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'view' });
+    await render(app);
+    const page = app.root!.firstChild;
+    const staleHook = app.onWorkspaceExternallyChanged;
+    app.isSurfaceGenerationCurrent = () => false;
     staleHook({ workspace: app.currentWorkspace!, queriesChanged: true });
     await flush();
     expect(app.root!.firstChild).toBe(page);
@@ -4047,14 +4103,14 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(labels).not.toContain('Import Dashboard…');
   });
 
-  it('live view shows the shared workspace name without exposing Rename', async () => {
+  it('live view shows the Dashboard name without exposing workspace Rename', async () => {
     const workspace = wsWith({ id: 'd' });
     const { app } = modeApp({ workspace, mode: 'view' });
     app.state.libraryName.value = 'Operations';
     await render(app);
-    expect(qs(app.root, '.lib-title').textContent).toBe('Operations');
+    expect(qs(app.root, '.dash-title').textContent).toBe('My Dash');
+    expect(qs(app.root, '.lib-title')).toBeNull();
     expect(qs(app.root, 'button.lib-name')).toBeNull();
-    expect(qs(app.root, '.lib-name').getAttribute('aria-label')).toBe('Workspace: Operations');
   });
 
   it('an unrelated keydown while the menu is open is ignored', async () => {

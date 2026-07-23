@@ -50,37 +50,16 @@ const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*
 const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): string => diagnostics[0]?.message || fallback;
 
-export interface LibraryControlsOptions {
-  /** Dashboard supplies its resource-scoped File menu while retaining the
-   * exact shared header placement and typography. */
-  fileButton?: HTMLButtonElement;
-  /** Replaces Workbench's Dashboard shortcut in the post-workspace slot. */
-  afterWorkspace?: HTMLElement;
-  /** View mode keeps the same workspace-name typography without exposing the
-   * rename authoring control. */
-  workspaceTitleReadOnly?: boolean;
-}
-
 /** Build the header File button + editable workspace title; returns the nodes
  *  to splice into the app header (after the connection chip). */
-export function libraryControls(app: App, options: LibraryControlsOptions = {}): HTMLElement[] {
-  app.dom.fileBtn = options.fileButton ?? h('button', {
+export function libraryControls(app: App): HTMLElement[] {
+  app.dom.fileBtn = h('button', {
     class: 'hd-file-btn', title: 'File — workspace and dashboard import/export',
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: () => openFileMenu(app),
   }, h('span', null, 'File'), Icon.chevDown());
   app.dom.libraryTitle = h('div', { class: 'lib-title' });
-  if (options.workspaceTitleReadOnly) {
-    app.dom.libraryTitle.appendChild(h('div', {
-      class: 'lib-name', 'aria-label': `Workspace: ${app.state.libraryName.value}`,
-    }, h('span', { class: 'lib-name-text' }, app.state.libraryName.value)));
-  } else {
-    renderLibraryTitle(app);
-  }
-  if (options.afterWorkspace) {
-    app.dom.dashboardNav = undefined;
-    return [app.dom.fileBtn, app.dom.libraryTitle, options.afterWorkspace];
-  }
+  renderLibraryTitle(app);
   // #407: Dashboard navigation lives next to the workspace name (not in the
   // File menu). It switches the current tab to the unified Dashboard surface,
   // including for a workspace whose editable Dashboard has not been created.

@@ -133,6 +133,9 @@ export interface DashboardApp {
   sqlRoute: SqlRoute;
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   renderDashboard(): void;
+  captureSurfaceGeneration(): number;
+  isSurfaceGenerationCurrent(generation: number): boolean;
+  refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
   applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
@@ -313,7 +316,9 @@ function renderDashboardNotFound(app: DashboardApp): void {
       h('p', null, 'This workspace no longer exists on this browser.'))));
 }
 
-function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
+function renderMissingDashboard(
+  app: DashboardApp, readOnly: boolean, surfaceGeneration: number,
+): void {
   const body = readOnly
     ? h('div', { class: 'dash-empty' },
       h('h2', null, 'This workspace has no dashboard'))
@@ -326,6 +331,7 @@ function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
             if (!latest || latest.dashboard) return null;
             return { candidate: { ...latest, dashboard: createEmptyDashboard(app.genId()) } };
           });
+          if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
           if (outcome.ok) app.renderDashboard();
         },
       }, 'Create dashboard'));
@@ -392,6 +398,7 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
 /** Render the dashboard into `app.root`. */
 export async function renderDashboard(app: DashboardApp): Promise<void> {
   const { document: doc, state } = app;
+  const surfaceGeneration = app.captureSurfaceGeneration();
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
@@ -407,7 +414,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.onWorkspaceExternallyChanged = () => {
     if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
   };
-  if (!workspace.dashboard) { renderMissingDashboard(app, readOnly); return; }
+  if (!workspace.dashboard) {
+    renderMissingDashboard(app, readOnly, surfaceGeneration);
+    return;
+  }
 
   const queries: SavedQueryV2[] = workspace.queries;
   const queryById = new Map<string, SavedQueryV2>();
@@ -566,7 +576,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     },
     'Dashboard style',
   );
-  const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutSelect.el);
+  const layoutWrap = h('div', { class: 'dash-layout-wrap' },
+    h('span', { class: 'dash-layout-label' }, 'Style'), layoutSelect.el);
   // #321 BLOCKER fix: the reduced read-only selector (Grid Tiles / Full view)
   // is a grafana-grid-only render-mode toggle — expose it read-only ONLY when
   // the persisted doc is grafana-grid. A read-only FLOW doc (report/columns-2/
@@ -579,13 +590,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // Dashboard keeps the shared header's File word and placement. View exposes
   // the safe Export row only; edit additionally exposes Import.
   const header = buildAppHeader(app as App, {
-    dashboardFileButton: buildDashboardFileMenu(app, readOnly),
+    dashboardControls: {
+      tileCount,
+      fileButton: buildDashboardFileMenu(app, readOnly),
+      style: showLayoutSelect ? layoutWrap : null,
+      title: h('div', {
+        class: 'dash-title', title: currentDoc.title || state.libraryName.value,
+      }, currentDoc.title || state.libraryName.value),
+      updated,
+      refresh: refreshBtn,
+    },
   });
-  const contextBar = h('div', { class: 'dash-contextbar' },
-    h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
-    tileCount, showLayoutSelect ? layoutWrap : null,
-    h('div', { class: 'dash-spacer', style: { flex: '1' } }),
-    updated, refreshBtn);
 
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
   // #294: the field region scrolls horizontally in its own viewport
@@ -658,6 +673,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       { filterId: group.fromFilterId, value: from, active: true },
       { filterId: group.toFilterId, value: to, active: true },
     ]);
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
     if (timeRangeApplyGeneration.get(group.key) !== generation) return;
     /* v8 ignore next 3 -- the mounted controls and chart formatter prevalidate;
        retained for a stale/destroyed-session race so failure is announced. */
@@ -945,6 +961,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         },
       };
     }).then((outcome) => {
+      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
       // #343: adapt the shared outcome back to this route's descriptor-based
       // settle contract — `null` on a transform abort (this command no longer
       // applies), the commit result otherwise. Projection already happened in
@@ -954,6 +971,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         : outcome.aborted ? null : { ok: false, diagnostics: outcome.diagnostics };
       settleCommand(result, observed);
     }, () => {
+      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration)) return;
       // The queued op itself REJECTED (blocked/quota/private-mode storage —
       // the active-ID load/store threw, distinct from an `ok:false` commit).
       // Without this handler the rejection is unhandled and, worse, this
@@ -981,9 +999,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   let rebuilding = false;
   function rebuildRouteFromCommitted(): void {
     if (rebuilding || pendingCommands.length > 0) return;
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
     rebuilding = true;
     session.destroy();
-    void renderDashboard(app);
+    // Route the replacement through the app-owned wrapper so this renderer is
+    // invalidated before the replacement captures its own generation.
+    app.renderDashboard();
   }
 
   // #343 step 6: react to an external workspace change the app-level cross-tab
@@ -2062,7 +2083,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, contextBar, toolbar),
+    h('div', { class: 'dash-topbar' }, header, toolbar),
     filterDiagnosticsHost, empty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard

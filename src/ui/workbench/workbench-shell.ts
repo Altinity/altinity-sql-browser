@@ -89,7 +89,7 @@ export interface WorkbenchShellDeps {
   state: State;
   actions: ActionsRegistry;
   conn: Pick<ConnectionSession, 'email' | 'host'>;
-  catalog: Pick<SchemaCatalogService, 'loadVersion' | 'loadSchema' | 'loadReference'>;
+  catalog: Pick<SchemaCatalogService, 'loadSchema' | 'loadReference'>;
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   /** The route-scoped run/runScript/runEntry/cancel session (#276 Phase 3a) —
@@ -395,7 +395,6 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   // breakpoint). Each runs once now for the initial paint.
   disposers.push(effect(() => { mainRow.dataset.mobileView = state.mobileView.value; }));
   disposers.push(effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; }));
-  catalog.loadVersion();
   catalog.loadSchema();
   catalog.loadReference();
   return () => {

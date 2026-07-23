@@ -9,6 +9,7 @@ import type { EditorPort } from '../../src/editor/editor-port.types.js';
 import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
+import { handleKeydown } from '../../src/ui/shortcuts.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
@@ -980,6 +981,13 @@ describe('renderApp shell', () => {
     expect(app.dom.userBtn!.getAttribute('title')).toBe('me@example.com');
     await Promise.resolve();
   });
+  it('renders an already-probed ClickHouse version on the Workbench header', () => {
+    const app = createApp(env());
+    app.state.serverVersion = '26.7.1.42';
+    app.renderApp();
+    expect(qs(app.root, '.conn-status').textContent).toBe('ClickHouse 26.7.1');
+    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ClickHouse 26.7.1.42');
+  });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
     app.dom.themeBtn!.dispatchEvent(new Event('click')); // default light → dark
@@ -1044,7 +1052,7 @@ describe('loadVersion / loadSchema', () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })]]) });
     const app = createApp(e);
     app.renderApp();
-    await new Promise((r) => setTimeout(r));
+    await app.catalog.loadVersion();
     expect(app.state.serverVersion).toBe('26.3.1');
     expect(app.dom.connStatus!.textContent).toContain('26.3.1');
   });
@@ -1052,7 +1060,7 @@ describe('loadVersion / loadSchema', () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ ok: false, status: 500, text: 'err' })]]) });
     const app = createApp(e);
     app.renderApp();
-    await new Promise((r) => setTimeout(r));
+    await app.catalog.loadVersion();
     expect(app.dom.connStatus!.textContent).toContain('offline');
   });
   it('records a schema error', async () => {
@@ -1352,7 +1360,7 @@ describe('query run', () => {
   });
   it('run() while already running is a no-op (cancel is separate)', async () => {
     const { app } = appForRun([]);
-    await new Promise((r) => setTimeout(r)); // let mount-time loadVersion/loadSchema/loadReference settle
+    await new Promise((r) => setTimeout(r)); // let mount-time loadSchema/loadReference settle
     app.state.running.value = true;
     const before = asMock(app.conn.chCtx.fetch).mock.calls.length;
     await app.actions.run();
@@ -2129,7 +2137,7 @@ describe('query run', () => {
       [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
-    await new Promise((r) => setTimeout(r)); // let app.catalog.loadVersion() resolve
+    await app.catalog.loadVersion();
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.explainQuery();
     expect(sentExplains(e)).toContain('EXPLAIN pretty = 1, compact = 1 SELECT 1');
@@ -2142,7 +2150,7 @@ describe('query run', () => {
       [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
-    await new Promise((r) => setTimeout(r)); // let app.catalog.loadVersion() resolve
+    await app.catalog.loadVersion();
     app.activeTab().sqlDraft = 'EXPLAIN SELECT 1';
     await app.actions.run();
     expect(sentExplains(e)).toContain('EXPLAIN SELECT 1'); // verbatim, no decoration
@@ -2919,7 +2927,7 @@ describe('formatQuery', () => {
   });
   it('no-ops on empty SQL', async () => {
     const { app, e } = appFor([]);
-    await Promise.resolve(); // let render's loadVersion/loadSchema settle
+    await Promise.resolve(); // let render's loadSchema settle
     asMock(e.fetch!).mockClear();
     app.activeTab().sqlDraft = '   ';
     await app.actions.formatQuery();
@@ -2991,7 +2999,7 @@ describe('formatQuery', () => {
   });
   it('optional blocks (#165): a single statement with a block is skipped with a notice — no server call', async () => {
     const { app, e } = appFor([]);
-    await Promise.resolve(); // let render's loadVersion/loadSchema settle
+    await Promise.resolve(); // let render's loadSchema settle
     asMock(e.fetch!).mockClear();
     app.activeTab().sqlDraft = 'select 1 /*[ AND d = {d:String} ]*/';
     app.sqlEditor.replaceDocument('select 1 /*[ AND d = {d:String} ]*/');
@@ -3283,8 +3291,10 @@ describe('credentials (basic) sign-in', () => {
       fetch: makeFetch([[(u, sql) => /SELECT 1/.test(sql), resp({ json: { data: [{ '1': 1 }] } })]]),
     });
     const app = createApp(e);
+    const loadVersion = vi.spyOn(app.catalog, 'loadVersion').mockResolvedValue();
     expect(app.conn.authMode()).toBe('oauth');
     await app.actions.connect({ username: 'demo', password: 'demo', host: '' });
+    expect(loadVersion).toHaveBeenCalledOnce();
     expect(app.conn.authMode()).toBe('basic');
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBe(creds);
     expect(e.sessionStorage!.getItem('ch_basic_user')).toBe('demo');
@@ -5149,6 +5159,43 @@ describe('mobile best-effort mode (#126)', () => {
 
 // ── #407: unified route coordinator ──────────────────────────────────────────
 describe('unified /sql routing', () => {
+  const dashboardWorkspace = (queries: SavedQueryV2[] = []): StoredWorkspaceV2 => ({
+    storageVersion: 2,
+    id: 'w',
+    key: 'w',
+    name: 'Workspace',
+    queries,
+    dashboard: {
+      documentVersion: 1,
+      id: 'dash',
+      title: 'Operations',
+      revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [],
+      tiles: [],
+    },
+  });
+
+  const deferNextCommit = (app: App) => {
+    const realCommit = app.workspace.commit.bind(app.workspace);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const commit = vi.spyOn(app.workspace, 'commit').mockImplementation(async (candidate) => {
+      await gate;
+      return realCommit(candidate);
+    });
+    return { commit, release };
+  };
+
+  it('tracks mounted renderer lifetime independently from workspace loading', () => {
+    const app = createApp(env());
+    const before = app.captureSurfaceGeneration();
+    expect(app.isSurfaceGenerationCurrent(before)).toBe(true);
+    app.renderApp();
+    expect(app.isSurfaceGenerationCurrent(before)).toBe(false);
+    expect(app.refreshCurrentSurfaceAfterStale(app.captureSurfaceGeneration())).toBe(true);
+  });
+
   it('parses dashboard view mode from query parameters', () => {
     const app = createApp(env({ location: {
       origin: 'https://ch.example', pathname: '/sql',
@@ -5352,6 +5399,31 @@ describe('unified /sql routing', () => {
     run.click();
     expect(saveAction).not.toHaveBeenCalled();
     expect(runAction).not.toHaveBeenCalled();
+    const shortcut = (over: Record<string, unknown>) => ({
+      key: '', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false,
+      preventDefault: vi.fn(), target: {}, ...over,
+    });
+    const shareAction = vi.fn();
+    const formatQueryAction = vi.fn();
+    const formatSpecAction = vi.fn();
+    const setEditorModeAction = vi.fn();
+    app.actions.share = shareAction;
+    app.actions.formatQuery = formatQueryAction;
+    app.actions.formatSpec = formatSpecAction;
+    app.actions.setEditorMode = setEditorModeAction;
+    expect(handleKeydown(shortcut({ key: 'Enter' }), app)).toBeNull();
+    expect(handleKeydown(shortcut({ key: 's' }), app)).toBeNull();
+    expect(handleKeydown(shortcut({ key: 's', shiftKey: true }), app)).toBeNull();
+    expect(handleKeydown(shortcut({ key: 'Enter', shiftKey: true }), app)).toBeNull();
+    app.activeTab().editorMode = 'spec';
+    expect(handleKeydown(shortcut({ key: 'Enter', shiftKey: true }), app)).toBeNull();
+    expect(handleKeydown(shortcut({ key: '1', altKey: true }), app)).toBeNull();
+    expect(runAction).not.toHaveBeenCalled();
+    expect(saveAction).not.toHaveBeenCalled();
+    expect(shareAction).not.toHaveBeenCalled();
+    expect(formatQueryAction).not.toHaveBeenCalled();
+    expect(formatSpecAction).not.toHaveBeenCalled();
+    expect(setEditorModeAction).not.toHaveBeenCalled();
     app.renderCurrentSurface();
 
     resolveB({ status: 'ok', workspace: b });
@@ -5386,6 +5458,27 @@ describe('unified /sql routing', () => {
 
     resolveB({ status: 'ok', workspace: b });
     await navigation;
+  });
+
+  it('an in-flight Create dashboard completion cannot repaint after switching to Workbench', async () => {
+    const app = createApp(env());
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w', key: 'w', name: 'W', queries: [], dashboard: null,
+    };
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
+    app.renderDashboard();
+    const { commit, release } = deferNextCommit(app);
+    qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
+    release();
+    await app.flushWorkspaceWrites();
+    await vi.waitFor(() => expect(app.currentWorkspace!.dashboard).not.toBeNull());
+
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    expect(qs(app.root, '.dash-page')).toBeNull();
   });
 
   it('discards a slower workspace navigation after a newer destination wins', async () => {
@@ -5536,6 +5629,144 @@ describe('unified /sql routing', () => {
     });
     expect(qs(app.root, '.dash-page')).not.toBeNull();
     expect(qs(app.root, '.workspace-loading')).toBeNull();
+  });
+
+  it('a Dashboard edit commit that settles after switching to View refreshes View only', async () => {
+    const app = createApp(env());
+    const workspace = dashboardWorkspace();
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
+    app.renderDashboard();
+    const { commit, release } = deferNextCommit(app);
+    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
+    style.value = 'columns-2';
+    style.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+
+    await app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: 'w', mode: 'view',
+    }, 'replace');
+    expect(qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
+      .find((button) => button.textContent === 'View')!.disabled).toBe(true);
+    release();
+    await app.flushWorkspaceWrites();
+    await vi.waitFor(() => {
+      expect((app.currentWorkspace!.dashboard!.layout as { preset?: string }).preset).toBe('columns-2');
+    });
+
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'w', mode: 'view',
+    });
+    expect(qs(app.root, '.dash-page')).not.toBeNull();
+    expect(qs(app.root, '.workbench')).toBeNull();
+    expect(qs(app.root, '.dash-gg-del')).toBeNull();
+  });
+
+  it('a Dashboard edit commit that settles after switching to Workbench cannot replace Workbench', async () => {
+    const app = createApp(env());
+    const workspace = dashboardWorkspace();
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
+    app.renderDashboard();
+    const { commit, release } = deferNextCommit(app);
+    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
+    style.value = 'columns-3';
+    style.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    release();
+    await app.flushWorkspaceWrites();
+    await vi.waitFor(() => {
+      expect((app.currentWorkspace!.dashboard!.layout as { preset?: string }).preset).toBe('columns-3');
+    });
+
+    expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'w' });
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    expect(qs(app.root, '.dash-page')).toBeNull();
+  });
+
+  it('a stale Dashboard rollback callback never replaces the current Workbench DOM', async () => {
+    const app = createApp(env());
+    const workspace = dashboardWorkspace();
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
+    app.renderDashboard();
+    let rejectCommit!: () => void;
+    const commit = vi.spyOn(app.workspace, 'commit').mockImplementation(() =>
+      new Promise((_resolve, reject) => {
+        rejectCommit = () => reject(new Error('boom'));
+      }));
+    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
+    style.value = 'columns-2';
+    style.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
+    rejectCommit();
+    await app.flushWorkspaceWrites();
+    await Promise.resolve();
+
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    expect(qs(app.root, '.dash-page')).toBeNull();
+    expect(document.querySelector('.share-toast')).toBeNull();
+  });
+
+  it('a linked Workbench Save that settles after switching to Dashboard refreshes Dashboard only', async () => {
+    const linked = savedQueryFixture({ id: 'q1', name: 'Query 1', sql: 'SELECT 1' });
+    const app = createApp(env());
+    const workspace = dashboardWorkspace([linked]);
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
+    app.renderApp();
+    app.actions.loadIntoNewTab(asQueryOrName(linked));
+    app.sqlEditor.replaceDocument('SELECT 2');
+    const { commit, release } = deferNextCommit(app);
+
+    const save = app.actions.save();
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+    await app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
+    }, 'push');
+    release();
+    await save;
+    await app.flushWorkspaceWrites();
+    await vi.waitFor(() => {
+      expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 2');
+    });
+
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
+    });
+    expect(qs(app.root, '.dash-page')).not.toBeNull();
+    expect(qs(app.root, '.workbench')).toBeNull();
+  });
+
+  it('a Workbench Save-as completion cannot settle its removed popover after switching to Dashboard', async () => {
+    const app = createApp(env());
+    const workspace = dashboardWorkspace();
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
+    app.renderApp();
+    app.sqlEditor.replaceDocument('SELECT 42');
+    const { commit, release } = deferNextCommit(app);
+    await app.actions.save();
+    qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Saved later';
+    qs<HTMLButtonElement>(document, '.save-popover .sp-save').click();
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+
+    await app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
+    }, 'push');
+    release();
+    await app.flushWorkspaceWrites();
+    await vi.waitFor(() => expect(app.currentWorkspace!.queries).toHaveLength(1));
+
+    expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 42');
+    expect(qs(app.root, '.dash-page')).not.toBeNull();
+    expect(qs(app.root, '.workbench')).toBeNull();
+    expect(document.querySelector('.save-popover')).toBeNull();
   });
 
   it('a mutation that observes external deletion transitions to not-found', async () => {

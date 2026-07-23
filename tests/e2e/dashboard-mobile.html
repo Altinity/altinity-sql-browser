@@ -17,25 +17,6 @@
     <div class="dash-page">
       <div class="dash-topbar">
         <div id="shared-header"></div>
-        <div class="dash-contextbar">
-          <div class="dash-title">A deliberately long production operations Dashboard name</div>
-          <span class="dash-chip dash-fav">6 favorites</span>
-          <div class="dash-layout-wrap">
-            <select class="result-panel-select dash-layout-select" aria-label="Dashboard style" title="Dashboard style">
-              <option value="grafana-grid">Grid Tiles</option>
-              <option value="full">Full view</option>
-              <option value="report" selected>Report</option>
-              <option value="columns-2">2 columns</option>
-              <option value="columns-3">3 columns</option>
-            </select>
-          </div>
-          <div class="dash-spacer" style="flex:1"></div>
-          <span class="dash-updated">Updated 12:34</span>
-          <button class="dash-btn dash-refresh" title="Re-run all tiles" aria-label="Refresh dashboard">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8" /></svg>
-            <span class="dash-refresh-label">Refresh</span>
-          </button>
-        </div>
         <div class="dash-toolbar has-filters">
           <div class="dash-filter-host"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
         </div>
@@ -60,6 +41,35 @@
     const dashboardFileButton = document.createElement('button');
     dashboardFileButton.className = 'hd-file-btn dash-file-btn';
     dashboardFileButton.textContent = 'File';
+    const tileCount = document.createElement('span');
+    tileCount.className = 'dash-chip dash-fav';
+    tileCount.textContent = '★ 6 tiles';
+    const styleWrap = document.createElement('div');
+    styleWrap.className = 'dash-layout-wrap';
+    styleWrap.innerHTML = `
+      <span class="dash-layout-label">Style</span>
+      <select class="result-panel-select dash-layout-select" aria-label="Dashboard style" title="Dashboard style">
+        <option value="grafana-grid">Grid Tiles</option>
+        <option value="full">Full view</option>
+        <option value="report" selected>Report</option>
+        <option value="columns-2">2 columns</option>
+        <option value="columns-3">3 columns</option>
+      </select>`;
+    const dashboardTitle = document.createElement('div');
+    dashboardTitle.className = 'dash-title';
+    dashboardTitle.textContent = 'A deliberately long production operations Dashboard name';
+    const updated = document.createElement('span');
+    updated.className = 'dash-updated';
+    updated.textContent = 'Updated 12:34';
+    const refresh = document.createElement('button');
+    refresh.className = 'dash-btn dash-refresh';
+    refresh.title = 'Re-run all tiles';
+    refresh.setAttribute('aria-label', 'Refresh dashboard');
+    refresh.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+        <path d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8"></path>
+      </svg>
+      <span class="dash-refresh-label">Refresh</span>`;
     const headerApp = {
       document,
       dom: {},
@@ -92,7 +102,16 @@
       editingLibrary: false,
     };
     document.querySelector('#shared-header').replaceWith(
-      buildAppHeader(headerApp, { dashboardFileButton }),
+      buildAppHeader(headerApp, {
+        dashboardControls: {
+          tileCount,
+          fileButton: dashboardFileButton,
+          style: styleWrap,
+          title: dashboardTitle,
+          updated,
+          refresh,
+        },
+      }),
     );
 
     const filters = document.querySelector('.dash-filters');
@@ -172,7 +191,6 @@
     };
 
     window.__refreshCount = 0;
-    const refresh = document.querySelector('.dash-refresh');
     refresh.addEventListener('click', () => {
       refresh.disabled = true;
       window.__refreshCount++;
