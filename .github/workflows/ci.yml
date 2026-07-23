@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*.*.*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -215,12 +215,14 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck install.sh build/bundle.sh
 
-  # Nightly/manual real-browser regression tests (Playwright). Keep the costly
-  # browser matrix out of ordinary PR and push CI; unit tests cover each commit.
+  # Nightly/manual/release real-browser regression tests (Playwright). Keep the
+  # costly browser matrix out of ordinary PR and branch-push CI; unit tests
+  # cover each commit, while release tags validate the shipped image/artifact.
   # The harness imports /src directly over a python http.server (started by the
   # Playwright config's webServer), so no build step is needed.
   e2e:
     if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
