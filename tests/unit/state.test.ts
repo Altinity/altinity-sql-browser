@@ -4,7 +4,7 @@ import {
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
   sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
-  reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
+  detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../../src/state.js';
 import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
@@ -12,7 +12,7 @@ import type {
 import { queryToken } from '../../src/workspace/workspace-sync.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
-import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 import { fakeMutateWorkspace } from '../helpers/fake-app.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
 
@@ -379,6 +379,34 @@ describe('saved queries', () => {
     expect(dangling).toMatchObject({ savedId: null, editorMode: 'sql' });
     expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
   });
+  it('detaches every workspace-bound tab without changing its drafts or dirty state', () => {
+    const s = savedTestState();
+    const linked = s.tabs.value[0];
+    linked.savedId = 'same-id';
+    linked.editorMode = 'spec';
+    linked.sqlDraft = "SELECT 'A'";
+    linked.specText = '{"name":"A"}';
+    linked.dirtySql = true;
+    linked.dirtySpec = true;
+    linked.lastCommittedQueryToken = 'workspace-a-token';
+    linked.externalState = 'conflict';
+    const unsaved = newTabObj('t2');
+    s.tabs.value = [linked, unsaved];
+
+    detachWorkspaceBoundTabs(s);
+
+    expect(linked).toMatchObject({
+      savedId: null,
+      editorMode: 'sql',
+      sqlDraft: "SELECT 'A'",
+      specText: '{"name":"A"}',
+      dirtySql: true,
+      dirtySpec: true,
+      externalState: null,
+    });
+    expect(linked.lastCommittedQueryToken).toBeUndefined();
+    expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
+  });
   it('renameSaved updates the entry + any linked tab name', async () => {
     const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'old' })];
@@ -608,8 +636,8 @@ describe('saved queries', () => {
     tab.savedId = 's1';
     // Another tab already committed a workspace where s1 is gone — the mutation
     // resolves the target against THAT latest, not the stale local projection.
-    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [], dashboard: null };
-    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const latest: StoredWorkspaceV2 = { storageVersion: 2, id: 'w1', key: 'sql_library', name: 'SQL Library', queries: [], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
     expect(await renameSaved(s, 's1', 'New', undefined, mutate)).toEqual({ ok: false, invalidTab: null, entry: null, deletedExternally: true });
     expect(await toggleFavorite(s, 's1', mutate, genTileId())).toEqual({ ok: false, invalidTab: null, entry: null, deletedExternally: true });
     expect(mutate.commit).not.toHaveBeenCalled(); // never recreated
@@ -622,8 +650,8 @@ describe('saved queries', () => {
     tab.savedId = 's1';
     tab.sqlDraft = 'SELECT my draft';
     setTabSpecDraft(tab, { name: 'Local', favorite: false });
-    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [], dashboard: null };
-    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const latest: StoredWorkspaceV2 = { storageVersion: 2, id: 'w1', key: 'sql_library', name: 'SQL Library', queries: [], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
     const result = await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(result).toEqual({ ok: false, entry: null, deletedExternally: true });
     expect(mutate.commit).not.toHaveBeenCalled(); // aborted — never recreated
@@ -642,8 +670,8 @@ describe('saved queries', () => {
     // Another tab already committed a changed s1; this tab has NOT refreshed yet
     // (missed poke) — no conflict flagged so far.
     const externalQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 999 /* external */' });
-    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [externalQ], dashboard: null };
-    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const latest: StoredWorkspaceV2 = { storageVersion: 2, id: 'w1', key: 'sql_library', name: 'SQL Library', queries: [externalQ], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
     // The user renames from the Library — the patch folds into LATEST (keeps the
     // external SQL) but must not stamp the newest token onto this stale tab.
     const result = await renameSaved(s, 's1', 'Renamed here', undefined, mutate);
@@ -651,7 +679,7 @@ describe('saved queries', () => {
     expect(s.savedQueries[0].sql).toBe('SELECT 999 /* external */'); // external change preserved
     expect(tab.lastCommittedQueryToken).toBe(queryToken(oldQ)); // baseline unchanged
     // …so the next refresh still classifies this dirty tab as CONFLICT.
-    const summary = reconcileLinkedTabsToLatest(s, { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: s.savedQueries, dashboard: null });
+    const summary = reconcileLinkedTabsToLatest(s, { storageVersion: 2, id: 'w1', key: 'sql_library', name: 'SQL Library', queries: s.savedQueries, dashboard: null });
     expect(summary.conflicts).toBe(1);
     expect(tab.externalState).toBe('conflict');
   });
@@ -667,8 +695,8 @@ describe('saved queries', () => {
     tab.lastCommittedQueryToken = queryToken(oldQ);
     // Another tab changed s1's SQL; this tab missed the poke and did NOT refresh.
     const externalQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 999 /* external */' });
-    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [externalQ], dashboard: null };
-    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const latest: StoredWorkspaceV2 = { storageVersion: 2, id: 'w1', key: 'sql_library', name: 'SQL Library', queries: [externalQ], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
     const result = await renameSaved(s, 's1', 'Renamed here', undefined, mutate);
     expect(result?.ok).toBe(true);
     // The tab adopted the COMPLETE committed entry NOW (external SQL + this
@@ -909,8 +937,8 @@ describe('linked-tab reconcile (#343)', () => {
   const q = (id: string, sql: string, name = id): SavedQueryV2 => ({
     id, sql, specVersion: 1, spec: { name, favorite: false },
   } as SavedQueryV2);
-  const ws = (queries: SavedQueryV2[]): StoredWorkspaceV1 => ({
-    storageVersion: 1, id: 'w1', name: 'Team', queries, dashboard: null,
+  const ws = (queries: SavedQueryV2[]): StoredWorkspaceV2 => ({
+    storageVersion: 2, id: 'w1', key: 'team', name: 'Team', queries, dashboard: null,
   });
   /** A tab linked to `query` and currently in sync with it. */
   const linkedTab = (id: string, query: SavedQueryV2): QueryTab => {

@@ -47,11 +47,11 @@ export interface BootstrapApp {
    *  main.ts's own `string | null` sentinel (`null` means "no callback
    *  error"), so this contract states what's actually passed here. */
   showLogin(msg?: string | null): void;
-  /** #287 W4: resolve the current StoredWorkspaceV1 aggregate (migrating the
-   *  legacy flat state once, if needed) and project it onto `app.state`
-   *  before the first `renderApp()` — see `App.loadWorkspaceOnBoot`'s own doc
-   *  comment (app.types.ts). The real return value is never read here
-   *  (`Promise<unknown>` is enough for `bootstrap`'s own purposes). */
+  /** Resolve the explicit or last-used StoredWorkspaceV2 and project it onto
+   *  `app.state` before the first `renderApp()` — see
+   *  `App.loadWorkspaceOnBoot`'s own doc comment (app.types.ts). The real
+   *  return value is never read here (`Promise<unknown>` is enough for
+   *  `bootstrap`'s own purposes). */
   loadWorkspaceOnBoot(): Promise<unknown>;
 }
 

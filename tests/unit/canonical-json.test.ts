@@ -88,11 +88,13 @@ describe('documented shapes', () => {
       revision: 1, title: 'D', id: 'd1', documentVersion: 1,
     };
     const query = { spec: { name: 'Q' }, specVersion: 1, sql: 'SELECT 1', id: 'q1' };
-    const workspaceA = { dashboard, queries: [query], name: 'W', id: 'w1', storageVersion: 1 };
-    const workspaceB = { storageVersion: 1, id: 'w1', name: 'W', queries: [query], dashboard };
+    const workspaceA = { dashboard, queries: [query], name: 'W', key: 'operations', id: 'w1', storageVersion: 2 };
+    const workspaceB = { storageVersion: 2, id: 'w1', key: 'operations', name: 'W', queries: [query], dashboard };
     expect(canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE))
       .toBe(canonicalJson(workspaceB, STORED_WORKSPACE_SHAPE));
     const ws = canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE);
+    expect(ws.indexOf('"id"')).toBeLessThan(ws.indexOf('"key"'));
+    expect(ws.indexOf('"key"')).toBeLessThan(ws.indexOf('"name"'));
     expect(ws.indexOf('"storageVersion"')).toBeLessThan(ws.indexOf('"queries"'));
     expect(ws.indexOf('"documentVersion"')).toBeLessThan(ws.indexOf('"revision"'));
 

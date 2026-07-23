@@ -22,7 +22,7 @@ import {
   CURRENT_PORTABLE_BUNDLE_VERSION, PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V1_SCHEMA_ID,
 } from './portable-bundle-codec.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../../generated/json-schema.types.js';
 
 function bundleEnvelope(
@@ -65,7 +65,7 @@ export function buildDashboardExportBundle(
  *  emitted resource — the input `workspace` (including its Dashboard
  *  `revision`) is left byte-for-byte unchanged. */
 export function buildWorkspaceExportBundle(
-  workspace: StoredWorkspaceV1, nowISO: string,
+  workspace: StoredWorkspaceV2, nowISO: string,
 ): PortableBundleV1 {
   const queries = cloneJson(workspace.queries);
   const dashboards = workspace.dashboard ? [cloneJson(workspace.dashboard)] : [];

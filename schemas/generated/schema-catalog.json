@@ -41,9 +41,9 @@
     },
     {
       "kind": "stored-workspace",
-      "version": 1,
-      "id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json",
-      "path": "../stored-workspace-v1.schema.json"
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json",
+      "path": "../stored-workspace-v2.schema.json"
     },
     {
       "kind": "portable-bundle",

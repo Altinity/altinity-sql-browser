@@ -14,7 +14,7 @@
 
 import { encodeStoredWorkspaceJson } from './stored-workspace.js';
 import { canonicalJson, SAVED_QUERY_SHAPE } from '../dashboard/model/canonical-json.js';
-import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 
 /** Snapshot-identity token for a whole workspace (or its absence). Two
  *  workspaces produce the same token iff they are canonically equal, so a tab
@@ -22,7 +22,7 @@ import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.t
  *  (no persisted workspace) tokens to `''`; a committed workspace always
  *  encodes cleanly, but a would-be-invalid one also collapses to `''` (never
  *  throws — this is an equality probe, not a validator). Not repository CAS. */
-export function workspaceToken(ws: StoredWorkspaceV1 | null): string {
+export function workspaceToken(ws: StoredWorkspaceV2 | null): string {
   if (ws === null) return '';
   const encoded = encodeStoredWorkspaceJson(ws);
   return encoded.ok ? encoded.value : '';
@@ -81,7 +81,7 @@ export interface TabReconcilePlan {
  *  persisted, so every linked query counts as deleted). Pure: returns one plan
  *  per input tab, in order, and applies no mutation. */
 export function reconcileLinkedTabs(
-  latest: StoredWorkspaceV1 | null, tabs: readonly LinkedTabSnapshot[],
+  latest: StoredWorkspaceV2 | null, tabs: readonly LinkedTabSnapshot[],
 ): TabReconcilePlan[] {
   const queries = latest ? latest.queries : [];
   return tabs.map((tab) => {

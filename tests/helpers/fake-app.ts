@@ -27,7 +27,9 @@ import type { MutateWorkspace } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
 import { createNoopSpecEditor } from '../../src/editor/spec-editor.js';
 import { createWorkspaceRepository } from '../../src/workspace/workspace-repository.js';
-import type { WorkspaceStore } from '../../src/workspace/workspace-store.types.js';
+import type {
+  WorkspaceStore, WorkspaceStoreRecord,
+} from '../../src/workspace/workspace-store.types.js';
 import type { App, ActionsRegistry, AppDom, ChCtx } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js';
@@ -44,7 +46,7 @@ import type { WorkbenchParameterSession } from '../../src/application/workbench-
 import type { ExportService } from '../../src/application/export-service.js';
 import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
 import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
-import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
 } from '../../src/application/saved-query-service.js';
@@ -57,12 +59,46 @@ import type { AssembledReference } from '../../src/core/completions.js';
 // exercising `createSavedQuery`/`toggleFavorite`/`deleteSaved`/etc. through
 // `app.workspace.commit` gets genuine whole-candidate schema validation
 // rather than an always-succeeds/always-fails placeholder.
-export function memWorkspaceStore(initial: string | null = null): WorkspaceStore {
-  let value = initial;
+export function memWorkspaceStore(initial: readonly WorkspaceStoreRecord[] = []): WorkspaceStore {
+  const records = new Map(initial.map((record) => [record.id, record]));
+  let lastUsedKey: string | null = null;
   return {
-    read: async () => value,
-    write: async (text: string) => { value = text; },
-    clear: async () => { value = null; },
+    list: async () => [...records.values()],
+    readById: async (id) => records.get(id) ?? null,
+    readByKey: async (key) => (
+      [...records.values()].find((record) => record.key === key) ?? null
+    ),
+    create: async (record) => {
+      if (records.has(record.id)) return { status: 'duplicate-id' };
+      if ([...records.values()].some((current) => current.key === record.key)) {
+        return { status: 'duplicate-key' };
+      }
+      records.set(record.id, record);
+      return { status: 'created' };
+    },
+    replace: async (record) => {
+      const current = records.get(record.id);
+      if (!current) return { status: 'not-found' };
+      if (current.key !== record.key) return { status: 'immutable-key' };
+      records.set(record.id, { ...record, lastOpenedAt: current.lastOpenedAt });
+      return { status: 'replaced' };
+    },
+    delete: async (id) => {
+      const current = records.get(id);
+      if (!current) return false;
+      records.delete(id);
+      if (lastUsedKey === current.key) lastUsedKey = null;
+      return true;
+    },
+    getLastUsedKey: async () => lastUsedKey,
+    markOpened: async (key, timestamp) => {
+      const current = [...records.values()].find((record) => record.key === key);
+      if (!current) return { status: 'not-found' };
+      records.set(current.id, { ...current, lastOpenedAt: timestamp });
+      lastUsedKey = key;
+      return { status: 'opened' };
+    },
+    clearLastUsedKey: async () => { lastUsedKey = null; },
   };
 }
 
@@ -71,7 +107,9 @@ export function memWorkspaceStore(initial: string | null = null): WorkspaceStore
  *  counts the same way it used to assert on the retired `save: SaveJSON`
  *  spy — `vi.fn(impl)` still delegates to the real implementation. */
 export function fakeWorkspaceCommit() {
-  return vi.fn(createWorkspaceRepository({ store: memWorkspaceStore() }).commit);
+  return vi.fn(async (candidate: StoredWorkspaceV2) => (
+    createWorkspaceRepository({ store: memWorkspaceStore() }).create(candidate)
+  ));
 }
 
 /** A `MutateWorkspace` (`App['mutateWorkspace']`, structurally) over a private
@@ -81,29 +119,36 @@ export function fakeWorkspaceCommit() {
  *  so a planner falls back to the passed `state`), run the transform, commit,
  *  then PROJECT committed truth onto `state` (savedQueries/dashboard/id/name +
  *  reconcile tab links when `state` carries `tabs`, clearing libraryDirty)
- *  exactly once. `commit`/`loadCurrent` are `vi.fn` spies (assert call counts as
- *  with the retired `fakeWorkspaceCommit`); pass `commit`/`loadCurrent`
+ *  exactly once. `commit`/`loadById` are `vi.fn` spies (assert call counts as
+ *  with the retired `fakeWorkspaceCommit`); pass `commit`/`loadById`
  *  overrides to exercise a rejecting commit or a distinct committed `latest`. */
 export function fakeMutateWorkspace(
-  state: Pick<AppState, 'savedQueries' | 'dashboard' | 'workspaceId' | 'libraryName' | 'libraryDirty'>,
-  opts: { commit?: WorkspaceRepository['commit']; loadCurrent?: WorkspaceRepository['loadCurrent'] } = {},
-): MutateWorkspace & { commit: ReturnType<typeof vi.fn>; loadCurrent: ReturnType<typeof vi.fn> } {
-  const repo = createWorkspaceRepository({ store: memWorkspaceStore() });
-  const commit = vi.fn(opts.commit ?? repo.commit);
-  const loadCurrent = vi.fn(opts.loadCurrent ?? repo.loadCurrent);
+  state: Pick<AppState, 'savedQueries' | 'dashboard' | 'workspaceId' | 'workspaceKey' | 'libraryName' | 'libraryDirty'>,
+  opts: {
+    commit?: WorkspaceRepository['commit'];
+    loadById?: (id: string) => Promise<StoredWorkspaceV2 | null>;
+  } = {},
+): MutateWorkspace & { commit: ReturnType<typeof vi.fn>; loadById: ReturnType<typeof vi.fn> } {
+  let current: StoredWorkspaceV2 | null = null;
+  const commit = vi.fn(opts.commit ?? (async (candidate: StoredWorkspaceV2) => (
+    createWorkspaceRepository({ store: memWorkspaceStore() }).create(candidate)
+  )));
+  const loadById = vi.fn(opts.loadById ?? (async () => current));
   const mutate = (async (transform) => {
-    const latest = await loadCurrent();
+    const latest = await loadById(state.workspaceId);
     const input = await transform(latest);
     if (!input || !input.candidate) {
       return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
     }
     const result = await commit(input.candidate);
     if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+    current = result.workspace;
     state.savedQueries = result.workspace.queries;
     const withTabs = state as Partial<Pick<AppState, 'tabs'>> & typeof state;
     if (withTabs.tabs) reconcileTabsWithSavedQueries(state as Pick<AppState, 'tabs' | 'savedQueries'>);
     state.dashboard = result.workspace.dashboard;
     state.workspaceId = result.workspace.id;
+    state.workspaceKey = result.workspace.key;
     state.libraryName.value = result.workspace.name;
     state.libraryDirty.value = false;
     return {
@@ -111,28 +156,52 @@ export function fakeMutateWorkspace(
       dashboardRevision: result.dashboardRevision, data: input.data,
     };
   }) as MutateWorkspace;
-  return Object.assign(mutate, { commit, loadCurrent });
+  return Object.assign(mutate, { commit, loadById });
 }
 
 /** A STATEFUL in-memory `WorkspaceRepository` fake (#341/#344 review fix):
- *  `commit` stores the candidate and `loadCurrent`/`loadCurrentResult` return
+ *  `commit` stores the candidate and keyed loads return
  *  the LAST committed value — unlike the module-default `appDefaults.workspace`
- *  (a stateless echo `commit` paired with a `loadCurrent` that always answers
+ *  (a stateless echo `commit` paired with keyed loads that always answer
  *  `null`), so a mixed-producer test (a pending write, then a second op queued
  *  through `app.mutateWorkspace` behind it) can assert the second op's
  *  transform actually observed the first commit's effect. No schema
  *  validation (unlike `fakeWorkspaceCommit`'s real-repository-backed spy) —
  *  just enough state to make read-after-write hold. */
-export function statefulWorkspaceRepo(initial: StoredWorkspaceV1 | null = null): WorkspaceRepository {
+export function statefulWorkspaceRepo(initial: StoredWorkspaceV2 | null = null): WorkspaceRepository {
   let current = initial;
   return {
-    loadCurrent: async () => current,
-    loadCurrentResult: async () => (current ? { status: 'ok', workspace: current } : { status: 'empty' }),
+    list: async () => ({
+      summaries: current ? [{
+        id: current.id, key: current.key, name: current.name,
+        queryCount: current.queries.length, hasDashboard: current.dashboard !== null,
+        lastOpenedAt: null,
+      }] : [],
+      corrupt: [],
+    }),
+    loadById: async (id) => (
+      current?.id === id ? { status: 'ok', workspace: current } : { status: 'empty' }
+    ),
+    loadByKey: async (key) => (
+      current?.key === key ? { status: 'ok', workspace: current } : { status: 'empty' }
+    ),
+    create: async (candidate) => {
+      current = candidate;
+      return { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard?.revision ?? null };
+    },
     commit: async (candidate) => {
       current = candidate;
       return { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard === null ? null : candidate.dashboard.revision };
     },
-    clearCurrent: async () => { current = null; },
+    delete: async (id) => {
+      const deleted = current?.id === id;
+      if (deleted) current = null;
+      return { ok: true, deleted };
+    },
+    resolveImplicit: async () => (
+      current ? { status: 'ok', workspace: current } : { status: 'empty' }
+    ),
+    markOpened: async () => ({ ok: true }),
   };
 }
 
@@ -348,14 +417,19 @@ const appDefaults: App = {
   // rule. A test asserting real validate-then-persist behavior overrides this
   // with `fakeWorkspaceCommit()` (or its own stub) instead.
   workspace: {
-    loadCurrent: async () => null,
-    // #300: default mirrors `loadCurrent`'s own default (no record) — a
-    // fixture testing the corrupt-record surface overrides this directly.
-    loadCurrentResult: async () => ({ status: 'empty' }),
+    list: async () => ({ summaries: [], corrupt: [] }),
+    loadById: async () => ({ status: 'empty' }),
+    loadByKey: async () => ({ status: 'empty' }),
+    create: async (candidate) => ({
+      ok: true, workspace: candidate,
+      dashboardRevision: candidate.dashboard?.revision ?? null,
+    }),
     commit: async (candidate) => ({
       ok: true, workspace: candidate, dashboardRevision: candidate.dashboard === null ? null : candidate.dashboard.revision,
     }),
-    clearCurrent: async () => {},
+    delete: async () => ({ ok: true, deleted: false }),
+    resolveImplicit: async () => ({ status: 'empty' }),
+    markOpened: async () => ({ ok: true }),
   },
   // #288 Phase 6 — Dashboard viewing seams. In-memory no-op stores by default;
   // a test exercising the handoff/detached-view flow overrides these.
@@ -366,6 +440,7 @@ const appDefaults: App = {
   detachedViews: {
     put: async () => {},
     get: async () => null,
+    getByKey: async () => null,
   },
   dashboardOpenSource: null,
   dashboardRoute: false,
@@ -501,7 +576,7 @@ const appDefaults: App = {
 export type MakeAppOverrides = AppOverrides;
 type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
   /** Partial like the rest (#286 Phase 4) — the Dashboard viewer reads a
-   *  StoredWorkspaceV1 through `loadDashboardWorkspace`/`workspace.loadCurrent`;
+   *  StoredWorkspaceV2 through `loadDashboardWorkspace`/`workspace.loadById`;
    *  a dashboard test overrides just the method(s) it drives. */
   workspace?: Partial<WorkspaceRepository>;
   dom?: Partial<AppDom>;
@@ -555,7 +630,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
   const root = document.createElement('div');
   // Resolved BEFORE `base` so the `mutateWorkspace` queue below (which needs to
-  // call `.loadCurrent()`/`.commit()` on the SAME repository the rest of the
+  // call `.loadById()`/`.commit()` on the SAME repository the rest of the
   // fake app sees) can close over it directly — the final `workspace` field is
   // this exact object, not a fresh merge (`overrides.workspace` layers under
   // `appDefaults.workspace`, same three-way convention as `dom`/`conn`/etc.).
@@ -563,13 +638,14 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // #287 W5 / #343 §2: the one state-backed projection both `applyCommittedWorkspace`
   // and the `mutateWorkspace` success path share (mirrors app.ts, where the
   // primitive projects exactly once so callers no longer do).
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV2): void => {
     state.savedQueries = workspace.queries;
     // #343: mirror app.ts's own projection — detach any open tab whose linked
     // saved query is absent from the committed collection (deleted elsewhere).
     reconcileTabsWithSavedQueries(state);
     state.dashboard = workspace.dashboard;
     state.workspaceId = workspace.id;
+    state.workspaceKey = workspace.key;
     state.libraryName.value = workspace.name;
     state.libraryDirty.value = false;
   };
@@ -634,14 +710,15 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       // this call resolve — mirrors app.ts's own `writeChain`-backed pair.
       const flushWorkspaceWrites = (): Promise<void> => chain.then(() => undefined, () => undefined);
       // #341/#344: mirrors app.ts's own `mutateWorkspace` — reads `workspaceRepo
-      // .loadCurrent()` (the SAME repo `workspace.commit` below publishes
+      // .loadById()` (the SAME repo `workspace.commit` below publishes
       // through) at DEQUEUE time, never a value captured at enqueue time, so a
       // mixed-producer test (a pending saved-query-style commit, then a
       // rename/import queued behind it) observes the first commit's effect.
       // #343 §2: on success the primitive projects committed truth exactly once
       // and threads `data` back — callers no longer project (mirrors app.ts).
       const mutateWorkspace: App['mutateWorkspace'] = (transform) => serializeWrite(async () => {
-        const latest = await workspaceRepo.loadCurrent();
+        const loaded = await workspaceRepo.loadById(state.workspaceId);
+        const latest = loaded.status === 'ok' ? loaded.workspace : null;
         const input = await transform(latest);
         if (!input || !input.candidate) {
           return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };

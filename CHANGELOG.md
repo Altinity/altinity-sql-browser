@@ -9,6 +9,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Multi-workspace local persistence foundation** (#406). Stored workspaces
+  now use the V2 contract with separate immutable opaque `id`, immutable
+  human-readable URL `key`, and mutable display `name`. IndexedDB stores one
+  validated aggregate per workspace behind an ID key path and unique key
+  index; the repository can list summaries, load by ID/key, create, replace,
+  and delete individual records without affecting neighbors. Last-used key and
+  injected-clock `lastOpenedAt` metadata select the most recently opened valid
+  workspace for implicit startup, while explicit `?ws=` lookup never falls
+  back. Workspace import is additive with reminted local identity, Dashboard
+  links resolve stable keys, and active edits reload/commit by immutable ID.
+
 ## [0.6.2] - 2026-07-23
 
 ### Fixed

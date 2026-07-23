@@ -1,235 +1,323 @@
-import { describe, expect, it, vi } from 'vitest';
-import {
-  createWorkspaceRepository,
-} from '../../src/workspace/workspace-repository.js';
-import type { WorkspaceStore } from '../../src/workspace/workspace-store.types.js';
+import { describe, expect, it } from 'vitest';
+import { createWorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import { encodeStoredWorkspaceJson } from '../../src/workspace/stored-workspace.js';
-import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
-import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type {
+  WorkspaceStore, WorkspaceStoreCreateResult, WorkspaceStoreRecord,
+  WorkspaceStoreReplaceResult,
+} from '../../src/workspace/workspace-store.types.js';
+import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 
-// ── An in-memory fake for the injected IndexedDB seam ────────────────────────
-// A single-record store, exactly the WorkspaceStore contract, plus test hooks
-// (the persisted text, every write, and a write-failure switch) so a commit's
-// atomicity and last-write-wins behavior are directly observable.
-function memStore(initial: string | null = null) {
-  let value = initial;
-  const writes: string[] = [];
-  let failWrite = false;
+const workspace = (over: Partial<StoredWorkspaceV2> = {}): StoredWorkspaceV2 => ({
+  storageVersion: 2,
+  id: 'w1',
+  key: 'workspace_one',
+  name: 'Workspace One',
+  queries: [],
+  dashboard: null,
+  ...over,
+});
+
+const encode = (value: StoredWorkspaceV2): string => {
+  const result = encodeStoredWorkspaceJson(value);
+  if (!result.ok) throw new Error('invalid test fixture');
+  return result.value;
+};
+
+function memoryStore(initial: WorkspaceStoreRecord[] = []) {
+  const records = new Map(initial.map((record) => [record.id, { ...record }]));
+  let lastUsedKey: string | null = null;
+  let fail: string | null = null;
+  let forcedCreate: WorkspaceStoreCreateResult | null = null;
+  let forcedReplace: WorkspaceStoreReplaceResult | null = null;
+
   const store: WorkspaceStore & {
-    readonly value: string | null; readonly writes: string[]; setFailWrite(f: boolean): void;
+    records: Map<string, WorkspaceStoreRecord>;
+    setLastUsed(key: string | null): void;
+    setFail(operation: string | null): void;
+    forceCreate(result: WorkspaceStoreCreateResult | null): void;
+    forceReplace(result: WorkspaceStoreReplaceResult | null): void;
   } = {
-    read: async () => value,
-    write: async (text: string) => {
-      if (failWrite) throw new Error('quota exceeded');
-      writes.push(text);
-      value = text;
+    list: async () => {
+      if (fail === 'list') throw 'list unavailable';
+      return [...records.values()];
     },
-    clear: async () => { value = null; },
-    get value() { return value; },
-    get writes() { return writes; },
-    setFailWrite(f: boolean) { failWrite = f; },
+    readById: async (id) => {
+      if (fail === 'read') throw new Error('read unavailable');
+      return records.get(id) ?? null;
+    },
+    readByKey: async (key) =>
+      [...records.values()].find((record) => record.key.toLowerCase() === key.toLowerCase()) ?? null,
+    create: async (record) => {
+      if (fail === 'create') throw new Error('quota exceeded');
+      if (forcedCreate) return forcedCreate;
+      if (records.has(record.id)) return { status: 'duplicate-id' };
+      if ([...records.values()].some((item) => item.key.toLowerCase() === record.key.toLowerCase())) {
+        return { status: 'duplicate-key' };
+      }
+      records.set(record.id, { ...record });
+      return { status: 'created' };
+    },
+    replace: async (record) => {
+      if (fail === 'replace') throw 'disk full';
+      if (forcedReplace) return forcedReplace;
+      const existing = records.get(record.id);
+      if (!existing) return { status: 'not-found' };
+      if (existing.key !== record.key) return { status: 'immutable-key' };
+      records.set(record.id, { ...record, lastOpenedAt: existing.lastOpenedAt });
+      return { status: 'replaced' };
+    },
+    delete: async (id) => {
+      if (fail === 'delete') throw new Error('delete unavailable');
+      const existing = records.get(id);
+      if (!existing) return false;
+      records.delete(id);
+      if (lastUsedKey === existing.key) lastUsedKey = null;
+      return true;
+    },
+    getLastUsedKey: async () => lastUsedKey,
+    markOpened: async (key, timestamp) => {
+      if (fail === 'markOpened') throw new Error('preference unavailable');
+      const entry = [...records.entries()].find(([, record]) => record.key === key);
+      if (!entry) return { status: 'not-found' };
+      records.set(entry[0], { ...entry[1], lastOpenedAt: timestamp });
+      lastUsedKey = key;
+      return { status: 'opened' };
+    },
+    clearLastUsedKey: async () => { lastUsedKey = null; },
+    records,
+    setLastUsed: (key) => { lastUsedKey = key; },
+    setFail: (operation) => { fail = operation; },
+    forceCreate: (result) => { forcedCreate = result; },
+    forceReplace: (result) => { forcedReplace = result; },
   };
   return store;
 }
 
-const panelQuery = (id: string): StoredWorkspaceV1['queries'][number] => ({
-  id, sql: 'SELECT 1', specVersion: 1,
-  spec: { name: id, favorite: true, panel: { cfg: { type: 'bar', x: 0, y: [1] } } },
-});
-const workspace = (over: Partial<StoredWorkspaceV1> = {}): StoredWorkspaceV1 => ({
-  storageVersion: 1, id: 'w1', name: 'W', queries: [], dashboard: null, ...over,
-});
-const withDashboard = (over: Record<string, unknown> = {}): StoredWorkspaceV1 => workspace({
-  queries: [panelQuery('p1')],
-  dashboard: {
-    documentVersion: 1, id: 'd1', title: 'D', revision: 7,
-    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-    filters: [], tiles: [{ id: 't1', queryId: 'p1' }],
-  },
-  ...over,
+const record = (
+  value: StoredWorkspaceV2, lastOpenedAt: number | null = null,
+): WorkspaceStoreRecord => ({
+  id: value.id, key: value.key, text: encode(value), lastOpenedAt,
 });
 
-describe('createWorkspaceRepository.loadCurrent', () => {
-  it('returns null when no aggregate record exists', async () => {
-    const repo = createWorkspaceRepository({ store: memStore(null) });
-    expect(await repo.loadCurrent()).toBeNull();
+describe('workspace repository collection', () => {
+  it('creates and independently loads multiple workspaces by ID and canonical key', async () => {
+    const store = memoryStore();
+    const repository = createWorkspaceRepository({ store });
+    const one = workspace();
+    const two = workspace({ id: 'w2', key: 'workspace_two', name: 'Two' });
+    expect((await repository.create(one)).ok).toBe(true);
+    expect((await repository.create(two)).ok).toBe(true);
+    expect(await repository.loadById('w1')).toEqual({ status: 'ok', workspace: one });
+    expect(await repository.loadByKey('WORKSPACE_TWO')).toEqual({ status: 'ok', workspace: two });
+    expect(await repository.loadById('missing')).toEqual({ status: 'empty' });
+    expect(await repository.loadByKey('missing')).toEqual({ status: 'empty' });
   });
 
-  it('decodes and returns a valid stored aggregate', async () => {
-    const ws = withDashboard();
-    const encoded = encodeStoredWorkspaceJson(ws);
-    if (!encoded.ok) throw new Error('fixture should encode');
-    const repo = createWorkspaceRepository({ store: memStore(encoded.value) });
-    expect(await repo.loadCurrent()).toEqual(ws);
+  it('lists deterministic summaries and separately reports corrupt records', async () => {
+    const one = workspace({ queries: [{
+      id: 'q', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q', favorite: false },
+    }] });
+    const two = workspace({ id: 'w2', key: 'a_key', name: 'A' });
+    const store = memoryStore([
+      record(one, 8),
+      record(two),
+      { id: 'broken', key: 'broken', text: 'not json', lastOpenedAt: null },
+      { id: 'wrong', key: 'wrong', text: encode(workspace({ id: 'other', key: 'other' })), lastOpenedAt: null },
+    ]);
+    const result = await createWorkspaceRepository({ store }).list();
+    expect(result.summaries).toEqual([
+      { id: 'w2', key: 'a_key', name: 'A', queryCount: 0, hasDashboard: false, lastOpenedAt: null },
+      {
+        id: 'w1', key: 'workspace_one', name: 'Workspace One',
+        queryCount: 1, hasDashboard: false, lastOpenedAt: 8,
+      },
+    ]);
+    expect(result.corrupt.map(({ id }) => id)).toEqual(['broken', 'wrong']);
+    expect(result.corrupt[1].diagnostics[0].code).toBe('workspace-record-identity-mismatch');
   });
 
-  it('reads a present-but-invalid record as null (never returns a corrupt aggregate)', async () => {
-    const repo = createWorkspaceRepository({ store: memStore('{"storageVersion":2}') });
-    expect(await repo.loadCurrent()).toBeNull();
-  });
-});
-
-describe('createWorkspaceRepository.loadCurrentResult', () => {
-  it('reports empty when no aggregate record exists', async () => {
-    const repo = createWorkspaceRepository({ store: memStore(null) });
-    expect(await repo.loadCurrentResult()).toEqual({ status: 'empty' });
+  it('preserves corrupt as a distinct keyed load state', async () => {
+    const store = memoryStore([{ id: 'bad', key: 'bad', text: '{}', lastOpenedAt: null }]);
+    const loaded = await createWorkspaceRepository({ store }).loadByKey('bad');
+    expect(loaded.status).toBe('corrupt');
   });
 
-  it('reports ok with the decoded workspace when a valid record is stored', async () => {
-    const ws = withDashboard();
-    const encoded = encodeStoredWorkspaceJson(ws);
-    if (!encoded.ok) throw new Error('fixture should encode');
-    const repo = createWorkspaceRepository({ store: memStore(encoded.value) });
-    expect(await repo.loadCurrentResult()).toEqual({ status: 'ok', workspace: ws });
+  it('validates before create and distinguishes duplicate ID, duplicate key, and persistence failure', async () => {
+    const store = memoryStore();
+    const repository = createWorkspaceRepository({ store });
+    const invalid = workspace({ key: 'INVALID KEY' });
+    expect((await repository.create(invalid)).ok).toBe(false);
+    expect(store.records.size).toBe(0);
+
+    await repository.create(workspace());
+    let result = await repository.create(workspace());
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-duplicate-id');
+    result = await repository.create(workspace({ id: 'w2' }));
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-duplicate-key');
+
+    store.setFail('create');
+    result = await repository.create(workspace({ id: 'w3', key: 'w3' }));
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-persist-failed');
   });
 
-  it('reports corrupt with diagnostics when a present record fails to decode/validate (never collapses to empty)', async () => {
-    const repo = createWorkspaceRepository({ store: memStore('{"storageVersion":2}') });
-    const result = await repo.loadCurrentResult();
-    expect(result.status).toBe('corrupt');
-    if (result.status !== 'corrupt') throw new Error('unreachable');
-    expect(result.diagnostics.length).toBeGreaterThan(0);
-    expect(result.diagnostics.some((d) => d.code === 'workspace-version-unsupported')).toBe(true);
+  it('commits one existing workspace without changing another or its open timestamp', async () => {
+    const one = workspace();
+    const two = workspace({ id: 'w2', key: 'two', name: 'Two' });
+    const store = memoryStore([record(one, 11), record(two, 22)]);
+    const repository = createWorkspaceRepository({ store });
+    const changed = { ...one, name: 'Renamed' };
+    const result = await repository.commit(changed);
+    expect(result.ok && result.workspace).toEqual(changed);
+    expect(result.ok && result.dashboardRevision).toBeNull();
+    expect(store.records.get('w1')?.lastOpenedAt).toBe(11);
+    expect(store.records.get('w2')).toEqual(record(two, 22));
   });
 
-  it('reports corrupt for text that is not even valid JSON', async () => {
-    const repo = createWorkspaceRepository({ store: memStore('not json{') });
-    const result = await repo.loadCurrentResult();
-    expect(result.status).toBe('corrupt');
-    if (result.status !== 'corrupt') throw new Error('unreachable');
-    expect(result.diagnostics.length).toBeGreaterThan(0);
-  });
-});
-
-describe('createWorkspaceRepository.commit', () => {
-  it('validates the whole candidate BEFORE writing; an invalid one is never persisted', async () => {
-    const store = memStore(null);
-    const repo = createWorkspaceRepository({ store });
-    // A tile referencing a missing query fails whole-workspace semantics.
-    const bad = workspace({
+  it('publishes a committed Dashboard revision', async () => {
+    const value = workspace({
+      queries: [{
+        id: 'q1', sql: 'SELECT 1', specVersion: 1,
+        spec: { name: 'q1', favorite: true },
+      }],
       dashboard: {
-        documentVersion: 1, id: 'd', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        filters: [], tiles: [{ id: 't1', queryId: 'gone' }],
+        documentVersion: 1,
+        id: 'd1',
+        title: 'Dashboard',
+        revision: 4,
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+        filters: [],
+        tiles: [],
       },
     });
-    const result = await repo.commit(bad);
+    const repository = createWorkspaceRepository({ store: memoryStore([record(value)]) });
+    const result = await repository.commit(value);
+    expect(result.ok && result.dashboardRevision).toBe(4);
+  });
+
+  it('validates commits and distinguishes not found, immutable key, and persistence failures', async () => {
+    const original = workspace();
+    const store = memoryStore([record(original)]);
+    const repository = createWorkspaceRepository({ store });
+
+    let result = await repository.commit({ ...original, key: 'INVALID KEY' });
     expect(result.ok).toBe(false);
-    if (result.ok) throw new Error('unreachable');
-    expect(result.diagnostics.some((d) => d.code === 'dashboard-tile-query-missing')).toBe(true);
-    expect(store.value).toBeNull(); // nothing written
-    expect(store.writes).toHaveLength(0);
+    expect(store.records.get('w1')?.text).toBe(encode(original));
+
+    result = await repository.commit(workspace({ id: 'missing', key: 'missing' }));
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-not-found');
+    result = await repository.commit({ ...original, key: 'changed' });
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-key-immutable');
+
+    store.forceReplace({ status: 'not-found' });
+    result = await repository.commit(original);
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-not-found');
+    store.forceReplace({ status: 'immutable-key' });
+    result = await repository.commit(original);
+    expect(!result.ok && result.diagnostics[0].code).toBe('workspace-key-immutable');
+    store.forceReplace(null);
+    store.setFail('replace');
+    result = await repository.commit(original);
+    expect(!result.ok && result.diagnostics[0].message).toContain('disk full');
   });
 
-  it('atomically persists a valid candidate and publishes the committed state + revision', async () => {
-    const store = memStore(null);
-    const repo = createWorkspaceRepository({ store });
-    const ws = withDashboard();
-    const result = await repo.commit(ws);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error('unreachable');
-    expect(result.workspace).toEqual(ws);
-    expect(result.dashboardRevision).toBe(7);
-    // Persisted text is exactly the canonical encoding (one atomic write).
-    const encoded = encodeStoredWorkspaceJson(ws);
-    expect(encoded.ok && store.value).toBe(encoded.ok ? encoded.value : '');
-    expect(store.writes).toHaveLength(1);
-  });
-
-  it('reports a null dashboardRevision when the workspace has no Dashboard', async () => {
-    const repo = createWorkspaceRepository({ store: memStore(null) });
-    const result = await repo.commit(workspace({ queries: [panelQuery('p1')] }));
-    expect(result.ok && result.dashboardRevision).toBeNull();
-  });
-
-  it('on a failed write leaves the previously stored workspace intact and does not increment revision', async () => {
-    const previous = withDashboard({ id: 'prev', name: 'Prev' });
-    const encodedPrev = encodeStoredWorkspaceJson(previous);
-    if (!encodedPrev.ok) throw new Error('fixture');
-    const store = memStore(encodedPrev.value);
-    store.setFailWrite(true);
-    const repo = createWorkspaceRepository({ store });
-    const result = await repo.commit(withDashboard({ id: 'next', name: 'Next', dashboard: null }));
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error('unreachable');
-    expect(result.diagnostics.map((d) => d.code)).toEqual(['workspace-persist-failed']);
-    // Previous stored workspace untouched; no new write recorded.
-    expect(store.value).toBe(encodedPrev.value);
-    expect(store.writes).toHaveLength(0);
-    // Repository never touched revision — the stored dashboard revision is still 7.
-    const reloaded = await repo.loadCurrent();
-    expect(reloaded?.dashboard?.revision).toBe(7);
-  });
-
-  it('stringifies a non-Error write rejection into the persist-failed diagnostic', async () => {
-    const store: WorkspaceStore = {
-      read: async () => null,
-      // Deliberately throwing a non-Error to exercise the String(error) branch.
-      write: async () => { throw 'disk full'; },
-      clear: async () => {},
-    };
-    const repo = createWorkspaceRepository({ store });
-    const result = await repo.commit(workspace());
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error('unreachable');
-    expect(result.diagnostics[0].message).toContain('disk full');
-  });
-
-  it('honors an injected validation-service override', async () => {
-    const store = memStore(null);
-    const repo = createWorkspaceRepository({ store, validationService: jsonSchemaValidationService });
-    const result = await repo.commit(workspace());
-    expect(result.ok).toBe(true);
-    expect(store.writes).toHaveLength(1);
+  it('deletes exactly one workspace idempotently and reports failed deletes', async () => {
+    const one = workspace();
+    const two = workspace({ id: 'w2', key: 'two' });
+    const store = memoryStore([record(one), record(two)]);
+    const repository = createWorkspaceRepository({ store });
+    expect(await repository.delete('w1')).toEqual({ ok: true, deleted: true });
+    expect(await repository.delete('w1')).toEqual({ ok: true, deleted: false });
+    expect(store.records.get('w2')).toEqual(record(two));
+    store.setFail('delete');
+    const failed = await repository.delete('w2');
+    expect(!failed.ok && failed.diagnostics[0].code).toBe('workspace-delete-failed');
   });
 });
 
-describe('createWorkspaceRepository.clearCurrent', () => {
-  it('delegates to the store clear', async () => {
-    const store = memStore('{"storageVersion":1}');
-    const clear = vi.spyOn(store, 'clear');
-    const repo = createWorkspaceRepository({ store });
-    await repo.clearCurrent();
-    expect(clear).toHaveBeenCalledTimes(1);
-    expect(store.value).toBeNull();
-  });
-});
-
-describe('multi-tab last-successful-commit-wins (never a partially-mixed workspace)', () => {
-  it('a later commit fully replaces the earlier one — the record is one complete aggregate', async () => {
-    const store = memStore(null);
-    const repo = createWorkspaceRepository({ store });
-    const a = withDashboard({ id: 'A', name: 'Alpha', queries: [panelQuery('qa')] });
-    // Re-key the dashboard tile onto qa/qb so a "mix" would be structurally detectable.
-    a.dashboard!.tiles = [{ id: 't1', queryId: 'qa' }];
-    const b = withDashboard({ id: 'B', name: 'Beta', queries: [panelQuery('qb')] });
-    b.dashboard!.tiles = [{ id: 't1', queryId: 'qb' }];
-
-    await repo.commit(a);
-    await repo.commit(b);
-
-    const loaded = await repo.loadCurrent();
-    expect(loaded).toEqual(b);
-    // The persisted record is exactly B's canonical encoding — never a blend
-    // of A's and B's fields.
-    const encodedB = encodeStoredWorkspaceJson(b);
-    expect(encodedB.ok && store.value).toBe(encodedB.ok ? encodedB.value : '');
-    expect(loaded?.queries.map((q) => q.id)).toEqual(['qb']);
+describe('implicit workspace resolution and opened metadata', () => {
+  it('first uses a valid last-used preference', async () => {
+    const store = memoryStore([
+      record(workspace(), 100),
+      record(workspace({ id: 'w2', key: 'two' }), 1),
+    ]);
+    store.setLastUsed('two');
+    const result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result.status === 'ok' && result.workspace.key).toBe('two');
   });
 
-  it('under interleaved (un-awaited) commits the final record is exactly one complete aggregate', async () => {
-    const store = memStore(null);
-    const repo = createWorkspaceRepository({ store });
-    const a = workspace({ id: 'A', name: 'Alpha', queries: [panelQuery('qa')] });
-    const b = workspace({ id: 'B', name: 'Beta', queries: [panelQuery('qb')] });
-    await Promise.all([repo.commit(a), repo.commit(b)]);
-    const loaded = await repo.loadCurrent();
-    // Whichever won, it is internally consistent — the id and its query match
-    // the SAME source workspace, proving no partial mix.
-    expect(loaded).not.toBeNull();
-    const encodedA = encodeStoredWorkspaceJson(a);
-    const encodedB = encodeStoredWorkspaceJson(b);
-    const winners = [encodedA, encodedB].filter((e) => e.ok).map((e) => (e.ok ? e.value : ''));
-    expect(winners).toContain(store.value);
+  it('falls back from a missing or corrupt preference to newest opened, ties by key', async () => {
+    const a = workspace({ id: 'a', key: 'a' });
+    const b = workspace({ id: 'b', key: 'b' });
+    const store = memoryStore([
+      record(b, 10),
+      { id: 'bad', key: 'bad', text: '{}', lastOpenedAt: 99 },
+      record(a, 10),
+    ]);
+    store.setLastUsed('missing');
+    let result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result.status === 'ok' && result.workspace.key).toBe('a');
+
+    store.setLastUsed('bad');
+    result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result.status === 'ok' && result.workspace.key).toBe('a');
+  });
+
+  it('uses key order when no workspace has usage metadata and stays empty when none are valid', async () => {
+    const store = memoryStore([
+      record(workspace({ id: 'b', key: 'b' })),
+      record(workspace({ id: 'a', key: 'a' })),
+    ]);
+    let result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result.status === 'ok' && result.workspace.key).toBe('a');
+    store.records.clear();
+    result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result).toEqual({ status: 'empty' });
+  });
+
+  it('ranks timestamped workspaces ahead of unstamped ones in either input order', async () => {
+    const a = workspace({ id: 'a', key: 'a' });
+    const b = workspace({ id: 'b', key: 'b' });
+    for (const records of [[record(a), record(b, 1)], [record(b, 1), record(a)]]) {
+      const result = await createWorkspaceRepository({ store: memoryStore(records) }).resolveImplicit();
+      expect(result.status === 'ok' && result.workspace.key).toBe('b');
+    }
+  });
+
+  it('returns deterministic corrupt identity when no valid workspace exists', async () => {
+    const store = memoryStore([
+      { id: 'z', key: 'same', text: '{}', lastOpenedAt: 1 },
+      { id: 'a', key: 'same', text: '{}', lastOpenedAt: 1 },
+    ]);
+    const result = await createWorkspaceRepository({ store }).resolveImplicit();
+    expect(result).toMatchObject({ status: 'corrupt', id: 'a', key: 'same' });
+  });
+
+  it('marks opened using the injected time and reports not-found and persistence failure', async () => {
+    const store = memoryStore([record(workspace())]);
+    const repository = createWorkspaceRepository({ store, now: () => 1234 });
+    expect(await repository.markOpened('WORKSPACE_ONE')).toEqual({ ok: true });
+    expect(store.records.get('w1')?.lastOpenedAt).toBe(1234);
+    expect(await repository.resolveImplicit()).toEqual({
+      status: 'ok', workspace: workspace(),
+    });
+    expect(await repository.markOpened('missing')).toMatchObject({
+      ok: false, diagnostics: [{ code: 'workspace-not-found' }],
+    });
+    store.setFail('markOpened');
+    expect(await repository.markOpened('workspace_one')).toMatchObject({
+      ok: false, diagnostics: [{ code: 'workspace-mark-opened-failed' }],
+    });
+  });
+
+  it('propagates read failures distinctly from empty records', async () => {
+    const store = memoryStore();
+    store.setFail('read');
+    await expect(createWorkspaceRepository({ store }).loadById('w1')).rejects.toThrow('read unavailable');
+  });
+
+  it('propagates list failures distinctly from an empty collection', async () => {
+    const store = memoryStore();
+    store.setFail('list');
+    await expect(createWorkspaceRepository({ store }).list()).rejects.toBe('list unavailable');
   });
 });

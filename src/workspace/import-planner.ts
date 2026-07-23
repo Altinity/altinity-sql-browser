@@ -5,7 +5,7 @@
 // in tests and unguessable in production.
 //
 // A PortableBundle import always resolves to one COMPLETE candidate
-// StoredWorkspaceV1 built from the repository-level primitives in
+// StoredWorkspaceV2 built from the repository-level primitives in
 // workspace-operations.ts, then validated in one pass through
 // validateStoredWorkspaceDocument — exactly the same "build the whole
 // candidate, validate once, never commit an invalid one" discipline
@@ -30,7 +30,7 @@ import type { WorkspaceIdGen } from './workspace-operations.js';
 import { validateStoredWorkspaceDocument } from './stored-workspace.js';
 import type { WorkspaceCodecOptions } from './stored-workspace.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../generated/json-schema.types.js';
 
 // --- Dashboard listing -------------------------------------------------------
@@ -272,7 +272,7 @@ function mergeIncomingQueries(
   return [...merged, ...additions];
 }
 
-/** REPLACE the query catalog wholesale (File menu's "Open workspace…", #342):
+/** Replace the query catalog wholesale when constructing an imported workspace:
  *  only queries
  *  reachable from the incoming bundle survive, in bundle order; 'use-existing'
  *  keeps the existing query's own content (still under the shared id) rather
@@ -301,7 +301,7 @@ function replaceIncomingQueries(
 export interface PortableBundleImportPlan {
   sourceDashboardId?: string;
   queryMappings: IdMapping;
-  candidateWorkspace: StoredWorkspaceV1 | null;
+  candidateWorkspace: StoredWorkspaceV2 | null;
   diagnostics: WorkspaceDiagnostic[];
 }
 
@@ -315,7 +315,7 @@ function invalidPlan(
 }
 
 function validatedPlan(
-  candidate: StoredWorkspaceV1, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
+  candidate: StoredWorkspaceV2, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
 ): PortableBundleImportPlan {
   const diagnostics = validateStoredWorkspaceDocument(candidate, options);
   if (diagnostics.length) return invalidPlan(diagnostics, queryMappings, sourceDashboardId);
@@ -349,7 +349,7 @@ function invalidatedDashboardPlan(
 /** Queries-only import (Dashboard untouched): merge the bundle's queries into
  *  the workspace's query catalog per `decisions`, and validate the result. */
 export function planImportQueries(
-  workspace: StoredWorkspaceV1, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV2, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
@@ -365,7 +365,7 @@ export function planImportQueries(
  *  or unmapped required dependency invalidates the plan (`candidateWorkspace:
  *  null`) rather than silently dropping the reference. */
 export function planImportDashboard(
-  workspace: StoredWorkspaceV1, bundle: PortableBundleV1, sourceDashboardId: string,
+  workspace: StoredWorkspaceV2, bundle: PortableBundleV1, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
@@ -395,7 +395,7 @@ export function planImportDashboard(
  *  Dashboard, keeping its own id/revision. Omit `sourceDashboardId` to
  *  replace with a query-only workspace (Dashboard cleared to `null`). */
 export function planReplaceWorkspace(
-  workspace: StoredWorkspaceV1, bundle: PortableBundleV1, sourceDashboardId: string | undefined,
+  workspace: StoredWorkspaceV2, bundle: PortableBundleV1, sourceDashboardId: string | undefined,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {

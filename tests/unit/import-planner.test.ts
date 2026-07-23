@@ -7,7 +7,7 @@ import type {
   IdMapping, QueryConflict, QueryDecision,
 } from '../../src/workspace/import-planner.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../../src/generated/json-schema.types.js';
 
 // --- fixtures ----------------------------------------------------------------
@@ -28,8 +28,8 @@ const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumen
   filters: [], tiles: [], ...over,
 });
 
-const workspace = (over: Partial<StoredWorkspaceV1> = {}): StoredWorkspaceV1 => ({
-  storageVersion: 1, id: 'w1', name: 'Workspace', queries: [], dashboard: null, ...over,
+const workspace = (over: Partial<StoredWorkspaceV2> = {}): StoredWorkspaceV2 => ({
+  storageVersion: 2, id: 'w1', key: 'workspace', name: 'Workspace', queries: [], dashboard: null, ...over,
 });
 
 const bundle = (over: Partial<PortableBundleV1> = {}): PortableBundleV1 => ({

@@ -1,11 +1,11 @@
 // Wire the Workbench favorite star to Dashboard tile membership (#299).
-// `StoredWorkspaceV1.dashboard.tiles[]` is canonical Dashboard membership
+// `StoredWorkspaceV2.dashboard.tiles[]` is canonical Dashboard membership
 // (#287); toggling `spec.favorite` on a saved query must add/remove the
 // matching tile IN THE SAME atomic commit as the favorite flip, or the star
 // and the Dashboard silently disagree about what's on it.
 //
 // The role gate mirrors the migration precedent in
-// `src/workspace/legacy-migration.ts`'s `buildLegacyMigrationCandidate`: only
+// the original single-workspace migration contract: only
 // PANEL-role queries ever become tiles — a favorited filter/setup-role query
 // stays favorited (the star's own visual state) but never gets a tile. Tile
 // removal mirrors `src/dashboard/application/saved-query-mutation.ts`'s
@@ -89,7 +89,7 @@ export function removeTileMembership(
  *   tile `{ id: genId(), queryId: query.id }`.
  * - Star ON + a tile already references it → unchanged (idempotent).
  * - Star ON + filter/setup-role query → unchanged (favorite flip only; never
- *   becomes a tile, matching `buildLegacyMigrationCandidate`).
+ *   becomes a tile, matching the legacy membership rule).
  * - Star OFF → remove EVERY tile referencing the query and scrub those tile
  *   ids from every filter's `targets`.
  * - Star ON + panel-role query + `dashboard:null` → mint the canonical empty

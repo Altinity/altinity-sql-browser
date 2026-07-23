@@ -1,5 +1,5 @@
-// StoredWorkspaceV1 contract codec and whole-workspace validation (#280
-// "Internal persistence: StoredWorkspaceV1", phase 1 of #283). The atomic
+// StoredWorkspaceV2 contract codec and whole-workspace validation (#280
+// "Internal persistence: StoredWorkspaceV2", phase 1 of #283). The atomic
 // WorkspaceRepository itself is Phase 2; this module owns the persistence
 // aggregate's validation pipeline (codec guards → storageVersion
 // identification, fail closed → structural schema validation → whole-
@@ -20,11 +20,11 @@ import {
 } from '../dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../core/json-schema-validation.js';
-import type { StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 
-export const CURRENT_STORED_WORKSPACE_VERSION = 1;
-export const STORED_WORKSPACE_V1_SCHEMA_ID =
-  'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json';
+export const CURRENT_STORED_WORKSPACE_VERSION = 2;
+export const STORED_WORKSPACE_V2_SCHEMA_ID =
+  'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json';
 
 export type WorkspaceFailResult = { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
@@ -69,7 +69,7 @@ export function validateStoredWorkspaceDocument(
   const skipQueryIndexes = new Set(versionDiagnostics
     .filter((item) => item.path[0] === 'queries').map((item) => item.path[1]));
   const skipDashboard = versionDiagnostics.some((item) => item.path[0] === 'dashboard');
-  const structural = validationService.validate(STORED_WORKSPACE_V1_SCHEMA_ID, document)
+  const structural = validationService.validate(STORED_WORKSPACE_V2_SCHEMA_ID, document)
     .filter((item) => !(item.path[0] === 'queries' && skipQueryIndexes.has(item.path[1]))
       && !(skipDashboard && item.path[0] === 'dashboard'));
   if (versionDiagnostics.length || structural.length) {
@@ -83,7 +83,7 @@ export function validateStoredWorkspaceDocument(
   ]);
 }
 
-export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV1 } | WorkspaceFailResult;
+export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV2 } | WorkspaceFailResult;
 
 /** Parse and fully validate stored-workspace JSON text. */
 export function decodeStoredWorkspaceJson(
@@ -93,7 +93,7 @@ export function decodeStoredWorkspaceJson(
   if (!parsed.ok) return parsed;
   const diagnostics = validateStoredWorkspaceDocument(parsed.value, options);
   if (diagnostics.length) return { ok: false, diagnostics };
-  return { ok: true, value: parsed.value as StoredWorkspaceV1 };
+  return { ok: true, value: parsed.value as StoredWorkspaceV2 };
 }
 
 export type EncodeStoredWorkspaceResult = { ok: true; value: string } | WorkspaceFailResult;

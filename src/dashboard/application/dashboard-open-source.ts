@@ -4,7 +4,7 @@
 // telling it which store to read the dashboard from.
 //
 // Two ways a dashboard tab can be opened (see the coordinator's two-mode
-// model): EDIT mode resolves `?ws=<workspaceId>&dash=<dashboardId>` against the
+// model): EDIT mode resolves `?ws=<workspaceKey>&dash=<dashboardId>` against the
 // shared primary workspace store; VIEW mode's one-time handoff resolves
 // `?st=<token>&dash=<dashboardId>` against the dedicated handoff store, then
 // rewrites the URL to a persistent `?ws=<detachedId>` once materialized. `st`
@@ -13,7 +13,7 @@
 
 /** Which store a standalone Dashboard tab should resolve its dashboard from. */
 export type DashboardOpenSource =
-  | { kind: 'current-workspace'; workspaceId: string; dashboardId: string }
+  | { kind: 'current-workspace'; workspaceKey: string; dashboardId: string }
   | { kind: 'session-bundle'; token: string; dashboardId: string };
 
 /**
@@ -34,8 +34,8 @@ export function parseDashboardOpenSource(search: string): DashboardOpenSource | 
   const dashboardId = params.get('dash') ?? '';
   const token = params.get('st');
   if (token) return { kind: 'session-bundle', token, dashboardId };
-  const workspaceId = params.get('ws');
-  if (workspaceId) return { kind: 'current-workspace', workspaceId, dashboardId };
+  const workspaceKey = params.get('ws');
+  if (workspaceKey) return { kind: 'current-workspace', workspaceKey, dashboardId };
   return null;
 }
 
@@ -50,7 +50,7 @@ export function buildDashboardSearch(source: DashboardOpenSource): string {
   if (source.kind === 'session-bundle') {
     params.set('st', source.token);
   } else {
-    params.set('ws', source.workspaceId);
+    params.set('ws', source.workspaceKey);
   }
   params.set('dash', source.dashboardId);
   return '?' + params.toString();

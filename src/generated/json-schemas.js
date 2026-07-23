@@ -1737,17 +1737,18 @@ export const dashboardV1Schema = {
   }
 };
 
-export const storedWorkspaceV1Schema = {
+export const storedWorkspaceV2Schema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json",
-  "title": "Altinity SQL Browser stored workspace v1",
-  "description": "The atomic browser-persistence aggregate: one workspace with an ordered saved-query collection and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json",
+  "title": "Altinity SQL Browser stored workspace v2",
+  "description": "One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
   "x-altinity-kind": "stored-workspace",
-  "x-altinity-version": 1,
+  "x-altinity-version": 2,
   "type": "object",
   "required": [
     "storageVersion",
     "id",
+    "key",
     "name",
     "queries",
     "dashboard"
@@ -1755,21 +1756,27 @@ export const storedWorkspaceV1Schema = {
   "properties": {
     "storageVersion": {
       "title": "Storage version",
-      "description": "Stored-workspace contract version; always 1 for this contract. Unknown future versions fail closed.",
+      "description": "Stored-workspace contract version; always 2 for this contract. Unknown future versions fail closed.",
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "id": {
       "title": "Workspace identifier",
-      "description": "Stable generated workspace identity. Two files with the same name still produce distinct workspace IDs.",
+      "description": "Stable generated application identity. Two workspaces with the same display name still have distinct IDs.",
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
       "pattern": "\\S"
     },
+    "key": {
+      "title": "Workspace URL key",
+      "description": "Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
     "name": {
       "title": "Workspace name",
-      "description": "User-visible workspace name. Renaming the workspace does not rename its Dashboard.",
+      "description": "Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or Dashboard title.",
       "type": "string",
       "maxLength": 512
     },
@@ -1799,6 +1806,7 @@ export const storedWorkspaceV1Schema = {
   "x-altinity-order": [
     "storageVersion",
     "id",
+    "key",
     "name",
     "queries",
     "dashboard"
@@ -1902,6 +1910,6 @@ export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": flowLayoutV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json": grafanaGridLayoutV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": dashboardV1Schema,
-  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json": storedWorkspaceV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json": storedWorkspaceV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": portableBundleV1Schema,
 };

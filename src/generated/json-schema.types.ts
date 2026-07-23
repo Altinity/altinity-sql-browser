@@ -952,30 +952,36 @@ export interface DashboardDocumentV1 {
   tiles: DashboardTileV1[];
 }
 
-// stored-workspace v1 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json
+// stored-workspace v2 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json
 
 /**
- * Altinity SQL Browser stored workspace v1
+ * Altinity SQL Browser stored workspace v2
  *
- * The atomic browser-persistence aggregate: one workspace with an ordered saved-query collection and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.
+ * One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.
  */
-export interface StoredWorkspaceV1 {
+export interface StoredWorkspaceV2 {
   /**
    * Storage version
    *
-   * Stored-workspace contract version; always 1 for this contract. Unknown future versions fail closed.
+   * Stored-workspace contract version; always 2 for this contract. Unknown future versions fail closed.
    */
-  storageVersion: 1;
+  storageVersion: 2;
   /**
    * Workspace identifier
    *
-   * Stable generated workspace identity. Two files with the same name still produce distinct workspace IDs.
+   * Stable generated application identity. Two workspaces with the same display name still have distinct IDs.
    */
   id: string;
   /**
+   * Workspace URL key
+   *
+   * Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.
+   */
+  key: string;
+  /**
    * Workspace name
    *
-   * User-visible workspace name. Renaming the workspace does not rename its Dashboard.
+   * Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or Dashboard title.
    */
   name: string;
   /**

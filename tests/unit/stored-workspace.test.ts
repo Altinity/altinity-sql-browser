@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CURRENT_STORED_WORKSPACE_VERSION, STORED_WORKSPACE_V1_SCHEMA_ID,
+  CURRENT_STORED_WORKSPACE_VERSION, STORED_WORKSPACE_V2_SCHEMA_ID,
   decodeStoredWorkspaceJson, encodeStoredWorkspaceJson, validateStoredWorkspaceDocument,
 } from '../../src/workspace/stored-workspace.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
@@ -14,7 +14,7 @@ const dashboardDoc = (over: Record<string, unknown> = {}) => ({
   layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
 });
 const workspace = (over: Record<string, unknown> = {}) => ({
-  storageVersion: 1, id: 'w1', name: 'W', queries: [], dashboard: null, ...over,
+  storageVersion: 2, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboard: null, ...over,
 });
 
 describe('validateStoredWorkspaceDocument', () => {
@@ -32,11 +32,13 @@ describe('validateStoredWorkspaceDocument', () => {
     expect(codes(validateStoredWorkspaceDocument(null))).toEqual(['workspace-invalid-root']);
     expect(codes(validateStoredWorkspaceDocument({}))).toEqual(['workspace-version-missing']);
     expect(codes(validateStoredWorkspaceDocument({ storageVersion: 1.5 }))).toEqual(['workspace-version-invalid']);
-    expect(codes(validateStoredWorkspaceDocument({ storageVersion: 2 }))).toEqual(['workspace-version-unsupported']);
+    expect(codes(validateStoredWorkspaceDocument({ storageVersion: 3 }))).toEqual(['workspace-version-unsupported']);
   });
 
   it('reports structural schema errors, e.g. a missing required field', () => {
-    const d = validateStoredWorkspaceDocument({ storageVersion: 1, id: 'w', name: 'W', queries: [] });
+    const d = validateStoredWorkspaceDocument({
+      storageVersion: 2, id: 'w', key: 'workspace', name: 'W', queries: [],
+    });
     expect(has(d, 'schema-required')).toBe(true); // dashboard required (may be null)
   });
 
@@ -70,7 +72,7 @@ describe('decodeStoredWorkspaceJson', () => {
 
   it('propagates codec-guard and validation failures', () => {
     expect(decodeStoredWorkspaceJson('{bad').ok).toBe(false);
-    const invalid = decodeStoredWorkspaceJson(JSON.stringify({ storageVersion: 2 }));
+    const invalid = decodeStoredWorkspaceJson(JSON.stringify({ storageVersion: 3 }));
     expect(!invalid.ok && invalid.diagnostics[0].code).toBe('workspace-version-unsupported');
   });
 });
@@ -83,11 +85,11 @@ describe('encodeStoredWorkspaceJson', () => {
     expect(result.value.indexOf('"storageVersion"')).toBeLessThan(result.value.indexOf('"id"'));
     expect(result.value.indexOf('"queries"')).toBeLessThan(result.value.indexOf('"dashboard"'));
     // Reference schema id is exported for callers/Phase 2.
-    expect(STORED_WORKSPACE_V1_SCHEMA_ID).toContain('stored-workspace-v1');
+    expect(STORED_WORKSPACE_V2_SCHEMA_ID).toContain('stored-workspace-v2');
   });
 
   it('rejects an invalid workspace before encoding', () => {
-    const result = encodeStoredWorkspaceJson({ storageVersion: 2 });
+    const result = encodeStoredWorkspaceJson({ storageVersion: 3 });
     expect(!result.ok && result.diagnostics[0].code).toBe('workspace-version-unsupported');
   });
 

@@ -2,7 +2,7 @@
 // (#288 Phase 6 — VIEW-mode Dashboard handoff). Each detached view is a
 // read-only snapshot of one Dashboard, keyed by its own fresh workspace id,
 // stored in a DEDICATED database separate from the single shared primary
-// `asb-workspace` aggregate — a detached view is not the editable primary
+// `asb-workspaces-v2` collection — a detached view is not the editable primary
 // workspace and must never be reachable through that store's key. Because
 // "Open for viewing…" can be used repeatedly, this store is a small keyed
 // collection with a retention cap (newest `maxRecords` by `savedAt`), unlike
@@ -13,7 +13,8 @@
 // that file for the seam-pattern rationale.
 
 import type { DetachedViewRecord, DetachedViewsStore } from './detached-views-store.types.js';
-import type { StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
+import { normalizeWorkspaceKeyLookup } from '../core/workspace-key.js';
 
 export interface IndexedDbDetachedViewsStoreOptions {
   /** IndexedDB database name. */
@@ -124,12 +125,20 @@ export function createIndexedDbDetachedViewsStore(
     await transactionDone(tx);
   }
 
-  async function get(id: string): Promise<StoredWorkspaceV1 | null> {
+  async function get(id: string): Promise<StoredWorkspaceV2 | null> {
     const db = await openDb();
     const tx = db.transaction([storeName], 'readonly');
     const record = await requestResult<DetachedViewRecord | undefined>(tx.objectStore(storeName).get(id));
     return record ? record.workspace : null;
   }
 
-  return { put, get };
+  async function getByKey(key: string): Promise<StoredWorkspaceV2 | null> {
+    const db = await openDb();
+    const tx = db.transaction([storeName], 'readonly');
+    const records = await requestResult<DetachedViewRecord[]>(tx.objectStore(storeName).getAll());
+    const normalized = normalizeWorkspaceKeyLookup(key);
+    return records.find((record) => record.workspace.key === normalized)?.workspace ?? null;
+  }
+
+  return { put, get, getByKey };
 }

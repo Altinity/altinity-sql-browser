@@ -50,7 +50,10 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 - Report the **PR URL**.
 
 ## 7 — 🛑 Merge gate — STOP
-Do **not** merge. Summarise what shipped and the PR link, start serving the just-built app locally (for manual testing), and wait. If there is another serving process on the same machine, kill the process to retake the port. Merging to `main` is a human call. 
+Do **not** merge. Summarise what shipped and the PR link, run `npm run local`
+to serve the just-built app for manual testing, and wait. If there is another
+serving process on the same machine, kill the process to retake the port.
+Merging to `main` is a human call.
 
 ## After — friction → memory
 If anything needed retries or surprised you (test / env / scope), save a memory so the next `/ship` doesn't repeat it. This session does the saving, not a subagent it spawned.

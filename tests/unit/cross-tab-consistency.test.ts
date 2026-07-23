@@ -6,7 +6,7 @@
 // tab A must survive an unrelated change committed in tab B, and an operation
 // that no longer applies to `latest` must abort without recreating deleted data.
 //
-// These assert the PERSISTED outcome via the shared store (`loadCurrent`), not
+// These assert the persisted outcome via the active record's immutable ID, not
 // UI refresh — the cross-tab invalidation/refresh wiring is #343 step 4+.
 
 import { describe, it, expect, vi } from 'vitest';
@@ -14,7 +14,7 @@ import { createApp } from '../../src/ui/app.js';
 import { createSavedQuery, commitSavedQuery, deleteSaved, renameSaved } from '../../src/state.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { SavedQueryV2, StoredWorkspaceV1, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV2, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
 
 // A minimal real `createApp` over an injected shared store — the editor/spec
 // seams fall back to their noop ports (createApp's own defaults), so no
@@ -39,28 +39,29 @@ const twoTileDashboard = (): DashboardDocumentV1 => ({
   filters: [], tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
 } as DashboardDocumentV1);
 
-const dashboardSeed = (): StoredWorkspaceV1 => ({
-  storageVersion: 1, id: 'w1', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
+const dashboardSeed = (): StoredWorkspaceV2 => ({
+  storageVersion: 2, id: 'w1', key: 'team', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
   dashboard: twoTileDashboard(),
 });
 
 /** Load the committed workspace from the shared store (fails loudly if empty). */
-async function committed(app: App): Promise<StoredWorkspaceV1> {
-  const workspace = await app.workspace.loadCurrent();
-  if (!workspace) throw new Error('expected a committed workspace');
-  return workspace;
+async function committed(app: App): Promise<StoredWorkspaceV2> {
+  const loaded = await app.workspace.loadById(app.state.workspaceId);
+  if (loaded.status !== 'ok') throw new Error('expected a committed workspace');
+  return loaded.workspace;
 }
 
-const layoutItems = (workspace: StoredWorkspaceV1): Record<string, { span: number }> =>
+const layoutItems = (workspace: StoredWorkspaceV2): Record<string, { span: number }> =>
   workspace.dashboard!.layout.items as Record<string, { span: number }>;
-const queryById = (workspace: StoredWorkspaceV1, id: string): SavedQueryV2 | undefined =>
+const queryById = (workspace: StoredWorkspaceV2, id: string): SavedQueryV2 | undefined =>
   workspace.queries.find((q) => q.id === id);
 
 /** Seed the shared store (via A) and project it into both tabs, mirroring two
  *  tabs that each loaded the same committed aggregate on boot. */
-async function seed(a: App, b: App, workspace: StoredWorkspaceV1): Promise<void> {
-  const outcome = await a.mutateWorkspace(() => ({ candidate: workspace }));
+async function seed(a: App, b: App, workspace: StoredWorkspaceV2): Promise<void> {
+  const outcome = await a.workspace.create(workspace);
   expect(outcome.ok).toBe(true);
+  if (outcome.ok) a.applyCommittedWorkspace(outcome.workspace);
   await b.loadWorkspaceOnBoot();
 }
 
@@ -159,8 +160,8 @@ describe('cross-tab read-before-write (#343)', () => {
   it('save-linked to an externally deleted query aborts and does not recreate it', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const seedNoDash: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Team',
+    const seedNoDash: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
       queries: [{ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2],
       dashboard: null,
     };
@@ -191,8 +192,8 @@ describe('cross-tab read-before-write (#343)', () => {
 // linked tabs adopt/conflict/detach/orphan, refresh coalesces + orders through
 // the write queue, and a failed reload never wedges it.
 describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
-  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV1 => ({
-    storageVersion: 1, id: 'w1', name: 'Team',
+  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV2 => ({
+    storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
     queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
     dashboard: null,
   });
@@ -235,8 +236,8 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
   it('a flagged conflict survives a Library star/rename plus an unrelated external change (#343 review blocker)', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const twoQueries: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Team',
+    const twoQueries: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
       queries: [
         { id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2,
         { id: 'q2', sql: 'SELECT 2', specVersion: 1, spec: { name: 'q2', favorite: false } } as SavedQueryV2,
@@ -365,7 +366,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     const before = b.state.savedQueries;
     await b.refreshWorkspaceFromStore(); // token unchanged → no reproject
     expect(b.state.savedQueries).toBe(before); // same reference, not reprojected
-    await b.workspace.clearCurrent(); // externally emptied
+    await b.workspace.delete(b.state.workspaceId); // externally emptied
     await b.refreshWorkspaceFromStore(); // loaded === null → keeps projection
     expect(b.state.savedQueries).toBe(before);
   });
@@ -374,7 +375,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
     await seed(a, b, oneQuery());
-    const spy = vi.spyOn(b.workspace, 'loadCurrentResult');
+    const spy = vi.spyOn(b.workspace, 'loadById');
     const poke = { type: 'workspace-changed' as const, sourceTabId: 'other', workspaceId: 'w1' };
     b.onExternalWorkspaceChange(poke);
     b.onExternalWorkspaceChange(poke);
@@ -428,10 +429,10 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     expect(final.queries.some((q) => q.spec.name === 'B-new')).toBe(true); // B's write landed on refreshed latest
 
     // A rejected reload warns internally but never wedges: a later write succeeds.
-    const orig = b.workspace.loadCurrentResult.bind(b.workspace);
-    b.workspace.loadCurrentResult = vi.fn(async () => { throw new Error('idb down'); });
+    const orig = b.workspace.loadById.bind(b.workspace);
+    b.workspace.loadById = vi.fn(async () => { throw new Error('idb down'); });
     await b.refreshWorkspaceFromStore(); // swallowed
-    b.workspace.loadCurrentResult = orig;
+    b.workspace.loadById = orig;
     const after = await b.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Recovered' } }));
     expect(after.ok).toBe(true);
   });

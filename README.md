@@ -436,22 +436,26 @@ remembered result view and chart config. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the
 row and is included in Markdown/SQL exports.
 
-The queries plus the zero-or-one editable Dashboard form one **current workspace**
-(a `StoredWorkspaceV1` aggregate). The workspace is persisted **atomically** in the
-browser (IndexedDB) — a reload restores queries, Dashboard, layout, and workspace
-name together; every saved-query edit commits the whole workspace and only
-publishes once persistence succeeds. The header **File ▾** menu carries a name, an
-unsaved-changes dot (changes since the last export or import), and these
-resource-oriented operations (#287):
+The queries plus the zero-or-one editable Dashboard form a workspace
+(`StoredWorkspaceV2`). A browser profile can keep multiple workspaces in
+IndexedDB; each has an immutable opaque id, a stable human-readable URL key,
+and a mutable display name. Each record is persisted **atomically** — a reload
+restores its queries, Dashboard, layout, and name together; every saved-query
+edit commits the whole active workspace and only publishes once persistence
+succeeds. Implicit startup reopens the last successfully used workspace.
+
+The header **File ▾** menu carries the active name, an unsaved-changes dot
+(changes since the last export or import), and these resource-oriented
+operations:
 
 The first four rows are one unlabeled primary-workspace-action group, in this
 order (#342):
 
-- **New workspace…** — clears to an empty, default-named workspace (confirms first
-  when non-empty). Open editor tabs are unaffected.
-- **Open workspace…** — atomically replace **both** the query collection and
-  the Dashboard from a file (confirms first). A multi-Dashboard file asks which
-  Dashboard to adopt (or none).
+- **New workspace…** — creates and activates a new empty, default-named
+  workspace without deleting the previous one. Open editor tabs are unaffected.
+- **Import workspace…** — creates and activates a new local workspace from a
+  portable bundle; imported identity is reminted and made unique. A
+  multi-Dashboard file asks which Dashboard to adopt (or none).
 - **Export workspace…** (`.json`) — write the one canonical
   **`altinity-sql-browser/portable-bundle`** interchange format: every saved
   query (catalog order) plus the zero-or-one Dashboard. Uses the deterministic

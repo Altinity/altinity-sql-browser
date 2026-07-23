@@ -1,34 +1,26 @@
-// Concrete IndexedDB adapter behind the injected `WorkspaceStore` seam (#280
-// Phase 2 / issue #284). This is the one place a real IndexedDB is touched;
-// the repository/migration logic never sees it. The pinned Phase-2 decision:
-// persist the StoredWorkspaceV1 aggregate as a SINGLE record and replace it
-// atomically via ONE readwrite transaction (IndexedDB was chosen over a single
-// localStorage key because a 10 MiB `maxDecodedJsonBytes` aggregate exceeds the
-// ~5 MB localStorage origin quota, and because Phase 6's cross-tab token
-// handoff needs IndexedDB anyway).
-//
-// The `IDBFactory` is injected (createApp resolves `env.indexedDB` /
-// `win.indexedDB`), so tests drive this with a minimal in-memory fake factory
-// instead of a real browser database — the same seam pattern as fetch/crypto.
-
-import type { WorkspaceStore } from './workspace-store.types.js';
+import type {
+  WorkspaceStore,
+  WorkspaceStoreCreateResult,
+  WorkspaceStoreMarkOpenedResult,
+  WorkspaceStoreRecord,
+  WorkspaceStoreReplaceResult,
+} from './workspace-store.types.js';
 
 export interface IndexedDbWorkspaceStoreOptions {
-  /** IndexedDB database name. */
   dbName?: string;
-  /** Object-store name inside the database. */
-  storeName?: string;
-  /** Fixed key of the single aggregate record. */
-  recordKey?: string;
+  workspaceStoreName?: string;
+  preferenceStoreName?: string;
+  keyIndexName?: string;
 }
 
 const DEFAULTS = {
-  dbName: 'asb-workspace',
-  storeName: 'workspace',
-  recordKey: 'current',
+  dbName: 'asb-workspaces-v2',
+  workspaceStoreName: 'workspaces',
+  preferenceStoreName: 'preferences',
+  keyIndexName: 'by-key',
 } as const;
+const LAST_USED_KEY = 'last-used-key';
 
-// Promisify one IDBRequest.
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -36,7 +28,6 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-// Resolve when a readwrite transaction durably completes (the atomicity point).
 function transactionDone(tx: IDBTransaction): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
@@ -45,16 +36,18 @@ function transactionDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** Build a `WorkspaceStore` backed by IndexedDB. The database is opened lazily
- *  on first use (and the open promise cached), so constructing the store with a
- *  not-yet-available factory never throws — the failure surfaces only when an
- *  operation actually runs, where the repository catches it. */
+function isConstraintError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'ConstraintError';
+}
+
 export function createIndexedDbWorkspaceStore(
-  factory: IDBFactory | undefined, options: IndexedDbWorkspaceStoreOptions = {},
+  factory: IDBFactory | undefined,
+  options: IndexedDbWorkspaceStoreOptions = {},
 ): WorkspaceStore {
   const dbName = options.dbName ?? DEFAULTS.dbName;
-  const storeName = options.storeName ?? DEFAULTS.storeName;
-  const recordKey = options.recordKey ?? DEFAULTS.recordKey;
+  const workspaceStoreName = options.workspaceStoreName ?? DEFAULTS.workspaceStoreName;
+  const preferenceStoreName = options.preferenceStoreName ?? DEFAULTS.preferenceStoreName;
+  const keyIndexName = options.keyIndexName ?? DEFAULTS.keyIndexName;
   let dbPromise: Promise<IDBDatabase> | null = null;
 
   function openDb(): Promise<IDBDatabase> {
@@ -67,44 +60,151 @@ export function createIndexedDbWorkspaceStore(
       const request = factory.open(dbName, 1);
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName);
+        db.createObjectStore(workspaceStoreName, { keyPath: 'id' })
+          .createIndex(keyIndexName, 'key', { unique: true });
+        db.createObjectStore(preferenceStoreName);
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
-      // Dormant at version 1 (no upgrade can block a fresh open), but an
-      // unhandled `blocked` event would hang the open forever — reject so the
-      // no-cache-on-failure path below reopens on the next call.
       request.onblocked = () => reject(new Error('IndexedDB open blocked'));
     });
-    // Cache only a SUCCESSFUL open. A rejected open must not poison the store
-    // for the page's lifetime (one createApp() builds one long-lived store):
-    // drop the cached promise on failure so a same-session retry can reopen,
-    // matching the repository's "failed write leaves a draft to retry" contract.
     dbPromise = pending;
-    pending.catch(() => { if (dbPromise === pending) dbPromise = null; });
+    pending.catch(() => { dbPromise = null; });
     return pending;
   }
 
-  async function read(): Promise<string | null> {
+  async function list(): Promise<WorkspaceStoreRecord[]> {
     const db = await openDb();
-    const tx = db.transaction([storeName], 'readonly');
-    const value = await requestResult(tx.objectStore(storeName).get(recordKey));
+    const tx = db.transaction([workspaceStoreName], 'readonly');
+    return requestResult(
+      tx.objectStore(workspaceStoreName).getAll() as IDBRequest<WorkspaceStoreRecord[]>,
+    );
+  }
+
+  async function readById(id: string): Promise<WorkspaceStoreRecord | null> {
+    const db = await openDb();
+    const tx = db.transaction([workspaceStoreName], 'readonly');
+    const value = await requestResult(
+      tx.objectStore(workspaceStoreName).get(id) as IDBRequest<WorkspaceStoreRecord | undefined>,
+    );
+    return value ?? null;
+  }
+
+  async function readByKey(key: string): Promise<WorkspaceStoreRecord | null> {
+    const db = await openDb();
+    const tx = db.transaction([workspaceStoreName], 'readonly');
+    const value = await requestResult(
+      tx.objectStore(workspaceStoreName).index(keyIndexName).get(key) as
+        IDBRequest<WorkspaceStoreRecord | undefined>,
+    );
+    return value ?? null;
+  }
+
+  async function create(record: WorkspaceStoreRecord): Promise<WorkspaceStoreCreateResult> {
+    const db = await openDb();
+    const tx = db.transaction([workspaceStoreName], 'readwrite');
+    const done = transactionDone(tx);
+    try {
+      await requestResult(tx.objectStore(workspaceStoreName).add(record));
+      await done;
+      return { status: 'created' };
+    } catch (error) {
+      await done.catch(() => undefined);
+      if (!isConstraintError(error)) throw error;
+      // The unique index and keyPath performed the atomic enforcement. These
+      // post-failure reads only turn its ConstraintError into a useful outcome.
+      if (await readById(record.id)) return { status: 'duplicate-id' };
+      if (await readByKey(record.key)) return { status: 'duplicate-key' };
+      throw error;
+    }
+  }
+
+  async function replace(record: WorkspaceStoreRecord): Promise<WorkspaceStoreReplaceResult> {
+    const db = await openDb();
+    const tx = db.transaction([workspaceStoreName], 'readwrite');
+    const done = transactionDone(tx);
+    const objectStore = tx.objectStore(workspaceStoreName);
+    const existing = await requestResult(
+      objectStore.get(record.id) as IDBRequest<WorkspaceStoreRecord | undefined>,
+    );
+    if (!existing) {
+      await done;
+      return { status: 'not-found' };
+    }
+    if (existing.key !== record.key) {
+      await done;
+      return { status: 'immutable-key' };
+    }
+    objectStore.put({ ...record, lastOpenedAt: existing.lastOpenedAt });
+    await done;
+    return { status: 'replaced' };
+  }
+
+  async function deleteWorkspace(id: string): Promise<boolean> {
+    const db = await openDb();
+    const tx = db.transaction([workspaceStoreName, preferenceStoreName], 'readwrite');
+    const done = transactionDone(tx);
+    const workspaceStore = tx.objectStore(workspaceStoreName);
+    const preferenceStore = tx.objectStore(preferenceStoreName);
+    const existing = await requestResult(
+      workspaceStore.get(id) as IDBRequest<WorkspaceStoreRecord | undefined>,
+    );
+    if (!existing) {
+      await done;
+      return false;
+    }
+    workspaceStore.delete(id);
+    const lastUsed = await requestResult(preferenceStore.get(LAST_USED_KEY));
+    if (lastUsed === existing.key) preferenceStore.delete(LAST_USED_KEY);
+    await done;
+    return true;
+  }
+
+  async function getLastUsedKey(): Promise<string | null> {
+    const db = await openDb();
+    const tx = db.transaction([preferenceStoreName], 'readonly');
+    const value = await requestResult(tx.objectStore(preferenceStoreName).get(LAST_USED_KEY));
     return typeof value === 'string' ? value : null;
   }
 
-  async function write(text: string): Promise<void> {
+  async function markOpened(
+    key: string,
+    timestamp: number,
+  ): Promise<WorkspaceStoreMarkOpenedResult> {
     const db = await openDb();
-    const tx = db.transaction([storeName], 'readwrite');
-    tx.objectStore(storeName).put(text, recordKey);
+    const tx = db.transaction([workspaceStoreName, preferenceStoreName], 'readwrite');
+    const done = transactionDone(tx);
+    const workspaceStore = tx.objectStore(workspaceStoreName);
+    const existing = await requestResult(
+      workspaceStore.index(keyIndexName).get(key) as
+        IDBRequest<WorkspaceStoreRecord | undefined>,
+    );
+    if (!existing) {
+      await done;
+      return { status: 'not-found' };
+    }
+    workspaceStore.put({ ...existing, lastOpenedAt: timestamp });
+    tx.objectStore(preferenceStoreName).put(key, LAST_USED_KEY);
+    await done;
+    return { status: 'opened' };
+  }
+
+  async function clearLastUsedKey(): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction([preferenceStoreName], 'readwrite');
+    tx.objectStore(preferenceStoreName).delete(LAST_USED_KEY);
     await transactionDone(tx);
   }
 
-  async function clear(): Promise<void> {
-    const db = await openDb();
-    const tx = db.transaction([storeName], 'readwrite');
-    tx.objectStore(storeName).delete(recordKey);
-    await transactionDone(tx);
-  }
-
-  return { read, write, clear };
+  return {
+    list,
+    readById,
+    readByKey,
+    create,
+    replace,
+    delete: deleteWorkspace,
+    getLastUsedKey,
+    markOpened,
+    clearLastUsedKey,
+  };
 }

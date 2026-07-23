@@ -1,6 +1,6 @@
 // The read-only Dashboard page (#149 / #240 / #280 / #286). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
-// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV1`
+// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV2`
 // (via `app.loadDashboardWorkspace()` — the phase-2 repository, migrating the
 // legacy favorites/layout keys once when no aggregate exists), constructs a
 // standalone `DashboardViewerSession` over that document + the workspace
@@ -86,7 +86,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV1,
+  SavedQueryV2, StoredWorkspaceV2,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
@@ -132,15 +132,15 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
+  loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
   // #288 Phase 6 — viewer routing (ADR-0003): the parsed open-source of this
   // tab, the detached-views lookup, the one-time-handoff consumer, and the
   // projection of the resolved workspace onto app.state (so the File menu's
   // export/import act on THIS dashboard).
   dashboardOpenSource: DashboardOpenSource | null;
-  detachedViews: Pick<DetachedViewsStore, 'get'>;
-  consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
-  applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
+  detachedViews: Pick<DetachedViewsStore, 'getByKey'>;
+  consumeDashboardHandoff(): Promise<StoredWorkspaceV2 | null>;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
   // saved-query mutations use, so a rapid sequence of drag/resize/preset/
@@ -325,7 +325,7 @@ function renderDashboardNotFound(app: DashboardApp): void {
  *  #347: only ever built for an EDITABLE (non-read-only) Dashboard — the
  *  caller omits the control entirely for a read-only route. (Previously a
  *  read-only view got an Export-only menu, but `exportDashboardAction`
- *  resolves the latest COMMITTED PRIMARY workspace via `workspace.loadCurrent()`,
+ *  resolves the latest committed primary workspace via its immutable ID,
  *  which may be unrelated to the read-only Dashboard on screen; hiding rows
  *  wasn't enough, since the surviving Export button still exported the wrong
  *  workspace.) Every item delegates to an `app.actions.*` seam (dashboard.ts
@@ -406,7 +406,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // current-workspace path. A resolution failure shows not-found — never a
   // different dashboard.
   const source = app.dashboardOpenSource;
-  let workspace: StoredWorkspaceV1 | null;
+  let workspace: StoredWorkspaceV2 | null;
   let readOnly = false;
   // #343 step 6: default to suppressing the cross-tab refresh until the mode is
   // resolved — an early not-found return then leaves this route inert w.r.t.
@@ -423,8 +423,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (!workspace) { renderDashboardNotFound(app); return; }
     readOnly = true;
   } else if (source && source.kind === 'current-workspace') {
-    const primary = await app.loadDashboardWorkspace();
-    const detached = await app.detachedViews.get(source.workspaceId);
+    const primary = await app.loadDashboardWorkspace(source.workspaceKey, source.dashboardId);
+    const detached = await app.detachedViews.getByKey(source.workspaceKey);
     const resolved = resolveDashboardMode(source, primary, detached);
     if (resolved.mode === 'not-found') { renderDashboardNotFound(app); return; }
     workspace = resolved.workspace;
@@ -467,7 +467,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rebuild its candidate from this stale snapshot and silently reverse that
   // other producer's mutation. `null` when no persisted aggregate exists yet
   // (legacy/empty) — commands then stay optimistic-only, same as before #341.
-  let committedWorkspace: StoredWorkspaceV1 | null = workspace;
+  let committedWorkspace: StoredWorkspaceV2 | null = workspace;
   // #344 review fix: queued command DESCRIPTORS (dispatch order), not
   // pre-built document snapshots. A snapshot-based queue (the pre-#344
   // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
@@ -987,7 +987,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // moved past the route cache, so rebasing from the stale cache would
     // re-publish a document containing what the concurrent commit removed.
     // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV1 | null | undefined;
+    let observed: StoredWorkspaceV2 | null | undefined;
     void app.mutateWorkspace((latest) => {
       observed = latest;
       if (!latest || !latest.dashboard) return null;
@@ -997,7 +997,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
       return {
         candidate: {
-          storageVersion: 1, id: latest.id, name: latest.name, queries: reapplied.queries,
+          storageVersion: 2, id: latest.id, key: latest.key, name: latest.name, queries: reapplied.queries,
           dashboard: { ...committedDoc, revision: base.revision + 1 },
         },
       };
@@ -1012,7 +1012,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       settleCommand(result, observed);
     }, () => {
       // The queued op itself REJECTED (blocked/quota/private-mode storage —
-      // `loadCurrent`/the store threw, distinct from an `ok:false` commit).
+      // the active-ID load/store threw, distinct from an `ok:false` commit).
       // Without this handler the rejection is unhandled and, worse, this
       // command would stay in `pendingCommands` forever, corrupting every
       // future rebase.
@@ -1062,7 +1062,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
   // head descriptor, refresh committed truth, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV1 | null | undefined): void {
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV2 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();
@@ -1076,7 +1076,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // the transform observed — the truth that rejected/invalidated this
       // command — so the rebase below never re-publishes a stale document
       // (a tile a concurrent producer removed staying visible). `undefined`
-      // means the op rejected before `loadCurrent()` resolved: nothing
+      // means the op rejected before the active-ID load resolved: nothing
       // fresher was observed, keep the current cache.
       if (observed !== undefined) {
         committedWorkspace = observed;

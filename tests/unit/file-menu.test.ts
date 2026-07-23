@@ -10,7 +10,7 @@ import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -25,6 +25,11 @@ const setSaved = (app: App, queries: SavedQueryFixture[]): void => {
 // .commit` always returns a Promise), so an assertion made right after firing
 // a UI event needs one tick before the projection lands.
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
+const loadActiveWorkspace = async (app: App): Promise<StoredWorkspaceV2> => {
+  const loaded = await app.workspace.loadById(app.state.workspaceId);
+  if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
+  return loaded.workspace;
+};
 
 // A FileReader stub: readAsText resolves synchronously with `content` (or errors).
 // Implements the full (mostly-unused) `FileReader` interface honestly — rather
@@ -223,7 +228,7 @@ describe('file menu structure', () => {
     app.state.savedQueries = [panelQuery('s1', 'A'), panelQuery('s2', 'B')];
     openFileMenu(app);
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
-      'New workspace…', 'Open workspace…', 'Export workspace…', 'Import queries…',
+      'New workspace…', 'Import workspace…', 'Export workspace…', 'Import queries…',
       'Download Markdown', 'Download SQL',
       'Remember recent variable values', 'Clear all recent values',
     ]);
@@ -252,13 +257,13 @@ describe('file menu structure', () => {
     const primary = rows.slice(0, 4);
     expect(primary.every((r) => r.classList.contains('fm-item'))).toBe(true);
     expect(primary.map((r) => r.querySelector('.fm-label')!.textContent)).toEqual([
-      'New workspace…', 'Open workspace…', 'Export workspace…', 'Import queries…',
+      'New workspace…', 'Import workspace…', 'Export workspace…', 'Import queries…',
     ]);
     expect(rows[4].classList.contains('fm-sep')).toBe(true);
     // Keyboard focus order matches the visual row order exactly.
     await flush();
     key(document, 'ArrowDown');
-    expect(document.activeElement).toBe(item(/Open workspace/));
+    expect(document.activeElement).toBe(item(/Import workspace/));
   });
 
   it('footer shows the empty state when there are no queries', () => {
@@ -327,11 +332,11 @@ describe('Export', () => {
   // (`loadCurrent`), not stale `app.state` — the whole reason the actions
   // became async (flush pending writes → read back the aggregate).
   it('exportWorkspaceAction builds the bundle from the committed workspace (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Committed Lib',
+    const committed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'committed_lib', name: 'Committed Lib',
       queries: [panelQuery('c1', 'Committed')], dashboard: null,
     };
-    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     // app.state is deliberately DIFFERENT — a regression reading state instead
     // of the committed aggregate would export THIS, failing the id assertion.
     app.state.savedQueries = [panelQuery('stale', 'Stale')];
@@ -345,12 +350,12 @@ describe('Export', () => {
   });
 
   it('exportDashboardAction builds from the committed dashboard (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Lib',
+    const committed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib',
       queries: [panelQuery('c1', 'Committed')],
       dashboard: dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] }),
     };
-    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
     app.state.savedQueries = [panelQuery('stale', 'Stale')];
     await exportDashboardAction(app);
@@ -365,7 +370,7 @@ describe('Export', () => {
   // the export must fall back to `app.state`, never become a silent no-op on an
   // unhandled rejection (a regression from the pre-#341 synchronous export).
   it('exportWorkspaceAction falls back to app.state when loadCurrent rejects — never a silent no-op (#341)', async () => {
-    const app = mount({ workspace: { loadCurrent: async () => { throw new Error('idb blocked'); } } });
+    const app = mount({ workspace: { loadById: async () => { throw new Error('idb blocked'); } } });
     app.state.libraryName.value = 'My Lib';
     app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
     openFileMenu(app);
@@ -672,41 +677,50 @@ describe('afterLibraryChange — dashboard route (#302)', () => {
   });
 });
 
-describe('Open workspace (#342 rename of "Replace workspace…")', () => {
-  it('the menu item closes the menu, opens the picker, and — after confirming — replaces the catalog + Dashboard', async () => {
+describe('Import workspace (#406 additive collection)', () => {
+  it('the menu item closes the menu, opens the picker, and creates a fresh active workspace', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'd1', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
-    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
+    const create = vi.fn(async (workspace: StoredWorkspaceV2) => ({
+      ok: true as const, workspace, dashboardRevision: workspace.dashboard?.revision ?? null,
+    }));
+    const app = mount({
+      FileReader: fakeReader(bundleText({
+        metadata: { name: 'Imported Ops' }, queries: [dep], dashboards: [dash],
+      })),
+      workspace: {
+        create,
+        list: async () => ({
+          summaries: [{
+            id: 'existing', key: 'imported_ops', name: 'Existing',
+            queryCount: 0, hasDashboard: false, lastOpenedAt: null,
+          }],
+          corrupt: [{ id: 'broken', key: 'imported_ops_2', diagnostics: [] }],
+        }),
+      },
+    });
     app.state.savedQueries = [panelQuery('old', 'Old')];
+    const oldId = app.state.workspaceId;
     openFileMenu(app);
     const input = picker(1);
     input.click = vi.fn();
-    click(item(/Open workspace/)!);
+    click(item(/Import workspace/)!);
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(input.click).toHaveBeenCalled();
     pickFile(input);
-    const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Open workspace?');
-    expect(dialog.textContent).toContain('current 1 saved query');
-    expect(dialog.textContent).toContain('and the selected Dashboard');
-    click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
-    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
-    expect(app.state.dashboard!.id).toBe('d1'); // Open workspace keeps the bundle Dashboard's own id/revision
-    expect(toast()).toBe('Opened workspace');
-  });
-
-  it('cancelling the confirm dialog leaves the workspace untouched', () => {
-    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1')] })) });
-    app.state.savedQueries = [panelQuery('old', 'Old')];
-    openFileMenu(app);
-    pickFile(picker(1));
-    click(document.querySelector('.fm-dialog-cancel')!);
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
-    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['old']);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({
+      storageVersion: 2, key: 'imported_ops_3', name: 'Imported Ops',
+    });
+    expect(create.mock.calls[0][0].id).not.toBe(oldId);
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
+    expect(app.state.dashboard!.id).toBe('d1');
+    expect(toast()).toBe('Imported workspace');
   });
 
-  it('shows a picker with a "No dashboard" option for a multi-dashboard bundle; picking it clears the Dashboard', async () => {
+  it('shows a picker with a "No dashboard" option for a multi-dashboard bundle', async () => {
     const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
     const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
     const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })) });
@@ -714,31 +728,67 @@ describe('Open workspace (#342 rename of "Replace workspace…")', () => {
     openFileMenu(app);
     pickFile(picker(1));
     const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Open workspace — which dashboard?');
+    expect(dialog.textContent).toContain('Import workspace — which dashboard?');
     const noneRow = [...dialog.querySelectorAll<HTMLButtonElement>('.fm-item')].find((b) => (b.textContent || '').includes('No dashboard'))!;
     click(noneRow);
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Open workspace?');
-    click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.dashboard).toBeNull();
   });
 
-  it('auto-picks the sole Dashboard in a single-dashboard bundle (no picker)', () => {
+  it('dismisses the multi-dashboard picker on Escape', () => {
+    const app = mount({
+      FileReader: fakeReader(bundleText({
+        dashboards: [
+          dashboardDoc({ id: 'a', title: 'Alpha' }),
+          dashboardDoc({ id: 'b', title: 'Beta' }),
+        ],
+      })),
+    });
+    openFileMenu(app);
+    pickFile(picker(1));
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+  });
+
+  it('auto-picks the sole Dashboard in a single-dashboard bundle (no picker)', async () => {
     const dash = dashboardDoc({ id: 'only', title: 'Only' });
     const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
     openFileMenu(app);
     pickFile(picker(1));
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Open workspace?');
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.dashboard?.id).toBe('only');
   });
 
-  it('a queries-only bundle (no Dashboard) clears an existing Dashboard', async () => {
+  it('warns when an imported workspace is active but last-used metadata cannot be saved', async () => {
+    const app = mount({
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })),
+      workspace: {
+        markOpened: async () => ({
+          ok: false as const,
+          diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'blocked' }],
+        }),
+      },
+    });
+    openFileMenu(app);
+    pickFile(picker(1));
+    await app.flushWorkspaceWrites();
+    await flush();
+    expect(app.state.savedQueries.map((query) => query.id)).toEqual(['q1']);
+    expect(toast()).toBe('Imported workspace, but its last-used timestamp could not be saved.');
+  });
+
+  it('a queries-only bundle creates a workspace without a Dashboard', async () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1')] })) });
     app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
     app.state.savedQueries = [];
     openFileMenu(app);
     pickFile(picker(1));
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('current 0 saved queries');
-    click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(app.state.dashboard).toBeNull();
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
@@ -747,7 +797,17 @@ describe('Open workspace (#342 rename of "Replace workspace…")', () => {
 
 describe('New workspace', () => {
   it('commits directly (no confirm) when the workspace is already empty', async () => {
-    const app = mount();
+    const app = mount({
+      workspace: {
+        list: async () => ({
+          summaries: [{
+            id: 'existing', key: 'sql_library', name: 'Existing',
+            queryCount: 0, hasDashboard: false, lastOpenedAt: null,
+          }],
+          corrupt: [{ id: 'broken', key: 'sql_library_2', diagnostics: [] }],
+        }),
+      },
+    });
     const oldId = app.state.workspaceId;
     openFileMenu(app);
     click(item(/New workspace/)!);
@@ -755,63 +815,46 @@ describe('New workspace', () => {
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(app.state.savedQueries).toEqual([]);
     expect(app.state.libraryName.value).toBe('SQL Library');
+    expect(app.state.workspaceKey).toBe('sql_library_3');
     expect(app.state.workspaceId).not.toBe(oldId);
     expect(toast()).toBe('Started a new workspace');
   });
 
-  it('confirms first when there are saved queries', async () => {
+  it('creates additively without confirmation when there are saved queries', async () => {
     const app = mount();
     app.state.savedQueries = [panelQuery('q1')];
     openFileMenu(app);
     click(item(/New workspace/)!);
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new workspace?');
-    click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.savedQueries).toEqual([]);
   });
 
-  it('confirms first when a Dashboard exists even with no saved queries', () => {
+  it('creates additively without confirmation when a Dashboard exists', async () => {
     const app = mount();
     app.state.dashboard = dashboardDoc();
     openFileMenu(app);
     click(item(/New workspace/)!);
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new workspace?');
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.dashboard).toBeNull();
   });
 
-  it('confirm dialog: Cancel, backdrop click, and Escape all dismiss; a card click does not', () => {
-    const app = mount();
-    app.state.savedQueries = [panelQuery('q1'), panelQuery('q2')]; // two → exercises the plural dialog copy
-    const openNew = (): void => { openFileMenu(app); click(item(/New workspace/)!); };
-    // Cancel
-    openNew();
-    click(document.querySelector('.fm-dialog-cancel')!);
-    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
-    expect(app.state.savedQueries).toHaveLength(2);
-    // backdrop click
-    openNew();
-    const backdrop = document.querySelector('.fm-dialog-backdrop')!;
-    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    click(backdrop);
-    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
-    // card click keeps it open; Escape closes it
-    openNew();
-    click(document.querySelector('.fm-dialog-card')!);
-    expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
-    key(document, 'Escape');
-    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
-    expect(app.state.savedQueries).toHaveLength(2);
-  });
-
-  it('a gesture starting on the card and ending on the backdrop does not dismiss it (#110)', () => {
-    const app = mount();
-    app.state.savedQueries = [panelQuery('q1')];
+  it('warns when a new workspace is active but last-used metadata cannot be saved', async () => {
+    const app = mount({
+      workspace: {
+        markOpened: async () => ({
+          ok: false as const,
+          diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'blocked' }],
+        }),
+      },
+    });
     openFileMenu(app);
     click(item(/New workspace/)!);
-    const backdrop = document.querySelector('.fm-dialog-backdrop')!;
-    const card = document.querySelector('.fm-dialog-card')!;
-    card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    backdrop.dispatchEvent(new Event('click', { bubbles: true })); // click's target is the backdrop
-    expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
+    await app.flushWorkspaceWrites();
+    await flush();
+    expect(app.state.libraryName.value).toBe('SQL Library');
+    expect(toast()).toBe('Started a new workspace, but its last-used timestamp could not be saved.');
   });
 });
 
@@ -867,8 +910,8 @@ describe('decode failures', () => {
 // queue while a SECOND op (here, a rename / an import) is fired behind it.
 describe('mixed-producer serialization (#341/#344 review fix)', () => {
   it('a pending saved-query-style mutation commits before a queued rename builds its candidate — the rename lands on top, nothing reverts', async () => {
-    const seed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'orig', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboard: null,
     };
     const app = mount({ workspace: statefulWorkspaceRepo(seed) });
     app.state.savedQueries = seed.queries;
@@ -895,17 +938,17 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     await pendingMutation;
     await app.flushWorkspaceWrites();
 
-    const finalWs = await app.workspace.loadCurrent();
+    const finalWs = await loadActiveWorkspace(app);
     // A `renameWorkspaceAction` that built its candidate from a pre-queue
     // snapshot would have re-committed the ORIGINAL [q1] catalog, silently
     // reverting the q2 mutation that landed while it waited.
-    expect(finalWs!.queries.map((q) => q.id)).toEqual(['q1', 'q2']);
-    expect(finalWs!.name).toBe('Renamed');
+    expect(finalWs.queries.map((q) => q.id)).toEqual(['q1', 'q2']);
+    expect(finalWs.name).toBe('Renamed');
   });
 
   it('a pending saved-query-style mutation commits before a queued Import queries builds its candidate — the import lands on top of the post-mutation catalog', async () => {
-    const seed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -932,10 +975,10 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     await pendingMutation;
     await app.flushWorkspaceWrites();
 
-    const finalWs = await app.workspace.loadCurrent();
+    const finalWs = await loadActiveWorkspace(app);
     // A stale-snapshot import would have planned against [q1] only, dropping
     // q2 from the committed candidate.
-    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1', 'q2']);
+    expect(finalWs.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1', 'q2']);
   });
 
   // #344 review 3: the conflict DECISIONS are collected against the pre-queue
@@ -944,8 +987,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   // without dequeue-time revalidation the import would silently drop the
   // incoming query and still toast success.
   it('a conflict minted while the import waits in the queue ABORTS the import (content differs) instead of silently skipping', async () => {
-    const seed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -972,17 +1015,17 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     await pendingMutation;
     await app.flushWorkspaceWrites();
 
-    const finalWs = await app.workspace.loadCurrent();
+    const finalWs = await loadActiveWorkspace(app);
     // The import aborted whole: the queued mutation's new1 ('Mine') stands,
     // the bundle's new1 ('Theirs') was neither imported nor silently skipped
     // under a success toast.
-    expect(finalWs!.queries.map((q) => queryName(q)).sort()).toEqual(['Mine', 'Q1']);
+    expect(finalWs.queries.map((q) => queryName(q)).sort()).toEqual(['Mine', 'Q1']);
     expect(toast()).toBe('✕ Workspace changed while importing — nothing imported, try again');
   });
 
   it('a conflict minted while the import waits in the queue auto-resolves when canonically IDENTICAL — no duplicate, honest count', async () => {
-    const seed: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -1007,26 +1050,74 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     await pendingMutation;
     await app.flushWorkspaceWrites();
 
-    const finalWs = await app.workspace.loadCurrent();
+    const finalWs = await loadActiveWorkspace(app);
     // Auto-resolved to 'use-existing': exactly ONE new1, and the toast counts
     // it as imported (the query IS available after the import).
-    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1']);
+    expect(finalWs.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1']);
     expect(toast()).toBe('Imported 1 query');
   });
 });
 
 describe('commit failure', () => {
-  it('a rejected commit toasts the first diagnostic and leaves state untouched', async () => {
+  it('a rejected rename commit toasts the diagnostic and keeps the active name', async () => {
     const commit = vi.fn(async () => ({
-      ok: false as const, diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'nope' }],
+      ok: false as const,
+      diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'rename failed' }],
     }));
     const app = mount({ workspace: { commit } });
+    app.state.libraryName.value = 'Original';
+    renderLibraryTitle(app);
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
+    input.value = 'Renamed';
+    key(input, 'Enter');
+    await app.flushWorkspaceWrites();
+    await flush();
+    expect(toast()).toBe('✕ rename failed');
+    expect(app.state.libraryName.value).toBe('Original');
+  });
+
+  it('a rejected create toasts the first diagnostic and leaves state untouched', async () => {
+    const create = vi.fn(async () => ({
+      ok: false as const, diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'nope' }],
+    }));
+    const app = mount({ workspace: { create } });
     app.state.savedQueries = [panelQuery('q1')];
     openFileMenu(app);
     click(item(/New workspace/)!);
-    click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(toast()).toBe('✕ nope');
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']);
+  });
+
+  it('a rejected imported-workspace create reports its diagnostic', async () => {
+    const create = vi.fn(async () => ({
+      ok: false as const,
+      diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'import blocked' }],
+    }));
+    const app = mount({
+      workspace: { create },
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })),
+    });
+    openFileMenu(app);
+    pickFile(picker(1));
+    await app.flushWorkspaceWrites();
+    await flush();
+    expect(toast()).toBe('✕ import blocked');
+  });
+
+  it('an invalid imported workspace reports the planner diagnostic without creating', async () => {
+    const create = vi.fn();
+    const app = mount({
+      workspace: { create },
+      genId: () => '',
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })),
+    });
+    openFileMenu(app);
+    pickFile(picker(1));
+    await app.flushWorkspaceWrites();
+    await flush();
+    expect(create).not.toHaveBeenCalled();
+    expect(toast()).toMatch(/^✕ /);
   });
 });

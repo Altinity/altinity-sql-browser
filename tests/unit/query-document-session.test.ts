@@ -282,7 +282,8 @@ describe('resolveEditorMode', () => {
     const state = {
       tabs: signal([tab]), savedQueries: [] as AppState['savedQueries'],
       resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'), libraryDirty: signal(false),
-      libraryName: signal('Lib'), workspaceId: 'w1', dashboard: null as AppState['dashboard'],
+      libraryName: signal('Lib'), workspaceId: 'w1', workspaceKey: 'lib',
+      dashboard: null as AppState['dashboard'],
     };
     // Link the tab via the real state.ts create path — the exact invariant
     // `savedForTab` (this session's own dependency) reads. #287 W4: the

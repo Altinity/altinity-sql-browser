@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createIndexedDbDetachedViewsStore } from '../../src/workspace/indexeddb-detached-views-store.js';
-import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 
 // ── A minimal in-memory fake IDBFactory ──────────────────────────────────────
 // Extends the shape established in `indexeddb-workspace-store.test.ts` with
@@ -37,6 +37,17 @@ class FakeObjectStore {
     queueMicrotask(() => {
       if (this.cfg.failGet) { req.error = this.cfg.getError ?? null; req.onerror?.(); } else {
         req.result = this.data.get(key);
+        req.onsuccess?.();
+      }
+    });
+    return req;
+  }
+
+  getAll(): FakeRequest {
+    const req = new FakeRequest();
+    queueMicrotask(() => {
+      if (this.cfg.failGet) { req.error = this.cfg.getError ?? null; req.onerror?.(); } else {
+        req.result = Array.from(this.data.values());
         req.onsuccess?.();
       }
     });
@@ -116,8 +127,11 @@ function fakeFactory(cfg: Cfg = {}): IDBFactory {
   } as unknown as IDBFactory;
 }
 
-function workspace(id: string): StoredWorkspaceV1 {
-  return { storageVersion: 1, id, name: `Workspace ${id}`, queries: [], dashboard: null };
+function workspace(id: string): StoredWorkspaceV2 {
+  return {
+    storageVersion: 2, id, key: `workspace_${id}`, name: `Workspace ${id}`,
+    queries: [], dashboard: null,
+  };
 }
 
 describe('createIndexedDbDetachedViewsStore', () => {
@@ -130,6 +144,15 @@ describe('createIndexedDbDetachedViewsStore', () => {
   it('returns null for a missing id', async () => {
     const store = createIndexedDbDetachedViewsStore(fakeFactory());
     expect(await store.get('missing')).toBeNull();
+  });
+
+  it('loads a detached workspace by its canonical URL key', async () => {
+    const store = createIndexedDbDetachedViewsStore(fakeFactory());
+    await store.put({ workspace: workspace('w1'), savedAt: 1000 });
+    await store.put({ workspace: workspace('w2'), savedAt: 2000 });
+    expect(await store.getByKey('workspace_w2')).toEqual(workspace('w2'));
+    expect(await store.getByKey('WORKSPACE_W2')).toEqual(workspace('w2'));
+    expect(await store.getByKey('missing')).toBeNull();
   });
 
   it('prunes to the newest maxRecords by savedAt within the same transaction', async () => {
@@ -163,6 +186,7 @@ describe('createIndexedDbDetachedViewsStore', () => {
   it('rejects every operation when no IndexedDB factory is available', async () => {
     const store = createIndexedDbDetachedViewsStore(undefined);
     await expect(store.get('x')).rejects.toThrow('IndexedDB is unavailable');
+    await expect(store.getByKey('x')).rejects.toThrow('IndexedDB is unavailable');
     await expect(store.put({ workspace: workspace('x'), savedAt: 1 })).rejects.toThrow('IndexedDB is unavailable');
   });
 
@@ -212,6 +236,7 @@ describe('createIndexedDbDetachedViewsStore', () => {
     await expect(boom.get('x')).rejects.toThrow('get boom');
     const silent = createIndexedDbDetachedViewsStore(fakeFactory({ failGet: true }));
     await expect(silent.get('x')).rejects.toThrow('IndexedDB request failed');
+    await expect(silent.getByKey('x')).rejects.toThrow('IndexedDB request failed');
   });
 
   it('rejects a put when the pruning cursor read fails (with and without a request error)', async () => {
