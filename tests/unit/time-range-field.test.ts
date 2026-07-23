@@ -23,6 +23,7 @@ function grp(overrides: Partial<DashboardTimeRangeGroup> = {}): DashboardTimeRan
     key: 'f1\u0000f2', fromFilterId: 'f1', toFilterId: 'f2',
     fromParameter: 'from', toParameter: 'to',
     fromType: DT, toType: DT,
+    tileIds: [], interactiveChartTileIds: [],
     ...overrides,
   };
 }
@@ -215,6 +216,24 @@ describe('buildTimeRangeField — right column: recents (no field active)', () =
     expect(onApply).toHaveBeenCalledWith('-2d', '-1h');
     expect(openWhenCalled).toBe(false); // close ran before onApply
     expect(popover()).toBeNull();
+  });
+
+  it('shows epoch wire values as datetimes while retaining raw commit values', () => {
+    const recents: TimeRangeRecent[] = [{ from: '1784750189', to: '1784750195' }];
+    const onApply = vi.fn();
+    const handle = buildTimeRangeField(baseOpts({
+      fromValue: '1784750189', toValue: '1784750195', getRecents: () => recents, onApply,
+    }));
+    document.body.appendChild(handle.el);
+    open(handle);
+    expect(fromInput().value).toBe('2026-07-22 19:56:29');
+    expect(toInput().value).toBe('2026-07-22 19:56:35');
+    expect(recentBtns()[0].textContent).toBe('2026-07-22 19:56:29 → 2026-07-22 19:56:35');
+    click(applyBtn());
+    expect(onApply).not.toHaveBeenCalled();
+    open(handle);
+    click(recentBtns()[0]);
+    expect(onApply).toHaveBeenCalledWith('1784750189', '1784750195');
   });
 });
 

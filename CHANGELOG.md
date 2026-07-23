@@ -43,6 +43,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   full validation, with a nightly cross-browser E2E safety run and stable gate.
 
 ### Added
+- **Saved-query time-range metadata and synchronized Dashboard chart
+  interaction** (#334). Query Spec v1 now carries zero or one authoritative
+  `{from,to}` parameter pair. Normal saved-query create/SQL-update flows infer
+  one conservative recognized date/time pair when metadata is absent, while
+  explicit `[]` opts out and Dashboard viewing never writes metadata. The
+  Dashboard derives runtime groups from that saved metadata, synchronizes an
+  exact-time vertical crosshair across compatible temporal charts, and lets a
+  plain mouse drag select a forward or reverse range. Selection formats each
+  bound through its declared Date/Date32/DateTime/DateTime64 contract, commits
+  and activates both filters atomically, reserves affected generations before
+  asynchronous preflight/source work, and reruns each dependent tile once;
+  Command/Ctrl-drag remains tile movement and manual filter inputs remain the
+  keyboard-accessible fallback.
 - **Cross-tab workspace consistency: refresh before write and stale-tab
   invalidation** (#343). Workbench and editable-Dashboard tabs editing the same
   workspace now stay consistent under normal sequential editing. Every

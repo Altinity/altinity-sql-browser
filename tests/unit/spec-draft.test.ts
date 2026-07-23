@@ -60,7 +60,13 @@ describe('Spec semantic validation', () => {
       'key.with.dots': [{ anything: true }],
     };
     expect(validateSpec(spec)).toEqual([]);
-    expect(CORE_SPEC_VALIDATORS).toHaveLength(1);
+    expect(CORE_SPEC_VALIDATORS).toHaveLength(2);
+  });
+
+  it('rejects a time range whose From and To name the same parameter', () => {
+    expect(validateSpec({ timeRanges: [{ from: 'ts', to: 'ts' }] })).toContainEqual(expect.objectContaining({
+      path: ['timeRanges', 0, 'to'], code: 'time-range-same-parameter', severity: 'error',
+    }));
   });
 
   it('rejects a non-object root, wrong known types, and a blank name', () => {

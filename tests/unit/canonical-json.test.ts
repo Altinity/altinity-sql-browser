@@ -63,6 +63,7 @@ describe('documented shapes', () => {
       },
       panel: { fieldConfig: { columns: { z: { unit: '%' }, a: { hidden: true } } }, cfg: { y: [1], type: 'bar', x: 0 } },
       name: 'Q',
+      timeRanges: [{ to: 'to', from: 'from' }],
     };
     const encoded = canonicalJson(spec, QUERY_SPEC_SHAPE);
     // name before panel before dashboard; cfg type/x/y order; variants key-sorted;
@@ -73,6 +74,8 @@ describe('documented shapes', () => {
     expect(encoded.indexOf('"alpha"')).toBeLessThan(encoded.indexOf('"zoom"'));
     expect(encoded.indexOf('"aAfter"')).toBeLessThan(encoded.indexOf('"zBefore"'));
     expect(encoded.indexOf('"preferred"')).toBeLessThan(encoded.indexOf('"aspectRatio"'));
+    expect(encoded.indexOf('"dashboard"')).toBeLessThan(encoded.indexOf('"timeRanges"'));
+    expect(encoded.indexOf('"from"')).toBeLessThan(encoded.indexOf('"to"'));
     // field config column map keys sorted lexicographically.
     expect(encoded.indexOf('"a": {')).toBeLessThan(encoded.indexOf('"z": {'));
   });

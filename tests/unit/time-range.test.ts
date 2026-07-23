@@ -2,10 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
 import type { ParameterAnalysis } from '../../src/core/param-pipeline.js';
 import type { FilterSelectionFilterDef } from '../../src/core/filter-selection.js';
+import { parseParamType } from '../../src/core/param-type.js';
 import {
   inferTimeRangePairs,
   resolveTimeRangeGroups,
+  resolveAuthoredTimeRangeGroups,
   validateTimeRangeDraft,
+  chartScaleTimeToInstant,
+  formatChartTimeLabel,
+  formatChartTimeRange,
+  formatTimeRangeDisplayValue,
+  instantToChartScaleTime,
   pushRecentRange,
 } from '../../src/core/time-range.js';
 import type { TimeRangeRecent } from '../../src/core/time-range.js';
@@ -17,6 +24,151 @@ const analysisFor = (sources: { id: string; sql: string }[]): ParameterAnalysis 
   analyzeParameterizedSources(sources.map((s) => ({ id: s.id, kind: 'tab', sql: s.sql, bindPolicy: 'row-returning' })));
 
 type TRFilterDef = FilterSelectionFilterDef & { sourceQueryId?: string | null };
+
+describe('chart time-range formatting', () => {
+  it('normalizes reverse selection and formats each declared wire type without shifting Date days', () => {
+    const a = Date.UTC(2026, 6, 21, 12, 30, 45, 123);
+    const b = Date.UTC(2026, 6, 22, 13, 31, 46, 987);
+    expect(formatChartTimeRange({ fromMs: b, toMs: a, fromType: 'Date', toType: 'DateTime64(3)' })).toEqual({
+      ok: true,
+      from: '2026-07-21',
+      to: String(Date.UTC(2026, 6, 22, 13, 31, 46, 987) / 1000),
+      fromLabel: '2026-07-21',
+      toLabel: '2026-07-22 13:31:46.987',
+    });
+    expect(formatChartTimeLabel(a, 'DateTime')).toBe('2026-07-21 12:30:45');
+  });
+
+  it('rejects non-finite selections', () => {
+    expect(formatChartTimeRange({ fromMs: NaN, toMs: 1, fromType: 'DateTime', toType: 'DateTime' }))
+      .toEqual({ ok: false, error: 'The selected time range is invalid.' });
+  });
+
+  it('accepts already-parsed types for range values and labels', () => {
+    const parsed = parseParamType('DateTime');
+    const ms = Date.UTC(2026, 0, 2, 3, 4, 5);
+    expect(formatChartTimeRange({ fromMs: ms, toMs: ms, fromType: parsed, toType: parsed })).toMatchObject({ ok: true });
+    expect(formatChartTimeLabel(ms, parsed)).toBe('2026-01-02 03:04:05');
+  });
+
+  it('projects epoch wire values to readable editor text without changing other tokens', () => {
+    expect(formatTimeRangeDisplayValue('1784750189', 'DateTime')).toBe('2026-07-22 19:56:29');
+    expect(formatTimeRangeDisplayValue('1784750189.123456', 'DateTime64(6)')).toBe('2026-07-22 19:56:29.123000');
+    expect(formatTimeRangeDisplayValue('-1d', 'DateTime')).toBe('-1d');
+    expect(formatTimeRangeDisplayValue('2026-07-22 19:56:29', 'DateTime')).toBe('2026-07-22 19:56:29');
+    expect(formatTimeRangeDisplayValue('1784750189', 'Date')).toBe('1784750189');
+  });
+
+  it('round-trips Chart.js wall-clock coordinates through an explicit column timezone', () => {
+    const chartMs = new Date(2026, 0, 2, 3, 4, 5, 123).getTime();
+    const instant = Date.UTC(2026, 0, 2, 11, 4, 5, 123);
+    const type = "DateTime64(3, 'America/Los_Angeles')";
+    expect(chartScaleTimeToInstant(chartMs, type)).toBe(instant);
+    expect(instantToChartScaleTime(instant, type)).toBe(chartMs);
+  });
+
+  it('fails closed for invalid explicit chart timezones and non-finite values', () => {
+    expect(chartScaleTimeToInstant(0, "DateTime('Not/A_Zone')")).toBeNull();
+    expect(instantToChartScaleTime(0, "DateTime('Not/A_Zone')")).toBeNull();
+    expect(chartScaleTimeToInstant(NaN, 'DateTime')).toBeNull();
+    expect(instantToChartScaleTime(Infinity, 'DateTime')).toBeNull();
+  });
+});
+
+describe('authored time-range metadata defensive shapes', () => {
+  it('infers legacy metadata-absent tiles on load but honors an explicit empty opt-out', () => {
+    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([
+        { id: 'legacy', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
+        { id: 'opted-out', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
+      ]),
+      executableTileIds: new Set(['legacy', 'opted-out']),
+      filterTargetTileIds: new Map([
+        ['from', new Set(['legacy', 'opted-out'])],
+        ['to', new Set(['legacy', 'opted-out'])],
+      ]),
+      tiles: [{ id: 'legacy', queryId: 'legacy-query' }, { id: 'opted-out', queryId: 'opted-query' }],
+      queries: [{ id: 'legacy-query', spec: {} }, { id: 'opted-query', spec: { timeRanges: [] } }],
+    });
+    expect(result.groups).toEqual([
+      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['legacy'] }),
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('fails closed when one legacy tile has more than one recognized pair', () => {
+    const filters: TRFilterDef[] = [
+      { id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' },
+      { id: 'start', parameter: 'start' }, { id: 'end', parameter: 'end' },
+    ];
+    const ids = new Set(['tile']);
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([{
+        id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}',
+      }]),
+      executableTileIds: ids,
+      filterTargetTileIds: new Map(filters.map((filter) => [filter.id, ids])),
+      tiles: [{ id: 'tile', queryId: 'legacy-query' }],
+      queries: [{ id: 'legacy-query', spec: {} }],
+    });
+    expect(result).toEqual({ groups: [], diagnostics: [] });
+  });
+
+  it('treats an own undefined timeRanges value as malformed authored metadata, never as legacy omission', () => {
+    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}' }]),
+      executableTileIds: new Set(['tile']),
+      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      tiles: [{ id: 'tile', queryId: 'query' }],
+      queries: [{ id: 'query', spec: { timeRanges: undefined } }],
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.diagnostics).toEqual([expect.objectContaining({ code: 'time-range-contract-invalid' })]);
+  });
+
+  it('ignores malformed extension values before filter resolution', () => {
+    const base = {
+      filters: [] as TRFilterDef[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
+      filterTargetTileIds: new Map<string, ReadonlySet<string>>(),
+    };
+    const result = resolveAuthoredTimeRangeGroups({
+      ...base,
+      tiles: [
+        { id: 'a', queryId: 'qa' }, { id: 'b', queryId: 'qb' }, { id: 'c', queryId: 'qc' },
+        { id: 'd', queryId: 'qd' }, { id: 'e', queryId: 'qe' },
+      ],
+      queries: [
+        { id: 'qa', spec: { timeRanges: [null] } },
+        { id: 'qb', spec: { timeRanges: [{ from: 1, to: 'to' }] } },
+        { id: 'qc', spec: { timeRanges: 'bad' } },
+        { id: 'qd', spec: { timeRanges: [{ from: 'x', to: 'x' }] } },
+        { id: 'qe', spec: { timeRanges: [{ from: 'x', to: 'y' }, { from: 'a', to: 'b' }] } },
+      ],
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.diagnostics).toHaveLength(5);
+    expect(result.diagnostics.every((item) => item.code === 'time-range-contract-invalid')).toBe(true);
+  });
+
+  it('diagnoses authored pairs whose declarations use unsupported date/time forms', () => {
+    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime(3)}, {to:DateTime}' }]),
+      executableTileIds: new Set(['tile']),
+      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      tiles: [{ id: 'tile', queryId: 'query' }],
+      queries: [{ id: 'query', spec: { timeRanges: [{ from: 'from', to: 'to' }] } }],
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.diagnostics).toEqual([expect.objectContaining({ code: 'time-range-contract-invalid' })]);
+  });
+});
 
 describe('inferTimeRangePairs', () => {
   it('recognizes from/to (case-insensitive)', () => {
@@ -256,6 +408,15 @@ describe('validateTimeRangeDraft', () => {
     const r = validateTimeRangeDraft({ fromText: '1783772625', toText: '1783772625123', fromType: 'DateTime', toType: 'DateTime64(3)', nowMs: NOW });
     expect(r.from).toEqual({ ok: true, display: expect.any(String), instantMs: 1783772625000, error: null, matchedRelative: false });
     expect(r.to.instantMs).toBe(1783772625123);
+  });
+
+  it('accepts fractional epoch seconds emitted for DateTime64', () => {
+    const r = validateTimeRangeDraft({
+      fromText: '1784750189.123456', toText: '1784750190.987654321',
+      fromType: 'DateTime64(6)', toType: 'DateTime64(9)', nowMs: NOW,
+    });
+    expect(r.from).toMatchObject({ ok: true, instantMs: 1784750189123, display: '2026-07-22 19:56:29.123000' });
+    expect(r.to).toMatchObject({ ok: true, instantMs: 1784750190987, display: '2026-07-22 19:56:30.987000000' });
   });
 
   it('invalid calendar dates are rejected', () => {

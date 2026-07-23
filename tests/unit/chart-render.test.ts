@@ -485,4 +485,12 @@ describe('renderChart', () => {
     expect(chart!.lastResize).toBeUndefined();
     expect(chart!.lastUpdateMode).toBeUndefined();
   });
+  it('passes optional Dashboard-local Chart.js plugins without changing ordinary callers', () => {
+    const app = appWithResult(chartResult());
+    const plugin = { id: 'dashboard-time-range' };
+    renderChart(app, chartResult(), {
+      cfg: { type: 'line', x: 0, y: [2] }, controls: false, chartPlugins: [plugin],
+    });
+    expect((app.chart!.config as unknown as { plugins: unknown[] }).plugins).toEqual([plugin]);
+  });
 });

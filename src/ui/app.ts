@@ -1291,6 +1291,16 @@ export function createApp(env: CreateAppEnv = {}): App {
     return { close };
   }
 
+  /** A warning-bearing save still succeeded. Preserve that confirmation and
+   * keep the actionable inference guidance visible long enough to read. */
+  function flashSaved(diagnostics?: ReadonlyArray<{ message: string }>): void {
+    const warning = diagnostics?.[0]?.message;
+    flashToast(warning ? `Saved — ${warning}` : 'Saved', {
+      document: doc,
+      ...(warning ? { duration: 6000 } : {}),
+    });
+  }
+
   async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
@@ -1329,7 +1339,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     renderSavedHistory(app);
     renderResults(app);
     app.updateEditorModeUi!();
-    flashToast('Saved', { document: doc });
+    flashSaved(result.diagnostics);
     return result.entry;
   }
 
@@ -1416,7 +1426,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.updateEditorModeUi!();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
-      flashToast('Saved', { document: doc });
+      flashSaved(result.diagnostics);
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.

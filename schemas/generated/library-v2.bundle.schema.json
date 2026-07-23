@@ -49,6 +49,15 @@
         },
         "dashboard": {
           "$ref": "#/$defs/queryDashboardPresentationV1"
+        },
+        "timeRanges": {
+          "title": "Time-range parameter semantics",
+          "description": "Zero or one authoritative From/To parameter pair. Omission allows conservative authoring inference; an empty array explicitly disables inference.",
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/queryTimeRangeV1"
+          }
         }
       },
       "additionalProperties": true,
@@ -58,9 +67,38 @@
         "favorite",
         "view",
         "panel",
-        "dashboard"
+        "dashboard",
+        "timeRanges"
       ],
       "$defs": {
+        "queryTimeRangeV1": {
+          "title": "Time-range parameter pair",
+          "description": "The exact saved-query parameter names used as the lower and upper bounds of one time range.",
+          "type": "object",
+          "required": [
+            "from",
+            "to"
+          ],
+          "properties": {
+            "from": {
+              "title": "From parameter",
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "to": {
+              "title": "To parameter",
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "additionalProperties": false,
+          "x-altinity-order": [
+            "from",
+            "to"
+          ]
+        },
         "columnName": {
           "title": "Result column",
           "description": "Exact top-level ClickHouse result-column name.",

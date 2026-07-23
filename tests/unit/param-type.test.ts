@@ -5,7 +5,36 @@ import {
   conflictingTypes,
   enumMembers,
   enumValues,
+  isSupportedTimeRangeParamType,
+  dateTimeTimeZone,
 } from '../../src/core/param-type.js';
+
+describe('isSupportedTimeRangeParamType', () => {
+  it('accepts supported scalar date/time declarations and valid wrappers', () => {
+    for (const type of [
+      'Date', 'Date32', 'DateTime', "DateTime('UTC')", 'DateTime64(0)',
+      "DateTime64(9, 'Europe/Berlin')", 'Nullable(Date)',
+      'LowCardinality(DateTime)', 'LowCardinality(Nullable(DateTime64(3)))',
+    ]) expect(isSupportedTimeRangeParamType(type), type).toBe(true);
+  });
+
+  it('rejects non-date, arrays, malformed arguments, precision overflow, and invalid wrapper order', () => {
+    for (const type of [
+      'String', 'UInt64', 'Array(Date)', 'Date(1)', "DateTime('')", "DateTime('   ')", 'DateTime(3)',
+      'DateTime64', "DateTime64('x')", 'DateTime64(10)', "DateTime64(3, '')", "DateTime64(3, '   ')", 'DateTime64(3, 4)',
+      'Nullable(LowCardinality(DateTime))', 'nope(', '',
+    ]) expect(isSupportedTimeRangeParamType(type), type).toBe(false);
+  });
+});
+
+describe('dateTimeTimeZone', () => {
+  it('extracts explicit DateTime zones and fails closed for opaque types', () => {
+    expect(dateTimeTimeZone("DateTime('UTC')")).toBe('UTC');
+    expect(dateTimeTimeZone("DateTime64(3, 'Europe/Berlin')")).toBe('Europe/Berlin');
+    expect(dateTimeTimeZone('DateTime')).toBeNull();
+    expect(dateTimeTimeZone('nope(')).toBeNull();
+  });
+});
 
 describe('parseParamType', () => {
   it('parses a bare scalar', () => {

@@ -95,7 +95,7 @@ const PANEL_SHAPE: CanonicalShape = {
 };
 
 export const QUERY_SPEC_SHAPE: CanonicalShape = {
-  order: ['name', 'description', 'favorite', 'view', 'panel', 'dashboard'],
+  order: ['name', 'description', 'favorite', 'view', 'panel', 'dashboard', 'timeRanges'],
   fields: {
     panel: PANEL_SHAPE,
     dashboard: {
@@ -105,6 +105,7 @@ export const QUERY_SPEC_SHAPE: CanonicalShape = {
         sizeHints: { order: ['preferred', 'minimum', 'aspectRatio'] },
       },
     },
+    timeRanges: { items: { order: ['from', 'to'] } },
   },
 };
 

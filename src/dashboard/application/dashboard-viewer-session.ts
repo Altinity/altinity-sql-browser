@@ -40,7 +40,7 @@ import type { FilterSourceAnalysis } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { resolveFilterSelection, sameSelection } from '../../core/filter-selection.js';
 import type { FilterSelectionFilterDef } from '../../core/filter-selection.js';
-import { resolveTimeRangeGroups } from '../../core/time-range.js';
+import { resolveAuthoredTimeRangeGroups } from '../../core/time-range.js';
 import type { DashboardTimeRangeGroup } from '../../core/time-range.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
 import type {
@@ -186,6 +186,8 @@ export interface DashboardViewState {
    *  appear once by construction). Reset to `[]` at the start of each wave;
    *  a pre-wave publish (session construction) also reads `[]`. */
   filterDiagnostics: FilterDiagnostic[];
+  /** Persistent saved-query time-range resolution diagnostics. */
+  timeRangeDiagnostics: WorkspaceDiagnostic[];
   /** #335: the ONE wall-clock snapshot (`deps.wallNow()`) the latest execution
    *  wave resolved its relative tokens against — `null` before the first wave.
    *  Every wave that reruns tiles (`refresh`/`runAffectedWave`, and the
@@ -291,12 +293,11 @@ export interface DashboardViewerSession {
   /** #335: commit MULTIPLE filters atomically (the time-range control's
    *  From/To pair, and #334's drag-to-select) in ONE execution wave over the
    *  union of every changed parameter's resolved targets. Every `filterId`
-   *  must resolve and be unique — an unknown OR duplicate id makes the whole
-   *  call a silent no-op (nothing mutated, no publish, no wave), matching
-   *  `applyFilter`'s posture (type-level value validation stays the pipeline's
-   *  job). A call in which nothing actually changes (values+active equal the
-   *  committed state) publishes nothing and runs no wave. */
-  applyFilters(entries: Array<{ filterId: string; value: string | string[]; active: boolean }>): Promise<void>;
+   *  and parameter must resolve uniquely; the complete proposed batch is
+   *  validated through the shared execution pipeline before either value is
+   *  mutated. Returns a diagnostic failure for an invalid batch. A call in
+   *  which nothing actually changes publishes nothing and runs no wave. */
+  applyFilters(entries: Array<{ filterId: string; value: string | string[]; active: boolean }>): Promise<ApplyFiltersResult>;
   /** Deactivate one filter WITHOUT discarding its value (reactivation restores
    *  it); one affected-panel wave (#188 clear-one). */
   clearFilter(filterId: string): Promise<void>;
@@ -322,6 +323,10 @@ export interface DashboardViewerSession {
   /** Cancel all work and turn every later entry point into a no-op. */
   destroy(): void;
 }
+
+export type ApplyFiltersResult =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: string };
 
 // ── Per-tile / per-filter runtime records (never published directly) ──────────
 
@@ -608,9 +613,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  apart. An explicit `targets: []` (present but empty) deliberately
    *  resolves to affecting NOTHING — it does not fall back to the declared
    *  set — preserving the pre-#189 `affectedByFilterWave` behavior exactly. */
-  function resolveFilterTargets(def: DashboardFilterDefinitionV1): Set<string> {
+  function resolveFilterTargets(
+    def: DashboardFilterDefinitionV1, sourceAnalysis: ParameterAnalysis = analysis,
+  ): Set<string> {
     if (Array.isArray(def.targets)) return new Set(def.targets.filter((id) => knownTileIds.has(id)));
-    const field = analysis.fields[def.parameter];
+    const field = sourceAnalysis.fields[def.parameter];
     return field ? new Set(field.requiredIn.concat(field.optionalIn)) : new Set();
   }
 
@@ -757,7 +764,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     for (const id of resolveFilterTargets(filter.def)) affectedByFilterWave.add(id);
   }
 
-  // #335: resolve the dashboard's time-range groups ONCE, here — AFTER the
+  // #334: resolve authored saved-query metadata ONCE, here — AFTER the
   // #189 source-fallback loop above — so `sourceQueryId` reflects each
   // filter's POST-resolution state (`filter.state.sourceId`), not the
   // structural `def.sourceQueryId`. `inferTimeRangePairs` (inside
@@ -768,17 +775,37 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // like any other date-like scalar pair. Every other input matches the #189
   // machinery (`analysis`, `executableTileIds`, and the same selection def)
   // so the gate's own `resolveFilterSelection` agrees with construction's.
-  const timeRangeGroups = resolveTimeRangeGroups({
-    filters: filters.map((filter) => ({
+  const timeRangeFilterDefs = filters.map((filter) => ({
       id: filter.def.id,
       parameter: filter.def.parameter,
       targets: Array.isArray(filter.def.targets) ? filter.def.targets : undefined,
       selection: filter.def.selection,
       sourceQueryId: filter.state.sourceId ?? null,
-    })),
-    analysis,
-    executableTileIds,
+    }));
+  // Membership semantics include every panel family, even panels that do not
+  // execute in the current viewer. Analyze their saved SQL for parameter
+  // contracts without adding them to the execution planner.
+  const timeRangeAnalysis = analyzeParameterizedSources(tiles.map((runtime) => ({
+    id: runtime.tile.id, label: runtime.state.title, kind: 'time-range-tile',
+    sql: runtime.query?.sql ?? '', bindPolicy: 'row-returning',
+  })));
+  const filterTargetTileIds = new Map<string, ReadonlySet<string>>(
+    filters.map((filter) => [filter.def.id, resolveFilterTargets(filter.def, timeRangeAnalysis)]),
+  );
+  const authoredTimeRanges = resolveAuthoredTimeRangeGroups({
+    filters: timeRangeFilterDefs,
+    analysis: timeRangeAnalysis,
+    executableTileIds: knownTileIds,
+    filterTargetTileIds,
+    tiles: tiles.map((runtime) => ({ id: runtime.tile.id, queryId: runtime.tile.queryId })),
+    queries,
   });
+  const timeRangeGroups = authoredTimeRanges.groups;
+  const tileIndexById = new Map(tiles.map((runtime, index) => [runtime.tile.id, index] as const));
+  const timeRangeDiagnostics: WorkspaceDiagnostic[] = authoredTimeRanges.diagnostics.map((item) => ({
+    path: ['dashboard', 'tiles', tileIndexById.get(item.tileId) ?? 0, 'queryId'],
+    severity: 'error', code: item.code, message: item.message, resource: item.tileId,
+  }));
 
   // Curated option bundles from the last filter wave (param name → field).
   let curated: MergeDashboardFilterHelpersResult['fields'] = {};
@@ -874,6 +901,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       // `filterDiagnostics` on every publish, rather than merged into that
       // mutable array, so nothing a wave does can ever drop them.
       filterDiagnostics: [...staticFilterDiagnostics, ...filterDiagnostics],
+      timeRangeDiagnostics,
       waveWallNowMs,
     };
   }
@@ -1262,7 +1290,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  same instant, never a per-source read. */
   async function executeFilterSourcePlan(
     sources: FilterSourceRuntime[],
-    opts: { clearOptions: boolean; resetDiagnostics: boolean; waveMs: number },
+    opts: {
+      clearOptions: boolean; resetDiagnostics: boolean; waveMs: number;
+      onReconciled?: (parameters: string[]) => void;
+    },
   ): Promise<SourceWaveResult> {
     if (opts.resetDiagnostics) filterDiagnostics = [];
     const plan = sources.map((source) => ({ source, generation: supersede(source) }));
@@ -1281,7 +1312,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // sequencing, not collected.
     await runPool(plan, VIEWER_TILE_CONCURRENCY,
       ({ source, generation }) => runFilterSource(source, generation, opts.waveMs));
-    return applyFilterProviders(plan);
+    const applied = applyFilterProviders(plan);
+    if (applied.status === 'applied') opts.onReconciled?.(applied.flipped);
+    return applied;
   }
 
   async function runFilterWave(waveMs: number): Promise<SourceWaveResult> {
@@ -1316,7 +1349,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  ONE combined affected-panel wave alongside `changedParams`, or to skip
    *  that wave entirely when this plan was superseded. */
   async function runFilterSourceWave(
-    changedParams: string[], waveMs: number,
+    changedParams: string[], waveMs: number, onReconciled?: (parameters: string[]) => void,
   ): Promise<SourceWaveResult> {
     // Entered only from `commitAndRerun`'s affected path, which preflights ONCE
     // for the whole commit (source wave + affected-panel wave) — avoiding a
@@ -1330,7 +1363,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
     // Selective rerun: clear stale-for-new-inputs options, but keep the prior
     // wave's diagnostics until THIS wave's own merge settles.
-    return executeFilterSourcePlan(affected, { clearOptions: true, resetDiagnostics: false, waveMs });
+    return executeFilterSourcePlan(affected, {
+      clearOptions: true, resetDiagnostics: false, waveMs, onReconciled,
+    });
   }
 
 
@@ -1414,8 +1449,25 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   // Re-run only the tiles some active filter parameter feeds into.
+  function reserveAffected(
+    parameters: string[], reservations: Map<string, number> = new Map(),
+  ): Map<string, number> {
+    const affectedIds = new Set<string>();
+    for (const parameter of parameters) {
+      for (const id of targetsByParameter.get(parameter) ?? []) affectedIds.add(id);
+    }
+    for (const runtime of runnableTiles()) {
+      if (affectedIds.has(runtime.tile.id) && !reservations.has(runtime.tile.id)) {
+        reservations.set(runtime.tile.id, supersede(runtime));
+        if (runtime.state.status === 'loading') runtime.state.status = 'idle';
+      }
+    }
+    return reservations;
+  }
+
   async function runAffectedWave(
     parameters: string[], preflighted: boolean, waveMs: number,
+    reservations: Map<string, number> = new Map(),
   ): Promise<void> {
     // Unconditional destroyed guard: the `preflighted: true` fast path (from
     // `commitAndRerun`'s affected branch) skips `preflight()` entirely below
@@ -1426,7 +1478,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     /* v8 ignore next -- defense in depth for future preflighted callers; the
        current caller checks destroyed immediately before entering this path. */
     if (destroyed) return;
-    if (!preflighted && !(await preflight())) return;
+    if (!preflighted && !(await preflight())) { publish(); return; }
     // #189: consult each parameter's RESOLVED targets (explicit `def.targets`
     // else declared-in tiles, `targetsByParameter` — built once at
     // construction, over EVERY filter definition, from the same
@@ -1439,12 +1491,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // an entry, possibly an EMPTY one (an explicit `targets: []` affecting
     // nothing); the `?? []` is a cheap defensive guard only, never expected
     // to be exercised.
-    const affectedIds = new Set<string>();
+    reserveAffected(parameters, reservations);
+    const actualIds = new Set<string>();
     for (const parameter of parameters) {
-      for (const id of targetsByParameter.get(parameter) ?? []) affectedIds.add(id);
+      for (const id of targetsByParameter.get(parameter) ?? []) actualIds.add(id);
     }
-    const targets = runnableTiles().filter((runtime) => affectedIds.has(runtime.tile.id));
-    const generations = new Map<string, number>(targets.map((runtime) => [runtime.tile.id, supersede(runtime)]));
+    const targets = runnableTiles().filter((runtime) => actualIds.has(runtime.tile.id));
     // #335: publish this wave's shared snapshot and resolve the batch's
     // relative tokens against it (the same instant `commitAndRerun`'s source
     // wave used, when there was one).
@@ -1452,7 +1504,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     publish();
     await runPool(targets, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, prepared.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
+      (runtime) => runTile(runtime, prepared.get(runtime.tile.id)!, reservations.get(runtime.tile.id)!));
   }
 
   // #360: after committing a value (these four are commit paths only — never
@@ -1473,7 +1525,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // (`applyFilterProviders`'s own stale-wave guard already discarded it), and
   // `destroy()` bumps every source generation too, so a source wave racing a
   // `destroy()` is caught by the same check.
-  async function commitAndRerun(changed: string[]): Promise<void> {
+  async function commitAndRerun(
+    changed: string[], reservations: Map<string, number> = reserveAffected(changed),
+  ): Promise<void> {
     // #335: ONE wall-clock snapshot for the whole commit — the filter-source
     // wave (when there is one) and the affected-panel wave both resolve their
     // relative tokens against it, and it is published as `waveWallNowMs`.
@@ -1481,16 +1535,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     waveWallNowMs = waveMs;
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
-    if (!hasAffectedSource) { await runAffectedWave(changed, false, waveMs); return; }
-    if (!(await preflight())) return;
-    const result = await runFilterSourceWave(changed, waveMs);
+    if (!hasAffectedSource) { await runAffectedWave(changed, false, waveMs, reservations); return; }
+    if (!(await preflight())) { publish(); return; }
+    // Reconciliation is terminal and synchronous inside the source wave. Its
+    // callback reserves only consumers that actually changed, before the
+    // source-wave promise resolves to any competing continuation.
+    const result = await runFilterSourceWave(changed, waveMs,
+      (flipped) => reserveAffected(flipped, reservations));
     // A `'superseded'` result means `applyFilterProviders` returned BEFORE
     // merging anything (its own stale-wave guard, `applyFilterProviders`'s
     // doc comment) — no consumer state changed, so there is nothing new to
     // `publish()`; the wave that superseded this one owns publishing the
     // eventual settled state.
     if (destroyed || result.status === 'superseded') return;
-    await runAffectedWave([...new Set([...changed, ...result.flipped])], true, waveMs);
+    await runAffectedWave([...new Set([...changed, ...result.flipped])], true, waveMs, reservations);
   }
 
   async function setFilter(filterId: string, value: unknown): Promise<void> {
@@ -1522,20 +1580,52 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   async function applyFilters(
     entries: Array<{ filterId: string; value: string | string[]; active: boolean }>,
-  ): Promise<void> {
-    if (destroyed) return;
+  ): Promise<ApplyFiltersResult> {
+    if (destroyed) return { ok: false, error: 'Dashboard is no longer active.' };
     // Resolve EVERY id up front, all-or-nothing: an unknown OR duplicate id
     // aborts the whole call before any mutation (atomicity — matches
     // `applyFilter`'s unknown-id no-op, extended across the batch so a partial
     // time-range commit can never leave one bound applied and the other not).
     const resolved: { filter: FilterRuntime; value: unknown; active: boolean }[] = [];
     const seen = new Set<string>();
+    const seenParameters = new Set<string>();
     for (const entry of entries) {
       const filter = filterById.get(entry.filterId);
-      if (!filter || seen.has(entry.filterId)) return;
+      if (!filter || seen.has(entry.filterId) || seenParameters.has(filter.def.parameter)) {
+        return { ok: false, error: 'The filter batch contains an unknown or duplicate filter.' };
+      }
       seen.add(entry.filterId);
+      seenParameters.add(filter.def.parameter);
       resolved.push({ filter, value: entry.value, active: entry.active });
     }
+    // Validate the complete proposed state before mutating either filter. We
+    // intentionally inspect only fields in this batch: an unrelated optional
+    // filter may still be empty and must not veto an otherwise valid range.
+    const proposedValues = rawValues();
+    const proposedActive = activeMap();
+    for (const { filter, value, active } of resolved) {
+      proposedValues[filter.def.parameter] = copyValue(value);
+      proposedActive[filter.def.parameter] = active;
+    }
+    const validationWallMs = deps.wallNow();
+    for (const { filter, active } of resolved) {
+      if (!active) continue;
+      const targetIds = resolveFilterTargets(filter.def);
+      const scopedAnalysis = analyzeParameterizedSources(tiles
+        .filter((runtime) => targetIds.has(runtime.tile.id) && isRunnableTileRuntime(runtime))
+        .map((runtime) => ({
+          id: runtime.tile.id, label: runtime.state.title, kind: 'tile',
+          sql: runtime.query!.sql, bindPolicy: 'row-returning' as const,
+        })));
+      const proposal = prepareParameterizedBatch(scopedAnalysis, {
+        values: proposedValues, active: proposedActive, wallNowMs: validationWallMs, validationMode: 'execute',
+      });
+      const field = proposal.fields[filter.def.parameter];
+      if (!field || field.state !== 'ok') {
+        return { ok: false, error: field?.reason || `${filter.def.parameter} is not a valid filter value.` };
+      }
+    }
+
     // Mutate every resolved entry (the filter bar owns activation, like
     // `applyFilter`; `copyValue` defends against aliasing the caller's array),
     // collecting the changed parameter names via the same `sameSelection` +
@@ -1551,9 +1641,14 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     }
     // Nothing actually differs from the committed state → no publish, no wave
     // (an identical-pair Apply is a true no-op, never a spurious rerun).
-    if (!changed.length) return;
+    if (!changed.length) return { ok: true, changed: false };
+    // Reserve generations synchronously with the atomic state commit, before
+    // token preflight or a dependent filter-source query can yield. This is
+    // the stale-result boundary for the whole batch.
+    const reservations = reserveAffected(changed);
     publish();
-    await commitAndRerun(changed);
+    await commitAndRerun(changed, reservations);
+    return { ok: true, changed: true };
   }
 
   async function clearFilter(filterId: string): Promise<void> {

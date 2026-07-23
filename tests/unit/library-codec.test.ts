@@ -64,6 +64,16 @@ describe('parsing and complete validation', () => {
     expect(validateSavedQueryDocument(query())).toEqual([]);
   });
 
+  it('rejects equal time-range bounds at saved-query and Library codec boundaries', () => {
+    const bad = query('timed', { timeRanges: [{ from: 'ts', to: 'ts' }] });
+    expect(validateSavedQueryDocument(bad)).toEqual([expect.objectContaining({
+      path: ['spec', 'timeRanges', 0, 'to'], code: 'time-range-same-parameter',
+    })]);
+    expect(validateLibraryDocument(library([bad]))).toEqual([expect.objectContaining({
+      path: ['queries', 0, 'spec', 'timeRanges', 0, 'to'], code: 'time-range-same-parameter',
+    })]);
+  });
+
   it('returns exact root-relative paths for envelope and nested Spec failures', () => {
     const cases: [unknown, (string | number)[], string][] = [
       [null, [], 'library-invalid-root'],
@@ -84,7 +94,7 @@ describe('parsing and complete validation', () => {
 
   it('collects independent safe diagnostics while pruning unsupported-branch noise', () => {
     const diagnostics = validateLibraryDocument(library([
-      { ...query('same'), specVersion: 9 },
+      { ...query('same', { timeRanges: [{ from: 'x', to: 'x' }] }), specVersion: 9 },
       { ...query('same'), sql: 1 },
     ], { extra: true }));
     expect(diagnostics.map((item) => [item.path, item.code])).toEqual(expect.arrayContaining([

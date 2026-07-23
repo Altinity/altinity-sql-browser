@@ -3127,6 +3127,7 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
 // its label per wave (a live relative range) without a bar rebuild.
 describe('renderDashboard — compound time-range control (#335)', () => {
   const PAIR = 'SELECT k, v FROM a WHERE ts >= {from:DateTime} AND ts < {to:DateTime}';
+  const paired = (sql = PAIR) => q('q1', sql, { timeRanges: [{ from: 'from', to: 'to' }] });
   const clickEv = (): MouseEvent => new MouseEvent('click', { bubbles: true });
   const inputEv = (): Event => new Event('input', { bubbles: true });
   // Drive one full time-range Apply on the CURRENTLY-rendered trigger.
@@ -3142,7 +3143,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
   it('renders one compound control for the from/to pair, suppressing the two individual fields, with Time/Filters labels', async () => {
     const { app } = dashApp({
       workspace: wsWith({
-        queries: [q('q1', PAIR + ' AND r = {region:String}')],
+        queries: [paired(PAIR + ' AND r = {region:String}')],
         tiles: [{ id: 't1', queryId: 'q1' }],
       }),
     });
@@ -3154,9 +3155,21 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(names).toEqual(['region']);
   });
 
+  it('keeps the compound control for a legacy saved query with omitted timeRanges metadata', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', PAIR)],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.trf-trigger')).not.toBeNull();
+    expect(qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
+  });
+
   it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
-      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     await render(app);
     document.body.appendChild(rootEl(app));
@@ -3173,9 +3186,42 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     rootEl(app).remove();
   });
 
+  it('does not let a slower earlier Apply overwrite the latest range announcement', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const originalExecute = app.exec.executeRead as App['exec']['executeRead'];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let delayNext = true;
+    const delayedExecute: App['exec']['executeRead'] = async (result, request) => {
+      if (delayNext) { delayNext = false; await gate; }
+      return originalExecute(result, request);
+    };
+    (app.exec as App['exec']).executeRead = delayedExecute;
+    const startApply = (from: string, to: string): void => {
+      qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+      const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
+      inputs[0].value = from; inputs[0].dispatchEvent(inputEv());
+      inputs[1].value = to; inputs[1].dispatchEvent(inputEv());
+      qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
+    };
+    startApply('-1d', 'now');
+    await flush();
+    startApply('-7d', 'now');
+    await flush();
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    release();
+    await flush();
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    rootEl(app).remove();
+  });
+
   it('pushes the OUTGOING committed pair to per-group recents on a changing re-apply, never on the first commit from unset', async () => {
     const { app } = dashApp({
-      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     await render(app);
     document.body.appendChild(rootEl(app));
@@ -3196,7 +3242,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     let clock = 1000;
     const { app } = dashApp({
       workspace: wsWith({
-        queries: [q('q1', PAIR)],
+        queries: [paired()],
         tiles: [{ id: 't1', queryId: 'q1' }],
         filters: [
           { id: 'from', parameter: 'from', defaultValue: '-1d', defaultActive: true },
@@ -3219,7 +3265,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
 
   it('restores focus onto the fresh time-range trigger after a commit-triggered rebuild', async () => {
     const { app } = dashApp({
-      workspace: wsWith({ queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }] }),
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     await render(app);
     document.body.appendChild(rootEl(app));
@@ -3239,7 +3285,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
 
   it('renders and commits the time-range control in a read-only (detached) dashboard', async () => {
     const detached = wsWith({
-      id: 'd', queries: [q('q1', PAIR)], tiles: [{ id: 't1', queryId: 'q1' }],
+      id: 'd', queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }],
     });
     const { app, calls } = modeApp({
       workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
@@ -3252,6 +3298,89 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     const added = calls.slice(before).filter((c) => 'param_from' in c.params && 'param_to' in c.params);
     expect(added.length).toBeGreaterThanOrEqual(1);
     rootEl(app).remove();
+  });
+
+  it('renders unresolved authored metadata as a persistent Dashboard diagnostic', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          { id: 'from', parameter: 'from', targets: [] },
+          { id: 'to', parameter: 'to', targets: [] },
+        ],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-config-diagnostic')?.textContent).toContain('could not resolve both parameters');
+  });
+
+  it('threads the Dashboard plugin into a temporal chart and brushing commits one absolute batch', async () => {
+    let built: (FakeChart & Record<string, unknown>) | null = null;
+    const scaleBase = new Date(2026, 0, 1, 0, 0, 0).getTime();
+    class InteractiveChart extends FakeChart {
+      ctx = {
+        save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+        fillRect: vi.fn(), strokeRect: vi.fn(), fillText: vi.fn(), measureText: vi.fn(() => ({ width: 40 })),
+        strokeStyle: '', fillStyle: '', lineWidth: 0, font: '', textBaseline: '',
+      };
+      width = 400; height = 200;
+      chartArea = { left: 20, right: 380, top: 10, bottom: 180 };
+      scales = { x: {
+        type: 'time', min: scaleBase, max: scaleBase + 1_000_000,
+        getValueForPixel: (x: number) => scaleBase + x * 2500,
+        getPixelForValue: (v: number) => (v - scaleBase) / 2500,
+      } };
+      options = { indexAxis: undefined };
+      draw = vi.fn();
+      constructor(canvas: HTMLCanvasElement, config: ConstructorParameters<typeof FakeChart>[1]) {
+        super(canvas, config); built = this as FakeChart & Record<string, unknown>;
+      }
+    }
+    const { app, calls } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', PAIR, {
+          timeRanges: [{ from: 'from', to: 'to' }], panel: { cfg: { type: 'line', x: 0, y: [1] } },
+        })],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          { id: 'from', parameter: 'from', defaultValue: '1700000000', defaultActive: true },
+          { id: 'to', parameter: 'to', defaultValue: '1800000000', defaultActive: true },
+        ],
+      }),
+      responder: () => ({
+        columns: [{ name: 'ts', type: 'DateTime' }, { name: 'v', type: 'UInt64' }],
+        rows: [['2026-01-01 00:00:00', 1], ['2026-01-02 00:00:00', 2]],
+      }),
+    });
+    app.Chart = InteractiveChart;
+    await render(app);
+    const chart = built as unknown as InteractiveChart;
+    const plugin = (chart.config as unknown as { plugins: Array<{
+      afterInit(c: InteractiveChart): void; afterDatasetsDraw(c: InteractiveChart): void;
+    }> }).plugins[0];
+    expect(plugin).toBeTruthy();
+    chart.canvas.getBoundingClientRect = () => ({
+      left: 0, top: 0, right: 400, bottom: 200, width: 400, height: 200, x: 0, y: 0, toJSON: () => ({}),
+    }) as DOMRect;
+    plugin.afterInit(chart);
+    const brushEvent = (type: string, clientX: number): Event => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX, clientY: 50 });
+      for (const [key, value] of Object.entries({ pointerId: 7, pointerType: 'mouse', isPrimary: true })) {
+        Object.defineProperty(event, key, { value, configurable: true });
+      }
+      return event;
+    };
+    const before = calls.length;
+    chart.canvas.dispatchEvent(brushEvent('pointerdown', 100));
+    window.dispatchEvent(brushEvent('pointermove', 200));
+    plugin.afterDatasetsDraw(chart);
+    window.dispatchEvent(brushEvent('pointerup', 200));
+    for (let i = 0; i < 10 && !calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params); i++) await flush();
+    expect(calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params)).toBe(true);
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toContain('Time range applied:');
+    qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
+    expect(qs(document.body, '.trf-recent').textContent)
+      .toBe('2023-11-14 22:13:20 → 2027-01-15 08:00:00');
   });
 });
 

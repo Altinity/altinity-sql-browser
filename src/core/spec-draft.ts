@@ -11,6 +11,7 @@ import {
 } from './spec-schema.js';
 import { filterSqlDiagnostics } from './filter-execution.js';
 import type { QuerySpecV1 } from '../generated/json-schema.types.js';
+import { hasSameTimeRangeParameter } from './query-time-range.js';
 
 const isDigit = (ch: string): boolean => ch >= '0' && ch <= '9';
 const isHex = (ch: string): boolean => /[0-9a-f]/i.test(ch);
@@ -248,10 +249,20 @@ function isValidatorEntryList(value: unknown): value is readonly SpecValidatorEn
 
 // Compatibility name for feature validators that predate the canonical
 // schema. Known static fields now live exclusively in query-spec-v1.schema.json.
-export const CORE_SPEC_VALIDATORS: readonly SpecValidatorEntry[] = Object.freeze([{
-  path: ['dashboard', 'role'],
-  validate: ({ value, context }: SpecValidatorArgs) => value === 'filter' ? filterSqlDiagnostics(context.sql) : [],
-}]);
+export const CORE_SPEC_VALIDATORS: readonly SpecValidatorEntry[] = Object.freeze([
+  {
+    path: ['dashboard', 'role'],
+    validate: ({ value, context }: SpecValidatorArgs) => value === 'filter' ? filterSqlDiagnostics(context.sql) : [],
+  },
+  {
+    path: ['timeRanges'],
+    validate: ({ value }: SpecValidatorArgs) => {
+      return hasSameTimeRangeParameter({ timeRanges: value })
+        ? [{ path: ['timeRanges', 0, 'to'], code: 'time-range-same-parameter', message: 'Time-range From and To parameters must be different.' }]
+        : [];
+    },
+  },
+]);
 
 export const defaultSpecValidationService: QuerySpecValidationService =
   createQuerySpecValidationService(CORE_SPEC_VALIDATORS);
