@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Append checkpoint protocol</title><style>body{font:16px system-ui;background:#f6f7f9;color:#18202a;margin:0}.wrap{max-width:1000px;margin:auto;padding:32px}.grid{display:grid;grid-template-columns:1fr 70px 1fr;gap:14px;align-items:center}.box{background:#fff;border:1px solid #ccd3dc;border-radius:12px;padding:18px}.arrow{text-align:center;font-size:28px}.commit{border:2px solid #238636}.code{font-family:ui-monospace,monospace;background:#eef1f5;padding:12px;border-radius:8px;white-space:pre-wrap}.rule{margin-top:25px;background:#fff8db;border-left:5px solid #bf8700;padding:16px}@media(max-width:760px){.grid{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}}</style><body><main class="wrap"><h1>Append checkpoint protocol</h1><div class="grid"><div class="box"><h2>Committed Google state</h2><div class="code">partition 202607
+blockNumber = 18401
+blockOffset = 982
+committedRows = 143221
+generation = 17</div></div><div class="arrow">→</div><div class="box"><h2>Finite ClickHouse page</h2><div class="code">cursor &gt; stored cursor
+cursor &lt;= captured upper bound
+ORDER BY _block_number,
+         _block_offset
+LIMIT 20000</div></div><div class="box"><h2>Hidden delta staging</h2><p>Upload the complete page using explicit, idempotent Google ranges.</p></div><div class="arrow">→</div><div class="box commit"><h2>One Google commit</h2><p>Copy rows to the exact live destination and advance the partition cursor, row count, refresh ID, and generation together.</p></div></div><div class="rule"><b>Invariant:</b> never advance a cursor unless the corresponding rows become live in the same publication operation. If the browser closes before commit, the previous checkpoint remains authoritative.</div></main></body></html>
