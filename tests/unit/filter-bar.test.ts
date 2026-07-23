@@ -613,18 +613,17 @@ describe('buildFilterBar (shared filter row)', () => {
     it('renders a "Time" section (label + control + separator) AHEAD of the fields, suppresses the pair, and labels the rest "Filters"', () => {
       const app = makeApp();
       const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
-      // Two section labels, in order: Time then Filters.
+      expect(bar.el.contains(bar.timeEl)).toBe(true);
+      expect(bar.el.contains(bar.ordinaryEl)).toBe(true);
       expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time', 'Filters']);
-      // Exactly one compound control, one separator.
+      // The combined form retains its section separator.
       expect(bar.el.querySelectorAll('.var-field.is-time-range').length).toBe(1);
       expect(bar.el.querySelector('.trf-trigger')).not.toBeNull();
       expect(bar.el.querySelectorAll('.trf-sep').length).toBe(1);
       // The pair's own two individual fields are gone; only the non-group field remains.
-      const names = [...bar.el.querySelectorAll('.dash-filters > .var-field:not(.is-time-range) .var-name')].map((n) => n.textContent);
+      const names = [...bar.ordinaryEl.querySelectorAll('.var-field:not(.is-time-range) .var-name')].map((n) => n.textContent);
       expect(names).toEqual(['region']);
-      // DOM order: Time label, control, separator, Filters label, region field.
-      const order = [...bar.el.children].map((c) => c.className.split(' ')[0] + (c.classList.contains('flabel') ? ':' + c.textContent : ''));
-      expect(order).toEqual(['flabel:Time', 'var-field', 'trf-sep', 'flabel:Filters', 'var-field']);
+      expect([...bar.el.children]).toEqual([bar.timeEl, bar.ordinaryEl]);
     });
 
     it('omits the "Filters" label when every remaining param is grouped (no non-group field left)', () => {

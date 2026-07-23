@@ -967,6 +967,9 @@ describe('renderApp shell', () => {
     expect(qs(app.root, '.logo-name').textContent).toBe('Altinity®');
     expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qsa(app.root, '.app-surface-switch svg')).toHaveLength(0);
+    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.getAttribute('aria-label')))
+      .toEqual(['SQL Browser', 'Dashboard']);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
     app.navigateSqlRoute = vi.fn(async () => {});
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
@@ -985,8 +988,8 @@ describe('renderApp shell', () => {
     const app = createApp(env());
     app.state.serverVersion = '26.7.1.42';
     app.renderApp();
-    expect(qs(app.root, '.conn-status').textContent).toBe('ClickHouse 26.7.1');
-    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ClickHouse 26.7.1.42');
+    expect(qs(app.root, '.conn-status').textContent).toBe('ch.example·CH 26.7.1');
+    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ch.example · ClickHouse 26.7.1.42');
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();

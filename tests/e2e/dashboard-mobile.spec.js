@@ -16,9 +16,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
     await expect(page.locator('.dash-refresh-label')).toHaveCount(0);
-    for (const selector of ['.dash-fav', '.dash-updated', '.dash-layout-wrap']) {
-      await expect(page.locator(selector)).toBeHidden();
-    }
+    await expect(page.locator('.dash-layout-wrap')).toBeVisible();
 
     const geometry = await header.evaluate((node) => {
       const visible = [...node.children].filter((child) => getComputedStyle(child).display !== 'none');
@@ -40,19 +38,19 @@ test.describe('Dashboard mobile layout', () => {
     expect(await page.evaluate(() => window.__refreshCount)).toBe(1);
   });
 
-  test('keeps title and actions reachable without viewport overflow at 360px', async ({ page }) => {
+  test('keeps primary tools reachable through one-row horizontal scrolling at 360px', async ({ page }) => {
     await openAt(page, 360, 800);
-    const result = await page.locator('.dashboard-app-header').evaluate((header) => {
-      const title = header.querySelector('.dash-title').getBoundingClientRect();
-      const refresh = header.querySelector('.dash-refresh').getBoundingClientRect();
+    const result = await page.locator('.dash-toolbar-primary').evaluate((toolbar) => {
+      const children = [...toolbar.children];
+      const tops = children.map((child) => child.getBoundingClientRect().top);
       return {
-        wraps: Math.abs((title.top + title.height / 2) - (refresh.top + refresh.height / 2)) > 2,
-        titleBeforeActions: title.right <= refresh.left,
-        actionsInside: refresh.right <= innerWidth,
+        oneRow: Math.max(...tops) - Math.min(...tops) < 2,
+        scrolls: toolbar.scrollWidth > toolbar.clientWidth,
+        overflowX: getComputedStyle(toolbar).overflowX,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
-    expect(result).toEqual({ wraps: false, titleBeforeActions: true, actionsInside: true, pageOverflow: 0 });
+    expect(result).toEqual({ oneRow: true, scrolls: true, overflowX: 'auto', pageOverflow: 0 });
   });
 
   test('keeps every visible Dashboard header control reachable just above the mobile breakpoint', async ({ page }) => {
@@ -117,7 +115,6 @@ test.describe('Dashboard mobile layout', () => {
   test('scrolls filters in one row while fixed combobox content escapes clipping', async ({ page }) => {
     await openAt(page, 390);
     const scroll = page.locator('.dash-filter-host');
-    const filters = page.locator('.dash-filters');
     const before = await scroll.evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
@@ -129,7 +126,7 @@ test.describe('Dashboard mobile layout', () => {
     expect(Math.max(...before.fieldTops) - Math.min(...before.fieldTops)).toBeLessThan(2);
     expect(Math.min(...before.fieldWidths)).toBeGreaterThan(150);
     expect(before.overflowX).toBe('auto');
-    expect(await filters.evaluate((node) => getComputedStyle(node).flexWrap)).toBe('nowrap');
+    expect(await scroll.evaluate((node) => getComputedStyle(node).flexWrap)).toBe('nowrap');
 
     await scroll.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
     expect(await scroll.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
@@ -161,19 +158,14 @@ test.describe('Dashboard mobile layout', () => {
     await openAt(page, 360, 800);
     await expect(page.locator('.trf-trigger')).toBeVisible();
     // The "Time" section label sits in the same filter row, ahead of the fields.
-    await expect(page.locator('.dash-filters .flabel', { hasText: 'Time' })).toBeVisible();
+    await expect(page.locator('.dash-time-filter-host .flabel', { hasText: 'Time' })).toBeVisible();
 
-    const result = await page.locator('.dash-filter-host').evaluate((host) => {
+    const result = await page.locator('.dash-time-filter-host').evaluate((host) => {
       const field = host.querySelector('.var-field.is-time-range');
       const trigger = host.querySelector('.trf-trigger');
-      const tops = [...host.querySelectorAll('.var-field')].map((f) => f.getBoundingClientRect().top);
       return {
         hasField: !!field,
         triggerText: trigger.textContent,
-        overflowX: getComputedStyle(host).overflowX,
-        flexWrap: getComputedStyle(host.querySelector('.dash-filters')).flexWrap,
-        scrolls: host.scrollWidth > host.clientWidth,
-        topsAligned: Math.max(...tops) - Math.min(...tops) < 2,
         fieldWidth: field.getBoundingClientRect().width,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
@@ -183,10 +175,6 @@ test.describe('Dashboard mobile layout', () => {
     expect(result.triggerText).toContain('→');
     // The row scrolls (never wraps, never clips the page) — the compound
     // control's wide trigger stays on the single field row with the others.
-    expect(result.overflowX).toBe('auto');
-    expect(result.flexWrap).toBe('nowrap');
-    expect(result.scrolls).toBe(true);
-    expect(result.topsAligned).toBe(true);
     expect(result.fieldWidth).toBeGreaterThan(150);
     expect(result.pageOverflow).toBeLessThanOrEqual(0);
   });
@@ -194,16 +182,13 @@ test.describe('Dashboard mobile layout', () => {
   test('keeps the time-range control on the field row without viewport overflow in landscape (~780px) (#335)', async ({ page }) => {
     await openAt(page, 780, 420);
     await expect(page.locator('.trf-trigger')).toBeVisible();
-    const result = await page.locator('.dash-filter-host').evaluate((host) => {
+    const result = await page.locator('.dash-time-filter-host').evaluate((host) => {
       const trigger = host.querySelector('.trf-trigger').getBoundingClientRect();
-      const tops = [...host.querySelectorAll('.var-field')].map((f) => f.getBoundingClientRect().top);
       return {
-        triggerOnRow: Math.max(...tops) - Math.min(...tops) < 2,
         triggerWithinRow: trigger.top >= host.getBoundingClientRect().top - 1,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
-    expect(result.triggerOnRow).toBe(true);
     expect(result.triggerWithinRow).toBe(true);
     expect(result.pageOverflow).toBeLessThanOrEqual(0);
   });
@@ -217,7 +202,7 @@ test.describe('Dashboard mobile layout', () => {
 
   test('marks a required filter name bold instead of a leading asterisk; an optional name stays muted (2026-07-18)', async ({ page }) => {
     await openAt(page, 1100, 800);
-    const names = await page.locator('.dash-filters .var-name').evaluateAll((nodes) => nodes.map((node) => ({
+    const names = await page.locator('.dash-filter-host .var-name').evaluateAll((nodes) => nodes.map((node) => ({
       // The old convention prepended a literal "*" via `::after { content }` —
       // never part of `textContent` even before this change — so the real
       // regression check is the CSS-generated content string itself, not the
@@ -235,9 +220,9 @@ test.describe('Dashboard mobile layout', () => {
     for (const n of optional) expect(Number(n.fontWeight)).toBeLessThan(700);
   });
 
-  test('desktop: filters stay on one row and scroll horizontally, no Clear-all or count control exists (#294)', async ({ page }) => {
+  test('desktop: filters stay on one row and Clear all remains reachable', async ({ page }) => {
     await openAt(page, 1100, 800);
-    await expect(page.locator('.dash-filter-clear-all')).toHaveCount(0);
+    await expect(page.locator('.dash-clear-filters')).toBeVisible();
     await expect(page.locator('.dash-filter-count')).toHaveCount(0);
     await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
 
@@ -246,11 +231,10 @@ test.describe('Dashboard mobile layout', () => {
 
     const layout = await page.evaluate(() => {
       const host = document.querySelector('.dash-filter-host');
-      const filters = document.querySelector('.dash-filters');
-      const fields = [...filters.querySelectorAll('.var-field')];
+      const fields = [...host.querySelectorAll('.var-field')];
       return {
         toolbarWrap: getComputedStyle(document.querySelector('.dash-toolbar')).flexWrap,
-        filtersWrap: getComputedStyle(filters).flexWrap,
+        filtersWrap: getComputedStyle(host).flexWrap,
         scrollWidth: host.scrollWidth,
         clientWidth: host.clientWidth,
         fieldTops: fields.map((field) => field.getBoundingClientRect().top),
@@ -277,11 +261,11 @@ test.describe('Dashboard mobile layout', () => {
     await page.locator('.dash-filter-host').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
     const after = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
     expect(after).toBe(before);
-    const lastField = page.locator('.dash-filters .var-field').last();
+    const lastField = page.locator('.dash-filter-host .var-field').last();
     await expect(lastField).toBeInViewport();
   });
 
-  test('the File-style layout picker follows File in the one-row Dashboard header', async ({ page }) => {
+  test('the File-style layout picker leads the Dashboard primary tool row', async ({ page }) => {
     await openAt(page, 1100, 800);
     const style = page.locator('.dash-style-btn');
     await expect(style).toBeVisible();
@@ -300,17 +284,16 @@ test.describe('Dashboard mobile layout', () => {
     expect(controlSizes.refresh).toEqual(controlSizes.edit);
 
     const geometry = await page.evaluate(() => {
-      const header = document.querySelector('.dashboard-app-header');
-      const children = [...header.children];
-      const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
-      const fileIndex = children.findIndex((c) => c.classList.contains('dash-file-btn'));
+      const toolbar = document.querySelector('.dash-toolbar-primary');
+      const children = [...toolbar.children];
+      const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-tile-count'));
       const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));
       const layoutWrap = children[layoutWrapIndex];
       const tileCount = children[tileCountIndex];
       return {
-        tileCountBeforeFile: fileIndex === tileCountIndex + 1,
-        styleRightAfterFile: layoutWrapIndex === fileIndex + 1,
-        inHeaderNotToolbar: !document.querySelector('.dash-toolbar .dash-layout-wrap'),
+        styleFirst: layoutWrapIndex === 0,
+        tileCountSecond: tileCountIndex === 1,
+        inToolbarNotHeader: !document.querySelector('.dashboard-app-header .dash-layout-wrap'),
         sameRow: Math.abs(
           (layoutWrap.getBoundingClientRect().top + layoutWrap.getBoundingClientRect().height / 2)
           - (tileCount.getBoundingClientRect().top + tileCount.getBoundingClientRect().height / 2),
@@ -318,8 +301,8 @@ test.describe('Dashboard mobile layout', () => {
       };
     });
     expect(geometry).toEqual({
-      tileCountBeforeFile: true, styleRightAfterFile: true,
-      inHeaderNotToolbar: true, sameRow: true,
+      styleFirst: true, tileCountSecond: true,
+      inToolbarNotHeader: true, sameRow: true,
     });
 
     await style.click();

@@ -17,11 +17,13 @@
     <div class="dash-page">
       <div class="dash-topbar">
         <div id="shared-header"></div>
-        <div class="dash-toolbar has-filters">
-          <div class="dash-filter-host"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
+        <div id="primary-toolbar" class="dash-toolbar dash-toolbar-primary"></div>
+        <div class="dash-toolbar dash-toolbar-filters has-filters">
+          <div class="dash-filter-host dash-filters" role="group" aria-label="Dashboard filters"><div class="dash-filter-ordinary"></div></div>
+          <button class="dash-clear-filters">Clear all</button>
         </div>
       </div>
-      <div id="no-filter-toolbar" class="dash-toolbar">Empty toolbar (no filters)</div>
+      <div id="no-filter-toolbar" class="dash-toolbar" style="display:none">Empty toolbar (no filters)</div>
       <main class="dash-grid is-report" aria-label="Dashboard panels">
         <section class="dash-tile"><div class="dash-tile-head">Panel one</div></section>
         <section class="dash-tile"><div class="dash-tile-head">Panel two</div></section>
@@ -43,8 +45,8 @@
     dashboardFileButton.className = 'hd-file-btn dash-file-btn';
     dashboardFileButton.textContent = 'File';
     const tileCount = document.createElement('span');
-    tileCount.className = 'dash-chip dash-fav';
-    tileCount.textContent = '★ 6 tiles';
+    tileCount.className = 'dash-chip dash-tile-count';
+    tileCount.textContent = '6 tiles';
     const styleWrap = document.createElement('div');
     styleWrap.className = 'dash-layout-wrap';
     const styleButton = document.createElement('button');
@@ -130,18 +132,34 @@
     };
     document.querySelector('#shared-header').replaceWith(
       buildAppHeader(headerApp, {
-        dashboardControls: {
-          tileCount,
-          fileButton: dashboardFileButton,
-          style: styleWrap,
-          title: dashboardTitle,
-          updated,
-          refresh: refreshControl,
-        },
+        fileButton: dashboardFileButton,
+        workspaceTitleEditable: true,
       }),
     );
+    const modeSwitch = document.createElement('div');
+    modeSwitch.className = 'editor-mode-switch dashboard-mode-switch';
+    modeSwitch.setAttribute('role', 'group');
+    modeSwitch.setAttribute('aria-label', 'Dashboard mode');
+    for (const label of ['View', 'Edit']) {
+      const button = document.createElement('button');
+      button.className = 'editor-mode-btn' + (label === 'Edit' ? ' active' : '');
+      button.textContent = label;
+      modeSwitch.append(button);
+    }
+    const tileSearch = document.createElement('input');
+    tileSearch.className = 'dash-tile-search';
+    tileSearch.placeholder = 'Search tiles';
+    const timeHost = document.createElement('div');
+    timeHost.className = 'dash-time-filter-host dash-filters';
+    timeHost.setAttribute('role', 'group');
+    timeHost.setAttribute('aria-label', 'Dashboard time filters');
+    document.querySelector('#primary-toolbar').append(
+      styleWrap, tileCount, tileSearch, timeHost,
+      Object.assign(document.createElement('span'), { className: 'dash-toolbar-spacer' }),
+      updated, refreshControl, modeSwitch,
+    );
 
-    const filters = document.querySelector('.dash-filters');
+    const filters = document.querySelector('.dash-filter-ordinary');
     // 'version' is the one optional field here — real coverage for the bold
     // (required) vs muted (optional) `.var-name` contrast (2026-07-18: replaced
     // the leading "*" glyph).
@@ -200,9 +218,10 @@
     // append style as every other field in this hand-built harness, and it
     // leaves the existing fields' positions (region first) untouched so the
     // pre-#335 layout assertions keep measuring exactly what they did before.
-    filters.append(trHeading);
-    filters.append(trField.el);
-    filters.append(trSep);
+    const timeRegion = document.createElement('div');
+    timeRegion.className = 'dash-filter-time';
+    timeRegion.append(trHeading, trField.el, trSep);
+    timeHost.append(timeRegion);
 
     window.__prefs = { dashLayout: 'report', dashCols: 3 };
     localStorage.setItem('asb:dashLayout', 'report');

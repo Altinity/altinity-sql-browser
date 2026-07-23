@@ -79,6 +79,8 @@ export interface ViewerTileState {
   tileId: string;
   queryId: string;
   title: string;
+  /** Dashboard-local description override, then the saved-query description. */
+  description: string;
   status: ViewerTileStatus;
   isKpi: boolean;
   /** The resolved effective panel (base + variant + override), or null when the
@@ -171,7 +173,13 @@ export type DashboardLayoutView =
   | { engine: 'grafana-grid'; grid: GrafanaGridLayoutModel; renderMode: GridRenderMode };
 
 export interface DashboardViewState {
+  /** Search-matched tiles only, in their unchanged saved order. */
   tiles: ViewerTileState[];
+  totalTileCount: number;
+  visibleTileCount: number;
+  tileSearch: string;
+  /** Filter ids whose current value/activation differs from its declared default. */
+  resettableFilterIds: string[];
   filters: ViewerFilterState[];
   layout: DashboardLayoutView;
   /** Count of ACTIVE filter DEFINITIONS (not non-empty stored values, #188). */
@@ -304,6 +312,10 @@ export interface DashboardViewerSession {
   /** Reset every filter to its `defaultActive`/`defaultValue`, coalesced into
    *  ONE affected-panel wave (#188 clear-all). */
   clearAllFilters(): Promise<void>;
+  /** Reset only the named filter definitions to their declared defaults. */
+  resetFilters(filterIds: readonly string[]): Promise<void>;
+  /** Set the transient presentation-only tile search. */
+  setTileSearch(query: string): void;
   /** Abort one tile's in-flight request. */
   cancelTile(tileId: string): void;
   /** Adopt a layout/order-edited document (reorder, span/height, preset) WITHOUT
@@ -421,6 +433,16 @@ const toParamValue = (value: unknown): unknown =>
  *  state must never alias an array a caller (the document, the persisted
  *  seed, `setFilter`/`applyFilter`'s own caller) still holds a reference to. */
 const copyValue = (value: unknown): unknown => (Array.isArray(value) ? value.slice() : value);
+const filterResetActive = (def: DashboardFilterDefinitionV1): boolean =>
+  def.defaultActive ?? false;
+const filterInitialActive = (def: DashboardFilterDefinitionV1): boolean =>
+  def.defaultActive ?? (Array.isArray(def.defaultValue)
+    ? def.defaultValue.length > 0
+    : def.defaultValue != null && def.defaultValue !== '');
+const filterDefaultValue = (def: DashboardFilterDefinitionV1): string | string[] =>
+  (Array.isArray(def.defaultValue)
+    ? def.defaultValue.map(toValueString)
+    : toValueString(def.defaultValue));
 
 /** Local copy of `effectiveFilterActive` (state.ts is off-limits to this
  *  layer): a param with an explicit activation entry uses it; otherwise a
@@ -469,6 +491,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // outside `documentRef` — never read/written by any command, never
   // persisted. A fresh session always starts at 'tiles'.
   let gridRenderMode: GridRenderMode = 'tiles';
+  let tileSearch = '';
   // #335: the single wall-clock snapshot the LATEST execution wave resolved its
   // relative tokens against (published as `state.waveWallNowMs`). `null` until
   // the first wave; every wave entry point (`refresh`/`runAffectedWave`/the
@@ -505,8 +528,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const isText = type === 'text';
     const explicit: Panel | null = isObject(panel) && isObject(panel.cfg) ? (panel as unknown as Panel) : null;
     const title = (typeof tile.title === 'string' && tile.title) || (query ? queryName(query) : tile.queryId) || tile.id;
+    const description = (typeof tile.description === 'string' && tile.description)
+      || (typeof query?.spec?.description === 'string' ? query.spec.description : '');
     const state: ViewerTileState = {
-      tileId: tile.id, queryId: tile.queryId, title, isKpi, panel,
+      tileId: tile.id, queryId: tile.queryId, title, description, isKpi, panel,
       status: presentationError ? 'error' : 'idle',
       columns: null, rows: null, meta: null,
       error: presentationError ? presentationError.message : null,
@@ -529,14 +554,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // Filter runtime records, in filter order.
   const filters: FilterRuntime[] = (Array.isArray(documentRef.filters) ? documentRef.filters : []).map((def) => {
-    const defaultValue = copyValue(def.defaultValue ?? '');
-    // Merge-gate review (Finding B): array-aware — an omitted `defaultActive`
-    // infers INACTIVE from an empty array default (`[]`, matching `''`), and
-    // ACTIVE from a non-empty one, the same length-based rule `setFilter`'s
-    // own value-implies-active already applies to a committed array.
-    const defaultActive = def.defaultActive ?? (Array.isArray(def.defaultValue)
-      ? def.defaultValue.length > 0
-      : (def.defaultValue != null && def.defaultValue !== ''));
+    const defaultValue = filterDefaultValue(def);
+    const defaultActive = filterInitialActive(def);
     // #303: a persisted seed for this filter's id overrides the pure-default
     // init above (untouched when `initialFilters` is absent/empty, or has no
     // entry for `def.id`). #189: `copyValue` defends against aliasing the
@@ -872,7 +891,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   function buildState(running: boolean, updatedAt: number | null): DashboardViewState {
     const mobile = !!deps.isMobile?.();
-    const visible = tiles.map((runtime) => ({ id: runtime.tile.id, isKpi: runtime.isKpi }));
+    const normalizeSearch = (value: string): string =>
+      value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const normalizedSearch = normalizeSearch(tileSearch);
+    const visibleRuntimes = normalizedSearch
+      ? tiles.filter((runtime) =>
+        normalizeSearch(runtime.state.title).includes(normalizedSearch)
+        || normalizeSearch(runtime.state.description).includes(normalizedSearch))
+      : tiles;
+    const visible = visibleRuntimes.map((runtime) => ({ id: runtime.tile.id, isKpi: runtime.isKpi }));
     // #291: route to whichever engine the CURRENT document's layout resolves
     // to (`resolveLayoutPluginSync` — the same sync helper the application
     // layer's other non-awaitable call sites use, since this runs on every
@@ -891,7 +918,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       }
       : { engine: 'flow', ...computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }) };
     return {
-      tiles: tiles.map((runtime) => ({ ...runtime.state })),
+      tiles: visibleRuntimes.map((runtime) => ({ ...runtime.state })),
+      totalTileCount: tiles.length,
+      visibleTileCount: visibleRuntimes.length,
+      tileSearch,
+      resettableFilterIds: filters.filter((filter) => {
+        const defaultActive = filterResetActive(filter.def);
+        const defaultValue = filterDefaultValue(filter.def);
+        return filter.state.active !== defaultActive || !sameSelection(filter.state.value, defaultValue);
+      }).map((filter) => filter.def.id),
       filters: filters.map((filter) => ({ ...filter.state })),
       layout,
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
@@ -1662,25 +1697,37 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   async function clearAllFilters(): Promise<void> {
+    await resetFilters(filters.map((filter) => filter.def.id));
+  }
+
+  async function resetFilters(filterIds: readonly string[]): Promise<void> {
     if (destroyed) return;
+    const ids = new Set(filterIds);
     const changed: string[] = [];
     for (const filter of filters) {
-      const nextActive = filter.def.defaultActive ?? false;
+      if (!ids.has(filter.def.id)) continue;
+      const nextActive = filterResetActive(filter.def);
       // #189: `copyValue` defends the default against aliasing (a
       // `defaultValue` array literal on the document); `sameSelection`
       // (filter-selection.ts) compares STRUCTURALLY so an array value/default
       // never falls through the old `!==` reference check into a spurious
       // "changed" on every reset.
-      const nextValue = copyValue(filter.def.defaultValue ?? '');
+      const nextValue = filterDefaultValue(filter.def);
       if (filter.state.active !== nextActive || !sameSelection(filter.state.value, nextValue)) {
         changed.push(filter.def.parameter);
       }
       filter.state.active = nextActive;
       filter.state.value = nextValue;
     }
-    publish();
+    if (changed.length) publish();
     // Coalesce every reset into ONE affected-panel wave (#188 clear-all).
     if (changed.length) await commitAndRerun(changed);
+  }
+
+  function setTileSearch(query: string): void {
+    if (destroyed || tileSearch === query) return;
+    tileSearch = query;
+    publish();
   }
 
   function cancelTile(tileId: string): void {
@@ -1735,7 +1782,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
     controls, timeRangeGroups, getFilterField,
-    start, refresh, refreshTile, setFilter, applyFilter, applyFilters, clearFilter, clearAllFilters,
-    cancelTile, syncDocument, setGridRenderMode, destroy,
+    start, refresh, refreshTile, setFilter, applyFilter, applyFilters, clearFilter, clearAllFilters, resetFilters,
+    setTileSearch, cancelTile, syncDocument, setGridRenderMode, destroy,
   };
 }
