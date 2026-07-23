@@ -41,10 +41,13 @@ test.describe('Dashboard mobile layout', () => {
   test('keeps primary tools reachable through one-row horizontal scrolling at 360px', async ({ page }) => {
     await openAt(page, 360, 800);
     const result = await page.locator('.dash-toolbar-primary').evaluate((toolbar) => {
-      const children = [...toolbar.children];
-      const tops = children.map((child) => child.getBoundingClientRect().top);
+      const children = [...toolbar.children].filter((child) => getComputedStyle(child).display !== 'none');
+      const centers = children.map((child) => {
+        const rect = child.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      });
       return {
-        oneRow: Math.max(...tops) - Math.min(...tops) < 2,
+        oneRow: Math.max(...centers) - Math.min(...centers) < 2,
         scrolls: toolbar.scrollWidth > toolbar.clientWidth,
         overflowX: getComputedStyle(toolbar).overflowX,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
