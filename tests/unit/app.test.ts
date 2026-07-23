@@ -967,6 +967,9 @@ describe('renderApp shell', () => {
     expect(qs(app.root, '.logo-name').textContent).toBe('Altinity®');
     expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qsa(app.root, '.app-surface-switch svg')).toHaveLength(0);
+    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.getAttribute('aria-label')))
+      .toEqual(['SQL Browser', 'Dashboard']);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
     app.navigateSqlRoute = vi.fn(async () => {});
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
@@ -985,8 +988,8 @@ describe('renderApp shell', () => {
     const app = createApp(env());
     app.state.serverVersion = '26.7.1.42';
     app.renderApp();
-    expect(qs(app.root, '.conn-status').textContent).toBe('ClickHouse 26.7.1');
-    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ClickHouse 26.7.1.42');
+    expect(qs(app.root, '.conn-status').textContent).toBe('ch.example·CH 26.7.1');
+    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ch.example · ClickHouse 26.7.1.42');
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
@@ -1055,6 +1058,9 @@ describe('loadVersion / loadSchema', () => {
     await app.catalog.loadVersion();
     expect(app.state.serverVersion).toBe('26.3.1');
     expect(app.dom.connStatus!.textContent).toContain('26.3.1');
+    expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
+    expect(qs(app.dom.connStatus!, '.connection-sep')).not.toBeNull();
+    expect(app.dom.connStatus!.title).toBe(`${app.conn.host()} · ClickHouse 26.3.1`);
   });
   it('marks offline when the version query fails', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ ok: false, status: 500, text: 'err' })]]) });
@@ -1062,6 +1068,7 @@ describe('loadVersion / loadSchema', () => {
     app.renderApp();
     await app.catalog.loadVersion();
     expect(app.dom.connStatus!.textContent).toContain('offline');
+    expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
   });
   it('records a schema error', async () => {
     const e = env({ fetch: makeFetch([

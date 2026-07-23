@@ -1,52 +1,18 @@
 name: docker
 
 # Build the production nginx image and publish it multi-arch to GHCR.
-#   • pull request        → build only (validation, no push)
-#   • push to main        → :edge + :sha-<short>
-#   • push tag v X.Y.Z    → :X.Y.Z + :latest  (this is the release image)
+# A version-tag push is the release boundary: PR and main CI validate the
+# application itself, while this workflow publishes the release image.
 on:
   push:
-    branches: [main]
     tags: ['v*.*.*']
-  pull_request:
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: altinity/altinity-sql-browser
 
 jobs:
-  # Keep the workflow/check present on every PR, but avoid QEMU + a multi-arch
-  # build when no production-image input changed. Job-level skips satisfy
-  # required checks; workflow-level path filters do not reliably do so.
-  changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      docker: ${{ steps.filter.outputs.docker }}
-    steps:
-      - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
-        if: github.event_name == 'pull_request'
-        id: filter
-        with:
-          filters: |
-            docker:
-              - 'Dockerfile'
-              - 'src/**'
-              - 'schemas/**'
-              - 'build/**'
-              - 'deploy/**'
-              - 'package.json'
-              - 'package-lock.json'
-              - '.github/workflows/docker.yml'
-
   docker:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,9 +26,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # No push on PRs — build-only validation. GITHUB_TOKEN is enough for GHCR.
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -75,18 +39,15 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=raw,value=edge,enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=sha,prefix=sha-
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}

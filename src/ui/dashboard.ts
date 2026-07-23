@@ -30,7 +30,7 @@
 import { effect } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
-import { buildAppHeader } from './app-header.js';
+import { buildAppHeader, routeButton } from './app-header.js';
 import { openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
 import { flashToast } from './toast.js';
@@ -53,7 +53,7 @@ import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import { buildFilterBar } from './filter-bar.js';
+import { buildFilterBar, FILTER_DEBOUNCE_MS } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
 import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
@@ -109,6 +109,7 @@ const Icon: {
   chevDown(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
+  search(): SVGElement;
 } = IconUntyped;
 
 const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
@@ -123,7 +124,7 @@ export interface DashboardApp {
   dom: AppDom;
   root: Element | null;
   toggleTheme(): void;
-  conn: Pick<ConnectionSession, 'basePath' | 'host' | 'ensureFreshToken' | 'chCtx'>;
+  conn: Pick<ConnectionSession, 'basePath' | 'host' | 'email' | 'ensureFreshToken' | 'chCtx'>;
   exec: Pick<QueryExecutionService, 'executeRead'>;
   now(): number;
   wallNow(): number;
@@ -150,7 +151,7 @@ export interface DashboardApp {
   // committed truth. Fires only AFTER the app-level refresh projected a real change.
   onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
   // #302 — the Dashboard page's own File-menu operations.
-  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard'>;
+  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openShortcuts' | 'openUserMenu'>;
   genId(): string;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
@@ -355,9 +356,26 @@ function renderMissingDashboard(
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       buildAppHeader(app as App, {
-        dashboardFileButton: buildDashboardFileMenu(app, readOnly),
-      })),
+        fileButton: buildDashboardFileMenu(app, readOnly),
+        workspaceTitleEditable: !readOnly,
+      }),
+      h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+        h('span', { class: 'dash-toolbar-spacer' }),
+        buildDashboardModeSwitch(app))),
     body));
+}
+
+function buildDashboardModeSwitch(app: DashboardApp): HTMLElement {
+  const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
+  const routeKey = app.currentWorkspace?.key ?? route.workspaceKey;
+  const button = (label: 'View' | 'Edit', mode: 'view' | 'edit'): HTMLButtonElement =>
+    routeButton(label, route.mode === mode, () => {
+      void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: routeKey, mode }, 'replace');
+    });
+  return h('div', {
+    class: 'editor-mode-switch dashboard-mode-switch',
+    role: 'group', 'aria-label': 'Dashboard mode',
+  }, button('View', 'view'), button('Edit', 'edit'));
 }
 
 /** #302/#331 — the standalone Dashboard header's own "File" menu: a keyboard-
@@ -505,10 +523,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
     initialFilters: initialBag,
   });
+  let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
+  const syncSessionDocument = (next: DashboardDocumentV1): void => {
+    session.syncDocument(next);
+    trackedSessionTileIds = new Set(next.tiles.map((tile) => tile.id));
+  };
 
   // ── Header chrome ───────────────────────────────────────────────────────
   const tileCountLabel = h('span');
-  const tileCount = h('span', { class: 'dash-chip dash-fav' }, Icon.star(true), tileCountLabel);
+  const tileCount = h('span', { class: 'dash-chip dash-tile-count' }, tileCountLabel);
   const updated = h('span', { class: 'dash-updated' });
   const refreshBtn = h('button', {
     class: 'editor-mode-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
@@ -608,26 +631,53 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // Dashboard keeps the shared header's File word and placement. View exposes
   // the safe Export row only; edit additionally exposes Import.
   const header = buildAppHeader(app as App, {
-    dashboardControls: {
-      tileCount,
-      fileButton: buildDashboardFileMenu(app, readOnly),
-      style: showLayoutSelect ? layoutWrap : null,
-      title: h('div', {
-        class: 'dash-title', title: currentDoc.title || state.libraryName.value,
-      }, currentDoc.title || state.libraryName.value),
-      updated,
-      refresh: refreshControl,
-    },
+    fileButton: buildDashboardFileMenu(app, readOnly),
+    workspaceTitleEditable: !readOnly,
   });
 
+  const dashboardModeSwitch = buildDashboardModeSwitch(app);
+
+  let tileSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  const commitTileSearch = (input: HTMLInputElement): void => {
+    if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
+    tileSearchTimer = null;
+    session.setTileSearch(input.value);
+  };
+  const tileSearchInput = h('input', {
+    class: 'dash-tile-search', type: 'search', placeholder: 'Search tiles',
+    'aria-label': 'Search dashboard tiles',
+    oninput: (event: Event) => {
+      const input = event.target as HTMLInputElement;
+      if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
+      tileSearchTimer = setTimeout(() => commitTileSearch(input), FILTER_DEBOUNCE_MS);
+    },
+    onblur: (event: Event) => commitTileSearch(event.target as HTMLInputElement),
+    onkeydown: (event: KeyboardEvent) => {
+      if (event.key === 'Enter') commitTileSearch(event.target as HTMLInputElement);
+    },
+  }) as HTMLInputElement;
+  const tileSearch = h('label', { class: 'dash-tile-search-wrap' },
+    Icon.search(), tileSearchInput);
+  const timeFilterHost = h('div', {
+    class: 'dash-time-filter-host dash-filters',
+    role: 'group', 'aria-label': 'Dashboard time filters',
+  });
+  const ordinaryFilterHost = h('div', {
+    class: 'dash-filter-host dash-filters',
+    role: 'group', 'aria-label': 'Dashboard filters',
+  });
+  const ordinaryTimeIds = new Set(session.timeRangeGroups.flatMap((group) =>
+    [group.fromFilterId, group.toFilterId]));
+  const ordinaryFilterIds = session.state.value.filters
+    .filter((filter) => !ordinaryTimeIds.has(filter.id)).map((filter) => filter.id);
+  const clearFiltersBtn = h('button', {
+    class: 'dash-clear-filters', type: 'button', disabled: true,
+    onclick: () => { void session.resetFilters(ordinaryFilterIds); },
+  }, 'Clear all') as HTMLButtonElement;
+
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
-  // #294: the field region scrolls horizontally in its own viewport
-  // (`.dash-filter-host`) so it never wraps the toolbar onto a second row.
-  // No visible Clear-all control (reverses the #286/#293 decision) — no
-  // visible "N active" count either (2026-07-18 owner override, reverses
-  // #294's own retained-count acceptance criterion) — `session.clearAllFilters()`
-  // stays a tested application-level operation with no UI trigger.
-  const filterHost = h('div', { class: 'dash-filter-host' });
+  // The compound time controls mount in the primary row; ordinary controls
+  // mount in the second scrolling row beside selective Clear all.
   // #189: a PERSISTENT sr-only announcer, a SIBLING of `filterHost` (never a
   // child — `filterHost.replaceChildren` below only ever replaces the bar's
   // own root) so it survives the very rebuild that fires it: when a rebuild
@@ -830,7 +880,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       filterBarApp, session.controls, onCommit, getField,
       { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange },
     );
-    filterHost.replaceChildren(bar.el);
+    timeFilterHost.replaceChildren(bar.timeEl);
+    ordinaryFilterHost.replaceChildren(bar.ordinaryEl);
     currentFilterBar = bar;
     filterBarUpdateStatus = bar.updateStatus;
     // Maintainer merge-gate fix (#189): announce the refresh ONLY when the
@@ -865,6 +916,19 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
     'No tiles yet — star a query in the Queries panel to add it to the dashboard.');
+  const searchEmpty = h('div', { class: 'dash-empty dash-search-empty', style: { display: 'none' } },
+    h('h2', null, 'No tiles match'),
+    h('p', null, 'Try a different title or description.'),
+    h('button', {
+      class: 'dash-btn',
+      onclick: () => {
+        if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
+        tileSearchTimer = null;
+        tileSearchInput.value = '';
+        session.setTileSearch('');
+        tileSearchInput.focus();
+      },
+    }, 'Clear search'));
 
   // #291 review F2: `grid.clientWidth` INCLUDES the host's own horizontal
   // padding (`.dash-grid`'s `padding: 18px 20px 40px`, styles.css), but CSS
@@ -949,7 +1013,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // trips its own edit) or a rebase corrects it once resolutions land.
     currentDoc = normalized;
     layoutMenu.sync();
-    session.syncDocument(withImplicitFilters(normalized));
+    syncSessionDocument(withImplicitFilters(normalized));
 
     pendingCommands.push(command);
 
@@ -1102,15 +1166,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // — deferred until the queue is idle
     // so no in-flight resolution handler from THIS render survives into the
     // rebuilt one.
-    if (rebased.tiles.some((t) => !sessionTileIds().has(t.id))) needsRebuild = true;
+    if (rebased.tiles.some((t) => !trackedSessionTileIds.has(t.id))) needsRebuild = true;
     if (needsRebuild) { rebuildRouteFromCommitted(); return; }
-    session.syncDocument(withImplicitFilters(rebased));
+    syncSessionDocument(withImplicitFilters(rebased));
     layoutMenu.sync();
-  }
-
-  /** Tile ids the viewer session still tracks a runtime record for. */
-  function sessionTileIds(): Set<string> {
-    return new Set(session.state.value.tiles.map((ts) => ts.tileId));
   }
 
   // ── Tile DOM ──────────────────────────────────────────────────────────────
@@ -1631,7 +1690,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       class: 'dash-gg-del', title: 'Remove tile', 'aria-label': 'Remove ' + ts.title + ' from the dashboard',
       onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },
     }, Icon.trash()) : null;
-    const head = h('div', { class: 'dash-tile-head' }, grip, h('span', { class: 'dash-tile-name', title: ts.title }, ts.title), delBtn);
+    const heading = h('div', { class: 'dash-tile-heading' },
+      h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
+      ts.description ? h('span', {
+        class: 'dash-tile-desc', title: ts.description,
+      }, ts.description) : null);
+    const head = h('div', { class: 'dash-tile-head' }, grip, heading, delBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly
@@ -2012,7 +2076,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // behavior is the `containerWidth`-driven effective-columns clamp below).
     if (sview.layout.engine === 'flow' && mobileNow !== lastMobile && mobileNow !== sview.layout.mobile) {
       lastMobile = mobileNow;
-      session.syncDocument(currentDoc);
+      syncSessionDocument(currentDoc);
       return;
     }
     lastMobile = mobileNow;
@@ -2061,8 +2125,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       lastFilterPersistSig = persistSig;
       app.saveJSON(KEYS.dashFilters, writeDashboardFilterBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, filterBag));
     }
-    tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
-    empty.style.display = sview.tiles.length ? 'none' : '';
+    tileCountLabel.textContent = sview.tileSearch.trim()
+      ? `${sview.visibleTileCount} of ${sview.totalTileCount} tiles`
+      : `${sview.totalTileCount} ${sview.totalTileCount === 1 ? 'tile' : 'tiles'}`;
+    const noMatch = !!sview.tileSearch.trim() && sview.visibleTileCount === 0 && sview.totalTileCount > 0;
+    empty.style.display = sview.totalTileCount === 0 ? '' : 'none';
+    searchEmpty.style.display = noMatch ? '' : 'none';
+    clearFiltersBtn.disabled = !sview.resettableFilterIds.some((id) => ordinaryFilterIds.includes(id));
     // Genuine dashboard-config diagnostics only (a tile whose presentation
     // could not resolve, etc.). Per-filter "required/invalid" badges were
     // dropped as noise (owner decision) — an unfilled required filter simply
@@ -2096,13 +2165,25 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
   });
 
-  const toolbar = h('div', { class: 'dash-toolbar' + (session.state.value.filters.length ? ' has-filters' : '') },
-    filterHost, filterRefreshLiveEl);
+  const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+    showLayoutSelect ? layoutWrap : null,
+    tileCount,
+    tileSearch,
+    timeFilterHost,
+    h('span', { class: 'dash-toolbar-spacer' }),
+    updated,
+    refreshControl,
+    dashboardModeSwitch);
+  const hasOrdinaryFilters = ordinaryFilterIds.length > 0;
+  const filterToolbar = h('div', {
+    class: 'dash-toolbar dash-toolbar-filters',
+    style: hasOrdinaryFilters ? undefined : { display: 'none' },
+  }, ordinaryFilterHost, clearFiltersBtn);
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, toolbar),
-    filterDiagnosticsHost, empty, grid));
+    h('div', { class: 'dash-topbar' }, header, primaryToolbar, filterToolbar, filterRefreshLiveEl),
+    filterDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard
   // rebuild must not leave Chart.js observers, signal effects, popovers, or
@@ -2110,6 +2191,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   installedDashboardCleanup = () => {
     currentFilterBar?.dispose();
     currentFilterBar = null;
+    if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
+    tileSearchTimer = null;
     disposeDashboardEffect();
     for (const tileEl of tileEls.values()) destroyChart(tileEl);
     chartInteraction.destroy();
@@ -2148,7 +2231,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (activeEngine !== 'grafana-grid') return;
       const prevWidth = containerWidthPx;
       measureGridWidth();
-      if (containerWidthPx !== prevWidth) session.syncDocument(currentDoc);
+      if (containerWidthPx !== prevWidth) syncSessionDocument(currentDoc);
     };
     gridWin.addEventListener('resize', onGridResize);
     installedGridResizeListener = { win: gridWin, handler: onGridResize };

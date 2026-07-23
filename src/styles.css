@@ -281,11 +281,22 @@ body {
 .app-header {
   height: 44px;
   display: flex; align-items: center;
-  padding: 0 14px; gap: 14px;
+  padding: 0 12px; gap: 10px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+.header-brand-zone,
+.header-context-zone,
+.header-utility-zone {
+  display: flex; align-items: center; min-width: 0;
+}
+.header-brand-zone { gap: 8px; flex: 0 0 auto; }
+.header-context-zone {
+  gap: 4px; flex: 1 1 auto; padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.header-utility-zone { gap: 4px; flex: 0 0 auto; }
 .logo-mark {
   width: 22px; height: 22px;
   border-radius: 5px;
@@ -294,7 +305,7 @@ body {
   color: #fff; font-weight: 700; font-size: 12px;
   flex-shrink: 0;
 }
-.logo-name { font-size: 13px; font-weight: 600; color: var(--fg); }
+.logo-name { font-size: 13px; font-weight: 650; color: var(--fg); white-space: nowrap; }
 .env-chip {
   font-size: 11px; color: var(--fg-faint);
   padding: 2px 6px;
@@ -307,6 +318,16 @@ body {
   font-size: 11.5px; color: var(--fg-mute);
   white-space: nowrap; flex-shrink: 0;
 }
+.connection-chip {
+  min-width: 0; max-width: 300px; height: 26px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-chip);
+}
+.connection-host {
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); color: var(--fg);
+}
+.connection-sep { color: var(--fg-faint); }
 .conn-status::before {
   content: ''; width: 7px; height: 7px; border-radius: 4px;
   background: #22c55e; box-shadow: 0 0 6px #22c55e;
@@ -387,6 +408,8 @@ body {
   max-width: 280px; min-width: 0;
 }
 .lib-name:hover { background: var(--bg-hover); }
+.lib-name-readonly { cursor: default; }
+.lib-name-readonly:hover { background: transparent; }
 .lib-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-dirty { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; }
 .lib-name-input {
@@ -1752,7 +1775,10 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: 0 1px 2px rgba(0, 0, 0, .14);
 }
 .editor-mode-btn.is-disabled { opacity: .42; cursor: not-allowed; }
-.app-surface-switch .editor-mode-btn { min-width: 0; white-space: nowrap; }
+.app-surface-switch .editor-mode-btn {
+  min-width: 0; white-space: nowrap;
+  font-size: 12.5px; font-weight: 500;
+}
 .dashboard-mode-switch { flex-shrink: 0; }
 .editor-mode-btn:focus-visible,
 .tb-btn:focus-visible,
@@ -2363,9 +2389,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    concern (side-by-side suits wide-but-short landscape). The hidden items are
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
-  .logo-name, .env-chip, .app-header .hd-divider, .conn-status, .hd-hide-mobile { display: none; }
-  /* #302: the header Dashboard control keeps its icon but drops its label on
-     narrow screens (its accessible name stays on the button). */
+  .logo-name, .env-chip, .app-header .hd-divider, .hd-hide-mobile { display: none; }
+  .connection-chip .connection-host,
+  .connection-chip .connection-sep { display: none; }
+  /* Legacy header controls may still opt into hiding a nonessential label. */
   .hd-hide-mobile-label { display: none; }
   /* Cap the user-menu label so a long local-part (`user ▾`) can't widen the
      header back past the viewport. */
@@ -2377,8 +2404,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
      narrowest portrait phones (~360px), where the default 14px gaps alone
      still overflowed. */
   .app-header { gap: 4px; padding: 0 6px; }
+  .header-brand-zone { gap: 4px; }
+  .header-context-zone { padding-left: 4px; }
   .app-header .editor-mode-switch { padding: 1px; gap: 1px; }
-  .app-header .editor-mode-btn { height: 20px; min-width: 0; padding: 0 5px; font-size: 10px; }
+  .app-header .editor-mode-btn { height: 20px; min-width: 0; padding: 0 5px; font-size: 11px; }
   .app-header .hd-file-btn { padding: 0 4px; font-size: 11px; }
   .app-header .lib-title { flex: 1 1 40px; overflow: hidden; }
   .app-header .lib-name { max-width: 100%; padding: 0 3px; font-size: 11px; }
@@ -2507,10 +2536,15 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    mobile, now that it holds nothing else worth showing when there are no
    filters. */
 .dash-toolbar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
-  padding: 8px 20px; background: var(--bg-header); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
+  min-height: 40px; padding: 5px 20px;
+  background: var(--bg-header); border-bottom: 1px solid var(--border);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
-.dash-toolbar:not(.has-filters) { display: none; }
+.dash-toolbar::-webkit-scrollbar { display: none; }
+.dash-toolbar > * { flex-shrink: 0; }
+.dash-toolbar-spacer { flex: 1 1 auto; min-width: 8px; }
 /* The File-style layout menu in the header's top row, replacing the old
    `.dash-seg` segmented button group that lived in the filter toolbar. */
 .dash-layout-wrap { display: inline-flex; align-items: center; flex: 0 0 auto; }
@@ -2520,10 +2554,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    (`.dash-filter-host`, the shared scroll contract above, following the
    workbench `.var-strip` / editor-tabs precedent) so excess fields scroll
    instead of wrapping, at every viewport width — not just the ≤768px
-   breakpoint. No visible Clear-all or "N active" count sit beside it
-   (2026-07-18 owner override — see the header comment in dashboard.ts). The
-   4px vertical padding keeps a focused field's box-shadow ring from being
-   clipped by the viewport's `overflow-y: hidden`. */
+   breakpoint. Selective Clear all sits outside this viewport, while the
+   removed "N active" count stays absent. The 4px vertical padding keeps a
+   focused field's box-shadow ring from being clipped by the viewport's
+   `overflow-y: hidden`. */
 .dash-filter-host { flex: 1 1 auto; min-width: 0; padding: 4px 0; }
 .dash-filters { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
 /* `.dash-filters` is shared with the detached Data view's filter row
@@ -2533,7 +2567,38 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    rather than changed on the shared class itself. `.var-field` already sets
    `flex-shrink: 0`, so `flex-wrap: nowrap` alone is enough for the overflow to
    reach the scroll viewport above — no extra width rule needed. */
-.dash-filter-host .dash-filters { flex-wrap: nowrap; }
+.dash-filter-time,
+.dash-filter-ordinary { display: contents; }
+.dash-filter-host,
+.dash-time-filter-host {
+  display: flex; align-items: flex-start; gap: 14px; flex-wrap: nowrap;
+}
+.dash-time-filter-host .trf-sep { display: none; }
+.dash-time-filter-host:empty { display: none; }
+.dash-time-filter-host { min-width: 0; }
+.dash-tile-search-wrap {
+  position: relative; display: inline-flex; align-items: center; min-width: 150px;
+}
+.dash-tile-search-wrap > svg {
+  position: absolute; left: 8px; color: var(--fg-faint); pointer-events: none;
+}
+.dash-tile-search {
+  width: 170px; height: 28px; padding: 0 9px 0 26px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-input); color: var(--fg); font: 12px var(--ui); outline: none;
+}
+.dash-tile-search::placeholder { color: var(--fg-mute); }
+.dash-tile-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
+.dash-clear-filters {
+  height: 26px; padding: 0 7px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--fg-mute); font: 500 12px var(--ui);
+  cursor: pointer; white-space: nowrap;
+}
+.dash-clear-filters:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
+.dash-clear-filters:disabled { opacity: .45; cursor: default; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -2556,7 +2621,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
   color: var(--fg-mute); background: var(--bg-chip); padding: 3px 9px; border-radius: 20px;
 }
-.dash-fav { color: var(--accent); flex-shrink: 0; white-space: nowrap; }
+.dash-tile-count { white-space: nowrap; border-radius: 5px; }
 .dash-src { font-family: var(--mono); }
 .dash-dot { width: 6px; height: 6px; border-radius: 6px; background: #22C55E; }
 .dash-updated {
@@ -2637,8 +2702,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-grid.dash-reordering .dash-gg-tile { transition: none !important; }
 }
 .dash-tile-head {
+  display: flex; align-items: flex-start; gap: 8px;
   padding: 11px 12px 9px; border-bottom: 1px solid var(--border-faint);
 }
+.dash-tile-heading { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .dash-tile-name {
   font-size: 13px; font-weight: 600; color: var(--fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
@@ -2786,24 +2853,27 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
     width: 30px; height: 30px; padding: 0; justify-content: center; flex-shrink: 0;
   }
   .dash-back-label,
-  .dash-fav,
   .dash-src,
   .dash-updated,
-  .dash-spacer,
-  .dash-layout-wrap { display: none; }
+  .dash-spacer { display: none; }
   .dash-title {
     flex: 1; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
   .dash-icobtn { width: 30px; height: 30px; flex-shrink: 0; }
 
-  .dash-toolbar { padding: 6px 10px; }
+  .dash-toolbar { padding: 5px 10px; }
+  .dash-tile-search { width: 145px; }
 
   .dash-grid,
   .dash-grid.is-report {
     grid-template-columns: 1fr; max-width: none; width: 100%; margin: 0; padding: 12px;
   }
   .dash-grid.is-report .dash-tile { min-height: 300px; }
+}
+@media (max-width: 520px) {
+  .connection-chip { display: none; }
+  .app-header .lib-name { max-width: 96px; }
 }
 @media (max-width: 520px) {
   .dash-kpi-stream .kpi-card, .dash-kpi-state-card {
@@ -2945,11 +3015,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   position: absolute; z-index: 2; inset: 0 0 auto 0; min-height: 0; padding: 4px 5px;
   border: 0; opacity: 0; pointer-events: none;
 }
-.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-name {
-  width: fit-content; max-width: calc(100% - 30px); padding: 2px 6px;
-  border-radius: 4px; background: color-mix(in srgb, var(--bg-modal) 92%, transparent);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
-}
+/* KPI values are the tile's identity. Hover chrome must never lay its saved
+   query title/description over that evidence; retain the header only as the
+   positioning host for the remove control. The card itself already exposes
+   the query title through its accessible group name. */
+.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-heading { display: none; }
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-gg-del { pointer-events: auto; }
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-body { padding: 0; }
 .dash-gg-grid .dash-gg-tile.is-kpi .dash-gg-grip { display: none; }

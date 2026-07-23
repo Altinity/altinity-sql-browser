@@ -293,6 +293,10 @@ export const FILTER_DEBOUNCE_MS = 500;
  *  focus state, neither of which a status flip should ever disturb. */
 export interface FilterBarHandle {
   el: HTMLElement;
+  /** Separately mountable compound time-range region. */
+  timeEl: HTMLElement;
+  /** Separately mountable ordinary-filter region. */
+  ordinaryEl: HTMLElement;
   dispose(): void;
   updateStatus(states: Record<string, CuratedFieldStatus>): void;
   /** #189, #189-F2b, GENERALIZED (#335): the opaque KEY of a popover-bearing
@@ -370,8 +374,11 @@ export function buildFilterBar(
   const attrs: Record<string, unknown> = { class: 'dash-filters' };
   if (options.ariaLabel) { attrs.role = 'group'; attrs['aria-label'] = options.ariaLabel; }
   if (!params.length) {
+    const timeEl = h('div', { class: 'dash-filter-time', style: { display: 'none' } });
+    const ordinaryEl = h('div', { class: 'dash-filter-ordinary', style: { display: 'none' } });
     return {
-      el: h('div', { ...attrs, style: { display: 'none' } }),
+      el: h('div', { ...attrs, style: { display: 'none' } }, timeEl, ordinaryEl),
+      timeEl, ordinaryEl,
       dispose: () => {}, updateStatus: () => {},
       openPopoverKey: () => null, focusedFieldKey: () => null,
       focusFieldTrigger: () => {}, refreshTimeRangeLabels: () => {},
@@ -600,12 +607,18 @@ export function buildFilterBar(
   // per-param fields. With no time-range groups `timeSection` is empty and no
   // "Filters" label renders, so the child list is byte-identical to the
   // pre-#335 `...params.map(...)` output.
-  const children: (HTMLElement | null)[] = [...timeSection];
-  if (timeRange.length && perParamFields.length) children.push(h('span', { class: 'flabel' }, 'Filters'));
-  children.push(...perParamFields);
-  const el = h('div', attrs, ...children);
+  const timeEl = h('div', {
+    class: 'dash-filter-time',
+    style: timeRange.length ? undefined : { display: 'none' },
+  }, ...timeSection);
+  const ordinaryEl = h('div', {
+    class: 'dash-filter-ordinary',
+    style: perParamFields.length ? undefined : { display: 'none' },
+  }, timeRange.length && perParamFields.length ? h('span', { class: 'flabel' }, 'Filters') : null,
+  ...perParamFields);
+  const el = h('div', attrs, timeEl, ordinaryEl);
   return {
-    el,
+    el, timeEl, ordinaryEl,
     dispose: () => {
       timerClears.forEach((clear) => clear());
       // Disposing a control WHILE its popover is open is that control's own

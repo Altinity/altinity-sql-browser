@@ -439,14 +439,16 @@ export function createApp(env: CreateAppEnv = {}): App {
   // `state.schemaError` the service writes — those signals/effects are
   // exactly as before.
   function setConn(online: boolean): void {
-    if (!app.dom.connStatus) return;
-    app.dom.connStatus.classList.toggle('dim', !online);
+    const chip = app.dom.connStatus;
+    if (!chip) return;
+    chip.classList.toggle('dim', !online);
+    const host = app.conn.host();
     const full = app.state.serverVersion;
     // Show a short version (e.g. 26.3.10); full string on hover so the header
     // doesn't crowd/overflow on a narrow window.
-    app.dom.connStatus.title = online ? 'ClickHouse ' + full : '';
-    app.dom.connStatus.replaceChildren(h('span', { class: 'ver' },
-      online ? 'ClickHouse ' + shortVersion(full) : 'offline'));
+    const version = chip.querySelector<HTMLElement>('.ver');
+    if (version) version.textContent = online ? `CH ${shortVersion(full)}` : 'offline';
+    chip.title = online ? `${host} · ClickHouse ${full}` : `${host} · offline`;
   }
   const catalog = createSchemaCatalogService({
     loadServerVersion: ch.loadServerVersion,

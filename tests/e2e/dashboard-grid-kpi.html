@@ -113,11 +113,14 @@
         grip.setAttribute('aria-hidden', 'true');
         head.appendChild(grip);
       }
+      const heading = document.createElement('div');
+      heading.className = 'dash-tile-heading';
       const name = document.createElement('span');
       name.className = 'dash-tile-name';
       name.title = title;
       name.textContent = title;
-      head.appendChild(name);
+      heading.appendChild(name);
+      head.appendChild(heading);
       let delBtn = null;
       if (!readOnly) {
         delBtn = document.createElement('button');

@@ -58,19 +58,23 @@ export function libraryControls(app: App): HTMLElement[] {
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: () => openFileMenu(app),
   }, h('span', null, 'File'), Icon.chevDown());
-  app.dom.libraryTitle = h('div', { class: 'lib-title' });
-  renderLibraryTitle(app);
-  // #407: Dashboard navigation lives next to the workspace name (not in the
-  // File menu). It switches the current tab to the unified Dashboard surface,
-  // including for a workspace whose editable Dashboard has not been created.
-  // label collapses to icon-only on narrow screens via `hd-hide-mobile-label`,
-  // but the accessible name ("Open Dashboard") is always present.
+  // Retain the controller seam for callers/tests that invoke the historical
+  // shortcut directly; the visible surface switch now owns this navigation.
   app.dom.dashboardNav = h('button', {
     class: 'hd-dash-nav', title: 'Open Dashboard', 'aria-label': 'Open Dashboard',
     onclick: () => app.actions.openDashboard(),
-  }, Icon.layers(), h('span', { class: 'hd-dash-nav-label hd-hide-mobile-label' }, 'Dashboard →'));
+  }, Icon.layers(), h('span', { class: 'hd-dash-nav-label' }, 'Dashboard →'));
   renderDashboardNav(app);
-  return [app.dom.fileBtn, app.dom.libraryTitle, app.dom.dashboardNav];
+  return [app.dom.fileBtn, buildWorkspaceTitle(app, true)];
+}
+
+/** Build the shared header workspace identity in editable or read-only form. */
+export function buildWorkspaceTitle(app: App, editable: boolean): HTMLElement {
+  app.dom.libraryTitle = h('div', {
+    class: 'lib-title', 'data-editable': editable ? 'true' : 'false',
+  });
+  renderLibraryTitle(app);
+  return app.dom.libraryTitle;
 }
 
 /** Keep the unified Dashboard surface reachable even when `dashboard === null`;
@@ -88,6 +92,12 @@ export function renderLibraryTitle(app: App): void {
   if (!slot) return;
   const state = app.state;
   slot.replaceChildren();
+  if (slot.dataset.editable === 'false') {
+    slot.appendChild(h('span', {
+      class: 'lib-name lib-name-readonly', title: state.libraryName.value,
+    }, h('span', { class: 'lib-name-text' }, state.libraryName.value)));
+    return;
+  }
   if (app.editingLibrary) {
     const input = h('input', { class: 'lib-name-input', value: state.libraryName.value });
     let done = false;

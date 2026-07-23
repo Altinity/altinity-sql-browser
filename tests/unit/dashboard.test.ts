@@ -406,11 +406,11 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     });
     await render(app);
     expect(qsa(app.root, '.dash-tile').length).toBe(2);
-    expect(qs(app.root, '.dash-fav span:last-child')?.textContent).toBe('2 tiles');
+    expect(qs(app.root, '.dash-tile-count')?.textContent).toBe('2 tiles');
     const sqls = calls.map((c) => c.sql);
     expect(sqls).toContain('SELECT k, v FROM a');
     expect(sqls).toContain('SELECT k, v FROM b');
-    expect(qs(app.root, '.dash-title')?.textContent).toBe('My Dash');
+    expect(qs(app.root, '.lib-name-text')?.textContent).toBe('W');
     expect(qsa(app.root, '.dash-tile canvas').length).toBeGreaterThan(0);
   });
 
@@ -418,13 +418,70 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     const { app } = dashApp({ workspace: wsWith({ tiles: [] }) });
     await render(app);
     expect((qs(app.root, '.dash-empty') as HTMLElement).style.display).toBe('');
-    expect(qs(app.root, '.dash-fav span:last-child')?.textContent).toBe('0 tiles');
+    expect(qs(app.root, '.dash-tile-count')?.textContent).toBe('0 tiles');
   });
 
   it('uses the library name when the dashboard title is empty', async () => {
     const { app } = dashApp({ workspace: wsWith({ title: '', tiles: [] }) });
     await render(app);
-    expect(qs(app.root, '.dash-title')?.textContent).toBe('W');
+    expect(qs(app.root, '.lib-name-text')?.textContent).toBe('W');
+  });
+
+  it('searches tile titles and descriptions without rerunning queries, shows counts, and recovers from no match', async () => {
+    const { app, calls } = dashApp({
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT 1', { name: 'Revenue', description: 'Monthly sales' }),
+          q('q2', 'SELECT 2', { name: 'Latency', description: 'Regional p95' }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      }),
+    });
+    await render(app);
+    const executed = calls.length;
+    const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+    vi.useFakeTimers();
+    search.value = 'reg';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.value = 'regional';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    vi.advanceTimersByTime(500);
+    vi.useRealTimers();
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(1);
+    expect(qs(app.root, '.dash-tile-name').textContent).toBe('Latency');
+    expect(qs(app.root, '.dash-tile-desc').textContent).toBe('Regional p95');
+    expect(qs(app.root, '.dash-tile-count').textContent).toBe('1 of 2 tiles');
+    expect(calls.length).toBe(executed);
+
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    search.value = 'not here';
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(qs<HTMLElement>(app.root, '.dash-search-empty').style.display).toBe('');
+
+    vi.useFakeTimers();
+    search.value = 'pending search';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    qs<HTMLButtonElement>(app.root, '.dash-search-empty button').click();
+    vi.useRealTimers();
+    expect(search.value).toBe('');
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+    expect(calls.length).toBe(executed);
+
+    // Search filters presentation only. A later layout commit must still see
+    // every session runtime, including the currently non-matching tile.
+    search.value = 'regional';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.dispatchEvent(new Event('blur'));
+    const rerender = vi.spyOn(app, 'renderDashboard');
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expect(rerender).not.toHaveBeenCalled();
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(1);
+
+    // A route teardown cancels a still-pending search callback.
+    search.value = 'pending teardown';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await render(app);
   });
 
   it('falls back to an empty dashboard when no workspace resolves', async () => {
@@ -2768,7 +2825,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(added[0].params.param_p).toBe('x');
   });
 
-  it('shows no visible Clear-all control or "N active" count at any active count (#294; count removed by a 2026-07-18 owner override)', async () => {
+  it('shows ordinary-filter Clear all and enables it only when a filter differs from its default', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -2777,9 +2834,19 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    // `DashboardViewerSession.clearAllFilters()`/`activeFilterCount` stay
-    // tested application-level operations/state with no UI trigger or display.
-    expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
+    const clear = qs<HTMLButtonElement>(app.root, '.dash-clear-filters');
+    expect(clear).not.toBeNull();
+    expect(clear.disabled).toBe(true);
+    const input = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    input.value = '7';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(clear.disabled).toBe(false);
+    clear.click();
+    await flush();
+    expect(clear.disabled).toBe(true);
+    expect(qs<HTMLInputElement>(app.root, '.dash-filter-host input').value).toBe('5');
     expect(qs(app.root, '.dash-filter-count')).toBeNull();
     expect(qs(app.root, '.dash-filter-count-host')).toBeNull();
   });
@@ -2794,7 +2861,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     });
     await render(app);
     const host = qs(app.root, '.dash-filter-host');
-    expect(host.contains(qs(host, '.dash-filters'))).toBe(true);
+    expect(host.contains(qs(host, '.dash-filter-ordinary'))).toBe(true);
   });
 
   it('renders no per-filter "required/invalid" badge (owner decision — dropped as noise)', async () => {
@@ -3005,7 +3072,7 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
     expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(false);
     expect(document.body.querySelector('.ms-popover')).toBeNull();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Filter options were refreshed');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Filter options were refreshed');
     // The committed value ['x'] (never touched by the draft) is now dormant
     // against the NEW option set — the merge deactivates it (existing
     // dormant-value self-heal behavior, unrelated to this fix) — the fresh
@@ -3048,7 +3115,7 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
     qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(qs(document.body, '.ms-popover')).not.toBeNull();
-    const liveRegionBefore = qs(app.root, '.dash-toolbar > .sr-only').textContent;
+    const liveRegionBefore = qs(app.root, '.dash-topbar > .sr-only').textContent;
     // Check the second option ('y') too, then Apply — a real value change.
     const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
     draftCb.checked = true;
@@ -3063,8 +3130,8 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
     expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(true); // the commit went through
     // The live region is untouched — no false "refreshed" announcement.
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe(liveRegionBefore);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe(liveRegionBefore);
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
     // Focus lands on the FRESH bar's trigger for the same parameter (the old
     // one, focused by `close()`, was detached by the synchronous rebuild).
     const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
@@ -3104,7 +3171,9 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     });
     await render(app);
     expect(qs(app.root, '.trf-trigger')).not.toBeNull();
-    expect(qsa(app.root, '.dash-filter-host .flabel').map((n) => n.textContent)).toEqual(['Time', 'Filters']);
+    expect(qs(app.root, '.dash-time-filter-host .trf-trigger')).not.toBeNull();
+    expect(qsa(app.root, '.dash-filters .flabel').map((node) => node.textContent))
+      .toEqual(['Time', 'Filters']);
     // The pair's own two fields are gone; only the non-group field remains.
     const names = qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name').map((n) => n.textContent);
     expect(names).toEqual(['region']);
@@ -3122,6 +3191,18 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
   });
 
+  it('keeps the time-range live region outside the hidden ordinary-filter toolbar', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    const liveRegion = qs(app.root, '.dash-topbar > .sr-only');
+    const ordinaryToolbar = qs(app.root, '.dash-toolbar-filters');
+    expect(liveRegion.getAttribute('aria-live')).toBe('polite');
+    expect(ordinaryToolbar.style.display).toBe('none');
+    expect(ordinaryToolbar.contains(liveRegion)).toBe(false);
+  });
+
   it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -3134,7 +3215,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(added.length).toBeGreaterThanOrEqual(1);
     // One atomic wave binds BOTH parameters on every affected tile call.
     expect(added.every((c) => 'param_from' in c.params && 'param_to' in c.params)).toBe(true);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
     // The bar rebuilt on the committed-value change and now shows a resolved,
     // active range (not "Not set").
     expect(qs(app.root, '.trf-trigger').textContent).not.toBe('Not set');
@@ -3167,10 +3248,10 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     await flush();
     startApply('-7d', 'now');
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
     release();
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
     rootEl(app).remove();
   });
 
@@ -3200,7 +3281,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     surfaceGeneration += 1;
     release();
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('');
     rootEl(app).remove();
   });
 
@@ -3362,7 +3443,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     window.dispatchEvent(brushEvent('pointerup', 200));
     for (let i = 0; i < 10 && !calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params); i++) await flush();
     expect(calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params)).toBe(true);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toContain('Time range applied:');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toContain('Time range applied:');
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
     expect(qs(document.body, '.trf-recent').textContent)
       .toBe('2023-11-14 22:13:20 → 2027-01-15 08:00:00');
@@ -3922,9 +4003,13 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const viewed = modeApp({ workspace: empty, mode: 'view' });
     await render(viewed.app);
     expect(viewed.app.root?.textContent).toContain('This workspace has no dashboard');
+    expect(qsa(viewed.app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
+      .toEqual(['View', 'Edit']);
     expect(viewed.calls).toHaveLength(0);
     const edited = modeApp({ workspace: empty, mode: 'edit' });
     await render(edited.app);
+    expect(qsa(edited.app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
+      .toEqual(['View', 'Edit']);
     const create = qs<HTMLButtonElement>(edited.app.root, '.dash-create');
     expect(edited.commit).not.toHaveBeenCalled();
     create.click();
@@ -3998,13 +4083,13 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qs(header, '.logo-name').textContent).toBe('Altinity®');
     expect(qsa(header, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['SQL Browser', 'Dashboard']);
-    expect(qsa(header, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
+    expect(qsa(app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
-    expect(qs(header, '.dash-title').textContent).toBe('My Dash');
-    expect(qs(header, '.dash-fav')).not.toBeNull();
+    expect(qs(header, '.lib-name-text').textContent).toBe('W');
+    expect(qs(app.root, '.dash-tile-count')).not.toBeNull();
     expect(qs(header, '.dash-file-btn')).not.toBeNull();
-    expect(qs(header, '.dash-layout-wrap')).not.toBeNull();
-    const style = qs<HTMLButtonElement>(header, '.dash-style-btn');
+    expect(qs(app.root, '.dash-layout-wrap')).not.toBeNull();
+    const style = qs<HTMLButtonElement>(app.root, '.dash-style-btn');
     expect(style.classList.contains('hd-file-btn')).toBe(true);
     expect(style.textContent).toBe('2 columns');
     expect(header.textContent).not.toContain('Style');
@@ -4015,14 +4100,14 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qsa(styleMenu, '.fm-item .fm-label').map((item) => item.textContent))
       .toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
     style.click();
-    expect(qs(header, '.dash-updated')).not.toBeNull();
-    const refresh = qs(header, '.dash-refresh');
+    expect(qs(app.root, '.dash-updated')).not.toBeNull();
+    const refresh = qs(app.root, '.dash-refresh');
     expect(refresh.classList.contains('editor-mode-btn')).toBe(true);
     expect(refresh.parentElement?.classList.contains('editor-mode-switch')).toBe(true);
-    expect(qs(header, '.conn-status')).toBeNull();
-    expect(qs(header, '[title="View examples"]')).toBeNull();
-    expect(qs(header, '[title^="Keyboard shortcuts"]')).toBeNull();
-    expect(qs(header, '.user-btn')).toBeNull();
+    expect(qs(header, '.conn-status')).not.toBeNull();
+    expect(qs(header, '[title="View examples"]')).not.toBeNull();
+    expect(qs(header, '[title^="Keyboard shortcuts"]')).not.toBeNull();
+    expect(qs(header, '.user-btn')).not.toBeNull();
     expect(qs(app.root, '.dash-contextbar')).toBeNull();
   });
 
@@ -4123,13 +4208,13 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(labels).not.toContain('Import Dashboard…');
   });
 
-  it('live view shows the Dashboard name without exposing workspace Rename', async () => {
+  it('live view shows the workspace name without exposing Rename', async () => {
     const workspace = wsWith({ id: 'd' });
     const { app } = modeApp({ workspace, mode: 'view' });
     app.state.libraryName.value = 'Operations';
     await render(app);
-    expect(qs(app.root, '.dash-title').textContent).toBe('My Dash');
-    expect(qs(app.root, '.lib-title')).toBeNull();
+    expect(qs(app.root, '.lib-name-text').textContent).toBe('Operations');
+    expect(qs(app.root, '.lib-title')).not.toBeNull();
     expect(qs(app.root, 'button.lib-name')).toBeNull();
   });
 

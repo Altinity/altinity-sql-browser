@@ -3,7 +3,7 @@ import {
   createDashboardViewerSession, VIEWER_TILE_CONCURRENCY,
 } from '../../src/dashboard/application/dashboard-viewer-session.js';
 import type {
-  DashboardViewerDeps, ViewerExecutor, ViewerReadRequest,
+  DashboardLayoutView, DashboardViewerDeps, ViewerExecutor, ViewerReadRequest,
 } from '../../src/dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardTileV1, SavedQueryV2,
@@ -454,6 +454,117 @@ describe('filters and the #235 execution planner', () => {
     const base2 = calls.length;
     await session.clearAllFilters();
     expect(calls.length).toBe(base2);
+  });
+
+  it('tile search matches normalized title/description, repacks both layouts, and never executes again', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({
+      tiles: [
+        tile('a', 'qa', { title: 'Revenue   Overview' }),
+        tile('b', 'qb', { description: 'Latency by region' }),
+        tile('c', 'qc'),
+        tile('d', 'qd', { title: '', description: '' }),
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qa', 'SELECT 1'), query('qb', 'SELECT 2'),
+        query('qc', 'SELECT 3', { description: 'Capacity forecast' }),
+        query('qd', 'SELECT 4', { name: 'Fallback title', description: 'Fallback description' }),
+      ],
+    }));
+    await session.start();
+    const executed = calls.length;
+    session.setTileSearch('  revenue overview ');
+    expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['a']);
+    expect(session.state.value).toMatchObject({
+      totalTileCount: 4, visibleTileCount: 1, tileSearch: '  revenue overview ',
+    });
+    expect(session.state.value.tiles[0].description).toBe('');
+    if (session.state.value.layout.engine !== 'flow') throw new Error('expected flow');
+    expect(session.state.value.layout.rows.flatMap((row) => row.tiles).map((entry) => entry.tileId)).toEqual(['a']);
+
+    session.setTileSearch('capacity');
+    expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['c']);
+    expect(session.state.value.tiles[0].description).toBe('Capacity forecast');
+    session.setTileSearch('fallback description');
+    expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['d']);
+    expect(session.state.value.tiles[0]).toMatchObject({
+      title: 'Fallback title', description: 'Fallback description',
+    });
+    session.setTileSearch('capacity');
+    session.syncDocument({
+      ...document,
+      layout: { type: 'grafana-grid', version: 1, items: { c: { span: 4, height: 2 } } },
+    });
+    const gridLayout = session.state.value.layout as DashboardLayoutView;
+    if (gridLayout.engine !== 'grafana-grid') throw new Error('expected grid');
+    expect(gridLayout.grid.tiles.map((entry) => entry.tileId)).toEqual(['c']);
+    expect(calls.length).toBe(executed);
+
+    session.setTileSearch('missing');
+    expect(session.state.value.visibleTileCount).toBe(0);
+    session.setTileSearch('');
+    expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['a', 'b', 'c', 'd']);
+    session.setTileSearch(''); // identical search is a no-op
+  });
+
+  it('Clear all restores an inferred-active default and compares authored defaults in UI string form', async () => {
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('a', 'qa')],
+        filters: [{ id: 'n', parameter: 'n', defaultValue: 5 }],
+      }),
+      exec, queries: [query('qa', 'SELECT {n:UInt8}')],
+    }));
+    await session.start();
+    expect(session.state.value.filters.find((filter) => filter.id === 'n'))
+      .toMatchObject({ active: true, value: '5' });
+    expect(session.state.value.resettableFilterIds).toEqual([]);
+    const before = calls.length;
+    await session.clearAllFilters();
+    expect(session.state.value.filters.find((filter) => filter.id === 'n'))
+      .toMatchObject({ active: true, value: '5' });
+    expect(session.state.value.resettableFilterIds).toEqual([]);
+    expect(calls.length).toBe(before);
+
+    await session.applyFilter('n', '5', false);
+    expect(session.state.value.resettableFilterIds).toEqual(['n']);
+  });
+
+  it('resetFilters restores only selected defaults in one wave and no-ops when unchanged or destroyed', async () => {
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('a', 'qa'), tile('b', 'qb')],
+        filters: [
+          { id: 'time', parameter: 'from', defaultActive: true, defaultValue: '-1d' },
+          { id: 'region', parameter: 'region', defaultActive: true, defaultValue: 'all' },
+        ],
+      }),
+      exec,
+      queries: [
+        query('qa', 'SELECT {from:String}'), query('qb', 'SELECT {region:String}'),
+      ],
+    }));
+    await session.start();
+    await session.setFilter('time', '-7d');
+    await session.setFilter('region', 'west');
+    expect(session.state.value.resettableFilterIds).toEqual(['time', 'region']);
+    const before = calls.length;
+    await session.resetFilters(['region', 'unknown']);
+    expect(calls.length - before).toBe(1);
+    expect(session.state.value.filters.map((filter) => filter.value)).toEqual(['-7d', 'all']);
+    expect(session.state.value.resettableFilterIds).toEqual(['time']);
+    const unchanged = calls.length;
+    await session.resetFilters(['region']);
+    expect(calls.length).toBe(unchanged);
+    session.destroy();
+    await session.resetFilters(['time']);
+    session.setTileSearch('ignored');
+    expect(session.state.value.tileSearch).toBe('');
   });
 
 });

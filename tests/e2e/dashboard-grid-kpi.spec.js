@@ -57,6 +57,10 @@ test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
 
     await card.hover();
     await expect(head).toBeVisible();
+    // KPI hover chrome is deliberately control-only: the saved query title
+    // and description would overlap the primary metric values.
+    await expect(card.locator('.dash-tile-heading')).toBeHidden();
+    expect(await card.locator('.dash-tile-heading').evaluate((node) => getComputedStyle(node).display)).toBe('none');
     const hoveredOutline = await card.evaluate((node) => getComputedStyle(node, '::before').outlineColor);
     expect(hoveredOutline).not.toBe('rgba(0, 0, 0, 0)');
     expect(await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }))).toEqual(before);

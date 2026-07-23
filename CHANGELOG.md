@@ -9,7 +9,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- Keep Grafana-grid KPI hover chrome control-only: saved-query titles and
+  descriptions no longer overlay metric values while moving or editing a tile.
+- Keep the shared connection host visible after the server-version probe,
+  restore Dashboard filters to their initial default-derived active state, and
+  retain Dashboard time-range announcements when no ordinary filters exist.
+
 ### Added
+- **Unified SQL Browser and Dashboard chrome.** Both surfaces now share the
+  same brand, surface, workspace, connection, examples, shortcuts, theme, and
+  user zones. Dashboard layout, tile count/search, time range, refresh, and
+  View/Edit controls live in a sticky primary tool row; ordinary parameters
+  live in a separate sticky filter row. Tile search matches effective titles
+  and descriptions without rerunning queries or changing saved layout/order,
+  and ordinary-filter Clear all restores defaults in one execution wave while
+  preserving every time-range pair.
 - **Unified `/sql` routing for Workbench and Dashboard surfaces** (#407).
   Workspace identity, surface, and presentation mode now live in canonical
   `ws`, `surface`, and `mode` query parameters. Workbench/Dashboard switches
@@ -19,8 +34,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   falls back, and an empty workspace offers Create only in edit mode. The old
   surface becomes an inert loading route before cross-workspace navigation,
   while same-workspace Back/Forward switches immediately. Dashboard uses the
-  shared header row for its surface, tile count, File, active-style menu, name,
-  View/Edit, update, Refresh, and theme controls. Global Workbench shortcuts
+  shared application header and route controls. Global Workbench shortcuts
   fail closed outside a ready matching route, and renderer generations let in-flight
   durable writes finish without obsolete Dashboard or Workbench callbacks
   repainting the selected surface. Direct Dashboard startup now shares the

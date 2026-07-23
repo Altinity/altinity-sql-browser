@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*.*.*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -26,7 +26,6 @@ jobs:
       examples: ${{ steps.filter.outputs.examples }}
       unit: ${{ steps.filter.outputs.unit }}
       build: ${{ steps.filter.outputs.build }}
-      e2e: ${{ steps.filter.outputs.e2e }}
       bundle: ${{ steps.filter.outputs.bundle }}
     steps:
       - uses: actions/checkout@v7
@@ -57,14 +56,6 @@ jobs:
               - 'src/**'
               - 'schemas/**'
               - 'build/**'
-              - 'package.json'
-              - 'package-lock.json'
-              - '.github/workflows/**'
-            e2e:
-              - 'src/**'
-              - 'schemas/**'
-              - 'tests/e2e/**'
-              - 'playwright.config.js'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
@@ -224,18 +215,16 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck install.sh build/bundle.sh
 
-  # Real-browser regression tests (Playwright). Runs on Linux runners where the
-  # Gecko/Chromium binaries launch normally — separate from the unit suite so a
-  # missing browser binary can't mask a unit failure, and vice versa. The
-  # harness imports /src directly over a python http.server (started by the
+  # Nightly/manual/release real-browser regression tests (Playwright). Keep the
+  # costly browser matrix out of ordinary PR and branch-push CI; unit tests
+  # cover each commit, while release tags validate the shipped image/artifact.
+  # The harness imports /src directly over a python http.server (started by the
   # Playwright config's webServer), so no build step is needed.
   e2e:
-    needs: changes
     if: >-
-      github.event_name == 'push' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
       github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true')
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
