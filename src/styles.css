@@ -1752,6 +1752,8 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: 0 1px 2px rgba(0, 0, 0, .14);
 }
 .editor-mode-btn.is-disabled { opacity: .42; cursor: not-allowed; }
+.app-surface-switch .editor-mode-btn { min-width: 0; white-space: nowrap; }
+.dashboard-mode-switch { flex-shrink: 0; }
 .editor-mode-btn:focus-visible,
 .tb-btn:focus-visible,
 .run-btn:focus-visible {
@@ -2374,7 +2376,14 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   /* Tighten the header's gap/padding so the decluttered controls fit the
      narrowest portrait phones (~360px), where the default 14px gaps alone
      still overflowed. */
-  .app-header { gap: 8px; padding: 0 8px; }
+  .app-header { gap: 4px; padding: 0 6px; }
+  .app-header .editor-mode-switch { padding: 1px; gap: 1px; }
+  .app-header .editor-mode-btn { height: 20px; min-width: 0; padding: 0 5px; font-size: 10px; }
+  .app-header .hd-file-btn { padding: 0 4px; font-size: 11px; }
+  .app-header .lib-title { flex: 1 1 40px; overflow: hidden; }
+  .app-header .lib-name { max-width: 100%; padding: 0 3px; font-size: 11px; }
+  .app-header .hd-btn.user-btn { width: 26px; padding: 0 5px; }
+  .app-header .hd-btn.user-btn .user-short { display: none; }
   /* The desktop drawer handle owns this boundary. Restore a structural line
      when mobile hides that non-touch resize affordance. */
   .cd-panel { border-left: 1px solid var(--border); }
@@ -2490,23 +2499,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* Header + layout toolbar share one sticky top bar (#149 D2) so the
    Arrange/Report switcher stays visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }
-.dash-header {
+.dash-contextbar {
   display: flex; align-items: center;
-  gap: 12px; padding: 11px 20px; background: var(--bg-header);
-  border-bottom: 1px solid var(--border); flex-wrap: wrap;
-}
-.dash-route-controls { display: inline-flex; align-items: center; gap: 8px; }
-.dash-route-switch {
-  display: inline-flex; align-items: center; padding: 2px; gap: 2px;
-  border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
-}
-.dash-route-btn {
-  min-height: 26px; padding: 3px 9px; border: 0; border-radius: 5px;
-  background: transparent; color: var(--fg-muted); font: inherit; cursor: pointer;
-}
-.dash-route-btn:hover { background: var(--bg-hover); color: var(--fg); }
-.dash-route-btn[aria-pressed="true"] {
-  background: var(--accent-bg); color: var(--accent-fg); font-weight: 600;
+  min-height: 36px; gap: 10px; padding: 4px 14px; background: var(--bg-header);
+  border-bottom: 1px solid var(--border); flex-wrap: nowrap;
 }
 /* Filter toolbar (#149 D2, now filters-only since the layout switcher moved to
    the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): filters
@@ -2783,7 +2779,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    their fixed-position popovers. These are CSS-only overrides, so widening
    restores the persisted desktop layout without writing preferences. */
 @media (max-width: 768px) {
-  .dash-header {
+  .dash-contextbar {
     flex-wrap: nowrap; gap: 8px; padding: 8px 10px;
   }
   .dash-back {

@@ -106,8 +106,8 @@ export interface AppDom {
   fileBtn?: HTMLElement;
   fileDialog?: HTMLElement;
   libraryTitle?: HTMLElement;
-  /** #302 — the Workbench header "Dashboard →" nav control (shown only when the
-   *  current workspace has a Dashboard). */
+  /** Workbench's post-workspace `Dashboard →` shortcut; Dashboard replaces
+   *  this slot with the View/Edit segmented control. */
   dashboardNav?: HTMLElement;
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
@@ -428,7 +428,7 @@ export interface App {
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV2 | null;
-  workspaceRouteStatus: 'ready' | 'not-found' | 'error';
+  workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
   /** Navigate within the single artifact. Surface changes use push; mode and
    * canonicalization use replace. */
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;

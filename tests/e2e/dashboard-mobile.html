@@ -4,16 +4,20 @@
   <meta charset="utf-8" />
   <title>Dashboard mobile harness</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+      }
+    }
+  </script>
 </head>
 <body data-theme="dark">
   <div id="root">
     <div class="dash-page">
       <div class="dash-topbar">
-        <div class="dash-header">
-          <a class="dash-back" href="/sql" title="Back to SQL Browser" aria-label="Back to SQL Browser">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M2 6h7.5M7 3.5 9.5 6 7 8.5" /></svg>
-            <span class="dash-back-label">SQL Browser</span>
-          </a>
+        <div id="shared-header"></div>
+        <div class="dash-contextbar">
           <div class="dash-title">A deliberately long production operations Dashboard name</div>
           <span class="dash-chip dash-fav">6 favorites</span>
           <div class="dash-layout-wrap">
@@ -26,11 +30,7 @@
             </select>
           </div>
           <div class="dash-spacer" style="flex:1"></div>
-          <span class="dash-chip dash-src"><span class="dash-dot"></span>clickhouse.example.internal</span>
           <span class="dash-updated">Updated 12:34</span>
-          <button class="dash-icobtn" title="Toggle theme" aria-label="Toggle theme">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"><circle cx="7" cy="7" r="2.4" /></svg>
-          </button>
           <button class="dash-btn dash-refresh" title="Re-run all tiles" aria-label="Refresh dashboard">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8" /></svg>
             <span class="dash-refresh-label">Refresh</span>
@@ -55,6 +55,45 @@
     import { buildTimeRangeField } from '/src/ui/time-range-field.js';
     import { parseParamType } from '/src/core/param-type.js';
     import { wireComboInput } from '/src/ui/combobox.js';
+    import { buildAppHeader } from '/src/ui/app-header.js';
+
+    const dashboardFileButton = document.createElement('button');
+    dashboardFileButton.className = 'hd-file-btn dash-file-btn';
+    dashboardFileButton.textContent = 'File';
+    const headerApp = {
+      document,
+      dom: {},
+      state: {
+        serverVersion: '26.3.1',
+        theme: 'dark',
+        workspaceKey: 'production_operations',
+        libraryName: { value: 'Production operations' },
+        libraryDirty: { value: false },
+      },
+      currentWorkspace: {
+        key: 'production_operations',
+      },
+      sqlRoute: {
+        surface: 'dashboard',
+        workspaceKey: 'production_operations',
+        mode: 'edit',
+      },
+      conn: {
+        host: () => 'clickhouse.example.internal',
+        email: () => 'me@example.com',
+      },
+      actions: {
+        openUserMenu: () => {},
+        openShortcuts: () => {},
+        openDashboard: () => {},
+      },
+      toggleTheme: () => {},
+      navigateSqlRoute: async () => {},
+      editingLibrary: false,
+    };
+    document.querySelector('#shared-header').replaceWith(
+      buildAppHeader(headerApp, { dashboardFileButton }),
+    );
 
     const filters = document.querySelector('.dash-filters');
     // 'version' is the one optional field here — real coverage for the bold

@@ -17,7 +17,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   replacement history. Dashboard view mode renders the same live workspace
   document without authoring controls; an explicit missing workspace never
   falls back, and an empty workspace offers Create only in edit mode. The old
-  `/sql/dashboard` bootstrap split, detached Dashboard snapshot stores,
+  surface becomes an inert loading route before cross-workspace navigation,
+  while same-workspace Back/Forward switches immediately. Both surfaces share
+  the compact Workbench header, with SQL Browser/Dashboard and Dashboard-only
+  View/Edit segmented controls. Empty Dashboard routes also react when another
+  tab creates the Dashboard. The old `/sql/dashboard` bootstrap split,
+  detached Dashboard snapshot stores,
   one-time state handoff, and cross-tab credential handoff have been removed.
 - **Multi-workspace local persistence foundation** (#406). Stored workspaces
   now use the V2 contract with separate immutable opaque `id`, immutable

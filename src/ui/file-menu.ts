@@ -50,16 +50,37 @@ const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*
 const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): string => diagnostics[0]?.message || fallback;
 
+export interface LibraryControlsOptions {
+  /** Dashboard supplies its resource-scoped File menu while retaining the
+   * exact shared header placement and typography. */
+  fileButton?: HTMLButtonElement;
+  /** Replaces Workbench's Dashboard shortcut in the post-workspace slot. */
+  afterWorkspace?: HTMLElement;
+  /** View mode keeps the same workspace-name typography without exposing the
+   * rename authoring control. */
+  workspaceTitleReadOnly?: boolean;
+}
+
 /** Build the header File button + editable workspace title; returns the nodes
  *  to splice into the app header (after the connection chip). */
-export function libraryControls(app: App): HTMLElement[] {
-  app.dom.fileBtn = h('button', {
+export function libraryControls(app: App, options: LibraryControlsOptions = {}): HTMLElement[] {
+  app.dom.fileBtn = options.fileButton ?? h('button', {
     class: 'hd-file-btn', title: 'File — workspace and dashboard import/export',
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: () => openFileMenu(app),
   }, h('span', null, 'File'), Icon.chevDown());
   app.dom.libraryTitle = h('div', { class: 'lib-title' });
-  renderLibraryTitle(app);
+  if (options.workspaceTitleReadOnly) {
+    app.dom.libraryTitle.appendChild(h('div', {
+      class: 'lib-name', 'aria-label': `Workspace: ${app.state.libraryName.value}`,
+    }, h('span', { class: 'lib-name-text' }, app.state.libraryName.value)));
+  } else {
+    renderLibraryTitle(app);
+  }
+  if (options.afterWorkspace) {
+    app.dom.dashboardNav = undefined;
+    return [app.dom.fileBtn, app.dom.libraryTitle, options.afterWorkspace];
+  }
   // #407: Dashboard navigation lives next to the workspace name (not in the
   // File menu). It switches the current tab to the unified Dashboard surface,
   // including for a workspace whose editable Dashboard has not been created.
@@ -279,9 +300,9 @@ function currentWorkspace(app: App): StoredWorkspaceV2 {
  *  may be pruned) and the saved list (count + rows). The title (name + dirty
  *  dot) repaints itself via the libraryName/libraryDirty effect in createApp. */
 function afterLibraryChange(app: App): void {
-  // #302: on the standalone Dashboard route the only committing operation is
-  // Import Dashboard, and none of the Workbench chrome below exists — re-render
-  // the dashboard instead (repointing the URL at the possibly-new dashboard id).
+  // Dashboard shares the application header, but none of the Workbench body
+  // chrome below exists. Re-render its route after any allowed header/File
+  // mutation (rename or Import Dashboard).
   if (app.sqlRoute.surface === 'dashboard') { app.reloadDashboardRoute(); return; }
   app.updateSaveBtn();
   // Always defined by the time a file-menu action can run (post-boot,

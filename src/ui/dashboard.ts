@@ -30,6 +30,7 @@
 import { effect } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
+import { buildAppHeader } from './app-header.js';
 import { openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
 import { flashToast } from './toast.js';
@@ -312,35 +313,6 @@ function renderDashboardNotFound(app: DashboardApp): void {
       h('p', null, 'This workspace no longer exists on this browser.'))));
 }
 
-function buildRouteControls(app: DashboardApp): HTMLElement {
-  // This renderer is entered only for the dashboard route; keep App's shared
-  // route type broad while narrowing the invariant at this surface boundary.
-  const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
-  const workspaceKey = app.currentWorkspace?.key ?? route.workspaceKey;
-  const navigate = (next: SqlRoute, method: 'push' | 'replace'): void => {
-    void app.navigateSqlRoute(next, method);
-  };
-  const workspace = h('button', {
-    class: 'dash-route-btn', 'aria-pressed': 'false',
-    onclick: () => navigate({ surface: 'workspace', workspaceKey }, 'push'),
-  }, 'Workspace');
-  const dashboard = h('button', {
-    class: 'dash-route-btn', 'aria-pressed': 'true', disabled: true,
-  }, 'Dashboard');
-  const surface = h('div', { class: 'dash-route-switch', role: 'group', 'aria-label': 'Application surface' },
-    workspace, dashboard);
-  const view = h('button', {
-    class: 'dash-route-btn', 'aria-pressed': route.mode === 'view' ? 'true' : 'false',
-    onclick: () => navigate({ surface: 'dashboard', workspaceKey, mode: 'view' }, 'replace'),
-  }, 'View');
-  const edit = h('button', {
-    class: 'dash-route-btn', 'aria-pressed': route.mode === 'edit' ? 'true' : 'false',
-    onclick: () => navigate({ surface: 'dashboard', workspaceKey, mode: 'edit' }, 'replace'),
-  }, 'Edit');
-  return h('div', { class: 'dash-route-controls' }, surface,
-    h('div', { class: 'dash-route-switch', role: 'group', 'aria-label': 'Dashboard mode' }, view, edit));
-}
-
 function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
   const body = readOnly
     ? h('div', { class: 'dash-empty' },
@@ -359,7 +331,9 @@ function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
       }, 'Create dashboard'));
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      h('div', { class: 'dash-header' }, buildRouteControls(app))),
+      buildAppHeader(app as App, {
+        dashboardFileButton: buildDashboardFileMenu(app, readOnly),
+      })),
     body));
 }
 
@@ -371,24 +345,20 @@ function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
  *  File menu, with Dashboard-specific CONTENTS:
  *    EXPORT   ⭳ Export Dashboard…   .json
  *    IMPORT   ⭱ Import Dashboard…
- *  #347: only ever built for an EDITABLE (non-read-only) Dashboard — the
- *  caller omits the control entirely for a read-only route. (Previously a
- *  read-only view got an Export-only menu, but `exportDashboardAction`
- *  resolves the latest committed primary workspace via its immutable ID,
- *  which may be unrelated to the read-only Dashboard on screen; hiding rows
- *  wasn't enough, since the surviving Export button still exported the wrong
- *  workspace.) Every item delegates to an `app.actions.*` seam (dashboard.ts
- *  never reaches into app.ts). The trigger uses the shared downward-chevron
+ *  The unified live workspace makes Export safe in both modes; read-only view
+ *  omits only the mutating Import row, while retaining the same File word and
+ *  header position as Workbench. Every item delegates to an `app.actions.*`
+ *  seam (dashboard.ts never reaches into app.ts). The trigger uses the shared downward-chevron
  *  treatment (`Icon.chevDown()`, matching the Workbench File button) rather
  *  than a right-pointing arrow, which would misread as navigation. The
  *  trigger owns its own open/close TOGGLE (unlike the Workbench menu, which
  *  only ever opens) — clicking it again while open closes the menu and
  *  restores focus, tracked here via the returned `MenuHandle` rather than a
  *  second `openMenu` call. */
-function buildDashboardFileMenu(app: DashboardApp): HTMLElement {
+function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButtonElement {
   const doc = app.document;
   const btn = h('button', {
-    class: 'dash-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    class: 'hd-file-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
     title: 'File — dashboard import/export', 'aria-label': 'Dashboard File menu',
   }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
 
@@ -401,11 +371,13 @@ function buildDashboardFileMenu(app: DashboardApp): HTMLElement {
         kind: 'item', icon: Icon.download(), label: 'Export Dashboard…', meta: '.json', extraClass: 'dash-fm-item',
         onClick: () => app.actions.exportDashboard(),
       },
-      { kind: 'section', label: 'Import' },
-      {
-        kind: 'item', icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
-        onClick: () => app.actions.importDashboard(),
-      },
+      ...(!readOnly ? [
+        { kind: 'section' as const, label: 'Import' },
+        {
+          kind: 'item' as const, icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
+          onClick: () => app.actions.importDashboard(),
+        },
+      ] : []),
     ];
     handle = openMenu({
       document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
@@ -432,6 +404,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const workspace = app.currentWorkspace;
   const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
   if (!workspace) { renderDashboardNotFound(app); return; }
+  app.onWorkspaceExternallyChanged = () => {
+    if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
+  };
   if (!workspace.dashboard) { renderMissingDashboard(app, readOnly); return; }
 
   const queries: SavedQueryV2[] = workspace.queries;
@@ -512,12 +487,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     class: 'dash-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
   }, Icon.refresh(), h('span', { class: 'dash-refresh-label' }, 'Refresh'));
   refreshBtn.onclick = () => session.refresh();
-  const themeBtn = h('button', {
-    class: 'dash-icobtn', title: 'Toggle theme', 'aria-label': 'Toggle theme', onclick: () => app.toggleTheme(),
-  });
-  themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
-  app.dom.themeBtn = themeBtn;
-
   // ── Preset switcher (change-layout command) ───────────────────────────────
   // #321: the local mirror of the viewer session's TRANSIENT grid render-mode
   // override ('tiles'|'full') — read by `getActive`/`onPick` below (built
@@ -607,18 +576,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // (always the full selector).
   const showLayoutSelect = !readOnly || currentDoc.layout.type === 'grafana-grid';
 
-  // #302: the Dashboard page's own resource-scoped File menu (import/export +
-  // open-for-viewing). #347: omitted from the DOM entirely in a read-only
-  // view — not merely disabled/hidden — so keyboard tab order and the
-  // accessibility tree carry no File control where no operation is valid.
-  const fileMenuBtn = readOnly ? null : buildDashboardFileMenu(app);
-  const header = h('div', { class: 'dash-header' },
-    buildRouteControls(app),
+  // Dashboard keeps the shared header's File word and placement. View exposes
+  // the safe Export row only; edit additionally exposes Import.
+  const header = buildAppHeader(app as App, {
+    dashboardFileButton: buildDashboardFileMenu(app, readOnly),
+  });
+  const contextBar = h('div', { class: 'dash-contextbar' },
     h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
     tileCount, showLayoutSelect ? layoutWrap : null,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
-    h('span', { class: 'dash-chip dash-src', title: app.conn.host() }, h('span', { class: 'dash-dot' }), app.conn.host()),
-    updated, fileMenuBtn, themeBtn, refreshBtn);
+    updated, refreshBtn);
 
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
   // #294: the field region scrolls horizontally in its own viewport
@@ -2095,7 +2062,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, toolbar),
+    h('div', { class: 'dash-topbar' }, header, contextBar, toolbar),
     filterDiagnosticsHost, empty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard

@@ -1235,10 +1235,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
   // button, Esc + click-outside close (capture listeners), stored at
   // app.dom[refKey] and cleared on close. Returns { close }.
+  const anchoredPopoverClosers = new Set<() => void>();
   function anchoredPopover(
     node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
   ): { close: () => void } {
     const close = (): void => {
+      anchoredPopoverClosers.delete(close);
       doc.removeEventListener('keydown', onKey, true);
       doc.removeEventListener('mousedown', onOutside, true);
       if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
@@ -1266,6 +1268,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     doc.body.appendChild(node);
     doc.addEventListener('keydown', onKey, true);
     doc.addEventListener('mousedown', onOutside, true);
+    anchoredPopoverClosers.add(close);
     return { close };
   }
 
@@ -1480,9 +1483,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   function toggleTheme(): void {
     // The shared DOM composition (state-flip + persist + `data-theme` +
     // icon swap) now lives in `ui/theme-toggle.ts`'s `toggleThemeDom` (#276
-    // Phase 5) — both route shells (workbench header, dashboard) wire their
-    // own theme button to it; this thin wrapper is kept as `app.toggleTheme`
-    // solely for explain-graph.ts's detached schema-graph overlay, which
+    // Phase 5) — the shared application header wires its theme button to this
+    // thin `app.toggleTheme` wrapper, which is also kept solely for
+    // explain-graph.ts's detached schema-graph overlay, which
     // takes it as an optional callback (see theme-toggle.ts's own header
     // comment for why that one seam isn't mechanical to repoint).
     toggleThemeDom({ prefs, document: doc, themeBtn: () => app.dom.themeBtn });
@@ -1511,6 +1514,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     return renderDashboard(app);
   };
   const disposeCurrentSurface = (): void => {
+    for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+      'button, input, select, textarea',
+    ) ?? []) control.disabled = true;
+    for (const close of [...anchoredPopoverClosers]) close();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();
     disposeWorkbenchMount?.();
@@ -1613,35 +1620,70 @@ export function createApp(env: CreateAppEnv = {}): App {
   // broadcasts ONE invalidation — callers no longer project. An aborted
   // transform (null / null candidate) commits nothing and notifies no one; a
   // failed commit surfaces its diagnostics without projecting or notifying.
-  app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
-    const loaded = await app.workspace.loadById(app.state.workspaceId);
-    if (loaded.status === 'corrupt') {
-      return { ok: false as const, diagnostics: loaded.diagnostics };
+  app.mutateWorkspace = (transform) => {
+    const requestedWorkspaceId = app.state.workspaceId;
+    const requestedWorkspaceKey = app.state.workspaceKey;
+    const requestedRouteGeneration = routeLoadGeneration;
+    const routeStillMatches = (): boolean => app.sqlRoute.workspaceKey === null
+      || app.sqlRoute.workspaceKey === requestedWorkspaceKey;
+    if (app.workspaceRouteStatus !== 'ready'
+      || !routeStillMatches()) {
+      return Promise.resolve({ ok: false as const, aborted: true as const });
     }
-    if (loaded.status !== 'ok') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'not-found';
-      app.renderCurrentSurface();
-      return { ok: false as const, aborted: true as const };
-    }
-    const latest = loaded.workspace;
-    const input = await transform(latest);
-    if (!input || !input.candidate) {
-      return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
-    }
-    const result = await app.workspace.commit(input.candidate);
-    if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
-    app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
-    if (workspaceChannel) {
-      workspaceChannel.postMessage({
-        type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
-      });
-    }
-    return {
-      ok: true as const, workspace: result.workspace,
-      dashboardRevision: result.dashboardRevision, data: input.data,
-    };
-  });
+    return app.serializeWrite(async () => {
+      if (app.workspaceRouteStatus !== 'ready'
+        || routeLoadGeneration !== requestedRouteGeneration
+        || app.state.workspaceId !== requestedWorkspaceId
+        || !routeStillMatches()) {
+        return { ok: false as const, aborted: true as const };
+      }
+      const loaded = await app.workspace.loadById(requestedWorkspaceId);
+      if (loaded.status === 'corrupt') {
+        return { ok: false as const, diagnostics: loaded.diagnostics };
+      }
+      if (loaded.status !== 'ok') {
+        app.currentWorkspace = null;
+        app.workspaceRouteStatus = 'not-found';
+        app.renderCurrentSurface();
+        return { ok: false as const, aborted: true as const };
+      }
+      const latest = loaded.workspace;
+      const input = await transform(latest);
+      if (!input || !input.candidate) {
+        return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+      }
+      if (app.workspaceRouteStatus !== 'ready'
+        || routeLoadGeneration !== requestedRouteGeneration
+        || app.state.workspaceId !== requestedWorkspaceId
+        || !routeStillMatches()) {
+        return { ok: false as const, aborted: true as const, data: input.data };
+      }
+      const result = await app.workspace.commit(input.candidate);
+      if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+      const routeIsStillCurrent = app.workspaceRouteStatus === 'ready'
+        && routeLoadGeneration === requestedRouteGeneration
+        && app.state.workspaceId === requestedWorkspaceId
+        && routeStillMatches();
+      if (routeIsStillCurrent) {
+        app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
+      }
+      if (workspaceChannel) {
+        workspaceChannel.postMessage({
+          type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
+        });
+      }
+      // The persistence operation may already have crossed its commit boundary
+      // when navigation began. Keep that durable write, but do not let its
+      // route-local caller repaint/toast against the new URL.
+      if (!routeIsStillCurrent) {
+        return { ok: false as const, aborted: true as const, data: input.data };
+      }
+      return {
+        ok: true as const, workspace: result.workspace,
+        dashboardRevision: result.dashboardRevision, data: input.data,
+      };
+    });
+  };
 
   // #343 step 4: a non-destructive warning when a reload can't reach the store.
   // The current projection stays on screen; the next focus/visibility event
@@ -1834,7 +1876,18 @@ export function createApp(env: CreateAppEnv = {}): App {
       h('a', { href: conn.basePath || '/sql' }, 'Open the last-used workspace')));
   };
 
+  const renderWorkspaceLoading = (): void => {
+    disposeCurrentSurface();
+    app.root?.replaceChildren(h('main', {
+      class: 'workspace-loading', 'aria-busy': 'true', 'aria-live': 'polite',
+    }, h('p', null, 'Loading workspace…')));
+  };
+
   app.renderCurrentSurface = () => {
+    if (app.workspaceRouteStatus === 'loading') {
+      renderWorkspaceLoading();
+      return;
+    }
     if (app.workspaceRouteStatus !== 'ready' || !app.currentWorkspace) {
       renderWorkspaceNotFound();
       return;
@@ -1847,7 +1900,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
     writeRoute(route, method);
     if (workspaceChanged) {
-      disposeCurrentSurface();
+      app.workspaceRouteStatus = 'loading';
+      app.currentWorkspace = null;
+      renderWorkspaceLoading();
       const expectedGeneration = routeLoadGeneration + 1;
       await app.loadWorkspaceOnBoot();
       if (routeLoadGeneration !== expectedGeneration) return;
@@ -1859,7 +1914,14 @@ export function createApp(env: CreateAppEnv = {}): App {
     const previousKey = app.sqlRoute.workspaceKey;
     routeSearch = loc.search;
     app.sqlRoute = parseSqlRoute(routeSearch);
-    if (app.sqlRoute.workspaceKey !== previousKey) disposeCurrentSurface();
+    if (app.sqlRoute.workspaceKey === previousKey) {
+      disposeCurrentSurface();
+      app.renderCurrentSurface();
+      return;
+    }
+    app.workspaceRouteStatus = 'loading';
+    app.currentWorkspace = null;
+    renderWorkspaceLoading();
     const expectedGeneration = routeLoadGeneration + 1;
     await app.loadWorkspaceOnBoot();
     if (routeLoadGeneration !== expectedGeneration) return;

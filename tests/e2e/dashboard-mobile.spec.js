@@ -7,39 +7,30 @@ async function openAt(page, width, height = 844) {
 }
 
 test.describe('Dashboard mobile layout', () => {
-  test('keeps the accessible header on one line and truncates its title at phone widths', async ({ page }) => {
+  test('keeps the shared application header on one line at phone widths', async ({ page }) => {
     await openAt(page, 390);
-    const header = page.locator('.dash-header');
-    const title = page.locator('.dash-title');
+    const header = page.locator('.app-header');
 
-    await expect(page.getByRole('link', { name: 'Back to SQL Browser' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Application surface' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Dashboard mode' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
-    await expect(page.locator('.dash-back-label')).toBeHidden();
     await expect(page.locator('.dash-refresh-label')).toBeHidden();
-    for (const selector of ['.dash-fav', '.dash-src', '.dash-updated', '.dash-layout-wrap']) {
+    for (const selector of ['.dash-fav', '.dash-updated', '.dash-layout-wrap']) {
       await expect(page.locator(selector)).toBeHidden();
     }
 
     const geometry = await header.evaluate((node) => {
       const visible = [...node.children].filter((child) => getComputedStyle(child).display !== 'none');
       const rects = visible.map((child) => child.getBoundingClientRect());
-      const title = node.querySelector('.dash-title');
       return {
         header: node.getBoundingClientRect(),
         centers: rects.map((rect) => rect.top + rect.height / 2),
-        titleClientWidth: title.clientWidth,
-        titleScrollWidth: title.scrollWidth,
-        whiteSpace: getComputedStyle(title).whiteSpace,
-        textOverflow: getComputedStyle(title).textOverflow,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
     expect(Math.max(...geometry.centers) - Math.min(...geometry.centers)).toBeLessThan(2);
-    expect(geometry.header.height).toBeLessThanOrEqual(47);
-    expect(geometry.titleClientWidth).toBeLessThan(geometry.titleScrollWidth);
-    expect(geometry.whiteSpace).toBe('nowrap');
-    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(geometry.header.height).toBe(44);
     expect(geometry.pageOverflow).toBeLessThanOrEqual(0);
 
     const refresh = page.getByRole('button', { name: 'Refresh dashboard' });
@@ -51,14 +42,12 @@ test.describe('Dashboard mobile layout', () => {
 
   test('keeps title and actions reachable without viewport overflow at 360px', async ({ page }) => {
     await openAt(page, 360, 800);
-    const result = await page.locator('.dash-header').evaluate((header) => {
+    const result = await page.locator('.dash-contextbar').evaluate((header) => {
       const title = header.querySelector('.dash-title').getBoundingClientRect();
-      const theme = header.querySelector('.dash-icobtn').getBoundingClientRect();
       const refresh = header.querySelector('.dash-refresh').getBoundingClientRect();
       return {
-        wraps: Math.abs((title.top + title.height / 2) - (theme.top + theme.height / 2)) > 2
-          || Math.abs((theme.top + theme.height / 2) - (refresh.top + refresh.height / 2)) > 2,
-        titleBeforeActions: title.right <= theme.left,
+        wraps: Math.abs((title.top + title.height / 2) - (refresh.top + refresh.height / 2)) > 2,
+        titleBeforeActions: title.right <= refresh.left,
         actionsInside: refresh.right <= innerWidth,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
@@ -282,7 +271,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
 
     const geometry = await page.evaluate(() => {
-      const header = document.querySelector('.dash-header');
+      const header = document.querySelector('.dash-contextbar');
       const children = [...header.children];
       const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
       const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));

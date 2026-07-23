@@ -50,14 +50,15 @@ import { h } from '../dom.js';
 import { Icon } from '../icons.js';
 import { MOBILE_BREAKPOINT_PX, savedForTab } from '../../state.js';
 import type { QueryTab as Tab, AppState as State } from '../../state.js';
-import { userShortName, formatRows } from '../../core/format.js';
+import { formatRows } from '../../core/format.js';
 import { effect } from '@preact/signals-core';
 import { renderTabs } from '../tabs.js';
 import { renderSchema } from '../schema.js';
 import { renderResults } from '../results.js';
 import type { QueryResult } from '../results.js';
 import { renderSavedHistory } from '../saved-history.js';
-import { libraryControls, renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
+import { renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
+import { buildAppHeader } from '../app-header.js';
 import { SCHEMA_GRAPH_MIME } from '../dnd-mime.js';
 import { startDrag } from '../splitters.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from '../splitters.js';
@@ -125,29 +126,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   doc.documentElement.setAttribute('data-density', state.density);
 
   app.dom = {};
-  app.dom.connStatus = h('div', { class: 'conn-status dim' }, h('span', { class: 'ver' }, 'Connecting…'));
-  app.dom.themeBtn = h('button', { class: 'hd-btn', title: 'Toggle theme', onclick: toggleTheme });
-  app.dom.themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
-  app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: conn.email(), onclick: () => actions.openUserMenu() },
-    h('span', { class: 'user-short' }, userShortName(conn.email())), Icon.chevDown());
-  const header = h('div', { class: 'app-header' },
-    h('div', { class: 'logo-mark' }, Icon.brand()),
-    h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
-    h('div', { class: 'env-chip' }, conn.host()),
-    h('div', { class: 'hd-divider' }),
-    ...libraryControls(app),
-    h('div', { style: { flex: '1' } }),
-    app.dom.connStatus,
-    h('a', {
-      // hd-hide-mobile: decorative/desktop-only header items are hidden below the
-      // breakpoint (#126) so the essential controls (File menu, theme, user menu)
-      // fit a phone width instead of overflowing off-screen. See styles.css.
-      class: 'hd-btn hd-hide-mobile', href: 'https://github.com/Altinity/altinity-sql-browser/tree/main/examples',
-      target: '_blank', rel: 'noopener noreferrer', title: 'View examples',
-    }, Icon.github()),
-    h('button', { class: 'hd-btn hd-hide-mobile', title: 'Keyboard shortcuts (?)', onclick: () => actions.openShortcuts() }, Icon.shortcuts()),
-    app.dom.themeBtn,
-    app.dom.userBtn);
+  const header = buildAppHeader(app);
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',

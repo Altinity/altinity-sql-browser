@@ -433,7 +433,7 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     const { app } = dashApp({ workspace: wsWith({ tiles: [] }) });
     app.state.theme = 'dark';
     await render(app);
-    const btn = qs(app.root, '.dash-icobtn');
+    const btn = qs(app.root, '.hd-btn[title="Toggle theme"]');
     expect(btn).not.toBeNull();
     btn.dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.toggleTheme).toHaveBeenCalled();
@@ -3889,6 +3889,21 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(edited.commit.mock.calls[0][0].dashboard).not.toBeNull();
   });
 
+  it.each(['view', 'edit'] as const)(
+    'a missing Dashboard in %s mode rerenders when another tab creates it',
+    async (mode) => {
+      const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+      const { app } = modeApp({ workspace: empty, mode });
+      const rerender = vi.fn();
+      app.renderDashboard = rerender;
+      await render(app);
+      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV2;
+      app.currentWorkspace = created;
+      app.onWorkspaceExternallyChanged({ workspace: created, queriesChanged: false });
+      expect(rerender).toHaveBeenCalledOnce();
+    },
+  );
+
   it('Create dashboard aborts if another producer created one before the click commits', async () => {
     const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
     const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
@@ -3906,13 +3921,20 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     app.navigateSqlRoute = vi.fn(async () => {});
     await render(app);
-    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'Workspace')!.click();
-    const dashboardButton = qsa<HTMLButtonElement>(app.root, '.dash-route-btn')
+    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
+      .find((b) => b.textContent === 'SQL Browser')!.click();
+    const dashboardButton = qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Dashboard')!;
     expect(dashboardButton.disabled).toBe(true);
     dashboardButton.click();
-    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'View')!.click();
-    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'Edit')!.click();
+    qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
+      .find((b) => b.textContent === 'View')!.click();
+    qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
+      .find((b) => b.textContent === 'Edit')!.click();
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' };
+    await render(app);
+    qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
+      .find((b) => b.textContent === 'Edit')!.click();
     expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
       1, { surface: 'workspace', workspaceKey: 'workspace' }, 'push',
     );
@@ -3922,6 +3944,21 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
       3, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' }, 'replace',
     );
+  });
+
+  it('uses the shared compact application header and keeps Dashboard details below it', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
+    app.state.serverVersion = '26.3.10.4';
+    await render(app);
+    const header = qs(app.root, '.app-header');
+    expect(qs(header, '.logo-name').textContent).toBe('Altinity®');
+    expect(qsa(header, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
+      .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qsa(header, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
+      .toEqual(['View', 'Edit']);
+    expect(qs(header, '.dash-title')).toBeNull();
+    expect(qs(header, '.conn-status').textContent).toBe('ClickHouse 26.3.10');
+    expect(qs(app.root, '.dash-contextbar .dash-title')).not.toBeNull();
   });
 
   it('an old Dashboard refresh hook is inert after the route leaves Dashboard', async () => {
@@ -4000,12 +4037,24 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(qs(app.root, '.dash-file-btn')).not.toBeNull();
   });
 
-  it('live view mode omits the File button entirely', async () => {
+  it('live view mode keeps the shared File word but offers export only', async () => {
     const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    expect(qs(app.root, '.dash-file-btn')).toBeNull();
-    expect(document.querySelector('.dash-file-menu')).toBeNull();
+    qs<HTMLButtonElement>(app.root, '.dash-file-btn').click();
+    const labels = qsa(document, '.dash-file-menu .fm-label').map((el) => el.textContent);
+    expect(labels).toContain('Export Dashboard…');
+    expect(labels).not.toContain('Import Dashboard…');
+  });
+
+  it('live view shows the shared workspace name without exposing Rename', async () => {
+    const workspace = wsWith({ id: 'd' });
+    const { app } = modeApp({ workspace, mode: 'view' });
+    app.state.libraryName.value = 'Operations';
+    await render(app);
+    expect(qs(app.root, '.lib-title').textContent).toBe('Operations');
+    expect(qs(app.root, 'button.lib-name')).toBeNull();
+    expect(qs(app.root, '.lib-name').getAttribute('aria-label')).toBe('Workspace: Operations');
   });
 
   it('an unrelated keydown while the menu is open is ignored', async () => {

@@ -18,7 +18,7 @@ import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type {
-  WorkspaceLoadResult, WorkspaceMarkOpenedResult,
+  WorkspaceCommitResult, WorkspaceLoadResult, WorkspaceMarkOpenedResult,
 } from '../../src/workspace/workspace-repository.js';
 import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
@@ -963,6 +963,16 @@ describe('renderApp shell', () => {
   it('builds header + sidebar + workbench and mounts the editor', async () => {
     const { app } = rendered();
     expect(qs(app.root, '.app-header')).not.toBeNull();
+    expect(qs(app.root, '.logo-name').textContent).toBe('Altinity®');
+    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
+      .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
+    app.navigateSqlRoute = vi.fn(async () => {});
+    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
+      .find((button) => button.textContent === 'Dashboard')!.click();
+    expect(app.navigateSqlRoute).toHaveBeenCalledWith({
+      surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit',
+    }, 'push');
     expect(qs(app.root, '.sidebar')).not.toBeNull();
     expect(qs(app.root, '.cm-editor')).not.toBeNull();
     // user control shows the short name (local-part) + full email on hover
@@ -5304,6 +5314,80 @@ describe('unified /sql routing', () => {
     remove.mockRestore();
   });
 
+  it('synchronously replaces and inerts old Workbench controls during workspace navigation', async () => {
+    const app = createApp(env());
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    const b: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'b', key: 'b', name: 'B', queries: [], dashboard: null,
+    };
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.applyCommittedWorkspace(a);
+    app.renderApp();
+    const save = qs<HTMLButtonElement>(app.root, '.save-btn');
+    const run = qs<HTMLButtonElement>(app.root, '.run-btn');
+    qs<HTMLButtonElement>(app.root, '.user-btn').click();
+    expect(document.querySelector('.user-menu')).not.toBeNull();
+    save.disabled = false;
+    const saveAction = vi.fn();
+    const runAction = vi.fn();
+    app.actions.save = saveAction;
+    app.actions.run = runAction;
+    let resolveB!: (result: WorkspaceLoadResult) => void;
+    app.workspace.loadByKey = vi.fn(() =>
+      new Promise<WorkspaceLoadResult>((resolve) => { resolveB = resolve; }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const }));
+
+    const navigation = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
+
+    expect(app.workspaceRouteStatus).toBe('loading');
+    expect(qs(app.root, '.workspace-loading').getAttribute('aria-busy')).toBe('true');
+    expect(save.isConnected).toBe(false);
+    expect(run.isConnected).toBe(false);
+    expect(save.disabled).toBe(true);
+    expect(run.disabled).toBe(true);
+    expect(document.querySelector('.user-menu')).toBeNull();
+    save.click();
+    run.click();
+    expect(saveAction).not.toHaveBeenCalled();
+    expect(runAction).not.toHaveBeenCalled();
+    app.renderCurrentSurface();
+
+    resolveB({ status: 'ok', workspace: b });
+    await navigation;
+    expect(app.currentWorkspace).toBe(b);
+  });
+
+  it('synchronously inerts a stale Create dashboard control during workspace navigation', async () => {
+    const app = createApp(env());
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    const b: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'b', key: 'b', name: 'B', queries: [], dashboard: null,
+    };
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'a', mode: 'edit' };
+    app.applyCommittedWorkspace(a);
+    app.renderDashboard();
+    const create = qs<HTMLButtonElement>(app.root, '.dash-create');
+    const mutate = vi.fn();
+    app.mutateWorkspace = mutate;
+    let resolveB!: (result: WorkspaceLoadResult) => void;
+    app.workspace.loadByKey = vi.fn(() =>
+      new Promise<WorkspaceLoadResult>((resolve) => { resolveB = resolve; }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const }));
+
+    const navigation = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
+    expect(create.isConnected).toBe(false);
+    expect(create.disabled).toBe(true);
+    create.click();
+    expect(mutate).not.toHaveBeenCalled();
+
+    resolveB({ status: 'ok', workspace: b });
+    await navigation;
+  });
+
   it('discards a slower workspace navigation after a newer destination wins', async () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
@@ -5397,8 +5481,8 @@ describe('unified /sql routing', () => {
 
   it('a stale popstate load never repaints over a newer Back/Forward destination', async () => {
     const location = {
-      origin: 'https://ch.example', pathname: '/sql', search: '?ws=b',
-      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=b',
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=a',
+      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=a',
     } as Location;
     const app = createApp(env({ location }));
     const resolvers = new Map<string, (result: WorkspaceLoadResult) => void>();
@@ -5412,6 +5496,7 @@ describe('unified /sql routing', () => {
       },
     }));
     app.renderCurrentSurface = vi.fn();
+    location.search = '?ws=b';
     const backToB = app.handleSqlPopState();
     location.search = '?ws=c';
     const forwardToC = app.handleSqlPopState();
@@ -5427,6 +5512,30 @@ describe('unified /sql routing', () => {
     await backToB;
     expect(app.currentWorkspace).toBe(c);
     expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('same-workspace popstate switches surface immediately without reloading', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=a',
+      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=a',
+    } as Location;
+    const app = createApp(env({ location }));
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    app.applyCommittedWorkspace(a);
+    app.renderApp();
+    const loadByKey = vi.spyOn(app.workspace, 'loadByKey');
+    location.search = '?ws=a&surface=dashboard&mode=view';
+
+    await app.handleSqlPopState();
+
+    expect(loadByKey).not.toHaveBeenCalled();
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'a', mode: 'view',
+    });
+    expect(qs(app.root, '.dash-page')).not.toBeNull();
+    expect(qs(app.root, '.workspace-loading')).toBeNull();
   });
 
   it('a mutation that observes external deletion transitions to not-found', async () => {
@@ -5446,6 +5555,83 @@ describe('unified /sql routing', () => {
     expect(app.currentWorkspace).toBeNull();
     expect(app.workspaceRouteStatus).toBe('not-found');
     expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('a mutation whose transform settles after route loading begins aborts before commit', async () => {
+    const app = createApp(env());
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: app.state.workspaceId, key: 'a', name: 'A',
+      queries: [], dashboard: null,
+    };
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.applyCommittedWorkspace(a);
+    app.workspace.loadById = vi.fn(async () => ({ status: 'ok' as const, workspace: a }));
+    app.workspace.commit = vi.fn();
+    let finishTransform!: (value: { candidate: StoredWorkspaceV2 }) => void;
+    const mutation = app.mutateWorkspace(() =>
+      new Promise<{ candidate: StoredWorkspaceV2 }>((resolve) => { finishTransform = resolve; }));
+    await Promise.resolve();
+    await Promise.resolve();
+    app.workspaceRouteStatus = 'loading';
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'b' };
+    finishTransform({ candidate: a });
+
+    await expect(mutation).resolves.toMatchObject({ ok: false, aborted: true });
+    expect(app.workspace.commit).not.toHaveBeenCalled();
+    const blockedTransform = vi.fn();
+    await expect(app.mutateWorkspace(blockedTransform)).resolves.toMatchObject({
+      ok: false, aborted: true,
+    });
+    expect(blockedTransform).not.toHaveBeenCalled();
+  });
+
+  it('a queued mutation aborts if route loading begins before it dequeues', async () => {
+    const app = createApp(env());
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: app.state.workspaceId, key: 'a', name: 'A',
+      queries: [], dashboard: null,
+    };
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.applyCommittedWorkspace(a);
+    let releaseQueue!: () => void;
+    const queuedAhead = app.serializeWrite(() =>
+      new Promise<void>((resolve) => { releaseQueue = resolve; }));
+    await Promise.resolve();
+    const transform = vi.fn();
+    const mutation = app.mutateWorkspace(transform);
+    app.workspaceRouteStatus = 'loading';
+    releaseQueue();
+    await queuedAhead;
+
+    await expect(mutation).resolves.toMatchObject({ ok: false, aborted: true });
+    expect(transform).not.toHaveBeenCalled();
+  });
+
+  it('a commit that finishes after navigation stays durable but cannot repaint the new route', async () => {
+    const app = createApp(env());
+    const a: StoredWorkspaceV2 = {
+      storageVersion: 2, id: app.state.workspaceId, key: 'a', name: 'A',
+      queries: [], dashboard: null,
+    };
+    const changed = { ...a, name: 'Changed A' };
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.applyCommittedWorkspace(a);
+    app.workspace.loadById = vi.fn(async () => ({ status: 'ok' as const, workspace: a }));
+    let finishCommit!: () => void;
+    app.workspace.commit = vi.fn(() => new Promise<WorkspaceCommitResult>((resolve) => {
+      finishCommit = () => resolve({
+        ok: true as const, workspace: changed, dashboardRevision: null,
+      });
+    }));
+    const mutation = app.mutateWorkspace(async () => ({ candidate: changed }));
+    await vi.waitFor(() => expect(app.workspace.commit).toHaveBeenCalledOnce());
+    app.workspaceRouteStatus = 'loading';
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'b' };
+    finishCommit();
+
+    await expect(mutation).resolves.toMatchObject({ ok: false, aborted: true });
+    expect(app.currentWorkspace).toBe(a);
+    expect(app.workspace.commit).toHaveBeenCalledWith(changed);
   });
 
   it('the registered popstate listener delegates to the route coordinator', async () => {
