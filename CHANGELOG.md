@@ -1,11 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed
-
-- Make the Dashboard multi-select Apply button remain a clear primary action on hover, while preserving distinct disabled, keyboard-focus, and pressed states (#386).
-
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -15,7 +9,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-23
+
 ### Fixed
+- Make the Dashboard multi-select Apply button remain a clear primary action on
+  hover, while preserving distinct disabled, keyboard-focus, and pressed states
+  (#386).
 - Declared Node.js 22 as the minimum source-development runtime, kept the
   committed `.nvmrc` as the version-manager default, and enabled strict npm
   engine checks so unsupported local installs fail before the test runner
@@ -2634,7 +2633,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.5...v0.5.0
