@@ -309,7 +309,7 @@ export interface DashboardViewerSession {
   /** Deactivate one filter WITHOUT discarding its value (reactivation restores
    *  it); one affected-panel wave (#188 clear-one). */
   clearFilter(filterId: string): Promise<void>;
-  /** Reset every filter to its `defaultActive`/`defaultValue`, coalesced into
+  /** Restore every filter to its initial default-derived state, coalesced into
    *  ONE affected-panel wave (#188 clear-all). */
   clearAllFilters(): Promise<void>;
   /** Reset only the named filter definitions to their declared defaults. */
@@ -433,8 +433,6 @@ const toParamValue = (value: unknown): unknown =>
  *  state must never alias an array a caller (the document, the persisted
  *  seed, `setFilter`/`applyFilter`'s own caller) still holds a reference to. */
 const copyValue = (value: unknown): unknown => (Array.isArray(value) ? value.slice() : value);
-const filterResetActive = (def: DashboardFilterDefinitionV1): boolean =>
-  def.defaultActive ?? false;
 const filterInitialActive = (def: DashboardFilterDefinitionV1): boolean =>
   def.defaultActive ?? (Array.isArray(def.defaultValue)
     ? def.defaultValue.length > 0
@@ -923,7 +921,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       visibleTileCount: visibleRuntimes.length,
       tileSearch,
       resettableFilterIds: filters.filter((filter) => {
-        const defaultActive = filterResetActive(filter.def);
+        const defaultActive = filterInitialActive(filter.def);
         const defaultValue = filterDefaultValue(filter.def);
         return filter.state.active !== defaultActive || !sameSelection(filter.state.value, defaultValue);
       }).map((filter) => filter.def.id),
@@ -1706,7 +1704,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const changed: string[] = [];
     for (const filter of filters) {
       if (!ids.has(filter.def.id)) continue;
-      const nextActive = filterResetActive(filter.def);
+      const nextActive = filterInitialActive(filter.def);
       // #189: `copyValue` defends the default against aliasing (a
       // `defaultValue` array literal on the document); `sameSelection`
       // (filter-selection.ts) compares STRUCTURALLY so an array value/default

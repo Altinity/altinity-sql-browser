@@ -1058,6 +1058,9 @@ describe('loadVersion / loadSchema', () => {
     await app.catalog.loadVersion();
     expect(app.state.serverVersion).toBe('26.3.1');
     expect(app.dom.connStatus!.textContent).toContain('26.3.1');
+    expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
+    expect(qs(app.dom.connStatus!, '.connection-sep')).not.toBeNull();
+    expect(app.dom.connStatus!.title).toBe(`${app.conn.host()} · ClickHouse 26.3.1`);
   });
   it('marks offline when the version query fails', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ ok: false, status: 500, text: 'err' })]]) });
@@ -1065,6 +1068,7 @@ describe('loadVersion / loadSchema', () => {
     app.renderApp();
     await app.catalog.loadVersion();
     expect(app.dom.connStatus!.textContent).toContain('offline');
+    expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
   });
   it('records a schema error', async () => {
     const e = env({ fetch: makeFetch([

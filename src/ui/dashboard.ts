@@ -2178,11 +2178,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const filterToolbar = h('div', {
     class: 'dash-toolbar dash-toolbar-filters',
     style: hasOrdinaryFilters ? undefined : { display: 'none' },
-  }, ordinaryFilterHost, clearFiltersBtn, filterRefreshLiveEl);
+  }, ordinaryFilterHost, clearFiltersBtn);
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, primaryToolbar, filterToolbar),
+    h('div', { class: 'dash-topbar' }, header, primaryToolbar, filterToolbar, filterRefreshLiveEl),
     filterDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard

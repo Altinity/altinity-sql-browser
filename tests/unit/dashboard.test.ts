@@ -3072,7 +3072,7 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
     expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(false);
     expect(document.body.querySelector('.ms-popover')).toBeNull();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Filter options were refreshed');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Filter options were refreshed');
     // The committed value ['x'] (never touched by the draft) is now dormant
     // against the NEW option set — the merge deactivates it (existing
     // dormant-value self-heal behavior, unrelated to this fix) — the fresh
@@ -3115,7 +3115,7 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
     qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(qs(document.body, '.ms-popover')).not.toBeNull();
-    const liveRegionBefore = qs(app.root, '.dash-toolbar > .sr-only').textContent;
+    const liveRegionBefore = qs(app.root, '.dash-topbar > .sr-only').textContent;
     // Check the second option ('y') too, then Apply — a real value change.
     const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
     draftCb.checked = true;
@@ -3130,8 +3130,8 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
     expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(true); // the commit went through
     // The live region is untouched — no false "refreshed" announcement.
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe(liveRegionBefore);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe(liveRegionBefore);
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
     // Focus lands on the FRESH bar's trigger for the same parameter (the old
     // one, focused by `close()`, was detached by the synchronous rebuild).
     const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
@@ -3191,6 +3191,18 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
   });
 
+  it('keeps the time-range live region outside the hidden ordinary-filter toolbar', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    await render(app);
+    const liveRegion = qs(app.root, '.dash-topbar > .sr-only');
+    const ordinaryToolbar = qs(app.root, '.dash-toolbar-filters');
+    expect(liveRegion.getAttribute('aria-live')).toBe('polite');
+    expect(ordinaryToolbar.style.display).toBe('none');
+    expect(ordinaryToolbar.contains(liveRegion)).toBe(false);
+  });
+
   it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -3203,7 +3215,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(added.length).toBeGreaterThanOrEqual(1);
     // One atomic wave binds BOTH parameters on every affected tile call.
     expect(added.every((c) => 'param_from' in c.params && 'param_to' in c.params)).toBe(true);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
     // The bar rebuilt on the committed-value change and now shows a resolved,
     // active range (not "Not set").
     expect(qs(app.root, '.trf-trigger').textContent).not.toBe('Not set');
@@ -3236,10 +3248,10 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     await flush();
     startApply('-7d', 'now');
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
     release();
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -7d → now');
     rootEl(app).remove();
   });
 
@@ -3269,7 +3281,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     surfaceGeneration += 1;
     release();
     await flush();
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('');
     rootEl(app).remove();
   });
 
@@ -3431,7 +3443,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     window.dispatchEvent(brushEvent('pointerup', 200));
     for (let i = 0; i < 10 && !calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params); i++) await flush();
     expect(calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params)).toBe(true);
-    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toContain('Time range applied:');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toContain('Time range applied:');
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
     expect(qs(document.body, '.trf-recent').textContent)
       .toBe('2023-11-14 22:13:20 → 2027-01-15 08:00:00');

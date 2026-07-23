@@ -9,6 +9,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- Keep the shared connection host visible after the server-version probe,
+  restore Dashboard filters to their initial default-derived active state, and
+  retain Dashboard time-range announcements when no ordinary filters exist.
+
 ### Added
 - **Unified SQL Browser and Dashboard chrome.** Both surfaces now share the
   same brand, surface, workspace, connection, examples, shortcuts, theme, and

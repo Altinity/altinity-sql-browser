@@ -510,7 +510,7 @@ describe('filters and the #235 execution planner', () => {
     session.setTileSearch(''); // identical search is a no-op
   });
 
-  it('Clear all deactivates an inferred-active default and compares authored defaults in UI string form', async () => {
+  it('Clear all restores an inferred-active default and compares authored defaults in UI string form', async () => {
     const { exec, calls } = makeExec();
     const session = createDashboardViewerSession(makeDeps({
       document: doc({
@@ -522,16 +522,16 @@ describe('filters and the #235 execution planner', () => {
     await session.start();
     expect(session.state.value.filters.find((filter) => filter.id === 'n'))
       .toMatchObject({ active: true, value: '5' });
-    expect(session.state.value.resettableFilterIds).toEqual(['n']);
+    expect(session.state.value.resettableFilterIds).toEqual([]);
     const before = calls.length;
     await session.clearAllFilters();
     expect(session.state.value.filters.find((filter) => filter.id === 'n'))
-      .toMatchObject({ active: false, value: '5' });
+      .toMatchObject({ active: true, value: '5' });
     expect(session.state.value.resettableFilterIds).toEqual([]);
-    expect(calls.length).toBeGreaterThan(before);
+    expect(calls.length).toBe(before);
 
     await session.applyFilter('n', '5', false);
-    expect(session.state.value.resettableFilterIds).toEqual([]);
+    expect(session.state.value.resettableFilterIds).toEqual(['n']);
   });
 
   it('resetFilters restores only selected defaults in one wave and no-ops when unchanged or destroyed', async () => {
