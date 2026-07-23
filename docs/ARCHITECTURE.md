@@ -44,7 +44,7 @@ service is tested with plain stubs at the per-file coverage gate.
 | Module | Owns |
 |---|---|
 | `query-execution-service` (`app.exec`) | the shared request/stream/normalize read core + the script transport loop (retry classification, stop-on-first-failure, per-attempt `query_id`); stateless `kill(queryId)` — cancellation is caller-owned (`AbortController`s live with the owning session) |
-| `connection-session` (`app.conn`) | auth + connection lifecycle: OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, the cross-tab dashboard auth handoff, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in/handoff — never reconstructed) |
+| `connection-session` (`app.conn`) | auth + connection lifecycle: OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in — never reconstructed) |
 | `schema-catalog-service` (`app.catalog`) | server version, schema tree, lazy columns, SQL reference/completions, entity-doc cache, `invalidate()` |
 | `workbench-parameter-session` (`app.params`) | `{name:Type}` analysis/prepare/gate policy, input-vs-execute hardening, enum inference, recent values; reads the live shared `AppState` slices through accessors |
 | `export-service` (`app.exports`) | direct + script export behind an injectable `ExportSink` (`pickFile`/`pickDirectory`); hold-back exception inspection, `.partial` semantics, its own cancellation state |

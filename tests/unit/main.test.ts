@@ -23,7 +23,6 @@ const valid = jwt({ email: 'me@x.com', exp: Math.floor(Date.now() / 1000) + 3600
 // `unknown` bridge — same pattern as tests/unit/{app,dashboard,oauth}.test.ts's
 // own `asWindow`/`asFetch`/`as Location` casts.
 const asLocation = (v: object): Location => v as Location;
-const asWindow = (v: object): Window => v as Window;
 const asFetch = (v: object): typeof fetch => v as typeof fetch;
 
 type FakeApp = BootstrapApp & { token: string | null };
@@ -40,19 +39,19 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
       resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
     },
     conn: {
+      basePath: '/sql',
       resolveConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' }) as ResolvedIdpConfig),
       ensureConfig: vi.fn(async () => ({}) as ResolvedIdpConfig),
       setTokens: vi.fn((id: string) => { self.token = id; }),
-      receiveAuthHandoff: vi.fn(async () => false),
-      ensureFreshToken: vi.fn(async () => false),
       // Default mirrors the real controller: signed in iff a token is held.
       // Tests that exercise a basic session (or a dynamic token check)
       // override this directly, either here or post-construction.
       isSignedIn: () => !!self.token,
       ...connOver,
     },
-    renderApp: vi.fn(),
-    renderDashboard: vi.fn(),
+    catalog: { loadVersion: vi.fn(async () => {}) },
+    renderCurrentSurface: vi.fn(),
+    syncSqlRoute: vi.fn(),
     showLogin: vi.fn(),
     // #287 W4: bootstrap awaits this before the first renderApp() on the
     // non-dashboard route — a no-op stub here (the aggregate-projection
@@ -72,7 +71,7 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
 // `replaceState`'s concrete type the same way it would on `history` itself);
 // the object below already structurally satisfies `BootstrapEnv` wherever
 // `bootstrap()` consumes it, so the richer inferred type is free.
-function fakeEnv(over: { location?: Location; fetch?: typeof fetch; opener?: Window | null } = {}) {
+function fakeEnv(over: { location?: Location; fetch?: typeof fetch } = {}) {
   return {
     location: over.location ?? asLocation({ href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' }),
     sessionStorage: {
@@ -95,7 +94,6 @@ function fakeEnv(over: { location?: Location; fetch?: typeof fetch; opener?: Win
       replaceState: vi.fn(),
     },
     fetch: over.fetch ?? asFetch(vi.fn()),
-    opener: over.opener,
   };
 }
 
@@ -104,13 +102,45 @@ describe('bootstrap', () => {
     const app = fakeApp();
     const out = await bootstrap(app, fakeEnv());
     expect(app.showLogin).toHaveBeenCalledWith(null);
+    expect(app.catalog.loadVersion).not.toHaveBeenCalled();
     expect(out.signedIn).toBe(false);
   });
 
   it('renders the app when already signed in', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv());
-    expect(app.renderApp).toHaveBeenCalled();
+    expect(app.catalog.loadVersion).toHaveBeenCalledOnce();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
+  });
+
+  it('mounts the initial surface before an authentication-losing version probe can replace it with Login', async () => {
+    let releaseWorkspace!: () => void;
+    const workspaceGate = new Promise<null>((resolve) => { releaseWorkspace = () => resolve(null); });
+    let signedIn = true;
+    let visible: 'none' | 'surface' | 'login' = 'none';
+    const app = fakeApp({
+      conn: { isSignedIn: () => signedIn },
+      loadWorkspaceOnBoot: vi.fn(() => workspaceGate),
+      renderCurrentSurface: vi.fn(() => { visible = 'surface'; }),
+      showLogin: vi.fn(() => { visible = 'login'; }),
+    });
+    app.catalog.loadVersion = vi.fn(async () => {
+      signedIn = false;
+      app.showLogin();
+    });
+
+    const boot = bootstrap(app, fakeEnv());
+    await Promise.resolve();
+    expect(app.catalog.loadVersion).not.toHaveBeenCalled();
+    releaseWorkspace();
+    await boot;
+    await vi.waitFor(() => expect(app.catalog.loadVersion).toHaveBeenCalledOnce());
+
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+    expect(app.showLogin).toHaveBeenCalledOnce();
+    expect(visible).toBe('login');
+    expect(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.catalog.loadVersion).mock.invocationCallOrder[0]);
   });
 
   it('renders the app for a restored basic session (no token)', async () => {
@@ -118,7 +148,7 @@ describe('bootstrap', () => {
     const app = fakeApp({ token: null, conn: { isSignedIn: () => true } });
     const out = await bootstrap(app, fakeEnv());
     expect(app.conn.ensureConfig).toHaveBeenCalled();
-    expect(app.renderApp).toHaveBeenCalled();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
     expect(out.signedIn).toBe(true);
   });
 
@@ -133,7 +163,51 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.conn.setTokens).toHaveBeenCalledWith(valid, undefined);
     expect(env.history.replaceState).toHaveBeenCalled();
-    expect(app.renderApp).toHaveBeenCalled();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
+  });
+
+  it('restores the state-bound pre-login route before resolving a workspace', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch',
+        pathname: '/sql', search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({
+        ok: true, json: async () => ({ id_token: valid }), text: async () => '',
+      }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_verifier', 'v');
+    env.sessionStorage.setItem('oauth_return_route', JSON.stringify({
+      state: 'st', search: '?ws=missing&surface=dashboard&mode=view&keep=1',
+    }));
+    await bootstrap(app, env);
+    expect(env.history.replaceState).toHaveBeenCalledWith(
+      null, '', 'https://ch/sql?ws=missing&surface=dashboard&mode=view&keep=1',
+    );
+    expect(app.syncSqlRoute).toHaveBeenCalledWith(
+      '?ws=missing&surface=dashboard&mode=view&keep=1',
+    );
+    expect(env.sessionStorage.getItem('oauth_return_route')).toBeNull();
+    expect(app.loadWorkspaceOnBoot).toHaveBeenCalledOnce();
+  });
+
+  it('does not restore return metadata associated with a different OAuth state', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=evil', origin: 'https://ch',
+        pathname: '/sql', search: '?code=abc&state=evil', hash: '',
+      }),
+    });
+    env.sessionStorage.setItem('oauth_state', 'expected');
+    env.sessionStorage.setItem('oauth_return_route', JSON.stringify({
+      state: 'expected', search: '?ws=private',
+    }));
+    await bootstrap(app, env);
+    expect(app.syncSqlRoute).toHaveBeenCalledWith('');
+    expect(env.sessionStorage.getItem('oauth_return_route')).not.toBeNull();
   });
 
   it('reports a CSRF state mismatch', async () => {
@@ -154,7 +228,7 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: User denied');
     expect(env.history.replaceState).toHaveBeenCalled();
-    expect(app.renderApp).not.toHaveBeenCalled();
+    expect(app.renderCurrentSurface).not.toHaveBeenCalled();
   });
 
   it('falls back to the error code when no description is given', async () => {
@@ -343,7 +417,7 @@ describe('bootstrap', () => {
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 42');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
     expect(tabPanel(app.state.tabs.value[0])).toEqual(chart);
-    expect(app.renderApp).toHaveBeenCalled();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
     expect(env.sessionStorage.getItem('oauth_shared')).toBeNull(); // consumed on render
   });
 
@@ -356,66 +430,51 @@ describe('bootstrap', () => {
     expect(app.state.tabs.value[0].name).toBe('Untitled');
   });
 
-  const dashLoc = (over: Partial<Location> = {}): Location => asLocation({ href: 'https://ch/sql/dashboard', origin: 'https://ch', pathname: '/sql/dashboard', search: '', hash: '', ...over });
+  const dashLoc = (over: Partial<Location> = {}): Location => asLocation({
+    href: 'https://ch/sql?ws=ops&surface=dashboard',
+    origin: 'https://ch',
+    pathname: '/sql',
+    search: '?ws=ops&surface=dashboard',
+    hash: '',
+    ...over,
+  });
 
-  it('renders the dashboard when signed in on the /sql/dashboard route', async () => {
+  it('hands the unified dashboard route to the surface coordinator', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv({ location: dashLoc() }));
-    expect(app.renderDashboard).toHaveBeenCalled();
-    expect(app.renderApp).not.toHaveBeenCalled();
-  });
-
-  it('attempts the auth handoff, then renders the dashboard once it signs the tab in', async () => {
-    const app = fakeApp();
-    app.conn.receiveAuthHandoff = vi.fn(async () => { app.token = valid; return true; });
-    const env = fakeEnv({ location: dashLoc(), opener: asWindow({ postMessage: vi.fn() }) });
-    await bootstrap(app, env);
-    expect(app.conn.receiveAuthHandoff).toHaveBeenCalledWith(env);
-    expect(app.renderDashboard).toHaveBeenCalled();
-    expect(app.showLogin).not.toHaveBeenCalled();
-  });
-
-  it('falls back to login on a cold dashboard visit with no handoff', async () => {
-    const app = fakeApp();
-    await bootstrap(app, fakeEnv({ location: dashLoc() }));
-    expect(app.conn.receiveAuthHandoff).toHaveBeenCalled();
-    expect(app.conn.ensureFreshToken).toHaveBeenCalled(); // tried a refresh before giving up
-    expect(app.showLogin).toHaveBeenCalledWith(null);
-    expect(app.renderDashboard).not.toHaveBeenCalled();
-  });
-
-  it('refreshes an expired handed-off token before falling back to login', async () => {
-    // The handoff applies an expired id_token (isSignedIn() still false); a
-    // refresh via ensureFreshToken recovers a valid one, so we render — not login.
-    const app = fakeApp();
-    app.conn.isSignedIn = () => app.token === valid;
-    app.conn.receiveAuthHandoff = vi.fn(async () => { app.token = 'expired'; return true; });
-    app.conn.ensureFreshToken = vi.fn(async () => { app.token = valid; return true; });
-    await bootstrap(app, fakeEnv({ location: dashLoc(), opener: asWindow({ postMessage: vi.fn() }) }));
-    expect(app.conn.ensureFreshToken).toHaveBeenCalled();
-    expect(app.renderDashboard).toHaveBeenCalled();
-    expect(app.showLogin).not.toHaveBeenCalled();
+    expect(app.loadWorkspaceOnBoot).toHaveBeenCalledOnce();
+    expect(app.catalog.loadVersion).toHaveBeenCalledOnce();
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
   });
 
   it('skips editor share-link seeding on the dashboard route', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
-    await bootstrap(app, fakeEnv({ location: dashLoc({ href: 'https://ch/sql/dashboard' + hash, hash }) }));
+    await bootstrap(app, fakeEnv({ location: dashLoc({
+      href: 'https://ch/sql?ws=ops&surface=dashboard' + hash, hash,
+    }) }));
     expect(app.state.tabs.value[0].sqlDraft).toBe(''); // not seeded — dashboard has no editor tab
-    expect(app.renderDashboard).toHaveBeenCalled();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
   });
 
-  it('preserves extra query params while stripping oauth ones', async () => {
+  it('preserves route and extra params while stripping only OAuth callback params', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({
-      location: asLocation({ href: 'https://ch/sql?code=c&state=st&keep=1', origin: 'https://ch', pathname: '/sql', search: '?code=c&state=st&keep=1', hash: '' }),
+      location: asLocation({
+        href: 'https://ch/sql?ws=ops&surface=dashboard&mode=view&code=c&state=st&keep=1',
+        origin: 'https://ch', pathname: '/sql',
+        search: '?ws=ops&surface=dashboard&mode=view&code=c&state=st&keep=1', hash: '',
+      }),
       fetch: asFetch(vi.fn(async () => ({ ok: true, json: async () => ({ id_token: valid, refresh_token: 'r' }), text: async () => '' }))),
     });
     env.sessionStorage.setItem('oauth_state', 'st');
     env.sessionStorage.setItem('oauth_verifier', 'v');
     await bootstrap(app, env);
     const url = env.history.replaceState.mock.calls[0][2];
+    expect(url).toContain('ws=ops');
+    expect(url).toContain('surface=dashboard');
+    expect(url).toContain('mode=view');
     expect(url).toContain('keep=1');
     expect(url).not.toContain('code=');
   });

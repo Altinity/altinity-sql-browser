@@ -7,39 +7,30 @@ async function openAt(page, width, height = 844) {
 }
 
 test.describe('Dashboard mobile layout', () => {
-  test('keeps the accessible header on one line and truncates its title at phone widths', async ({ page }) => {
+  test('keeps the shared application header on one line at phone widths', async ({ page }) => {
     await openAt(page, 390);
-    const header = page.locator('.dash-header');
-    const title = page.locator('.dash-title');
+    const header = page.locator('.app-header');
 
-    await expect(page.getByRole('link', { name: 'Back to SQL Browser' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Application surface' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Dashboard mode' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
-    await expect(page.locator('.dash-back-label')).toBeHidden();
-    await expect(page.locator('.dash-refresh-label')).toBeHidden();
-    for (const selector of ['.dash-fav', '.dash-src', '.dash-updated', '.dash-layout-wrap']) {
+    await expect(page.locator('.dash-refresh-label')).toHaveCount(0);
+    for (const selector of ['.dash-fav', '.dash-updated', '.dash-layout-wrap']) {
       await expect(page.locator(selector)).toBeHidden();
     }
 
     const geometry = await header.evaluate((node) => {
       const visible = [...node.children].filter((child) => getComputedStyle(child).display !== 'none');
       const rects = visible.map((child) => child.getBoundingClientRect());
-      const title = node.querySelector('.dash-title');
       return {
         header: node.getBoundingClientRect(),
         centers: rects.map((rect) => rect.top + rect.height / 2),
-        titleClientWidth: title.clientWidth,
-        titleScrollWidth: title.scrollWidth,
-        whiteSpace: getComputedStyle(title).whiteSpace,
-        textOverflow: getComputedStyle(title).textOverflow,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
     expect(Math.max(...geometry.centers) - Math.min(...geometry.centers)).toBeLessThan(2);
-    expect(geometry.header.height).toBeLessThanOrEqual(47);
-    expect(geometry.titleClientWidth).toBeLessThan(geometry.titleScrollWidth);
-    expect(geometry.whiteSpace).toBe('nowrap');
-    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(geometry.header.height).toBe(44);
     expect(geometry.pageOverflow).toBeLessThanOrEqual(0);
 
     const refresh = page.getByRole('button', { name: 'Refresh dashboard' });
@@ -51,19 +42,36 @@ test.describe('Dashboard mobile layout', () => {
 
   test('keeps title and actions reachable without viewport overflow at 360px', async ({ page }) => {
     await openAt(page, 360, 800);
-    const result = await page.locator('.dash-header').evaluate((header) => {
+    const result = await page.locator('.dashboard-app-header').evaluate((header) => {
       const title = header.querySelector('.dash-title').getBoundingClientRect();
-      const theme = header.querySelector('.dash-icobtn').getBoundingClientRect();
       const refresh = header.querySelector('.dash-refresh').getBoundingClientRect();
       return {
-        wraps: Math.abs((title.top + title.height / 2) - (theme.top + theme.height / 2)) > 2
-          || Math.abs((theme.top + theme.height / 2) - (refresh.top + refresh.height / 2)) > 2,
-        titleBeforeActions: title.right <= theme.left,
+        wraps: Math.abs((title.top + title.height / 2) - (refresh.top + refresh.height / 2)) > 2,
+        titleBeforeActions: title.right <= refresh.left,
         actionsInside: refresh.right <= innerWidth,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
     expect(result).toEqual({ wraps: false, titleBeforeActions: true, actionsInside: true, pageOverflow: 0 });
+  });
+
+  test('keeps every visible Dashboard header control reachable just above the mobile breakpoint', async ({ page }) => {
+    await openAt(page, 820, 700);
+    const result = await page.locator('.dashboard-app-header').evaluate((header) => {
+      const visible = [...header.children].filter((child) => getComputedStyle(child).display !== 'none');
+      const rects = visible.map((child) => child.getBoundingClientRect());
+      return {
+        oneRow: Math.max(...rects.map((rect) => rect.top + rect.height / 2))
+          - Math.min(...rects.map((rect) => rect.top + rect.height / 2)) < 2,
+        inside: rects.every((rect) => rect.left >= 0 && rect.right <= innerWidth),
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+        outside: visible.flatMap((child, index) => (
+          rects[index].left < 0 || rects[index].right > innerWidth
+            ? [`${child.className}:${rects[index].left}-${rects[index].right}`] : []
+        )),
+      };
+    });
+    expect(result).toEqual({ oneRow: true, inside: true, pageOverflow: 0, outside: [] });
   });
 
   test('visually normalizes every saved layout on mobile and restores desktop CSS on resize', async ({ page }) => {
@@ -273,23 +281,35 @@ test.describe('Dashboard mobile layout', () => {
     await expect(lastField).toBeInViewport();
   });
 
-  test('the layout switcher is a compact select in the header, right after the tile-count chip, matching the workbench panel-picker style (2026-07-18)', async ({ page }) => {
+  test('the File-style layout picker follows File in the one-row Dashboard header', async ({ page }) => {
     await openAt(page, 1100, 800);
-    const select = page.locator('.dash-layout-select');
-    await expect(select).toBeVisible();
-    await expect(select).toHaveClass(/result-panel-select/);
+    const style = page.locator('.dash-style-btn');
+    await expect(style).toBeVisible();
+    await expect(style).toHaveClass(/hd-file-btn/);
+    await expect(style).toHaveText(/Report/);
+    await expect(page.locator('.dashboard-app-header')).not.toContainText('Style');
     // No more four-button segmented control.
     await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
+    await expect(page.locator('.dash-contextbar')).toHaveCount(0);
+    const controlSizes = await page.evaluate(() => {
+      const edit = [...document.querySelectorAll('.dashboard-mode-switch .editor-mode-btn')]
+        .find((button) => button.textContent === 'Edit').getBoundingClientRect();
+      const refresh = document.querySelector('.dash-refresh').getBoundingClientRect();
+      return { edit: [edit.width, edit.height], refresh: [refresh.width, refresh.height] };
+    });
+    expect(controlSizes.refresh).toEqual(controlSizes.edit);
 
     const geometry = await page.evaluate(() => {
-      const header = document.querySelector('.dash-header');
+      const header = document.querySelector('.dashboard-app-header');
       const children = [...header.children];
       const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
+      const fileIndex = children.findIndex((c) => c.classList.contains('dash-file-btn'));
       const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));
       const layoutWrap = children[layoutWrapIndex];
       const tileCount = children[tileCountIndex];
       return {
-        layoutRightAfterTileCount: layoutWrapIndex === tileCountIndex + 1,
+        tileCountBeforeFile: fileIndex === tileCountIndex + 1,
+        styleRightAfterFile: layoutWrapIndex === fileIndex + 1,
         inHeaderNotToolbar: !document.querySelector('.dash-toolbar .dash-layout-wrap'),
         sameRow: Math.abs(
           (layoutWrap.getBoundingClientRect().top + layoutWrap.getBoundingClientRect().height / 2)
@@ -297,9 +317,19 @@ test.describe('Dashboard mobile layout', () => {
         ) < 2,
       };
     });
-    expect(geometry).toEqual({ layoutRightAfterTileCount: true, inHeaderNotToolbar: true, sameRow: true });
+    expect(geometry).toEqual({
+      tileCountBeforeFile: true, styleRightAfterFile: true,
+      inHeaderNotToolbar: true, sameRow: true,
+    });
 
-    await select.selectOption('columns-2');
-    expect(await select.inputValue()).toBe('columns-2');
+    await style.click();
+    const menu = page.locator('.dash-style-menu');
+    await expect(menu).toHaveClass(/file-menu/);
+    await expect(menu.locator('.fm-label')).toHaveText(
+      ['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns'],
+    );
+    await menu.getByRole('menuitem', { name: '2 columns' }).click();
+    await expect(style).toHaveText(/2 columns/);
+    expect(await style.evaluate((button) => button.value)).toBe('columns-2');
   });
 });

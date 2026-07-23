@@ -111,6 +111,7 @@ function renderSearch(app: App): void {
 
 function renderSaved(app: App, list: HTMLElement): void {
   const state = app.state;
+  const surfaceGeneration = app.captureSurfaceGeneration();
   if (state.savedQueries.length === 0) {
     list.appendChild(h('div', { class: 'saved-empty' },
       'No saved queries yet.', h('br'), 'Click ', Icon.bookmark(), ' Save next to Run.'));
@@ -141,6 +142,7 @@ function renderSaved(app: App, list: HTMLElement): void {
         // `toggleFavorite` runs its transform through `app.mutateWorkspace`
         // (serializes + reads latest at dequeue) — no `serializeWrite` wrapper.
         const result = await toggleFavorite(state, q.id, app.mutateWorkspace, app.genId, app.specValidators);
+        if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result?.ok === true)) return;
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();
@@ -208,6 +210,7 @@ function renderSaved(app: App, list: HTMLElement): void {
             e.stopPropagation();
             // #343: delete over the LATEST workspace via `app.mutateWorkspace`.
             const result = await deleteSaved(state, q.id, app.mutateWorkspace);
+            if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
             if (result.ok) {
               app.updateSaveBtn();
               app.updateEditorModeUi?.();
@@ -232,6 +235,7 @@ function renderSaved(app: App, list: HTMLElement): void {
  */
 function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
   const state = app.state;
+  const surfaceGeneration = app.captureSurfaceGeneration();
   const nameInput = h('input', { class: 'sv-edit-name', value: queryName(q), placeholder: 'Query name' });
   const descInput = h('textarea', { class: 'sv-edit-desc', rows: '3', placeholder: 'What this query does (shown in Markdown export)' });
   descInput.value = queryDescription(q);
@@ -242,6 +246,10 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
     if (commit && nameInput.value.trim()) {
       // #343: rename/description over the LATEST workspace via `app.mutateWorkspace`.
       const result = await renameSaved(state, q.id, nameInput.value, descInput.value, app.mutateWorkspace, app.specValidators);
+      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result?.ok === true)) {
+        app.state.editingSavedId.value = null;
+        return;
+      }
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
       else if (result && !result.ok && result.deletedExternally) {
         // #343 review: target vanished — refresh so the dead row reconciles.

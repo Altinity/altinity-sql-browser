@@ -39,7 +39,7 @@ import type { QueryOrName } from './tabs.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
-import { renderDashboard } from './dashboard.js';
+import { disposeDashboardSurface, renderDashboard } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';
 import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
@@ -77,17 +77,17 @@ import { createAppPreferences } from '../application/app-preferences.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
-import { createIndexedDbHandoffStore } from '../workspace/indexeddb-handoff-store.js';
-import { createIndexedDbDetachedViewsStore } from '../workspace/indexeddb-detached-views-store.js';
 import { createNewWorkspace, DEFAULT_WORKSPACE_NAME } from '../workspace/workspace-operations.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
 import { buildConflictChooser } from './conflict-resolution.js';
-import { isDashboardRoute } from '../core/dashboard.js';
-import { parseDashboardOpenSource, buildDashboardSearch } from '../dashboard/application/dashboard-open-source.js';
-import { buildViewHandoffRecord, materializeDetachedWorkspace } from '../dashboard/application/session-bundle.js';
-import { randomHandoffToken } from '../core/handoff-token.js';
-import { exportDashboardAction, triggerImportDashboard, renderDashboardNav } from './file-menu.js';
+import {
+  buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
+} from '../core/sql-route.js';
+import type { SqlRoute } from '../core/sql-route.js';
+import {
+  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard, renderDashboardNav,
+} from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -127,12 +127,6 @@ interface WindowExtras {
  *  `defaultSpecValidationService`). `.register` is app.ts-internal wiring (the
  *  `registerSpecValidator` action) that other modules never call directly. */
 type AppSpecValidators = QuerySpecValidationService;
-
-/** #288 Phase 6 — how long a one-time view-mode handoff token stays consumable
- *  (ADR-0003). Long enough to survive a cold viewer tab's OAuth round-trip,
- *  short enough to bound exposure; the real guarantee is delete-on-consume, not
- *  the TTL. 5 minutes. */
-const VIEW_HANDOFF_TTL_MS = 5 * 60_000;
 
 export function createApp(env: CreateAppEnv = {}): App {
   const doc = env.document || document;
@@ -233,28 +227,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
   const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
   app.workspace = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
-  // #288 Phase 6 — Dashboard viewing. Two dedicated IndexedDB stores (own
-  // databases, same injected factory + lazy-open pattern as the workspace
-  // store): `handoff` is the one-time cross-tab token transport that carries a
-  // view-mode Dashboard snapshot to a new tab; `detachedViews` is the
-  // persistent store that the consumed handoff materializes into (a read-only
-  // copy under its own fresh workspace id, detached from the editable primary
-  // workspace — see ADR-0003). `dashboardOpenSource` is THIS tab's parsed
-  // /dashboard route: `?ws=&dash=` (edit, current-workspace) or `?st=&dash=`
-  // (a one-time view handoff), or null on a bare/legacy `/dashboard` open.
-  app.handoff = createIndexedDbHandoffStore(env.indexedDB || win.indexedDB);
-  app.detachedViews = createIndexedDbDetachedViewsStore(env.indexedDB || win.indexedDB);
-  app.dashboardOpenSource = parseDashboardOpenSource(loc.search);
-  // Static per-tab flag: is THIS tab the standalone `/dashboard` route (vs the
-  // Workbench)? Lets shared post-commit logic (`afterLibraryChange`) repaint the
-  // right surface — a Dashboard-page import re-renders the dashboard, not the
-  // absent Workbench chrome.
-  app.dashboardRoute = isDashboardRoute(loc.pathname);
-  // #343 step 6: set true by `renderDashboard` only while a DETACHED/read-only
-  // Dashboard is on screen. A Workbench tab (and an editable Dashboard) leaves it
-  // false, so the cross-tab refresh below projects normally; a detached view
-  // flips it so refresh skips projecting the primary workspace over its snapshot.
-  app.dashboardReadOnly = false;
+  // #407 — both application surfaces live on `/sql`; URL query parameters are
+  // parsed once here and reparsed on Back/Forward. The resolved live workspace
+  // is shared by Workbench and Dashboard.
+  let routeSearch = loc.search;
+  let routeLoadGeneration = 0;
+  let surfaceGeneration = 0;
+  app.sqlRoute = parseSqlRoute(routeSearch);
+  app.currentWorkspace = null;
+  app.workspaceRouteStatus = 'ready';
+  app.captureSurfaceGeneration = () => surfaceGeneration;
+  app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
+  app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
+    if (generation === surfaceGeneration) return true;
+    const routeKey = app.sqlRoute.workspaceKey;
+    if (committed && app.workspaceRouteStatus === 'ready' && app.currentWorkspace
+      && (routeKey === null || routeKey === app.currentWorkspace.key)) {
+      app.renderCurrentSurface();
+    }
+    return false;
+  };
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -389,19 +381,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // either way).
   const renderLoginApp = (msg?: string): void => renderLogin(app as App & { root: Element }, msg);
   // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
-  // PKCE login/refresh, Basic probing, IdP config resolution, and cross-tab
-  // auth handoff all now live in `application/connection-session.ts`,
+  // PKCE login/refresh, Basic probing, and IdP config resolution live in
+  // `application/connection-session.ts`,
   // constructible without App/AppState/DOM; this module wires it to the real
   // browser env and to `renderLoginApp` (the one piece that IS this shell's
-  // job — the session only ever calls `onAuthLost`, never renders). The two
-  // handoff windows (how long the child waits for a grant vs. how long the
-  // opener keeps listening) are env-injectable seams whose defaults are
-  // documented in full on `ConnectionSessionDeps` itself.
+  // job — the session only ever calls `onAuthLost`, never renders).
   const conn = createConnectionSession({
-    fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj, win,
+    fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
-    handoffMs: env.handoffMs != null ? env.handoffMs : 4000,
-    handoffListenMs: env.handoffListenMs != null ? env.handoffListenMs : 30000,
     onAuthLost: (detail) => renderLoginApp(detail),
   });
   app.conn = conn;
@@ -1260,10 +1247,15 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
   // button, Esc + click-outside close (capture listeners), stored at
   // app.dom[refKey] and cleared on close. Returns { close }.
+  const anchoredPopoverClosers = new Set<() => void>();
+  const closeAnchoredPopovers = (): void => {
+    for (const close of [...anchoredPopoverClosers]) close();
+  };
   function anchoredPopover(
     node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
   ): { close: () => void } {
     const close = (): void => {
+      anchoredPopoverClosers.delete(close);
       doc.removeEventListener('keydown', onKey, true);
       doc.removeEventListener('mousedown', onOutside, true);
       if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
@@ -1291,6 +1283,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     doc.body.appendChild(node);
     doc.addEventListener('keydown', onKey, true);
     doc.addEventListener('mousedown', onOutside, true);
+    anchoredPopoverClosers.add(close);
     return { close };
   }
 
@@ -1305,6 +1298,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
+    const surfaceGeneration = app.captureSurfaceGeneration();
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     // #343: `saved.commit` now runs its candidate-building transform through
@@ -1312,6 +1306,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
     // wrapper needed (it would only double-queue).
     const result = await saved.commit(tab, evaluated);
+    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
+      return result.ok ? result.entry : null;
+    }
     if (!result.ok) {
       // 'rejected' (commit's own defensive re-check inside the service, OR the
       // aggregate strictly rejecting the whole-workspace commit — #287 W4)
@@ -1414,10 +1411,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = async (): Promise<void> => {
       if (!input.value.trim()) return;
+      const surfaceGeneration = app.captureSurfaceGeneration();
       // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
       // which already serializes + reads the latest committed aggregate — no
       // outer `serializeWrite` wrapper needed.
       const result = await saved.create(tab, input.value, descInput.value);
+      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
         return;
@@ -1505,9 +1504,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   function toggleTheme(): void {
     // The shared DOM composition (state-flip + persist + `data-theme` +
     // icon swap) now lives in `ui/theme-toggle.ts`'s `toggleThemeDom` (#276
-    // Phase 5) — both route shells (workbench header, dashboard) wire their
-    // own theme button to it; this thin wrapper is kept as `app.toggleTheme`
-    // solely for explain-graph.ts's detached schema-graph overlay, which
+    // Phase 5) — the shared application header wires its theme button to this
+    // thin `app.toggleTheme` wrapper, which is also kept solely for
+    // explain-graph.ts's detached schema-graph overlay, which
     // takes it as an optional callback (see theme-toggle.ts's own header
     // comment for why that one seam isn't mechanical to repoint).
     toggleThemeDom({ prefs, document: doc, themeBtn: () => app.dom.themeBtn });
@@ -1526,13 +1525,38 @@ export function createApp(env: CreateAppEnv = {}): App {
   // `runSlotTile`), the same path run() and the detached Data view use; the
   // former bespoke `runTile`/`queryDashboardTile`/`parseJsonResult` machinery
   // was retired so cap/settings fixes can't apply to only one path.
-  app.renderDashboard = () => renderDashboard(app);
+  let disposeWorkbenchMount: (() => void) | null = null;
+  const ignoreExternalWorkspaceChange = (): void => {};
+  app.renderDashboard = () => {
+    surfaceGeneration += 1;
+    closeAnchoredPopovers();
+    disposeFileMenuOverlays(app);
+    disposeWorkbenchMount?.();
+    disposeWorkbenchMount = null;
+    workbench.destroy();
+    return renderDashboard(app);
+  };
+  const disposeCurrentSurface = (): void => {
+    surfaceGeneration += 1;
+    for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+      'button, input, select, textarea',
+    ) ?? []) control.disabled = true;
+    closeAnchoredPopovers();
+    disposeFileMenuOverlays(app);
+    disposeDashboardSurface();
+    disposeWorkbenchMount?.();
+    disposeWorkbenchMount = null;
+    workbench.destroy();
+    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+  };
 
   // Project the active StoredWorkspaceV2 onto the current application surface.
   // Persistence is now a collection; this projection identifies which record
   // this tab is editing, while the repository remains independently addressable
   // by immutable id and stable URL key.
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV2): void => {
+    app.currentWorkspace = workspace;
+    app.workspaceRouteStatus = 'ready';
     const workspaceChanged = app.state.workspaceId !== workspace.id;
     if (workspaceChanged) detachWorkspaceBoundTabs(app.state);
     app.state.savedQueries = workspace.queries;
@@ -1595,11 +1619,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   let lastCommittedToken = '';
   app.getLastCommittedToken = () => lastCommittedToken;
   // #343 step 4: the route/surface refresh hook a mounted route registers to
-  // react AFTER a refresh actually projected an external change — the standalone
-  // Dashboard route (a later step) overrides this to rebuild its viewer session
+  // react AFTER a refresh actually projected an external change — Dashboard
+  // overrides this to rebuild its viewer session
   // from the latest committed workspace. Default no-op: the Workbench route's
   // repaint is built into `refreshWorkspaceFromStore` itself.
-  app.onWorkspaceExternallyChanged = () => {};
+  app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   // #343 §5: open the invalidation channel and route inbound pokes (that aren't
   // our own) to the hook. Never carries the workspace body — only a signal.
   const workspaceChannel = broadcastChannelFactory('asb:workspace');
@@ -1620,29 +1644,70 @@ export function createApp(env: CreateAppEnv = {}): App {
   // broadcasts ONE invalidation — callers no longer project. An aborted
   // transform (null / null candidate) commits nothing and notifies no one; a
   // failed commit surfaces its diagnostics without projecting or notifying.
-  app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
-    const loaded = await app.workspace.loadById(app.state.workspaceId);
-    if (loaded.status === 'corrupt') {
-      return { ok: false as const, diagnostics: loaded.diagnostics };
+  app.mutateWorkspace = (transform) => {
+    const requestedWorkspaceId = app.state.workspaceId;
+    const requestedWorkspaceKey = app.state.workspaceKey;
+    const requestedRouteGeneration = routeLoadGeneration;
+    const routeStillMatches = (): boolean => app.sqlRoute.workspaceKey === null
+      || app.sqlRoute.workspaceKey === requestedWorkspaceKey;
+    if (app.workspaceRouteStatus !== 'ready'
+      || !routeStillMatches()) {
+      return Promise.resolve({ ok: false as const, aborted: true as const });
     }
-    const latest = loaded.status === 'ok' ? loaded.workspace : null;
-    const input = await transform(latest);
-    if (!input || !input.candidate) {
-      return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
-    }
-    const result = await app.workspace.commit(input.candidate);
-    if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
-    app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
-    if (workspaceChannel) {
-      workspaceChannel.postMessage({
-        type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
-      });
-    }
-    return {
-      ok: true as const, workspace: result.workspace,
-      dashboardRevision: result.dashboardRevision, data: input.data,
-    };
-  });
+    return app.serializeWrite(async () => {
+      if (app.workspaceRouteStatus !== 'ready'
+        || routeLoadGeneration !== requestedRouteGeneration
+        || app.state.workspaceId !== requestedWorkspaceId
+        || !routeStillMatches()) {
+        return { ok: false as const, aborted: true as const };
+      }
+      const loaded = await app.workspace.loadById(requestedWorkspaceId);
+      if (loaded.status === 'corrupt') {
+        return { ok: false as const, diagnostics: loaded.diagnostics };
+      }
+      if (loaded.status !== 'ok') {
+        app.currentWorkspace = null;
+        app.workspaceRouteStatus = 'not-found';
+        app.renderCurrentSurface();
+        return { ok: false as const, aborted: true as const };
+      }
+      const latest = loaded.workspace;
+      const input = await transform(latest);
+      if (!input || !input.candidate) {
+        return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+      }
+      if (app.workspaceRouteStatus !== 'ready'
+        || routeLoadGeneration !== requestedRouteGeneration
+        || app.state.workspaceId !== requestedWorkspaceId
+        || !routeStillMatches()) {
+        return { ok: false as const, aborted: true as const, data: input.data };
+      }
+      const result = await app.workspace.commit(input.candidate);
+      if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+      const routeIsStillCurrent = app.workspaceRouteStatus === 'ready'
+        && routeLoadGeneration === requestedRouteGeneration
+        && app.state.workspaceId === requestedWorkspaceId
+        && routeStillMatches();
+      if (routeIsStillCurrent) {
+        app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
+      }
+      if (workspaceChannel) {
+        workspaceChannel.postMessage({
+          type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
+        });
+      }
+      // The persistence operation may already have crossed its commit boundary
+      // when navigation began. Keep that durable write, but do not let its
+      // route-local caller repaint/toast against the new URL.
+      if (!routeIsStillCurrent) {
+        return { ok: false as const, aborted: true as const, data: input.data };
+      }
+      return {
+        ok: true as const, workspace: result.workspace,
+        dashboardRevision: result.dashboardRevision, data: input.data,
+      };
+    });
+  };
 
   // #343 step 4: a non-destructive warning when a reload can't reach the store.
   // The current projection stays on screen; the next focus/visibility event
@@ -1661,34 +1726,37 @@ export function createApp(env: CreateAppEnv = {}): App {
   // projecting an older read over a newer local commit. A failed load keeps the
   // projection and warns; it never rejects the queued op (no wedge).
   const runWorkspaceRefresh = async (): Promise<void> => {
-    // #343 step 6: a detached/read-only Dashboard renders from a detached
-    // snapshot, not the primary workspace — primary-workspace invalidation must
-    // never project over it (it would clobber `app.state` with a different
-    // aggregate). The Dashboard route sets `dashboardReadOnly` per render; a
-    // Workbench tab and an editable Dashboard leave it false.
-    if (app.dashboardReadOnly) return;
+    const requestedWorkspaceId = app.state.workspaceId;
+    const requestedRouteGeneration = routeLoadGeneration;
     let loaded: StoredWorkspaceV2 | null;
     try {
-      const result = await app.workspace.loadById(app.state.workspaceId);
+      const result = await app.workspace.loadById(requestedWorkspaceId);
       if (result.status === 'corrupt') { warnRefreshFailed(); return; }
       loaded = result.status === 'ok' ? result.workspace : null;
     } catch {
       warnRefreshFailed();
       return;
     }
+    if (app.state.workspaceId !== requestedWorkspaceId
+      || routeLoadGeneration !== requestedRouteGeneration) return;
     // Unchanged since this tab's last projection ⇒ cheap no-op (the common case
-    // for an activation refresh that raced no real external write). An external
-    // clear (had a workspace, now empty) also leaves the projection untouched.
-    if (workspaceToken(loaded) === lastCommittedToken || !loaded) return;
+    // for an activation refresh that raced no real external write).
+    if (workspaceToken(loaded) === lastCommittedToken) return;
+    if (!loaded) {
+      app.currentWorkspace = null;
+      app.workspaceRouteStatus = 'not-found';
+      app.renderCurrentSurface();
+      return;
+    }
     // Reconcile linked tabs from the CURRENT (pre-projection) snapshots so the
     // orphan/detach distinction survives, THEN project committed truth (which
     // reconciles tab links + fills tokens + records lastCommittedToken).
     const queriesDidChange = queriesChanged(app.state.savedQueries, loaded.queries);
     reconcileLinkedTabsToLatest(app.state, loaded);
     applyCommittedWorkspace(loaded);
-    // Workbench surface repaint. The standalone Dashboard route has no Workbench
-    // chrome — it reacts through the `onWorkspaceExternallyChanged` hook instead.
-    if (!app.dashboardRoute) {
+    // Workbench surface repaint. Dashboard reacts through the
+    // `onWorkspaceExternallyChanged` hook instead.
+    if (app.sqlRoute.surface === 'workspace') {
       // Re-run the tab effect (editor doc re-sync for the active tab, parked
       // reconcile for the rest, tab strip + Save button + var strip) by handing
       // the tabs signal a fresh array reference.
@@ -1758,18 +1826,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   };
 
-  app.loadDashboardWorkspace = async (key?: string, dashboardId?: string) => {
-    const result = key
-      ? await app.workspace.loadByKey(key)
-      : await resolveImplicitOrProvision();
-    if (result.status !== 'ok') return null;
-    // A keyed Dashboard route is valid only when both parts of its identity
-    // resolve. Do not make a workspace "last used" for a not-found Dashboard.
-    if (dashboardId !== undefined && result.workspace.dashboard?.id !== dashboardId) return null;
-    await recordOpened(result.workspace);
-    return result.workspace;
-  };
-
   const resetCorruptWorkspace = async (id: string): Promise<void> => {
     const deleted = await app.workspace.delete(id);
     if (!deleted.ok) return;
@@ -1777,17 +1833,31 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (result.status === 'ok') {
       applyCommittedWorkspace(result.workspace);
       await recordOpened(result.workspace);
-      app.renderApp();
+      app.sqlRoute = routeForWorkspace(app.sqlRoute, result.workspace.key);
+      routeSearch = buildSqlRouteSearch(app.sqlRoute, routeSearch);
+      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
+      app.renderCurrentSurface();
     }
   };
 
+  const writeRoute = (route: SqlRoute, method: 'push' | 'replace'): void => {
+    app.sqlRoute = route;
+    routeSearch = buildSqlRouteSearch(route, routeSearch);
+    win.history[method === 'push' ? 'pushState' : 'replaceState'](
+      null, '', conn.basePath + routeSearch + (loc.hash || ''),
+    );
+  };
+
   app.loadWorkspaceOnBoot = async () => {
-    const workspaceParams = new URLSearchParams(loc.search);
-    const explicitKey = workspaceParams.has('ws') ? (workspaceParams.get('ws') ?? '') : null;
+    const generation = ++routeLoadGeneration;
+    const explicitKey = app.sqlRoute.workspaceKey;
     const result = explicitKey !== null
       ? await app.workspace.loadByKey(explicitKey)
       : await resolveImplicitOrProvision();
+    if (generation !== routeLoadGeneration) return null;
     if (result.status === 'corrupt') {
+      app.currentWorkspace = null;
+      app.workspaceRouteStatus = 'error';
       flashToast(
         'Saved workspace could not be read. Other local workspaces remain unaffected.',
         {
@@ -1797,103 +1867,111 @@ export function createApp(env: CreateAppEnv = {}): App {
       );
       return null;
     }
-    const workspace = result.status === 'ok' ? result.workspace : null;
-    if (workspace) {
-      applyCommittedWorkspace(workspace);
-      await recordOpened(workspace);
+    if (result.status !== 'ok') {
+      app.currentWorkspace = null;
+      app.workspaceRouteStatus = explicitKey !== null ? 'not-found' : 'error';
+      const normalized = normalizeSqlRouteSearch(routeSearch);
+      app.sqlRoute = normalized.route;
+      if (normalized.search !== routeSearch) {
+        routeSearch = normalized.search;
+        win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
+      }
+      return null;
+    }
+    const workspace = result.workspace;
+    await recordOpened(workspace);
+    if (generation !== routeLoadGeneration) return null;
+    applyCommittedWorkspace(workspace);
+    const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);
+    const canonicalSearch = buildSqlRouteSearch(canonicalRoute, routeSearch);
+    app.sqlRoute = canonicalRoute;
+    if (canonicalSearch !== routeSearch) {
+      routeSearch = canonicalSearch;
+      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
     }
     return workspace;
   };
 
-  // Open the dashboard in a new EDIT-mode tab (#288/#302): the route carries
-  // the current workspace + dashboard ids (`?ws=&dash=`) so the viewer verifies
-  // both and shares the primary workspace store with this Workbench tab. We
-  // stand ready to hand it our credentials — the cross-tab auth-handoff GRANT
-  // side is the session's job (`conn.grantHandoffTo`, #276 Phase 2); this stays
-  // app-side only because opening the tab (window.open) is a DOM/browser
-  // concern. A workspace with no dashboard opens the bare route (legacy).
+  const renderWorkspaceNotFound = (): void => {
+    disposeCurrentSurface();
+    app.root?.replaceChildren(h('main', { class: 'workspace-not-found' },
+      h('h1', null, 'Workspace not found'),
+      h('p', null, `No local workspace exists for “${app.sqlRoute.workspaceKey ?? ''}”.`),
+      h('a', { href: conn.basePath || '/sql' }, 'Open the last-used workspace')));
+  };
+
+  const renderWorkspaceLoading = (): void => {
+    disposeCurrentSurface();
+    app.root?.replaceChildren(h('main', {
+      class: 'workspace-loading', 'aria-busy': 'true', 'aria-live': 'polite',
+    }, h('p', null, 'Loading workspace…')));
+  };
+
+  app.renderCurrentSurface = () => {
+    if (app.workspaceRouteStatus === 'loading') {
+      renderWorkspaceLoading();
+      return;
+    }
+    if (app.workspaceRouteStatus !== 'ready' || !app.currentWorkspace) {
+      renderWorkspaceNotFound();
+      return;
+    }
+    if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
+    else app.renderApp();
+  };
+
+  app.navigateSqlRoute = async (route, method) => {
+    const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
+    writeRoute(route, method);
+    if (workspaceChanged) {
+      app.workspaceRouteStatus = 'loading';
+      app.currentWorkspace = null;
+      renderWorkspaceLoading();
+      const expectedGeneration = routeLoadGeneration + 1;
+      await app.loadWorkspaceOnBoot();
+      if (routeLoadGeneration !== expectedGeneration) return;
+    }
+    app.renderCurrentSurface();
+  };
+
+  app.handleSqlPopState = async () => {
+    const previousKey = app.sqlRoute.workspaceKey;
+    routeSearch = loc.search;
+    app.sqlRoute = parseSqlRoute(routeSearch);
+    if (app.sqlRoute.workspaceKey === previousKey) {
+      disposeCurrentSurface();
+      app.renderCurrentSurface();
+      return;
+    }
+    app.workspaceRouteStatus = 'loading';
+    app.currentWorkspace = null;
+    renderWorkspaceLoading();
+    const expectedGeneration = routeLoadGeneration + 1;
+    await app.loadWorkspaceOnBoot();
+    if (routeLoadGeneration !== expectedGeneration) return;
+    app.renderCurrentSurface();
+  };
+  app.syncSqlRoute = (search) => {
+    routeSearch = search;
+    app.sqlRoute = parseSqlRoute(search);
+  };
+  app.rewriteWorkspaceRoute = (workspaceKey) => {
+    writeRoute(routeForWorkspace(app.sqlRoute, workspaceKey), 'replace');
+  };
+
+  // Workbench -> Dashboard stays in this tab and creates one useful history
+  // entry. Dashboard edit is canonical, so `mode=edit` is omitted.
   function openDashboard(): void {
-    const dashId = app.state.dashboard?.id;
-    const wsKey = app.state.workspaceKey;
-    const search = (wsKey && dashId)
-      ? buildDashboardSearch({ kind: 'current-workspace', workspaceKey: wsKey, dashboardId: dashId })
-      : '';
-    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
-    if (child) conn.grantHandoffTo(child);
+    void app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit',
+    }, 'push');
   }
   app.openDashboard = openDashboard;
 
-  // #288 Phase 6 — open the current dashboard in a new READ-ONLY VIEW-mode tab
-  // via the one-time IndexedDB token handoff (ADR-0003). The token is generated
-  // synchronously so the child tab can be opened in the SAME user-gesture task
-  // (popup-safe) already pointed at `?st=<token>&dash=`; the validated bundle is
-  // written to the handoff store in parallel, and the viewer retries the
-  // one-time `take` briefly to cover the write/read race. The detached workspace
-  // id minted here is what the consumed handoff materializes under, detached
-  // from (and unaffected by later edits to) this primary workspace.
-  function openDashboardForViewing(): void {
-    const dashboard = app.state.dashboard;
-    if (!dashboard) { flashToast('No dashboard to view', { document: doc }); return; }
-    const token = randomHandoffToken(cryptoObj);
-    const detachedWorkspaceId = uid('wsview-');
-    const built = buildViewHandoffRecord(dashboard, app.state.savedQueries, {
-      detachedWorkspaceId, expiresAt: wallNow() + VIEW_HANDOFF_TTL_MS,
-      nowISO: new Date(wallNow()).toISOString(),
-    });
-    if (!built.ok) { flashToast('✕ ' + (built.diagnostics[0]?.message || 'Could not prepare dashboard for viewing'), { document: doc }); return; }
-    const search = buildDashboardSearch({ kind: 'session-bundle', token, dashboardId: dashboard.id });
-    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
-    // A blocked popup means nothing will ever consume the token — don't write a
-    // (potentially multi-MB) orphan record the store never sweeps. Only persist
-    // the handoff once we know a viewer tab is actually opening.
-    if (!child) { flashToast('Allow pop-ups to open the dashboard view', { document: doc }); return; }
-    conn.grantHandoffTo(child);
-    // Write AFTER opening the child (open must stay in the gesture task); the
-    // child only reads the token after a full load + auth handoff, well after
-    // this fast IndexedDB write lands.
-    app.handoff.put(token, built.record).catch(() => {
-      flashToast('✕ Could not prepare dashboard for viewing', { document: doc });
-    });
-  }
-  app.openDashboardForViewing = openDashboardForViewing;
-
-  // #288 Phase 6 — the VIEW-mode viewer's side of the one-time handoff
-  // (ADR-0003). Atomically consume this tab's `?st=` token, materialize the
-  // carried bundle into the persistent detached store under its own id, then
-  // rewrite the URL to the durable `?ws=<detachedId>&dash=` form (dropping the
-  // dead token) so a relogin/reload re-opens the detached view rather than a
-  // spent token. Returns the detached workspace, or null (missing/expired
-  // token, or an undecodable bundle) → the viewer shows not-found. The opener
-  // writes the token before opening this tab, and this tab only reaches here
-  // after a full load + auth handoff, so the record is present by now.
-  app.consumeDashboardHandoff = async () => {
-    const src = app.dashboardOpenSource;
-    if (!src || src.kind !== 'session-bundle') return null;
-    const record = await app.handoff.take(src.token, wallNow());
-    if (!record) return null;
-    const materialized = materializeDetachedWorkspace(record.text, record.dashboardId, record.detachedWorkspaceId);
-    if (!materialized.ok) return null;
-    await app.detachedViews.put({ workspace: materialized.workspace, savedAt: wallNow() });
-    const search = buildDashboardSearch({
-      kind: 'current-workspace', workspaceKey: materialized.workspace.key, dashboardId: record.dashboardId,
-    });
-    win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
-    app.dashboardOpenSource = parseDashboardOpenSource(search);
-    return materialized.workspace;
-  };
-
-  // #302 — after an import committed FROM the standalone Dashboard page, point
-  // the tab's URL at the (possibly new) current dashboard id and re-render the
-  // viewer. Import replaces the current dashboard (new id), so the pre-import
-  // URL's `dash=` would otherwise fail the viewer's strict id verification.
   app.reloadDashboardRoute = () => {
-    const dash = app.state.dashboard;
-    const wsKey = app.state.workspaceKey;
-    if (dash && wsKey) {
-      const search = buildDashboardSearch({ kind: 'current-workspace', workspaceKey: wsKey, dashboardId: dash.id });
-      win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
-      app.dashboardOpenSource = parseDashboardOpenSource(search);
-    }
+    app.currentWorkspace = app.currentWorkspace
+      ? { ...app.currentWorkspace, queries: app.state.savedQueries, dashboard: app.state.dashboard }
+      : null;
     app.renderDashboard();
   };
 
@@ -1911,7 +1989,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     // workspace resolution runs for a username/password session. Without it,
     // basic auth would keep rendering the placeholder workspace instead of the
     // requested or last-used persisted workspace.
-    connect: async (input) => { await conn.connectBasic(input); await app.loadWorkspaceOnBoot(); app.renderApp(); },
+    connect: async (input) => {
+      await conn.connectBasic(input);
+      await app.loadWorkspaceOnBoot();
+      app.renderCurrentSurface();
+      void app.catalog.loadVersion();
+    },
     share,
     copyResult,
     // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
@@ -1942,7 +2025,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     openCreateInNewTab: (target, name) => openCreateInNewTab(target, name),
     openShortcuts: () => openShortcuts(app),
     openDashboard,
-    openDashboardForViewing,
     // #302: Dashboard import/export invoked from the Dashboard page's own File
     // menu (and still from the Workbench during the transition). Export is a
     // read-only bundle download; import runs the transactional planner and, on
@@ -1959,7 +2041,18 @@ export function createApp(env: CreateAppEnv = {}): App {
     updateSaveBtn: () => app.updateSaveBtn(),
   };
 
-  app.renderApp = () => renderApp(app, { toggleTheme, startDrag });
+  app.renderApp = () => {
+    surfaceGeneration += 1;
+    closeAnchoredPopovers();
+    disposeFileMenuOverlays(app);
+    disposeDashboardSurface();
+    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+    disposeWorkbenchMount?.();
+    disposeWorkbenchMount = renderApp(app, { toggleTheme, startDrag });
+  };
+  if (typeof win.addEventListener === 'function') {
+    win.addEventListener('popstate', () => { void app.handleSqlPopState(); });
+  }
   return app;
 }
 
@@ -1978,8 +2071,8 @@ export interface RenderAppHelpers {
  *  byte-identically, driven by a narrow `WorkbenchShellDeps` bag instead of
  *  the full `App` — see that module's header comment for what stays coupled
  *  to `app` and why. */
-export function renderApp(app: App, helpers: RenderAppHelpers): void {
-  mountWorkbenchShell({
+export function renderApp(app: App, helpers: RenderAppHelpers): () => void {
+  return mountWorkbenchShell({
     app,
     root: app.root,
     document: app.document,

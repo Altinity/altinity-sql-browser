@@ -18,7 +18,7 @@ import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
-import { isDashboardRoute } from './core/dashboard.js';
+import { parseSqlRoute } from './core/sql-route.js';
 import { rolePreviewView } from './core/result-choice.js';
 import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
@@ -38,10 +38,11 @@ import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
  *  its real name on `ConnectionSession`). */
 export interface BootstrapApp {
   state: Pick<State, 'tabs' | 'resultView'>;
+  catalog: { loadVersion(): Promise<void> };
   conn: Pick<ConnectionSession,
-    'isSignedIn' | 'resolveConfig' | 'setTokens' | 'receiveAuthHandoff' | 'ensureFreshToken' | 'ensureConfig'>;
-  renderDashboard(): void;
-  renderApp(): void;
+    'basePath' | 'isSignedIn' | 'resolveConfig' | 'setTokens' | 'ensureConfig'>;
+  renderCurrentSurface(): void;
+  syncSqlRoute(search: string): void;
   /** The real `App.showLogin` is `(msg?: string) => void` — every other real
    *  caller (ui/login.ts) always passes a string. `callbackError` below is
    *  main.ts's own `string | null` sentinel (`null` means "no callback
@@ -62,13 +63,11 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   const loc = env.location;
   const ss = env.sessionStorage;
   const hist = env.history;
-  // The standalone dashboard route (#149) reuses this same bootstrap + app: it
-  // shares the OAuth-callback handling below, but renders the dashboard instead
-  // of the workbench and skips editor-only share-link seeding.
-  const dash = isDashboardRoute(loc.pathname);
+  let dash = parseSqlRoute(loc.search).surface === 'dashboard';
   const u = new URL(loc.href);
   const code = u.searchParams.get('code');
   const stateParam = u.searchParams.get('state');
+  const expectedState = ss.getItem('oauth_state');
   const errorParam = u.searchParams.get('error');
   let callbackError: string | null = null;
 
@@ -77,7 +76,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // a code — surface it rather than dropping silently onto the login screen.
     callbackError = 'Sign-in failed: ' + (u.searchParams.get('error_description') || errorParam);
   } else if (code && stateParam) {
-    if (stateParam !== ss.getItem('oauth_state')) {
+    if (stateParam !== expectedState) {
       callbackError = 'OAuth state mismatch — please try again.';
     } else {
       try {
@@ -89,7 +88,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
           // behavior guard) keeps the exact pre-existing pass-through-null
           // runtime shape for a stale/direct hit with no stashed verifier.
           verifier: ss.getItem('oauth_verifier') as string,
-          redirectUri: loc.origin + loc.pathname,
+          redirectUri: loc.origin + app.conn.basePath,
         });
         const bearer = bearerFromTokens(tokens, cfg.bearer);
         if (!bearer) throw new Error('Token response missing bearer token');
@@ -102,8 +101,27 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   if (errorParam || (code && stateParam)) {
     ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
       .forEach((k) => u.searchParams.delete(k));
+    if (stateParam && stateParam === expectedState) {
+      try {
+        const saved = JSON.parse(ss.getItem('oauth_return_route') || 'null') as {
+          state?: unknown; search?: unknown;
+        } | null;
+        if (saved?.state === stateParam && typeof saved.search === 'string') {
+          const restored = new URLSearchParams(saved.search);
+          for (const key of new Set(restored.keys())) u.searchParams.delete(key);
+          for (const [key, value] of restored) u.searchParams.append(key, value);
+          ss.removeItem('oauth_return_route');
+        }
+      } catch {
+        // Invalid same-tab return metadata is ignored; callback validation and
+        // the normal implicit route remain authoritative.
+      }
+    }
     const qs = u.searchParams.toString();
-    hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
+    const cleanedSearch = qs ? '?' + qs : '';
+    hist.replaceState(null, '', loc.origin + loc.pathname + cleanedSearch + loc.hash);
+    app.syncSqlRoute(cleanedSearch);
+    dash = parseSqlRoute(cleanedSearch).surface === 'dashboard';
   }
 
   // A shared query (SQL + complete Spec) rides in the URL hash, which is lost
@@ -160,18 +178,6 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     }
   }
 
-  // A freshly-opened dashboard tab is signed out (per-tab sessionStorage); try a
-  // one-time credential handoff from the opener before deciding what to render.
-  // A cold/bookmarked visit has no opener → falls through to the login screen,
-  // which after sign-in returns to /sql/dashboard and renders the dashboard.
-  if (dash && !app.conn.isSignedIn()) {
-    await app.conn.receiveAuthHandoff(env);
-    // The opener may hand over an *expired* id_token whose refresh token is still
-    // good (an idle opener refreshes only lazily). Attempt a refresh before
-    // giving up — otherwise a valid handoff would still bounce to a full re-login.
-    if (!app.conn.isSignedIn()) await app.conn.ensureFreshToken();
-  }
-
   if (app.conn.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.
     ss.removeItem('oauth_shared'); // consumed
@@ -179,15 +185,9 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
-    if (dash) app.renderDashboard();
-    else {
-      // #287 W4: resolve + project the aggregate before the Workbench's first
-      // paint so the saved-query sidebar/Save flow already treat it as the
-      // single source of truth (the /dashboard branch above keeps resolving
-      // its own copy via `renderDashboard` → `loadDashboardWorkspace`).
-      await app.loadWorkspaceOnBoot();
-      app.renderApp();
-    }
+    await app.loadWorkspaceOnBoot();
+    app.renderCurrentSurface();
+    void app.catalog.loadVersion();
   } else {
     app.showLogin(callbackError);
   }
@@ -227,7 +227,6 @@ if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
     sessionStorage: window.sessionStorage,
     history: window.history,
     fetch: window.fetch.bind(window),
-    opener: window.opener, // dashboard tab reads its opener for the auth handoff
   });
 }
 /* c8 ignore stop */

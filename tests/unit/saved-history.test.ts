@@ -78,6 +78,37 @@ describe('renderSavedHistory', () => {
     expect(app.activeTab().editorMode).toBe('sql');
   });
 
+  it('stale saved-query mutations finish durably without settling into the obsolete Workbench renderer', async () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [
+      { id: 'star', name: 'Star', sql: 'SELECT 1', favorite: false },
+      { id: 'delete', name: 'Delete', sql: 'SELECT 2', favorite: false },
+      { id: 'rename', name: 'Rename', sql: 'SELECT 3', favorite: false },
+    ]);
+    app.refreshCurrentSurfaceAfterStale = vi.fn(() => false);
+    renderSavedHistory(app);
+    const rows = qsa(savedList(app), '.saved-row');
+
+    click(qs(rows[0], '.sv-star'));
+    await flush();
+    click(byTitle(rows[1], 'Delete'));
+    await flush();
+    click(byTitle(rows[2], 'Edit name & description'));
+    const input = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    input.value = 'Renamed';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+
+    expect(app.refreshCurrentSurfaceAfterStale).toHaveBeenCalledTimes(3);
+    expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'star'))).toBe(true);
+    expect(app.state.savedQueries.some((q) => q.id === 'delete')).toBe(false);
+    expect(queryName(app.state.savedQueries.find((q) => q.id === 'rename'))).toBe('Renamed');
+    expect(app.state.editingSavedId.value).toBeNull();
+    expect(app.updateSaveBtn).not.toHaveBeenCalled();
+    expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
+  });
+
   it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

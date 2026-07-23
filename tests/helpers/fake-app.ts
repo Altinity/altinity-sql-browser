@@ -240,8 +240,6 @@ const connDefaults: ConnectionSession = {
   connectBasic: async () => {},
   signOut: () => {},
   ensureFreshToken: async () => true,
-  grantHandoffTo: () => {},
-  receiveAuthHandoff: async () => false,
 };
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
@@ -431,23 +429,18 @@ const appDefaults: App = {
     resolveImplicit: async () => ({ status: 'empty' }),
     markOpened: async () => ({ ok: true }),
   },
-  // #288 Phase 6 — Dashboard viewing seams. In-memory no-op stores by default;
-  // a test exercising the handoff/detached-view flow overrides these.
-  handoff: {
-    put: async () => {},
-    take: async () => null,
-  },
-  detachedViews: {
-    put: async () => {},
-    get: async () => null,
-    getByKey: async () => null,
-  },
-  dashboardOpenSource: null,
-  dashboardRoute: false,
-  dashboardReadOnly: false,
+  sqlRoute: { surface: 'workspace', workspaceKey: null },
+  currentWorkspace: null,
+  workspaceRouteStatus: 'ready',
+  captureSurfaceGeneration: () => 0,
+  isSurfaceGenerationCurrent: (generation) => generation === 0,
+  refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
+  navigateSqlRoute: async () => {},
+  handleSqlPopState: async () => {},
+  syncSqlRoute: () => {},
+  rewriteWorkspaceRoute: () => {},
+  renderCurrentSurface: () => {},
   reloadDashboardRoute: () => {},
-  consumeDashboardHandoff: async () => null,
-  loadDashboardWorkspace: async () => null,
   loadWorkspaceOnBoot: async () => null,
   // Inert placeholders — `base` below overrides both with real, state-backed
   // implementations (mirroring app.ts's own #287 W5 wiring) so a file-menu
@@ -554,7 +547,6 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
-  openDashboardForViewing: () => {},
   actions: {} as ActionsRegistry,
 };
 
@@ -575,9 +567,9 @@ const appDefaults: App = {
 // re-declaring a narrower `Partial<App>` that would reject it.
 export type MakeAppOverrides = AppOverrides;
 type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
-  /** Partial like the rest (#286 Phase 4) — the Dashboard viewer reads a
-   *  StoredWorkspaceV2 through `loadDashboardWorkspace`/`workspace.loadById`;
-   *  a dashboard test overrides just the method(s) it drives. */
+  /** Partial like the rest (#286 Phase 4) — Dashboard mutations read a
+   *  StoredWorkspaceV2 through `workspace.loadById`; a test overrides only
+   *  the repository methods it drives. */
   workspace?: Partial<WorkspaceRepository>;
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
@@ -635,6 +627,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // this exact object, not a fresh merge (`overrides.workspace` layers under
   // `appDefaults.workspace`, same three-way convention as `dom`/`conn`/etc.).
   const workspaceRepo: WorkspaceRepository = { ...appDefaults.workspace, ...(overrides.workspace ?? {}) };
+  let projectedApp: App | null = null;
   // #287 W5 / #343 §2: the one state-backed projection both `applyCommittedWorkspace`
   // and the `mutateWorkspace` success path share (mirrors app.ts, where the
   // primitive projects exactly once so callers no longer do).
@@ -648,9 +641,14 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     state.workspaceKey = workspace.key;
     state.libraryName.value = workspace.name;
     state.libraryDirty.value = false;
+    if (projectedApp) {
+      projectedApp.currentWorkspace = workspace;
+      projectedApp.workspaceRouteStatus = 'ready';
+    }
   };
   const base = {
     state,
+    sqlRoute: { surface: 'workspace', workspaceKey: state.workspaceKey } as App['sqlRoute'],
     root,
     document,
     Chart: FakeChart,
@@ -827,7 +825,6 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
       openDashboard: vi.fn(),
-      openDashboardForViewing: vi.fn(),
       exportDashboard: vi.fn(),
       importDashboard: vi.fn(),
       openUserMenu: vi.fn(),
@@ -866,6 +863,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // (every field's REAL, often Mock-typed, shape) is what callers actually
   // get back, not this widened annotation.
   const asApp: App = merged;
+  projectedApp = asApp;
   void asApp;
   return merged;
 }

@@ -77,8 +77,6 @@ export interface CreateAppEnv {
    * `{ clipboard: { writeText } }` or omits the field entirely. */
   navigator?: { clipboard?: Clipboard } & Record<string, unknown>;
   download?: (filename: string, mime: string, content: BlobPart) => void;
-  handoffMs?: number;
-  handoffListenMs?: number;
 }
 
 /** The env param of `bootstrap(app, env)` — a distinct, fully-required shape
@@ -88,5 +86,4 @@ export interface BootstrapEnv {
   sessionStorage: Storage;
   history: History;
   fetch: typeof fetch;
-  opener?: Window | null;
 }

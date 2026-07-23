@@ -84,11 +84,8 @@ describe('dashboard dependency boundaries', () => {
     expect(specs.some((spec) => FORBIDDEN.some((f) => spec === f || spec.startsWith(`${f}/`)))).toBe(false);
   });
 
-  // #288 Phase 6: the workspace aggregate + Dashboard-viewing stores (the
-  // one-time handoff transport and the persistent detached-views store) are the
-  // read-only viewer path's persistence layer — they must stay constructible
-  // without any UI/App/editor/service/net dependency, so the viewer bundles no
-  // Workbench/editor construction.
+  // #407: the live workspace aggregate is the Dashboard viewer's persistence
+  // layer. It remains constructible without UI/App/editor/service/net modules.
   it('src/workspace imports no Workbench UI / App / AppState / editor / service / net modules', () => {
     expect(violations('src/workspace')).toEqual([]);
   });

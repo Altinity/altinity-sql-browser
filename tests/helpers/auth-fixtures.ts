@@ -14,7 +14,7 @@ export function jwt(payload: Record<string, unknown>): string {
 /** A Map-backed sessionStorage fake — the three methods the auth code uses,
  *  plus the backing `_map` for direct assertions. Structurally satisfies
  *  `connection-session.ts`'s `SessionStorageLike` (and the narrower
- *  `core/auth-handoff.js` `StorageLike`). */
+ *  the browser session-storage contract). */
 export interface MemStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;

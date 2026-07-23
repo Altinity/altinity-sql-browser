@@ -50,14 +50,15 @@ import { h } from '../dom.js';
 import { Icon } from '../icons.js';
 import { MOBILE_BREAKPOINT_PX, savedForTab } from '../../state.js';
 import type { QueryTab as Tab, AppState as State } from '../../state.js';
-import { userShortName, formatRows } from '../../core/format.js';
+import { formatRows } from '../../core/format.js';
 import { effect } from '@preact/signals-core';
 import { renderTabs } from '../tabs.js';
 import { renderSchema } from '../schema.js';
 import { renderResults } from '../results.js';
 import type { QueryResult } from '../results.js';
 import { renderSavedHistory } from '../saved-history.js';
-import { libraryControls, renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
+import { renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
+import { buildAppHeader } from '../app-header.js';
 import { SCHEMA_GRAPH_MIME } from '../dnd-mime.js';
 import { startDrag } from '../splitters.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from '../splitters.js';
@@ -88,7 +89,7 @@ export interface WorkbenchShellDeps {
   state: State;
   actions: ActionsRegistry;
   conn: Pick<ConnectionSession, 'email' | 'host'>;
-  catalog: Pick<SchemaCatalogService, 'loadVersion' | 'loadSchema' | 'loadReference'>;
+  catalog: Pick<SchemaCatalogService, 'loadSchema' | 'loadReference'>;
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   /** The route-scoped run/runScript/runEntry/cancel session (#276 Phase 3a) —
@@ -115,7 +116,7 @@ export interface WorkbenchShellDeps {
 /** Build the signed-in shell and mount all regions. Ported byte-identically
  *  from app.ts's former `renderApp` body (#276 Phase 5) — every ordering
  *  comment below is original. */
-export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
+export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   const {
     app, root, document: doc, state, actions, conn, catalog, sqlEditor, specEditor,
     queryDoc, prefs, matchMedia, activeTab, updateSaveBtn, specBlocked, renderVarStrip,
@@ -125,29 +126,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   doc.documentElement.setAttribute('data-density', state.density);
 
   app.dom = {};
-  app.dom.connStatus = h('div', { class: 'conn-status dim' }, h('span', { class: 'ver' }, 'Connecting…'));
-  app.dom.themeBtn = h('button', { class: 'hd-btn', title: 'Toggle theme', onclick: toggleTheme });
-  app.dom.themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
-  app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: conn.email(), onclick: () => actions.openUserMenu() },
-    h('span', { class: 'user-short' }, userShortName(conn.email())), Icon.chevDown());
-  const header = h('div', { class: 'app-header' },
-    h('div', { class: 'logo-mark' }, Icon.brand()),
-    h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
-    h('div', { class: 'env-chip' }, conn.host()),
-    h('div', { class: 'hd-divider' }),
-    ...libraryControls(app),
-    h('div', { style: { flex: '1' } }),
-    app.dom.connStatus,
-    h('a', {
-      // hd-hide-mobile: decorative/desktop-only header items are hidden below the
-      // breakpoint (#126) so the essential controls (File menu, theme, user menu)
-      // fit a phone width instead of overflowing off-screen. See styles.css.
-      class: 'hd-btn hd-hide-mobile', href: 'https://github.com/Altinity/altinity-sql-browser/tree/main/examples',
-      target: '_blank', rel: 'noopener noreferrer', title: 'View examples',
-    }, Icon.github()),
-    h('button', { class: 'hd-btn hd-hide-mobile', title: 'Keyboard shortcuts (?)', onclick: () => actions.openShortcuts() }, Icon.shortcuts()),
-    app.dom.themeBtn,
-    app.dom.userBtn);
+  const header = buildAppHeader(app);
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',
@@ -307,7 +286,8 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
   // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
   // just mutate the signals.
-  effect(() => {
+  const disposers: (() => void)[] = [];
+  disposers.push(effect(() => {
     state.tabs.value;
     state.activeTabId.value;
     queryDoc.revalidateSpecDrafts({ refreshUi: false });
@@ -322,7 +302,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     updateSaveBtn();
     renderVarStrip(); // switching tabs / opening a saved query re-detects variables
     app.updateEditorModeUi!(); // assigned just above, unconditionally, before any effect can run
-  });
+  }));
   // The workbench's 3 run-coupled reactive effects (#276 Phase 3a — see
   // workbench-session.ts's own `attachShell`): the results-pane repaint
   // (re-runs on a tab switch, a Table/JSON/Chart view change, or a run-state
@@ -346,7 +326,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // The Export button reflects the exporting state — set here (not just at
   // click-time) so a second click while one export is already running is
   // blocked visually too, not just by exportDirect's own re-entrance guard.
-  effect(() => { setExportBtn(state.exporting.value); });
+  disposers.push(effect(() => { setExportBtn(state.exporting.value); }));
   // Track the editor's text selection into a signal so the Run button label and
   // ⌘+Enter target just the highlighted text. `selectionchange` is the one event
   // that fires for keyboard, mouse, and programmatic selection; gate on the
@@ -365,7 +345,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // calls: re-runs on schema load, load error, filter text, or expand/collapse.
   // Registered here (post-mount) so app.dom.schemaList already exists; the effect
   // also runs once now for the initial paint.
-  effect(() => {
+  disposers.push(effect(() => {
     state.schema.value;
     state.schemaError.value;
     state.schemaFilter.value;
@@ -374,23 +354,23 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     // and hover title, so repaint the tree when isMobile flips.
     state.isMobile.value;
     renderSchema(app);
-  });
+  }));
   // The schema/auth-failure banner reflects schemaError (a separate surface).
-  effect(() => {
+  disposers.push(effect(() => {
     state.schemaError.value;
     updateBanner();
-  });
+  }));
   // Reactive repaint of the side panel: re-runs when the active panel changes
   // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
   // still call renderSavedHistory directly until those slices are signals too.
-  effect(() => {
+  disposers.push(effect(() => {
     state.sidePanel.value;
     renderSavedHistory(app);
-  });
+  }));
   // Reactive repaint of the header library title (name + unsaved-changes dot):
   // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
   // separately (editingLibrary is not a signal — file-menu.js renders it directly).
-  effect(() => {
+  disposers.push(effect(() => {
     state.libraryName.value;
     state.libraryDirty.value;
     renderLibraryTitle(app);
@@ -398,23 +378,28 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     // which changes alongside these signals (star toggle / import / replace all
     // flip libraryDirty on their way through a commit).
     renderDashboardNav(app);
-  });
+  }));
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the
   // auto-navigation in the action wrappers) via the injected matchMedia seam.
   // When the platform has no matchMedia the app stays in desktop JS mode — the
   // mobile CSS still applies, just without JS branching.
   const mq = matchMedia && matchMedia('(max-width: ' + MOBILE_BREAKPOINT_PX + 'px)');
+  const onMobileChange = (e: MediaQueryListEvent): void => { state.isMobile.value = e.matches; };
   if (mq) {
     state.isMobile.value = mq.matches;
-    mq.addEventListener('change', (e) => { state.isMobile.value = e.matches; });
+    mq.addEventListener('change', onMobileChange);
   }
   // Bottom-nav view switching: reflect the active mobile panel + Tables segmented
   // choice onto data-attributes the mobile CSS keys off (a no-op above the
   // breakpoint). Each runs once now for the initial paint.
-  effect(() => { mainRow.dataset.mobileView = state.mobileView.value; });
-  effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; });
-  catalog.loadVersion();
+  disposers.push(effect(() => { mainRow.dataset.mobileView = state.mobileView.value; }));
+  disposers.push(effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; }));
   catalog.loadSchema();
   catalog.loadReference();
+  return () => {
+    for (const dispose of disposers) dispose();
+    doc.removeEventListener('selectionchange', app.syncSelection!);
+    mq?.removeEventListener('change', onMobileChange);
+  };
 }

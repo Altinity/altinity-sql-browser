@@ -31,12 +31,12 @@ server {
         return 302 /sql;
     }
 
-    # The workbench (/sql) and the client-side dashboard route (/sql/dashboard)
-    # are the SAME single-file SPA. alias to a file (no captured path appended
-    # inside a regex location). The CSP's connect-src bounds where the
+    # Workbench and Dashboard are query-selected surfaces of /sql. Alias to a
+    # file (no captured path appended inside a regex location). CSP connect-src
+    # bounds where the
     # sessionStorage tokens can be sent; script-src/style-src need
     # 'unsafe-inline' because the JS+CSS are inlined into this one HTML file.
-    location ~ ^/sql(/dashboard)?/?$ {
+    location ~ ^/sql/?$ {
         alias /app/sql.html;
         # NB: set the charset via the `charset` directive, NOT inside
         # default_type — a "text/html; charset=…" content_type string defeats

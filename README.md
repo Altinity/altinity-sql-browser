@@ -532,10 +532,11 @@ npm run dev            # build + serve dist/ at http://localhost:8900
 ### Run in Docker
 
 The production image is a static **nginx** server for the single-file SPA — no
-application backend. It serves `/sql` (and the `/sql/dashboard` client route),
-serves a `config.json` you provide at `/sql/config.json`, and answers `/healthz`
-for probes. Queries are **not** proxied: the browser POSTs them straight to the
-chosen ClickHouse cluster, exactly like the on-cluster deployment.
+application backend. It serves `/sql`, including Workbench and Dashboard
+surfaces selected by query parameters, serves a `config.json` you provide at
+`/sql/config.json`, and answers `/healthz` for probes. Queries are **not**
+proxied: the browser POSTs them straight to the chosen ClickHouse cluster,
+exactly like the on-cluster deployment.
 
 Pull the published multi-arch image (`linux/amd64` + `linux/arm64`):
 
@@ -697,12 +698,9 @@ see "Security headers" below), and uploads the SPA + config into ClickHouse
 
 1. Add the rendered `dist/http_handlers.xml` to the server's `config.d/` (or push
    it as an ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
-   The SPA handler serves both `/sql` (the workbench) and `/sql/dashboard` (the
-   favorites dashboard) from the same file.
-2. Register the redirect URI `https://<ch-host>/sql` with your OAuth IdP. If users
-   will open `/sql/dashboard` via a cold/bookmarked link (rather than from the app,
-   which hands credentials over in-session), also register
-   `https://<ch-host>/sql/dashboard` so that direct sign-in can complete.
+   The SPA handler serves `/sql`; Workbench and Dashboard bookmarks differ only
+   by the `ws`, `surface`, and optional `mode` query parameters.
+2. Register the single redirect URI `https://<ch-host>/sql` with your OAuth IdP.
 3. Make sure ClickHouse accepts the bearer JWT — either a CH
    `<token_processors>` entry validating your IdP's JWKS, or a delegated
    `<http_authentication_servers>` verifier. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
