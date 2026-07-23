@@ -10,6 +10,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- Keep Grafana-grid KPI hover chrome control-only: saved-query titles and
+  descriptions no longer overlay metric values while moving or editing a tile.
 - Keep the shared connection host visible after the server-version probe,
   restore Dashboard filters to their initial default-derived active state, and
   retain Dashboard time-range announcements when no ordinary filters exist.
