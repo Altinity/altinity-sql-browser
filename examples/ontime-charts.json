@@ -359,7 +359,7 @@
     },
     {
       "id": "ontime-filter-options",
-      "sql": "SELECT\n  (SELECT arraySort(groupUniqArray(Carrier)) FROM ontime.fact_ontime WHERE Carrier != '') AS carrier,\n  (SELECT groupArray((AirportCode AS value, DisplayAirportName AS label)) FROM (SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName)) AS origin",
+      "sql": "SELECT\n  (SELECT arraySort(groupUniqArray(Carrier)) FROM ontime.fact_ontime WHERE Carrier != '') AS carrier,\n  (SELECT mapFromArrays(groupArray(AirportCode), groupArray(DisplayAirportName)) FROM (SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName)) AS origin",
       "specVersion": 1,
       "spec": {
         "name": "On-time dimensions",
