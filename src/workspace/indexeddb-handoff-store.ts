@@ -2,9 +2,9 @@
 // Dashboard view-mode handoff). Structured exactly like
 // `indexeddb-workspace-store.ts` (lazy cached `openDb`, `requestResult`,
 // `transactionDone`, cache dropped on a failed open) but backed by its OWN
-// dedicated database — never the `asb-workspace` DB — since a handoff token
+// dedicated database — never the `asb-workspaces-v2` DB — since a handoff token
 // is a short-lived, one-time-consumed record with its own lifecycle, unlike
-// the workspace aggregate's single-record replace-whole-thing semantics.
+// an editable workspace record's replace-whole-aggregate semantics.
 //
 // The `IDBFactory` is injected the same way as the workspace store, so tests
 // drive this with a minimal in-memory fake factory instead of a real browser

@@ -13,7 +13,7 @@ import {
   adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
-import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
@@ -75,10 +75,12 @@ import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../applica
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
 import { createIndexedDbHandoffStore } from '../workspace/indexeddb-handoff-store.js';
 import { createIndexedDbDetachedViewsStore } from '../workspace/indexeddb-detached-views-store.js';
-import { migrateLegacyWorkspaceIfNeeded } from '../workspace/legacy-migration.js';
+import { createNewWorkspace, DEFAULT_WORKSPACE_NAME } from '../workspace/workspace-operations.js';
+import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
 import { buildConflictChooser } from './conflict-resolution.js';
 import { isDashboardRoute } from '../core/dashboard.js';
@@ -147,6 +149,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     || ((name: string): BroadcastChannelPort | null =>
       (typeof win.BroadcastChannel === 'function' ? new win.BroadcastChannel(name) : null));
   const documentVisible = env.documentVisible || (() => doc.visibilityState !== 'hidden');
+  // Epoch clock shared by persistence metadata and parameter execution.
+  const wallNow = (): number => (env.wallNow || (() => Date.now()))();
 
   // Built up as a `Partial<App>` first (every field below has a real,
   // App-typed value already — `Partial` just lets this literal typecheck
@@ -220,15 +224,15 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  // Atomic StoredWorkspaceV1 persistence (#280 Phase 2 / #284): the injected
-  // IndexedDB factory seam (mirrors crypto/sessionStorage) backs a single-record
-  // WorkspaceStore, behind which the pure WorkspaceRepository does validate-then-
-  // atomically-replace commits. Constructed lazily — no database is opened until
+  // Atomic StoredWorkspaceV2 persistence: the injected IndexedDB factory seam
+  // (mirrors crypto/sessionStorage) backs the workspace collection, behind
+  // which the pure WorkspaceRepository validates create/replace commits.
+  // Constructed lazily — no database is opened until
   // a workspace operation runs — so this never touches IndexedDB during
   // bootstrap. The favorites-driven Dashboard render still reads legacy keys in
   // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
   const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
-  app.workspace = createWorkspaceRepository({ store: workspaceStore });
+  app.workspace = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
   // #288 Phase 6 — Dashboard viewing. Two dedicated IndexedDB stores (own
   // databases, same injected factory + lazy-open pattern as the workspace
   // store): `handoff` is the one-time cross-tab token transport that carries a
@@ -519,7 +523,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // wrong for epoch-relative values (#169's `now-1h`). Callers resolve one
   // wallNow() per execution wave and thread it through every prepare of that
   // wave; debounce/coalescing also live in the callers, never in the pipeline.
-  const wallNow = (): number => (env.wallNow || (() => Date.now()))();
   app.wallNow = wallNow;
   // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
   // fallback (non-secure context, where randomUUID is undefined) must still be
@@ -1525,57 +1528,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // was retired so cap/settings fixes can't apply to only one path.
   app.renderDashboard = () => renderDashboard(app);
 
-  // #286 Phase 4: run the one-shot legacy migration (favorites → tiles,
-  // dashLayout/dashCols → flow@1) — it only actually does anything when no
-  // aggregate record exists yet (`migrateLegacyWorkspaceIfNeeded` keys on raw
-  // record existence via the store, never on `loadCurrent`/`loadCurrentResult`
-  // validity, so a present-but-corrupt record is never clobbered by a re-run
-  // — #300). Shared by `loadDashboardWorkspace` below and the boot path
-  // (`loadWorkspaceOnBoot`) so both read the SAME migration deps built off the
-  // current `app.state` snapshot.
-  const runLegacyMigrationIfNeeded = () => migrateLegacyWorkspaceIfNeeded({
-    store: workspaceStore,
-    repository: app.workspace,
-    legacy: {
-      name: app.state.libraryName.value,
-      queries: app.state.savedQueries,
-      dashLayout: app.state.dashLayout,
-      dashCols: app.state.dashCols,
-    },
-    genId: () => uid('ws-'),
-  });
-
-  // #286 Phase 4: resolve the current StoredWorkspaceV1 the Dashboard viewer
-  // reads from. Reads via `loadCurrent` (not `loadCurrentResult`), so a
-  // corrupt-but-present record still collapses to `null` here — the /dashboard
-  // route's own render just falls back to its empty state; the user-visible
-  // corrupt-record surface (#300) lives in the boot path below, which both
-  // `main.ts`'s OAuth bootstrap and the basic-auth `connect` action go through.
-  app.loadDashboardWorkspace = async () => {
-    await runLegacyMigrationIfNeeded();
-    return app.workspace.loadCurrent();
-  };
-
-  // #287 W4: the async boot-init step — migrate-if-needed + loadCurrent (via
-  // `loadDashboardWorkspace` above), then PROJECT the resolved aggregate onto
-  // `state` so the Workbench (not only the /dashboard route) treats it as the
-  // saved-query collection's single source of truth. `main.ts`'s `bootstrap`
-  // awaits this before the first `renderApp()`. A null/failed load leaves
-  // `state` exactly as `createState()`'s synchronous legacy read already
-  // populated it (a brand-new install with nothing to migrate yet, or a
-  // degraded IndexedDB) — including its own synchronously-minted
-  // `workspaceId` placeholder (see `createState`'s `mintWorkspaceId`), so a
-  // saved-query CRUD op run in this window (or by a caller that never awaits
-  // this step at all) still succeeds rather than failing closed.
-  // #287 W5: the projection every commit of the aggregate onto `state`
-  // shares — extracted from this same assignment's pre-W5 inline body so
-  // `loadWorkspaceOnBoot` and every file-menu.js write (New/Import/Replace/
-  // rename) apply it identically. `libraryDirty` clears here too: a workspace
-  // that was JUST committed (boot's own load, or a file-menu op's commit) is
-  // by construction in sync with what's persisted, matching the pre-#287
-  // New/Replace-clears-dirty behavior file-menu.js's own ops used to apply
-  // directly.
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
+  // Project the active StoredWorkspaceV2 onto the current application surface.
+  // Persistence is now a collection; this projection identifies which record
+  // this tab is editing, while the repository remains independently addressable
+  // by immutable id and stable URL key.
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV2): void => {
     app.state.savedQueries = workspace.queries;
     reconcileTabsWithSavedQueries(app.state);
     // #343: seed the in-sync baseline token for any still-linked tab that lacks
@@ -1591,6 +1548,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
     app.state.dashboard = workspace.dashboard;
     app.state.workspaceId = workspace.id;
+    app.state.workspaceKey = workspace.key;
     app.state.libraryName.value = workspace.name;
     app.state.libraryDirty.value = false;
     // #343 §2: this projection IS now the tab's committed baseline — record its
@@ -1636,11 +1594,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // used to detect whether a later reload actually changed anything (not CAS).
   let lastCommittedToken = '';
   app.getLastCommittedToken = () => lastCommittedToken;
-  // #343 §5/§6: the channel-receive + focus/visibility listeners only ever call
-  // THIS hook; it is wired to the coalesced refresh scheduler just below (once
-  // `refreshWorkspaceFromStore` and its dependencies are defined). A no-op until
-  // then so an inbound message arriving mid-construction can't fault.
-  app.onExternalWorkspaceChange = () => {};
   // #343 step 4: the route/surface refresh hook a mounted route registers to
   // react AFTER a refresh actually projected an external change — the standalone
   // Dashboard route (a later step) overrides this to rebuild its viewer session
@@ -1653,28 +1606,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   if (workspaceChannel) {
     workspaceChannel.onmessage = (event) => {
       const msg = event.data as WorkspaceChangedMessage | null;
-      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId) return;
+      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId
+        || msg.workspaceId !== app.state.workspaceId) return;
       app.onExternalWorkspaceChange(msg);
     };
   }
 
-  // #341/#344 review fix: the ONLY correct way to build a workspace-mutation
-  // candidate. `serializeWrite` alone only serializes EXECUTION — a producer
-  // that builds its whole candidate from `state`/`app.workspace` BEFORE
-  // entering the queue (e.g. across an awaited user dialog) can still have it
-  // clobber a mutation that committed while it waited, because its candidate
-  // was already stale the moment it was built. Reading `app.workspace
-  // .loadCurrent()` INSIDE the queued op (never cached in an outer variable)
-  // is what makes it authoritative: every write is serialized through this
-  // same queue, so by the time this op runs, `loadCurrent()` reflects every
-  // write queued before it.
+  // Build every mutation from this tab's active workspace, reloaded by
+  // immutable id INSIDE the queue. Repository commits can never create, so an
+  // externally deleted active workspace aborts rather than resurrecting it.
   // #343 §2: on a SUCCESSFUL commit the primitive itself owns the projection
   // (`applyCommittedWorkspace`, exactly once), records the snapshot token, and
   // broadcasts ONE invalidation — callers no longer project. An aborted
   // transform (null / null candidate) commits nothing and notifies no one; a
   // failed commit surfaces its diagnostics without projecting or notifying.
   app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
-    const latest = await app.workspace.loadCurrent();
+    const loaded = await app.workspace.loadById(app.state.workspaceId);
+    if (loaded.status === 'corrupt') {
+      return { ok: false as const, diagnostics: loaded.diagnostics };
+    }
+    const latest = loaded.status === 'ok' ? loaded.workspace : null;
     const input = await transform(latest);
     if (!input || !input.candidate) {
       return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
@@ -1716,9 +1667,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     // aggregate). The Dashboard route sets `dashboardReadOnly` per render; a
     // Workbench tab and an editable Dashboard leave it false.
     if (app.dashboardReadOnly) return;
-    let loaded: StoredWorkspaceV1 | null;
+    let loaded: StoredWorkspaceV2 | null;
     try {
-      const result = await app.workspace.loadCurrentResult();
+      const result = await app.workspace.loadById(app.state.workspaceId);
       if (result.status === 'corrupt') { warnRefreshFailed(); return; }
       loaded = result.status === 'ok' ? result.workspace : null;
     } catch {
@@ -1785,44 +1736,69 @@ export function createApp(env: CreateAppEnv = {}): App {
     doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
   }
 
-  // #300: the Reset action offered on the corrupt-workspace toast below.
-  // `loadCurrent()`/`clearCurrent()`'s callers rely on a corrupt record
-  // collapsing to `null`/being silently removable — here that removal is
-  // deliberate and user-initiated. Clearing makes the store look exactly like
-  // a fresh install to `migrateLegacyWorkspaceIfNeeded`'s existence check, so
-  // it rebuilds a brand-new aggregate from the CURRENT legacy/local state
-  // (favorites, layout prefs) rather than leaving the next random CRUD op to
-  // silently mint one over nothing. Only projects + re-renders on success —
-  // an immediately-re-corrupt or still-empty outcome (unexpected; the store
-  // was just cleared) leaves the legacy `createState()` projection standing,
-  // same as any other failed load.
-  const resetCorruptWorkspace = async (): Promise<void> => {
-    await app.workspace.clearCurrent();
-    await runLegacyMigrationIfNeeded();
-    const result = await app.workspace.loadCurrentResult();
+  const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
+    const listed = await app.workspace.list();
+    const key = deriveWorkspaceKey(DEFAULT_WORKSPACE_NAME, listed.summaries.map((item) => item.key));
+    const created = await app.workspace.create(createNewWorkspace(app.genId, key, DEFAULT_WORKSPACE_NAME));
+    if (created.ok) return { status: 'ok', workspace: created.workspace };
+    // A different tab may have provisioned the collection after our empty
+    // resolution. Re-resolve instead of creating a second fallback workspace.
+    return app.workspace.resolveImplicit();
+  };
+
+  const resolveImplicitOrProvision = async (): Promise<WorkspaceLoadResult> => {
+    const resolved = await app.workspace.resolveImplicit();
+    return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
+  };
+
+  const recordOpened = async (workspace: StoredWorkspaceV2): Promise<void> => {
+    const result = await app.workspace.markOpened(workspace.key);
+    if (!result.ok) {
+      flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
+    }
+  };
+
+  app.loadDashboardWorkspace = async (key?: string) => {
+    const result = key
+      ? await app.workspace.loadByKey(key)
+      : await resolveImplicitOrProvision();
+    if (result.status !== 'ok') return null;
+    await recordOpened(result.workspace);
+    return result.workspace;
+  };
+
+  const resetCorruptWorkspace = async (id: string): Promise<void> => {
+    const deleted = await app.workspace.delete(id);
+    if (!deleted.ok) return;
+    const result = await resolveImplicitOrProvision();
     if (result.status === 'ok') {
       applyCommittedWorkspace(result.workspace);
+      await recordOpened(result.workspace);
       app.renderApp();
     }
   };
 
   app.loadWorkspaceOnBoot = async () => {
-    await runLegacyMigrationIfNeeded();
-    const result = await app.workspace.loadCurrentResult();
+    const workspaceParams = new URLSearchParams(loc.search);
+    const explicitKey = workspaceParams.has('ws') ? (workspaceParams.get('ws') ?? '') : null;
+    const result = explicitKey !== null
+      ? await app.workspace.loadByKey(explicitKey)
+      : await resolveImplicitOrProvision();
     if (result.status === 'corrupt') {
-      // #300: a corrupt-but-present aggregate is surfaced instead of silently
-      // continuing on the legacy projection (which would otherwise let the
-      // next saved-query CRUD commit orphan the corrupt record with no
-      // user-visible error). State is left untouched — same as any other
-      // null/failed load below.
       flashToast(
-        'Saved workspace could not be read — your queries and dashboard layout are unaffected until you reset it.',
-        { document: app.document, action: { label: 'Reset workspace', onClick: () => { void resetCorruptWorkspace(); } } },
+        'Saved workspace could not be read. Other local workspaces remain unaffected.',
+        {
+          document: app.document,
+          action: { label: 'Reset workspace', onClick: () => { void resetCorruptWorkspace(result.id); } },
+        },
       );
       return null;
     }
     const workspace = result.status === 'ok' ? result.workspace : null;
-    if (workspace) applyCommittedWorkspace(workspace);
+    if (workspace) {
+      applyCommittedWorkspace(workspace);
+      await recordOpened(workspace);
+    }
     return workspace;
   };
 
@@ -1835,9 +1811,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // concern. A workspace with no dashboard opens the bare route (legacy).
   function openDashboard(): void {
     const dashId = app.state.dashboard?.id;
-    const wsId = app.state.workspaceId;
-    const search = (wsId && dashId)
-      ? buildDashboardSearch({ kind: 'current-workspace', workspaceId: wsId, dashboardId: dashId })
+    const wsKey = app.state.workspaceKey;
+    const search = (wsKey && dashId)
+      ? buildDashboardSearch({ kind: 'current-workspace', workspaceKey: wsKey, dashboardId: dashId })
       : '';
     const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
     if (child) conn.grantHandoffTo(child);
@@ -1896,7 +1872,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (!materialized.ok) return null;
     await app.detachedViews.put({ workspace: materialized.workspace, savedAt: wallNow() });
     const search = buildDashboardSearch({
-      kind: 'current-workspace', workspaceId: materialized.workspace.id, dashboardId: record.dashboardId,
+      kind: 'current-workspace', workspaceKey: materialized.workspace.key, dashboardId: record.dashboardId,
     });
     win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
     app.dashboardOpenSource = parseDashboardOpenSource(search);
@@ -1909,9 +1885,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // URL's `dash=` would otherwise fail the viewer's strict id verification.
   app.reloadDashboardRoute = () => {
     const dash = app.state.dashboard;
-    const wsId = app.state.workspaceId;
-    if (dash && wsId) {
-      const search = buildDashboardSearch({ kind: 'current-workspace', workspaceId: wsId, dashboardId: dash.id });
+    const wsKey = app.state.workspaceKey;
+    if (dash && wsKey) {
+      const search = buildDashboardSearch({ kind: 'current-workspace', workspaceKey: wsKey, dashboardId: dash.id });
       win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
       app.dashboardOpenSource = parseDashboardOpenSource(search);
     }

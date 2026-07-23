@@ -106,7 +106,7 @@ export const Icon = {
   undo: () => svg('M4.5 3.5 2 6l2.5 2.5M2 6h5a2.5 2.5 0 0 1 2.5 2.5', 12, 12),
   redo: () => svg('M7.5 3.5 10 6l-2.5 2.5M10 6H5a2.5 2.5 0 0 0-2.5 2.5', 12, 12),
   bookmark: () => iconEl('<path d="M3.5 1.8h5a.6.6 0 0 1 .6.6v8.2l-3.1-2-3.1 2V2.4a.6.6 0 0 1 .6-.6z"/>', 12, 12, 1.3),
-  // File menu "Open workspace…" (#342): an open folder, distinct from the
+  // File menu "Import workspace…": an open folder, distinct from the
   // closed-loop `refresh` glyph it replaces there.
   folderOpen: () => iconEl('<path d="M1.4 4.2c0-.6.5-1 1-1h2l1 1.1h3.6c.5 0 1 .4 1 1v.4"/><path d="M1.5 5.7h8.3c.6 0 1.1.6.9 1.2l-.8 2.7a1 1 0 0 1-1 .7H2.3a1 1 0 0 1-1-.7l-.8-2.7a.9.9 0 0 1 .9-1.2z"/>', 12, 12, 1.3),
   // #314 — the schema-surface "Open engine/type reference" actions' icon (an

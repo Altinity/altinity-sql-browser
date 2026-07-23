@@ -4,7 +4,7 @@ import {
 } from '../../src/dashboard/application/saved-query-mutation.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
-import type { SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
 
 const panelQuery = (id: string, sql: string, dashboard?: Record<string, unknown>): SavedQueryV2 => ({
@@ -18,8 +18,8 @@ const filterQuery = (id: string): SavedQueryV2 => ({
 // A valid base workspace: a panel tile p1 (declares `country`), a filter flt
 // sourced from f1 targeting that tile, and a spare panel p2 (also declaring
 // `country`, so a remap onto it stays valid).
-const baseWorkspace = (): StoredWorkspaceV1 => ({
-  storageVersion: 1, id: 'ws', name: 'WS',
+const baseWorkspace = (): StoredWorkspaceV2 => ({
+  storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
   queries: [
     panelQuery('p1', 'SELECT a,b WHERE c={country:String}'),
     panelQuery('p2', 'SELECT a,b WHERE c={country:String}'),
@@ -31,7 +31,7 @@ const baseWorkspace = (): StoredWorkspaceV1 => ({
     filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
     tiles: [{ id: 't1', queryId: 'p1' }],
   },
-} as StoredWorkspaceV1);
+} as StoredWorkspaceV2);
 
 const codes = (d: WorkspaceDiagnostic[]): string[] => d.map((x) => x.code);
 
@@ -75,8 +75,8 @@ describe('planSavedQueryMutation — rejection without repair', () => {
   });
 
   it('remaps a filter source reference onto another filter query', () => {
-    const workspace: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'ws', name: 'WS',
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1'), filterQuery('f2')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
@@ -84,7 +84,7 @@ describe('planSavedQueryMutation — rejection without repair', () => {
         filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
         tiles: [{ id: 't1', queryId: 'p1' }],
       },
-    } as StoredWorkspaceV1;
+    } as StoredWorkspaceV2;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'f1' }, { type: 'remap-query', to: 'f2' });
     expect(plan.ok).toBe(true);
     expect(plan.candidate!.dashboard!.filters[0].sourceQueryId).toBe('f2');
@@ -131,15 +131,15 @@ describe('planSavedQueryMutation — atomic repair', () => {
   });
 
   it('switches an affected tile to another valid variant', () => {
-    const workspace: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'ws', name: 'WS',
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } })],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
         filters: [], tiles: [{ id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }],
       },
-    } as StoredWorkspaceV1;
+    } as StoredWorkspaceV2;
     const deletesAlt = { type: 'replace-query' as const, queryId: 'p1', query: panelQuery('p1', 'SELECT a,b', { variants: { other: {} } }) };
 
     const rejected = planSavedQueryMutation(workspace, deletesAlt);
@@ -181,8 +181,8 @@ describe('planSavedQueryMutation — atomic repair', () => {
 });
 
 describe('planSavedQueryMutation — repairs skip unaffected and target-less entries', () => {
-  const multiTile = (): StoredWorkspaceV1 => ({
-    storageVersion: 1, id: 'ws', name: 'WS',
+  const multiTile = (): StoredWorkspaceV2 => ({
+    storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
     queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } }), panelQuery('p2', 'SELECT a,b')],
     dashboard: {
       documentVersion: 1, id: 'dash', title: 'D', revision: 1,
@@ -195,7 +195,7 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
         { id: 't4', queryId: 'p1' }, // affected but unmapped — left untouched
       ],
     },
-  } as StoredWorkspaceV1);
+  } as StoredWorkspaceV2);
 
   it('removes only affected tiles and leaves a target-less filter intact', () => {
     const plan = planSavedQueryMutation(multiTile(), { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
@@ -216,8 +216,8 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
   });
 
   it('remaps only affected tiles and leaves a source-less filter intact', () => {
-    const workspace: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'ws', name: 'WS',
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b'), panelQuery('p2', 'SELECT a,b')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
@@ -225,7 +225,7 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
         filters: [{ id: 'flt', parameter: 'x' }], // no source
         tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
       },
-    } as StoredWorkspaceV1;
+    } as StoredWorkspaceV2;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' }, { type: 'remap-query', to: 'p2' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboard!;
@@ -234,13 +234,13 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
 
   it('tolerates malformed tiles and filters while applying a repair', () => {
     const malformed = {
-      storageVersion: 1, id: 'ws', name: 'WS', queries: [panelQuery('p1', 'SELECT a,b')],
+      storageVersion: 2, id: 'ws', key: 'ws', name: 'WS', queries: [panelQuery('p1', 'SELECT a,b')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: {} },
         filters: ['bad', { id: 'flt', parameter: 'x' }], tiles: ['bad', { id: 't1', queryId: 'p1' }],
       },
-    } as unknown as StoredWorkspaceV1;
+    } as unknown as StoredWorkspaceV2;
     const plan = planSavedQueryMutation(malformed, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected' });
     // The malformed entries make the candidate invalid, but the repair helpers
     // ran over them without throwing.
@@ -254,8 +254,8 @@ describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', ()
     // normalization/fallback regeneration, not filter-selection contract
     // validity; see the "removes affected tiles" test above for why a
     // source-backed filter left with zero tiles would (correctly) now fail.
-    const workspace: StoredWorkspaceV1 = {
-      storageVersion: 1, id: 'ws', name: 'WS',
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
@@ -263,7 +263,7 @@ describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', ()
         filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
         tiles: [{ id: 't1', queryId: 'p1' }],
       },
-    } as StoredWorkspaceV1;
+    } as StoredWorkspaceV2;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboard!;
@@ -278,7 +278,7 @@ describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', ()
 
 describe('planSavedQueryMutation — no dashboard, and suggestRepairs', () => {
   it('always accepts a mutation when the workspace has no dashboard', () => {
-    const workspace = { ...baseWorkspace(), dashboard: null } as StoredWorkspaceV1;
+    const workspace = { ...baseWorkspace(), dashboard: null } as StoredWorkspaceV2;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' });
     expect(plan.ok).toBe(true);
     expect(plan.candidate!.dashboard).toBeNull();

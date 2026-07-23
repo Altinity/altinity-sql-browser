@@ -35,7 +35,7 @@ product model, which this ADR records.
 | Entry | Workbench header `Dashboard →` control | Dashboard header **File → "Open for viewing…"** |
 | Tab | new tab | new tab |
 | Open source | `current-workspace` (`?ws=&dash=`) | detached snapshot of the current dashboard |
-| Storage | **shared** primary workspace store (`asb-workspace`) | its **own** detached store (`asb-dashboard-views`), fresh id |
+| Storage | **shared** primary workspace collection (`asb-workspaces-v2`) | its **own** detached store (`asb-dashboard-views`), fresh id |
 | Editable | yes — drag reorder + layout preset persist to the shared aggregate | **read-only** |
 | Auth | existing postMessage credential handoff (#149) | same |
 | Survives relogin / reload | yes (shared store) | yes (own persisted record) |
@@ -48,7 +48,7 @@ credential handoff.
 
 ```ts
 type DashboardOpenSource =
-  | { kind: 'current-workspace'; workspaceId: string; dashboardId: string }
+  | { kind: 'current-workspace'; workspaceKey: string; dashboardId: string }
   | { kind: 'session-bundle';   token: string;        dashboardId: string };
 ```
 
@@ -62,8 +62,8 @@ current-workspace; `?st=&dash=` is session-bundle.
 > `bootstrap` (`src/main.ts`) reads `?state` as the OAuth CSRF value; a token
 > there would raise "OAuth state mismatch".
 
-**Mode is discriminated by which store the `ws` id resolves in**, not by a
-spoofable URL flag: the id present in the primary workspace store → edit mode;
+**Mode is discriminated by which store the `ws` key resolves in**, not by a
+spoofable URL flag: the key present in the primary workspace store → edit mode;
 present in the detached views store → view mode; in neither → a not-found panel
 that executes nothing (never silently opens a different dashboard).
 
@@ -84,7 +84,8 @@ through a one-time IndexedDB token, then materializes a durable detached copy:
    transaction (`take` = get+delete, then reject if expired), and strips `st`
    from the URL via `history.replaceState`.
 5. It **materializes** the bundle into the detached store under
-   `detachedWorkspaceId`, rewrites the URL to `?ws=<detachedWorkspaceId>&dash=`,
+   `detachedWorkspaceId`, assigns the detached copy a stable local key, rewrites
+   the URL to `?ws=<detachedWorkspaceKey>&dash=`,
    and renders read-only.
 
 Auth is orthogonal and unchanged: the new tab still restores credentials via the
@@ -105,7 +106,8 @@ detached `?ws=` URL survives).
   so there is no untrusted external SQL to gate. The viewer's existing safety
   limits (row/byte caps, bounded concurrency, per-tile cancellation, stale-wave
   protection, no Setup execution) still apply.
-- **A new IndexedDB store family.** Two dedicated databases join `asb-workspace`:
+- **A new IndexedDB store family.** Two dedicated databases join the primary
+  workspace database (now `asb-workspaces-v2`):
   `asb-dashboard-handoff` (one-time tokens) and `asb-dashboard-views`
   (multi-record detached snapshots, keyed by workspace id, with a small retention
   cap so abandoned views don't grow unbounded). Both reuse the #284 adapter
@@ -131,3 +133,28 @@ detached `?ws=` URL survives).
   suffix.
 - **A `?view=1` mode flag:** rejected in favor of store-membership discrimination
   (not spoofable, and naturally yields the not-found case).
+
+## Addendum — 2026-07-23: stable workspace keys and collection persistence (#406)
+
+`StoredWorkspaceV2` replaces the single fixed `current` aggregate with one
+IndexedDB record per workspace. Workspace identity is deliberately split:
+
+- `id` is the immutable opaque object-store key;
+- `key` is the immutable, unique lowercase ASCII URL identity resolved by
+  `?ws=`;
+- `name` is mutable display metadata and never rewrites bookmarks.
+
+The primary store uses `id` as its key path and a unique `key` index. Create,
+replace, delete, and last-opened metadata updates are transaction-scoped;
+replace cannot create a missing record or alter its key. Portable workspace
+import creates a fresh local ID/key instead of replacing the active workspace.
+
+Implicit opens persist the successfully opened key in a separate preferences
+store and stamp store-owned `lastOpenedAt` metadata using the injected wall
+clock. If that preference is absent or invalid, resolution chooses the valid
+workspace with the newest timestamp, breaking ties by key; records without a
+timestamp fall back deterministically by key. Explicit `?ws=` opens never fall
+back to another workspace.
+
+The detached-view store follows the same key-based `?ws=` resolution contract,
+while its generated local key remains separate from its opaque detached ID.

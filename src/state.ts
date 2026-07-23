@@ -28,7 +28,7 @@ import {
 } from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
-import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV1 } from './generated/json-schema.types.js';
+import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV2 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
 import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
@@ -36,6 +36,7 @@ import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
 import { materializeQueryTimeRange } from './core/query-time-range.js';
 import type { QueryTimeRangeInferenceDiagnostic } from './core/query-time-range.js';
+import { deriveWorkspaceKey } from './core/workspace-key.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -61,7 +62,7 @@ export type SaveJSON = (key: string, value: unknown) => void;
 export type SaveStr = (key: string, value: string) => void;
 
 // ── Read-before-write mutation seam (#287 W4 / #343) ───────────────────────
-// The saved-query CRUD ops below persist through the StoredWorkspaceV1
+// The saved-query CRUD ops below persist through the StoredWorkspaceV2
 // aggregate (IndexedDB), never the flat `asb:saved` localStorage key. #343:
 // they no longer take a raw `commit(candidate)` callback that would let them
 // build a whole candidate from stale in-memory `AppState` and clobber a change
@@ -83,7 +84,7 @@ export type SaveStr = (key: string, value: string) => void;
  *  committed workspace (or `null` when nothing is persisted yet) and returns the
  *  complete candidate to commit — or `null` to abort committing nothing. */
 export type MutateWorkspace = <T = unknown>(
-  transform: (latest: StoredWorkspaceV1 | null) =>
+  transform: (latest: StoredWorkspaceV2 | null) =>
     WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
 ) => Promise<WorkspaceMutationOutcome<T>>;
 
@@ -124,11 +125,11 @@ const asSpecDiagnostics = (diagnostics: readonly WorkspaceDiagnostic[]): SpecDia
  *  when it exists, so once the aggregate is persisted a mutation NEVER rebuilds
  *  a candidate from a stale in-memory projection (#343). Pure. */
 function baselineWorkspace(
-  state: Pick<AppState, 'libraryName' | 'workspaceId' | 'dashboard' | 'savedQueries'>,
-  latest: StoredWorkspaceV1 | null,
-): StoredWorkspaceV1 {
+  state: Pick<AppState, 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard' | 'savedQueries'>,
+  latest: StoredWorkspaceV2 | null,
+): StoredWorkspaceV2 {
   return latest ?? {
-    storageVersion: 1, id: state.workspaceId, name: state.libraryName.value,
+    storageVersion: 2, id: state.workspaceId, key: state.workspaceKey, name: state.libraryName.value,
     queries: state.savedQueries, dashboard: state.dashboard,
   };
 }
@@ -137,9 +138,11 @@ function baselineWorkspace(
  *  carried through unchanged, the op's own next `queries`, and — unless the op
  *  explicitly changes it — the base Dashboard byte-for-byte. Pure. */
 const candidateFrom = (
-  base: StoredWorkspaceV1, queries: SavedQueryV2[],
+  base: StoredWorkspaceV2, queries: SavedQueryV2[],
   dashboard: DashboardDocumentV1 | null = base.dashboard,
-): StoredWorkspaceV1 => ({ storageVersion: 1, id: base.id, name: base.name, queries, dashboard });
+): StoredWorkspaceV2 => ({
+  storageVersion: 2, id: base.id, key: base.key, name: base.name, queries, dashboard,
+});
 
 /** The committed entry, re-read from the just-committed canonical `queries`
  *  array (not the locally-computed candidate entry) — the aggregate's commit
@@ -331,14 +334,14 @@ export interface AppState {
   history: HistoryEntry[];
   libraryName: Signal<string>;
   libraryDirty: Signal<boolean>;
-  /** #287 W4: the current committed StoredWorkspaceV1's Dashboard document —
+  /** #287 W4: the current committed StoredWorkspaceV2's Dashboard document —
    *  the Workbench NEVER mutates this (that's the /dashboard route's job); it
    *  is only carried through, unchanged, in every saved-query CRUD commit
    *  candidate. `null` until the boot projection (app.ts's
    *  `loadWorkspaceOnBoot`) resolves the aggregate, or when the workspace
    *  genuinely has no Dashboard yet. */
   dashboard: DashboardDocumentV1 | null;
-  /** #287 W4: the current committed StoredWorkspaceV1's id, carried forward
+  /** #287 W4: the current committed StoredWorkspaceV2's id, carried forward
    *  unchanged by every saved-query CRUD commit candidate. `createState`
    *  mints a session-local placeholder synchronously (never blank — the
    *  stored-workspace schema requires a non-empty id), so a CRUD op run
@@ -347,6 +350,8 @@ export interface AppState {
    *  with the real committed id (existing or freshly migrated) once
    *  resolved. See `createState`'s own comment on `mintWorkspaceId`. */
   workspaceId: string;
+  /** Immutable canonical URL key for the active workspace. */
+  workspaceKey: string;
   libraryFilter: string;
   shortcutsOpen: Signal<boolean>;
   isMobile: Signal<boolean>;
@@ -472,6 +477,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
   const num = (key: string, dflt: number, lo: number, hi: number) =>
     clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
   const storedQueries = decodeStoredSavedQueries(read.loadJSON(KEYS.saved, []));
+  const initialWorkspaceName = read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
   return {
     nextTabId: 2,
     theme: read.loadStr(KEYS.theme, 'light'),
@@ -599,23 +605,24 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // effect that reads these. `libraryName` is persisted; `libraryDirty`
     // (unsaved changes since the last file Save/Replace/New) is session-only and
     // resets on reload. Read/write via `.value`.
-    libraryName: signal(read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME)),
+    libraryName: signal(initialWorkspaceName),
     libraryDirty: signal(false),
     // #287 W4: the aggregate projection. `dashboard` has no aggregate to read
     // yet at this synchronous constructor — it starts `null` and is populated
     // once app.ts's async boot step (`loadWorkspaceOnBoot`) resolves the real
-    // StoredWorkspaceV1 (after the one-shot legacy migration). `workspaceId`
+    // StoredWorkspaceV2 (after the one-shot legacy migration). `workspaceId`
     // is minted here rather than left blank: the stored-workspace schema
     // requires a non-empty id, so a save attempted in the window before boot
     // projection completes (or by a fixture that never runs it at all — e.g.
     // a unit test driving `createApp` directly) still succeeds, committing
-    // the FIRST-ever aggregate under this freshly-minted id; `loadCurrent`'s
+    // the first aggregate under this freshly minted id; the active-id lookup's
     // migration marker is keyed on store record existence, so that commit is
     // simply treated as "already migrated" rather than raced/overwritten.
     // `loadWorkspaceOnBoot` overwrites this with the real committed id once
     // it resolves (a pre-existing aggregate, or the one migration just built).
     dashboard: null,
     workspaceId: mintWorkspaceId(),
+    workspaceKey: deriveWorkspaceKey(initialWorkspaceName),
     // Transient search text for the Library/History side panel (session-only,
     // cleared on a tab switch); never persisted.
     libraryFilter: '',
@@ -784,7 +791,7 @@ export interface LinkedTabReconcileSummary {
  *  erase the orphan/detach distinction. Pure over the tab objects. */
 export function reconcileLinkedTabsToLatest(
   state: Pick<AppState, 'tabs'>,
-  latest: StoredWorkspaceV1 | null,
+  latest: StoredWorkspaceV2 | null,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): LinkedTabReconcileSummary {
   const tabs = state.tabs.value;
@@ -839,7 +846,7 @@ export function reconcileLinkedTabsToLatest(
  * which satisfies this directly.
  */
 export async function createSavedQuery(
-  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard'>,
   tab: QueryTab | null | undefined, name: unknown, description: unknown,
   mutate: MutateWorkspace, now: number = Date.now(),
   validationService: SpecValidationService = defaultSpecValidationService,
@@ -908,7 +915,7 @@ export async function createSavedQuery(
  *  `baselineWorkspace`/the candidate need, same convention as `createSavedQuery`
  *  above. */
 export async function commitSavedQuery(
-  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard'>,
   tab: QueryTab, spec: QuerySpecDraft | null | undefined,
   mutate: MutateWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
@@ -987,7 +994,7 @@ const identityDashboardTransform: DashboardTransform = (dashboard) => dashboard;
  * full `AppState` through unchanged (it satisfies this directly).
  */
 export async function patchSavedSpec(
-  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard'>,
   id: string, patch: SpecPatch,
   mutate: MutateWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
@@ -1174,7 +1181,7 @@ export type CommitOnlyResult = { ok: true } | { ok: false; diagnostics: Workspac
  *  aggregate commit (#287 W4): on `ok: false` NOTHING is mutated (the query
  *  and every tab pointer to it are left exactly as they were). */
 export async function deleteSaved(
-  state: Pick<AppState, 'savedQueries' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  state: Pick<AppState, 'savedQueries' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard'>,
   id: string, mutate: MutateWorkspace,
 ): Promise<CommitOnlyResult> {
   // Delete by ID from the LATEST workspace (#343): the whole-workspace

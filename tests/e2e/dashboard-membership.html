@@ -37,7 +37,7 @@
     import { renderDashboard } from '/src/ui/dashboard.js';
 
     const seed = {
-      storageVersion: 1, id: 'workspace', name: 'Workspace', dashboard: null,
+      storageVersion: 2, id: 'workspace', key: 'workspace', name: 'Workspace', dashboard: null,
       queries: [{
         id: 'q1', sql: 'SELECT 1', specVersion: 1,
         spec: { name: 'Revenue', favorite: false },
@@ -69,17 +69,22 @@
       renderSavedHistory(app);
     }
 
-    let workspace = await app.workspace.loadCurrent();
+    const loaded = await app.workspace.loadById(seed.id);
+    let workspace = loaded.status === 'ok' ? loaded.workspace : null;
     if (!sessionStorage.getItem('membership-seeded')) {
-      await app.workspace.clearCurrent();
-      const committed = await app.workspace.commit(seed);
+      await app.workspace.delete(seed.id);
+      const committed = await app.workspace.create(seed);
       if (!committed.ok) throw new Error(committed.diagnostics[0]?.message || 'seed failed');
       workspace = committed.workspace;
       sessionStorage.setItem('membership-seeded', '1');
     }
+    if (!workspace) throw new Error('seeded workspace missing');
     app.applyCommittedWorkspace(workspace);
     renderWorkbench();
-    window.__workspace = () => app.workspace.loadCurrent();
+    window.__workspace = async () => {
+      const current = await app.workspace.loadById(seed.id);
+      return current.status === 'ok' ? current.workspace : null;
+    };
     window.__ready = true;
   </script>
 </body>

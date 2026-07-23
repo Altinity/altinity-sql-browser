@@ -37,7 +37,7 @@
     import { renderDashboard } from '/src/ui/dashboard.js';
 
     const seed = {
-      storageVersion: 1, id: 'workspace', name: 'Workspace',
+      storageVersion: 2, id: 'workspace', key: 'workspace', name: 'Workspace',
       queries: [
         { id: 'q1', sql: 'SELECT 111111', specVersion: 1, spec: { name: 'First metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
         { id: 'q2', sql: 'SELECT 222222', specVersion: 1, spec: { name: 'Second metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
@@ -62,14 +62,17 @@
       result.error = null;
       return result;
     };
-    await app.workspace.clearCurrent();
-    const seeded = await app.workspace.commit(seed);
+    await app.workspace.delete(seed.id);
+    const seeded = await app.workspace.create(seed);
     if (!seeded.ok) throw new Error(seeded.diagnostics[0]?.message || 'seed failed');
     app.applyCommittedWorkspace(seeded.workspace);
     const realCommit = app.workspace.commit.bind(app.workspace);
     window.__commitCount = 0;
     app.workspace.commit = async (...args) => { window.__commitCount += 1; return realCommit(...args); };
-    window.__workspace = () => app.workspace.loadCurrent();
+    window.__workspace = async () => {
+      const loaded = await app.workspace.loadById(seed.id);
+      return loaded.status === 'ok' ? loaded.workspace : null;
+    };
     await renderDashboard(app);
     window.__ready = true;
   </script>

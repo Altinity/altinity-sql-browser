@@ -142,7 +142,7 @@ export const DASHBOARD_DOCUMENT_SHAPE: CanonicalShape = {
 };
 
 export const STORED_WORKSPACE_SHAPE: CanonicalShape = {
-  order: ['storageVersion', 'id', 'name', 'queries', 'dashboard'],
+  order: ['storageVersion', 'id', 'key', 'name', 'queries', 'dashboard'],
   fields: {
     queries: { items: SAVED_QUERY_SHAPE },
     dashboard: DASHBOARD_DOCUMENT_SHAPE,

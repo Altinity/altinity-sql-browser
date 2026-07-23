@@ -53,10 +53,10 @@ export const SCHEMA_MANIFEST = [
     typeExport: 'DashboardDocumentV1',
   },
   {
-    path: 'schemas/stored-workspace-v1.schema.json',
-    schemaExport: 'storedWorkspaceV1Schema',
-    validatorExport: 'validateStoredWorkspaceV1',
-    typeExport: 'StoredWorkspaceV1',
+    path: 'schemas/stored-workspace-v2.schema.json',
+    schemaExport: 'storedWorkspaceV2Schema',
+    validatorExport: 'validateStoredWorkspaceV2',
+    typeExport: 'StoredWorkspaceV2',
   },
   {
     path: 'schemas/portable-bundle-v1.schema.json',

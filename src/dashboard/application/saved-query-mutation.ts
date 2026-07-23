@@ -24,7 +24,7 @@ import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../../generated/json-schema.types.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -51,7 +51,7 @@ export type SavedQueryRepair =
  *  can offer. */
 export interface SavedQueryMutationPlan {
   ok: boolean;
-  candidate: StoredWorkspaceV1 | null;
+  candidate: StoredWorkspaceV2 | null;
   diagnostics: WorkspaceDiagnostic[];
   repairs: SavedQueryRepairKind[];
 }
@@ -145,7 +145,7 @@ export function suggestRepairs(diagnostics: readonly WorkspaceDiagnostic[]): Sav
 }
 
 function validateWorkspace(
-  candidate: StoredWorkspaceV1, options: SavedQueryMutationOptions,
+  candidate: StoredWorkspaceV2, options: SavedQueryMutationOptions,
 ): WorkspaceDiagnostic[] {
   const codecOptions = options.validationService ? { validationService: options.validationService } : {};
   const structural = validateStoredWorkspaceDocument(candidate, codecOptions);
@@ -161,7 +161,7 @@ function validateWorkspace(
  *  atomic repair. Returns a valid candidate to commit, or the diagnostics and
  *  available repairs when the mutation would invalidate the workspace. */
 export function planSavedQueryMutation(
-  workspace: StoredWorkspaceV1, mutation: SavedQueryMutation,
+  workspace: StoredWorkspaceV2, mutation: SavedQueryMutation,
   repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},
 ): SavedQueryMutationPlan {
   const queries = applyQueryMutation(workspace.queries, mutation);
@@ -176,8 +176,8 @@ export function planSavedQueryMutation(
     dashboard = resolveLayoutPluginSync(dashboard.layout).normalize(dashboard);
     regenerateGridFallback(dashboard.layout, dashboard.tiles);
   }
-  const candidate: StoredWorkspaceV1 = {
-    storageVersion: 1, id: workspace.id, name: workspace.name,
+  const candidate: StoredWorkspaceV2 = {
+    storageVersion: 2, id: workspace.id, key: workspace.key, name: workspace.name,
     queries: cloneJson(queries), dashboard,
   };
   const diagnostics = validateWorkspace(candidate, options);

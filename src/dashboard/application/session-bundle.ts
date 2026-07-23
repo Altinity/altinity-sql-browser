@@ -18,8 +18,9 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import type { HandoffRecord } from '../../workspace/handoff-store.types.js';
 import type { DashboardOpenSource } from './dashboard-open-source.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../../generated/json-schema.types.js';
+import { deriveWorkspaceKey, normalizeWorkspaceKeyLookup } from '../../core/workspace-key.js';
 
 export type BuildViewHandoffRecordResult =
   | { ok: true; record: HandoffRecord }
@@ -55,12 +56,12 @@ export function buildViewHandoffRecord(
 }
 
 export type MaterializeDetachedWorkspaceResult =
-  | { ok: true; workspace: StoredWorkspaceV1 }
+  | { ok: true; workspace: StoredWorkspaceV2 }
   | { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
 /**
  * Materialize a consumed handoff record's bundle text into a detached,
- * read-only `StoredWorkspaceV1`. Decodes and validates `text`, selects the
+ * read-only `StoredWorkspaceV2`. Decodes and validates `text`, selects the
  * Dashboard matching `dashboardId` out of the bundle (failing with a single
  * diagnostic when absent), and assembles the detached workspace under
  * `detachedWorkspaceId`. `name` is the selected Dashboard's title, falling
@@ -82,8 +83,9 @@ export function materializeDetachedWorkspace(
   return {
     ok: true,
     workspace: {
-      storageVersion: 1,
+      storageVersion: 2,
       id: detachedWorkspaceId,
+      key: deriveWorkspaceKey(detachedWorkspaceId),
       name: selected.title || 'Dashboard',
       queries: bundle.queries,
       dashboard: selected,
@@ -93,27 +95,29 @@ export function materializeDetachedWorkspace(
 
 /** Pure mode resolution result for a parsed `current-workspace` open source. */
 export type DashboardModeResolution =
-  | { mode: 'edit'; workspace: StoredWorkspaceV1 }
-  | { mode: 'view'; workspace: StoredWorkspaceV1 }
+  | { mode: 'edit'; workspace: StoredWorkspaceV2 }
+  | { mode: 'view'; workspace: StoredWorkspaceV2 }
   | { mode: 'not-found' };
 
 const matches = (
-  workspace: StoredWorkspaceV1 | null, source: Extract<DashboardOpenSource, { kind: 'current-workspace' }>,
-): workspace is StoredWorkspaceV1 =>
-  !!workspace && workspace.id === source.workspaceId && workspace.dashboard?.id === source.dashboardId;
+  workspace: StoredWorkspaceV2 | null, source: Extract<DashboardOpenSource, { kind: 'current-workspace' }>,
+): workspace is StoredWorkspaceV2 =>
+  !!workspace
+  && workspace.key === normalizeWorkspaceKeyLookup(source.workspaceKey)
+  && workspace.dashboard?.id === source.dashboardId;
 
 /**
  * Resolve a parsed `current-workspace` `DashboardOpenSource` against the two
  * candidate workspaces already loaded by the coordinator: `primary` (from the
- * shared `asb-workspace` store) and `detached` (from the `asb-dashboard-views`
- * detached-views store). Both the workspace id AND the Dashboard id must
- * match — a workspace id match with a differing (or missing) Dashboard id is
+ * shared `asb-workspaces-v2` store) and `detached` (from the `asb-dashboard-views`
+ * detached-views store). Both the workspace key AND the Dashboard id must
+ * match — a workspace-key match with a differing (or missing) Dashboard id is
  * `not-found`, never a silent fall-through to edit mode.
  */
 export function resolveDashboardMode(
   source: Extract<DashboardOpenSource, { kind: 'current-workspace' }>,
-  primary: StoredWorkspaceV1 | null,
-  detached: StoredWorkspaceV1 | null,
+  primary: StoredWorkspaceV2 | null,
+  detached: StoredWorkspaceV2 | null,
 ): DashboardModeResolution {
   if (matches(primary, source)) return { mode: 'edit', workspace: primary };
   if (matches(detached, source)) return { mode: 'view', workspace: detached };

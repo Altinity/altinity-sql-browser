@@ -24,7 +24,7 @@ import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnosti
 import type { HandoffStore } from '../workspace/handoff-store.types.js';
 import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
-import type { StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
@@ -43,7 +43,7 @@ type Json = Record<string, unknown>;
  *  commit resolves (e.g. the created query id a tab must link to). Returning the
  *  whole object as `null` also aborts. */
 export interface WorkspaceMutationInput<T = unknown> {
-  candidate: StoredWorkspaceV1 | null;
+  candidate: StoredWorkspaceV2 | null;
   data?: T;
 }
 
@@ -55,7 +55,7 @@ export interface WorkspaceMutationInput<T = unknown> {
  *  three outcomes (undefined when the queued op rejected before the transform
  *  ran). */
 export type WorkspaceMutationOutcome<T = unknown> =
-  | { ok: true; workspace: StoredWorkspaceV1; dashboardRevision: number | null; data?: T }
+  | { ok: true; workspace: StoredWorkspaceV2; dashboardRevision: number | null; data?: T }
   | { ok: false; aborted: true; data?: T }
   | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
 
@@ -74,7 +74,7 @@ export interface WorkspaceChangedMessage {
  *  relative to the previous projection — the Dashboard route rebuilds its viewer
  *  session on a query-only change even when the Dashboard document is identical. */
 export interface WorkspaceExternallyChangedInfo {
-  workspace: StoredWorkspaceV1 | null;
+  workspace: StoredWorkspaceV2 | null;
   queriesChanged: boolean;
 }
 
@@ -307,7 +307,7 @@ export interface App {
    *  `App.savePref` delegate); `toggleTheme`'s preference-write half also
    *  delegates here, the DOM half stays in app.ts. */
   prefs: AppPreferences;
-  /** Atomic StoredWorkspaceV1 aggregate persistence (#280 Phase 2 / #284),
+  /** Atomic StoredWorkspaceV2 aggregate persistence (#280 Phase 2 / #284),
    *  behind the injected IndexedDB seam (`env.indexedDB`). Pure/testable — no
    *  App/AppState/DOM dependency. In this phase it is constructed but the
    *  favorites-driven Dashboard render still reads legacy keys; Phases 3-6 of
@@ -465,14 +465,14 @@ export interface App {
    *  detached store, rewrite the URL to the durable `?ws=` form, and return the
    *  detached workspace (or null when the token is missing/expired/undecodable).
    *  ADR-0003. */
-  consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
-  /** #286 Phase 4: resolve the current StoredWorkspaceV1 for the Dashboard
+  consumeDashboardHandoff(): Promise<StoredWorkspaceV2 | null>;
+  /** #286 Phase 4: resolve the current StoredWorkspaceV2 for the Dashboard
    *  viewer, running the one-shot legacy migration first when no aggregate
    *  exists. Returns null when neither an aggregate nor a migratable legacy
    *  workspace is available. */
-  loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
+  loadDashboardWorkspace(key?: string): Promise<StoredWorkspaceV2 | null>;
   /** #287 W4: the async boot-init step — runs `loadDashboardWorkspace`
-   *  (migrate-if-needed, then `workspace.loadCurrent()`) and, when it
+   *  (resolve the explicit key or implicit last-opened workspace) and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
    *  `dashboard`, `workspaceId`, `libraryName`) so the whole app (not only
    *  the /dashboard route) treats the aggregate as the saved-query
@@ -480,8 +480,8 @@ export interface App {
    *  this before the first `renderApp()`. On a null/failed load, `state`
    *  keeps whatever the legacy-projected `createState()` synchronous read
    *  already populated (a brand-new install, or a degraded IndexedDB). */
-  loadWorkspaceOnBoot(): Promise<StoredWorkspaceV1 | null>;
-  /** #287 W5: project a committed `StoredWorkspaceV1` onto `state`
+  loadWorkspaceOnBoot(): Promise<StoredWorkspaceV2 | null>;
+  /** #287 W5: project a committed `StoredWorkspaceV2` onto `state`
    *  (`savedQueries`/`dashboard`/`workspaceId`/`libraryName`, and clear
    *  `libraryDirty` — a fresh committed workspace is, by construction, in
    *  sync with what's persisted) — the exact projection `loadWorkspaceOnBoot`
@@ -490,7 +490,7 @@ export interface App {
    *  (`updateSaveBtn`/`updateEditorModeUi`/`renderSavedHistory`) is the
    *  caller's job — this never touches `app.dom` (it also runs during boot,
    *  before the first `renderApp()`/mount). */
-  applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
   /** #287 W5: a fresh, unguessable id — the same generator
    *  `loadDashboardWorkspace`'s legacy migration already uses internally
    *  (`uid('ws-')`), exposed here as the injected `WorkspaceIdGen` the
@@ -519,7 +519,7 @@ export interface App {
    *  `serializeWrite`, so a mutation that committed while they awaited a user
    *  dialog (or just lost the race) got silently clobbered by the later,
    *  stale write. `mutateWorkspace` closes that window: the queued op reads
-   *  the latest COMMITTED aggregate via `app.workspace.loadCurrent()` at
+   *  the latest committed aggregate via `app.workspace.loadById()` at
    *  DEQUEUE time (never cached in a variable outside the op — every other
    *  producer commits through the same repository, so only a read taken
    *  inside the queue slot is guaranteed fresh), hands it to `transform`, and
@@ -528,7 +528,7 @@ export interface App {
    *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
    *  the queue itself never wedges. */
   mutateWorkspace<T = unknown>(
-    transform: (latest: StoredWorkspaceV1 | null) =>
+    transform: (latest: StoredWorkspaceV2 | null) =>
       WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
   ): Promise<WorkspaceMutationOutcome<T>>;
   /** #343 §5: this tab's random per-session id, minted through the crypto seam.

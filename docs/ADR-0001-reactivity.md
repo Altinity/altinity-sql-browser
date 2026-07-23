@@ -348,6 +348,10 @@ as the legacy-migration source). This is a state-flow change worth recording
 against this ADR because it re-shapes how `state.savedQueries` relates to
 reactivity:
 
+`StoredWorkspaceV2` and the collection repository introduced by #406 preserve
+this projection/commit model per workspace; they replace only the fixed-current
+record and V1 identity contract.
+
 - `state.savedQueries` is now a **projection** of the committed workspace, not a
   directly-mutated array. Boot loads the aggregate and projects it (queries,
   Dashboard, workspace id/name); every file operation commits and re-projects

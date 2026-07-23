@@ -23,7 +23,8 @@ import { fakeMutateWorkspace } from '../helpers/fake-app.js';
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
 type StateSlice = Pick<AppState,
-  'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName' | 'workspaceId' | 'dashboard'>;
+  'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName'
+  | 'workspaceId' | 'workspaceKey' | 'dashboard'>;
 
 function makeState(over: Partial<StateSlice> = {}): StateSlice {
   return {
@@ -33,6 +34,7 @@ function makeState(over: Partial<StateSlice> = {}): StateSlice {
     history: over.history ?? [],
     libraryName: over.libraryName ?? signal('Lib'),
     workspaceId: over.workspaceId ?? 'w1',
+    workspaceKey: over.workspaceKey ?? 'workspace',
     dashboard: over.dashboard ?? null,
   };
 }

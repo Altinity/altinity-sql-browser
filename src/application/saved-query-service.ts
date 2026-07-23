@@ -52,7 +52,8 @@ import type { QueryTimeRangeInferenceDiagnostic } from '../core/query-time-range
  *  narrowed to their own exact reads) need between them. */
 export interface SavedQueryServiceDeps {
   state: Pick<AppState,
-    'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName' | 'workspaceId' | 'dashboard'>;
+    'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName'
+    | 'workspaceId' | 'workspaceKey' | 'dashboard'>;
   saveJSON: SaveJSON;
   /** `createSavedQuery`'s minting timestamp — a genuine wall-clock read
    *  (production wires this to `() => Date.now()`, called at the exact

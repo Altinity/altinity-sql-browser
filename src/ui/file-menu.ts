@@ -1,13 +1,10 @@
 // The header "File ▾" menu (#287 W5): resource-oriented portable-bundle
 // workspace operations — New workspace / Import queries / Import Dashboard /
-// Open workspace / Export Dashboard / Export workspace — plus the kept
+// Import workspace / Export Dashboard / Export workspace — plus the kept
 // "Open as dashboard" (#149), the Variable history section, and the one-way
 // Markdown/SQL "share" downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
-// #342 reordered the Workbench menu around an unlabeled primary group (New /
-// Open / Export workspace / Import queries), renamed "Replace workspace…" to
-// "Open workspace…" (same destructive whole-workspace replace semantics —
-// see `startOpenWorkspace`/`confirmOpenWorkspace` below), and moved Share/
-// Publish above Variable history.
+// #406 makes workspace import additive: local identity is reminted, the
+// generated key is made unique, and the previously active record is untouched.
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
 // write here builds a `PortableBundleImportPlan` (workspace/import-planner.js)
 // or a repository-level primitive (workspace/workspace-operations.js) INSIDE
@@ -42,8 +39,9 @@ import type {
   QueryDecision, QueryConflict, QueryConflictAction, DashboardSummary, PortableBundleImportPlan,
 } from '../workspace/import-planner.js';
 import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-operations.js';
+import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
-import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
+import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
@@ -170,7 +168,7 @@ export function openFileMenu(app: App): void {
   // then Variable history — the query-count footer stays last.
   const rows: MenuRow[] = [
     { kind: 'item', icon: Icon.plus(), label: 'New workspace…', onClick: () => newWorkspaceAction(app) },
-    { kind: 'item', icon: Icon.folderOpen(), label: 'Open workspace…', onClick: () => openWorkspaceInput.click() },
+    { kind: 'item', icon: Icon.folderOpen(), label: 'Import workspace…', onClick: () => openWorkspaceInput.click() },
     { kind: 'item', icon: Icon.download(), label: 'Export workspace…', meta: '.json', onClick: () => exportWorkspaceAction(app) },
     { kind: 'item', icon: Icon.upload(), label: 'Import queries…', onClick: () => importQueriesInput.click() },
     { kind: 'sep' },
@@ -193,7 +191,7 @@ export function openFileMenu(app: App): void {
   const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
   // own) — they're display:none inputs `.click()`-triggered by the Import
-  // queries / Open workspace items above. Parent them to the mounted menu
+  // queries / Import workspace items above. Parent them to the mounted menu
   // so they're torn down with it on close (no leak) and `picker(i)`-style
   // lookups (`.file-menu input[type=file]`) keep finding them. The item click
   // closes the menu (detaching these) BEFORE running its onClick, so the
@@ -267,10 +265,11 @@ function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV
 /** The current committed aggregate, reconstructed from `state` — W4 keeps
  *  `state.savedQueries`/`dashboard`/`workspaceId`/`libraryName` as a live
  *  projection of it, so this never needs its own read of `app.workspace`. */
-function currentWorkspace(app: App): StoredWorkspaceV1 {
+function currentWorkspace(app: App): StoredWorkspaceV2 {
   return {
-    storageVersion: 1,
+    storageVersion: 2,
     id: app.state.workspaceId,
+    key: app.state.workspaceKey,
     name: app.state.libraryName.value,
     queries: app.state.savedQueries,
     dashboard: app.state.dashboard,
@@ -292,7 +291,7 @@ function afterLibraryChange(app: App): void {
   app.updateEditorModeUi!();
   renderSavedHistory(app);
   // Keep the header "Dashboard →" control in sync when a commit adds/removes
-  // the workspace's Dashboard (e.g. Open workspace / Import queries).
+  // the workspace's Dashboard (e.g. Import workspace / Import queries).
   renderDashboardNav(app);
 }
 
@@ -307,7 +306,7 @@ function afterLibraryChange(app: App): void {
  *  (schema/persistence failure) toasts the first diagnostic. Never a partial
  *  write either way. */
 async function commitWorkspace(
-  app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null,
+  app: App, build: (latest: StoredWorkspaceV2 | null) => StoredWorkspaceV2 | null,
   successMsg?: string | (() => string),
 ): Promise<boolean> {
   const result = await app.mutateWorkspace((latest) => {
@@ -339,7 +338,7 @@ async function commitWorkspace(
  *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
  *  import and decide against the workspace as it now is. */
 function revalidateDecisions(
-  base: StoredWorkspaceV1, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  base: StoredWorkspaceV2, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
 ): QueryDecision[] | null {
   const conflicts = detectQueryConflicts(base.queries, incoming);
   const decided = new Set(decisions.map((decision) => decision.sourceId));
@@ -358,8 +357,8 @@ function revalidateDecisions(
  *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
 function planBuild(
   app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
-  run: (base: StoredWorkspaceV1, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
-): (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null {
+  run: (base: StoredWorkspaceV2, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV2 | null) => StoredWorkspaceV2 | null {
   return (latest) => {
     const base = latest ?? currentWorkspace(app);
     const revalidated = revalidateDecisions(base, incoming, decisions);
@@ -465,7 +464,7 @@ function openConflictDialog(
 // ── multi-dashboard picker ───────────────────────────────────────────────────
 
 /** Show a picker over `dashboards` (bundle array order — presentation order,
- *  not re-sorted); `allowNone` adds a "No dashboard" row (Open workspace's
+ *  not re-sorted); `allowNone` adds a "No dashboard" row (workspace import's
  *  own owner decision — Import Dashboard never offers it, since it must
  *  import exactly one). Cancelling calls neither branch of `onPick`. */
 function openDashboardPicker(
@@ -490,26 +489,31 @@ function openDashboardPicker(
 // ── actions: New workspace ───────────────────────────────────────────────────
 
 function newWorkspaceAction(app: App): void {
-  const cur = currentWorkspace(app);
-  if (cur.queries.length || cur.dashboard) confirmNewWorkspace(app, cur);
-  else void doNewWorkspace(app);
+  void doNewWorkspace(app);
 }
 
 async function doNewWorkspace(app: App): Promise<void> {
-  // Independent of `latest` (a brand-new workspace never derives from the
-  // current one) — still routed through `commitWorkspace`/`mutateWorkspace`
-  // for the same one write-path discipline every other mutation here uses.
-  await commitWorkspace(app, () => createNewWorkspace(app.genId), 'Started a new workspace');
-}
-
-function confirmNewWorkspace(app: App, cur: StoredWorkspaceV1): void {
-  openConfirm(app, {
-    title: 'Start a new workspace?',
-    body: ['This clears your current ', h('b', null, String(cur.queries.length)), ' saved ',
-      cur.queries.length === 1 ? 'query' : 'queries', cur.dashboard ? ' and your Dashboard' : '',
-      '. Open editor tabs are unaffected. Export first if you want to keep them.'],
-    confirmLabel: 'New workspace',
-    onConfirm: () => void doNewWorkspace(app),
+  await app.serializeWrite(async () => {
+    const listed = await app.workspace.list();
+    const name = 'SQL Library';
+    const key = deriveWorkspaceKey(name, [
+      ...listed.summaries.map((item) => item.key),
+      ...listed.corrupt.map((item) => item.key),
+    ]);
+    const result = await app.workspace.create(createNewWorkspace(app.genId, key, name));
+    if (!result.ok) {
+      flashToast('✕ ' + first(result.diagnostics, 'Could not create workspace'), { document: app.document });
+      return;
+    }
+    app.applyCommittedWorkspace(result.workspace);
+    const opened = await app.workspace.markOpened(result.workspace.key);
+    afterLibraryChange(app);
+    flashToast(
+      opened.ok
+        ? 'Started a new workspace'
+        : 'Started a new workspace, but its last-used timestamp could not be saved.',
+      { document: app.document },
+    );
   });
 }
 
@@ -584,8 +588,8 @@ function startImportDashboard(app: App, bundle: PortableBundleV1): void {
 function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
   // v1 holds at most one Dashboard, so importing one REPLACES the current
   // Dashboard (its tiles/layout/filters). Confirm first when that would discard
-  // an existing Dashboard — matching New workspace/Open workspace, which also
-  // gate destructive commits (#287; flagged in review — silent, unrecoverable loss).
+  // an existing Dashboard — unlike additive New/Import workspace, this gates
+  // a destructive commit (#287; flagged in review — silent, unrecoverable loss).
   if (app.state.dashboard) {
     openConfirm(app, {
       title: 'Import and replace current Dashboard?',
@@ -620,11 +624,7 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
   });
 }
 
-// ── actions: Open workspace ──────────────────────────────────────────────────
-// #342: user-facing rename of "Replace workspace…" — same destructive
-// whole-workspace replace semantics (picker → plan → confirm → commit), just
-// relabeled. `planReplaceWorkspace` (import-planner.js) keeps its own name;
-// it's an internal primitive, not user-facing copy.
+// ── actions: Import workspace ────────────────────────────────────────────────
 
 function onOpenWorkspaceFile(app: App, file: File): void {
   readBundleFile(app, file, (bundle) => startOpenWorkspace(app, bundle));
@@ -633,36 +633,44 @@ function onOpenWorkspaceFile(app: App, file: File): void {
 function startOpenWorkspace(app: App, bundle: PortableBundleV1): void {
   const dashboards = listBundleDashboards(bundle);
   if (dashboards.length > 1) {
-    openDashboardPicker(app, 'Open workspace — which dashboard?', dashboards, true, (id) => {
-      confirmOpenWorkspace(app, bundle, id === null ? undefined : id);
+    openDashboardPicker(app, 'Import workspace — which dashboard?', dashboards, true, (id) => {
+      void importWorkspace(app, bundle, id === null ? undefined : id);
     });
     return;
   }
-  confirmOpenWorkspace(app, bundle, dashboards[0]?.id);
+  void importWorkspace(app, bundle, dashboards[0]?.id);
 }
 
-function confirmOpenWorkspace(app: App, bundle: PortableBundleV1, sourceDashboardId: string | undefined): void {
-  const cur = currentWorkspace(app);
-  openConfirm(app, {
-    title: 'Open workspace?',
-    body: ['Opening this file replaces your current ', h('b', null, String(cur.queries.length)), ' saved ',
-      cur.queries.length === 1 ? 'query' : 'queries', cur.dashboard ? ' and your Dashboard' : '',
-      ' with ', h('b', null, String(bundle.queries.length)), ' ', queries(bundle.queries.length),
-      sourceDashboardId ? ' and the selected Dashboard' : '', ' from the file. Open editor tabs are unaffected.'],
-    confirmLabel: 'Open workspace',
-    onConfirm: () => {
-      // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit
-      // split as `startImportQueries`/`doImportDashboard` above (#341/#344) —
-      // `cur` above (the confirm body's own snapshot) has the same property.
-      const workspace = currentWorkspace(app);
-      withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
-        void commitWorkspace(
-          app, planBuild(app, bundle.queries, decisions,
-            (base, revalidated) => planReplaceWorkspace(base, bundle, sourceDashboardId, revalidated, app.genId)),
-          'Opened workspace',
-        );
-      });
-    },
+async function importWorkspace(
+  app: App, bundle: PortableBundleV1, sourceDashboardId: string | undefined,
+): Promise<void> {
+  await app.serializeWrite(async () => {
+    const listed = await app.workspace.list();
+    const name = bundle.metadata?.name?.trim() || 'Imported workspace';
+    const key = deriveWorkspaceKey(name, [
+      ...listed.summaries.map((item) => item.key),
+      ...listed.corrupt.map((item) => item.key),
+    ]);
+    const base = createNewWorkspace(app.genId, key, name);
+    const plan = planReplaceWorkspace(base, bundle, sourceDashboardId, [], app.genId);
+    if (!plan.candidateWorkspace) {
+      flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
+      return;
+    }
+    const result = await app.workspace.create(plan.candidateWorkspace);
+    if (!result.ok) {
+      flashToast('✕ ' + first(result.diagnostics, 'Could not import workspace'), { document: app.document });
+      return;
+    }
+    app.applyCommittedWorkspace(result.workspace);
+    const opened = await app.workspace.markOpened(result.workspace.key);
+    afterLibraryChange(app);
+    flashToast(
+      opened.ok
+        ? 'Imported workspace'
+        : 'Imported workspace, but its last-used timestamp could not be saved.',
+      { document: app.document },
+    );
   });
 }
 
@@ -682,10 +690,11 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
  *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
  *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
  *  export never becomes a silent no-op on an unhandled rejection. */
-async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV1 | null> {
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV2 | null> {
   try {
     await app.flushWorkspaceWrites();
-    return await app.workspace.loadCurrent();
+    const result = await app.workspace.loadById(app.state.workspaceId);
+    return result.status === 'ok' ? result.workspace : null;
   } catch {
     return null;
   }

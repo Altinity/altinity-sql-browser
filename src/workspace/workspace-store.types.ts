@@ -1,28 +1,49 @@
-// The injected persistence seam the WorkspaceRepository (Phase 2 of #280,
-// issue #284) sits behind. Exactly like the fetch/crypto/storage seams: the
-// repository logic depends only on this narrow async interface, never on a
-// concrete IndexedDB, so it is unit-testable with a plain in-memory fake.
-//
-// The aggregate is ONE record — the whole StoredWorkspaceV1 serialized as its
-// canonical JSON text. `write` is an atomic full-record replacement (one
-// IndexedDB readwrite transaction in the real adapter), which is what gives
-// the repository genuine last-commit-wins semantics: a commit can never leave
-// a half-mixed aggregate, because there is no read-modify-write across two
-// transactions — one `write` replaces the entire record or nothing at all.
-//
-// Type-only (ADR-0002 seam contract) — no executable statements, excluded from
-// the coverage gate like every other `*.types.ts`.
+// The injected persistence seam for the multi-workspace repository (#406).
+// Persisted workspace content is an opaque canonical JSON string. Store-owned
+// metadata stays outside that JSON so opening a workspace does not dirty its
+// portable aggregate.
+
+export interface WorkspaceStoreRecord {
+  readonly id: string;
+  /** Canonical lowercase workspace key; callers validate before persistence. */
+  readonly key: string;
+  readonly text: string;
+  readonly lastOpenedAt: number | null;
+}
+
+export type WorkspaceStoreCreateResult =
+  | { readonly status: 'created' }
+  | { readonly status: 'duplicate-id' }
+  | { readonly status: 'duplicate-key' };
+
+export type WorkspaceStoreReplaceResult =
+  | { readonly status: 'replaced' }
+  | { readonly status: 'not-found' }
+  | { readonly status: 'immutable-key' };
+
+export type WorkspaceStoreMarkOpenedResult =
+  | { readonly status: 'opened' }
+  | { readonly status: 'not-found' };
+
 export interface WorkspaceStore {
-  /** Read the single persisted aggregate record's canonical JSON text, or
-   *  `null` when no record exists. A rejected promise means the read failed
-   *  (storage unavailable); it is distinct from a resolved `null` (no record),
-   *  and the migration marker keys on record existence via this method. */
-  read(): Promise<string | null>;
-  /** Atomically replace the single aggregate record with `text` in one
-   *  transaction. Rejects when persistence fails; on rejection the previously
-   *  stored record is left intact. */
-  write(text: string): Promise<void>;
-  /** Delete the aggregate record (idempotent — clearing an absent record
-   *  resolves). */
-  clear(): Promise<void>;
+  list(): Promise<WorkspaceStoreRecord[]>;
+  readById(id: string): Promise<WorkspaceStoreRecord | null>;
+  readByKey(key: string): Promise<WorkspaceStoreRecord | null>;
+
+  /** Atomically add a workspace. Both `id` and canonical `key` are unique. */
+  create(record: WorkspaceStoreRecord): Promise<WorkspaceStoreCreateResult>;
+
+  /** Replace content only when `id` exists and its key is unchanged. The
+   * store preserves its current `lastOpenedAt` metadata atomically. */
+  replace(record: WorkspaceStoreRecord): Promise<WorkspaceStoreReplaceResult>;
+
+  /** Delete exactly one workspace. Resolves false when `id` did not exist. */
+  delete(id: string): Promise<boolean>;
+
+  getLastUsedKey(): Promise<string | null>;
+
+  /** Atomically stamp the workspace and make it the last-used preference. */
+  markOpened(key: string, timestamp: number): Promise<WorkspaceStoreMarkOpenedResult>;
+
+  clearLastUsedKey(): Promise<void>;
 }

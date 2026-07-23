@@ -4,7 +4,7 @@ import {
 } from '../../src/dashboard/application/session-bundle.js';
 import { encodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV2,
 } from '../../src/generated/json-schema.types.js';
 
 const panelQuery = (id: string): SavedQueryV2 => ({
@@ -86,16 +86,17 @@ describe('materializeDetachedWorkspace', () => {
     ]);
   });
 
-  it('materializes the selected dashboard into a StoredWorkspaceV1 named after its title', () => {
+  it('materializes the selected dashboard into a StoredWorkspaceV2 named after its title', () => {
     const dashboard = dashboardDoc('d1', 'My Dashboard', ['q1']);
     const queries = [panelQuery('q1')];
     const text = encodedBundle(dashboard, queries);
     const result = materializeDetachedWorkspace(text, 'd1', 'detached-1');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const workspace: StoredWorkspaceV1 = result.workspace;
-    expect(workspace.storageVersion).toBe(1);
+    const workspace: StoredWorkspaceV2 = result.workspace;
+    expect(workspace.storageVersion).toBe(2);
     expect(workspace.id).toBe('detached-1');
+    expect(workspace.key).toBe('detached-1');
     expect(workspace.name).toBe('My Dashboard');
     expect(workspace.dashboard?.id).toBe('d1');
     expect(workspace.queries.map((q) => q.id)).toEqual(['q1']);
@@ -113,51 +114,61 @@ describe('materializeDetachedWorkspace', () => {
 });
 
 describe('resolveDashboardMode', () => {
-  const workspaceFixture = (id: string, dashboardId: string | null): StoredWorkspaceV1 => ({
-    storageVersion: 1, id, name: 'WS', queries: [],
+  const workspaceFixture = (id: string, dashboardId: string | null): StoredWorkspaceV2 => ({
+    storageVersion: 2, id, key: `${id}_key`, name: 'WS', queries: [],
     dashboard: dashboardId ? dashboardDoc(dashboardId, 'D', []) : null,
   });
 
   it('resolves edit mode when the primary workspace and dashboard id both match', () => {
     const primary = workspaceFixture('ws1', 'd1');
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, primary, null);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, primary, null);
     expect(result).toEqual({ mode: 'edit', workspace: primary });
   });
 
   it('resolves view mode when only the detached workspace and dashboard id match', () => {
     const detached = workspaceFixture('ws1', 'd1');
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, null, detached);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, null, detached);
     expect(result).toEqual({ mode: 'view', workspace: detached });
   });
 
   it('prefers the primary workspace over the detached workspace when both match', () => {
     const primary = workspaceFixture('ws1', 'd1');
     const detached = workspaceFixture('ws1', 'd1');
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, primary, detached);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, primary, detached);
+    expect(result).toEqual({ mode: 'edit', workspace: primary });
+  });
+
+  it('matches the canonical workspace key case-insensitively', () => {
+    const primary = workspaceFixture('ws1', 'd1');
+    const result = resolveDashboardMode(
+      { kind: 'current-workspace', workspaceKey: 'WS1_KEY', dashboardId: 'd1' },
+      primary,
+      null,
+    );
     expect(result).toEqual({ mode: 'edit', workspace: primary });
   });
 
   it('returns not-found when neither workspace is loaded', () => {
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, null, null);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, null, null);
     expect(result).toEqual({ mode: 'not-found' });
   });
 
   it('returns not-found when the workspace id matches but the dashboard id differs', () => {
     const primary = workspaceFixture('ws1', 'd1');
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd2' }, primary, null);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd2' }, primary, null);
     expect(result).toEqual({ mode: 'not-found' });
   });
 
   it('returns not-found when the workspace has no dashboard at all', () => {
     const primary = workspaceFixture('ws1', null);
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, primary, null);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, primary, null);
     expect(result).toEqual({ mode: 'not-found' });
   });
 
-  it('returns not-found when the workspace id itself differs from both candidates', () => {
+  it('returns not-found when the workspace key differs from both candidates', () => {
     const primary = workspaceFixture('ws-other', 'd1');
     const detached = workspaceFixture('ws-other-2', 'd1');
-    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceId: 'ws1', dashboardId: 'd1' }, primary, detached);
+    const result = resolveDashboardMode({ kind: 'current-workspace', workspaceKey: 'ws1_key', dashboardId: 'd1' }, primary, detached);
     expect(result).toEqual({ mode: 'not-found' });
   });
 });
