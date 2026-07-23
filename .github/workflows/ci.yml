@@ -42,8 +42,11 @@ jobs:
             unit:
               - 'src/**'
               - 'schemas/**'
+              # Keep this positive-only: paths-filter's default "some"
+              # quantifier treats a standalone negative rule as matching every
+              # other repository path. The example contract test intentionally
+              # overlaps the focused examples job when that test itself changes.
               - 'tests/unit/**'
-              - '!tests/unit/spec-examples.test.js'
               - 'tests/vitest.config.ts'
               - 'build/**'
               - 'tsconfig.json'
