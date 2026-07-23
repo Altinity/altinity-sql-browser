@@ -1561,9 +1561,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
   app.applyCommittedWorkspace = applyCommittedWorkspace;
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
-  // Import / Replace operations mint fresh ids through — the same generator
-  // `loadDashboardWorkspace`'s one-shot legacy migration already uses inline
-  // above (`uid('ws-')`).
+  // Import / Replace operations use to mint fresh ids (`uid('ws-')`).
   app.genId = () => uid('ws-');
 
   // #287 review fix: serialize saved-query writes so overlapping async CRUD
@@ -1909,12 +1907,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     loadIntoNewTab: (queryOrName, sql) => { loadIntoNewTab(app, queryOrName, sql); toEditorOnMobile(); },
     login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
     // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
-    // path, where `main.ts`'s `bootstrap` awaits it — this is the ONLY place the
-    // aggregate load + legacy migration runs for a username/password session.
-    // Without it a first basic-auth session would render on the placeholder
-    // workspaceId and skip `migrateLegacyWorkspaceIfNeeded`, so the first CRUD
-    // commit would mint an orphan aggregate the migration marker then treats as
-    // "already migrated" — permanently stranding legacy favorites/layout (#287).
+    // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
+    // workspace resolution runs for a username/password session. Without it,
+    // basic auth would keep rendering the placeholder workspace instead of the
+    // requested or last-used persisted workspace.
     connect: async (input) => { await conn.connectBasic(input); await app.loadWorkspaceOnBoot(); app.renderApp(); },
     share,
     copyResult,

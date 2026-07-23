@@ -607,17 +607,13 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // resets on reload. Read/write via `.value`.
     libraryName: signal(initialWorkspaceName),
     libraryDirty: signal(false),
-    // #287 W4: the aggregate projection. `dashboard` has no aggregate to read
-    // yet at this synchronous constructor — it starts `null` and is populated
-    // once app.ts's async boot step (`loadWorkspaceOnBoot`) resolves the real
-    // StoredWorkspaceV2 (after the one-shot legacy migration). `workspaceId`
-    // is minted here rather than left blank: the stored-workspace schema
-    // requires a non-empty id, so a save attempted in the window before boot
-    // projection completes (or by a fixture that never runs it at all — e.g.
-    // a unit test driving `createApp` directly) still succeeds, committing
-    // the first aggregate under this freshly minted id; the active-id lookup's
-    // migration marker is keyed on store record existence, so that commit is
-    // simply treated as "already migrated" rather than raced/overwritten.
+    // The synchronous constructor has no persisted workspace to project yet:
+    // `dashboard` starts null and app.ts's async `loadWorkspaceOnBoot` fills it
+    // after resolving the explicit or last-used StoredWorkspaceV2.
+    // `workspaceId` is minted here rather than left blank because the persisted
+    // schema requires a non-empty id. A save attempted before boot projection
+    // completes (or by a fixture that never runs it) can therefore still commit
+    // a valid workspace under this placeholder identity.
     // `loadWorkspaceOnBoot` overwrites this with the real committed id once
     // it resolves (a pre-existing aggregate, or the one migration just built).
     dashboard: null,

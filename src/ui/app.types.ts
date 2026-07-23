@@ -466,10 +466,9 @@ export interface App {
    *  detached workspace (or null when the token is missing/expired/undecodable).
    *  ADR-0003. */
   consumeDashboardHandoff(): Promise<StoredWorkspaceV2 | null>;
-  /** #286 Phase 4: resolve the current StoredWorkspaceV2 for the Dashboard
-   *  viewer, running the one-shot legacy migration first when no aggregate
-   *  exists. Returns null when neither an aggregate nor a migratable legacy
-   *  workspace is available. */
+  /** Resolve the keyed or implicit StoredWorkspaceV2 for the Dashboard viewer.
+   *  Returns null when no matching workspace (or requested Dashboard id) is
+   *  available. */
   loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
   /** #287 W4: the async boot-init step — runs `loadDashboardWorkspace`
    *  (resolve the explicit key or implicit last-opened workspace) and, when it
@@ -491,12 +490,11 @@ export interface App {
    *  caller's job — this never touches `app.dom` (it also runs during boot,
    *  before the first `renderApp()`/mount). */
   applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
-  /** #287 W5: a fresh, unguessable id — the same generator
-   *  `loadDashboardWorkspace`'s legacy migration already uses internally
-   *  (`uid('ws-')`), exposed here as the injected `WorkspaceIdGen` the
-   *  file-menu's New workspace / Import / Replace operations pass to
-   *  `createNewWorkspace`/the import planner. One shared generator: a minted
-   *  id only needs to be unique, never to encode which op minted it. */
+  /** #287 W5: a fresh, unguessable id (`uid('ws-')`), exposed here as the
+   *  injected `WorkspaceIdGen` the file-menu's New workspace / Import /
+   *  Replace operations pass to `createNewWorkspace`/the import planner. One
+   *  shared generator: a minted id only needs to be unique, never to encode
+   *  which op minted it. */
   genId(): string;
   /** #287 review fix: serialize saved-query write operations per-app so two
    *  overlapping async CRUD commits can't interleave. Each queued op runs only
