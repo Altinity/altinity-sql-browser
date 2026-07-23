@@ -4,7 +4,7 @@ import {
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
   sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
-  reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
+  detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../../src/state.js';
 import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
@@ -377,6 +377,34 @@ describe('saved queries', () => {
     reconcileTabsWithSavedQueries(s);
     expect(kept).toMatchObject({ savedId: 'keep', editorMode: 'spec' });
     expect(dangling).toMatchObject({ savedId: null, editorMode: 'sql' });
+    expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
+  });
+  it('detaches every workspace-bound tab without changing its drafts or dirty state', () => {
+    const s = savedTestState();
+    const linked = s.tabs.value[0];
+    linked.savedId = 'same-id';
+    linked.editorMode = 'spec';
+    linked.sqlDraft = "SELECT 'A'";
+    linked.specText = '{"name":"A"}';
+    linked.dirtySql = true;
+    linked.dirtySpec = true;
+    linked.lastCommittedQueryToken = 'workspace-a-token';
+    linked.externalState = 'conflict';
+    const unsaved = newTabObj('t2');
+    s.tabs.value = [linked, unsaved];
+
+    detachWorkspaceBoundTabs(s);
+
+    expect(linked).toMatchObject({
+      savedId: null,
+      editorMode: 'sql',
+      sqlDraft: "SELECT 'A'",
+      specText: '{"name":"A"}',
+      dirtySql: true,
+      dirtySpec: true,
+      externalState: null,
+    });
+    expect(linked.lastCommittedQueryToken).toBeUndefined();
     expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
   });
   it('renameSaved updates the entry + any linked tab name', async () => {

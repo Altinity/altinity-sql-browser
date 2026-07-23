@@ -731,6 +731,20 @@ export function savedForTab(
   return (tab && tab.savedId && state.savedQueries.find((q) => q.id === tab.savedId)) || null;
 }
 
+/** Detach every tab linked to the workspace being left. Saved-query ids are
+ * scoped to their enclosing workspace, so carrying a link across a workspace
+ * identity change could bind the tab's draft to an unrelated query that happens
+ * to reuse the same id. Drafts and dirty flags deliberately remain untouched. */
+export function detachWorkspaceBoundTabs(state: Pick<AppState, 'tabs'>): void {
+  for (const tab of state.tabs.value) {
+    if (!tab.savedId) continue;
+    tab.savedId = null;
+    tab.editorMode = 'sql';
+    tab.lastCommittedQueryToken = undefined;
+    tab.externalState = null;
+  }
+}
+
 /** Clear links from open tabs to saved queries that are absent from a newly
  * committed workspace. The SQL draft stays open; only the invalid association
  * and its Spec-only editor mode are reset, matching deleteSaved(). */

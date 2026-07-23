@@ -9,7 +9,7 @@ import { Icon } from './icons.js';
 import {
   createState, activeTab,
   savedForTab, tabPanel,
-  normalizeRowLimit, reconcileTabsWithSavedQueries,
+  normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
   adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
@@ -1533,6 +1533,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   // this tab is editing, while the repository remains independently addressable
   // by immutable id and stable URL key.
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV2): void => {
+    const workspaceChanged = app.state.workspaceId !== workspace.id;
+    if (workspaceChanged) detachWorkspaceBoundTabs(app.state);
     app.state.savedQueries = workspace.queries;
     reconcileTabsWithSavedQueries(app.state);
     // #343: seed the in-sync baseline token for any still-linked tab that lacks
@@ -1758,11 +1760,14 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   };
 
-  app.loadDashboardWorkspace = async (key?: string) => {
+  app.loadDashboardWorkspace = async (key?: string, dashboardId?: string) => {
     const result = key
       ? await app.workspace.loadByKey(key)
       : await resolveImplicitOrProvision();
     if (result.status !== 'ok') return null;
+    // A keyed Dashboard route is valid only when both parts of its identity
+    // resolve. Do not make a workspace "last used" for a not-found Dashboard.
+    if (dashboardId !== undefined && result.workspace.dashboard?.id !== dashboardId) return null;
     await recordOpened(result.workspace);
     return result.workspace;
   };

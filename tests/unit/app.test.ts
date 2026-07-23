@@ -20,7 +20,7 @@ import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
-import { renameSaved } from '../../src/state.js';
+import { renameSaved, savedForTab } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type { SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
@@ -3540,6 +3540,29 @@ describe('share + star + columns', () => {
     const app = createApp(env());
     await expect(app.loadDashboardWorkspace('missing_workspace')).resolves.toBeNull();
   });
+  it('marks a keyed Dashboard workspace opened only after its Dashboard id resolves', async () => {
+    const app = createApp(env());
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'dashboard-workspace-id', key: 'dashboard_workspace',
+      name: 'Dashboard workspace', queries: [],
+      dashboard: {
+        documentVersion: 1, id: 'dashboard-id', title: 'Dashboard', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+        filters: [], tiles: [],
+      },
+    };
+    expect((await app.workspace.create(workspace)).ok).toBe(true);
+    const markOpened = vi.spyOn(app.workspace, 'markOpened');
+
+    await expect(app.loadDashboardWorkspace(workspace.key, 'missing-dashboard')).resolves.toBeNull();
+    expect(markOpened).not.toHaveBeenCalled();
+
+    await expect(app.loadDashboardWorkspace(workspace.key, 'dashboard-id')).resolves.toMatchObject({
+      id: workspace.id,
+    });
+    expect(markOpened).toHaveBeenCalledOnce();
+    expect(markOpened).toHaveBeenCalledWith(workspace.key);
+  });
   it('boot resolves an explicit Workbench ws key without falling back or provisioning', async () => {
     const location = {
       host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
@@ -3602,6 +3625,71 @@ describe('share + star + columns', () => {
     expect(tab).toMatchObject({ sqlDraft: 'SELECT still_here', savedId: null, editorMode: 'sql' });
     expect(app.state.savedQueries).toEqual([]);
     expect(app.state.workspaceId).toBe('new-workspace');
+  });
+  it('detaches a linked tab when a different workspace reuses the same query id', () => {
+    const app = createApp(env());
+    const tab = app.activeTab();
+    const workspaceA: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'workspace-a', key: 'workspace_a',
+      name: 'Workspace A',
+      queries: [savedQueryFixture({ id: 'q1', name: 'A', sql: "SELECT 'A'" })],
+      dashboard: null,
+    };
+    const workspaceB: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'workspace-b', key: 'workspace_b',
+      name: 'Workspace B',
+      queries: [savedQueryFixture({ id: 'q1', name: 'B', sql: "SELECT 'B'" })],
+      dashboard: null,
+    };
+    app.applyCommittedWorkspace(workspaceA);
+    tab.savedId = 'q1';
+    tab.editorMode = 'spec';
+    tab.sqlDraft = "SELECT 'A draft'";
+    tab.specText = '{"name":"A draft"}';
+    tab.dirtySql = true;
+    tab.dirtySpec = true;
+    tab.lastCommittedQueryToken = 'workspace-a-token';
+    tab.externalState = 'conflict';
+
+    app.applyCommittedWorkspace(workspaceB);
+
+    expect(tab).toMatchObject({
+      savedId: null,
+      editorMode: 'sql',
+      sqlDraft: "SELECT 'A draft'",
+      specText: '{"name":"A draft"}',
+      dirtySql: true,
+      dirtySpec: true,
+      externalState: null,
+    });
+    expect(tab.lastCommittedQueryToken).toBeUndefined();
+    expect(savedForTab(app.state, tab)).toBeNull();
+  });
+  it('keeps a valid query link when re-projecting the same workspace identity', () => {
+    const app = createApp(env());
+    const tab = app.activeTab();
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'workspace-a', key: 'workspace_a',
+      name: 'Workspace A',
+      queries: [savedQueryFixture({ id: 'q1', name: 'A', sql: "SELECT 'A'" })],
+      dashboard: null,
+    };
+    app.applyCommittedWorkspace(workspace);
+    tab.savedId = 'q1';
+    tab.editorMode = 'spec';
+    tab.lastCommittedQueryToken = 'existing-token';
+
+    app.applyCommittedWorkspace({
+      ...workspace,
+      queries: [savedQueryFixture({ id: 'q1', name: 'A2', sql: "SELECT 'A2'" })],
+    });
+
+    expect(tab).toMatchObject({
+      savedId: 'q1',
+      editorMode: 'spec',
+      lastCommittedQueryToken: 'existing-token',
+    });
+    expect(savedForTab(app.state, tab)?.sql).toBe("SELECT 'A2'");
   });
   it('#300: a corrupt-but-present aggregate surfaces a toast instead of silently continuing, and its Reset action rebuilds a fresh one', async () => {
     const app = createApp(env());

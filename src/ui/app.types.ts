@@ -470,7 +470,7 @@ export interface App {
    *  viewer, running the one-shot legacy migration first when no aggregate
    *  exists. Returns null when neither an aggregate nor a migratable legacy
    *  workspace is available. */
-  loadDashboardWorkspace(key?: string): Promise<StoredWorkspaceV2 | null>;
+  loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
   /** #287 W4: the async boot-init step — runs `loadDashboardWorkspace`
    *  (resolve the explicit key or implicit last-opened workspace) and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,

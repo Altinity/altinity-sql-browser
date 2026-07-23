@@ -132,7 +132,7 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  loadDashboardWorkspace(key?: string): Promise<StoredWorkspaceV2 | null>;
+  loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
   // #288 Phase 6 — viewer routing (ADR-0003): the parsed open-source of this
   // tab, the detached-views lookup, the one-time-handoff consumer, and the
   // projection of the resolved workspace onto app.state (so the File menu's
@@ -423,7 +423,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (!workspace) { renderDashboardNotFound(app); return; }
     readOnly = true;
   } else if (source && source.kind === 'current-workspace') {
-    const primary = await app.loadDashboardWorkspace(source.workspaceKey);
+    const primary = await app.loadDashboardWorkspace(source.workspaceKey, source.dashboardId);
     const detached = await app.detachedViews.getByKey(source.workspaceKey);
     const resolved = resolveDashboardMode(source, primary, detached);
     if (resolved.mode === 'not-found') { renderDashboardNotFound(app); return; }
