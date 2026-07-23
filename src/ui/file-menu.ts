@@ -12,16 +12,16 @@
 // from a pre-queue snapshot: `commitWorkspace`/`planBuild` below are the only
 // path every mutation here goes through), commits the WHOLE candidate, and
 // projects the result onto `state` via `app.applyCommittedWorkspace` before
-// repainting (`afterLibraryChange`). External read-only "Open for viewing" +
-// a trust preflight are DEFERRED to #288 — every operation here only COMMITS
-// to the workspace, never executes a query. Render module over the `app`
+// repainting (`afterLibraryChange`). Detached Dashboard snapshot transport was
+// removed by #407; every operation here only COMMITS to the workspace, never
+// executes a query. Render module over the `app`
 // controller; every side effect goes through an injected seam
 // (app.mutateWorkspace / app.downloadFile / app.FileReader / app.document /
 // app.genId / app.wallNow), so it is fully testable.
 
 import { h, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
-import { openMenu } from './menu.js';
+import { closeOpenMenus, openMenu } from './menu.js';
 import type { MenuRow } from './menu.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -60,9 +60,9 @@ export function libraryControls(app: App): HTMLElement[] {
   }, h('span', null, 'File'), Icon.chevDown());
   app.dom.libraryTitle = h('div', { class: 'lib-title' });
   renderLibraryTitle(app);
-  // #302: Dashboard navigation lives next to the workspace name (not in the
-  // File menu). A plain navigation control (not a dropdown) that opens the
-  // standalone Dashboard; shown only when the workspace has a Dashboard. The
+  // #407: Dashboard navigation lives next to the workspace name (not in the
+  // File menu). It switches the current tab to the unified Dashboard surface,
+  // including for a workspace whose editable Dashboard has not been created.
   // label collapses to icon-only on narrow screens via `hd-hide-mobile-label`,
   // but the accessible name ("Open Dashboard") is always present.
   app.dom.dashboardNav = h('button', {
@@ -73,13 +73,12 @@ export function libraryControls(app: App): HTMLElement[] {
   return [app.dom.fileBtn, app.dom.libraryTitle, app.dom.dashboardNav];
 }
 
-/** #302 — show the header "Dashboard →" control only when the current workspace
- *  has a Dashboard. Re-run on library changes (see the workbench-shell effect +
- *  `afterLibraryChange`). No-op before `libraryControls` has built the slot. */
+/** Keep the unified Dashboard surface reachable even when `dashboard === null`;
+ * that route owns the explicit Create dashboard action. */
 export function renderDashboardNav(app: App): void {
   const nav = app.dom.dashboardNav;
   if (!nav) return;
-  nav.hidden = !app.state.dashboard;
+  nav.hidden = false;
 }
 
 /** (Re)render the workspace title into its slot: a click-to-rename name button
@@ -283,7 +282,7 @@ function afterLibraryChange(app: App): void {
   // #302: on the standalone Dashboard route the only committing operation is
   // Import Dashboard, and none of the Workbench chrome below exists — re-render
   // the dashboard instead (repointing the URL at the possibly-new dashboard id).
-  if (app.dashboardRoute) { app.reloadDashboardRoute(); return; }
+  if (app.sqlRoute.surface === 'dashboard') { app.reloadDashboardRoute(); return; }
   app.updateSaveBtn();
   // Always defined by the time a file-menu action can run (post-boot,
   // post-first-renderApp()) — app.types.ts only marks it optional because it's
@@ -506,6 +505,7 @@ async function doNewWorkspace(app: App): Promise<void> {
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
+    app.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(
@@ -663,6 +663,7 @@ async function importWorkspace(
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
+    app.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(
@@ -729,23 +730,35 @@ function downloadAction(app: App, fmt: 'md' | 'sql'): void {
 // ── dialogs (shared `.fm-dialog-*` visual language) ─────────────────────────
 
 interface DialogHandle { close(): void; }
+const dialogClosers = new WeakMap<Element, () => void>();
+
+/** Close body-mounted File menus/dialogs before an application surface exits. */
+export function disposeFileMenuOverlays(app: Pick<App, 'document' | 'dom'>): void {
+  closeOpenMenus(app.document);
+  const dialog = app.dom.fileDialog;
+  if (dialog) dialogClosers.get(dialog)?.();
+}
 
 /** Mount one `.fm-dialog-backdrop`/`.fm-dialog-card` (title + caller-supplied
  *  content nodes), wired for Esc + outside-click close — the shared shell
  *  `openConfirm`/the conflict dialog/the dashboard picker all build on. */
 function openDialogShell(app: App, title: string, content: unknown[], extraCardClass?: string): DialogHandle {
   const doc = app.document;
+  let backdrop: HTMLElement;
   const close = (): void => {
     doc.removeEventListener('keydown', onKey, true);
     detachBackdrop();
-    if (app.dom.fileDialog) { app.dom.fileDialog.remove(); app.dom.fileDialog = undefined; }
+    dialogClosers.delete(backdrop);
+    backdrop.remove();
+    if (app.dom.fileDialog === backdrop) app.dom.fileDialog = undefined;
   };
   const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
   const card = h('div', { class: extraCardClass ? `fm-dialog-card ${extraCardClass}` : 'fm-dialog-card' },
     h('div', { class: 'fm-dialog-title' }, title), content);
-  const backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
+  backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
   const detachBackdrop = attachBackdropClose(backdrop, close);
   app.dom.fileDialog = backdrop;
+  dialogClosers.set(backdrop, close);
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
   return { close };

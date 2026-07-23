@@ -115,7 +115,7 @@ export interface WorkbenchShellDeps {
 /** Build the signed-in shell and mount all regions. Ported byte-identically
  *  from app.ts's former `renderApp` body (#276 Phase 5) — every ordering
  *  comment below is original. */
-export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
+export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   const {
     app, root, document: doc, state, actions, conn, catalog, sqlEditor, specEditor,
     queryDoc, prefs, matchMedia, activeTab, updateSaveBtn, specBlocked, renderVarStrip,
@@ -307,7 +307,8 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
   // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
   // just mutate the signals.
-  effect(() => {
+  const disposers: (() => void)[] = [];
+  disposers.push(effect(() => {
     state.tabs.value;
     state.activeTabId.value;
     queryDoc.revalidateSpecDrafts({ refreshUi: false });
@@ -322,7 +323,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     updateSaveBtn();
     renderVarStrip(); // switching tabs / opening a saved query re-detects variables
     app.updateEditorModeUi!(); // assigned just above, unconditionally, before any effect can run
-  });
+  }));
   // The workbench's 3 run-coupled reactive effects (#276 Phase 3a — see
   // workbench-session.ts's own `attachShell`): the results-pane repaint
   // (re-runs on a tab switch, a Table/JSON/Chart view change, or a run-state
@@ -346,7 +347,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // The Export button reflects the exporting state — set here (not just at
   // click-time) so a second click while one export is already running is
   // blocked visually too, not just by exportDirect's own re-entrance guard.
-  effect(() => { setExportBtn(state.exporting.value); });
+  disposers.push(effect(() => { setExportBtn(state.exporting.value); }));
   // Track the editor's text selection into a signal so the Run button label and
   // ⌘+Enter target just the highlighted text. `selectionchange` is the one event
   // that fires for keyboard, mouse, and programmatic selection; gate on the
@@ -365,7 +366,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
   // calls: re-runs on schema load, load error, filter text, or expand/collapse.
   // Registered here (post-mount) so app.dom.schemaList already exists; the effect
   // also runs once now for the initial paint.
-  effect(() => {
+  disposers.push(effect(() => {
     state.schema.value;
     state.schemaError.value;
     state.schemaFilter.value;
@@ -374,23 +375,23 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     // and hover title, so repaint the tree when isMobile flips.
     state.isMobile.value;
     renderSchema(app);
-  });
+  }));
   // The schema/auth-failure banner reflects schemaError (a separate surface).
-  effect(() => {
+  disposers.push(effect(() => {
     state.schemaError.value;
     updateBanner();
-  });
+  }));
   // Reactive repaint of the side panel: re-runs when the active panel changes
   // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
   // still call renderSavedHistory directly until those slices are signals too.
-  effect(() => {
+  disposers.push(effect(() => {
     state.sidePanel.value;
     renderSavedHistory(app);
-  });
+  }));
   // Reactive repaint of the header library title (name + unsaved-changes dot):
   // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
   // separately (editingLibrary is not a signal — file-menu.js renders it directly).
-  effect(() => {
+  disposers.push(effect(() => {
     state.libraryName.value;
     state.libraryDirty.value;
     renderLibraryTitle(app);
@@ -398,23 +399,29 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     // which changes alongside these signals (star toggle / import / replace all
     // flip libraryDirty on their way through a commit).
     renderDashboardNav(app);
-  });
+  }));
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the
   // auto-navigation in the action wrappers) via the injected matchMedia seam.
   // When the platform has no matchMedia the app stays in desktop JS mode — the
   // mobile CSS still applies, just without JS branching.
   const mq = matchMedia && matchMedia('(max-width: ' + MOBILE_BREAKPOINT_PX + 'px)');
+  const onMobileChange = (e: MediaQueryListEvent): void => { state.isMobile.value = e.matches; };
   if (mq) {
     state.isMobile.value = mq.matches;
-    mq.addEventListener('change', (e) => { state.isMobile.value = e.matches; });
+    mq.addEventListener('change', onMobileChange);
   }
   // Bottom-nav view switching: reflect the active mobile panel + Tables segmented
   // choice onto data-attributes the mobile CSS keys off (a no-op above the
   // breakpoint). Each runs once now for the initial paint.
-  effect(() => { mainRow.dataset.mobileView = state.mobileView.value; });
-  effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; });
+  disposers.push(effect(() => { mainRow.dataset.mobileView = state.mobileView.value; }));
+  disposers.push(effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; }));
   catalog.loadVersion();
   catalog.loadSchema();
   catalog.loadReference();
+  return () => {
+    for (const dispose of disposers) dispose();
+    doc.removeEventListener('selectionchange', app.syncSelection!);
+    mq?.removeEventListener('change', onMobileChange);
+  };
 }

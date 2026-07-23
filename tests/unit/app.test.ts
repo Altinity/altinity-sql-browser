@@ -15,9 +15,11 @@ import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
-import { encodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
+import type {
+  WorkspaceLoadResult, WorkspaceMarkOpenedResult,
+} from '../../src/workspace/workspace-repository.js';
 import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
 import { renameSaved, savedForTab } from '../../src/state.js';
@@ -524,11 +526,9 @@ describe('createApp basics', () => {
     await expect(app.flushWorkspaceWrites()).resolves.toBeUndefined();
 
     const dashboardApp = createApp(env());
-    await dashboardApp.loadDashboardWorkspace();
-    await expect(dashboardApp.renderDashboard()).resolves.toBeUndefined();
-    dashboardApp.dashboardReadOnly = true;
+    await dashboardApp.loadWorkspaceOnBoot();
+    expect(dashboardApp.renderCurrentSurface()).toBeUndefined();
     await expect(dashboardApp.refreshWorkspaceFromStore()).resolves.toBeUndefined();
-    dashboardApp.dashboardReadOnly = false;
     const change = { type: 'workspace-changed' as const, sourceTabId: 'other', workspaceId: 'w1' };
     dashboardApp.onExternalWorkspaceChange(change);
     dashboardApp.onExternalWorkspaceChange(change); // coalesced while the first refresh is queued
@@ -3455,6 +3455,7 @@ describe('share + star + columns', () => {
   });
   it('#287 W4: the Save popover surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
     const app = createApp(env());
+    await app.loadWorkspaceOnBoot();
     app.renderApp();
     const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
     app.workspace.commit = vi.fn(async () => ({ ok: false as const, diagnostics }));
@@ -3469,8 +3470,12 @@ describe('share + star + columns', () => {
   });
   it('#287 W4: linked Save surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
     const app = createApp(env());
+    await app.loadWorkspaceOnBoot();
     app.renderApp();
-    app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    const linked = savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' });
+    await app.mutateWorkspace((latest) => ({
+      candidate: { ...latest!, queries: [linked] },
+    }));
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
     const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
     app.workspace.commit = vi.fn(async () => ({ ok: false as const, diagnostics }));
@@ -3536,32 +3541,33 @@ describe('share + star + columns', () => {
     expect(qs(document, '.share-toast').textContent)
       .toBe('Workspace opened, but its last-used timestamp could not be saved.');
   });
-  it('returns null for an explicit Dashboard workspace key that does not exist', async () => {
-    const app = createApp(env());
-    await expect(app.loadDashboardWorkspace('missing_workspace')).resolves.toBeNull();
+  it('boot provisions an empty collection and rewrites /sql with its canonical key', async () => {
+    const replaceState = vi.fn();
+    const app = createApp(env({
+      window: asWindow({ history: { replaceState }, navigator: {} }),
+    }));
+    const workspace = await app.loadWorkspaceOnBoot();
+    expect(workspace).not.toBeNull();
+    expect(replaceState).toHaveBeenCalledWith(
+      null, '', `/sql?ws=${encodeURIComponent(workspace!.key)}`,
+    );
   });
-  it('marks a keyed Dashboard workspace opened only after its Dashboard id resolves', async () => {
-    const app = createApp(env());
-    const workspace: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'dashboard-workspace-id', key: 'dashboard_workspace',
-      name: 'Dashboard workspace', queries: [],
-      dashboard: {
-        documentVersion: 1, id: 'dashboard-id', title: 'Dashboard', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-        filters: [], tiles: [],
-      },
+  it('boot resolves a pre-existing last-used workspace and rewrites /sql', async () => {
+    const store = fakeIndexedDbFactory();
+    const seed = createApp(env({ indexedDB: store }));
+    const alpha: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'alpha-id', key: 'alpha', name: 'Alpha',
+      queries: [], dashboard: null,
     };
-    expect((await app.workspace.create(workspace)).ok).toBe(true);
-    const markOpened = vi.spyOn(app.workspace, 'markOpened');
-
-    await expect(app.loadDashboardWorkspace(workspace.key, 'missing-dashboard')).resolves.toBeNull();
-    expect(markOpened).not.toHaveBeenCalled();
-
-    await expect(app.loadDashboardWorkspace(workspace.key, 'dashboard-id')).resolves.toMatchObject({
-      id: workspace.id,
-    });
-    expect(markOpened).toHaveBeenCalledOnce();
-    expect(markOpened).toHaveBeenCalledWith(workspace.key);
+    expect((await seed.workspace.create(alpha)).ok).toBe(true);
+    expect((await seed.workspace.markOpened('alpha')).ok).toBe(true);
+    const replaceState = vi.fn();
+    const app = createApp(env({
+      indexedDB: store,
+      window: asWindow({ history: { replaceState }, navigator: {} }),
+    }));
+    await expect(app.loadWorkspaceOnBoot()).resolves.toMatchObject({ key: 'alpha' });
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/sql?ws=alpha');
   });
   it('boot resolves an explicit Workbench ws key without falling back or provisioning', async () => {
     const location = {
@@ -5131,149 +5137,335 @@ describe('mobile best-effort mode (#126)', () => {
   });
 });
 
-// ── #288 / #302: Dashboard viewing seams on the App controller ────────────────
-describe('Dashboard viewing (open-source, handoff, actions) — #288/#302', () => {
-  const vdash = () => ({
-    documentVersion: 1, id: 'd', title: 'My View', revision: 1,
-    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-    filters: [], tiles: [{ id: 't1', queryId: 'q1' }],
-  });
-  const vquery = () => savedQuery({ id: 'q1', name: 'q1', sql: 'SELECT 1' });
-  const bundleText = (): string => {
-    const enc = encodePortableBundleJson({ queries: [vquery()], dashboards: [vdash()] as never, nowISO: '2026-07-18T00:00:00.000Z' });
-    if (!enc.ok) throw new Error('fixture failed to encode');
-    return enc.value;
-  };
-  const child = () => ({ postMessage: vi.fn(), closed: false });
-
-  it('createApp parses the tab open-source + route flag from the location', () => {
-    const editTab = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?ws=w1&dash=d1', host: 'ch.example' } as Location }));
-    expect(editTab.dashboardOpenSource).toEqual({
-      kind: 'current-workspace', workspaceKey: 'w1', dashboardId: 'd1',
+// ── #407: unified route coordinator ──────────────────────────────────────────
+describe('unified /sql routing', () => {
+  it('parses dashboard view mode from query parameters', () => {
+    const app = createApp(env({ location: {
+      origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=w1&surface=dashboard&mode=view', host: 'ch.example',
+    } as Location }));
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'w1', mode: 'view',
     });
-    expect(editTab.dashboardRoute).toBe(true);
-    const workbenchTab = createApp(env());
-    expect(workbenchTab.dashboardOpenSource).toBeNull();
-    expect(workbenchTab.dashboardRoute).toBe(false);
   });
 
-  it('openDashboard opens ?ws=&dash= when the workspace has a dashboard, else the bare route; grants the handoff', () => {
-    const opened: (string | undefined)[] = [];
-    const c = child();
-    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return c; }) }));
-    app.state.workspaceKey = 'workspace_nine';
-    app.state.dashboard = vdash() as never;
-    app.openDashboard();
-    expect(opened[0]).toBe('https://ch.example/sql/dashboard?ws=workspace_nine&dash=d');
-    expect(c.postMessage).not.toBe(undefined); // grantHandoffTo ran against the child
-    // No dashboard → bare route.
-    app.state.dashboard = null;
-    app.openDashboard();
-    expect(opened[1]).toBe('https://ch.example/sql/dashboard');
-  });
-
-  it('openDashboardForViewing writes the one-time token then opens ?st=; toasts when there is no dashboard', async () => {
-    const opened: (string | undefined)[] = [];
-    const put = vi.fn(async () => {});
-    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return child(); }) }));
-    app.handoff = { put, take: vi.fn(async () => null) };
-    app.state.savedQueries = [vquery()] as never;
-    app.state.dashboard = vdash() as never;
-    app.openDashboardForViewing();
-    expect(opened[0]).toMatch(/\/dashboard\?st=[0-9a-f]{64}&dash=d$/);
-    expect(put).toHaveBeenCalledOnce();
-    // No dashboard → toast, no window.
-    app.state.dashboard = null;
-    app.openDashboardForViewing();
-    expect(opened.length).toBe(1);
-    // Blocked popup (openWindow → null) → no orphan token is written.
-    const put2 = vi.fn(async () => {});
-    const blocked = createApp(env({ openWindow: asOpenWindow(() => null) }));
-    blocked.handoff = { put: put2, take: vi.fn(async () => null) };
-    blocked.state.savedQueries = [vquery()] as never;
-    blocked.state.dashboard = vdash() as never;
-    blocked.openDashboardForViewing();
-    expect(put2).not.toHaveBeenCalled();
-  });
-
-  it('openDashboardForViewing toasts on an unencodable dashboard and on a failed token write', async () => {
-    const opened: unknown[] = [];
-    // Unencodable dashboard (bad preset) → build fails before opening a window.
-    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return child(); }) }));
-    app.handoff = { put: vi.fn(async () => {}), take: vi.fn(async () => null) };
-    app.state.savedQueries = [vquery()] as never;
-    app.state.dashboard = { ...vdash(), layout: { type: 'flow', version: 1, preset: 'nope', items: {} } } as never;
-    app.openDashboardForViewing();
-    expect(opened.length).toBe(0);
-    // Valid dashboard but the token write rejects → the window still opened, the
-    // rejection is caught (toast), never thrown.
-    const app2 = createApp(env({ openWindow: asOpenWindow(() => child()) }));
-    app2.handoff = { put: vi.fn(async () => { throw new Error('idb down'); }), take: vi.fn(async () => null) };
-    app2.state.savedQueries = [vquery()] as never;
-    app2.state.dashboard = vdash() as never;
-    app2.openDashboardForViewing();
-    await new Promise((r) => setTimeout(r, 0)); // let the rejected put settle into .catch
-  });
-
-  it('consumeDashboardHandoff atomically consumes the token, materializes a detached view, and rewrites the URL', async () => {
-    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?st=tok&dash=d', host: 'ch.example' } as Location }));
-    const put = vi.fn(async () => {});
-    app.handoff = { take: vi.fn(async () => ({ text: bundleText(), dashboardId: 'd', detachedWorkspaceId: 'wsview-1', expiresAt: 9e12 })), put: vi.fn(async () => {}) };
-    app.detachedViews = {
-      get: vi.fn(async () => null),
-      getByKey: vi.fn(async () => null),
-      put,
-    };
-    // happy-dom's real replaceState rejects a cross-origin URL from the test's
-    // blob: document — stub the impl so we observe the call without it throwing.
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
-    const ws = await app.consumeDashboardHandoff();
-    expect(ws?.id).toBe('wsview-1');
-    expect(put).toHaveBeenCalledOnce();
-    expect(replaceState).toHaveBeenCalled();
-    expect(app.dashboardOpenSource).toEqual({
-      kind: 'current-workspace', workspaceKey: 'wsview-1', dashboardId: 'd',
-    });
-    replaceState.mockRestore();
-  });
-
-  it('consumeDashboardHandoff returns null for a non-bundle route, a spent token, and an undecodable record', async () => {
-    const plain = createApp(env()); // no ?st → not a session-bundle route
-    expect(await plain.consumeDashboardHandoff()).toBeNull();
-    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?st=tok&dash=d', host: 'ch.example' } as Location }));
-    app.handoff = { take: vi.fn(async () => null), put: vi.fn(async () => {}) }; // spent/expired
-    expect(await app.consumeDashboardHandoff()).toBeNull();
-    app.handoff = { take: vi.fn(async () => ({ text: '{bad', dashboardId: 'd', detachedWorkspaceId: 'x', expiresAt: 9e12 })), put: vi.fn(async () => {}) };
-    expect(await app.consumeDashboardHandoff()).toBeNull();
-  });
-
-  it('reloadDashboardRoute repoints the URL at the current dashboard and re-renders (URL skipped when absent)', () => {
-    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?ws=w&dash=old', host: 'ch.example' } as Location }));
-    app.renderDashboard = vi.fn();
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
-    app.state.workspaceKey = 'workspace';
-    app.state.dashboard = { ...vdash(), id: 'dNew' } as never;
-    app.reloadDashboardRoute();
-    expect(replaceState).toHaveBeenCalledWith(
-      null, '', 'https://ch.example/sql/dashboard?ws=workspace&dash=dNew',
-    );
-    expect(app.dashboardOpenSource).toEqual({
-      kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'dNew',
-    });
-    expect(app.renderDashboard).toHaveBeenCalledOnce();
-    // No dashboard → re-render only, no URL rewrite.
-    replaceState.mockClear();
-    app.state.dashboard = null;
-    app.reloadDashboardRoute();
-    expect(replaceState).not.toHaveBeenCalled();
-    expect(app.renderDashboard).toHaveBeenCalledTimes(2);
-    replaceState.mockRestore();
-  });
-
-  it('the Dashboard export/import actions delegate to their file-menu flows', () => {
+  it('resynchronizes route state after bootstrap cleans an OAuth callback URL', () => {
     const app = createApp(env());
-    // exportDashboard with no dashboard just toasts (no throw); importDashboard
-    // opens a picker input on the page — both exercise the action arrow bodies.
+    app.syncSqlRoute('?ws=ops&surface=dashboard&mode=view');
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'ops', mode: 'view',
+    });
+  });
+
+  it('Workbench to Dashboard uses pushState in the same tab', async () => {
+    const pushState = vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
+    const app = createApp(env());
+    app.state.workspaceKey = 'workspace_nine';
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'w', key: 'workspace_nine', name: 'W', queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.renderCurrentSurface = vi.fn();
+    app.openDashboard();
+    await Promise.resolve();
+    expect(pushState).toHaveBeenCalledWith(
+      null, '', '/sql?ws=workspace_nine&surface=dashboard',
+    );
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'workspace_nine', mode: 'edit',
+    });
+    pushState.mockRestore();
+  });
+
+  it('view/edit uses replaceState and canonicalizes edit mode away', async () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    const app = createApp(env({ location: {
+      origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=w&surface=dashboard&mode=view', host: 'ch.example',
+    } as Location }));
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'w', key: 'w', name: 'W', queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.renderCurrentSurface = vi.fn();
+    await app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: 'w', mode: 'edit' }, 'replace');
+    expect(replaceState).toHaveBeenCalledWith(
+      null, '', '/sql?ws=w&surface=dashboard',
+    );
+    replaceState.mockRestore();
+  });
+
+  it('rewrites a newly created workspace key without changing the active surface', () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    const app = createApp(env({ location: {
+      origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=old&surface=dashboard&mode=view', hash: '', host: 'ch.example',
+    } as Location }));
+    app.rewriteWorkspaceRoute('new_workspace');
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'new_workspace', mode: 'view',
+    });
+    expect(replaceState).toHaveBeenCalledWith(
+      null, '', '/sql?ws=new_workspace&surface=dashboard&mode=view',
+    );
+    replaceState.mockRestore();
+  });
+
+  it('canonicalizes an unresolved explicit route without falling back', async () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    const app = createApp(env({ location: {
+      origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=missing&surface=workspace&mode=view', hash: '#keep', host: 'ch.example',
+    } as Location }));
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'empty' as const }));
+    app.workspace.resolveImplicit = vi.fn();
+    await expect(app.loadWorkspaceOnBoot()).resolves.toBeNull();
+    expect(app.workspaceRouteStatus).toBe('not-found');
+    expect(app.workspace.resolveImplicit).not.toHaveBeenCalled();
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/sql?ws=missing#keep');
+    replaceState.mockRestore();
+  });
+
+  it('popstate reparses, reloads, and renders the destination workspace', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=first',
+      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=first',
+    } as Location;
+    const app = createApp(env({ location }));
+    const second: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'second-id', key: 'second', name: 'Second',
+      queries: [], dashboard: null,
+    };
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace: second }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const, workspace: second }));
+    app.renderCurrentSurface = vi.fn();
+    location.search = '?ws=second&surface=dashboard&mode=view';
+    await app.handleSqlPopState();
+    expect(app.sqlRoute).toEqual({
+      surface: 'dashboard', workspaceKey: 'second', mode: 'view',
+    });
+    expect(app.currentWorkspace).toBe(second);
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('reloadDashboardRoute also handles a missing current projection', () => {
+    const app = createApp(env());
+    app.currentWorkspace = null;
+    app.renderDashboard = vi.fn();
+    app.reloadDashboardRoute();
+    expect(app.currentWorkspace).toBeNull();
+    expect(app.renderDashboard).toHaveBeenCalledOnce();
+  });
+
+  it('renderCurrentSurface dispatches a ready dashboard route to its renderer', () => {
+    const app = createApp(env());
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'view' };
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'w', key: 'w', name: 'W', queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.renderDashboard = vi.fn();
+    app.renderCurrentSurface();
+    expect(app.renderDashboard).toHaveBeenCalledOnce();
+  });
+
+  it('renderCurrentSurface dispatches an absent-surface route to Workbench', () => {
+    const app = createApp(env());
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'w', key: 'w', name: 'W', queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.renderApp = vi.fn();
+    app.renderCurrentSurface();
+    expect(app.renderApp).toHaveBeenCalledOnce();
+  });
+
+  it('renders the dedicated not-found surface for an explicit missing key', () => {
+    const app = createApp(env());
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'gone' };
+    app.currentWorkspace = null;
+    app.workspaceRouteStatus = 'not-found';
+    app.renderCurrentSurface();
+    expect(app.root!.querySelector('.workspace-not-found')).not.toBeNull();
+    expect(app.root!.textContent).toContain('No local workspace exists for “gone”');
+  });
+
+  it('disposes a mounted Workbench before rendering not-found', async () => {
+    const app = createApp(env());
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const remove = vi.spyOn(document, 'removeEventListener');
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'gone' };
+    app.currentWorkspace = null;
+    app.workspaceRouteStatus = 'not-found';
+    app.renderCurrentSurface();
+    expect(remove.mock.calls.some(([type]) => type === 'selectionchange')).toBe(true);
+    remove.mockRestore();
+  });
+
+  it('discards a slower workspace navigation after a newer destination wins', async () => {
+    const app = createApp(env());
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    const resolvers = new Map<string, (result: WorkspaceLoadResult) => void>();
+    app.workspace.loadByKey = vi.fn((key: string) =>
+      new Promise<WorkspaceLoadResult>((resolve) => resolvers.set(key, resolve)));
+    app.workspace.markOpened = vi.fn(async (key) => ({
+      ok: true as const,
+      workspace: {
+        storageVersion: 2 as const, id: key, key, name: key.toUpperCase(),
+        queries: [], dashboard: null,
+      },
+    }));
+    app.renderCurrentSurface = vi.fn();
+    const toB = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
+    const toC = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'c' }, 'push');
+    const c: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'c', key: 'c', name: 'C', queries: [], dashboard: null,
+    };
+    resolvers.get('c')!({ status: 'ok', workspace: c });
+    await toC;
+    const b: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'b', key: 'b', name: 'B', queries: [], dashboard: null,
+    };
+    resolvers.get('b')!({ status: 'ok', workspace: b });
+    await toB;
+    expect(app.sqlRoute.workspaceKey).toBe('c');
+    expect(app.currentWorkspace).toBe(c);
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('discards a route whose last-used write finishes after a newer navigation', async () => {
+    const app = createApp(env());
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    const workspace = (key: string): StoredWorkspaceV2 => ({
+      storageVersion: 2, id: key, key, name: key.toUpperCase(), queries: [], dashboard: null,
+    });
+    app.workspace.loadByKey = vi.fn(async (key) => ({ status: 'ok' as const, workspace: workspace(key) }));
+    let releaseB!: () => void;
+    app.workspace.markOpened = vi.fn((key: string): Promise<WorkspaceMarkOpenedResult> => key === 'b'
+      ? new Promise<WorkspaceMarkOpenedResult>((resolve) => {
+        releaseB = () => resolve({ ok: true as const });
+      })
+      : Promise.resolve({ ok: true as const }));
+    app.renderCurrentSurface = vi.fn();
+    const toB = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
+    await Promise.resolve();
+    await Promise.resolve();
+    const toC = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'c' }, 'push');
+    await toC;
+    releaseB();
+    await toB;
+    expect(app.currentWorkspace?.key).toBe('c');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('a refresh started for one workspace cannot overwrite a newer routed workspace', async () => {
+    const app = createApp(env());
+    const workspace = (key: string): StoredWorkspaceV2 => ({
+      storageVersion: 2, id: key, key, name: key.toUpperCase(), queries: [], dashboard: null,
+    });
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.applyCommittedWorkspace(workspace('a'));
+    let resolveRefresh!: (result: WorkspaceLoadResult) => void;
+    app.workspace.loadById = vi.fn(() =>
+      new Promise<WorkspaceLoadResult>((resolve) => { resolveRefresh = resolve; }));
+    app.workspace.loadByKey = vi.fn(async (key) => ({
+      status: 'ok' as const, workspace: workspace(key),
+    }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const }));
+    app.renderCurrentSurface = vi.fn();
+
+    const refreshA = app.refreshWorkspaceFromStore();
+    await Promise.resolve();
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
+    resolveRefresh({ status: 'ok', workspace: workspace('a') });
+    await refreshA;
+
+    expect(app.sqlRoute.workspaceKey).toBe('b');
+    expect(app.currentWorkspace?.key).toBe('b');
+    expect(app.state.workspaceKey).toBe('b');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('a stale popstate load never repaints over a newer Back/Forward destination', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=b',
+      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=b',
+    } as Location;
+    const app = createApp(env({ location }));
+    const resolvers = new Map<string, (result: WorkspaceLoadResult) => void>();
+    app.workspace.loadByKey = vi.fn((key: string) =>
+      new Promise<WorkspaceLoadResult>((resolve) => resolvers.set(key, resolve)));
+    app.workspace.markOpened = vi.fn(async (key) => ({
+      ok: true as const,
+      workspace: {
+        storageVersion: 2 as const, id: key, key, name: key.toUpperCase(),
+        queries: [], dashboard: null,
+      },
+    }));
+    app.renderCurrentSurface = vi.fn();
+    const backToB = app.handleSqlPopState();
+    location.search = '?ws=c';
+    const forwardToC = app.handleSqlPopState();
+    const c: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'c', key: 'c', name: 'C', queries: [], dashboard: null,
+    };
+    resolvers.get('c')!({ status: 'ok', workspace: c });
+    await forwardToC;
+    const b: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'b', key: 'b', name: 'B', queries: [], dashboard: null,
+    };
+    resolvers.get('b')!({ status: 'ok', workspace: b });
+    await backToB;
+    expect(app.currentWorkspace).toBe(c);
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('a mutation that observes external deletion transitions to not-found', async () => {
+    const app = createApp(env());
+    app.currentWorkspace = {
+      storageVersion: 2, id: app.state.workspaceId, key: 'w', name: 'W',
+      queries: [], dashboard: null,
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.workspace.loadById = vi.fn(async () => ({ status: 'empty' as const }));
+    app.renderCurrentSurface = vi.fn();
+    const transform = vi.fn();
+    await expect(app.mutateWorkspace(transform)).resolves.toMatchObject({
+      ok: false, aborted: true,
+    });
+    expect(transform).not.toHaveBeenCalled();
+    expect(app.currentWorkspace).toBeNull();
+    expect(app.workspaceRouteStatus).toBe('not-found');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('the registered popstate listener delegates to the route coordinator', async () => {
+    let listener: EventListener | null = null;
+    const addEventListener = vi.spyOn(window, 'addEventListener').mockImplementation(
+      ((type: string, callback: EventListenerOrEventListenerObject) => {
+        if (type === 'popstate' && typeof callback === 'function') listener = callback;
+      }) as typeof window.addEventListener,
+    );
+    const app = createApp(env());
+    app.handleSqlPopState = vi.fn(async () => {});
+    expect(listener).not.toBeNull();
+    listener!(new PopStateEvent('popstate'));
+    await Promise.resolve();
+    expect(app.handleSqlPopState).toHaveBeenCalledOnce();
+    addEventListener.mockRestore();
+  });
+
+  it('the Dashboard export/import actions remain available without snapshot handoff', () => {
+    const app = createApp(env());
     app.state.dashboard = null;
     expect(() => app.actions.exportDashboard()).not.toThrow();
     expect(() => app.actions.importDashboard()).not.toThrow();

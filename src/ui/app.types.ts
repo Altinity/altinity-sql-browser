@@ -21,11 +21,9 @@ import type { SchemaGraphSession } from '../application/schema-graph-session.js'
 import type { AppPreferences } from '../application/app-preferences.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
-import type { HandoffStore } from '../workspace/handoff-store.types.js';
-import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
-import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
 import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { SqlRoute } from '../core/sql-route.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -206,8 +204,6 @@ export interface ActionsRegistry {
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
   openDashboard(): void;
-  /** #288 Phase 6 — open the current dashboard read-only in a new view tab. */
-  openDashboardForViewing(): void;
   /** #302 — export the current dashboard's dependency closure as a bundle. */
   exportDashboard(): void;
   /** #302 — import a Dashboard bundle through the transactional planner. */
@@ -227,8 +223,8 @@ export interface App {
   document: Document;
 
   /** The auth + config + ClickHouse connection lifecycle (#276 Phase 2) —
-   *  OAuth PKCE login/refresh, Basic probing, IdP config resolution, and
-   *  cross-tab auth handoff, constructible without App/AppState/DOM
+   *  OAuth PKCE login/refresh, Basic probing, and IdP config resolution,
+   *  constructible without App/AppState/DOM
    *  (`src/application/connection-session.ts`). The identity/auth members
    *  below (`isSignedIn`/`email`/`host`/…) are Phase-2 delegates onto this —
    *  shells/bootstrap consume those; a future phase re-points them to
@@ -279,8 +275,8 @@ export interface App {
   // `chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/`chUsername` likewise moved
   // there in Phase 2; the flat `App` delegates that used to forward onto them
   // (`isSignedIn`/`email`/`host`/`hostHint`/`basePath`/`setTokens`/
-  // `loadConfig`/`loadIdps`/`ensureConfig`/`ensureFreshToken`/`chCtx`/
-  // `receiveAuthHandoff`) were deleted in #276 Phase 5 — every consumer reads
+  // `loadConfig`/`loadIdps`/`ensureConfig`/`ensureFreshToken`/`chCtx`) were
+  // deleted in #276 Phase 5 — every consumer reads
   // `app.conn.*` directly now. `showLogin`/`signOut` stay here: they compose
   // rendering (`renderLoginApp`), not pure forwards.
   activeTab(): Tab;
@@ -313,21 +309,6 @@ export interface App {
    *  favorites-driven Dashboard render still reads legacy keys; Phases 3-6 of
    *  #280 route reads/commits through it and retire the legacy keys. */
   workspace: WorkspaceRepository;
-  /** #288 Phase 6 — the one-time cross-tab token store backing VIEW-mode
-   *  Dashboard handoff (ADR-0003): the opener writes a validated snapshot
-   *  bundle under an unguessable token before opening the viewer tab, which
-   *  atomically consumes (get+delete) and materializes it. Injected IndexedDB
-   *  seam, own database. */
-  handoff: HandoffStore;
-  /** #288 Phase 6 — the persistent detached-views store a consumed handoff
-   *  materializes into: a read-only Dashboard copy under its own fresh
-   *  workspace id, detached from the editable primary workspace so it survives
-   *  relogin/reload and is unaffected by later Workbench edits (ADR-0003). */
-  detachedViews: DetachedViewsStore;
-  /** #288 Phase 6 — THIS tab's parsed `/dashboard` open source: `?ws=&dash=`
-   *  (edit, current-workspace) or `?st=&dash=` (a one-time view handoff), or
-   *  null on a bare/legacy `/dashboard` open. Read by `renderDashboard`. */
-  dashboardOpenSource: DashboardOpenSource | null;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
   /** The one deliberate delegate survivor of #276 Phase 5's params-group
@@ -442,36 +423,24 @@ export interface App {
   // Rendering / lifecycle.
   renderApp(): void;
   renderDashboard(): void;
+  renderCurrentSurface(): void;
   openDashboard(): void;
-  /** #288 Phase 6 — open the current dashboard in a read-only VIEW-mode tab via
-   *  the one-time IndexedDB token handoff (ADR-0003). */
-  openDashboardForViewing(): void;
-  /** #288/#302 — true when THIS tab is the standalone `/dashboard` route (set
-   *  once from the pathname). Lets shared post-commit logic repaint the right
-   *  surface. */
-  dashboardRoute: boolean;
-  /** #343 step 6 — true while the standalone Dashboard route is showing a
-   *  DETACHED/read-only view (a `?st=` handoff or a `?ws=` id that resolved only
-   *  in the detached-views store). Such a view renders from a detached snapshot,
-   *  not the primary workspace, so `refreshWorkspaceFromStore` must NOT project
-   *  primary-workspace invalidation over it. A Workbench tab and an editable
-   *  Dashboard leave it `false`; `renderDashboard` sets it per render. */
-  dashboardReadOnly: boolean;
-  /** #302 — repaint the standalone Dashboard route after an in-tab import: point
-   *  the URL at the (possibly new) current dashboard id, then re-render. */
+  /** Current canonical `/sql` route and the live workspace resolved for it. */
+  sqlRoute: SqlRoute;
+  currentWorkspace: StoredWorkspaceV2 | null;
+  workspaceRouteStatus: 'ready' | 'not-found' | 'error';
+  /** Navigate within the single artifact. Surface changes use push; mode and
+   * canonicalization use replace. */
+  navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
+  /** Reparse the browser URL after Back/Forward and mount the selected surface. */
+  handleSqlPopState(): Promise<void>;
+  /** Synchronize route state after bootstrap rewrites an OAuth callback URL. */
+  syncSqlRoute(search: string): void;
+  /** Point the current surface/mode at an already-projected workspace. */
+  rewriteWorkspaceRoute(workspaceKey: string): void;
+  /** Repaint Dashboard after an in-tab import, retaining its route mode. */
   reloadDashboardRoute(): void;
-  /** #288 Phase 6 — the VIEW-mode viewer's side of the one-time handoff: consume
-   *  this tab's `?st=` token, materialize the carried bundle into the persistent
-   *  detached store, rewrite the URL to the durable `?ws=` form, and return the
-   *  detached workspace (or null when the token is missing/expired/undecodable).
-   *  ADR-0003. */
-  consumeDashboardHandoff(): Promise<StoredWorkspaceV2 | null>;
-  /** Resolve the keyed or implicit StoredWorkspaceV2 for the Dashboard viewer.
-   *  Returns null when no matching workspace (or requested Dashboard id) is
-   *  available. */
-  loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
-  /** #287 W4: the async boot-init step — runs `loadDashboardWorkspace`
-   *  (resolve the explicit key or implicit last-opened workspace) and, when it
+  /** Resolve the explicit or implicit route workspace and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
    *  `dashboard`, `workspaceId`, `libraryName`) so the whole app (not only
    *  the /dashboard route) treats the aggregate as the saved-query

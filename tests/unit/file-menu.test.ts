@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   libraryControls, renderLibraryTitle, openFileMenu,
-  triggerImportDashboard, exportDashboardAction, renderDashboardNav,
+  triggerImportDashboard, exportDashboardAction, renderDashboardNav, disposeFileMenuOverlays,
 } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
@@ -112,24 +112,24 @@ describe('header Dashboard nav (#302)', () => {
     expect(document.querySelector('.file-menu')).not.toBeNull();
   });
 
-  it('libraryControls builds a "Dashboard →" nav (hidden when there is no Dashboard) that opens the Dashboard on click', () => {
+  it('libraryControls builds a "Dashboard →" nav that opens the Dashboard on click', () => {
     const app = mount();
     const nav = app.dom.dashboardNav!;
     expect(nav).toBeTruthy();
     expect(nav.classList.contains('hd-dash-nav')).toBe(true);
     expect(nav.getAttribute('aria-label')).toBe('Open Dashboard');
     expect(nav.querySelector('.hd-dash-nav-label')!.textContent).toBe('Dashboard →');
-    expect(nav.hidden).toBe(true); // no Dashboard by default
+    expect(nav.hidden).toBe(false); // #407: the dashboard creation route is always reachable
     app.actions.openDashboard = vi.fn();
     click(nav);
     expect(app.actions.openDashboard).toHaveBeenCalled();
   });
 
-  it('renderDashboardNav toggles .hidden with app.state.dashboard', () => {
+  it('renderDashboardNav keeps the dashboard creation route visible without a document', () => {
     const app = mount();
     app.state.dashboard = null;
     renderDashboardNav(app);
-    expect(app.dom.dashboardNav!.hidden).toBe(true);
+    expect(app.dom.dashboardNav!.hidden).toBe(false);
     app.state.dashboard = dashboardDoc();
     renderDashboardNav(app);
     expect(app.dom.dashboardNav!.hidden).toBe(false);
@@ -660,20 +660,18 @@ describe('afterLibraryChange — dashboard route (#302)', () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
-    app.dashboardRoute = true;
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit' };
     app.reloadDashboardRoute = vi.fn();
-    // The nav was built (hidden — no Dashboard yet) by `mount()`'s own
-    // `libraryControls` call; the dashboard-route branch must never re-run
-    // `renderDashboardNav`, even though the commit below gives the workspace
-    // a Dashboard.
-    expect(app.dom.dashboardNav!.hidden).toBe(true);
+    // The nav was built by `mount()`'s own `libraryControls` call; the
+    // dashboard-route branch must never re-run `renderDashboardNav`.
+    expect(app.dom.dashboardNav!.hidden).toBe(false);
     pickDashboardImport(app);
     await flush();
     expect(app.reloadDashboardRoute).toHaveBeenCalled();
     expect(app.state.dashboard).not.toBeNull(); // the commit itself still landed
     expect(app.updateSaveBtn).not.toHaveBeenCalled();
     expect(app.updateEditorModeUi).not.toHaveBeenCalled();
-    expect(app.dom.dashboardNav!.hidden).toBe(true); // renderDashboardNav was skipped
+    expect(app.dom.dashboardNav!.hidden).toBe(false); // renderDashboardNav was skipped
   });
 });
 
@@ -699,6 +697,7 @@ describe('Import workspace (#406 additive collection)', () => {
         }),
       },
     });
+    app.rewriteWorkspaceRoute = vi.fn();
     app.state.savedQueries = [panelQuery('old', 'Old')];
     const oldId = app.state.workspaceId;
     openFileMenu(app);
@@ -717,6 +716,7 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(create.mock.calls[0][0].id).not.toBe(oldId);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
     expect(app.state.dashboard!.id).toBe('d1');
+    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
     expect(toast()).toBe('Imported workspace');
   });
 
@@ -808,6 +808,7 @@ describe('New workspace', () => {
         }),
       },
     });
+    app.rewriteWorkspaceRoute = vi.fn();
     const oldId = app.state.workspaceId;
     openFileMenu(app);
     click(item(/New workspace/)!);
@@ -817,6 +818,7 @@ describe('New workspace', () => {
     expect(app.state.libraryName.value).toBe('SQL Library');
     expect(app.state.workspaceKey).toBe('sql_library_3');
     expect(app.state.workspaceId).not.toBe(oldId);
+    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('sql_library_3');
     expect(toast()).toBe('Started a new workspace');
   });
 
@@ -855,6 +857,22 @@ describe('New workspace', () => {
     await flush();
     expect(app.state.libraryName.value).toBe('SQL Library');
     expect(toast()).toBe('Started a new workspace, but its last-used timestamp could not be saved.');
+  });
+});
+
+describe('surface overlay disposal', () => {
+  it('closes both the dropdown and a body-mounted File dialog', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({
+      dashboards: [dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' })],
+    })) });
+    openFileMenu(app);
+    pickFile(picker(1));
+    await flush();
+    expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
+    openFileMenu(app);
+    disposeFileMenuOverlays(app);
+    expect(document.querySelector('.file-menu')).toBeNull();
+    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
   });
 });
 

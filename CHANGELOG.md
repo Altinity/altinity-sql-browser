@@ -10,6 +10,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Unified `/sql` routing for Workbench and Dashboard surfaces** (#407).
+  Workspace identity, surface, and presentation mode now live in canonical
+  `ws`, `surface`, and `mode` query parameters. Workbench/Dashboard switches
+  stay in the same tab with useful Back-button history, while View/Edit uses
+  replacement history. Dashboard view mode renders the same live workspace
+  document without authoring controls; an explicit missing workspace never
+  falls back, and an empty workspace offers Create only in edit mode. The old
+  `/sql/dashboard` bootstrap split, detached Dashboard snapshot stores,
+  one-time state handoff, and cross-tab credential handoff have been removed.
 - **Multi-workspace local persistence foundation** (#406). Stored workspaces
   now use the V2 contract with separate immutable opaque `id`, immutable
   human-readable URL `key`, and mutable display `name`. IndexedDB stores one

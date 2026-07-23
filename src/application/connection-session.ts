@@ -1,28 +1,20 @@
 // #276 Phase 2's ConnectionSession — auth + config + ClickHouse connection
-// lifecycle (OAuth PKCE login/refresh, Basic probing, IdP config resolution,
-// cross-tab auth handoff), constructible without App/AppState/DOM; no imports
+// lifecycle (OAuth PKCE login/refresh, Basic probing, IdP config resolution),
+// constructible without App/AppState/DOM; no imports
 // from src/ui/** or src/editor/** (check:arch enforces). Rendering is the
 // shell's job — auth loss surfaces through the injected `onAuthLost` callback,
-// never a render/toast call. This is a byte-for-byte port of the auth/config/
-// connection lifecycle that used to live inline in src/ui/app.ts (see that
-// file's history around the OAuth/basic-auth/handoff sections) — comments
+// never a render/toast call. This is a port of the auth/config/connection
+// lifecycle that used to live inline in src/ui/app.ts — comments
 // below are carried over, adapted only where the code itself moved (e.g.
 // `app.token` becomes a closed-over local, `ss`/`loc`/`win` become the
 // injected `deps.storage`/`deps.location`/`deps.win`, and a couple of
 // `app.renderApp()`/`renderLoginApp()` calls are gone because rendering isn't
-// this module's job any more — see each call site below for the specific
-// note). `openDashboard` itself (opening the new tab) stays app-side; this
-// module only owns the credential-grant half of the handoff.
+// this module's job any more — see each call site below for the specific note).
 
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import type { PkceCrypto } from '../core/pkce.js';
-import { configBase } from '../core/dashboard.js';
 import { resolveTarget } from '../core/target.js';
-import {
-  snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT,
-} from '../core/auth-handoff.js';
-import type { AuthSnapshot, StorageLike } from '../core/auth-handoff.js';
 import { buildAuthorizeUrl, refreshTokens, bearerFromTokens } from '../net/oauth.js';
 import { memoizeConfig, loadConfigDoc, resolveIdp } from '../net/oauth-config.js';
 import type { ConfigDoc, ResolvedIdpConfig, ChAuthKind } from '../net/oauth-config.js';
@@ -30,10 +22,10 @@ import type { ChCtx as NetChCtx, queryJson } from '../net/ch-client.js';
 
 // ── Injected dependency seam ─────────────────────────────────────────────────
 
-/** The sessionStorage-like surface this module needs — `core/auth-handoff.js`'s
- *  canonical `StorageLike` plus `removeItem` (the token/handoff bookkeeping
- *  below removes one-shot keys alongside `getItem`/`setItem`). */
-export interface SessionStorageLike extends StorageLike {
+/** The sessionStorage-like surface used by OAuth PKCE token bookkeeping. */
+export interface SessionStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
   removeItem(key: string): void;
 }
 
@@ -46,29 +38,15 @@ export type SessionCrypto = PkceCrypto;
 
 /** Every side effect this session needs, injected as a narrow bag — mirrors
  *  `query-execution-service.ts`'s own `QueryExecutionDeps` seam. Production
- *  wires the real browser/env objects (`main.js`'s bootstrap resolves
- *  `handoffMs`/`handoffListenMs` defaults before constructing the session —
- *  this module never defaults them itself); tests inject plain stubs. */
+ *  wires the real browser/env objects; tests inject plain stubs. */
 export interface ConnectionSessionDeps {
   fetch: typeof fetch;
   storage: SessionStorageLike;
   /** `href` is WRITTEN (the OAuth redirect assigns it) as well as read. */
   location: { origin: string; pathname: string; search: string; href: string };
   crypto: SessionCrypto;
-  /** Cross-tab auth-handoff listeners/timeouts. */
-  win: Pick<Window, 'addEventListener' | 'removeEventListener' | 'setTimeout'>;
   /** Basic-auth sign-in probe. */
   queryJson: typeof queryJson;
-  /** The child's own wait for a grant once it asks (a same-origin reply is
-   *  near-instant, so this is short) — resolved by the caller; the historical
-   *  4000ms env default stays app-side. */
-  handoffMs: number;
-  /** How long the opener keeps listening for a request — far longer than
-   *  `handoffMs` because it must survive the child's cold JS load before the
-   *  child can even ask; a short opener window would drop a slow tab's
-   *  request and force a needless re-login. The historical 30000ms env
-   *  default stays app-side. */
-  handoffListenMs: number;
   /** Auth was lost (no token / expired-and-unrefreshable / CH rejected a
    *  valid login). The session never renders — it calls this and lets the
    *  shell decide how to show the login screen. */
@@ -134,13 +112,10 @@ export interface ConnectionSession {
   signOut(): void;
   ensureFreshToken(): Promise<boolean>;
 
-  // cross-tab handoff (message contract: core/auth-handoff)
-  grantHandoffTo(child: Window): void;
-  receiveAuthHandoff(env: { opener?: Window | null }): Promise<boolean>;
 }
 
 export function createConnectionSession(deps: ConnectionSessionDeps): ConnectionSession {
-  const { storage: ss, location: loc, crypto: cryptoObj, fetch: fetchFn, win, queryJson: queryJsonFn } = deps;
+  const { storage: ss, location: loc, crypto: cryptoObj, fetch: fetchFn, queryJson: queryJsonFn } = deps;
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
   // a ClickHouse username/password sent as Authorization: Basic, optionally
@@ -156,12 +131,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // config.json may list several IdPs. Fetch the doc once; resolve OIDC
   // discovery per selected IdP. The chosen IdP id is persisted so it survives
   // the OAuth redirect (like oauth_state) and drives token exchange/refresh.
-  // configBase strips a trailing `/dashboard` so config.json / OAuth discovery
-  // resolve from the SPA base (`/sql/config.json`) on the dashboard route too.
-  // The same base is the single source of truth for the workbench<->dashboard
-  // links (openDashboard, the dashboard's Back link) rather than hardcoding
-  // `/sql` in several shapes.
-  const basePath = configBase(loc.pathname);
+  const basePath = loc.pathname.replace(/\/+$/, '');
   const loadDoc = memoizeConfig(() => loadConfigDoc(fetchFn, basePath));
   const resolvedCache = new Map<string, Promise<ResolvedIdpConfig>>();
   let idpId: string | null = ss.getItem('oauth_idp') || null;
@@ -220,7 +190,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     authMode = 'oauth';
     chCtx.origin = loc.origin;
     chCtx.authConfirmed = false; // a fresh sign-in starts unconfirmed again
-    ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp', 'oauth_origin',
+    ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_return_route', 'oauth_idp', 'oauth_origin',
       'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin'].forEach((k) => ss.removeItem(k));
   }
   // `signOut` is exactly today's app.ts `clearTokens()` — no render. (app.ts's
@@ -241,8 +211,15 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     const state = randomState(cryptoObj);
     ss.setItem('oauth_verifier', verifier);
     ss.setItem('oauth_state', state);
+    const returnParams = new URLSearchParams(loc.search);
+    ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
+      .forEach((key) => returnParams.delete(key));
+    const returnSearch = returnParams.toString();
+    ss.setItem('oauth_return_route', JSON.stringify({
+      state, search: returnSearch ? `?${returnSearch}` : '',
+    }));
     loc.href = buildAuthorizeUrl(cfg, {
-      redirectUri: loc.origin + loc.pathname,
+      redirectUri: loc.origin + basePath,
       challenge,
       state,
     });
@@ -363,77 +340,6 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     return !!(await getToken());
   }
 
-  // One-time cross-tab auth handoff. The dashboard opens in a new same-origin
-  // tab whose sessionStorage starts empty; rather than force a second sign-in,
-  // this (opener) side grants its live credentials once when the child asks.
-  // Both sides pin the target origin AND the peer window; a timeout stops the
-  // opener listening if the child never asks. Message contract: core/auth-handoff.
-  // Two windows: the child waits `handoffMs` for a grant once it *asks* (a
-  // same-origin reply is near-instant, so this is short); the opener listens far
-  // longer (`handoffListenMs`) because it must survive the child's cold JS load
-  // before the child can ask — a short opener window would drop a slow tab's
-  // request and force a needless re-login.
-  function grantHandoffTo(child: Window): void {
-    const onMsg = (e: MessageEvent): void => {
-      if (!isAuthRequest(e, loc.origin, child)) return;
-      const creds = snapshotAuth(ss);
-      // Only grant when we actually hold credentials — never hand over an empty
-      // snapshot (which the child would have to reject anyway).
-      if (hasAuth(creds)) child.postMessage({ type: AUTH_GRANT, creds }, loc.origin);
-      win.removeEventListener('message', onMsg);
-    };
-    win.addEventListener('message', onMsg);
-    win.setTimeout(() => win.removeEventListener('message', onMsg), deps.handoffListenMs);
-  }
-
-  // Restore a handed-off credential snapshot into BOTH this tab's sessionStorage
-  // and the already-constructed in-memory auth fields — token/authMode/idp/origin
-  // were snapshotted from an empty ss at construction, so writing keys back alone
-  // wouldn't take effect until a reload.
-  function applyAuthSnapshot(creds: AuthSnapshot): void {
-    restoreAuth(ss, creds);
-    if (creds.ch_basic_auth) {
-      authMode = 'basic';
-      chCtx.origin = creds.ch_basic_origin || loc.origin;
-    } else {
-      if (creds.oauth_id_token) setTokens(creds.oauth_id_token, creds.oauth_refresh_token);
-      if (creds.oauth_idp) idpId = creds.oauth_idp;
-      chCtx.origin = creds.oauth_origin || loc.origin;
-    }
-  }
-  // Child side: ask the opener for credentials once. Resolves true once a valid
-  // grant is applied; false when there's no opener or the request times out (a
-  // cold/bookmarked visit → the caller falls through to the normal login flow).
-  function receiveAuthHandoff(handoffEnv: { opener?: Window | null }): Promise<boolean> {
-    return new Promise((resolve) => {
-      const opener = handoffEnv.opener;
-      if (!opener) { resolve(false); return; }
-      let done = false;
-      const finish = (ok: boolean): void => {
-        if (done) return;
-        done = true;
-        win.removeEventListener('message', onMsg);
-        resolve(ok);
-      };
-      const onMsg = (e: MessageEvent): void => {
-        if (!isAuthGrant(e, loc.origin, opener)) return;
-        // `e.data` is a real handoff grant `{type, creds}` once isAuthGrant has
-        // confirmed `type` — `AuthMessageEvent`'s own contract type only pins
-        // `type` (the shared predicate's whole point); `creds` rides alongside.
-        const data = e.data as { type?: string; creds?: AuthSnapshot } | null;
-        // Ignore an empty grant (opener signed out / mid-sign-in) — keep waiting so
-        // the request times out into the normal login rather than falsely
-        // reporting success with no credentials applied.
-        if (!hasAuth(data?.creds)) return;
-        applyAuthSnapshot(data!.creds!);
-        finish(true);
-      };
-      win.addEventListener('message', onMsg);
-      opener.postMessage({ type: AUTH_REQUEST }, loc.origin);
-      win.setTimeout(() => finish(false), deps.handoffMs);
-    });
-  }
-
   return {
     basePath,
     hostHint,
@@ -461,7 +367,5 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     connectBasic,
     signOut,
     ensureFreshToken,
-    grantHandoffTo,
-    receiveAuthHandoff,
   };
 }

@@ -1,16 +1,11 @@
 import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
 import {
-  isDashboardRoute, configBase,
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../../src/core/dashboard.js';
 import { KEYS } from '../../src/state.js';
 import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
-import {
-  AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
-  snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
-} from '../../src/core/auth-handoff.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
 import { applyCommand } from '../../src/dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
@@ -49,27 +44,6 @@ const runOnclick = (el: HTMLElement | null): unknown => ((el as HTMLElement).onc
 /** `app.root` is typed `Element | null` (App.root) but is always a real,
  * attached div for every fixture this file builds. */
 const rootEl = (app: App): HTMLElement => app.root as HTMLElement;
-
-// ── core/dashboard.js ───────────────────────────────────────────────────────
-describe('isDashboardRoute', () => {
-  it('matches the dashboard path (with or without a trailing slash), nothing else', () => {
-    expect(isDashboardRoute('/sql/dashboard')).toBe(true);
-    expect(isDashboardRoute('/sql/dashboard/')).toBe(true);
-    expect(isDashboardRoute('/tools/sql/dashboard')).toBe(true); // mount-agnostic (matches configBase)
-    expect(isDashboardRoute('/sql')).toBe(false);
-    expect(isDashboardRoute('/sql/config.json')).toBe(false);
-    expect(isDashboardRoute(undefined)).toBe(false);
-  });
-});
-
-describe('configBase', () => {
-  it('strips a trailing /dashboard so config resolves from the SPA base', () => {
-    expect(configBase('/sql/dashboard')).toBe('/sql');
-    expect(configBase('/sql/dashboard/')).toBe('/sql');
-    expect(configBase('/sql')).toBe('/sql');
-    expect(configBase(undefined)).toBe('');
-  });
-});
 
 // (dashboardTileSql + parseJsonResult were retired in #193 — the tiles stream
 // through the shared app.exec.executeRead seam, so SQL prep is now just the shared
@@ -159,7 +133,7 @@ describe('partitionKpiBands (#240)', () => {
 // field discovery is now `fieldControls(analysis)`, tested with the pipeline in
 // param-pipeline.test.js and end-to-end in the filter-bar suite below.)
 
-// ── core/auth-handoff.js ─────────────────────────────────────────────────────
+// ── auth/window fixture helpers ──────────────────────────────────────────────
 /** A minimal sessionStorage-like stub — a real `Storage` structurally
  * (length/key/clear included), so it plugs straight into `env.sessionStorage`
  * (`CreateAppEnv`) with no cast. */
@@ -186,57 +160,11 @@ function memSession(initial: Record<string, string> = {}): MemSession {
   };
 }
 
-describe('auth-handoff snapshot/restore', () => {
-  it('snapshots only the present auth keys', () => {
-    const ss = memSession({ oauth_id_token: 't', oauth_idp: 'g', unrelated: 'x' });
-    expect(snapshotAuth(ss)).toEqual({ oauth_id_token: 't', oauth_idp: 'g' });
-  });
-  it('restores present keys and ignores absent ones (and a null snapshot)', () => {
-    const ss = memSession();
-    restoreAuth(ss, { oauth_id_token: 't', ch_basic_auth: 'b' });
-    expect(ss.getItem('oauth_id_token')).toBe('t');
-    expect(ss.getItem('ch_basic_auth')).toBe('b');
-    expect(ss.getItem('oauth_idp')).toBeNull();
-    expect(() => restoreAuth(ss, null)).not.toThrow();
-  });
-  it('AUTH_SS_KEYS covers both OAuth and basic sessions', () => {
-    expect(AUTH_SS_KEYS).toContain('oauth_id_token');
-    expect(AUTH_SS_KEYS).toContain('ch_basic_auth');
-  });
-  it('hasAuth is true only with a token or basic creds', () => {
-    expect(hasAuth({ oauth_id_token: 't' })).toBe(true);
-    expect(hasAuth({ ch_basic_auth: 'b' })).toBe(true);
-    expect(hasAuth({})).toBe(false);
-    expect(hasAuth(null)).toBe(false);
-  });
-});
-
-describe('auth-handoff message predicates', () => {
-  const src = {};
-  const ok = (type: string) => ({ origin: 'https://o', source: src, data: { type } });
-  it('isAuthRequest accepts a matching request only', () => {
-    expect(isAuthRequest(ok(AUTH_REQUEST), 'https://o', src)).toBe(true);
-    expect(isAuthRequest(null, 'https://o', src)).toBe(false);
-    expect(isAuthRequest({ ...ok(AUTH_REQUEST), origin: 'https://evil' }, 'https://o', src)).toBe(false);
-    expect(isAuthRequest({ ...ok(AUTH_REQUEST), source: {} }, 'https://o', src)).toBe(false);
-    expect(isAuthRequest({ origin: 'https://o', source: src }, 'https://o', src)).toBe(false); // no data
-    expect(isAuthRequest(ok('other'), 'https://o', src)).toBe(false);
-  });
-  it('isAuthGrant accepts a matching grant only', () => {
-    expect(isAuthGrant(ok(AUTH_GRANT), 'https://o', src)).toBe(true);
-    expect(isAuthGrant(null, 'https://o', src)).toBe(false);
-    expect(isAuthGrant({ ...ok(AUTH_GRANT), origin: 'https://evil' }, 'https://o', src)).toBe(false);
-    expect(isAuthGrant({ ...ok(AUTH_GRANT), source: {} }, 'https://o', src)).toBe(false);
-    expect(isAuthGrant({ origin: 'https://o', source: src }, 'https://o', src)).toBe(false);
-    expect(isAuthGrant(ok('other'), 'https://o', src)).toBe(false);
-  });
-});
-
 // ── ui/dashboard.js (viewer-driven render, #286 — reads dashboard.tiles[]) ────
 // The favorites-derived render was replaced by a DashboardViewerSession bound
 // to the persisted StoredWorkspaceV2; these tests drive renderDashboard through
-// a fake `loadDashboardWorkspace` (a controlled workspace) + a fake streaming
-// `executeRead`, exactly as the app wires the real repository + exec seam.
+// a controlled current workspace + a fake streaming `executeRead`, exactly as
+// the app wires the real repository projection + exec seam.
 
 type ExecuteReadResult = Parameters<App['exec']['executeRead']>[0];
 type ExecuteReadOpts = Parameters<App['exec']['executeRead']>[1];
@@ -331,12 +259,11 @@ function dashApp(opts: {
           : { status: 'empty' as const }
       ),
     } as Partial<App['workspace']>,
-    // Mirrors production (`app.loadDashboardWorkspace` resolves the route key):
-    // reads the fixture's stateful `current`, so a route REBUILD (#350 —
-    // membership-restoring rollback) re-renders from committed truth, not the
-    // initially-loaded snapshot.
-    loadDashboardWorkspace: async () => current as never,
+    currentWorkspace: current,
+    workspaceRouteStatus: current ? 'ready' : 'not-found',
+    sqlRoute: { surface: 'dashboard', workspaceKey: current?.key ?? 'workspace', mode: 'edit' },
   }) as TestApp;
+  if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
   const loadActive = async (): Promise<StoredWorkspaceV2> => {
     const loaded = await app.workspace.loadById(app.state.workspaceId);
@@ -921,7 +848,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
   it('read-only dashboard: ⌘-drag does not move and no drag listeners are wired', async () => {
     const detached = twoTiles();
     const { app, commit } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(app);
     const cards = qsa(app.root, '.dash-tile');
@@ -1031,7 +958,7 @@ describe('renderDashboard — modkey cursor cue (#332)', () => {
   it('a read-only dashboard never installs the modkey listeners', async () => {
     const detached = oneTile();
     const { app } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(app);
     const grid = qs(app.root, '.dash-grid');
@@ -1068,8 +995,8 @@ describe('renderDashboard — shared cell-detail drawer (#332)', () => {
       tiles: [{ id: 't1', queryId: 'q1' }],
     });
     const { app } = modeApp({
-      workspace: null, detached, responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['hello', 42]] }),
-      openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['hello', 42]] }),
     });
     await render(app);
     qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -1519,8 +1446,8 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(foot.hidden).toBe(true); // metaless Text tile — no meta, footer hidden
 
     // Republish the same tile as a query-backed table query (a real Spec
-    // change recreates session + tile DOM — dashApp's loadDashboardWorkspace
-    // reads `ws` by reference, so mutating it in place and re-rendering
+    // change recreates session + tile DOM — dashApp's current workspace reads
+    // `ws` by reference, so mutating it in place and re-rendering
     // exercises exactly that path) — meta is now present.
     ws.queries[0] = q('tq', 'SELECT 1 AS v', { panel: { cfg: { type: 'table' } } });
     await render(app);
@@ -1605,8 +1532,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
   it('view mode: a KPI grid tile is frameless (.is-view) — header/edit controls hidden, role=group names it by title, placement survives (#316)', async () => {
     const detached = kpiGridWs();
     const { app } = modeApp({
-      workspace: null, detached, responder: kpiResponder,
-      openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view', responder: kpiResponder,
     });
     await render(app);
     const card = qs<HTMLElement>(app.root, '.dash-gg-tile');
@@ -1717,7 +1643,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
 
     const detached = twoTilesGrid();
     const { app: readonlyApp } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(readonlyApp);
     expect(qsa(readonlyApp.root, '.dash-gg-grip').length).toBe(0);
@@ -2471,7 +2397,7 @@ describe('renderDashboard — drag auto-scroll (#338)', () => {
   it('read-only: no drag listeners wired, so no auto-scroll ever starts', async () => {
     const detached = gridWs();
     const { app, commit } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(app);
     const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
@@ -2718,7 +2644,7 @@ describe('renderDashboard — Full view (#321)', () => {
   it('read-only view: the reduced selector only calls session.setGridRenderMode — never a command', async () => {
     const detached = twoTilesGrid();
     const { app, commit } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(app);
     const select = layoutSelect(app.root);
@@ -3297,12 +3223,12 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     rootEl(app).remove();
   });
 
-  it('renders and commits the time-range control in a read-only (detached) dashboard', async () => {
+  it('renders and commits the time-range control in a live read-only dashboard', async () => {
     const detached = wsWith({
       id: 'd', queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }],
     });
     const { app, calls } = modeApp({
-      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+      workspace: detached, mode: 'view',
     });
     await render(app);
     document.body.appendChild(rootEl(app));
@@ -3808,30 +3734,22 @@ function appEnv(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
     location: { host: 'ch.example', origin: 'https://ch.example', pathname: '/sql', search: '', hash: '', href: 'https://ch.example/sql' } as Location,
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: globalThis.crypto, Editor: createCodeMirrorEditor, Chart: FakeChart,
-    fetch: asFetch(makeFetch([])), now: () => 0, retryMs: 0, handoffMs: 10, handoffListenMs: 10,
+    fetch: asFetch(makeFetch([])), now: () => 0, retryMs: 0,
     navigator: { clipboard: { writeText: clipboardWriteText } as Clipboard },
     ...over,
   };
 }
-/** A test-only `MessageEvent`-shaped `Event` — real code (app.js) only reads
- * these three fields off the dispatched event. */
-interface FakeMessageEvent extends Event { data: unknown; origin: string; source: unknown }
-const msg = (data: unknown, source: unknown, origin = 'https://ch.example'): FakeMessageEvent => {
-  const e = new Event('message') as FakeMessageEvent;
-  e.data = data; e.origin = origin; e.source = source;
-  return e;
-};
 /** `realApp` retypes a real `createApp(env)` object as `App` WITHOUT copying
  * it (unlike `makeApp()`'s own internal defaults-then-overrides spread):
  * createApp's *inferred* return type only reflects the initial object-literal
  * fields app.js builds (state/dom/root/…) — the ~270 other members (actions,
- * ensureConfig, chCtx, renderApp, receiveAuthHandoff, …) are attached via
+ * ensureConfig, chCtx, renderApp, …) are attached via
  * later property assignment inside that same untyped function, invisible to
  * declaration inference, but genuinely present on the one real object at
  * runtime. Several of those methods are closures over `app.conn` — the real
  * `ConnectionSession` (#276 Phase 2) createApp constructs and wires in place,
- * whose own internal `token`/`authMode`/… locals mutate on
- * `receiveAuthHandoff`/`setTokens`/etc. — so returning a spread COPY here (as
+ * whose own internal `token`/`authMode`/… locals mutate on `setTokens` and
+ * related operations — so returning a spread COPY here (as
  * `makeApp()` does for its stateless stub) would silently detach every such
  * mutation from what the test reads back — `asApp` only reinterprets the
  * type, preserving the one real reference. */
@@ -3846,33 +3764,22 @@ function realApp(env: CreateAppEnv): App {
 // `typeof fetch`, since every function and every plain object is an
 // `object`) makes the cast inside a genuine single-level `as`, not an
 // `unknown` bridge.
-const asWindow = (v: object): Window => v as Window;
 const asFetch = (v: object): typeof globalThis.fetch => v as typeof globalThis.fetch;
 
-describe('app config base on the dashboard route', () => {
-  it('resolves config.json from /sql, not /sql/dashboard', async () => {
+describe('app config base on the unified route', () => {
+  it('resolves config.json from /sql for Dashboard query state', async () => {
     const fetch = makeFetch([]);
     const app = realApp(appEnv({
       fetch: asFetch(fetch),
-      location: { host: 'ch.example', origin: 'https://ch.example', pathname: '/sql/dashboard', search: '', hash: '', href: 'https://ch.example/sql/dashboard' } as Location,
+      location: {
+        host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+        search: '?ws=workspace&surface=dashboard', hash: '',
+        href: 'https://ch.example/sql?ws=workspace&surface=dashboard',
+      } as Location,
     }));
     await app.conn.ensureConfig();
     const urls = fetch.mock.calls.map((c) => c[0]);
     expect(urls.some((u) => /\/sql\/config\.json$/.test(u))).toBe(true);
-    expect(urls.some((u) => /dashboard\/config\.json/.test(u))).toBe(false);
-  });
-});
-
-describe('app.loadDashboardWorkspace (read-flip source, #286)', () => {
-  it('provisions an empty aggregate workspace, then reads it back', async () => {
-    const app = realApp(appEnv({ indexedDB: fakeIndexedDbFactory() }));
-    app.state.savedQueries = [savedQuery({ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true })] as AppState['savedQueries'];
-    const ws = await app.loadDashboardWorkspace();
-    expect(ws?.queries).toEqual([]);
-    expect(ws?.dashboard).toBeNull();
-    // Idempotent: a second call finds the aggregate and returns it unchanged.
-    const again = await app.loadDashboardWorkspace();
-    expect(again?.id).toBe(ws?.id);
   });
 });
 
@@ -3892,10 +3799,11 @@ describe('app.renderDashboard', () => {
     // Drive the read-flip deterministically: a StoredWorkspaceV2 whose one tile
     // references the query (bypassing IndexedDB), then the real exec seam runs it.
     const query = savedQuery({ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart' });
-    app.loadDashboardWorkspace = async () => ({
+    app.currentWorkspace = {
       storageVersion: 2, id: 'w', key: 'workspace', name: 'W', queries: [query],
       dashboard: { documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] },
-    });
+    };
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' };
     await app.renderDashboard();
     expect(qs(app.root, '.dash-tile canvas')).not.toBeNull();
     // The read-only tile guard (readonly=2) + the row-cap sentinel reach the wire.
@@ -3904,105 +3812,19 @@ describe('app.renderDashboard', () => {
   });
 });
 
-describe('app auth handoff', () => {
-  it('openDashboard opens a tab and grants credentials when the child asks', () => {
-    const child = { postMessage: vi.fn() };
-    const app = realApp(appEnv({ openWindow: vi.fn(() => asWindow(child)) }));
-    app.openDashboard();
-    window.dispatchEvent(msg({ type: 'nope' }, child)); // ignored (wrong type)
-    window.dispatchEvent(msg({ type: AUTH_REQUEST }, child));
-    expect(child.postMessage).toHaveBeenCalledTimes(1);
-    const [payload, origin] = child.postMessage.mock.calls[0];
-    expect(payload.type).toBe(AUTH_GRANT);
-    expect(payload.creds.oauth_id_token).toBe(validToken);
-    expect(origin).toBe('https://ch.example');
-  });
-  it('openDashboard tolerates a blocked popup (null window)', () => {
-    const app = realApp(appEnv({ openWindow: () => null }));
-    expect(() => app.openDashboard()).not.toThrow();
-  });
-  it('openDashboard does not grant when the opener holds no credentials', () => {
-    const child = { postMessage: vi.fn() };
-    const app = realApp(appEnv({ sessionStorage: memSession({}), openWindow: () => asWindow(child) }));
-    app.openDashboard();
-    window.dispatchEvent(msg({ type: AUTH_REQUEST }, child));
-    expect(child.postMessage).not.toHaveBeenCalled();
-  });
-  it('receiveAuthHandoff resolves false with no opener', async () => {
-    const app = realApp(appEnv());
-    await expect(app.conn.receiveAuthHandoff({})).resolves.toBe(false);
-  });
-  it('applies an OAuth grant and re-seeds in-memory auth fields', async () => {
-    const ss = memSession({});
-    const app = realApp(appEnv({ sessionStorage: ss }));
-    const opener = { postMessage: vi.fn() };
-    const newTok = jwt({ email: 'x@y.com', exp: Math.floor(Date.now() / 1000) + 3600 });
-    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
-    expect(opener.postMessage).toHaveBeenCalledWith({ type: AUTH_REQUEST }, 'https://ch.example');
-    window.dispatchEvent(msg({ type: 'other' }, opener)); // ignored
-    window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok, oauth_refresh_token: 'r', oauth_idp: 'g', oauth_origin: 'https://cluster' } }, opener));
-    await expect(p).resolves.toBe(true);
-    expect(app.conn.token()).toBe(newTok);
-    expect(app.conn.idpId()).toBe('g');
-    expect(app.conn.chCtx.origin).toBe('https://cluster');
-    expect(ss.getItem('oauth_id_token')).toBe(newTok);
-  });
-  it('applies a basic-auth grant', async () => {
-    const ss = memSession({});
-    const app = realApp(appEnv({ sessionStorage: ss }));
-    const opener = { postMessage: vi.fn() };
-    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
-    window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { ch_basic_auth: 'YmFzZQ==', ch_basic_user: 'u', ch_basic_origin: 'https://c2' } }, opener));
-    await expect(p).resolves.toBe(true);
-    expect(app.conn.authMode()).toBe('basic');
-    expect(app.conn.chCtx.origin).toBe('https://c2');
-    expect(ss.getItem('ch_basic_auth')).toBe('YmFzZQ==');
-  });
-  it('ignores an empty grant and applies a later valid one', async () => {
-    const ss = memSession({});
-    const app = realApp(appEnv({ sessionStorage: ss }));
-    const opener = { postMessage: vi.fn() };
-    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
-    window.dispatchEvent(msg({ type: AUTH_GRANT, creds: {} }, opener)); // empty — ignored, keeps waiting
-    const newTok = jwt({ email: 'z@z.com', exp: Math.floor(Date.now() / 1000) + 3600 });
-    window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok } }, opener));
-    await expect(p).resolves.toBe(true);
-    expect(app.conn.token()).toBe(newTok);
-  });
-  it('resolves false when the request times out', async () => {
-    const app = realApp(appEnv({ handoffMs: 5 }));
-    await expect(app.conn.receiveAuthHandoff({ opener: asWindow({ postMessage: vi.fn() }) })).resolves.toBe(false);
-  });
-});
-
-// ── #288 Phase 6: open-source modes + the Dashboard header File menu ──────────
-// renderDashboard now branches on `app.dashboardOpenSource`: a current-workspace
-// route verifies BOTH the workspace key and dashboard id against the primary
-// (edit) or detached (view) store; a
-// session-bundle route consumes the one-time handoff into a read-only view; a
-// resolution failure shows not-found. See ADR-0003.
-
-/** Build a dashApp wired for a specific open-source mode. `detached` seeds
- *  `app.detachedViews.getByKey`; `consume` overrides
- *  `app.consumeDashboardHandoff`. */
+// ── #407: live route modes + the Dashboard header File menu ─────────────────
 function modeApp(opts: {
   workspace?: ReturnType<typeof wsWith> | null;
-  openSource?: TestApp['dashboardOpenSource'];
-  detached?: ReturnType<typeof wsWith> | null;
-  consume?: Mock<TestApp['consumeDashboardHandoff']>;
+  mode?: 'edit' | 'view';
   responder?: ExecResponder;
 } = {}) {
   const built = dashApp({ workspace: opts.workspace, responder: opts.responder });
   const app = built.app;
-  app.dashboardOpenSource = opts.openSource ?? null;
-  app.detachedViews = {
-    get: vi.fn(async () => (opts.detached ?? null) as never),
-    getByKey: vi.fn(async (key: string) => (
-      opts.detached?.key === key ? opts.detached : null
-    ) as never),
-    put: vi.fn(async () => {}),
+  app.sqlRoute = {
+    surface: 'dashboard',
+    workspaceKey: opts.workspace?.key ?? 'workspace',
+    mode: opts.mode ?? 'edit',
   };
-  if (opts.consume) app.consumeDashboardHandoff = opts.consume;
   return { ...built, app };
 }
 
@@ -4016,90 +3838,101 @@ const menuItems = (): string[] =>
 const menuSections = (): string[] =>
   qsa(document, '.dash-file-menu .fm-section').map((b) => b.textContent || '');
 
-describe('renderDashboard — open-source modes (#288)', () => {
+describe('renderDashboard — unified live modes (#407)', () => {
   afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
 
-  it('current-workspace: workspace key and dashboard id match the primary store → editable (reorder grip present, layout switcher)', async () => {
+  it('edit mode renders the live workspace with authoring controls', async () => {
     const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: ws, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
+    const { app } = modeApp({ workspace: ws, mode: 'edit' });
     await render(app);
-    expect(qs(app.root, '.dash-notfound')).toBeNull();
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
-    // Command/Ctrl-drag reorder affordance (#332) is edit-mode-only.
     expect(qs(app.root, '.dash-tile .dash-gg-grip')).not.toBeNull();
     expect(layoutSelect(app.root)).toBeTruthy();
-    // projection: the resolved workspace is on app.state for the File menu.
-    expect(app.state.dashboard?.id).toBe('d');
   });
 
-  it('current-workspace: workspace matches but dashboard id differs → not-found, runs nothing', async () => {
-    const ws = wsWith({ id: 'd' });
-    const { app, calls } = modeApp({ workspace: ws, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'other' } });
-    await render(app);
-    expect(qs(app.root, '.dash-notfound')).toBeTruthy();
-    expect(qs(app.root, '.dash-notfound-title')?.textContent).toContain('unavailable');
-    expect(qsa(app.root, '.dash-tile').length).toBe(0);
-    expect(calls.length).toBe(0);
-  });
-
-  it('current-workspace: key resolves only in the detached store → read-only view (no drag, no layout selector for a flow doc, #321)', async () => {
-    // `wsWith`'s default layout is flow@1 — this is the pre-#321 shape any
-    // existing shared doc has. The reduced read-only selector is a
-    // grafana-grid-only render-mode toggle; for a read-only FLOW doc there is
-    // no engine switch possible read-only, so the selector must be HIDDEN
-    // entirely (not shown with a dead 'Full view' option over a flow layout).
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
-    await render(app);
-    expect(qs(app.root, '.dash-notfound')).toBeNull();
-    expect(qsa(app.root, '.dash-tile').length).toBe(1);
-    // No reorder grip in a read-only view (#332 — no drag wiring either).
-    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
-    expect(layoutSelect(app.root)).toBeNull();
-  });
-
-  it('current-workspace: read-only + grafana-grid doc → the reduced Grid Tiles / Full view selector IS shown and functional (#321)', async () => {
-    const detached = wsWith({
+  it('view mode renders that same live document without mutation controls', async () => {
+    const ws = wsWith({
       id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }],
       layout: { type: 'grafana-grid', version: 1, items: {} },
     });
-    const { app, commit } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
+    const { app, commit } = modeApp({ workspace: ws, mode: 'view' });
     await render(app);
-    expect(qs(app.root, '.dash-notfound')).toBeNull();
-    // #321: read-only still shows the REDUCED Grid Tiles / Full view selector
-    // (a runtime-only render-mode toggle, never persistence) — the flow
-    // presets and the flow<->grid engine switch stay edit-mode-only.
+    expect(qsa(app.root, '.dash-tile').length).toBe(1);
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
     const select = layoutSelect(app.root);
     expect(select).not.toBeNull();
     expect([...select.options].map((o) => o.value)).toEqual(['grafana-grid', 'full']);
-    pickLayout(app.root, 'full');
-    expect(layoutSelect(app.root).value).toBe('full');
     expect(commit).not.toHaveBeenCalled();
   });
 
-  it('session-bundle: consumes the one-time handoff into a read-only view', async () => {
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const consume = vi.fn(async () => detached as never);
-    const { app } = modeApp({ openSource: { kind: 'session-bundle', token: 'tok', dashboardId: 'd' }, consume });
-    await render(app);
-    expect(consume).toHaveBeenCalledOnce();
-    expect(qs(app.root, '.dash-notfound')).toBeNull();
-    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
-  });
-
-  it('session-bundle: a missing/expired token → not-found, runs nothing', async () => {
-    const consume = vi.fn(async () => null);
-    const { app, calls } = modeApp({ openSource: { kind: 'session-bundle', token: 'gone', dashboardId: 'd' }, consume });
+  it('missing workspace renders not-found and executes nothing', async () => {
+    const { app, calls } = modeApp({ workspace: null, mode: 'view' });
     await render(app);
     expect(qs(app.root, '.dash-notfound')).toBeTruthy();
+    expect(app.root?.textContent).toContain('Workspace not found');
     expect(calls.length).toBe(0);
   });
 
-  it('a bare /dashboard open (no open-source) stays the legacy editable current workspace', async () => {
-    const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: ws, openSource: null });
+  it('missing dashboard differs in view and edit, and Create persists only on click', async () => {
+    const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+    const viewed = modeApp({ workspace: empty, mode: 'view' });
+    await render(viewed.app);
+    expect(viewed.app.root?.textContent).toContain('This workspace has no dashboard');
+    expect(viewed.calls).toHaveLength(0);
+    const edited = modeApp({ workspace: empty, mode: 'edit' });
+    await render(edited.app);
+    const create = qs<HTMLButtonElement>(edited.app.root, '.dash-create');
+    expect(edited.commit).not.toHaveBeenCalled();
+    create.click();
+    await flush();
+    expect(edited.commit).toHaveBeenCalledOnce();
+    expect(edited.commit.mock.calls[0][0].dashboard).not.toBeNull();
+  });
+
+  it('Create dashboard aborts if another producer created one before the click commits', async () => {
+    const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+    const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
     await render(app);
-    expect(qs(app.root, '.dash-tile .dash-gg-grip')).not.toBeNull();
+    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV2;
+    app.workspace.loadById = vi.fn(async () => ({
+      status: 'ok' as const, workspace: concurrentlyUpdated,
+    }));
+    qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('route controls use push for surface and replace for mode', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
+    app.navigateSqlRoute = vi.fn(async () => {});
+    await render(app);
+    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'Workspace')!.click();
+    const dashboardButton = qsa<HTMLButtonElement>(app.root, '.dash-route-btn')
+      .find((b) => b.textContent === 'Dashboard')!;
+    expect(dashboardButton.disabled).toBe(true);
+    dashboardButton.click();
+    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'View')!.click();
+    qsa<HTMLButtonElement>(app.root, '.dash-route-btn').find((b) => b.textContent === 'Edit')!.click();
+    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
+      1, { surface: 'workspace', workspaceKey: 'workspace' }, 'push',
+    );
+    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
+      2, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' }, 'replace',
+    );
+    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
+      3, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' }, 'replace',
+    );
+  });
+
+  it('an old Dashboard refresh hook is inert after the route leaves Dashboard', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'view' });
+    await render(app);
+    const page = app.root!.firstChild;
+    const staleHook = app.onWorkspaceExternallyChanged;
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'workspace' };
+    staleHook({ workspace: app.currentWorkspace!, queriesChanged: true });
+    await flush();
+    expect(app.root!.firstChild).toBe(page);
   });
 });
 
@@ -4108,7 +3941,7 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
 
   const editApp = () => modeApp({
     workspace: wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
-    openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' },
+    mode: 'edit',
   });
 
   it('the trigger uses the shared downward-chevron treatment, never a right-pointing arrow', async () => {
@@ -4123,25 +3956,20 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(path).not.toBe('M2 6h7.5M7 3.5L9.5 6 7 8.5');
   });
 
-  it('edit mode: opens Export / Import / Open-for-viewing (with sections + Export\'s .json meta), each wired to its action; re-click + Escape close', async () => {
+  it('edit mode opens Export / Import with sections and supports toggle + Escape close', async () => {
     const { app } = editApp();
-    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn(), openDashboardForViewing: vi.fn() };
+    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn() };
     await render(app);
     const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
     openFileMenuBtn(app.root);
     expect(btn.getAttribute('aria-expanded')).toBe('true');
-    expect(menuSections()).toEqual(['Export', 'Import', 'Open']);
-    expect(menuItems()).toEqual(['Export Dashboard…', 'Import Dashboard…', 'Open for viewing…']);
+    expect(menuSections()).toEqual(['Export', 'Import']);
+    expect(menuItems()).toEqual(['Export Dashboard…', 'Import Dashboard…']);
     expect(qs(document, '.dash-file-menu .fm-meta').textContent).toBe('.json');
     // arrow-key navigation between items
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-    // click "Open for viewing…"
-    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[2].click();
-    expect(app.actions.openDashboardForViewing).toHaveBeenCalledOnce();
-    expect(document.querySelector('.dash-file-menu')).toBeNull(); // closed on select
-    // re-open, then Escape closes + restores aria
-    openFileMenuBtn(app.root);
+    // Escape closes + restores aria
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(document.querySelector('.dash-file-menu')).toBeNull();
     expect(btn.getAttribute('aria-expanded')).toBe('false');
@@ -4153,7 +3981,7 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
 
   it('Export / Import items call their actions; overlay click closes the menu', async () => {
     const { app } = editApp();
-    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn(), openDashboardForViewing: vi.fn() };
+    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn() };
     await render(app);
     openFileMenuBtn(app.root);
     qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[0].click();
@@ -4172,36 +4000,12 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(qs(app.root, '.dash-file-btn')).not.toBeNull();
   });
 
-  it('detached view mode omits the File button entirely, not just its Import/Open rows (#347)', async () => {
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
+  it('live view mode omits the File button entirely', async () => {
+    const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace, mode: 'view' });
     await render(app);
     expect(qs(app.root, '.dash-file-btn')).toBeNull();
     expect(document.querySelector('.dash-file-menu')).toBeNull();
-  });
-
-  it('session-bundle read-only mode omits the File button entirely (#347)', async () => {
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const consume = vi.fn(async () => detached as never);
-    const { app } = modeApp({ openSource: { kind: 'session-bundle', token: 'tok', dashboardId: 'd' }, consume });
-    await render(app);
-    expect(qs(app.root, '.dash-file-btn')).toBeNull();
-  });
-
-  it('a different primary workspace existing cannot export it from the read-only page (#347)', async () => {
-    // The primary store holds an UNRELATED dashboard ('other') — resolveDashboardMode
-    // won't match it against this route's `dashboardId: 'd'`, so it falls through to
-    // the detached store, same as production when a primary workspace exists but this
-    // tab is showing someone else's shared/detached Dashboard.
-    const primary = wsWith({ id: 'other', queries: [q('secret', 'SELECT 2')], tiles: [{ id: 'ts', queryId: 'secret' }] });
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: primary, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
-    await render(app);
-    expect(qs(app.root, '.dash-notfound')).toBeNull();
-    // No File control at all — no way to reach exportDashboard() (which reads
-    // the PRIMARY workspace via app.workspace.loadCurrent(), i.e. `primary` here)
-    // from this read-only page.
-    expect(qs(app.root, '.dash-file-btn')).toBeNull();
   });
 
   it('an unrelated keydown while the menu is open is ignored', async () => {
@@ -4334,16 +4138,14 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(candidate.dashboard?.revision).toBe(2);
   });
 
-  it('no persisted aggregate (legacy/empty Dashboard): a command stays optimistic-only — never calls commit', async () => {
+  it('missing workspace renders a dedicated not-found state and never commits', async () => {
     const { app, commit } = dashApp({
       workspace: null, savedQueries: [q('q1', 'SELECT 1', { favorite: true })],
     });
     await render(app);
-    pickLayout(app.root, 'columns-2');
-    await flush();
+    expect(app.root.textContent).toContain('Workspace not found');
+    expect(app.root.querySelector('.dash-layout-select')).toBeNull();
     expect(commit).not.toHaveBeenCalled();
-    // the optimistic doc still applied (drives the layout select's own state)
-    expect(layoutSelect(app.root).value).toBe('columns-2');
   });
 
   it('rapid commands commit in STRICT invocation order — a slow-to-resolve first commit is never skipped or reordered by a second', async () => {
@@ -4607,7 +4409,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
 // `session.syncDocument`), because a referenced query's SQL/Spec may have moved
 // while the Dashboard document stayed byte-identical. The rebuild defers behind
 // any pending local command, coalesces duplicate notifications, preserves the
-// persisted per-Dashboard filter seed, and never commits. A detached read-only
+// persisted per-Dashboard filter seed, and never commits. A live read-only
 // view ignores primary-workspace invalidation entirely.
 describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
   const twoTiles = () => wsWith({
@@ -4655,17 +4457,16 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     expect(calls.slice(before).some((c) => c.sql.includes('999'))).toBe(true); // re-executed with new SQL
   });
 
-  it('a detached read-only view ignores primary-workspace invalidation (no rebuild)', async () => {
-    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
-    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceKey: 'workspace', dashboardId: 'd' } });
+  it('live view rebuilds from the same workspace after external invalidation', async () => {
+    const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app, calls } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    expect(app.dashboardReadOnly).toBe(true); // route resolved as read-only
-    const getBefore = loadCalls(app.detachedViews.getByKey); // one read during the initial render
-    app.onWorkspaceExternallyChanged({ workspace: detached as never, queriesChanged: true });
+    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV2;
+    app.currentWorkspace = changed;
+    const before = calls.length;
+    app.onWorkspaceExternallyChanged({ workspace: changed as never, queriesChanged: true });
     await flush(); await flush();
-    // A rebuild would re-render → re-read the detached store; it stayed inert.
-    expect(loadCalls(app.detachedViews.getByKey)).toBe(getBefore);
-    expect(qsa(app.root, '.dash-tile')).toHaveLength(1); // unchanged
+    expect(calls.slice(before).some((call) => call.sql.includes('99'))).toBe(true);
   });
 
   it('a stale rebuild waits until pending Dashboard command descriptors settle', async () => {
@@ -4673,31 +4474,31 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const commit = vi.fn((candidate: StoredWorkspaceV2) => new Promise((resolve) => {
       resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboard!.revision });
     }));
-    const { app, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
+    const { app, calls, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);
-    const loadSpy = vi.spyOn(app, 'loadDashboardWorkspace');
+    const before = calls.length;
     pickLayout(app.root, 'columns-2'); // dispatch a command whose commit stays pending
     for (let i = 0; i < 4; i++) await Promise.resolve(); // reach commit() — still unresolved
     // An external change arrives WHILE the command is pending: the rebuild must
     // defer (no resolution handler from this render may survive into the rebuilt one).
     app.onWorkspaceExternallyChanged({ workspace: await loadActive(), queriesChanged: false });
     await flush();
-    expect(loadSpy).not.toHaveBeenCalled(); // deferred behind the pending command
+    expect(calls).toHaveLength(before); // deferred behind the pending command
     resolveCommit();
     await flush(); await flush();
-    expect(loadSpy).toHaveBeenCalledTimes(1); // rebuilt once the queue drained
+    expect(calls.length).toBeGreaterThan(before); // rebuilt once the queue drained
   });
 
   it('coalesces duplicate external notifications into a single rebuild', async () => {
-    const { app, loadActive } = dashApp({ workspace: twoTiles() });
+    const { app, calls, loadActive } = dashApp({ workspace: twoTiles() });
     await render(app);
-    const loadSpy = vi.spyOn(app, 'loadDashboardWorkspace');
+    const before = calls.length;
     const info = { workspace: await loadActive(), queriesChanged: false };
     app.onWorkspaceExternallyChanged(info);
     app.onWorkspaceExternallyChanged(info);
     app.onWorkspaceExternallyChanged(info);
     await flush(); await flush();
-    expect(loadSpy).toHaveBeenCalledTimes(1); // one rebuild, not three
+    expect(calls.length - before).toBe(2); // two tiles, one rebuild, not three
   });
 
   it('preserves the persisted per-Dashboard filter seed (KEYS.dashFilters) across the rebuild', async () => {

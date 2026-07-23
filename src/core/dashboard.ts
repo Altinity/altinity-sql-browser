@@ -1,32 +1,11 @@
 // Pure logic for the Dashboard view (#149). No DOM, no globals.
 //
 // A dashboard is "the favorited subset of the Library, rendered together" — no
-// new schema. This module holds the route helpers and the tile result caps.
+// new schema. This module holds legacy layout preference helpers and tile caps.
 // (Per-tile classification moved to core/panel-cfg.js's autoPanel/resolvePanel
 // in #166 — the panel union replaced classifyTile's chart-vs-skip ladder. The
 // tiles stream through the shared `app.exec.executeRead` seam as of #193/#276, so the
 // former `FORMAT JSON` → array-rows transform and its SQL prep were retired.)
-
-/**
- * True on the standalone dashboard route (a path ending in `/dashboard`,
- * trailing slash ok). Matches on the `/dashboard` suffix rather than a pinned
- * `/sql/dashboard` so it stays consistent with `configBase` (which strips the
- * same suffix) and survives the SPA being mounted somewhere other than `/sql`.
- * The server only serves the artifact at its SPA routes, so nothing unexpected
- * reaches this predicate.
- */
-export function isDashboardRoute(pathname?: string | null): boolean {
-  return /\/dashboard\/?$/.test(pathname || '');
-}
-
-/**
- * The SPA base path for config.json / OAuth resolution, independent of the
- * dashboard sub-route: `/sql/dashboard` → `/sql` so `loadConfigDoc` fetches
- * `/sql/config.json` (not the non-existent `/sql/dashboard/config.json`).
- */
-export function configBase(pathname?: string | null): string {
-  return (pathname || '').replace(/\/dashboard\/?$/, '');
-}
 
 /**
  * Dashboard layout modes (#149 D2, #184): `arrange` = uniform multi-column grid

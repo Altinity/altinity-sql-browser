@@ -1,9 +1,8 @@
-// The read-only Dashboard page (#149 / #240 / #280 / #286). Phase 4 of #280
+// The live Dashboard surface (#149 / #240 / #280 / #286 / #407). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
 // `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV2`
-// (via `app.loadDashboardWorkspace()` — the phase-2 repository, migrating the
-// legacy favorites/layout keys once when no aggregate exists), constructs a
-// standalone `DashboardViewerSession` over that document + the workspace
+// from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
+// document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
 // runtime — presentation resolution, the filter/tile execution waves (with
 // #235 parallelism), bounded concurrency, per-tile cancellation, and the
@@ -76,8 +75,8 @@ import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layout
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
+import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
-import { resolveDashboardMode } from '../dashboard/application/session-bundle.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
 } from '../dashboard/model/dashboard-filter-store.js';
@@ -89,8 +88,7 @@ import type {
   SavedQueryV2, StoredWorkspaceV2,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
-import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
-import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
+import type { SqlRoute } from '../core/sql-route.js';
 import type { AppState } from '../state.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
@@ -106,12 +104,10 @@ const Icon: {
   refresh(): SVGElement;
   sun(): SVGElement;
   moon(): SVGElement;
-  arrow(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
-  eye(): SVGElement;
 } = IconUntyped;
 
 const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
@@ -132,14 +128,10 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  loadDashboardWorkspace(key?: string, dashboardId?: string): Promise<StoredWorkspaceV2 | null>;
-  // #288 Phase 6 — viewer routing (ADR-0003): the parsed open-source of this
-  // tab, the detached-views lookup, the one-time-handoff consumer, and the
-  // projection of the resolved workspace onto app.state (so the File menu's
-  // export/import act on THIS dashboard).
-  dashboardOpenSource: DashboardOpenSource | null;
-  detachedViews: Pick<DetachedViewsStore, 'getByKey'>;
-  consumeDashboardHandoff(): Promise<StoredWorkspaceV2 | null>;
+  currentWorkspace: StoredWorkspaceV2 | null;
+  sqlRoute: SqlRoute;
+  navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
+  renderDashboard(): void;
   applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
@@ -149,16 +141,13 @@ export interface DashboardApp {
   // producer's), never a route-local snapshot that another producer's
   // in-flight commit could make stale.
   mutateWorkspace: App['mutateWorkspace'];
-  // #343 step 6: set per render to mark a detached/read-only view (so the
-  // app-level cross-tab refresh skips projecting the primary workspace over it).
-  dashboardReadOnly: boolean;
   // #343 step 6: the route/surface refresh hook — `renderDashboard` overrides it
   // (per render) so an external workspace change rebuilds this viewer session from
-  // committed truth. Fires only AFTER the app-level refresh projected a real
-  // change; a detached read-only route no-ops it.
+  // committed truth. Fires only AFTER the app-level refresh projected a real change.
   onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
   // #302 — the Dashboard page's own File-menu operations.
-  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openDashboardForViewing'>;
+  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard'>;
+  genId(): string;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
   /** #332: the shared cell-detail drawer's own resize persist (`openCellDetail`
@@ -198,6 +187,24 @@ let installedModifierListeners:
 let installedGestureCancel: (() => void) | null = null;
 let installedDashboardChartInteraction: DashboardChartInteractionController | null = null;
 let installedDashboardCleanup: (() => void) | null = null;
+
+/** Tear down every resource owned by the currently mounted Dashboard surface. */
+export function disposeDashboardSurface(): void {
+  if (installedGridResizeListener) {
+    installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
+    installedGridResizeListener = null;
+  }
+  if (installedModifierListeners) {
+    const m = installedModifierListeners;
+    m.win.removeEventListener('keydown', m.onKeyDown);
+    m.win.removeEventListener('keyup', m.onKeyUp);
+    m.win.removeEventListener('blur', m.onBlur);
+    installedModifierListeners = null;
+  }
+  if (installedGestureCancel) installedGestureCancel();
+  installedDashboardCleanup?.();
+  installedDashboardCleanup = null;
+}
 
 /**
  * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
@@ -296,21 +303,64 @@ function synthesizeImplicitFilters(
   return out;
 }
 
-/** #288 — the read-only viewer's not-found state: a `current-workspace` route
- *  whose workspace/dashboard ids no longer resolve (the workspace was replaced,
- *  or the detached view was evicted), or a spent/expired one-time handoff token.
- *  Renders a message + a link back and executes nothing. */
+/** #407 — an explicit workspace route that no longer resolves. */
 function renderDashboardNotFound(app: DashboardApp): void {
-  const back = h('a', { class: 'dash-back', href: app.conn.basePath || '/sql' },
-    Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser'));
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
     h('div', { class: 'dash-empty' },
-      h('h2', { class: 'dash-notfound-title' }, 'Dashboard unavailable'),
-      h('p', null,
-        'This dashboard link is no longer available — the workspace may have been '
-        + 'replaced, or a one-time preview link was already used or has expired.'),
-      back)));
+      h('h2', { class: 'dash-notfound-title' }, 'Workspace not found'),
+      h('p', null, 'This workspace no longer exists on this browser.'))));
+}
+
+function buildRouteControls(app: DashboardApp): HTMLElement {
+  // This renderer is entered only for the dashboard route; keep App's shared
+  // route type broad while narrowing the invariant at this surface boundary.
+  const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
+  const workspaceKey = app.currentWorkspace?.key ?? route.workspaceKey;
+  const navigate = (next: SqlRoute, method: 'push' | 'replace'): void => {
+    void app.navigateSqlRoute(next, method);
+  };
+  const workspace = h('button', {
+    class: 'dash-route-btn', 'aria-pressed': 'false',
+    onclick: () => navigate({ surface: 'workspace', workspaceKey }, 'push'),
+  }, 'Workspace');
+  const dashboard = h('button', {
+    class: 'dash-route-btn', 'aria-pressed': 'true', disabled: true,
+  }, 'Dashboard');
+  const surface = h('div', { class: 'dash-route-switch', role: 'group', 'aria-label': 'Application surface' },
+    workspace, dashboard);
+  const view = h('button', {
+    class: 'dash-route-btn', 'aria-pressed': route.mode === 'view' ? 'true' : 'false',
+    onclick: () => navigate({ surface: 'dashboard', workspaceKey, mode: 'view' }, 'replace'),
+  }, 'View');
+  const edit = h('button', {
+    class: 'dash-route-btn', 'aria-pressed': route.mode === 'edit' ? 'true' : 'false',
+    onclick: () => navigate({ surface: 'dashboard', workspaceKey, mode: 'edit' }, 'replace'),
+  }, 'Edit');
+  return h('div', { class: 'dash-route-controls' }, surface,
+    h('div', { class: 'dash-route-switch', role: 'group', 'aria-label': 'Dashboard mode' }, view, edit));
+}
+
+function renderMissingDashboard(app: DashboardApp, readOnly: boolean): void {
+  const body = readOnly
+    ? h('div', { class: 'dash-empty' },
+      h('h2', null, 'This workspace has no dashboard'))
+    : h('div', { class: 'dash-empty' },
+      h('h2', null, 'Create a dashboard for this workspace'),
+      h('button', {
+        class: 'dash-btn dash-create',
+        onclick: async () => {
+          const outcome = await app.mutateWorkspace((latest) => {
+            if (!latest || latest.dashboard) return null;
+            return { candidate: { ...latest, dashboard: createEmptyDashboard(app.genId()) } };
+          });
+          if (outcome.ok) app.renderDashboard();
+        },
+      }, 'Create dashboard'));
+  app.root!.replaceChildren(h('div', { class: 'dash-page' },
+    h('div', { class: 'dash-topbar' },
+      h('div', { class: 'dash-header' }, buildRouteControls(app))),
+    body));
 }
 
 /** #302/#331 — the standalone Dashboard header's own "File" menu: a keyboard-
@@ -321,7 +371,6 @@ function renderDashboardNotFound(app: DashboardApp): void {
  *  File menu, with Dashboard-specific CONTENTS:
  *    EXPORT   ⭳ Export Dashboard…   .json
  *    IMPORT   ⭱ Import Dashboard…
- *    OPEN     ◇ Open for viewing…
  *  #347: only ever built for an EDITABLE (non-read-only) Dashboard — the
  *  caller omits the control entirely for a read-only route. (Previously a
  *  read-only view got an Export-only menu, but `exportDashboardAction`
@@ -357,11 +406,6 @@ function buildDashboardFileMenu(app: DashboardApp): HTMLElement {
         kind: 'item', icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
         onClick: () => app.actions.importDashboard(),
       },
-      { kind: 'section', label: 'Open' },
-      {
-        kind: 'item', icon: Icon.eye(), label: 'Open for viewing…', extraClass: 'dash-fm-item',
-        onClick: () => app.actions.openDashboardForViewing(),
-      },
     ];
     handle = openMenu({
       document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
@@ -383,80 +427,20 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
   // call installed on this window before this call installs its own (see
   // `installedGridResizeListener`'s own doc comment above).
-  if (installedGridResizeListener) {
-    installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
-    installedGridResizeListener = null;
-  }
-  if (installedModifierListeners) {
-    const m = installedModifierListeners;
-    m.win.removeEventListener('keydown', m.onKeyDown);
-    m.win.removeEventListener('keyup', m.onKeyUp);
-    m.win.removeEventListener('blur', m.onBlur);
-    installedModifierListeners = null;
-  }
-  if (installedGestureCancel) installedGestureCancel();
-  installedDashboardCleanup?.();
-  installedDashboardCleanup = null;
+  disposeDashboardSurface();
 
-  // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
-  // the parsed open-source (ADR-0003). `current-workspace` (?ws=&dash=) verifies
-  // both ids against the shared primary store (edit) or the persistent detached
-  // store (view); `session-bundle` (?st=) atomically consumes the one-time
-  // handoff into a detached view. A bare /dashboard open is the legacy editable
-  // current-workspace path. A resolution failure shows not-found — never a
-  // different dashboard.
-  const source = app.dashboardOpenSource;
-  let workspace: StoredWorkspaceV2 | null;
-  let readOnly = false;
-  // #343 step 6: default to suppressing the cross-tab refresh until the mode is
-  // resolved — an early not-found return then leaves this route inert w.r.t.
-  // primary-workspace invalidation (it has no session to rebuild). The editable
-  // branch flips it back to false once resolved. Known conservative-skip window
-  // (#343 review): a refresh op dequeuing during THIS render's own async load
-  // (e.g. a second external change landing mid-rebuild) sees `true`, skips, and
-  // schedules no follow-up — that change is only picked up by the next
-  // poke/focus/visibility refresh. A skip is always safe (never a misprojection)
-  // and within the issue's human-paced-editing scope.
-  app.dashboardReadOnly = true;
-  if (source && source.kind === 'session-bundle') {
-    workspace = await app.consumeDashboardHandoff();
-    if (!workspace) { renderDashboardNotFound(app); return; }
-    readOnly = true;
-  } else if (source && source.kind === 'current-workspace') {
-    const primary = await app.loadDashboardWorkspace(source.workspaceKey, source.dashboardId);
-    const detached = await app.detachedViews.getByKey(source.workspaceKey);
-    const resolved = resolveDashboardMode(source, primary, detached);
-    if (resolved.mode === 'not-found') { renderDashboardNotFound(app); return; }
-    workspace = resolved.workspace;
-    readOnly = resolved.mode === 'view';
-  } else {
-    workspace = await app.loadDashboardWorkspace();
-  }
-  // #343 step 6: now that the mode is resolved, expose it to the app-level
-  // cross-tab refresh — an editable route (false) projects/rebuilds on an
-  // external change; a detached/read-only view (true) ignores it entirely.
-  app.dashboardReadOnly = readOnly;
-  // Project the resolved workspace onto app.state so the Dashboard File menu's
-  // export/import (which read app.state) operate on THIS dashboard, not the
-  // tab's stale legacy-boot state.
-  if (workspace) app.applyCommittedWorkspace(workspace);
+  const workspace = app.currentWorkspace;
+  const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
+  if (!workspace) { renderDashboardNotFound(app); return; }
+  if (!workspace.dashboard) { renderMissingDashboard(app, readOnly); return; }
 
-  const queries: SavedQueryV2[] = workspace ? workspace.queries : state.savedQueries;
+  const queries: SavedQueryV2[] = workspace.queries;
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) if (!queryById.has(query.id)) queryById.set(query.id, query);
 
   // The live document — layout/order edits replace it; membership is read from
   // `dashboard.tiles[]` (NOT `savedQueries.filter(queryFavorite)`).
-  let currentDoc: DashboardDocumentV1 = workspace && workspace.dashboard
-    ? workspace.dashboard
-    : {
-      documentVersion: 1, id: 'empty', title: state.libraryName.value, revision: 1,
-      layout: {
-        type: 'grafana-grid', version: 1, items: {},
-        fallback: deriveFlowFallback({ type: 'grafana-grid', version: 1, items: {} }, []),
-      },
-      filters: [], tiles: [],
-    };
+  let currentDoc: DashboardDocumentV1 = workspace.dashboard;
   let committedRevision = currentDoc.revision;
   // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
   // CACHE of the last commit this route observed — never the baseline a
@@ -546,7 +530,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // four-button segmented control it replaces.
   // #321: "Full view" is a TRANSIENT runtime render-mode override over the
   // grafana-grid engine (never persisted) — it sits alongside "Grid Tiles" in
-  // the editable selector. A read-only (detached) view gets a REDUCED
+  // the editable selector. A read-only view gets a REDUCED
   // selector with only those two entries — layout editing (the flow presets,
   // and the flow<->grid engine switch) stays an edit-mode-only affordance,
   // but the render-mode toggle is harmless to expose read-only since it never
@@ -629,9 +613,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // accessibility tree carry no File control where no operation is valid.
   const fileMenuBtn = readOnly ? null : buildDashboardFileMenu(app);
   const header = h('div', { class: 'dash-header' },
-    h('a', {
-      class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
-    }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
+    buildRouteControls(app),
     h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
     tileCount, showLayoutSelect ? layoutWrap : null,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
@@ -968,12 +950,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     layoutSelect.sync();
     session.syncDocument(withImplicitFilters(normalized));
 
-    // No persisted aggregate to commit to (legacy/empty Dashboard) — stays
-    // optimistic-only, same as pre-#341 behavior. (`committedWorkspace` can
-    // still start being populated later, e.g. by a File-menu action on this
-    // same route — this command itself just never gets queued.)
-    if (!committedWorkspace) return;
-
     pendingCommands.push(command);
 
     // `app.mutateWorkspace` reads the latest COMMITTED aggregate at DEQUEUE
@@ -1021,8 +997,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   }
 
   // #350/#343 step 6: rebuild the WHOLE route from committed truth — a fresh
-  // `renderDashboard` re-reads `loadDashboardWorkspace` (both the Dashboard
-  // document AND the query collection), so it repairs what `session.syncDocument`
+  // `renderDashboard` reads the newly projected `app.currentWorkspace` (both
+  // Dashboard document and query collection), repairing what `session.syncDocument`
   // cannot: a membership-RESTORING rebase (a tile record the session already
   // dropped can't be reinstated), and an external query-only change (a tile's
   // query SQL/Spec moved while the Dashboard document stayed byte-identical).
@@ -1044,17 +1020,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   }
 
   // #343 step 6: react to an external workspace change the app-level cross-tab
-  // refresh has ALREADY projected onto `app.state` (this hook fires only after a
-  // refresh projected a real change). An editable route rebuilds its viewer
-  // session from committed truth; a detached read-only view ignores primary-
-  // workspace invalidation entirely (the app-level refresh already skips
-  // projecting for it — this stays a no-op as the second line of defence).
+  // refresh has ALREADY projected onto `app.state` and `app.currentWorkspace`.
+  // Both edit and live view rebuild from the same committed workspace.
   // `needsRebuild` coalesces with the settleCommand path; `rebuildRouteFrom
   // Committed` defers while commands are pending and never commits. `info` is
   // unused: the hook fires only on a real change and the full rebuild re-reads
   // everything, so a query-only change rebuilds even a byte-identical document.
   app.onWorkspaceExternallyChanged = () => {
-    if (readOnly) return;
+    if (app.sqlRoute.surface !== 'dashboard') return;
     needsRebuild = true;
     rebuildRouteFromCommitted();
   };
@@ -1119,8 +1092,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // REINSTATE a tile whose record it already dropped — e.g. a remove-tile
     // whose commit failed and rolled back, or dequeue-time truth restoring a
     // tile this route optimistically dropped. A membership-RESTORING rebase
-    // therefore rebuilds the whole route (a fresh session re-reads committed
-    // truth via `loadDashboardWorkspace`) — deferred until the queue is idle
+    // therefore rebuilds the whole route from the current workspace projection
+    // — deferred until the queue is idle
     // so no in-flight resolution handler from THIS render survives into the
     // rebuilt one.
     if (rebased.tiles.some((t) => !sessionTileIds().has(t.id))) needsRebuild = true;
@@ -1668,7 +1641,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // tile move. Reorder is Command/Ctrl-drag via pointer events (wireTileDrag),
     // the same modifier-gated model as the schema graph (#55). Reused verbatim
     // for grafana-grid@1 tiles (#291 — same move-tile command, no engine
-    // branching). A read-only (detached view) dashboard never wires it (#288).
+    // branching). A read-only dashboard never wires it (#288/#407).
     const card = h('div', {
       class: 'dash-tile' + (readOnly ? ' is-view' : ''),
       title: !readOnly && ts.isKpi ? 'Command/Ctrl-drag to move' : undefined,

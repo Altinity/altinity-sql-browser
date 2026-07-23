@@ -2482,9 +2482,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .docs-panel { width: 100vw !important; min-width: 0; }
 }
 
-/* ── Dashboard (#149 D1) ───────────────────────────────────────────────────
-   The standalone /sql/dashboard page: sticky header + a responsive grid of
-   read-only chart tiles rendered from favorited Library queries. */
+/* ── Dashboard (#149 D1 / #407) ─────────────────────────────────────────────
+   The `/sql?surface=dashboard` surface: sticky header + responsive tiles. */
 /* The dashboard's own scroll container: #root is a fixed overflow:hidden flex
    column (the workbench shell), so the dashboard fills it and scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
@@ -2495,6 +2494,19 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: flex; align-items: center;
   gap: 12px; padding: 11px 20px; background: var(--bg-header);
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.dash-route-controls { display: inline-flex; align-items: center; gap: 8px; }
+.dash-route-switch {
+  display: inline-flex; align-items: center; padding: 2px; gap: 2px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
+}
+.dash-route-btn {
+  min-height: 26px; padding: 3px 9px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--fg-muted); font: inherit; cursor: pointer;
+}
+.dash-route-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.dash-route-btn[aria-pressed="true"] {
+  background: var(--accent-bg); color: var(--accent-fg); font-weight: 600;
 }
 /* Filter toolbar (#149 D2, now filters-only since the layout switcher moved to
    the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): filters

@@ -242,10 +242,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.endswith("/config.json"):
             self._send(CONFIG, "application/json; charset=utf-8")
             return
-        # Serve the SPA for the workbench (/sql) and the client-side dashboard
-        # route (/sql/dashboard) — mirrors the production http_handlers rule so
-        # "Open as dashboard" works under `npm run local` too (#149 D1).
-        if path.rstrip("/") in ("", "/sql", "/sql.html", "/sql/dashboard"):
+        # Workbench and Dashboard are query-selected surfaces of /sql.
+        if path.rstrip("/") in ("", "/sql", "/sql.html"):
             try:
                 with open(SPA, "rb") as f:
                     html = f.read()

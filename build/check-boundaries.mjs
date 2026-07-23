@@ -3,7 +3,7 @@
 //   service layer coordinates state and network, it does not reach into DOM
 //   rendering or the CodeMirror editor adapters.
 //   Phase 3 — the route sessions must not import each other's implementation
-//   modules (ui/workbench ↔ ui/dashboard), and the dashboard route must not
+//   modules (ui/workbench ↔ ui/dashboard), and the Dashboard surface must not
 //   depend on the editor ports at all.
 //   Phase 5 — neither route shell (ui/workbench/**, ui/dashboard.ts +
 //   ui/dashboard/**) may import src/ui/app.ts: both receive everything they

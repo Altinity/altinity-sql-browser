@@ -3,6 +3,7 @@
 import { h, attachBackdropClose } from './dom.js';
 import type { ActionsRegistry, State, Tab } from './app.types.js';
 import type { ConnectionSession } from '../application/connection-session.js';
+import type { SqlRoute } from '../core/sql-route.js';
 
 /** The narrow slice of the real `app` controller this module reads — not
  *  the full ~50-member `App` contract (app.types.ts). A real `App` satisfies
@@ -13,6 +14,7 @@ export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running'>;
   conn: Pick<ConnectionSession, 'isSignedIn'>;
+  sqlRoute?: Pick<SqlRoute, 'surface'>;
   /** #60 — closes the docs reference pane when one is open (returns true),
    *  no-op returning false otherwise. Injected by app.ts (bound to
    *  ui/doc-pane's isDocPaneOpen/closeDocPane) so Esc closes the pane from
@@ -110,6 +112,9 @@ export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): strin
   // e.g. Esc closing the completion popup or search panel) must not ALSO
   // trigger a global action like cancelling the running query.
   if (e.defaultPrevented) return null;
+  // Dashboard owns its own controls and key handlers. In particular, live view
+  // mode must never reach hidden Workbench run/save/share mutation actions.
+  if (app.sqlRoute?.surface === 'dashboard') return null;
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.conn.isSignedIn();
   const editorMode = app.activeTab().editorMode || 'sql';

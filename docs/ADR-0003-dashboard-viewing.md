@@ -1,160 +1,102 @@
-# ADR-0003: Dashboard viewing — edit vs view modes, and the one-time cross-tab state handoff
+# ADR-0003: Dashboard viewing and unified `/sql` routes
 
-- **Status:** Accepted — 2026-07-18 (#288 + #302, Dashboard v1 phase 6, the final
-  phase of epic #280). Implemented on branch `feat/dashboard-viewing-288`.
-- **Date:** 2026-07-18
-- **Context tracking:** roadmap #68 (Dashboard track); epic #280; closes #153.
-- **Related:** #149 (original standalone-dashboard route + postMessage credential
-  handoff — its *state*-transport decision is superseded here), #284 (IndexedDB
-  `StoredWorkspaceV1` persistence, whose adapter pattern this reuses), #287
-  (portable bundle codecs + transactional import planner this builds on).
+- **Status:** Accepted; detached-snapshot decision superseded by #407 on
+  2026-07-23
+- **Date:** 2026-07-18; revised 2026-07-23
+- **Context tracking:** roadmap #68; #288, #302, #406, #407
 
 ## Context
 
-Phases 1–5 of #280 made the Dashboard a first-class module: an explicit
-`StoredWorkspaceV1` aggregate persisted atomically to IndexedDB (#284), an
-independent read-only `DashboardViewerSession` + `flow@1` layout (#286), and a
-canonical `PortableBundleV1` with a transactional import planner (#287). Phase 6
-(#288) is the viewing surface: how a Dashboard is *opened* — bookmarkably for the
-current workspace, and in a detached read-only tab — without the read-only path
-dragging in Workbench or editor construction. In parallel, #302 asked to move
-Dashboard navigation and Dashboard-scoped file operations out of the (overloaded)
-Workbench File menu and next to the Dashboard resource itself.
+The original Dashboard viewing design separated an editable primary workspace
+from durable read-only snapshots. Opening a view created a second workspace
+record through a one-time IndexedDB handoff and opened a separate
+`/sql/dashboard` application tab. That model duplicated local data, required
+parallel stores and credential/state transport, and made view mode diverge from
+the workspace users were actually editing.
 
-The original #288 spec framed the second open kind as a *temporary, one-time,
-non-bookmarkable* "session-bundle" for full-screen preview and external-bundle
-viewing. During planning the owner refined this into a cleaner, more durable
-product model, which this ADR records.
+Multi-workspace persistence (#406) established an immutable human-readable
+workspace `key` as the canonical URL identity. Unified routing (#407) uses that
+identity for both application surfaces and treats View/Edit as presentation
+modes over one live workspace.
 
 ## Decision
 
-### Two explicit viewing modes
+Workbench and Dashboard are surfaces of the same `/sql` application:
 
-| | **Edit mode** | **View mode** |
-|---|---|---|
-| Entry | Workbench header `Dashboard →` control | Dashboard header **File → "Open for viewing…"** |
-| Tab | new tab | new tab |
-| Open source | `current-workspace` (`?ws=&dash=`) | detached snapshot of the current dashboard |
-| Storage | **shared** primary workspace collection (`asb-workspaces-v2`) | its **own** detached store (`asb-dashboard-views`), fresh id |
-| Editable | yes — drag reorder + layout preset persist to the shared aggregate | **read-only** |
-| Auth | existing postMessage credential handoff (#149) | same |
-| Survives relogin / reload | yes (shared store) | yes (own persisted record) |
-
-`Dashboard →` opens a **new tab** (an owner override of #302's "current tab"
-wording), keeping the Workbench tab available and reusing the existing new-tab
-credential handoff.
-
-### The `DashboardOpenSource` contract
-
-```ts
-type DashboardOpenSource =
-  | { kind: 'current-workspace'; workspaceKey: string; dashboardId: string }
-  | { kind: 'session-bundle';   token: string;        dashboardId: string };
+```text
+/sql?ws=clickhouse_operations
+/sql?ws=clickhouse_operations&surface=dashboard
+/sql?ws=clickhouse_operations&surface=dashboard&mode=view
 ```
 
-Encoded as **query params on `/dashboard`** — never path segments — so the
-pathname stays exactly `/dashboard` and `isDashboardRoute`/`configBase`/the OAuth
-`redirect_uri` (all keyed on the `/dashboard` suffix) are untouched, and the
-params survive `bootstrap`'s OAuth-param strip automatically. `?ws=&dash=` is
-current-workspace; `?st=&dash=` is session-bundle.
+The pure route contract owns `ws`, `surface`, and `mode`:
 
-> **Critical constraint:** the session token param is **`st`**, never `state`.
-> `bootstrap` (`src/main.ts`) reads `?state` as the OAuth CSRF value; a token
-> there would raise "OAuth state mismatch".
+- absent or unknown `surface` means Workbench;
+- `surface=dashboard` means Dashboard;
+- Dashboard edit is the default, so `mode=edit` is accepted but omitted from
+  canonical URLs;
+- `mode=view` renders the same current workspace dashboard without mutation
+  controls;
+- unrelated parameters are preserved until their owning flow consumes them.
 
-**Mode is discriminated by which store the `ws` key resolves in**, not by a
-spoofable URL flag: the key present in the primary workspace store → edit mode;
-present in the detached views store → view mode; in neither → a not-found panel
-that executes nothing (never silently opens a different dashboard).
+An explicit `ws` resolves exactly that workspace key. Failure renders
+**Workspace not found** and never falls back. An implicit `/sql` open resolves
+the last-used workspace, deterministically selects an existing workspace when
+needed, or provisions the default workspace, then rewrites the URL with its
+canonical key.
 
-### The one-time cross-tab state handoff
+Surface changes use same-tab `history.pushState()` so browser Back remains
+useful. View/Edit changes use `history.replaceState()` so presentation toggles
+do not pollute history. The Dashboard header exposes
+`[Workspace | Dashboard] [View | Edit]`.
 
-"Open for viewing…" hands the dashboard *state* (not credentials) to the new tab
-through a one-time IndexedDB token, then materializes a durable detached copy:
+Each workspace owns zero or one dashboard:
 
-1. Snapshot the current dashboard's dependency closure into a `PortableBundleV1`
-   (`buildDashboardExportBundle`).
-2. Generate an unguessable 256-bit token (`crypto.getRandomValues`); write a
-   record `{ text: bundleJSON, dashboardId, detachedWorkspaceId, expiresAt }` to
-   a dedicated IndexedDB database (`asb-dashboard-handoff`) **before** opening the
-   tab.
-3. `window.open('/dashboard?st=<token>&dash=<id>')` and grant the credential
-   handoff.
-4. The new tab **atomically consumes + deletes** the record in one readwrite
-   transaction (`take` = get+delete, then reject if expired), and strips `st`
-   from the URL via `history.replaceState`.
-5. It **materializes** the bundle into the detached store under
-   `detachedWorkspaceId`, assigns the detached copy a stable local key, rewrites
-   the URL to `?ws=<detachedWorkspaceKey>&dash=`,
-   and renders read-only.
+- edit mode shows **Create dashboard** when none exists, but visiting does not
+  create one;
+- view mode shows **This workspace has no dashboard** and executes no queries;
+- view mode registers no reorder, resize, delete, layout-persistence, or other
+  authoring paths.
 
-Auth is orthogonal and unchanged: the new tab still restores credentials via the
-#149 postMessage handoff, falling back to a normal OAuth relogin (which the
-detached `?ws=` URL survives).
+## Superseded implementation
 
-## Consequences / deliberate evolutions of #288
+The following original ADR decisions are intentionally retired:
 
-- **"session-bundle is not bookmarkable" is refined, not violated.** The `?st=`
-  token URL is genuinely one-time and dead after consumption — not bookmarkable.
-  The *detached view it produces* (`?ws=<detachedId>`) is persistent and
-  bookmarkable/relogin-surviving. This is the intended product behavior: a
-  view-mode tab you can leave open, reload, and re-authenticate into.
-- **External-file *viewing* + the untrusted-bundle "Run Dashboard on `<host>`"
-  trust preflight are descoped.** External `.json` files go through #302's
-  transactional **Import Dashboard…** (validate + commit via the planner).
-  "Open for viewing…" detaches the workspace's *own*, already-trusted dashboard,
-  so there is no untrusted external SQL to gate. The viewer's existing safety
-  limits (row/byte caps, bounded concurrency, per-tile cancellation, stale-wave
-  protection, no Setup execution) still apply.
-- **A new IndexedDB store family.** Two dedicated databases join the primary
-  workspace database (now `asb-workspaces-v2`):
-  `asb-dashboard-handoff` (one-time tokens) and `asb-dashboard-views`
-  (multi-record detached snapshots, keyed by workspace id, with a small retention
-  cap so abandoned views don't grow unbounded). Both reuse the #284 adapter
-  pattern (lazy cached open, single readwrite-txn atomicity) behind injected
-  seams, so the pure/seam logic stays 100%-covered and tests use in-memory fakes.
-- **Read-only path stays clean.** The viewer path constructs no Workbench/editor
-  modules; the `check:arch` boundary guard + `dashboard-boundaries.test.js` are
-  extended to the new `dashboard/application` + `workspace` modules.
-- **File-menu ownership clarified (#302).** The Workbench File menu owns
-  workspace/query operations only; Dashboard navigation moves to a Workbench
-  header `Dashboard →` control, and Dashboard import/export + "Open for viewing…"
-  move to a resource-scoped File menu on the Dashboard header.
+- pathname-based `/sql/dashboard` bootstrapping;
+- default new-tab Workbench/Dashboard navigation;
+- `DashboardOpenSource` current-workspace/session-bundle discrimination;
+- the `st` one-time state transport parameter;
+- `asb-dashboard-handoff` and `asb-dashboard-views`;
+- detached workspace materialization and retention;
+- **Open for viewing…** snapshot creation;
+- store-membership-based edit/view discrimination;
+- dashboard-specific cross-tab credential handoff.
+
+There is no migration requirement for those development-era URLs or IndexedDB
+records.
+
+## Consequences
+
+- Edit and view always observe the same canonical workspace/dashboard data.
+- A bookmarked view remains read-only in presentation, not authorization; the
+  local user can switch back to edit.
+- Workbench and Dashboard share authentication, configuration, workspace
+  refresh, import/export, and query execution without parallel bootstrap
+  applications.
+- Dashboard route resources are disposed when switching surfaces or rebuilding
+  the current surface; the Workbench shell likewise disposes signal and media
+  listeners before remounting.
+- OAuth uses one `/sql` redirect URI. Callback cleanup retains route parameters
+  while removing only OAuth callback parameters.
 
 ## Alternatives considered
 
-- **Same-tab navigation for `Dashboard →`** (#302 as literally written): rejected
-  by the owner in favor of a new tab, to keep the Workbench visible.
-- **Ephemeral one-time view (strict original #288):** the view would not survive
-  relogin/close. Rejected — the owner wants a durable, detached view surface;
-  the token remains the *transport*, persistence is layered on top.
-- **Path-segment routes (`/dashboard/ws/<id>`):** rejected — breaks
-  `isDashboardRoute`/`configBase`/OAuth-redirect, all keyed on the `/dashboard`
-  suffix.
-- **A `?view=1` mode flag:** rejected in favor of store-membership discrimination
-  (not spoofable, and naturally yields the not-found case).
-
-## Addendum — 2026-07-23: stable workspace keys and collection persistence (#406)
-
-`StoredWorkspaceV2` replaces the single fixed `current` aggregate with one
-IndexedDB record per workspace. Workspace identity is deliberately split:
-
-- `id` is the immutable opaque object-store key;
-- `key` is the immutable, unique lowercase ASCII URL identity resolved by
-  `?ws=`;
-- `name` is mutable display metadata and never rewrites bookmarks.
-
-The primary store uses `id` as its key path and a unique `key` index. Create,
-replace, delete, and last-opened metadata updates are transaction-scoped;
-replace cannot create a missing record or alter its key. Portable workspace
-import creates a fresh local ID/key instead of replacing the active workspace.
-
-Implicit opens persist the successfully opened key in a separate preferences
-store and stamp store-owned `lastOpenedAt` metadata using the injected wall
-clock. If that preference is absent or invalid, resolution chooses the valid
-workspace with the newest timestamp, breaking ties by key; records without a
-timestamp fall back deterministically by key. Explicit `?ws=` opens never fall
-back to another workspace.
-
-The detached-view store follows the same key-based `?ws=` resolution contract,
-while its generated local key remains separate from its opaque detached ID.
+- **Durable detached snapshots:** rejected because they silently diverge from
+  the live workspace and require duplicate persistence and transport.
+- **New-tab navigation by default:** rejected because it encourages concurrent
+  editing and makes Back navigation ineffective.
+- **Path-segment routes:** rejected because workspace, surface, and mode are
+  independent application state and query parameters preserve the single SPA
+  handler and OAuth redirect.
+- **View as authorization:** out of scope. View mode is a local presentation
+  choice, not an access-control boundary.

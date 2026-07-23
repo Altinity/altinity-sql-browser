@@ -19,34 +19,6 @@ const expiredToken = jwt({ email: 'gone@example.com', exp: nowSec() - 10 });
 const _storageTypeCheck: SessionStorageLike = memStorage();
 void _storageTypeCheck;
 
-/** A test-only `MessageEvent`-shaped object — the session only ever reads
- * `data`/`origin`/`source` off a dispatched message (matches
- * `core/auth-handoff.ts`'s own `AuthMessageEvent` contract). */
-interface FakeMessageEvent { data: unknown; origin: string; source: unknown }
-
-/** A fake `win` seam: captures `message` listeners (so tests can dispatch
- * synthetic events at them) and queued `setTimeout` callbacks (so tests can
- * fire the handoff timeout deterministically instead of sleeping). Cast to
- * the narrow `Pick<Window, ...>` the session declares — the same "widen the
- * fake, single cast" idiom `tests/unit/dashboard.test.ts`'s own `asWindow`
- * helper uses for the same reason (a plain object only ever needs the few
- * members real code reads, not the whole `Window` interface). */
-function makeWin() {
-  const listeners = new Set<(e: MessageEvent) => void>();
-  const timeouts: (() => void)[] = [];
-  const raw = {
-    addEventListener: (_type: string, fn: (e: MessageEvent) => void) => { listeners.add(fn); },
-    removeEventListener: (_type: string, fn: (e: MessageEvent) => void) => { listeners.delete(fn); },
-    setTimeout: (fn: () => void, _ms?: number): number => { timeouts.push(fn); return timeouts.length; },
-  };
-  return {
-    win: raw as unknown as Pick<Window, 'addEventListener' | 'removeEventListener' | 'setTimeout'>,
-    dispatch: (e: FakeMessageEvent): void => { for (const fn of [...listeners]) fn(e as unknown as MessageEvent); },
-    listenerCount: (): number => listeners.size,
-    fireTimeouts: (): void => { const t = timeouts.splice(0); for (const fn of t) fn(); },
-  };
-}
-
 interface FakeResponse { ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }
 function jsonResponse(status: number, body: unknown): FakeResponse {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
@@ -97,12 +69,9 @@ interface SetupOpts {
   location?: { origin: string; pathname: string; search: string; href: string };
   routes?: RouteFn[];
   queryJson?: QueryJsonFn;
-  handoffMs?: number;
-  handoffListenMs?: number;
   onAuthLost?: (detail?: string) => void;
 }
 function setup(opts: SetupOpts = {}) {
-  const win = makeWin();
   const fetchMock = makeFetch(opts.routes || []);
   const storage = opts.storage || memStorage();
   const onAuthLost = opts.onAuthLost || vi.fn();
@@ -115,13 +84,10 @@ function setup(opts: SetupOpts = {}) {
     // sibling spec stubbing the global (or a differently-ordered aggregation
     // where it's undefined at setup() time) must not break PKCE here.
     crypto: webcrypto,
-    win: win.win,
     queryJson: opts.queryJson || fakeQueryJson(async () => ({ data: [{ 1: 1 }] })),
-    handoffMs: opts.handoffMs ?? 50,
-    handoffListenMs: opts.handoffListenMs ?? 200,
     onAuthLost,
   };
-  return { deps, storage, location, win, fetchMock, onAuthLost, session: createConnectionSession(deps) };
+  return { deps, storage, location, fetchMock, onAuthLost, session: createConnectionSession(deps) };
 }
 
 // ── construction seeding ─────────────────────────────────────────────────────
@@ -162,8 +128,8 @@ describe('construction seeding', () => {
     expect(session.idpId()).toBe('g');
   });
 
-  it('resolves basePath from /sql/dashboard via configBase', () => {
-    const { session } = setup({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '', href: '' } });
+  it('uses the unified /sql pathname as basePath', () => {
+    const { session } = setup({ location: { origin: 'https://ch.example', pathname: '/sql/', search: '?surface=dashboard', href: '' } });
     expect(session.basePath).toBe('/sql');
   });
 
@@ -333,6 +299,9 @@ describe('beginOAuth', () => {
     expect(storage.getItem('oauth_origin')).toBe('https://cluster.example');
     expect(storage.getItem('oauth_verifier')).toBeTruthy();
     expect(storage.getItem('oauth_state')).toBeTruthy();
+    expect(JSON.parse(storage.getItem('oauth_return_route')!)).toEqual({
+      state: storage.getItem('oauth_state'), search: '',
+    });
     expect(location.href).not.toBe('');
     const url = new URL(location.href);
     expect(url.origin + url.pathname).toBe('https://issuer.example/authorize');
@@ -347,6 +316,21 @@ describe('beginOAuth', () => {
     await session.beginOAuth();
     expect(storage.getItem('oauth_origin')).toBeNull();
     expect(session.idpId()).toBe('g');
+  });
+
+  it('associates the pre-login application route with the OAuth state', async () => {
+    const { session, storage } = setup({
+      location: {
+        origin: 'https://ch.example', pathname: '/sql',
+        search: '?ws=ops&surface=dashboard&mode=view&code=stale&keep=1',
+        href: 'https://ch.example/sql?ws=ops&surface=dashboard&mode=view&code=stale&keep=1',
+      },
+    });
+    await session.beginOAuth('g');
+    expect(JSON.parse(storage.getItem('oauth_return_route')!)).toEqual({
+      state: storage.getItem('oauth_state'),
+      search: '?ws=ops&surface=dashboard&mode=view&keep=1',
+    });
   });
 });
 
@@ -515,133 +499,6 @@ describe('ensureFreshToken', () => {
   it('resolves false with no token', async () => {
     const { session } = setup();
     await expect(session.ensureFreshToken()).resolves.toBe(false);
-  });
-});
-
-// ── cross-tab auth handoff ───────────────────────────────────────────────────
-
-describe('grantHandoffTo', () => {
-  it('answers a pinned request with a snapshot, only when it holds credentials, then stops listening', () => {
-    const { session, win, location } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
-    const child = { postMessage: vi.fn() };
-    session.grantHandoffTo(child as unknown as Window);
-    win.dispatch({ data: { type: 'asb-auth-request' }, origin: location.origin, source: child });
-    expect(child.postMessage).toHaveBeenCalledTimes(1);
-    const [payload, origin] = child.postMessage.mock.calls[0];
-    expect(payload.type).toBe('asb-auth-grant');
-    expect(payload.creds.oauth_id_token).toBe(validToken);
-    expect(origin).toBe(location.origin);
-    expect(win.listenerCount()).toBe(0);
-  });
-
-  it('ignores a request from the wrong origin or the wrong source window', () => {
-    const { session, win, location } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
-    const child = { postMessage: vi.fn() };
-    const stranger = { postMessage: vi.fn() };
-    session.grantHandoffTo(child as unknown as Window);
-    win.dispatch({ data: { type: 'asb-auth-request' }, origin: 'https://evil.example', source: child });
-    win.dispatch({ data: { type: 'asb-auth-request' }, origin: location.origin, source: stranger });
-    expect(child.postMessage).not.toHaveBeenCalled();
-    expect(win.listenerCount()).toBe(1);
-  });
-
-  it('grants nothing (but still stops listening) when it holds no credentials', () => {
-    const { session, win, location } = setup();
-    const child = { postMessage: vi.fn() };
-    session.grantHandoffTo(child as unknown as Window);
-    win.dispatch({ data: { type: 'asb-auth-request' }, origin: location.origin, source: child });
-    expect(child.postMessage).not.toHaveBeenCalled();
-    expect(win.listenerCount()).toBe(0);
-  });
-
-  it('stops listening after handoffListenMs even if the child never asks', () => {
-    const { session, win, location } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
-    const child = { postMessage: vi.fn() };
-    session.grantHandoffTo(child as unknown as Window);
-    win.fireTimeouts();
-    win.dispatch({ data: { type: 'asb-auth-request' }, origin: location.origin, source: child });
-    expect(child.postMessage).not.toHaveBeenCalled();
-  });
-});
-
-describe('receiveAuthHandoff', () => {
-  it('resolves false immediately with no opener', async () => {
-    const { session } = setup();
-    await expect(session.receiveAuthHandoff({})).resolves.toBe(false);
-  });
-
-  it('requests, then applies a full OAuth grant (token/refresh/idp/origin all updated)', async () => {
-    const { session, win, storage, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const newTok = jwt({ email: 'x@y.com', exp: nowSec() + 3600 });
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    expect(opener.postMessage).toHaveBeenCalledWith({ type: 'asb-auth-request' }, location.origin);
-    win.dispatch({ data: { type: 'other' }, origin: location.origin, source: opener }); // ignored: wrong type
-    win.dispatch({
-      data: { type: 'asb-auth-grant', creds: { oauth_id_token: newTok, oauth_refresh_token: 'r9', oauth_idp: 'zz', oauth_origin: 'https://cluster.example' } },
-      origin: location.origin, source: opener,
-    });
-    await expect(p).resolves.toBe(true);
-    expect(session.token()).toBe(newTok);
-    expect(session.refreshToken()).toBe('r9');
-    expect(session.idpId()).toBe('zz');
-    expect(session.chCtx.origin).toBe('https://cluster.example');
-    expect(storage.getItem('oauth_id_token')).toBe(newTok);
-  });
-
-  it('applies a partial OAuth grant, falling back to the serving origin with no idp change', async () => {
-    const { session, win, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const newTok = jwt({ email: 'x@y.com', exp: nowSec() + 3600 });
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { oauth_id_token: newTok } }, origin: location.origin, source: opener });
-    await expect(p).resolves.toBe(true);
-    expect(session.token()).toBe(newTok);
-    expect(session.idpId()).toBeNull();
-    expect(session.chCtx.origin).toBe(location.origin);
-  });
-
-  it('applies a basic grant', async () => {
-    const { session, win, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { ch_basic_auth: 'YWJj', ch_basic_origin: 'https://other.example' } }, origin: location.origin, source: opener });
-    await expect(p).resolves.toBe(true);
-    expect(session.authMode()).toBe('basic');
-    expect(session.chCtx.origin).toBe('https://other.example');
-  });
-
-  it('ignores an empty grant and times out into false', async () => {
-    const { session, win, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: {} }, origin: location.origin, source: opener });
-    win.fireTimeouts();
-    await expect(p).resolves.toBe(false);
-  });
-
-  it('ignores a grant from the wrong source window', async () => {
-    const { session, win, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const stranger = { postMessage: vi.fn() };
-    const newTok = jwt({ email: 'x@y.com', exp: nowSec() + 3600 });
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { oauth_id_token: 'from-stranger' } }, origin: location.origin, source: stranger });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { oauth_id_token: newTok } }, origin: location.origin, source: opener });
-    await expect(p).resolves.toBe(true);
-    expect(session.token()).toBe(newTok);
-  });
-
-  it('resolves once — a second grant after the first is ignored', async () => {
-    const { session, win, location } = setup();
-    const opener = { postMessage: vi.fn() };
-    const tokA = jwt({ email: 'a@x.com', exp: nowSec() + 3600 });
-    const tokB = jwt({ email: 'b@x.com', exp: nowSec() + 3600 });
-    const p = session.receiveAuthHandoff({ opener: opener as unknown as Window });
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { oauth_id_token: tokA } }, origin: location.origin, source: opener });
-    await expect(p).resolves.toBe(true);
-    win.dispatch({ data: { type: 'asb-auth-grant', creds: { oauth_id_token: tokB } }, origin: location.origin, source: opener });
-    expect(session.token()).toBe(tokA);
   });
 });
 

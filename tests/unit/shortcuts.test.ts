@@ -75,6 +75,16 @@ describe('handleKeydown', () => {
   const ev = (over: Partial<ShortcutKeydownEvent> = {}): ShortcutKeydownEvent =>
     ({ preventDefault: vi.fn(), key: '', metaKey: false, ctrlKey: false, shiftKey: false, target: {}, ...over });
 
+  it('does not dispatch hidden Workbench shortcuts on a Dashboard route', () => {
+    const app = makeApp({
+      sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
+    });
+    expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+    expect(app.actions.save).not.toHaveBeenCalled();
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+
   it('⌘Enter runs (even when signed out)', () => {
     const app = makeApp({ conn: { isSignedIn: () => false } });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');

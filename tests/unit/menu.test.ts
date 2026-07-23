@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { openMenu } from '../../src/ui/menu.js';
+import { closeOpenMenus, openMenu } from '../../src/ui/menu.js';
 import type { MenuRow } from '../../src/ui/menu.js';
 
 const key = (target: EventTarget, k: string): boolean =>
@@ -147,6 +147,21 @@ describe('openMenu — overlay close', () => {
     click(document.querySelector('.fm-overlay')!);
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(document.querySelector('.fm-overlay')).toBeNull();
+  });
+});
+
+describe('closeOpenMenus', () => {
+  it('closes every body-mounted menu and detaches their key handlers', () => {
+    const a = trigger();
+    const b = trigger();
+    openMenu({ document, trigger: a, rows: [itemRow('A')] });
+    openMenu({ document, trigger: b, rows: [itemRow('B')] });
+    expect(document.querySelectorAll('.file-menu')).toHaveLength(2);
+    closeOpenMenus(document);
+    expect(document.querySelectorAll('.file-menu')).toHaveLength(0);
+    expect(a.getAttribute('aria-expanded')).toBe('false');
+    expect(b.getAttribute('aria-expanded')).toBe('false');
+    expect(() => closeOpenMenus(document)).not.toThrow();
   });
 });
 

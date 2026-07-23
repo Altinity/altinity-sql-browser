@@ -70,6 +70,12 @@ export interface MenuHandle {
 // WeakMap so a since-discarded trigger (e.g. a torn-down test DOM) doesn't
 // keep a stale handle reachable.
 const openByTrigger = new WeakMap<HTMLElement, MenuHandle>();
+const openByDocument = new WeakMap<Document, Set<() => void>>();
+
+/** Close every body-mounted menu owned by `doc` (surface-navigation teardown). */
+export function closeOpenMenus(doc: Document): void {
+  for (const close of [...(openByDocument.get(doc) ?? [])]) close();
+}
 
 // The focus target for a `custom` row: its own first focusable descendant, or
 // the node itself when it already matches a focusable selector directly.
@@ -127,6 +133,9 @@ export function openMenu(opts: MenuOptions): MenuHandle {
     if (closed) return;
     closed = true;
     openByTrigger.delete(trigger);
+    const documentClosers = openByDocument.get(doc);
+    documentClosers?.delete(close);
+    if (documentClosers?.size === 0) openByDocument.delete(doc);
     doc.removeEventListener('keydown', onKey, true);
     menu.remove();
     overlay.remove();
@@ -151,5 +160,11 @@ export function openMenu(opts: MenuOptions): MenuHandle {
 
   const handle: MenuHandle = { el: menu, close };
   openByTrigger.set(trigger, handle);
+  let documentClosers = openByDocument.get(doc);
+  if (!documentClosers) {
+    documentClosers = new Set();
+    openByDocument.set(doc, documentClosers);
+  }
+  documentClosers.add(close);
   return handle;
 }
