@@ -1,9 +1,9 @@
 name: release
 
-# Cut a release by pushing a tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
+# Cut a release by pushing a semver tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
 on:
   push:
-    tags: ['v*']
+    tags: ['v*.*.*']
 
 permissions:
   contents: write   # create the GitHub Release + upload assets
@@ -36,7 +36,7 @@ jobs:
 
       # Package the Helm chart and push it to GHCR as an OCI artifact — same
       # approach as altinity-mcp. The container image itself is built+pushed by
-      # docker.yml (also on the v* tag).
+      # docker.yml (also on the vX.Y.Z tag).
       - uses: azure/setup-helm@v5
         with:
           version: latest
