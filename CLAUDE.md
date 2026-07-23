@@ -1,7 +1,7 @@
 # Contributor guide — altinity-sql-browser
 
 A modular ES-module SPA that builds to one self-contained HTML file served from
-ClickHouse. No framework; runtime deps are rare and deliberate (currently five,
+ClickHouse. No framework; runtime deps are rare and deliberate (currently seven,
 all bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
@@ -38,10 +38,11 @@ all bundled — see hard rule 4). Quality is held by tests.
    fail clearly. `package-lock.json` is committed; use `npm ci` for a
    reproducible dependency graph in local, CI, and release builds, and update
    the lock only with an intentional dependency change.
-   There are **six** bundled runtime dependencies — **CodeMirror 6** (the SQL
+   There are **seven** bundled runtime dependencies — **CodeMirror 6** (the SQL
    editor, saved-query Spec JSON editor, and read-only source viewer, behind
    injected seams — #21/#212/#213),
-   **Chart.js** (the Chart result view) with **chartjs-adapter-date-fns**
+   **Chart.js** (the Chart result view) with **chartjs-adapter-date-fns** and
+   **date-fns**
    (registers the date-math backend Chart.js's `time` scale needs for
    line/area charts over a time-role X column — #309; the pure axis/role
    decision of *whether* to use it stays in `core/chart-data.ts`, the adapter
@@ -55,7 +56,7 @@ all bundled — see hard rule 4). Quality is held by tests.
    token tree is projected into DOM by `ui/doc-markdown-view.ts` under the
    fail-closed policy: images/raw HTML/rejected links render as literal
    text; measured +44 KB raw / ~3% artifact delta) — all inlined into the
-   artifact, so the page still makes zero third-party requests.
+   artifact, so the page loads no runtime libraries from third-party CDNs.
    Adding *another* runtime dependency is a deliberate decision (it grows the
    single served file) — don't do it casually. When a feature needs a library,
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in

@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Altinity® SQL Browser — an OAuth-gated SQL console for ClickHouse®</title>
-<meta name="description" content="A self-contained, OAuth-gated SQL browser for any ClickHouse cluster. Charts, EXPLAIN graphs, data-flow graphs, autocomplete — one HTML file, zero third-party requests. Run it locally with one curl command.">
+<meta name="description" content="A self-contained, OAuth-gated SQL browser for any ClickHouse cluster. Charts, EXPLAIN graphs, data-flow graphs, autocomplete — one HTML file with runtime dependencies bundled. Run it locally with one curl command.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 <meta property="og:title" content="Altinity SQL Browser">
-<meta property="og:description" content="A self-contained, OAuth-gated SQL console for any ClickHouse cluster — charts, EXPLAIN graphs, data-flow graphs. One HTML file, zero third-party requests. Install locally with one curl command.">
+<meta property="og:description" content="A self-contained, OAuth-gated SQL console for any ClickHouse cluster — charts, EXPLAIN graphs, data-flow graphs. One HTML file with runtime dependencies bundled. Install locally with one curl command.">
 <meta property="og:type" content="website">
 </head>
 <body>
@@ -31,7 +31,7 @@
 
 <section class="hero center">
   <div class="wrap">
-    <span class="pill">One HTML file · Zero third-party requests</span>
+    <span class="pill">One HTML file · Dependencies bundled</span>
     <h1>A SQL console for ClickHouse®<br>that you can host anywhere</h1>
     <p class="lede">An OAuth-gated query browser with charts, EXPLAIN pipeline graphs, data-flow graphs and
       smart autocomplete — built as a single self-contained HTML file. Serve it from ClickHouse itself,
@@ -65,8 +65,8 @@
     <div class="section-head">
       <div class="eyebrow">Why it's different</div>
       <h2>A full query workbench with no backend to run</h2>
-      <p>The browser talks straight to ClickHouse over HTTP. There is no app server, no database of its own,
-        and no third-party requests — just one HTML file and your OAuth provider.</p>
+      <p>The browser talks straight to ClickHouse over HTTP. There is no app server or database of its own;
+        runtime libraries are bundled into the one HTML file.</p>
     </div>
     <div class="grid cols-3">
       <div class="card">
@@ -79,7 +79,7 @@
         <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
         <h3>One self-contained file</h3>
         <p>esbuild bundles everything — including Chart.js and the graph layout engine — into a single
-          <code class="k">sql.html</code>. No CDN, no fonts, no external calls. Serve it from ClickHouse's
+          <code class="k">sql.html</code>. No CDN or external font/library loads. Serve it from ClickHouse's
           <code class="k">user_files</code> and you're done.</p>
       </div>
       <div class="card">
@@ -175,7 +175,7 @@ ClickHouse  POST /  Authorization: Bearer &lt;id_token&gt;   ← every query
       <a class="card post-card" href="blog/no-backend-sql-console.html">
         <div class="kicker">Architecture</div>
         <h3>The SQL console with no backend</h3>
-        <p>One HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, zero third-party requests.</p>
+        <p>One HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, dependencies bundled.</p>
       </a>
       <a class="card post-card" href="blog/materialized-view-web.html">
         <div class="kicker">Schema</div>

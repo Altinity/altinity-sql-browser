@@ -1,5 +1,5 @@
 /* Altinity SQL Browser — public site styles.
-   Hand-built, zero third-party requests. Tokens lifted from src/styles.css. */
+   Hand-built, with no third-party asset loads. Tokens lifted from src/styles.css. */
 
 :root {
   --accent: #0079AD;
