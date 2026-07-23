@@ -37,6 +37,7 @@
     import { parseParamType } from '/src/core/param-type.js';
     import { wireComboInput } from '/src/ui/combobox.js';
     import { buildAppHeader } from '/src/ui/app-header.js';
+    import { openMenu } from '/src/ui/menu.js';
 
     const dashboardFileButton = document.createElement('button');
     dashboardFileButton.className = 'hd-file-btn dash-file-btn';
@@ -46,15 +47,42 @@
     tileCount.textContent = '★ 6 tiles';
     const styleWrap = document.createElement('div');
     styleWrap.className = 'dash-layout-wrap';
-    styleWrap.innerHTML = `
-      <span class="dash-layout-label">Style</span>
-      <select class="result-panel-select dash-layout-select" aria-label="Dashboard style" title="Dashboard style">
-        <option value="grafana-grid">Grid Tiles</option>
-        <option value="full">Full view</option>
-        <option value="report" selected>Report</option>
-        <option value="columns-2">2 columns</option>
-        <option value="columns-3">3 columns</option>
-      </select>`;
+    const styleButton = document.createElement('button');
+    styleButton.className = 'hd-file-btn dash-style-btn';
+    styleButton.setAttribute('aria-haspopup', 'menu');
+    styleButton.setAttribute('aria-expanded', 'false');
+    styleButton.setAttribute('aria-label', 'Dashboard style: Report');
+    styleButton.innerHTML = '<span>Report</span><span aria-hidden="true">⌄</span>';
+    styleButton.value = 'report';
+    let styleHandle = null;
+    const styles = [
+      ['grafana-grid', 'Grid Tiles'], ['full', 'Full view'], ['report', 'Report'],
+      ['columns-2', '2 columns'], ['columns-3', '3 columns'],
+    ];
+    styleButton.onclick = () => {
+      if (styleHandle) {
+        styleHandle.close();
+        styleButton.focus();
+        return;
+      }
+      styleHandle = openMenu({
+        document,
+        trigger: styleButton,
+        menuClass: 'dash-file-menu dash-style-menu',
+        rows: styles.map(([value, label]) => ({
+          kind: 'item',
+          label,
+          meta: value === styleButton.value ? 'Current' : null,
+          onClick: () => {
+            styleButton.value = value;
+            styleButton.querySelector('span').textContent = label;
+            styleButton.setAttribute('aria-label', `Dashboard style: ${label}`);
+          },
+        })),
+        onClose: () => { styleHandle = null; },
+      });
+    };
+    styleWrap.append(styleButton);
     const dashboardTitle = document.createElement('div');
     dashboardTitle.className = 'dash-title';
     dashboardTitle.textContent = 'A deliberately long production operations Dashboard name';
@@ -62,14 +90,13 @@
     updated.className = 'dash-updated';
     updated.textContent = 'Updated 12:34';
     const refresh = document.createElement('button');
-    refresh.className = 'dash-btn dash-refresh';
+    refresh.className = 'editor-mode-btn dash-refresh';
     refresh.title = 'Re-run all tiles';
     refresh.setAttribute('aria-label', 'Refresh dashboard');
-    refresh.innerHTML = `
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-        <path d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8"></path>
-      </svg>
-      <span class="dash-refresh-label">Refresh</span>`;
+    refresh.textContent = 'Refresh';
+    const refreshControl = document.createElement('div');
+    refreshControl.className = 'editor-mode-switch dash-refresh-wrap';
+    refreshControl.append(refresh);
     const headerApp = {
       document,
       dom: {},
@@ -109,7 +136,7 @@
           style: styleWrap,
           title: dashboardTitle,
           updated,
-          refresh,
+          refresh: refreshControl,
         },
       }),
     );

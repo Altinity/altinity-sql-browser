@@ -113,6 +113,36 @@ describe('bootstrap', () => {
     expect(app.renderCurrentSurface).toHaveBeenCalled();
   });
 
+  it('mounts the initial surface before an authentication-losing version probe can replace it with Login', async () => {
+    let releaseWorkspace!: () => void;
+    const workspaceGate = new Promise<null>((resolve) => { releaseWorkspace = () => resolve(null); });
+    let signedIn = true;
+    let visible: 'none' | 'surface' | 'login' = 'none';
+    const app = fakeApp({
+      conn: { isSignedIn: () => signedIn },
+      loadWorkspaceOnBoot: vi.fn(() => workspaceGate),
+      renderCurrentSurface: vi.fn(() => { visible = 'surface'; }),
+      showLogin: vi.fn(() => { visible = 'login'; }),
+    });
+    app.catalog.loadVersion = vi.fn(async () => {
+      signedIn = false;
+      app.showLogin();
+    });
+
+    const boot = bootstrap(app, fakeEnv());
+    await Promise.resolve();
+    expect(app.catalog.loadVersion).not.toHaveBeenCalled();
+    releaseWorkspace();
+    await boot;
+    await vi.waitFor(() => expect(app.catalog.loadVersion).toHaveBeenCalledOnce());
+
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+    expect(app.showLogin).toHaveBeenCalledOnce();
+    expect(visible).toBe('login');
+    expect(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.catalog.loadVersion).mock.invocationCallOrder[0]);
+  });
+
   it('renders the app for a restored basic session (no token)', async () => {
     // A credentials session has no OAuth token; isSignedIn() carries it.
     const app = fakeApp({ token: null, conn: { isSignedIn: () => true } });

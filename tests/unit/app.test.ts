@@ -5187,6 +5187,12 @@ describe('unified /sql routing', () => {
     return { commit, release };
   };
 
+  const pickDashboardStyle = (app: App, label: string): void => {
+    qs<HTMLButtonElement>(app.root, '.dash-style-btn').click();
+    qsa<HTMLButtonElement>(document.body, '.dash-style-menu .fm-item')
+      .find((item) => item.querySelector('.fm-label')?.textContent === label)!.click();
+  };
+
   it('tracks mounted renderer lifetime independently from workspace loading', () => {
     const app = createApp(env());
     const before = app.captureSurfaceGeneration();
@@ -5638,9 +5644,7 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
     app.renderDashboard();
     const { commit, release } = deferNextCommit(app);
-    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
-    style.value = 'columns-2';
-    style.dispatchEvent(new Event('change', { bubbles: true }));
+    pickDashboardStyle(app, '2 columns');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({
@@ -5669,9 +5673,7 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
     app.renderDashboard();
     const { commit, release } = deferNextCommit(app);
-    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
-    style.value = 'columns-3';
-    style.dispatchEvent(new Event('change', { bubbles: true }));
+    pickDashboardStyle(app, '3 columns');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
@@ -5698,9 +5700,7 @@ describe('unified /sql routing', () => {
       new Promise((_resolve, reject) => {
         rejectCommit = () => reject(new Error('boom'));
       }));
-    const style = qs<HTMLSelectElement>(app.root, '.dash-layout-select');
-    style.value = 'columns-2';
-    style.dispatchEvent(new Event('change', { bubbles: true }));
+    pickDashboardStyle(app, '2 columns');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');

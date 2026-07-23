@@ -287,13 +287,25 @@ const render = (app: TestApp): Promise<void> => renderDashboard(app as unknown a
 // observe `commit` having been called; a macrotask flush lets every pending
 // microtask (the queue + the commit promise + its projection callback) run.
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-/** The flow preset switcher (2026-07-18: a `<select class="dash-layout-select">`
- *  in the header, replacing the old `.dash-seg-layout` button group). */
-const layoutSelect = (root: ParentNode | null): HTMLSelectElement => qs<HTMLSelectElement>(root, '.dash-layout-select');
+/** The File-style Dashboard style menu in the shared header row. */
+const layoutSelect = (root: ParentNode | null): HTMLButtonElement => qs<HTMLButtonElement>(root, '.dash-style-btn');
+const layoutOptions = (root: ParentNode | null): string[] => {
+  const trigger = layoutSelect(root);
+  trigger.click();
+  const labels = qsa(document.body, '.dash-style-menu .fm-label').map((node) => node.textContent || '');
+  trigger.click();
+  return labels;
+};
 const pickLayout = (root: ParentNode | null, value: string): void => {
-  const select = layoutSelect(root);
-  select.value = value;
-  select.dispatchEvent(new Event('change', { bubbles: true }));
+  const labels: Record<string, string> = {
+    'grafana-grid': 'Grid Tiles', full: 'Full view', report: 'Report',
+    'columns-2': '2 columns', 'columns-3': '3 columns',
+  };
+  layoutSelect(root).click();
+  const row = qsa<HTMLButtonElement>(document.body, '.dash-style-menu .fm-item')
+    .find((item) => item.querySelector('.fm-label')?.textContent === labels[value]);
+  if (!row) throw new Error(`Missing Dashboard style option: ${value}`);
+  row.click();
 };
 
 // #332: happy-dom's `getBoundingClientRect` always returns an all-zero rect,
@@ -1586,7 +1598,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(card.getAttribute('role')).toBe('group');
   });
 
-  it('reflects the active engine in the 5-option editable layout select and switches engines via change-layout', async () => {
+  it('reflects the active engine in the 5-option File-style menu and switches engines via change-layout', async () => {
     const { app, commit } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')],
@@ -1599,13 +1611,10 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // #321: 'full-width' removed; 'Grid Tiles'/'Full view' are the two new
     // grafana-grid-related entries (Full view is a transient render-mode
     // override, never an engine of its own).
-    expect([...select.options].map((o) => o.value)).toEqual(
-      ['grafana-grid', 'full', 'report', 'columns-2', 'columns-3'],
-    );
-    expect([...select.options].map((o) => o.textContent)).toEqual(
+    expect(layoutOptions(app.root)).toEqual(
       ['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns'],
     );
-    expect(select.getAttribute('aria-label')).toBe('Dashboard style');
+    expect(select.getAttribute('aria-label')).toBe('Dashboard style: 2 columns');
     expect(select.value).toBe('columns-2');
     // Picking "Grid Tiles" sends change-layout {type:'grafana-grid',version:1}.
     pickLayout(app.root, 'grafana-grid');
@@ -2648,14 +2657,13 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(handle.getAttribute('aria-label')).toBe('Resize');
   });
 
-  it('read-only view: the reduced selector only calls session.setGridRenderMode — never a command', async () => {
+  it('read-only view: the reduced style menu only calls session.setGridRenderMode — never a command', async () => {
     const detached = twoTilesGrid();
     const { app, commit } = modeApp({
       workspace: detached, mode: 'view',
     });
     await render(app);
-    const select = layoutSelect(app.root);
-    expect([...select.options].map((o) => o.value)).toEqual(['grafana-grid', 'full']);
+    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view']);
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
     for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
@@ -3896,9 +3904,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
     await render(app);
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
     expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
-    const select = layoutSelect(app.root);
-    expect(select).not.toBeNull();
-    expect([...select.options].map((o) => o.value)).toEqual(['grafana-grid', 'full']);
+    expect(layoutSelect(app.root)).not.toBeNull();
+    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view']);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -3997,8 +4004,21 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qs(header, '.dash-fav')).not.toBeNull();
     expect(qs(header, '.dash-file-btn')).not.toBeNull();
     expect(qs(header, '.dash-layout-wrap')).not.toBeNull();
+    const style = qs<HTMLButtonElement>(header, '.dash-style-btn');
+    expect(style.classList.contains('hd-file-btn')).toBe(true);
+    expect(style.textContent).toBe('2 columns');
+    expect(header.textContent).not.toContain('Style');
+    expect(header.querySelector('select')).toBeNull();
+    style.click();
+    const styleMenu = qs(document.body, '.dash-style-menu');
+    expect(styleMenu.classList.contains('file-menu')).toBe(true);
+    expect(qsa(styleMenu, '.fm-item .fm-label').map((item) => item.textContent))
+      .toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
+    style.click();
     expect(qs(header, '.dash-updated')).not.toBeNull();
-    expect(qs(header, '.dash-refresh')).not.toBeNull();
+    const refresh = qs(header, '.dash-refresh');
+    expect(refresh.classList.contains('editor-mode-btn')).toBe(true);
+    expect(refresh.parentElement?.classList.contains('editor-mode-switch')).toBe(true);
     expect(qs(header, '.conn-status')).toBeNull();
     expect(qs(header, '[title="View examples"]')).toBeNull();
     expect(qs(header, '[title^="Keyboard shortcuts"]')).toBeNull();
@@ -4249,7 +4269,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     });
     await render(app);
     expect(app.root.textContent).toContain('Workspace not found');
-    expect(app.root.querySelector('.dash-layout-select')).toBeNull();
+    expect(app.root.querySelector('.dash-style-btn')).toBeNull();
     expect(commit).not.toHaveBeenCalled();
   });
 

@@ -210,28 +210,45 @@ export function disposeDashboardSurface(): void {
   installedDashboardCleanup = null;
 }
 
-/**
- * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
- * override — was a `.dash-seg` segmented button group; restyled to match the
- * Workbench's panel-type picker, `renderPanelTypePicker` in panels.ts, so the
- * dashboard reuses the same "shared `.result-panel-select` chrome" convention
- * rather than its own). `options` are `[value,label,title?]`; `sync()` (called
- * on construction and after every layout change) reflects the current preset.
- */
+/** Build the Dashboard style picker with the same trigger and dropdown
+ * vocabulary as File. The trigger shows only the active style; `sync()`
+ * reflects session changes without adding a second header label. */
 type LayoutOption = [value: string, label: string, title?: string];
-function buildLayoutSelect(
+function buildLayoutMenu(
+  doc: Document,
   options: LayoutOption[], getActive: () => string, onPick: (value: string) => void, ariaLabel: string,
-): { el: HTMLSelectElement; sync: () => void } {
-  const el = h('select', {
-    class: 'result-panel-select dash-layout-select', 'aria-label': ariaLabel, title: ariaLabel,
-    onchange: (e: Event) => onPick((e.target as HTMLSelectElement).value),
-  }) as HTMLSelectElement;
-  for (const [value, label, title] of options) {
-    const opt = h('option', { value }, label) as HTMLOptionElement;
-    if (title) opt.title = title;
-    el.appendChild(opt);
-  }
-  const sync = (): void => { el.value = getActive(); };
+): { el: HTMLButtonElement; sync: () => void } {
+  const label = h('span');
+  const el = h('button', {
+    class: 'hd-file-btn dash-style-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    title: ariaLabel,
+  }, label, Icon.chevDown()) as HTMLButtonElement;
+  let handle: MenuHandle | null = null;
+  const sync = (): void => {
+    const active = getActive();
+    const option = options.find(([value]) => value === active);
+    label.textContent = option?.[1] ?? active;
+    el.value = active;
+    el.dataset.value = active;
+    el.setAttribute('aria-label', `${ariaLabel}: ${label.textContent}`);
+  };
+  const open = (): void => {
+    const active = getActive();
+    handle = openMenu({
+      document: doc,
+      trigger: el,
+      menuClass: 'dash-file-menu dash-style-menu',
+      rows: options.map(([value, optionLabel]) => ({
+        kind: 'item',
+        label: optionLabel,
+        meta: value === active ? 'Current' : null,
+        extraClass: 'dash-style-item',
+        onClick: () => onPick(value),
+      })),
+      onClose: () => { handle = null; },
+    });
+  };
+  el.onclick = () => { if (handle) { handle.close(); el.focus(); } else open(); };
   sync();
   return { el, sync };
 }
@@ -494,8 +511,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const tileCount = h('span', { class: 'dash-chip dash-fav' }, Icon.star(true), tileCountLabel);
   const updated = h('span', { class: 'dash-updated' });
   const refreshBtn = h('button', {
-    class: 'dash-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
-  }, Icon.refresh(), h('span', { class: 'dash-refresh-label' }, 'Refresh'));
+    class: 'editor-mode-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
+  }, 'Refresh');
+  const refreshControl = h('div', { class: 'editor-mode-switch dash-refresh-wrap' }, refreshBtn);
   refreshBtn.onclick = () => session.refresh();
   // ── Preset switcher (change-layout command) ───────────────────────────────
   // #321: the local mirror of the viewer session's TRANSIENT grid render-mode
@@ -504,13 +522,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // effect (Part D) whenever `sview.layout.renderMode` changes.
   let gridRenderMode: GridRenderMode = 'tiles';
   // 2026-07-18 owner override: moved off the filter toolbar and into the top
-  // header row (right after the tile-count chip) so the toolbar's whole width
-  // is available for filters; a compact select needs far less room than the
-  // four-button segmented control it replaces.
+  // header row (right after File) so the toolbar's whole width is available
+  // for filters; its File-style menu keeps the active layout visible without
+  // a second header label.
   // #321: "Full view" is a TRANSIENT runtime render-mode override over the
   // grafana-grid engine (never persisted) — it sits alongside "Grid Tiles" in
-  // the editable selector. A read-only view gets a REDUCED
-  // selector with only those two entries — layout editing (the flow presets,
+  // the editable menu. A read-only view gets a REDUCED
+  // menu with only those two entries — layout editing (the flow presets,
   // and the flow<->grid engine switch) stays an edit-mode-only affordance,
   // but the render-mode toggle is harmless to expose read-only since it never
   // persists anything.
@@ -528,16 +546,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const getActiveLayoutOption = (): string => (currentDoc.layout.type === 'grafana-grid'
     ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
     : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
-  const layoutSelect = buildLayoutSelect(
+  const layoutMenu = buildLayoutMenu(
+    doc,
     readOnly ? READONLY_LAYOUT_OPTIONS : EDITABLE_LAYOUT_OPTIONS,
     getActiveLayoutOption,
     (value) => {
-      // #321 read-only: the reduced selector offers ONLY 'grafana-grid'/'full'
+      // #321 read-only: the reduced menu offers ONLY 'grafana-grid'/'full'
       // — either choice is ONLY ever the transient render-mode override, NEVER
       // a command / persistence.
       if (readOnly) {
         session.setGridRenderMode(value === 'full' ? 'full' : 'tiles');
-        layoutSelect.sync();
+        layoutMenu.sync();
         return;
       }
       if (value === 'grafana-grid') {
@@ -548,7 +567,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         else if (currentDoc.layout.type !== 'grafana-grid') {
           runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
         }
-        layoutSelect.sync();
+        layoutMenu.sync();
         return;
       }
       if (value === 'full') {
@@ -560,7 +579,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
         }
         session.setGridRenderMode('full');
-        layoutSelect.sync();
+        layoutMenu.sync();
         return;
       }
       // A flow preset: clear any transient full-view override first (#321 —
@@ -572,19 +591,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       } else {
         runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: value as FlowPresetV1 } });
       }
-      layoutSelect.sync();
+      layoutMenu.sync();
     },
     'Dashboard style',
   );
-  const layoutWrap = h('div', { class: 'dash-layout-wrap' },
-    h('span', { class: 'dash-layout-label' }, 'Style'), layoutSelect.el);
-  // #321 BLOCKER fix: the reduced read-only selector (Grid Tiles / Full view)
+  const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
+  // #321 BLOCKER fix: the reduced read-only menu (Grid Tiles / Full view)
   // is a grafana-grid-only render-mode toggle — expose it read-only ONLY when
   // the persisted doc is grafana-grid. A read-only FLOW doc (report/columns-2/
-  // columns-3 — any pre-#321 shared doc) must hide the selector entirely: no
+  // columns-3 — any pre-#321 shared doc) must hide the menu entirely: no
   // engine switch is possible read-only, so this is decided once at build
   // time from the static `currentDoc.layout.type`. Editable mode is unchanged
-  // (always the full selector).
+  // (always the full menu).
   const showLayoutSelect = !readOnly || currentDoc.layout.type === 'grafana-grid';
 
   // Dashboard keeps the shared header's File word and placement. View exposes
@@ -598,7 +616,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         class: 'dash-title', title: currentDoc.title || state.libraryName.value,
       }, currentDoc.title || state.libraryName.value),
       updated,
-      refresh: refreshBtn,
+      refresh: refreshControl,
     },
   });
 
@@ -930,7 +948,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // commit below either confirms this (this command's own commit round-
     // trips its own edit) or a rebase corrects it once resolutions land.
     currentDoc = normalized;
-    layoutSelect.sync();
+    layoutMenu.sync();
     session.syncDocument(withImplicitFilters(normalized));
 
     pendingCommands.push(command);
@@ -1087,7 +1105,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (rebased.tiles.some((t) => !sessionTileIds().has(t.id))) needsRebuild = true;
     if (needsRebuild) { rebuildRouteFromCommitted(); return; }
     session.syncDocument(withImplicitFilters(rebased));
-    layoutSelect.sync();
+    layoutMenu.sync();
   }
 
   /** Tile ids the viewer session still tracks a runtime record for. */
@@ -2061,12 +2079,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     activeEngine = sview.layout.engine;
     // #321: keep the local render-mode mirror current from the published
     // grafana-grid layout view — the ONLY place this session-owned, transient
-    // state is read back into the UI. A change re-syncs the selector, flips
+    // state is read back into the UI. A change re-syncs the style menu, flips
     // the grid host's `is-full` class (the CSS vertical-resize-cursor hook),
     // and updates every built resize handle's accessible label.
     if (sview.layout.engine === 'grafana-grid' && sview.layout.renderMode !== gridRenderMode) {
       gridRenderMode = sview.layout.renderMode;
-      layoutSelect.sync();
+      layoutMenu.sync();
       grid.classList.toggle('is-full', gridRenderMode === 'full');
       for (const tileEl of tileEls.values()) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
     }

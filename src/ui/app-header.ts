@@ -14,7 +14,7 @@ export interface AppHeaderOptions {
     style: HTMLElement | null;
     title: HTMLElement;
     updated: HTMLElement;
-    refresh: HTMLButtonElement;
+    refresh: HTMLElement;
   };
   /** Missing-dashboard routes have no viewer session, but still own the
    * Dashboard-scoped File menu. */

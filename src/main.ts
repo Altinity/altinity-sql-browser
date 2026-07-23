@@ -185,9 +185,9 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
-    void app.catalog.loadVersion();
     await app.loadWorkspaceOnBoot();
     app.renderCurrentSurface();
+    void app.catalog.loadVersion();
   } else {
     app.showLogin(callbackError);
   }

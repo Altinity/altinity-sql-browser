@@ -1991,9 +1991,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     // requested or last-used persisted workspace.
     connect: async (input) => {
       await conn.connectBasic(input);
-      void app.catalog.loadVersion();
       await app.loadWorkspaceOnBoot();
       app.renderCurrentSurface();
+      void app.catalog.loadVersion();
     },
     share,
     copyResult,

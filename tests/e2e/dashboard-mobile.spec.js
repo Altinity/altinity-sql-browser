@@ -15,7 +15,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.getByRole('group', { name: 'Dashboard mode' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
-    await expect(page.locator('.dash-refresh-label')).toBeHidden();
+    await expect(page.locator('.dash-refresh-label')).toHaveCount(0);
     for (const selector of ['.dash-fav', '.dash-updated', '.dash-layout-wrap']) {
       await expect(page.locator(selector)).toBeHidden();
     }
@@ -281,14 +281,23 @@ test.describe('Dashboard mobile layout', () => {
     await expect(lastField).toBeInViewport();
   });
 
-  test('the Style picker follows File in the one-row Dashboard header', async ({ page }) => {
+  test('the File-style layout picker follows File in the one-row Dashboard header', async ({ page }) => {
     await openAt(page, 1100, 800);
-    const select = page.locator('.dash-layout-select');
-    await expect(select).toBeVisible();
-    await expect(select).toHaveClass(/result-panel-select/);
+    const style = page.locator('.dash-style-btn');
+    await expect(style).toBeVisible();
+    await expect(style).toHaveClass(/hd-file-btn/);
+    await expect(style).toHaveText(/Report/);
+    await expect(page.locator('.dashboard-app-header')).not.toContainText('Style');
     // No more four-button segmented control.
     await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
     await expect(page.locator('.dash-contextbar')).toHaveCount(0);
+    const controlSizes = await page.evaluate(() => {
+      const edit = [...document.querySelectorAll('.dashboard-mode-switch .editor-mode-btn')]
+        .find((button) => button.textContent === 'Edit').getBoundingClientRect();
+      const refresh = document.querySelector('.dash-refresh').getBoundingClientRect();
+      return { edit: [edit.width, edit.height], refresh: [refresh.width, refresh.height] };
+    });
+    expect(controlSizes.refresh).toEqual(controlSizes.edit);
 
     const geometry = await page.evaluate(() => {
       const header = document.querySelector('.dashboard-app-header');
@@ -313,7 +322,14 @@ test.describe('Dashboard mobile layout', () => {
       inHeaderNotToolbar: true, sameRow: true,
     });
 
-    await select.selectOption('columns-2');
-    expect(await select.inputValue()).toBe('columns-2');
+    await style.click();
+    const menu = page.locator('.dash-style-menu');
+    await expect(menu).toHaveClass(/file-menu/);
+    await expect(menu.locator('.fm-label')).toHaveText(
+      ['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns'],
+    );
+    await menu.getByRole('menuitem', { name: '2 columns' }).click();
+    await expect(style).toHaveText(/2 columns/);
+    expect(await style.evaluate((button) => button.value)).toBe('columns-2');
   });
 });
