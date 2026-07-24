@@ -9,8 +9,8 @@
 # (antalya + github.demo, each in demo:demo and Google-SSO modes).
 
 image:
-  # Pinned to the v0.6.3 release image for reproducibility.
-  tag: "0.6.3"
+  # Pinned to the v0.6.4 release image for reproducibility.
+  tag: "0.6.4"
 
 service:
   type: ClusterIP

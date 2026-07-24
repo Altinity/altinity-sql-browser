@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-24
+
 ### Fixed
 - Remove obsolete `iss` and `hd` login-link hints from SQL Browser URLs. IdP
   selection remains owned by the deployment configuration and session state.
