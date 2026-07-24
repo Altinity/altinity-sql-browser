@@ -454,7 +454,7 @@ describe('Import queries', () => {
     expect(app.actions.save).not.toHaveBeenCalled();
     expect(app.actions.setEditorMode).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'view' };
-    app.surfaceCommands = { surface: 'dashboard', generation: 0, refresh: vi.fn() };
+    app.surfaceCommands = { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle: vi.fn() };
     expect(handleKeydown(shortcut('Enter', { metaKey: true }), app)).toBeNull();
     expect(app.surfaceCommands.refresh).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'workspace', workspaceKey: app.state.workspaceKey };

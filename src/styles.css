@@ -434,6 +434,8 @@ body {
 }
 .fm-item:hover { background: var(--bg-hover); }
 .fm-icon { display: flex; width: 15px; justify-content: center; color: var(--fg-mute); flex-shrink: 0; }
+.fm-leading { display: inline-flex; flex-shrink: 0; }
+.fm-trailing { display: inline-flex; flex-shrink: 0; margin-left: auto; }
 .fm-label { flex: 1; white-space: nowrap; }
 .fm-meta { font-size: 10px; color: var(--fg-faint); font-family: var(--mono); flex-shrink: 0; }
 .fm-sep { height: 1px; background: var(--border-faint); margin: 5px 0; }
@@ -759,6 +761,12 @@ body {
 }
 .shortcut-keys { display: inline-flex; align-items: center; gap: 4px; }
 .shortcut-then { color: var(--fg-faint); font-size: 11px; }
+.shortcut-plus { color: var(--fg-faint); font-size: 11px; }
+.dash-style-key {
+  font-family: var(--mono); font-size: 11px; padding: 2px 6px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; color: var(--fg);
+  white-space: nowrap;
+}
 .modal-card .close-row {
   margin-top: 12px; display: flex; justify-content: flex-end;
 }

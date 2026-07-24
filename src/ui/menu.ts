@@ -37,7 +37,7 @@ import type { KeyboardOwner } from './app.types.js';
  *    focus target is the row's own first focusable descendant (an `<input>`/
  *    `<button>`/etc.), or the node itself when it can take focus directly. */
 export type MenuRow =
-  | { kind: 'item'; icon?: Node; label: string; meta?: string | null; onClick: () => void; extraClass?: string }
+  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; onClick: () => void; extraClass?: string }
   | { kind: 'section'; label: string }
   | { kind: 'sep' }
   | { kind: 'custom'; node: HTMLElement; focusable?: boolean };
@@ -108,8 +108,10 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       role: 'menuitem',
       onclick: () => { close(); row.onClick(); },
     },
+      row.leading ? h('span', { class: 'fm-leading' }, row.leading) : null,
       row.icon ? h('span', { class: 'fm-icon' }, row.icon) : null,
       h('span', { class: 'fm-label' }, row.label),
+      row.trailing ? h('span', { class: 'fm-trailing' }, row.trailing) : null,
       row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null);
     focusable.push(btn);
     return btn;

@@ -1339,6 +1339,47 @@ describe('setGridRenderMode / Full view (#321)', () => {
     if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
     expect(layout.renderMode).toBe('tiles');
   });
+
+  it('projects every Dashboard style without mutating or re-running the session document', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = gridDoc();
+    const before = JSON.stringify(document);
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
+    await session.start();
+    const executed = calls.length;
+
+    session.setDashboardStyle('full');
+    expect(session.state.value.style).toBe('full');
+    expect(session.state.value.layout.engine).toBe('grafana-grid');
+    session.setDashboardStyle('report');
+    expect(session.state.value.style).toBe('report');
+    expect(session.state.value.layout.engine).toBe('flow');
+    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.preset).toBe('report');
+    session.setDashboardStyle('columns-3');
+    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.columns).toBe(3);
+    session.setDashboardStyle('grafana-grid');
+    expect(session.state.value.layout.engine).toBe('grafana-grid');
+    expect(calls.length).toBe(executed);
+    expect(JSON.stringify(document)).toBe(before);
+  });
+
+  it('projects grid styles from a flow document, preserves flow placements, and ignores duplicate/destroyed choices', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('a', 'qa'), tile('b', 'qb')],
+      layout: { type: 'flow', version: 1, preset: 'columns-2', items: { a: { span: 2 } } },
+    });
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
+    await session.start();
+    session.setDashboardStyle('columns-3');
+    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.rows[0].tiles[0].span).toBe(2);
+    session.setDashboardStyle('full');
+    expect(session.state.value.layout.engine).toBe('grafana-grid');
+    session.setDashboardStyle('full'); // duplicate selection is a no-op
+    session.destroy();
+    session.setDashboardStyle('report');
+    expect(session.state.value.style).toBe('full');
+  });
 });
 
 describe('flow layout (mobile normalization)', () => {

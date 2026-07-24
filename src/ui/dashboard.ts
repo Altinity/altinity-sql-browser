@@ -63,7 +63,7 @@ import { createDashboardChartInteractionController } from './dashboard-chart-int
 import type { DashboardChartInteractionController } from './dashboard-chart-interaction.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
-  DashboardViewerSession, DashboardViewState, ViewerTileState, ViewerFilterState,
+  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerFilterState,
 } from '../dashboard/application/dashboard-viewer-session.js';
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
@@ -226,10 +226,14 @@ export function disposeDashboardSurface(): void {
 /** Build the Dashboard style picker with the same trigger and dropdown
  * vocabulary as File. The trigger shows only the active style; `sync()`
  * reflects session changes without adding a second header label. */
-type LayoutOption = [value: string, label: string, title?: string];
+type LayoutOption = [value: DashboardStyle, label: string, title: string, shortcut: string];
+function dashboardStyleKeyCaps(shortcut: string): HTMLElement {
+  const key = shortcut.toUpperCase();
+  return h('kbd', { class: 'dash-style-key' }, `G + ${key}`);
+}
 function buildLayoutMenu(
   doc: Document, onKeyboardOwnerChange: (owner: App['keyboardOwner']) => void,
-  options: LayoutOption[], getActive: () => string, onPick: (value: string) => void, ariaLabel: string,
+  options: LayoutOption[], getActive: () => string, onPick: (value: DashboardStyle) => void, ariaLabel: string,
 ): { el: HTMLButtonElement; sync: () => void } {
   const label = h('span');
   const el = h('button', {
@@ -251,10 +255,10 @@ function buildLayoutMenu(
       document: doc,
       trigger: el,
       menuClass: 'dash-file-menu dash-style-menu',
-      rows: options.map(([value, optionLabel]) => ({
+      rows: options.map(([value, optionLabel, _title, shortcut]) => ({
         kind: 'item',
         label: optionLabel,
-        meta: value === active ? 'Current' : null,
+        trailing: dashboardStyleKeyCaps(shortcut),
         extraClass: 'dash-style-item',
         onClick: () => onPick(value),
       })),
@@ -539,11 +543,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
     initialFilters: initialBag,
   });
-  // The global shortcut reaches this route-local port only while its renderer
-  // generation is current. It is cleared by both Dashboard cleanup and every
-  // application surface transition.
-  const commandPort = { surface: 'dashboard' as const, generation: surfaceGeneration, refresh: () => session.refresh() };
-  app.surfaceCommands = commandPort;
   let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
   const syncSessionDocument = (next: DashboardDocumentV1): void => {
     session.syncDocument(next);
@@ -577,29 +576,19 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // but the render-mode toggle is harmless to expose read-only since it never
   // persists anything.
   const EDITABLE_LAYOUT_OPTIONS: LayoutOption[] = [
-    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights'],
-    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved'],
-    ['report', 'Report', 'One centered, taller tile per row'],
-    ['columns-2', '2 columns', 'Arrange tiles in two columns'],
-    ['columns-3', '3 columns', 'Arrange tiles in three columns'],
-  ];
-  const READONLY_LAYOUT_OPTIONS: LayoutOption[] = [
-    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights'],
-    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved'],
+    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights', 'G'],
+    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved', 'F'],
+    ['report', 'Report', 'One centered, taller tile per row', 'R'],
+    ['columns-2', '2 columns', 'Arrange tiles in two columns', '2'],
+    ['columns-3', '3 columns', 'Arrange tiles in three columns', '3'],
   ];
   const getActiveLayoutOption = (): string => (currentDoc.layout.type === 'grafana-grid'
     ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
     : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
-  const layoutMenu = buildLayoutMenu(
-    doc, keyboardOwnerChannel(app),
-    readOnly ? READONLY_LAYOUT_OPTIONS : EDITABLE_LAYOUT_OPTIONS,
-    getActiveLayoutOption,
-    (value) => {
-      // #321 read-only: the reduced menu offers ONLY 'grafana-grid'/'full'
-      // — either choice is ONLY ever the transient render-mode override, NEVER
-      // a command / persistence.
+  let layoutMenu: { el: HTMLButtonElement; sync: () => void };
+  const selectLayout = (value: DashboardStyle): void => {
       if (readOnly) {
-        session.setGridRenderMode(value === 'full' ? 'full' : 'tiles');
+        session.setDashboardStyle(value as DashboardStyle);
         layoutMenu.sync();
         return;
       }
@@ -636,18 +625,25 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: value as FlowPresetV1 } });
       }
       layoutMenu.sync();
-    },
+  };
+  layoutMenu = buildLayoutMenu(
+    doc, keyboardOwnerChannel(app),
+    EDITABLE_LAYOUT_OPTIONS,
+    () => readOnly ? session.state.value.style : getActiveLayoutOption(),
+    selectLayout,
     'Dashboard style',
   );
+  // The global shortcut reaches this route-local port only while its renderer
+  // generation is current. It is cleared by both Dashboard cleanup and every
+  // application surface transition.
+  const commandPort = {
+    surface: 'dashboard' as const,
+    generation: surfaceGeneration,
+    refresh: () => session.refresh(),
+    setDashboardStyle: selectLayout,
+  };
+  app.surfaceCommands = commandPort;
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
-  // #321 BLOCKER fix: the reduced read-only menu (Grid Tiles / Full view)
-  // is a grafana-grid-only render-mode toggle — expose it read-only ONLY when
-  // the persisted doc is grafana-grid. A read-only FLOW doc (report/columns-2/
-  // columns-3 — any pre-#321 shared doc) must hide the menu entirely: no
-  // engine switch is possible read-only, so this is decided once at build
-  // time from the static `currentDoc.layout.type`. Editable mode is unchanged
-  // (always the full menu).
-  const showLayoutSelect = !readOnly || currentDoc.layout.type === 'grafana-grid';
 
   // Dashboard keeps the shared header's File word and placement. View exposes
   // the safe Export row only; edit additionally exposes Import.
@@ -2178,13 +2174,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
-    // #321: keep the local render-mode mirror current from the published
-    // grafana-grid layout view — the ONLY place this session-owned, transient
-    // state is read back into the UI. A change re-syncs the style menu, flips
-    // the grid host's `is-full` class (the CSS vertical-resize-cursor hook),
-    // and updates every built resize handle's accessible label.
-    if (sview.layout.engine === 'grafana-grid' && sview.layout.renderMode !== gridRenderMode) {
-      gridRenderMode = sview.layout.renderMode;
+    // Keep the local render-mode mirror current from the published session
+    // layout. View mode can now project flow styles too, so leaving a Full
+    // grid must also clear the grid host's vertical-only resize affordance.
+    const nextGridRenderMode = sview.layout.engine === 'grafana-grid' ? sview.layout.renderMode : 'tiles';
+    if (nextGridRenderMode !== gridRenderMode) {
+      gridRenderMode = nextGridRenderMode;
       layoutMenu.sync();
       grid.classList.toggle('is-full', gridRenderMode === 'full');
       for (const tileEl of tileEls.values()) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
@@ -2198,7 +2193,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   });
 
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-    showLayoutSelect ? layoutWrap : null,
+    layoutWrap,
     tileCount,
     tileSearch,
     timeFilterHost,

@@ -71,9 +71,9 @@ describe('openShortcuts', () => {
     expect(text).toContain('Shift-click');
   });
   it('renders Dashboard-only help from the shared catalog and supplies dialog accessibility', () => {
-    const refresh = vi.fn();
+    const refresh = vi.fn(); const setDashboardStyle = vi.fn();
     const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
-      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle } });
     const invoke = document.createElement('button'); document.body.appendChild(invoke); invoke.focus();
     const opened = openShortcuts(app)!;
     const card = document.querySelector<HTMLElement>('.modal-card')!;
@@ -81,6 +81,11 @@ describe('openShortcuts', () => {
     expect(card.getAttribute('aria-modal')).toBe('true');
     expect(card.textContent).toContain('Refresh all tiles');
     expect(card.textContent).toContain('Open SQL Browser');
+    const dashboardRows = [...card.querySelectorAll<HTMLElement>('.shortcut-section[aria-label="Dashboard"] .row')];
+    expect(dashboardRows.map((row) => row.querySelector('.label')?.textContent))
+      .toEqual(['Refresh all tiles', 'View mode', 'Edit mode', 'Style']);
+    expect(dashboardRows.at(-1)?.textContent).toContain('G/F/R/2/3');
+    expect(card.textContent).not.toContain('Grid Tiles');
     expect(card.textContent).not.toContain('Run query');
     expect(card.textContent).not.toContain('Schema tree');
     expect(card.querySelectorAll('kbd').length).toBeGreaterThan(0);
@@ -122,13 +127,19 @@ describe('handleKeydown', () => {
   });
 
   it('dispatches Dashboard refresh and mode navigation only for the current viewer generation', () => {
-    const refresh = vi.fn();
+    const refresh = vi.fn(); const setDashboardStyle = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' },
       captureSurfaceGeneration: () => 7,
-      surfaceCommands: { surface: 'dashboard', generation: 7, refresh },
+      surfaceCommands: { surface: 'dashboard', generation: 7, refresh, setDashboardStyle },
       navigateSqlRoute: vi.fn(async () => {}) });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
     expect(refresh).toHaveBeenCalledOnce();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('dashboardGridTiles');
+    expect(setDashboardStyle).toHaveBeenLastCalledWith('grafana-grid');
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: '2' }), app)).toBe('dashboardColumns2');
+    expect(setDashboardStyle).toHaveBeenLastCalledWith('columns-2');
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'v' }), app)).toBe('dashboardView');
     expect(app.navigateSqlRoute).toHaveBeenCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' }, 'replace');
@@ -142,8 +153,24 @@ describe('handleKeydown', () => {
     const editing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' } });
     expect(handleKeydown(ev({ key: 'g' }), editing)).toBe('chord');
     expect(handleKeydown(ev({ key: 'e' }), editing)).toBeNull();
-    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh };
+    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh, setDashboardStyle };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+  });
+
+  it('selects every Dashboard style through its G chord', () => {
+    const setDashboardStyle = vi.fn();
+    const app = makeApp({
+      sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle },
+    });
+    for (const [key, style, result] of [
+      ['g', 'grafana-grid', 'dashboardGridTiles'], ['f', 'full', 'dashboardFullView'],
+      ['r', 'report', 'dashboardReport'], ['2', 'columns-2', 'dashboardColumns2'], ['3', 'columns-3', 'dashboardColumns3'],
+    ] as const) {
+      expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+      expect(handleKeydown(ev({ key }), app)).toBe(result);
+      expect(setDashboardStyle).toHaveBeenLastCalledWith(style);
+    }
   });
 
   it('routes the G chord by current surface, and resets it on mismatch, timeout, blur and stale generation', () => {
@@ -176,9 +203,9 @@ describe('handleKeydown', () => {
   });
 
   it('keeps surface actions behind keyboard-owning overlays and ignores plain keys while typing', () => {
-    const refresh = vi.fn();
+    const refresh = vi.fn(); const setDashboardStyle = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
-      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle } });
     app.keyboardOwner = { kind: 'popover' };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
     app.keyboardOwner = null;

@@ -2719,18 +2719,22 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(handle.getAttribute('aria-label')).toBe('Resize');
   });
 
-  it('read-only view: the reduced style menu only calls session.setGridRenderMode — never a command', async () => {
+  it('read-only view switches every style session-locally — never a command', async () => {
     const detached = twoTilesGrid();
     const { app, commit } = modeApp({
       workspace: detached, mode: 'view',
     });
     await render(app);
-    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view']);
+    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
     for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
       expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
     }
+    expect(commit).not.toHaveBeenCalled();
+    pickLayout(app.root, 'columns-3');
+    expect(layoutSelect(app.root).value).toBe('columns-3');
+    expect(qs(app.root, '.dash-gg-grid')).toBeNull();
     expect(commit).not.toHaveBeenCalled();
     pickLayout(app.root, 'grafana-grid');
     expect(layoutSelect(app.root).value).toBe('grafana-grid');
@@ -3991,7 +3995,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
     expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
     expect(layoutSelect(app.root)).not.toBeNull();
-    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view']);
+    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -4104,6 +4108,10 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(styleMenu.classList.contains('file-menu')).toBe(true);
     expect(qsa(styleMenu, '.fm-item .fm-label').map((item) => item.textContent))
       .toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
+    expect(qsa(styleMenu, '.dash-style-item .fm-trailing').map((item) => item.textContent))
+      .toEqual(['G + G', 'G + F', 'G + R', 'G + 2', 'G + 3']);
+    expect(qsa(styleMenu, '.dash-style-item .fm-leading')).toHaveLength(0);
+    expect(styleMenu.textContent).not.toContain('Current');
     style.click();
     expect(qs(app.root, '.dash-updated')).not.toBeNull();
     const refresh = qs(app.root, '.dash-refresh');
