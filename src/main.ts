@@ -18,7 +18,7 @@ import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
-import { parseSqlRoute } from './core/sql-route.js';
+import { normalizeSqlRouteSearch, parseSqlRoute } from './core/sql-route.js';
 import { rolePreviewView } from './core/result-choice.js';
 import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
@@ -63,8 +63,21 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   const loc = env.location;
   const ss = env.sessionStorage;
   const hist = env.history;
-  let dash = parseSqlRoute(loc.search).surface === 'dashboard';
+  // Canonicalize retired route parameters before showing either the login or
+  // workbench surface. `iss`/`hd` must not look like active IdP selectors:
+  // actual selection is config/session-owned.
+  const initialParams = new URLSearchParams(loc.search);
+  const hasRetiredLoginHint = initialParams.has('iss') || initialParams.has('hd');
+  const normalizedRoute = hasRetiredLoginHint
+    ? normalizeSqlRouteSearch(loc.search)
+    : { route: parseSqlRoute(loc.search), search: loc.search };
+  if (normalizedRoute.search !== loc.search) {
+    hist.replaceState(null, '', loc.origin + loc.pathname + normalizedRoute.search + loc.hash);
+    app.syncSqlRoute(normalizedRoute.search);
+  }
+  let dash = normalizedRoute.route.surface === 'dashboard';
   const u = new URL(loc.href);
+  u.search = normalizedRoute.search;
   const code = u.searchParams.get('code');
   const stateParam = u.searchParams.get('state');
   const expectedState = ss.getItem('oauth_state');
@@ -118,7 +131,14 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       }
     }
     const qs = u.searchParams.toString();
-    const cleanedSearch = qs ? '?' + qs : '';
+    const callbackSearch = qs ? '?' + qs : '';
+    // A callback can restore return-route state saved by an older version.
+    // Canonicalize retired hints again so they cannot reappear on a failed
+    // sign-in, which renders the login screen without a workspace rewrite.
+    const callbackParams = new URLSearchParams(callbackSearch);
+    const cleanedSearch = callbackParams.has('iss') || callbackParams.has('hd')
+      ? normalizeSqlRouteSearch(callbackSearch).search
+      : callbackSearch;
     hist.replaceState(null, '', loc.origin + loc.pathname + cleanedSearch + loc.hash);
     app.syncSqlRoute(cleanedSearch);
     dash = parseSqlRoute(cleanedSearch).surface === 'dashboard';

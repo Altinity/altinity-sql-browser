@@ -478,4 +478,38 @@ describe('bootstrap', () => {
     expect(url).toContain('keep=1');
     expect(url).not.toContain('code=');
   });
+
+  it('removes retired issuer and hosted-domain hints before rendering the login screen', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?iss=https%3A%2F%2Faccounts.google.com&hd=altinity.com&ws=ops',
+        origin: 'https://ch', pathname: '/sql',
+        search: '?iss=https%3A%2F%2Faccounts.google.com&hd=altinity.com&ws=ops', hash: '',
+      }),
+    });
+    await bootstrap(app, env);
+    expect(env.history.replaceState).toHaveBeenCalledWith(null, '', 'https://ch/sql?ws=ops');
+    expect(app.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
+    expect(app.showLogin).toHaveBeenCalled();
+  });
+
+  it('removes retired login hints restored by an OAuth error callback', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?error=access_denied&state=st', origin: 'https://ch',
+        pathname: '/sql', search: '?error=access_denied&state=st', hash: '',
+      }),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_return_route', JSON.stringify({
+      state: 'st', search: '?iss=https%3A%2F%2Faccounts.google.com&hd=altinity.com&ws=ops',
+    }));
+    await bootstrap(app, env);
+    expect(env.history.replaceState).toHaveBeenCalledWith(null, '', 'https://ch/sql?ws=ops');
+    expect(app.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
+    expect(env.sessionStorage.getItem('oauth_return_route')).toBeNull();
+    expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: access_denied');
+  });
 });
