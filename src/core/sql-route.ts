@@ -1,6 +1,8 @@
 // Pure parser/builder for the single `/sql` application route (#407).
 // The caller supplies `location.search`; this module owns only `ws`, `surface`,
 // and `mode`, leaving OAuth callback and other application parameters intact.
+// `iss`/`hd` are retired legacy login-link hints: IdP selection comes from
+// config.json/session state, never from URL-supplied issuer/domain values.
 
 export type SqlRoute =
   | { surface: 'workspace'; workspaceKey: string | null }
@@ -32,6 +34,8 @@ export function buildSqlRouteSearch(route: SqlRoute, currentSearch = ''): string
   // Retired Dashboard snapshot route state (#407); never carry it forward.
   params.delete('st');
   params.delete('dash');
+  params.delete('iss');
+  params.delete('hd');
   if (route.workspaceKey !== null) params.set('ws', route.workspaceKey);
   if (route.surface === 'dashboard') {
     params.set('surface', 'dashboard');

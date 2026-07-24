@@ -54,6 +54,11 @@ describe('buildSqlRouteSearch', () => {
     expect(normalizeSqlRouteSearch('?ws=x&st=token&dash=old&keep=yes').search)
       .toBe('?keep=yes&ws=x');
   });
+
+  it('drops the retired issuer and hosted-domain login-link hints', () => {
+    expect(normalizeSqlRouteSearch('?iss=https%3A%2F%2Faccounts.google.com&hd=altinity.com&ws=x').search)
+      .toBe('?ws=x');
+  });
 });
 
 describe('routeForWorkspace', () => {
