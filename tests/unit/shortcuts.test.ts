@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
+import { SHORTCUT_CATALOG, openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
 import type { ShortcutKeydownEvent } from '../../src/ui/shortcuts.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -13,6 +13,7 @@ describe('openShortcuts', () => {
     expect(document.querySelector('.modal-backdrop')).not.toBeNull();
     expect(openShortcuts(app)).toBeNull(); // already open
     r!.close();
+    r!.close(); // idempotent lifecycle handle
     expect(app.state.shortcutsOpen.value).toBe(false);
     expect(document.querySelector('.modal-backdrop')).toBeNull();
   });
@@ -103,6 +104,13 @@ describe('handleKeydown', () => {
   const ev = (over: Partial<ShortcutKeydownEvent> = {}): ShortcutKeydownEvent =>
     ({ preventDefault: vi.fn(), key: '', metaKey: false, ctrlKey: false, shiftKey: false, target: {}, ...over });
 
+  it('gives every application-dispatched catalog entry executable metadata', () => {
+    for (const command of SHORTCUT_CATALOG.filter((entry) => entry.dispatch === 'application')) {
+      expect(command.run, command.id).toBeTypeOf('function');
+      expect(!!command.matches || !!command.sequence, command.id).toBe(true);
+    }
+  });
+
   it('does not dispatch hidden Workbench shortcuts on a Dashboard route', () => {
     const app = makeApp({
       sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
@@ -131,6 +139,9 @@ describe('handleKeydown', () => {
     const viewing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' } });
     expect(handleKeydown(ev({ key: 'g' }), viewing)).toBe('chord');
     expect(handleKeydown(ev({ key: 'v' }), viewing)).toBeNull();
+    const editing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' } });
+    expect(handleKeydown(ev({ key: 'g' }), editing)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'e' }), editing)).toBeNull();
     app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
   });
@@ -173,6 +184,9 @@ describe('handleKeydown', () => {
     app.keyboardOwner = null;
     expect(handleKeydown(ev({ key: 'g', target: { tagName: 'SELECT' } }), app)).toBeNull();
     expect(handleKeydown(ev({ key: 'g', target: { getAttribute: () => 'textbox' } }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g', target: {
+      closest: (selector) => selector.includes('[role="textbox"]') ? document.body : null,
+    } }), app)).toBeNull();
     app.keyboardOwner = { kind: 'modal' };
     expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
   });

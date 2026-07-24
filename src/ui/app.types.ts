@@ -159,6 +159,12 @@ export interface AppDom {
 export interface KeyboardOwner {
   kind: 'modal' | 'menu' | 'popover';
 }
+export type KeyboardOwnerRelease = () => void;
+
+export interface ShortcutDialogHandle {
+  backdrop: HTMLElement;
+  close(): void;
+}
 
 /** The live ClickHouse auth context every query call site reads/mutates —
  * a structural alias of `application/connection-session.ts`'s own
@@ -229,7 +235,12 @@ export interface App {
   document: Document;
   /** Set by shared overlay primitives for the duration of their open lifecycle. */
   keyboardOwner: KeyboardOwner | null;
+  /** Acquire exclusive application-keyboard ownership. The returned idempotent
+   * release removes only this acquisition, preserving any owner below it. */
+  acquireKeyboardOwner(kind: KeyboardOwner['kind']): KeyboardOwnerRelease;
   resetShortcutChord(): void;
+  shortcutDialog: ShortcutDialogHandle | null;
+  closeShortcutDialog(): void;
 
   /** The auth + config + ClickHouse connection lifecycle (#276 Phase 2) —
    *  OAuth PKCE login/refresh, Basic probing, and IdP config resolution,

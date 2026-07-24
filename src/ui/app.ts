@@ -63,7 +63,7 @@ import { renderLogin } from './login.js';
 import { openShortcuts, resetShortcutChord } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
-import type { App, ActionsRegistry, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
+import type { App, ActionsRegistry, KeyboardOwner, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
@@ -238,6 +238,28 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.workspaceRouteStatus = 'ready';
   app.keyboardOwner = null;
   app.resetShortcutChord = () => resetShortcutChord(app);
+  const keyboardOwners: KeyboardOwner[] = [];
+  app.acquireKeyboardOwner = (kind) => {
+    const owner = { kind };
+    keyboardOwners.push(owner);
+    app.keyboardOwner = owner;
+    resetShortcutChord(app);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const index = keyboardOwners.indexOf(owner);
+      if (index >= 0) keyboardOwners.splice(index, 1);
+      app.keyboardOwner = keyboardOwners.at(-1) ?? null;
+      resetShortcutChord(app);
+    };
+  };
+  app.shortcutDialog = null;
+  app.closeShortcutDialog = () => {
+    const dialog = app.shortcutDialog;
+    app.shortcutDialog = null;
+    dialog?.close();
+  };
   app.surfaceCommands = null;
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
@@ -383,7 +405,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // root would already throw inside login.ts's own `app.root.replaceChildren`
   // either way).
   const renderLoginApp = (msg?: string): void => {
-    app.keyboardOwner = null;
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     renderLogin(app as App & { root: Element }, msg);
   };
@@ -420,7 +442,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // workbench session stays reusable after destroy(): the next renderApp
   // re-attaches its shell effects.
   app.signOut = () => {
-    app.keyboardOwner = null;
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     workbench.destroy();
     // Plain abort (no clearResult settle) — the login render replaces the
@@ -1269,21 +1291,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   function anchoredPopover(
     node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
   ): { close: () => void } {
+    const releaseKeyboard = app.acquireKeyboardOwner('popover');
     const close = (): void => {
       anchoredPopoverClosers.delete(close);
       doc.removeEventListener('keydown', onKey, true);
       doc.removeEventListener('mousedown', onOutside, true);
       if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
-      app.keyboardOwner = null;
-      resetShortcutChord(app);
+      releaseKeyboard();
     };
     const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
     const onOutside = (e: MouseEvent): void => {
       if (app.dom[refKey] && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
     };
     app.dom[refKey] = node;
-    app.keyboardOwner = { kind: 'popover' };
-    resetShortcutChord(app);
     const r = anchorEl.getBoundingClientRect();
     // Right-align under the button.
     const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 }) as { top: number; right: number };
@@ -1550,6 +1570,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   let disposeWorkbenchMount: (() => void) | null = null;
   const ignoreExternalWorkspaceChange = (): void => {};
   app.renderDashboard = () => {
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;
@@ -1561,6 +1582,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return renderDashboard(app);
   };
   const disposeCurrentSurface = (): void => {
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;
@@ -1947,6 +1969,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.navigateSqlRoute = async (route, method) => {
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
     writeRoute(route, method);
@@ -1962,6 +1985,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.handleSqlPopState = async () => {
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     const previousKey = app.sqlRoute.workspaceKey;
     routeSearch = loc.search;
@@ -2051,7 +2075,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     openNodeDetail,
     insertCreate: async (target) => { await insertCreate(target); toEditorOnMobile(); },
     openCreateInNewTab: (target, name) => openCreateInNewTab(target, name),
-    openShortcuts: () => openShortcuts(app),
+    openShortcuts: () => {
+      const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
+      if (dialog) app.shortcutDialog = dialog;
+    },
     openDashboard,
     // #302: Dashboard import/export invoked from the Dashboard page's own File
     // menu (and still from the Workbench during the transition). Export is a
@@ -2070,6 +2097,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.renderApp = () => {
+    app.closeShortcutDialog();
     resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;

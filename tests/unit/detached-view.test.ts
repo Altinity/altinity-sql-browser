@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { signal } from '@preact/signals-core';
 import { openInDetachedTab } from '../../src/ui/detached-view.js';
 import type { DetachedViewApp, DetachedWindowLike, MountCtx } from '../../src/ui/detached-view.js';
+import { handleKeydown } from '../../src/ui/shortcuts.js';
+import { makeApp } from '../helpers/fake-app.js';
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
 
@@ -155,6 +157,18 @@ describe('openInDetachedTab — overlay fallback', () => {
     expect(document.body.contains(overlay)).toBe(true); // panel click doesn't close
     qs(overlay, '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
+  });
+
+  it('owns the application keyboard until the fallback overlay closes', () => {
+    const app = makeApp({ openWindow: () => null });
+    const view = openInDetachedTab(app, { title: 'Widget', mode: 'graph', mount: () => {} });
+    expect(app.keyboardOwner?.kind).toBe('modal');
+    expect(handleKeydown({
+      key: 'Enter', metaKey: true, preventDefault: vi.fn(), target: document.body,
+    }, app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    view.close();
+    expect(app.keyboardOwner).toBeNull();
   });
 
   it('does not append closeBtn anywhere itself — a mount() that ignores it gets no ✕ at all', () => {

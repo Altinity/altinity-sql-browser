@@ -135,6 +135,7 @@ export interface DashboardApp {
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
+  acquireKeyboardOwner: App['acquireKeyboardOwner'];
   resetShortcutChord: App['resetShortcutChord'];
   renderDashboard(): void;
   captureSurfaceGeneration(): number;
@@ -197,6 +198,14 @@ let installedDashboardChartInteraction: DashboardChartInteractionController | nu
 let installedDashboardCleanup: (() => void) | null = null;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
+function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
+  let release: (() => void) | null = null;
+  return (owner) => {
+    release?.();
+    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
+  };
+}
+
 export function disposeDashboardSurface(): void {
   if (installedGridResizeListener) {
     installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
@@ -408,6 +417,7 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
   }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
 
   let handle: MenuHandle | null = null;
+  const onKeyboardOwnerChange = keyboardOwnerChannel(app);
 
   const open = (): void => {
     const rows: MenuRow[] = [
@@ -427,7 +437,7 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
     handle = openMenu({
       document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
       onClose: () => { handle = null; },
-      onKeyboardOwnerChange: (owner) => { app.keyboardOwner = owner; app.resetShortcutChord(); },
+      onKeyboardOwnerChange,
     });
   };
 
@@ -581,7 +591,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
     : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
   const layoutMenu = buildLayoutMenu(
-    doc, (owner) => { app.keyboardOwner = owner; app.resetShortcutChord(); },
+    doc, keyboardOwnerChannel(app),
     readOnly ? READONLY_LAYOUT_OPTIONS : EDITABLE_LAYOUT_OPTIONS,
     getActiveLayoutOption,
     (value) => {
@@ -890,7 +900,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
       { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange,
-        onKeyboardOwnerChange: (owner) => { app.keyboardOwner = owner; app.resetShortcutChord(); } },
+        onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
     ordinaryFilterHost.replaceChildren(bar.ordinaryEl);

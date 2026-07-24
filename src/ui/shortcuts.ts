@@ -7,6 +7,7 @@ import type { SqlRoute } from '../core/sql-route.js';
 
 type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
 type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
+type ShortcutDispatch = 'application' | 'editor';
 type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'g-v' | 'g-e' | 'question' | 'escape';
 
 export interface ShortcutDefinition {
@@ -15,6 +16,8 @@ export interface ShortcutDefinition {
   section: Section;
   surface: ShortcutSurface;
   key: KeyName;
+  dispatch: ShortcutDispatch;
+  sequence?: readonly [string, string];
   available?: (app: ShortcutsApp) => boolean;
   matches?: (e: ShortcutKeydownEvent, app: ShortcutsApp) => boolean;
   run?: (e: ShortcutKeydownEvent, app: ShortcutsApp) => string | null;
@@ -23,22 +26,22 @@ export interface ShortcutDefinition {
 /** The single shortcut catalogue. Help never documents a command unavailable to
  * the dispatcher because both paths resolve this list against the same app. */
 export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
-  { id: 'open-dashboard', label: 'Open Dashboard', section: 'application', surface: 'workspace', key: 'g-d' },
-  { id: 'open-workbench', label: 'Open SQL Browser', section: 'application', surface: 'dashboard', key: 'g-w' },
-  { id: 'run-query', label: 'Run query', section: 'workspace', surface: 'workspace', key: 'mod-enter', available: (a) => a.activeTab().editorMode !== 'spec', matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.actions.run(); return 'run'; } },
-  { id: 'format-document', label: 'Format active document', section: 'workspace', surface: 'workspace', key: 'mod-shift-enter', matches: (e) => modKey(e) && e.key === 'Enter' && !!e.shiftKey, run: (e, a) => { e.preventDefault(); if (a.activeTab().editorMode === 'spec') { a.actions.formatSpec(); return 'formatSpec'; } a.actions.formatQuery(); return 'formatQuery'; } },
-  { id: 'save-query', label: 'Save query', section: 'workspace', surface: 'workspace', key: 'mod-s', matches: (e) => modKey(e) && !e.shiftKey && e.key.toLowerCase() === 's', run: (e, a) => { e.preventDefault(); a.actions.save(); return 'save'; } },
-  { id: 'share-query', label: 'Share query', section: 'workspace', surface: 'workspace', key: 'mod-shift-s', available: (a) => a.activeTab().editorMode !== 'spec', matches: (e) => modKey(e) && !!e.shiftKey && e.key.toLowerCase() === 's', run: (e, a) => { e.preventDefault(); a.actions.share(); return 'share'; } },
-  { id: 'sql-mode', label: 'SQL editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-1', matches: (e) => modKey(e) && !!e.altKey && e.key === '1', run: (e, a) => { e.preventDefault(); a.actions.setEditorMode('sql'); return 'sqlMode'; } },
-  { id: 'spec-mode', label: 'Spec editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-2', matches: (e) => modKey(e) && !!e.altKey && e.key === '2', run: (e, a) => { e.preventDefault(); a.actions.setEditorMode('spec'); return 'specMode'; } },
-  { id: 'undo', label: 'Undo', section: 'workspace', surface: 'workspace', key: 'mod-z' },
-  { id: 'redo', label: 'Redo', section: 'workspace', surface: 'workspace', key: 'mod-shift-z' },
-  { id: 'open-reference', label: 'Open reference for symbol', section: 'workspace', surface: 'workspace', key: 'f1' },
-  { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', available: (a) => validDashboardPort(a), matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.surfaceCommands!.refresh(); return 'dashboardRefresh'; } },
-  { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v' },
-  { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e' },
-  { id: 'open-help', label: 'Show this dialog', section: 'general', surface: 'all', key: 'question' },
-  { id: 'close-overlay', label: 'Close dialog', section: 'general', surface: 'all', key: 'escape' },
+  { id: 'open-dashboard', label: 'Open Dashboard', section: 'application', surface: 'workspace', key: 'g-d', dispatch: 'application', sequence: ['g', 'd'], run: (e, a) => { e.preventDefault(); void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'edit' }, 'push'); return 'openDashboard'; } },
+  { id: 'open-workbench', label: 'Open SQL Browser', section: 'application', surface: 'dashboard', key: 'g-w', dispatch: 'application', sequence: ['g', 'w'], run: (e, a) => { e.preventDefault(); void a.navigateSqlRoute?.({ surface: 'workspace', workspaceKey: a.state.workspaceKey }, 'push'); return 'openWorkbench'; } },
+  { id: 'run-query', label: 'Run query', section: 'workspace', surface: 'workspace', key: 'mod-enter', dispatch: 'application', available: (a) => a.activeTab().editorMode !== 'spec', matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.actions.run(); return 'run'; } },
+  { id: 'format-document', label: 'Format active document', section: 'workspace', surface: 'workspace', key: 'mod-shift-enter', dispatch: 'application', matches: (e) => modKey(e) && e.key === 'Enter' && !!e.shiftKey, run: (e, a) => { e.preventDefault(); if (a.activeTab().editorMode === 'spec') { a.actions.formatSpec(); return 'formatSpec'; } a.actions.formatQuery(); return 'formatQuery'; } },
+  { id: 'save-query', label: 'Save query', section: 'workspace', surface: 'workspace', key: 'mod-s', dispatch: 'application', matches: (e) => modKey(e) && !e.shiftKey && e.key.toLowerCase() === 's', run: (e, a) => { e.preventDefault(); a.actions.save(); return 'save'; } },
+  { id: 'share-query', label: 'Share query', section: 'workspace', surface: 'workspace', key: 'mod-shift-s', dispatch: 'application', available: (a) => a.activeTab().editorMode !== 'spec', matches: (e) => modKey(e) && !!e.shiftKey && e.key.toLowerCase() === 's', run: (e, a) => { e.preventDefault(); a.actions.share(); return 'share'; } },
+  { id: 'sql-mode', label: 'SQL editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-1', dispatch: 'application', matches: (e) => modKey(e) && !!e.altKey && e.key === '1', run: (e, a) => { e.preventDefault(); a.actions.setEditorMode('sql'); return 'sqlMode'; } },
+  { id: 'spec-mode', label: 'Spec editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-2', dispatch: 'application', matches: (e) => modKey(e) && !!e.altKey && e.key === '2', run: (e, a) => { e.preventDefault(); a.actions.setEditorMode('spec'); return 'specMode'; } },
+  { id: 'undo', label: 'Undo', section: 'workspace', surface: 'workspace', key: 'mod-z', dispatch: 'editor' },
+  { id: 'redo', label: 'Redo', section: 'workspace', surface: 'workspace', key: 'mod-shift-z', dispatch: 'editor' },
+  { id: 'open-reference', label: 'Open reference for symbol', section: 'workspace', surface: 'workspace', key: 'f1', dispatch: 'editor' },
+  { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', dispatch: 'application', available: (a) => validDashboardPort(a), matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.surfaceCommands!.refresh(); return 'dashboardRefresh'; } },
+  { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v', dispatch: 'application', sequence: ['g', 'v'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'view') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'view' }, 'replace'); return 'dashboardView'; } },
+  { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e', dispatch: 'application', sequence: ['g', 'e'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'edit') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'edit' }, 'replace'); return 'dashboardEdit'; } },
+  { id: 'open-help', label: 'Show this dialog', section: 'general', surface: 'all', key: 'question', dispatch: 'application', matches: (e) => e.key === '?' && !modKey(e) && !isTypingTarget(e.target), run: (e, a) => { e.preventDefault(); a.actions.openShortcuts(); return 'shortcuts'; } },
+  { id: 'close-overlay', label: 'Close dialog', section: 'general', surface: 'all', key: 'escape', dispatch: 'application', matches: (e) => e.key === 'Escape', run: (e, a) => { if (a.sqlRoute.surface === 'workspace' && a.closeDocPane?.()) { e.preventDefault(); return 'close-doc-pane'; } if (a.sqlRoute.surface === 'workspace' && a.state.running.value) { e.preventDefault(); a.actions.cancel(); return 'cancel'; } return null; } },
 ];
 
 const GESTURES = [
@@ -60,6 +63,7 @@ export interface ShortcutsApp {
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
   surfaceCommands?: SurfaceCommandPort | null;
   keyboardOwner?: KeyboardOwner | null;
+  acquireKeyboardOwner(kind: KeyboardOwner['kind']): () => void;
   captureSurfaceGeneration?: () => number;
   navigateSqlRoute?: (route: SqlRoute, method: 'push' | 'replace') => Promise<void>;
   closeDocPane?: () => boolean;
@@ -101,20 +105,24 @@ const sectionNames: Record<Section, string> = {
 };
 
 /** Open accessible, surface-specific help. */
-export function openShortcuts(app: ShortcutsApp): { backdrop: HTMLElement; close: () => void } | null {
+export function openShortcuts(app: ShortcutsApp, onClose?: () => void): { backdrop: HTMLElement; close: () => void } | null {
   const doc = app.document || document;
   if (app.state.shortcutsOpen.value) return null;
   app.state.shortcutsOpen.value = true;
-  app.keyboardOwner = { kind: 'modal' };
+  const releaseKeyboard = app.acquireKeyboardOwner('modal');
   resetShortcutChord(app);
   let previousFocus = doc.activeElement as HTMLElement | null;
+  let closed = false;
   const headingId = 'shortcuts-heading';
   const close = (): void => {
+    if (closed) return;
+    closed = true;
     app.state.shortcutsOpen.value = false;
-    if (app.keyboardOwner?.kind === 'modal') app.keyboardOwner = null;
+    releaseKeyboard();
     resetShortcutChord(app);
     detachBackdrop(); backdrop.remove(); doc.removeEventListener('keydown', onKeydown);
     previousFocus?.focus?.(); previousFocus = null;
+    onClose?.();
   };
   const onKeydown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') { event.preventDefault(); close(); return; }
@@ -170,7 +178,7 @@ export interface ShortcutKeydownEvent {
 function isTypingTarget(target?: ShortcutEventTarget | null): boolean {
   if (!target) return false;
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName || '') || !!target.isContentEditable
-    || target.getAttribute?.('role') === 'textbox' || !!target.closest?.('.cm-editor, .cm-content, [contenteditable]');
+    || target.getAttribute?.('role') === 'textbox' || !!target.closest?.('.cm-editor, .cm-content, [contenteditable], [role="textbox"]');
 }
 function ownsKeyboard(app: ShortcutsApp): boolean { return !!app.keyboardOwner; }
 function ready(app: ShortcutsApp): boolean {
@@ -202,40 +210,19 @@ function consumeChord(e: ShortcutKeydownEvent, app: ShortcutsApp): string | null
   if (!stillCurrent) return null;
   const key = e.key.toLowerCase();
   if (key === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
-  const target = app.sqlRoute.surface === 'workspace' ? 'd' : 'w';
-  if (key !== target && !(app.sqlRoute.surface === 'dashboard' && (key === 'v' || key === 'e'))) return null;
-  e.preventDefault();
-  if (app.sqlRoute.surface === 'dashboard' && (key === 'v' || key === 'e')) {
-    const mode = key === 'v' ? 'view' : 'edit';
-    if (app.sqlRoute.mode === mode) return null;
-    void app.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode }, 'replace');
-    return mode === 'view' ? 'dashboardView' : 'dashboardEdit';
-  }
-  if (app.sqlRoute.surface === 'workspace') {
-    void app.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit' }, 'push');
-    return 'openDashboard';
-  }
-  void app.navigateSqlRoute?.({ surface: 'workspace', workspaceKey: app.state.workspaceKey }, 'push');
-  return 'openWorkbench';
+  const command = visibleDefinitions(app).find((definition) => definition.sequence?.[0] === 'g'
+    && definition.sequence[1] === key);
+  return command?.run ? command.run(e, app) : null;
 }
 
 /** Global dispatcher. Commands are gated by current route, identity and surface. */
 export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): string | null {
   if (e.defaultPrevented) return null;
   if (!ready(app)) { resetShortcutChord(app); return null; }
-  const mod = modKey(e); const surface = app.sqlRoute.surface;
+  const mod = modKey(e);
   if (ownsKeyboard(app)) { resetShortcutChord(app); return null; }
   if (!app.conn.isSignedIn()) { resetShortcutChord(app); return null; }
-  if (e.key === 'Escape') {
-    resetShortcutChord(app);
-    if (surface === 'workspace' && app.closeDocPane?.()) { e.preventDefault(); return 'close-doc-pane'; }
-    if (surface === 'workspace' && app.state.running.value) { e.preventDefault(); app.actions.cancel(); return 'cancel'; }
-    return null;
-  }
-  if (e.key === '?' && !mod) {
-    if (isTypingTarget(e.target)) return null;
-    e.preventDefault(); app.actions.openShortcuts(); return 'shortcuts';
-  }
+  if (e.key === 'Escape') resetShortcutChord(app);
   const command = visibleDefinitions(app).find((definition) => definition.matches?.(e, app));
   if (command?.run) return command.run(e, app);
   if (mod && e.key.toLowerCase() === 'a') {
@@ -246,7 +233,9 @@ export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): strin
   }
   if (!mod && !isTypingTarget(e.target)) {
     const result = consumeChord(e, app); if (result !== undefined) return result;
-    if (e.key.toLowerCase() === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
+    if (visibleDefinitions(app).some((definition) => definition.sequence?.[0] === e.key.toLowerCase())) {
+      beginChord(app); e.preventDefault(); return 'chord';
+    }
   }
   return null;
 }
