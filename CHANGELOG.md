@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-24
+
 ### Fixed
 - Keep Grafana-grid KPI hover chrome control-only: saved-query titles and
   descriptions no longer overlay metric values while moving or editing a tile.
