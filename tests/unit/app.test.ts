@@ -5652,6 +5652,30 @@ describe('unified /sql routing', () => {
     expect(qs(app.root, '.workspace-loading')).toBeNull();
   });
 
+  it('keeps imported favorite queries visible after visiting an empty Dashboard', async () => {
+    const imported = savedQueryFixture({
+      id: 'imported-favorite', name: 'Imported favorite', sql: 'SELECT 1', favorite: true,
+    });
+    const app = createApp(env());
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'imported-workspace', key: 'imported_workspace',
+      name: 'Imported workspace', queries: [imported], dashboard: null,
+    };
+    await seedActiveWorkspace(app, workspace);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: workspace.key };
+    app.renderApp();
+
+    await app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: workspace.key, mode: 'edit',
+    }, 'push');
+    expect(qs(app.root, '.dash-create')).not.toBeNull();
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: workspace.key }, 'push');
+
+    expect(app.state.savedQueries).toEqual([imported]);
+    expect(qs(app.root, '.saved-row .name').textContent).toBe('Imported favorite');
+  });
+
   it('a Dashboard edit commit that settles after switching to View refreshes View only', async () => {
     const app = createApp(env());
     const workspace = dashboardWorkspace();

@@ -248,15 +248,24 @@ describe('planImportQueries', () => {
     expect(plan.sourceDashboardId).toBeUndefined();
   });
 
-  it('imports a favorite panel query without inventing Dashboard membership', () => {
+  it('imports a favorite panel query as a Dashboard tile', () => {
+    const ws = workspace({ queries: [panelQuery('a')], dashboard: null });
+    const favorite = panelQuery('b');
+    favorite.spec.favorite = true;
+    const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
+    expect(plan.candidateWorkspace?.queries.find((query) => query.id === 'b')?.spec.favorite).toBe(true);
+    expect(plan.candidateWorkspace?.dashboard).toMatchObject({
+      title: 'Dashboard', tiles: [{ queryId: 'b' }],
+    });
+  });
+
+  it('adds a favorite panel query to an existing Dashboard', () => {
     const dash = dashboardDoc({ tiles: [] });
     const ws = workspace({ queries: [panelQuery('a')], dashboard: dash });
     const favorite = panelQuery('b');
     favorite.spec.favorite = true;
     const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
-    expect(plan.candidateWorkspace?.queries.find((query) => query.id === 'b')?.spec.favorite).toBe(true);
-    expect(plan.candidateWorkspace?.dashboard?.tiles).toEqual([]);
-    expect(plan.candidateWorkspace?.dashboard).toBe(dash);
+    expect(plan.candidateWorkspace?.dashboard?.tiles).toEqual([{ id: 'id-1', queryId: 'b' }]);
   });
 
   it('overwrites the existing entry in place on a replace decision', () => {
@@ -398,6 +407,15 @@ describe('planReplaceWorkspace', () => {
     expect(candidate.queries[0].spec.name).toBe('existing p1'); // use-existing kept existing content
     expect(candidate.dashboard).toBeNull();
     expect(plan.sourceDashboardId).toBeUndefined();
+  });
+
+  it('creates Dashboard membership for favorite panel queries in a query-only workspace import', () => {
+    const favorite = panelQuery('p1');
+    favorite.spec.favorite = true;
+    const plan = planReplaceWorkspace(workspace(), bundle({ queries: [favorite] }), undefined, [], counter());
+    expect(plan.candidateWorkspace?.dashboard).toMatchObject({
+      title: 'Dashboard', tiles: [{ queryId: 'p1' }],
+    });
   });
 
   it('replaces queries AND Dashboard atomically when a source Dashboard is selected, including standalone queries', () => {

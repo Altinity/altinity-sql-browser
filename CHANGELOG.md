@@ -15,6 +15,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 - Keep the shared connection host visible after the server-version probe,
   restore Dashboard filters to their initial default-derived active state, and
   retain Dashboard time-range announcements when no ordinary filters exist.
+- Restore Dashboard tiles for favorited panel queries imported through either
+  query-only or query-only workspace imports, so the imported report opens
+  instead of incorrectly offering only “Create dashboard”.
 
 ### Added
 - **Unified SQL Browser and Dashboard chrome.** Both surfaces now share the
