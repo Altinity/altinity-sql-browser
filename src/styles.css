@@ -305,7 +305,7 @@ body {
   color: #fff; font-weight: 700; font-size: 12px;
   flex-shrink: 0;
 }
-.logo-name { font-size: 13px; font-weight: 650; color: var(--fg); white-space: nowrap; }
+.logo-name { font-size: 13px; font-weight: 600; color: var(--fg); }
 .env-chip {
   font-size: 11px; color: var(--fg-faint);
   padding: 2px 6px;
