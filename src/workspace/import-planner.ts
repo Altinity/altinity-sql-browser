@@ -23,6 +23,8 @@ import { dashboardDependencyQueryIds } from '../dashboard/model/bundle-order.js'
 import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
+import { toggleTileMembership } from '../dashboard/application/tile-membership.js';
+import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
@@ -296,6 +298,44 @@ function replaceIncomingQueries(
   return out;
 }
 
+/** Restore the Workbench star's Dashboard-membership contract for imported
+ * entries. A portable query-only import carries the compatibility
+ * `spec.favorite` flag, while the live application represents a favorited
+ * panel query as a Dashboard tile. A replacement also removes obsolete tiles
+ * when the replacement is no longer a favorited panel.
+ *
+ * Only copied/replaced incoming entries participate: an entry skipped by the
+ * import or resolved to an existing local query must not change the current
+ * Dashboard merely because the bundle happened to mark it as a favorite. */
+function addImportedFavoriteTiles(
+  dashboard: DashboardDocumentV1 | null,
+  incoming: readonly SavedQueryV2[], mapping: IdMapping,
+  queries: readonly SavedQueryV2[], genId: WorkspaceIdGen,
+): DashboardDocumentV1 | null {
+  const queriesById = new Map(queries.map((query) => [query.id, query] as const));
+  const original = dashboard;
+  let next = dashboard;
+  for (const source of incoming) {
+    const resolution = mapping[source.id];
+    if (!resolution || resolution.action === 'skip' || resolution.action === 'use-existing') continue;
+    // Every copy/replace resolution contributes its target to `queries` above.
+    const imported = queriesById.get(resolution.targetId as string) as SavedQueryV2;
+    const shouldBeMember = imported.spec.favorite === true && queryDashboardRole(imported) === 'panel';
+    const isMember = next?.tiles.some((tile) => tile.queryId === imported.id) === true;
+    // A newly copied, unfavorited query cannot have a tile. A replacement must
+    // also reconcile removal, so stale tile/filter references do not survive.
+    if ((resolution.action === 'replace' || shouldBeMember) && isMember !== shouldBeMember) {
+      next = toggleTileMembership(next, imported, shouldBeMember, genId);
+    }
+  }
+  // Tile changes are one Dashboard document mutation regardless of how many
+  // imported queries participate. A newly minted Dashboard starts at revision
+  // 1; only an existing document advances its revision.
+  return original && next !== original
+    ? { ...(next as DashboardDocumentV1), revision: original.revision + 1 }
+    : next;
+}
+
 // --- Plans --------------------------------------------------------------------
 
 export interface PortableBundleImportPlan {
@@ -346,8 +386,9 @@ function invalidatedDashboardPlan(
   );
 }
 
-/** Queries-only import (Dashboard untouched): merge the bundle's queries into
- *  the workspace's query catalog per `decisions`, and validate the result. */
+/** Queries-only import: merge the bundle's queries into the workspace's query
+ * catalog per `decisions`. Imported favorited panels restore their Dashboard
+ * tile membership. */
 export function planImportQueries(
   workspace: StoredWorkspaceV2, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
@@ -355,7 +396,10 @@ export function planImportQueries(
 ): PortableBundleImportPlan {
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = mergeIncomingQueries(bundle.queries, workspace.queries, mapping);
-  const candidate = importQueries(workspace, nextQueries);
+  const dashboard = addImportedFavoriteTiles(
+    workspace.dashboard, bundle.queries, mapping, nextQueries, genId,
+  );
+  const candidate = importQueries({ ...workspace, dashboard }, nextQueries);
   return validatedPlan(candidate, mapping, options);
 }
 
@@ -413,6 +457,11 @@ export function planReplaceWorkspace(
     dashboard = rewritten.dashboard;
   }
 
-  const candidate = replaceWorkspaceContents(workspace, { queries: nextQueries, dashboard });
+  const candidate = replaceWorkspaceContents(workspace, {
+    queries: nextQueries,
+    dashboard: sourceDashboardId === undefined
+      ? addImportedFavoriteTiles(dashboard, bundle.queries, mapping, nextQueries, genId)
+      : dashboard,
+  });
   return validatedPlan(candidate, mapping, options, sourceDashboardId);
 }
