@@ -33,7 +33,7 @@ import type { FilterBarApp } from './filter-bar.js';
 import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
 import { panelExecution } from '../core/panel-execution.js';
 import { renderFilterPreview } from './filter-preview.js';
-import type { AppDom, App } from './app.types.js';
+import type { AppDom, App, KeyboardOwner } from './app.types.js';
 import type { PanelResolution } from '../core/panel-cfg.js';
 import type { ResultSource } from '../core/query-source.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
@@ -180,6 +180,7 @@ export interface ResultsApp {
   updateSaveBtn(): void;
   updateEditorModeUi?(): void;
   openWindow?(url: string, target: string): DetachedWindowLike | null;
+  acquireKeyboardOwner(kind: KeyboardOwner['kind']): () => void;
 }
 
 /** The Chart.js instance shape a readonly panel's `setChart` ever receives —
@@ -471,15 +472,19 @@ export interface RowsViewerEntry {
  */
 export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLElement {
   const doc = app.document;
+  const releaseKeyboard = app.acquireKeyboardOwner('modal');
   let backdrop: HTMLElement;
   let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
   let detachBackdrop: () => void;
-  const onKey = (ev: KeyboardEvent): void => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) { ev.preventDefault(); close(); }
+  };
   function close(): void {
     cancelDrawerDrag();
     detachBackdrop();
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
+    releaseKeyboard();
   }
   const n = entry.rows.length;
   const { panel } = buildDrawerChrome(doc, {
@@ -1118,16 +1123,20 @@ function isTopDrawer(doc: Document, el: Element | undefined): boolean {
 
 export function openCellDetail(app: ResultsApp, name: string, type: string, value: unknown, targetDoc?: Document): HTMLElement {
   const doc = targetDoc || app.document;
+  const releaseKeyboard = doc === app.document ? app.acquireKeyboardOwner('modal') : () => {};
   const text = value == null ? '' : String(value);
   let backdrop: HTMLElement;
   let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
   let detachBackdrop: () => void;
-  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) { e.preventDefault(); close(); }
+  };
   function close(): void {
     cancelDrawerDrag();
     detachBackdrop();
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
+    releaseKeyboard();
   }
 
   // withDocument(doc, ...) so every element (including the ones built later,

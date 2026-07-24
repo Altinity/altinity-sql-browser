@@ -24,6 +24,7 @@ import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnosti
 import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
+import type { SurfaceCommandPort } from './shortcuts.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -154,6 +155,17 @@ export interface AppDom {
   varStripDeferHooked?: boolean;
 }
 
+/** The currently open UI primitive that has exclusive keyboard handling. */
+export interface KeyboardOwner {
+  kind: 'modal' | 'menu' | 'popover';
+}
+export type KeyboardOwnerRelease = () => void;
+
+export interface ShortcutDialogHandle {
+  backdrop: HTMLElement;
+  close(): void;
+}
+
 /** The live ClickHouse auth context every query call site reads/mutates —
  * a structural alias of `application/connection-session.ts`'s own
  * `SessionChCtx` (the session is the one place that constructs and mutates
@@ -221,6 +233,14 @@ export interface App {
   dom: AppDom;
   root: Element | null;
   document: Document;
+  /** Set by shared overlay primitives for the duration of their open lifecycle. */
+  keyboardOwner: KeyboardOwner | null;
+  /** Acquire exclusive application-keyboard ownership. The returned idempotent
+   * release removes only this acquisition, preserving any owner below it. */
+  acquireKeyboardOwner(kind: KeyboardOwner['kind']): KeyboardOwnerRelease;
+  resetShortcutChord(): void;
+  shortcutDialog: ShortcutDialogHandle | null;
+  closeShortcutDialog(): void;
 
   /** The auth + config + ClickHouse connection lifecycle (#276 Phase 2) —
    *  OAuth PKCE login/refresh, Basic probing, and IdP config resolution,
@@ -429,6 +449,9 @@ export interface App {
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV2 | null;
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  /** Route-local commands registered by the mounted surface. They are cleared
+   * before every transition, so a disposed Dashboard viewer cannot be called. */
+  surfaceCommands: SurfaceCommandPort | null;
   /** Renderer lifetime, distinct from workspace-load ordering. Any surface
    * teardown/remount advances it so obsolete async callbacks can finish their
    * durable work without settling against a replacement renderer. */

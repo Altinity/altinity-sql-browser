@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { openShortcuts, handleKeydown } from '../../src/ui/shortcuts.js';
+import { SHORTCUT_CATALOG, openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
 import type { ShortcutKeydownEvent } from '../../src/ui/shortcuts.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -13,6 +13,7 @@ describe('openShortcuts', () => {
     expect(document.querySelector('.modal-backdrop')).not.toBeNull();
     expect(openShortcuts(app)).toBeNull(); // already open
     r!.close();
+    r!.close(); // idempotent lifecycle handle
     expect(app.state.shortcutsOpen.value).toBe(false);
     expect(document.querySelector('.modal-backdrop')).toBeNull();
   });
@@ -69,11 +70,46 @@ describe('openShortcuts', () => {
     expect(text).toContain('Double-click');
     expect(text).toContain('Shift-click');
   });
+  it('renders Dashboard-only help from the shared catalog and supplies dialog accessibility', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+    const invoke = document.createElement('button'); document.body.appendChild(invoke); invoke.focus();
+    const opened = openShortcuts(app)!;
+    const card = document.querySelector<HTMLElement>('.modal-card')!;
+    expect(card.getAttribute('role')).toBe('dialog');
+    expect(card.getAttribute('aria-modal')).toBe('true');
+    expect(card.textContent).toContain('Refresh all tiles');
+    expect(card.textContent).toContain('Open SQL Browser');
+    expect(card.textContent).not.toContain('Run query');
+    expect(card.textContent).not.toContain('Schema tree');
+    expect(card.querySelectorAll('kbd').length).toBeGreaterThan(0);
+    const close = card.querySelector<HTMLButtonElement>('.close-btn')!;
+    close.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    close.remove();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    opened.close();
+    expect(document.activeElement).toBe(invoke);
+  });
+  it('omits Dashboard refresh when no viewer session is mounted', () => {
+    const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' }, surfaceCommands: null });
+    openShortcuts(app);
+    expect(document.querySelector('.modal-card')!.textContent).not.toContain('Refresh all tiles');
+  });
 });
 
 describe('handleKeydown', () => {
   const ev = (over: Partial<ShortcutKeydownEvent> = {}): ShortcutKeydownEvent =>
     ({ preventDefault: vi.fn(), key: '', metaKey: false, ctrlKey: false, shiftKey: false, target: {}, ...over });
+
+  it('gives every application-dispatched catalog entry executable metadata', () => {
+    for (const command of SHORTCUT_CATALOG.filter((entry) => entry.dispatch === 'application')) {
+      expect(command.run, command.id).toBeTypeOf('function');
+      expect(!!command.matches || !!command.sequence, command.id).toBe(true);
+    }
+  });
 
   it('does not dispatch hidden Workbench shortcuts on a Dashboard route', () => {
     const app = makeApp({
@@ -83,6 +119,76 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
     expect(app.actions.save).not.toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled();
+  });
+
+  it('dispatches Dashboard refresh and mode navigation only for the current viewer generation', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' },
+      captureSurfaceGeneration: () => 7,
+      surfaceCommands: { surface: 'dashboard', generation: 7, refresh },
+      navigateSqlRoute: vi.fn(async () => {}) });
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'v' }), app)).toBe('dashboardView');
+    expect(app.navigateSqlRoute).toHaveBeenCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' }, 'replace');
+    (app.sqlRoute as { mode?: 'view' | 'edit' }).mode = 'view';
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'e' }), app)).toBe('dashboardEdit');
+    expect(app.navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'replace');
+    const viewing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' } });
+    expect(handleKeydown(ev({ key: 'g' }), viewing)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'v' }), viewing)).toBeNull();
+    const editing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' } });
+    expect(handleKeydown(ev({ key: 'g' }), editing)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'e' }), editing)).toBeNull();
+    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh };
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+  });
+
+  it('routes the G chord by current surface, and resets it on mismatch, timeout, blur and stale generation', () => {
+    vi.useFakeTimers();
+    const navigateSqlRoute = vi.fn(async () => {});
+    let generation = 1;
+    const app = makeApp({ navigateSqlRoute, captureSurfaceGeneration: () => generation });
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    // A repeated G deliberately restarts the chord's expiration window.
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    generation = 2;
+    expect(handleKeydown(ev({ key: 'd' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'd' }), app)).toBe('openDashboard');
+    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'push');
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' };
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBe('openWorkbench');
+    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'workspace', workspaceKey: 'sql_library' }, 'push');
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    window.dispatchEvent(new Event('blur'));
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    vi.advanceTimersByTime(1500);
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBeNull();
+    resetShortcutChord(app);
+    vi.useRealTimers();
+  });
+
+  it('keeps surface actions behind keyboard-owning overlays and ignores plain keys while typing', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+    app.keyboardOwner = { kind: 'popover' };
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+    app.keyboardOwner = null;
+    expect(handleKeydown(ev({ key: 'g', target: { tagName: 'SELECT' } }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g', target: { getAttribute: () => 'textbox' } }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g', target: {
+      closest: (selector) => selector.includes('[role="textbox"]') ? document.body : null,
+    } }), app)).toBeNull();
+    app.keyboardOwner = { kind: 'modal' };
+    expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
   });
 
   it('fails closed for every Workbench action shortcut while the route is loading', () => {
@@ -120,10 +226,21 @@ describe('handleKeydown', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
-  it('⌘Enter runs (even when signed out)', () => {
-    const app = makeApp({ conn: { isSignedIn: () => false } });
+  it('runs a SQL document when signed in', () => {
+    const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
-    expect(app.actions.run).toHaveBeenCalled();
+    expect(app.actions.run).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed for every application action when signed out', () => {
+    const app = makeApp({ conn: { isSignedIn: () => false } });
+    for (const event of [
+      { metaKey: true, key: 'Enter' }, { metaKey: true, key: 's' },
+      { metaKey: true, shiftKey: true, key: 'Enter' }, { key: 'g' }, { key: '?' },
+    ]) expect(handleKeydown(ev(event), app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(app.actions.save).not.toHaveBeenCalled();
+    expect(app.actions.formatQuery).not.toHaveBeenCalled();
   });
   it('a key the editor already consumed (defaultPrevented) never triggers a global action', () => {
     const app = makeApp();

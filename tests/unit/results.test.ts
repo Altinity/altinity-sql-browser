@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   renderResults, renderJson, renderTable, openCellDetail, openRowsViewer, expandDataPane,
 } from '../../src/ui/results.js';
+import { handleKeydown } from '../../src/ui/shortcuts.js';
+import type { ShortcutKeydownEvent } from '../../src/ui/shortcuts.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry,
 } from '../../src/ui/results.js';
@@ -1578,12 +1580,33 @@ describe('multiquery script grid (#83)', () => {
   it('Escape closes only the topmost stacked drawer (cell first, then the rows pane)', () => {
     const app = makeApp();
     openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
+    expect(app.keyboardOwner?.kind).toBe('modal');
     click(qs(document, '.cd-backdrop tbody td.cell')); // opens a stacked cell drawer
     expect(qsa(document, '.cd-backdrop')).toHaveLength(2);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(qsa(document, '.cd-backdrop')).toHaveLength(1); // only the cell drawer closed
+    expect(app.keyboardOwner?.kind).toBe('modal'); // rows viewer still owns the keyboard
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(qsa(document, '.cd-backdrop')).toHaveLength(0); // now the rows pane
+    expect(app.keyboardOwner).toBeNull();
+  });
+
+  it('blocks application shortcuts and consumes Escape before a running-query cancel', () => {
+    const app = makeApp();
+    app.state.running.value = true;
+    openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
+    expect(handleKeydown({
+      key: 'Enter', metaKey: true, preventDefault: vi.fn(), target: document.body,
+    }, app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    const dispatchGlobal = (event: KeyboardEvent): void => {
+      handleKeydown(event as unknown as ShortcutKeydownEvent, app);
+    };
+    document.addEventListener('keydown', dispatchGlobal);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    document.removeEventListener('keydown', dispatchGlobal);
+    expect(qsa(document, '.cd-backdrop')).toHaveLength(0);
+    expect(app.actions.cancel).not.toHaveBeenCalled();
   });
 
   it('toolbar shows live elapsed + Cancel while running, with a running footer', () => {

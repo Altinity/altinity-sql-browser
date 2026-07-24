@@ -9,6 +9,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- Surface-aware keyboard shortcuts for SQL Browser and Dashboard (#417). The
+  shared, platform-aware shortcut catalog now drives both help and dispatch;
+  Dashboard gains refresh, View/Edit, and `G` navigation commands while stale
+  viewer sessions, loading routes, stacked overlays, and nested text inputs
+  fail closed. Contextual help is torn down on route and authentication
+  transitions so it cannot survive onto another surface or Login.
+
 ## [0.6.4] - 2026-07-24
 
 ### Fixed

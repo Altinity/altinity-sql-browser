@@ -49,6 +49,13 @@ import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnosti
 const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'queries';
 const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): string => diagnostics[0]?.message || fallback;
+function keyboardOwnerChannel(app: Pick<App, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
+  let release: (() => void) | null = null;
+  return (owner) => {
+    release?.();
+    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
+  };
+}
 
 /** Build the header File button + editable workspace title; returns the nodes
  *  to splice into the app header (after the connection chip). */
@@ -170,7 +177,8 @@ export function openFileMenu(app: App): void {
     { kind: 'custom', node: countRow },
   ];
 
-  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows });
+  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows,
+    onKeyboardOwnerChange: keyboardOwnerChannel(app) });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
   // own) — they're display:none inputs `.click()`-triggered by the Import
   // queries / Import workspace items above. Parent them to the mounted menu
@@ -727,6 +735,7 @@ export function disposeFileMenuOverlays(app: Pick<App, 'document' | 'dom'>): voi
  *  `openConfirm`/the conflict dialog/the dashboard picker all build on. */
 function openDialogShell(app: App, title: string, content: unknown[], extraCardClass?: string): DialogHandle {
   const doc = app.document;
+  const releaseKeyboard = app.acquireKeyboardOwner('modal');
   let backdrop: HTMLElement;
   const close = (): void => {
     doc.removeEventListener('keydown', onKey, true);
@@ -734,6 +743,7 @@ function openDialogShell(app: App, title: string, content: unknown[], extraCardC
     dialogClosers.delete(backdrop);
     backdrop.remove();
     if (app.dom.fileDialog === backdrop) app.dom.fileDialog = undefined;
+    releaseKeyboard();
   };
   const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
   const card = h('div', { class: extraCardClass ? `fm-dialog-card ${extraCardClass}` : 'fm-dialog-card' },

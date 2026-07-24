@@ -133,6 +133,10 @@ export interface DashboardApp {
   currentWorkspace: StoredWorkspaceV2 | null;
   sqlRoute: SqlRoute;
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
+  surfaceCommands: App['surfaceCommands'];
+  keyboardOwner: App['keyboardOwner'];
+  acquireKeyboardOwner: App['acquireKeyboardOwner'];
+  resetShortcutChord: App['resetShortcutChord'];
   renderDashboard(): void;
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
@@ -194,6 +198,14 @@ let installedDashboardChartInteraction: DashboardChartInteractionController | nu
 let installedDashboardCleanup: (() => void) | null = null;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
+function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
+  let release: (() => void) | null = null;
+  return (owner) => {
+    release?.();
+    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
+  };
+}
+
 export function disposeDashboardSurface(): void {
   if (installedGridResizeListener) {
     installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
@@ -216,7 +228,7 @@ export function disposeDashboardSurface(): void {
  * reflects session changes without adding a second header label. */
 type LayoutOption = [value: string, label: string, title?: string];
 function buildLayoutMenu(
-  doc: Document,
+  doc: Document, onKeyboardOwnerChange: (owner: App['keyboardOwner']) => void,
   options: LayoutOption[], getActive: () => string, onPick: (value: string) => void, ariaLabel: string,
 ): { el: HTMLButtonElement; sync: () => void } {
   const label = h('span');
@@ -247,6 +259,7 @@ function buildLayoutMenu(
         onClick: () => onPick(value),
       })),
       onClose: () => { handle = null; },
+      onKeyboardOwnerChange,
     });
   };
   el.onclick = () => { if (handle) { handle.close(); el.focus(); } else open(); };
@@ -404,6 +417,7 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
   }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
 
   let handle: MenuHandle | null = null;
+  const onKeyboardOwnerChange = keyboardOwnerChannel(app);
 
   const open = (): void => {
     const rows: MenuRow[] = [
@@ -423,6 +437,7 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
     handle = openMenu({
       document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
       onClose: () => { handle = null; },
+      onKeyboardOwnerChange,
     });
   };
 
@@ -442,6 +457,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // call installed on this window before this call installs its own (see
   // `installedGridResizeListener`'s own doc comment above).
   disposeDashboardSurface();
+  app.surfaceCommands = null;
 
   const workspace = app.currentWorkspace;
   const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
@@ -523,6 +539,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
     initialFilters: initialBag,
   });
+  // The global shortcut reaches this route-local port only while its renderer
+  // generation is current. It is cleared by both Dashboard cleanup and every
+  // application surface transition.
+  const commandPort = { surface: 'dashboard' as const, generation: surfaceGeneration, refresh: () => session.refresh() };
+  app.surfaceCommands = commandPort;
   let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
   const syncSessionDocument = (next: DashboardDocumentV1): void => {
     session.syncDocument(next);
@@ -570,7 +591,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
     : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
   const layoutMenu = buildLayoutMenu(
-    doc,
+    doc, keyboardOwnerChannel(app),
     readOnly ? READONLY_LAYOUT_OPTIONS : EDITABLE_LAYOUT_OPTIONS,
     getActiveLayoutOption,
     (value) => {
@@ -878,7 +899,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     };
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
-      { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange },
+      { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange,
+        onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
     ordinaryFilterHost.replaceChildren(bar.ordinaryEl);
@@ -2199,6 +2221,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rebuild must not leave Chart.js observers, signal effects, popovers, or
   // viewer requests attached to the replaced page.
   installedDashboardCleanup = () => {
+    if (app.surfaceCommands === commandPort) app.surfaceCommands = null;
     currentFilterBar?.dispose();
     currentFilterBar = null;
     if (tileSearchTimer != null) clearTimeout(tileSearchTimer);

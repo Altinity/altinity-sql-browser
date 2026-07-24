@@ -39,6 +39,7 @@ import { h } from './dom.js';
 import { openAnchoredDialog } from './popover.js';
 import { idSafe } from './combobox.js';
 import { canonicalizeSelection, sameSelection } from '../core/filter-selection.js';
+import type { KeyboardOwner } from './app.types.js';
 
 /** One selectable option — value/label only (no grouping; #189 doesn't need it). */
 export interface MultiSelectOption {
@@ -86,6 +87,7 @@ export interface MultiSelectFieldOpts {
   onApply(next: string[], active: boolean): void;
   /** Error-mode plain-input commit (Enter, or blur after an edit). */
   onFallbackCommit(raw: string, active: boolean): void;
+  onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
 /** `buildMultiSelectField`'s return value. */
@@ -459,6 +461,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       minWidthFromTrigger: true,
       initialFocus: () => searchInput, // focus moves into the dialog on open
       onClose: () => { closeCurrent = null; openPopoverBusy = null; },
+      onKeyboardOwnerChange: opts.onKeyboardOwnerChange,
     });
     // #189 F2a: `skipFocus` flows through to the primitive so `applyStatus`'s
     // forced error-close can skip refocusing a trigger that's about to be

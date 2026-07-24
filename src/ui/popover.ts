@@ -33,6 +33,7 @@
 
 import { h, fixedAnchor, attachBackdropClose } from './dom.js';
 import type { FixedAnchorOptions } from './dom.js';
+import type { KeyboardOwner } from './app.types.js';
 
 /** `openAnchoredDialog`'s options bag. */
 export interface AnchoredDialogOptions {
@@ -62,6 +63,7 @@ export interface AnchoredDialogOptions {
   /** Fires after teardown + focus return, on EVERY dismissal path, exactly
    *  once (idempotent close never double-fires it). */
   onClose?: () => void;
+  onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
 /** `openAnchoredDialog`'s return value. */
@@ -127,9 +129,11 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
     trigger.setAttribute('aria-expanded', 'false');
     if (!closeOpts.skipFocus) trigger.focus();
     opts.onClose?.();
+    opts.onKeyboardOwnerChange?.(null);
   }
 
   trigger.setAttribute('aria-expanded', 'true');
+  opts.onKeyboardOwnerChange?.({ kind: 'popover' });
   d.body.appendChild(overlay);
   d.body.appendChild(dialog);
   const detachBackdrop = attachBackdropClose(overlay, () => close());

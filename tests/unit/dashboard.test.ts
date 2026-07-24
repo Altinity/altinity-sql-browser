@@ -4116,6 +4116,18 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qs(app.root, '.dash-contextbar')).toBeNull();
   });
 
+  it('registers only the mounted viewer as the Dashboard shortcut refresh port', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
+    await render(app);
+    const port = app.surfaceCommands;
+    expect(port?.surface).toBe('dashboard');
+    expect(port?.generation).toBe(app.captureSurfaceGeneration());
+    expect(port?.refresh).toBeTypeOf('function');
+    port?.refresh();
+    app.renderDashboard();
+    expect(app.surfaceCommands).not.toBe(port);
+  });
+
   it('an old Dashboard refresh hook is inert after the route leaves Dashboard', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'view' });
     await render(app);

@@ -48,6 +48,7 @@ import { idSafe } from './combobox.js';
 import { openAnchoredDialog } from './popover.js';
 import { formatTimeRangeDisplayValue, validateTimeRangeDraft } from '../core/time-range.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent, TimeRangeBoundDraft } from '../core/time-range.js';
+import type { KeyboardOwner } from './app.types.js';
 import { TIME_RANGE_CONSTANTS, filterTokenList } from './relative-time-field.js';
 
 /** `buildTimeRangeField`'s options bag. */
@@ -72,6 +73,7 @@ export interface TimeRangeFieldOpts {
   getRecents: () => readonly TimeRangeRecent[];
   /** Both the Apply button and a recents pick route here, with TRIMMED text. */
   onApply: (from: string, to: string) => void;
+  onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
 /** `buildTimeRangeField`'s return value. */
@@ -344,6 +346,7 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
       minWidthFromTrigger: false,
       initialFocus: () => fromInput,
       onClose: () => { closeCurrent = null; },
+      onKeyboardOwnerChange: opts.onKeyboardOwnerChange,
     });
     closeCurrent = (closeOpts) => handle.close(closeOpts);
     openingFocus = false;

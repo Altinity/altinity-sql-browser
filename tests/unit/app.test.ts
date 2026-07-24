@@ -5652,6 +5652,71 @@ describe('unified /sql routing', () => {
     expect(qs(app.root, '.workspace-loading')).toBeNull();
   });
 
+  it('closes Dashboard shortcut help before a Dashboard-to-Workbench popstate', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=a&surface=dashboard&mode=view', hash: '', host: 'ch.example',
+      href: 'https://ch.example/sql?ws=a&surface=dashboard&mode=view',
+    } as Location;
+    const app = createApp(env({ location }));
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    app.applyCommittedWorkspace(workspace);
+    await app.renderDashboard();
+    app.actions.openShortcuts();
+    expect(app.state.shortcutsOpen.value).toBe(true);
+    expect(document.querySelector('.modal-backdrop')).not.toBeNull();
+    location.search = '?ws=a';
+    await app.handleSqlPopState();
+    expect(app.state.shortcutsOpen.value).toBe(false);
+    expect(document.querySelector('.modal-backdrop')).toBeNull();
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+  });
+
+  it('closes Workbench shortcut help before Dashboard navigation without restoring detached focus', async () => {
+    const app = createApp(env());
+    const workspace: StoredWorkspaceV2 = {
+      storageVersion: 2, id: 'a', key: 'a', name: 'A', queries: [], dashboard: null,
+    };
+    app.applyCommittedWorkspace(workspace);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
+    app.renderApp();
+    const oldFocus = qs<HTMLElement>(app.root, 'button');
+    oldFocus.focus();
+    app.actions.openShortcuts();
+    await app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: 'a', mode: 'edit' }, 'push');
+    expect(app.state.shortcutsOpen.value).toBe(false);
+    expect(document.querySelector('.modal-backdrop')).toBeNull();
+    expect(oldFocus.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(oldFocus);
+  });
+
+  it('authentication loss tears down shortcut help and leaves only Login', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.actions.openShortcuts();
+    expect(app.state.shortcutsOpen.value).toBe(true);
+    app.showLogin('Session expired');
+    expect(app.state.shortcutsOpen.value).toBe(false);
+    expect(document.querySelector('.modal-backdrop')).toBeNull();
+    expect(app.root!.textContent).toContain('Session expired');
+    expect(app.keyboardOwner).toBeNull();
+  });
+
+  it('releases keyboard-owner acquisitions by identity and idempotently', () => {
+    const app = createApp(env());
+    app.resetShortcutChord();
+    const releaseMenu = app.acquireKeyboardOwner('menu');
+    const releaseModal = app.acquireKeyboardOwner('modal');
+    expect(app.keyboardOwner?.kind).toBe('modal');
+    releaseMenu();
+    expect(app.keyboardOwner?.kind).toBe('modal');
+    releaseMenu();
+    releaseModal();
+    expect(app.keyboardOwner).toBeNull();
+  });
+
   it('keeps imported favorite queries visible after visiting an empty Dashboard', async () => {
     const imported = savedQueryFixture({
       id: 'imported-favorite', name: 'Imported favorite', sql: 'SELECT 1', favorite: true,

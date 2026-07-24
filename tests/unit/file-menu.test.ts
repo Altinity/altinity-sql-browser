@@ -11,6 +11,7 @@ import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
+import { handleKeydown } from '../../src/ui/shortcuts.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -441,7 +442,26 @@ describe('Import queries', () => {
     const dialog = document.querySelector('.fm-dialog-card')!;
     expect(dialog.textContent).toContain('Resolve 1 conflicting query');
     expect(dialog.textContent).toContain('OldName'); // row shows the EXISTING query's name
+    const shortcut = (keyValue: string, mods: { metaKey?: boolean; altKey?: boolean; shiftKey?: boolean } = {}) => ({
+      key: keyValue, preventDefault: vi.fn(), target: document.body, ...mods,
+    });
+    expect(app.keyboardOwner?.kind).toBe('modal');
+    expect(handleKeydown(shortcut('Enter', { metaKey: true }), app)).toBeNull();
+    expect(handleKeydown(shortcut('s', { metaKey: true }), app)).toBeNull();
+    expect(handleKeydown(shortcut('1', { metaKey: true, altKey: true }), app)).toBeNull();
+    expect(handleKeydown(shortcut('g'), app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(app.actions.save).not.toHaveBeenCalled();
+    expect(app.actions.setEditorMode).not.toHaveBeenCalled();
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'view' };
+    app.surfaceCommands = { surface: 'dashboard', generation: 0, refresh: vi.fn() };
+    expect(handleKeydown(shortcut('Enter', { metaKey: true }), app)).toBeNull();
+    expect(app.surfaceCommands.refresh).not.toHaveBeenCalled();
+    app.sqlRoute = { surface: 'workspace', workspaceKey: app.state.workspaceKey };
     click(document.querySelector('.fm-dialog-confirm')!); // Apply with the default (use-existing)
+    expect(app.keyboardOwner?.kind).toBe('menu'); // the still-mounted File menu remains underneath
+    disposeFileMenuOverlays(app);
+    expect(app.keyboardOwner).toBeNull();
     await flush();
     expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
     expect(toast()).toBe('Imported 1 query');

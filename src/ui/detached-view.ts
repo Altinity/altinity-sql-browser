@@ -10,6 +10,7 @@
 import { h, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import type { Signal } from '@preact/signals-core';
+import type { KeyboardOwner } from './app.types.js';
 
 /** The window-like object `app.openWindow()` returns — a real `Window` in
  *  production. Accessing `.document` may legitimately throw (COOP severing
@@ -29,6 +30,7 @@ export interface DetachedViewApp {
   stylesText?: string;
   faviconHref?: string;
   state?: { detachedView?: Signal<number> };
+  acquireKeyboardOwner?(kind: KeyboardOwner['kind']): () => void;
   openWindow(url: string, target: string): DetachedWindowLike | null;
 }
 
@@ -128,6 +130,7 @@ function openAsOverlay(
   mount: MountFn, onClose: () => void,
 ): DetachedView {
   return withDocument(mainDoc, () => {
+    const releaseKeyboard = app?.acquireKeyboardOwner?.('modal') ?? (() => {});
     const { panel, bar, body } = buildPanel(mode, title);
     let teardown: (() => void) | null = null;
     let closed = false;
@@ -140,6 +143,7 @@ function openAsOverlay(
       backdrop.remove();
       if (teardown) teardown();
       onClose();
+      releaseKeyboard();
     };
     backdrop = h('div', { class: 'graph-overlay' }, panel);
     detachBackdrop = attachBackdropClose(backdrop, close);

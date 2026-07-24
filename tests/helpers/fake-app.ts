@@ -432,6 +432,30 @@ const appDefaults: App = {
   sqlRoute: { surface: 'workspace', workspaceKey: null },
   currentWorkspace: null,
   workspaceRouteStatus: 'ready',
+  keyboardOwner: null,
+  acquireKeyboardOwner(kind) {
+    const token = { kind };
+    const host = this as App & { __keyboardOwners?: Array<typeof token> };
+    const owners = (host.__keyboardOwners ??= []);
+    owners.push(token);
+    this.keyboardOwner = token;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const index = owners.indexOf(token);
+      if (index >= 0) owners.splice(index, 1);
+      this.keyboardOwner = owners.at(-1) ?? null;
+    };
+  },
+  resetShortcutChord: () => {},
+  shortcutDialog: null,
+  closeShortcutDialog() {
+    const dialog = this.shortcutDialog;
+    this.shortcutDialog = null;
+    dialog?.close();
+  },
+  surfaceCommands: null,
   captureSurfaceGeneration: () => 0,
   isSurfaceGenerationCurrent: (generation) => generation === 0,
   refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
