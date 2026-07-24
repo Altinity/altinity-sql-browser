@@ -236,6 +236,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.sqlRoute = parseSqlRoute(routeSearch);
   app.currentWorkspace = null;
   app.workspaceRouteStatus = 'ready';
+  app.surfaceCommands = null;
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
   app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
@@ -1538,6 +1539,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const ignoreExternalWorkspaceChange = (): void => {};
   app.renderDashboard = () => {
     surfaceGeneration += 1;
+    app.surfaceCommands = null;
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeWorkbenchMount?.();
@@ -1547,6 +1549,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
   const disposeCurrentSurface = (): void => {
     surfaceGeneration += 1;
+    app.surfaceCommands = null;
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
       'button, input, select, textarea',
     ) ?? []) control.disabled = true;
@@ -2052,6 +2055,7 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   app.renderApp = () => {
     surfaceGeneration += 1;
+    app.surfaceCommands = null;
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();

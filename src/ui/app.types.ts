@@ -24,6 +24,7 @@ import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnosti
 import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
+import type { SurfaceCommandPort } from './shortcuts.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -429,6 +430,9 @@ export interface App {
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV2 | null;
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  /** Route-local commands registered by the mounted surface. They are cleared
+   * before every transition, so a disposed Dashboard viewer cannot be called. */
+  surfaceCommands: SurfaceCommandPort | null;
   /** Renderer lifetime, distinct from workspace-load ordering. Any surface
    * teardown/remount advances it so obsolete async callbacks can finish their
    * durable work without settling against a replacement renderer. */

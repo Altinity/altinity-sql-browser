@@ -432,6 +432,7 @@ const appDefaults: App = {
   sqlRoute: { surface: 'workspace', workspaceKey: null },
   currentWorkspace: null,
   workspaceRouteStatus: 'ready',
+  surfaceCommands: null,
   captureSurfaceGeneration: () => 0,
   isSurfaceGenerationCurrent: (generation) => generation === 0,
   refreshCurrentSurfaceAfterStale: (generation) => generation === 0,

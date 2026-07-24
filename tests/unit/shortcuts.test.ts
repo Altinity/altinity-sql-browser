@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { openShortcuts, handleKeydown } from '../../src/ui/shortcuts.js';
+import { openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
 import type { ShortcutKeydownEvent } from '../../src/ui/shortcuts.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -69,6 +69,34 @@ describe('openShortcuts', () => {
     expect(text).toContain('Double-click');
     expect(text).toContain('Shift-click');
   });
+  it('renders Dashboard-only help from the shared catalog and supplies dialog accessibility', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+    const invoke = document.createElement('button'); document.body.appendChild(invoke); invoke.focus();
+    const opened = openShortcuts(app)!;
+    const card = document.querySelector<HTMLElement>('.modal-card')!;
+    expect(card.getAttribute('role')).toBe('dialog');
+    expect(card.getAttribute('aria-modal')).toBe('true');
+    expect(card.textContent).toContain('Refresh all tiles');
+    expect(card.textContent).toContain('Open SQL Browser');
+    expect(card.textContent).not.toContain('Run query');
+    expect(card.textContent).not.toContain('Schema tree');
+    expect(card.querySelectorAll('kbd').length).toBeGreaterThan(0);
+    const close = card.querySelector<HTMLButtonElement>('.close-btn')!;
+    close.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    close.remove();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    opened.close();
+    expect(document.activeElement).toBe(invoke);
+  });
+  it('omits Dashboard refresh when no viewer session is mounted', () => {
+    const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' }, surfaceCommands: null });
+    openShortcuts(app);
+    expect(document.querySelector('.modal-card')!.textContent).not.toContain('Refresh all tiles');
+  });
 });
 
 describe('handleKeydown', () => {
@@ -83,6 +111,62 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
     expect(app.actions.save).not.toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled();
+  });
+
+  it('dispatches Dashboard refresh and mode navigation only for the current viewer generation', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' },
+      captureSurfaceGeneration: () => 7,
+      surfaceCommands: { surface: 'dashboard', generation: 7, refresh },
+      navigateSqlRoute: vi.fn(async () => {}) });
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(handleKeydown(ev({ ctrlKey: true, altKey: true, key: '1' }), app)).toBe('dashboardView');
+    expect(app.navigateSqlRoute).toHaveBeenCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' }, 'replace');
+    const viewing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' } });
+    expect(handleKeydown(ev({ metaKey: true, altKey: true, key: '1' }), viewing)).toBeNull();
+    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh };
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+  });
+
+  it('routes the G chord by current surface, and resets it on mismatch, timeout, blur and stale generation', () => {
+    vi.useFakeTimers();
+    const navigateSqlRoute = vi.fn(async () => {});
+    let generation = 1;
+    const app = makeApp({ navigateSqlRoute, captureSurfaceGeneration: () => generation });
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    generation = 2;
+    expect(handleKeydown(ev({ key: 'd' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'd' }), app)).toBe('openDashboard');
+    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'push');
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' };
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBe('openWorkbench');
+    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'workspace', workspaceKey: 'sql_library' }, 'push');
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    window.dispatchEvent(new Event('blur'));
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    vi.advanceTimersByTime(1500);
+    expect(handleKeydown(ev({ key: 'w' }), app)).toBeNull();
+    resetShortcutChord(app);
+    vi.useRealTimers();
+  });
+
+  it('keeps surface actions behind keyboard-owning overlays and ignores plain keys while typing', () => {
+    const refresh = vi.fn();
+    const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
+    document.body.appendChild(document.createElement('div')).className = 'fm-overlay';
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
+    document.body.innerHTML = '';
+    expect(handleKeydown(ev({ key: 'g', target: { tagName: 'SELECT' } }), app)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g', target: { getAttribute: () => 'textbox' } }), app)).toBeNull();
+    app.state.shortcutsOpen.value = true;
+    expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
   });
 
   it('fails closed for every Workbench action shortcut while the route is loading', () => {

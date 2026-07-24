@@ -1,199 +1,264 @@
-// Keyboard-shortcuts modal + the global key handler.
+// Surface-aware keyboard shortcuts: one catalog drives both dispatch and help.
 
 import { h, attachBackdropClose } from './dom.js';
 import type { ActionsRegistry, State, Tab } from './app.types.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { SqlRoute } from '../core/sql-route.js';
 
-/** The narrow slice of the real `app` controller this module reads — not
- *  the full ~50-member `App` contract (app.types.ts). A real `App` satisfies
- *  this directly, and so does tests/helpers/fake-app.js's long-standing
- *  minimal `makeApp()` fixture (this module predates ADR-0002's App
- *  contract) — no cast needed on either side. */
+type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
+type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
+type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'question' | 'escape';
+
+export interface ShortcutDefinition {
+  id: string;
+  label: string;
+  section: Section;
+  surface: ShortcutSurface;
+  key: KeyName;
+  available?: (app: ShortcutsApp) => boolean;
+}
+
+/** The single shortcut catalogue. Help never documents a command unavailable to
+ * the dispatcher because both paths resolve this list against the same app. */
+export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
+  { id: 'open-dashboard', label: 'Open Dashboard', section: 'application', surface: 'workspace', key: 'g-d' },
+  { id: 'open-workbench', label: 'Open SQL Browser', section: 'application', surface: 'dashboard', key: 'g-w' },
+  { id: 'run-query', label: 'Run query', section: 'workspace', surface: 'workspace', key: 'mod-enter' },
+  { id: 'format-document', label: 'Format active document', section: 'workspace', surface: 'workspace', key: 'mod-shift-enter' },
+  { id: 'save-query', label: 'Save query', section: 'workspace', surface: 'workspace', key: 'mod-s' },
+  { id: 'share-query', label: 'Share query', section: 'workspace', surface: 'workspace', key: 'mod-shift-s' },
+  { id: 'sql-mode', label: 'SQL editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-1' },
+  { id: 'spec-mode', label: 'Spec editor mode', section: 'workspace', surface: 'workspace', key: 'mod-alt-2' },
+  { id: 'undo', label: 'Undo', section: 'workspace', surface: 'workspace', key: 'mod-z' },
+  { id: 'redo', label: 'Redo', section: 'workspace', surface: 'workspace', key: 'mod-shift-z' },
+  { id: 'open-reference', label: 'Open reference for symbol', section: 'workspace', surface: 'workspace', key: 'f1' },
+  { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', available: (app) => !!app.surfaceCommands },
+  { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'mod-alt-1' },
+  { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'mod-alt-2' },
+  { id: 'open-help', label: 'Show this dialog', section: 'general', surface: 'all', key: 'question' },
+  { id: 'close-overlay', label: 'Close dialog', section: 'general', surface: 'all', key: 'escape' },
+];
+
+const GESTURES = [
+  ['Expand / collapse', 'Click'], ['Insert into editor', 'Double-click'], ['Insert DDL / col::type', 'Shift-click'],
+] as const;
+
+export interface SurfaceCommandPort {
+  surface: 'dashboard';
+  generation: number;
+  refresh(): void;
+}
+
+/** Narrow controller contract; it deliberately avoids importing the full App. */
 export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running' | 'workspaceKey'>;
   conn: Pick<ConnectionSession, 'isSignedIn'>;
-  sqlRoute: Pick<SqlRoute, 'surface' | 'workspaceKey'>;
+  sqlRoute: Pick<SqlRoute, 'surface' | 'workspaceKey'> & { mode?: 'view' | 'edit' };
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
-  /** #60 — closes the docs reference pane when one is open (returns true),
-   *  no-op returning false otherwise. Injected by app.ts (bound to
-   *  ui/doc-pane's isDocPaneOpen/closeDocPane) so Esc closes the pane from
-   *  ANYWHERE — not only with focus inside it — layered BEFORE the
-   *  cancel-running-query action below. Optional: minimal test apps omit it. */
+  surfaceCommands?: SurfaceCommandPort | null;
+  captureSurfaceGeneration?: () => number;
+  navigateSqlRoute?: (route: SqlRoute, method: 'push' | 'replace') => Promise<void>;
   closeDocPane?: () => boolean;
   activeTab(): Pick<Tab, 'editorMode'>;
-  actions: Pick<
-    ActionsRegistry,
-    'cancel' | 'run' | 'formatSpec' | 'formatQuery' | 'setEditorMode' | 'share' | 'save' | 'openShortcuts'
-  >;
+  actions: Pick<ActionsRegistry,
+    'cancel' | 'run' | 'formatSpec' | 'formatQuery' | 'setEditorMode' | 'share' | 'save' | 'openShortcuts'>;
 }
 
-const SHORTCUTS: string[][] = [
-  ['Run query', '⌘↵'],
-  ['Format active document', '⌘⇧↵'],
-  ['Save query', '⌘S'],
-  ['Share query', '⌘⇧S'],
-  ['SQL editor mode', '⌘⌥1'],
-  ['Spec editor mode', '⌘⌥2'],
-  ['Undo', '⌘Z'],
-  ['Redo', '⌘⇧Z'],
-  ['Open reference for symbol', 'F1'], // #313 — in-editor only (CM6 keymap, codemirror-adapter.ts)
-  ['Show this dialog', '?'],
-  ['Close dialog', 'Esc'],
-];
+function platformIsMac(doc: Document): boolean {
+  return /mac/i.test(doc.defaultView?.navigator.platform || '');
+}
 
-// Mouse gestures on the schema tree (db / table / column). Kept terse — the
-// per-row tooltips carry the detail; this just signals the gestures exist.
-const GESTURES: string[][] = [
-  ['Expand / collapse', 'Click'],
-  ['Insert into editor', 'Double-click'],
-  ['Insert DDL / col::type', 'Shift-click'],
-];
+function keyParts(key: KeyName, mac: boolean): string[] {
+  const mod = mac ? '⌘' : 'Ctrl'; const alt = mac ? '⌥' : 'Alt'; const shift = mac ? '⇧' : 'Shift';
+  const keys: Record<KeyName, string[]> = {
+    'mod-enter': [mod, 'Enter'], 'mod-shift-enter': [mod, shift, 'Enter'], 'mod-s': [mod, 'S'],
+    'mod-shift-s': [mod, shift, 'S'], 'mod-alt-1': [mod, alt, '1'], 'mod-alt-2': [mod, alt, '2'],
+    'mod-z': [mod, 'Z'], 'mod-shift-z': [mod, shift, 'Z'], f1: ['F1'], 'g-d': ['G', 'then', 'D'],
+    'g-w': ['G', 'then', 'W'], question: ['?'], escape: ['Esc'],
+  };
+  return keys[key];
+}
 
-/** Open the shortcuts modal. Idempotent while open (tracked on state). */
+function visibleDefinitions(app: ShortcutsApp): ShortcutDefinition[] {
+  const surface = app.sqlRoute.surface;
+  return SHORTCUT_CATALOG.filter((definition) => (
+    (definition.surface === 'all' || definition.surface === surface) && (!definition.available || definition.available(app))
+  ));
+}
+
+function keyCaps(parts: string[]): HTMLElement[] {
+  return parts.map((part, index) => part === 'then'
+    ? h('span', { class: 'shortcut-then' }, 'then')
+    : h('kbd', { key: String(index) }, part));
+}
+
+const sectionNames: Record<Section, string> = {
+  application: 'Application', workspace: 'SQL Browser', dashboard: 'Dashboard', general: 'General', gestures: 'Schema tree — database · table · column',
+};
+
+/** Open accessible, surface-specific help. */
 export function openShortcuts(app: ShortcutsApp): { backdrop: HTMLElement; close: () => void } | null {
   const doc = app.document || document;
   if (app.state.shortcutsOpen.value) return null;
   app.state.shortcutsOpen.value = true;
+  let previousFocus = doc.activeElement as HTMLElement | null;
+  const headingId = 'shortcuts-heading';
   const close = (): void => {
     app.state.shortcutsOpen.value = false;
-    detachBackdrop();
-    backdrop.remove();
-    doc.removeEventListener('keydown', escHandler);
+    detachBackdrop(); backdrop.remove(); doc.removeEventListener('keydown', onKeydown);
+    previousFocus?.focus?.(); previousFocus = null;
   };
-  const escHandler = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') close();
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+    if (event.key !== 'Tab') return;
+    const focusable = [...card.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => !element.hasAttribute('disabled'));
+    if (!focusable.length) return;
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && doc.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && doc.activeElement === last) { event.preventDefault(); first.focus(); }
   };
-  doc.addEventListener('keydown', escHandler);
-  const rowOf = ([label, key]: string[]): HTMLElement =>
-    h('div', { class: 'row' }, h('span', { class: 'label' }, label), h('kbd', null, key));
-  const card = h('div', { class: 'modal-card' },
-    h('h2', null, 'Keyboard shortcuts'),
-    ...SHORTCUTS.map(rowOf),
-    h('div', { class: 'section-label' }, 'Schema tree — database · table · column'),
-    ...GESTURES.map(rowOf),
-    h('div', { class: 'close-row' }, h('button', { class: 'close-btn', onclick: close }, 'Close')),
+  const rows = visibleDefinitions(app);
+  const mac = platformIsMac(doc);
+  const sections: HTMLElement[] = [];
+  for (const section of ['application', 'workspace', 'dashboard', 'general'] as const) {
+    const entries = rows.filter((row) => row.section === section);
+    if (!entries.length) continue;
+    sections.push(h('section', { class: 'shortcut-section', 'aria-label': sectionNames[section] },
+      h('h3', { class: 'section-label' }, sectionNames[section]),
+      ...entries.map((row) => h('div', { class: 'row' }, h('span', { class: 'label' }, row.label),
+        h('span', { class: 'shortcut-keys' }, ...keyCaps(keyParts(row.key, mac))))),
+    ));
+  }
+  if (app.sqlRoute.surface === 'workspace') {
+    sections.push(h('section', { class: 'shortcut-section', 'aria-label': sectionNames.gestures },
+      h('h3', { class: 'section-label' }, sectionNames.gestures),
+      ...GESTURES.map(([label, key]) => h('div', { class: 'row' }, h('span', { class: 'label' }, label), h('kbd', null, key))),
+    ));
+  }
+  const closeButton = h('button', { class: 'close-btn', 'aria-label': 'Close keyboard shortcuts', onclick: close }, 'Close');
+  const card = h('div', { class: 'modal-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': headingId },
+    h('h2', { id: headingId }, 'Keyboard shortcuts'),
+    h('div', { class: 'modal-card-body' }, ...sections),
+    h('div', { class: 'close-row' }, closeButton),
   );
   const backdrop = h('div', { class: 'modal-backdrop' }, card);
   const detachBackdrop = attachBackdropClose(backdrop, close);
   doc.body.appendChild(backdrop);
+  doc.addEventListener('keydown', onKeydown);
+  closeButton.focus();
   return { backdrop, close };
 }
 
-/** The event target shape `handleKeydown`'s ⌘A/`?` arms duck-type over — a
- *  real `Element` satisfies it directly (structurally); test fixtures pass a
- *  plain object instead of a full DOM node. */
 export interface ShortcutEventTarget {
-  tagName?: string;
-  isContentEditable?: boolean;
-  ownerDocument?: Document | null;
+  tagName?: string; isContentEditable?: boolean; ownerDocument?: Document | null;
+  getAttribute?(name: string): string | null; closest?(selector: string): Element | null;
 }
-
-/** The minimal keydown-event shape this handler reads. A real `KeyboardEvent`
- *  (from the app's global `keydown` listener) satisfies it directly; tests
- *  build a small plain-object fixture instead of a real event. */
 export interface ShortcutKeydownEvent {
-  key: string;
-  metaKey?: boolean;
-  ctrlKey?: boolean;
-  shiftKey?: boolean;
-  altKey?: boolean;
-  defaultPrevented?: boolean;
-  preventDefault(): void;
-  target?: ShortcutEventTarget | null;
+  key: string; metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean;
+  defaultPrevented?: boolean; preventDefault(): void; target?: ShortcutEventTarget | null;
 }
 
-/**
- * Handle a global keydown. Returns the action name it dispatched (or null).
- * `app` provides state + the action callbacks; `signedIn` gates editing keys.
- */
+function isTypingTarget(target?: ShortcutEventTarget | null): boolean {
+  if (!target) return false;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName || '') || !!target.isContentEditable
+    || target.getAttribute?.('role') === 'textbox' || !!target.closest?.('.cm-editor, .cm-content, [contenteditable]');
+}
+function ownsKeyboard(app: ShortcutsApp): boolean {
+  if (app.state.shortcutsOpen.value) return true;
+  const doc = app.document || (typeof document === 'undefined' ? undefined : document);
+  return !!doc?.querySelector('.modal-backdrop, .fm-overlay, .file-menu, .popover, .confirm-dialog');
+}
+function ready(app: ShortcutsApp): boolean {
+  return app.workspaceRouteStatus === 'ready'
+    && !!app.sqlRoute.workspaceKey && app.sqlRoute.workspaceKey === app.state.workspaceKey;
+}
+
+interface Chord { timer: ReturnType<typeof setTimeout> | null; surface: 'workspace' | 'dashboard'; workspaceKey: string | null; generation: number | null; }
+const chords = new WeakMap<ShortcutsApp, Chord>();
+export function resetShortcutChord(app: ShortcutsApp): void {
+  const chord = chords.get(app); if (!chord) return;
+  if (chord.timer) clearTimeout(chord.timer); chords.delete(app);
+}
+function beginChord(app: ShortcutsApp): void {
+  resetShortcutChord(app);
+  const chord: Chord = { timer: null, surface: app.sqlRoute.surface, workspaceKey: app.sqlRoute.workspaceKey, generation: app.captureSurfaceGeneration?.() ?? null };
+  chord.timer = setTimeout(() => resetShortcutChord(app), 1500);
+  chords.set(app, chord);
+  const win = (app.document || document).defaultView;
+  win?.addEventListener('blur', () => resetShortcutChord(app), { once: true });
+}
+function consumeChord(e: ShortcutKeydownEvent, app: ShortcutsApp): string | null | undefined {
+  const chord = chords.get(app); if (!chord) return undefined;
+  resetShortcutChord(app);
+  const stillCurrent = chord.surface === app.sqlRoute.surface && chord.workspaceKey === app.sqlRoute.workspaceKey
+    && (chord.generation === null || chord.generation === app.captureSurfaceGeneration?.());
+  if (!stillCurrent) return null;
+  const target = app.sqlRoute.surface === 'workspace' ? 'd' : 'w';
+  if (e.key.toLowerCase() !== target) return null;
+  e.preventDefault();
+  if (app.sqlRoute.surface === 'workspace') {
+    void app.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit' }, 'push');
+    return 'openDashboard';
+  }
+  void app.navigateSqlRoute?.({ surface: 'workspace', workspaceKey: app.state.workspaceKey }, 'push');
+  return 'openWorkbench';
+}
+
+/** Global dispatcher. Commands are gated by current route, identity and surface. */
 export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): string | null {
-  // A key the editor already consumed (CM6 preventDefaults what it handles —
-  // e.g. Esc closing the completion popup or search panel) must not ALSO
-  // trigger a global action like cancelling the running query.
   if (e.defaultPrevented) return null;
-  // Fail closed unless the visible Workbench and projected workspace agree
-  // with the canonical ready route. During async navigation the old editor
-  // session still exists as an object even after its DOM has been removed.
-  if (app.workspaceRouteStatus !== 'ready'
-    || app.sqlRoute.surface !== 'workspace'
-    || app.sqlRoute.workspaceKey !== app.state.workspaceKey) return null;
-  const mod = e.metaKey || e.ctrlKey;
-  const signedIn = app.conn.isSignedIn();
+  if (!ready(app)) { resetShortcutChord(app); return null; }
+  const mod = !!(e.metaKey || e.ctrlKey); const surface = app.sqlRoute.surface;
   const editorMode = app.activeTab().editorMode || 'sql';
-  // Esc closes the docs reference pane first — from anywhere, not only with
-  // focus inside it (#60 live finding). A second Esc then cancels a query.
-  if (e.key === 'Escape' && app.closeDocPane?.()) {
-    e.preventDefault();
-    return 'close-doc-pane';
+  if (e.key === 'Escape') {
+    resetShortcutChord(app);
+    if (surface === 'workspace' && app.closeDocPane?.()) { e.preventDefault(); return 'close-doc-pane'; }
+    if (surface === 'workspace' && app.state.running.value) { e.preventDefault(); app.actions.cancel(); return 'cancel'; }
+    return null;
   }
-  // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
-  if (e.key === 'Escape' && app.state.running.value) {
-    e.preventDefault();
-    app.actions.cancel();
-    return 'cancel';
-  }
-  if (mod && e.key === 'Enter') {
-    // Format targets the active document. Plain Mod-Enter is SQL-only.
-    if (e.shiftKey) {
-      if (!signedIn) return null;
-      e.preventDefault();
-      if (editorMode === 'spec') {
-        app.actions.formatSpec();
-        return 'formatSpec';
-      }
-      app.actions.formatQuery();
-      return 'formatQuery';
-    }
-    if (editorMode !== 'sql') return null;
-    e.preventDefault();
-    app.actions.run();
-    return 'run';
-  }
-  if (mod && e.altKey && (e.key === '1' || e.key === '2')) {
-    if (!signedIn) return null;
-    e.preventDefault();
-    const mode = e.key === '1' ? 'sql' : 'spec';
-    app.actions.setEditorMode(mode);
-    return mode + 'Mode';
-  }
-  if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
-    if (!signedIn || editorMode !== 'sql') return null;
-    e.preventDefault();
-    app.actions.share();
-    return 'share';
-  }
-  if (mod && e.key.toLowerCase() === 's') {
-    if (!signedIn) return null;
-    e.preventDefault();
-    app.actions.save();
-    return 'save';
-  }
-  if (mod && e.key.toLowerCase() === 'a') {
-    // When a selectable text pane is on screen and the user isn't typing,
-    // ⌘/Ctrl+A selects just that text so it can be copied — not the whole page.
-    // Keyed off "not editing + pane present" rather than pane focus, because
-    // macOS WebKit doesn't focus a tabindex <div> on click (so e.target stays
-    // <body>). A focused editor/input keeps the native select-all (whole query).
-    // The cell-detail drawer (.cd-pre) is a modal overlay — when open it wins
-    // over the result pane behind it, so select all of *its* text.
-    const t = e.target;
-    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)) return null;
-    const doc = (t && t.ownerDocument) || document;
-    const box = doc.querySelector('.cd-pre') || doc.querySelector('.raw-text-view, .json-view');
-    if (!box) return null;
-    e.preventDefault();
-    box.ownerDocument.defaultView!.getSelection()!.selectAllChildren(box);
-    return 'selectAll';
-  }
+  if (ownsKeyboard(app)) return null;
   if (e.key === '?' && !mod) {
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return null;
-    if (!signedIn) return null;
-    e.preventDefault();
-    app.actions.openShortcuts();
-    return 'shortcuts';
+    if (isTypingTarget(e.target)) return null;
+    if (!app.conn.isSignedIn()) return null;
+    e.preventDefault(); app.actions.openShortcuts(); return 'shortcuts';
+  }
+  if (surface === 'dashboard') {
+    if (mod && e.key === 'Enter' && !e.shiftKey && app.conn.isSignedIn() && app.surfaceCommands
+      && app.surfaceCommands.surface === 'dashboard'
+      && app.surfaceCommands.generation === (app.captureSurfaceGeneration?.() ?? app.surfaceCommands.generation)) {
+      e.preventDefault(); app.surfaceCommands.refresh(); return 'dashboardRefresh';
+    }
+    if (mod && e.altKey && (e.key === '1' || e.key === '2') && app.conn.isSignedIn()) {
+      const mode = e.key === '1' ? 'view' : 'edit';
+      if (app.sqlRoute.mode === mode) return null;
+      e.preventDefault(); void app.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode }, 'replace');
+      return mode === 'view' ? 'dashboardView' : 'dashboardEdit';
+    }
+    if (!mod && !isTypingTarget(e.target) && app.conn.isSignedIn()) {
+      const result = consumeChord(e, app); if (result !== undefined) return result;
+      if (e.key.toLowerCase() === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
+    }
+    return null;
+  }
+  // Workbench-only keys remain completely disabled on Dashboard.
+  if (mod && e.key === 'Enter') {
+    if (e.shiftKey) { if (!app.conn.isSignedIn()) return null; e.preventDefault(); if (editorMode === 'spec') { app.actions.formatSpec(); return 'formatSpec'; } app.actions.formatQuery(); return 'formatQuery'; }
+    if (editorMode !== 'sql') return null; e.preventDefault(); app.actions.run(); return 'run';
+  }
+  if (mod && e.altKey && (e.key === '1' || e.key === '2')) { if (!app.conn.isSignedIn()) return null; e.preventDefault(); const mode = e.key === '1' ? 'sql' : 'spec'; app.actions.setEditorMode(mode); return mode + 'Mode'; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 's') { if (!app.conn.isSignedIn() || editorMode !== 'sql') return null; e.preventDefault(); app.actions.share(); return 'share'; }
+  if (mod && e.key.toLowerCase() === 's') { if (!app.conn.isSignedIn()) return null; e.preventDefault(); app.actions.save(); return 'save'; }
+  if (mod && e.key.toLowerCase() === 'a') {
+    if (isTypingTarget(e.target)) return null;
+    const doc = e.target?.ownerDocument || app.document || document;
+    const box = doc.querySelector('.cd-pre') || doc.querySelector('.raw-text-view, .json-view');
+    if (!box) return null; e.preventDefault(); box.ownerDocument.defaultView!.getSelection()!.selectAllChildren(box); return 'selectAll';
+  }
+  if (!mod && !isTypingTarget(e.target) && app.conn.isSignedIn()) {
+    const result = consumeChord(e, app); if (result !== undefined) return result;
+    if (e.key.toLowerCase() === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
   }
   return null;
 }

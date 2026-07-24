@@ -732,8 +732,11 @@ body {
   border: 1px solid var(--border); border-radius: 10px;
   padding: 18px 20px;
   min-width: 360px; max-width: 480px;
+  max-height: calc(100dvh - 32px);
+  display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
+.modal-card-body { overflow-y: auto; }
 .modal-card h2 {
   margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--fg);
 }
@@ -754,6 +757,8 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px; color: var(--fg);
 }
+.shortcut-keys { display: inline-flex; align-items: center; gap: 4px; }
+.shortcut-then { color: var(--fg-faint); font-size: 11px; }
 .modal-card .close-row {
   margin-top: 12px; display: flex; justify-content: flex-end;
 }

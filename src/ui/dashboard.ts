@@ -133,6 +133,7 @@ export interface DashboardApp {
   currentWorkspace: StoredWorkspaceV2 | null;
   sqlRoute: SqlRoute;
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
+  surfaceCommands: App['surfaceCommands'];
   renderDashboard(): void;
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
@@ -442,6 +443,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // call installed on this window before this call installs its own (see
   // `installedGridResizeListener`'s own doc comment above).
   disposeDashboardSurface();
+  app.surfaceCommands = null;
 
   const workspace = app.currentWorkspace;
   const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
@@ -523,6 +525,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
     initialFilters: initialBag,
   });
+  // The global shortcut reaches this route-local port only while its renderer
+  // generation is current. It is cleared by both Dashboard cleanup and every
+  // application surface transition.
+  const commandPort = { surface: 'dashboard' as const, generation: surfaceGeneration, refresh: () => session.refresh() };
+  app.surfaceCommands = commandPort;
   let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
   const syncSessionDocument = (next: DashboardDocumentV1): void => {
     session.syncDocument(next);
@@ -2199,6 +2206,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rebuild must not leave Chart.js observers, signal effects, popovers, or
   // viewer requests attached to the replaced page.
   installedDashboardCleanup = () => {
+    if (app.surfaceCommands === commandPort) app.surfaceCommands = null;
     currentFilterBar?.dispose();
     currentFilterBar = null;
     if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
