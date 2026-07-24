@@ -3,6 +3,7 @@
 
 # Local developer automation
 /Makefile
+*~
 
 # Bundle-size report output (npm run size-report) — a CI artifact, not committed
 /bundle-report/
