@@ -130,3 +130,54 @@ service:
 The chart source is in [`helm/altinity-sql-browser/`](../helm/altinity-sql-browser/);
 a ready-made demo overlay is [`deploy/helm/values-demo.yaml`](../deploy/helm/values-demo.yaml).
 Plain (no-Helm) manifests are in [`deploy/k8s/`](../deploy/k8s/).
+
+## Testing
+
+```bash
+npm test          # run once with coverage
+npm run test:watch
+```
+
+Coverage is enforced **per file** (no global aggregate can hide a weak module).
+Pure, network, state, and DOM/render modules are held at
+**100/100/100/100** (statements / branches / functions / lines); the browser
+controller and bootstrap have lower gates and integration coverage. The fetch,
+crypto, and storage seams are injected, so the suite needs no mocking libraries.
+
+### End-to-end (real browser)
+
+happy-dom has no real layout or scrollbars, so render-layer bugs (keyboard
+routing through the real engine, completion popup timing, drop-point geometry)
+can't be caught by the unit suite. A small Playwright harness mounts the real
+`src/` modules in **Chromium, Firefox and WebKit** for those cases — WebKit is
+the Safari proxy.
+
+```bash
+npx playwright install chromium firefox webkit   # once per machine
+npm run test:e2e
+```
+
+The harness (`tests/e2e/`) serves the repo over HTTP and imports the actual
+source as native ESM — no bundling, always current. It is **not** part of
+`npm test` or the coverage gate.
+
+## Releasing
+
+Releases are cut by pushing a version tag — `.github/workflows/release.yml` then
+runs the coverage gate, assembles the bundle, and publishes a GitHub Release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The release attaches `altinity-sql-browser.tar.gz` (+ `.sha256`) and the raw
+`sql.html`. The bundle is built by `build/bundle.sh` (also runnable locally), and
+every PR smoke-tests it in CI (`bundle` job: extract → boot the runner → fetch
+`/sql` + `/config.json`). The `curl | sh` `install.sh` resolves the latest tag and
+installs that artifact.
+
+`package-lock.json` is committed and every CI/release job uses `npm ci`, so a tag
+build resolves the same complete dependency graph—including transitives—as a
+local checkout of that commit. npm records platform-specific esbuild binaries as
+optional packages and installs only the current platform's binary; the lockfile
+therefore remains portable between Linux CI and macOS development.
