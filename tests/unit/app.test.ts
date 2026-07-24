@@ -972,10 +972,18 @@ describe('renderApp shell', () => {
       .toEqual(['SQL Browser', 'Dashboard']);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
     app.navigateSqlRoute = vi.fn(async () => {});
+    // File → New workspace replaces the active aggregate without rebuilding
+    // this header. Its surface controls must route to the replacement, not
+    // the key captured when the header first mounted.
+    app.currentWorkspace = {
+      storageVersion: 2, id: 'new-workspace', key: 'sql_library_7',
+      name: 'SQL Library', queries: [], dashboard: null,
+    };
+    app.state.workspaceKey = 'sql_library_7';
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((button) => button.textContent === 'Dashboard')!.click();
     expect(app.navigateSqlRoute).toHaveBeenCalledWith({
-      surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit',
+      surface: 'dashboard', workspaceKey: 'sql_library_7', mode: 'edit',
     }, 'push');
     expect(qs(app.root, '.sidebar')).not.toBeNull();
     expect(qs(app.root, '.cm-editor')).not.toBeNull();

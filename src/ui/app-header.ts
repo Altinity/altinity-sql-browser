@@ -25,17 +25,20 @@ export function routeButton(
 }
 
 function surfaceSwitch(app: App): HTMLElement {
-  const key = app.currentWorkspace?.key ?? app.state.workspaceKey;
   const dashboard = app.sqlRoute.surface === 'dashboard';
+  // The header stays mounted when File → New workspace swaps the active
+  // aggregate. Resolve at click time so its route never retains the workspace
+  // key from the header's original render.
+  const workspaceKey = (): string => app.currentWorkspace?.key ?? app.state.workspaceKey;
   return h('div', {
     class: 'editor-mode-switch app-surface-switch',
     role: 'group', 'aria-label': 'Application surface',
   },
   routeButton('SQL Browser', !dashboard, () => {
-    void app.navigateSqlRoute({ surface: 'workspace', workspaceKey: key }, 'push');
+    void app.navigateSqlRoute({ surface: 'workspace', workspaceKey: workspaceKey() }, 'push');
   }),
   routeButton('Dashboard', dashboard, () => {
-    void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: key, mode: 'edit' }, 'push');
+    void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: workspaceKey(), mode: 'edit' }, 'push');
   }));
 }
 
