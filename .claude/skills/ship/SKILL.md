@@ -46,6 +46,7 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 ## 6 — PR
 - Performed by **this session only** (see the subagent note above) — never delegate the commit/push/PR-create sequence to a spawned agent.
 - Commit using the repo's footer convention (Co-Authored-By + Claude-Session). `git push -u origin <branch>`.
+- **Use the authenticated GitHub CLI directly; do not use the GitHub connector.** Its collaborator preflight is known to fail for this Altinity organization repository despite the ChatGPT Codex Connector installation having all-repository and pull-request write access.
 - `gh pr create --base main` — title + body per `.github/PULL_REQUEST_TEMPLATE.md`; **`Closes #<ISSUE>`** if it fully satisfies the issue, else **`Part of #<ISSUE>`**. Tick the checklist (gate, layers, deps, CHANGELOG, reconcile).
 - Report the **PR URL**.
 
