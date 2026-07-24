@@ -170,7 +170,8 @@ export function openFileMenu(app: App): void {
     { kind: 'custom', node: countRow },
   ];
 
-  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows });
+  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows,
+    onKeyboardOwnerChange: (owner) => { app.keyboardOwner = owner; app.resetShortcutChord(); } });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
   // own) — they're display:none inputs `.click()`-triggered by the Import
   // queries / Import workspace items above. Parent them to the mounted menu

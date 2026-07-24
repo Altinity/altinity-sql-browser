@@ -155,6 +155,11 @@ export interface AppDom {
   varStripDeferHooked?: boolean;
 }
 
+/** The currently open UI primitive that has exclusive keyboard handling. */
+export interface KeyboardOwner {
+  kind: 'modal' | 'menu' | 'popover';
+}
+
 /** The live ClickHouse auth context every query call site reads/mutates —
  * a structural alias of `application/connection-session.ts`'s own
  * `SessionChCtx` (the session is the one place that constructs and mutates
@@ -222,6 +227,9 @@ export interface App {
   dom: AppDom;
   root: Element | null;
   document: Document;
+  /** Set by shared overlay primitives for the duration of their open lifecycle. */
+  keyboardOwner: KeyboardOwner | null;
+  resetShortcutChord(): void;
 
   /** The auth + config + ClickHouse connection lifecycle (#276 Phase 2) —
    *  OAuth PKCE login/refresh, Basic probing, and IdP config resolution,

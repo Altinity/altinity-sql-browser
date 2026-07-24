@@ -25,6 +25,7 @@ import { buildFilterOptionField } from './filter-option-field.js';
 import type { FilterFieldOption } from './filter-option-field.js';
 import { buildMultiSelectField } from './multi-select-field.js';
 import { buildTimeRangeField } from './time-range-field.js';
+import type { KeyboardOwner } from './app.types.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
@@ -89,6 +90,7 @@ export interface BuildFilterBarOptions {
    *  `session.applyFilters` over the group's from/to filter ids. Only reached
    *  when `timeRange` built at least one control. */
   onApplyTimeRange?(group: DashboardTimeRangeGroup, from: string, to: string): void;
+  onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
 /** #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
@@ -450,6 +452,7 @@ export function buildFilterBar(
             app.params.saveFilterActive();
             onCommit(p.name);
           },
+          onKeyboardOwnerChange: options.onKeyboardOwnerChange,
         });
         // #335: a multiselect handle already satisfies `FieldHandle` directly.
         handles.set(p.name, msField);
@@ -592,6 +595,7 @@ export function buildFilterBar(
         fromValue: tr.fromValue, toValue: tr.toValue, active: tr.active,
         waveNowMs: tr.waveNowMs, wallNow: app.wallNow, getRecents: tr.recents,
         onApply: (from, to) => options.onApplyTimeRange?.(tr.group, from, to),
+        onKeyboardOwnerChange: options.onKeyboardOwnerChange,
       });
       handles.set(`group:${tr.group.key}`, trField);
       timeSection.push(trField.el);

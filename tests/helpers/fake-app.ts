@@ -432,6 +432,8 @@ const appDefaults: App = {
   sqlRoute: { surface: 'workspace', workspaceKey: null },
   currentWorkspace: null,
   workspaceRouteStatus: 'ready',
+  keyboardOwner: null,
+  resetShortcutChord: () => {},
   surfaceCommands: null,
   captureSurfaceGeneration: () => 0,
   isSurfaceGenerationCurrent: (generation) => generation === 0,

@@ -23,6 +23,7 @@
 // convention), so this is fully unit-testable under happy-dom.
 
 import { h, fixedAnchor } from './dom.js';
+import type { KeyboardOwner } from './app.types.js';
 
 /** One row of a dropdown menu.
  *  - `item` — an actionable `.fm-item` row: icon + label + optional meta text
@@ -56,6 +57,7 @@ export interface MenuOptions {
    *  overlay click, an item's own click, or an explicit `handle.close()`) —
    *  lets the caller clear its own open/closed bookkeeping. */
   onClose?: () => void;
+  onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
 export interface MenuHandle {
@@ -141,9 +143,11 @@ export function openMenu(opts: MenuOptions): MenuHandle {
     overlay.remove();
     trigger.setAttribute('aria-expanded', 'false');
     onClose?.();
+    opts.onKeyboardOwnerChange?.(null);
   }
 
   trigger.setAttribute('aria-haspopup', 'menu');
+  opts.onKeyboardOwnerChange?.({ kind: 'menu' });
   trigger.setAttribute('aria-expanded', 'true');
   doc.body.appendChild(overlay);
   doc.body.appendChild(menu);

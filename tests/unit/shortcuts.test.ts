@@ -121,10 +121,16 @@ describe('handleKeydown', () => {
       navigateSqlRoute: vi.fn(async () => {}) });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
     expect(refresh).toHaveBeenCalledOnce();
-    expect(handleKeydown(ev({ ctrlKey: true, altKey: true, key: '1' }), app)).toBe('dashboardView');
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'v' }), app)).toBe('dashboardView');
     expect(app.navigateSqlRoute).toHaveBeenCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' }, 'replace');
+    (app.sqlRoute as { mode?: 'view' | 'edit' }).mode = 'view';
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'e' }), app)).toBe('dashboardEdit');
+    expect(app.navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'replace');
     const viewing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' } });
-    expect(handleKeydown(ev({ metaKey: true, altKey: true, key: '1' }), viewing)).toBeNull();
+    expect(handleKeydown(ev({ key: 'g' }), viewing)).toBe('chord');
+    expect(handleKeydown(ev({ key: 'v' }), viewing)).toBeNull();
     app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
   });
@@ -134,6 +140,8 @@ describe('handleKeydown', () => {
     const navigateSqlRoute = vi.fn(async () => {});
     let generation = 1;
     const app = makeApp({ navigateSqlRoute, captureSurfaceGeneration: () => generation });
+    expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
+    // A repeated G deliberately restarts the chord's expiration window.
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
@@ -160,12 +168,12 @@ describe('handleKeydown', () => {
     const refresh = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
       surfaceCommands: { surface: 'dashboard', generation: 0, refresh } });
-    document.body.appendChild(document.createElement('div')).className = 'fm-overlay';
+    app.keyboardOwner = { kind: 'popover' };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
-    document.body.innerHTML = '';
+    app.keyboardOwner = null;
     expect(handleKeydown(ev({ key: 'g', target: { tagName: 'SELECT' } }), app)).toBeNull();
     expect(handleKeydown(ev({ key: 'g', target: { getAttribute: () => 'textbox' } }), app)).toBeNull();
-    app.state.shortcutsOpen.value = true;
+    app.keyboardOwner = { kind: 'modal' };
     expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
   });
 
@@ -204,10 +212,21 @@ describe('handleKeydown', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
-  it('⌘Enter runs (even when signed out)', () => {
-    const app = makeApp({ conn: { isSignedIn: () => false } });
+  it('runs a SQL document when signed in', () => {
+    const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
-    expect(app.actions.run).toHaveBeenCalled();
+    expect(app.actions.run).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed for every application action when signed out', () => {
+    const app = makeApp({ conn: { isSignedIn: () => false } });
+    for (const event of [
+      { metaKey: true, key: 'Enter' }, { metaKey: true, key: 's' },
+      { metaKey: true, shiftKey: true, key: 'Enter' }, { key: 'g' }, { key: '?' },
+    ]) expect(handleKeydown(ev(event), app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(app.actions.save).not.toHaveBeenCalled();
+    expect(app.actions.formatQuery).not.toHaveBeenCalled();
   });
   it('a key the editor already consumed (defaultPrevented) never triggers a global action', () => {
     const app = makeApp();

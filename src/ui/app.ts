@@ -60,7 +60,7 @@ import { recentOptions } from '../core/recent-values.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
 import { renderLogin } from './login.js';
-import { openShortcuts } from './shortcuts.js';
+import { openShortcuts, resetShortcutChord } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
 import type { App, ActionsRegistry, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
@@ -236,6 +236,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.sqlRoute = parseSqlRoute(routeSearch);
   app.currentWorkspace = null;
   app.workspaceRouteStatus = 'ready';
+  app.keyboardOwner = null;
+  app.resetShortcutChord = () => resetShortcutChord(app);
   app.surfaceCommands = null;
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
@@ -380,7 +382,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // structural-only reinterpretation, not a new runtime assumption (a null
   // root would already throw inside login.ts's own `app.root.replaceChildren`
   // either way).
-  const renderLoginApp = (msg?: string): void => renderLogin(app as App & { root: Element }, msg);
+  const renderLoginApp = (msg?: string): void => {
+    app.keyboardOwner = null;
+    resetShortcutChord(app);
+    renderLogin(app as App & { root: Element }, msg);
+  };
   // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
   // PKCE login/refresh, Basic probing, and IdP config resolution live in
   // `application/connection-session.ts`,
@@ -414,6 +420,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   // workbench session stays reusable after destroy(): the next renderApp
   // re-attaches its shell effects.
   app.signOut = () => {
+    app.keyboardOwner = null;
+    resetShortcutChord(app);
     workbench.destroy();
     // Plain abort (no clearResult settle) — the login render replaces the
     // whole DOM next, so settling the visible result would be a wasted paint.
@@ -1266,12 +1274,16 @@ export function createApp(env: CreateAppEnv = {}): App {
       doc.removeEventListener('keydown', onKey, true);
       doc.removeEventListener('mousedown', onOutside, true);
       if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
+      app.keyboardOwner = null;
+      resetShortcutChord(app);
     };
     const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
     const onOutside = (e: MouseEvent): void => {
       if (app.dom[refKey] && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
     };
     app.dom[refKey] = node;
+    app.keyboardOwner = { kind: 'popover' };
+    resetShortcutChord(app);
     const r = anchorEl.getBoundingClientRect();
     // Right-align under the button.
     const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 }) as { top: number; right: number };
@@ -1538,6 +1550,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   let disposeWorkbenchMount: (() => void) | null = null;
   const ignoreExternalWorkspaceChange = (): void => {};
   app.renderDashboard = () => {
+    resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;
     closeAnchoredPopovers();
@@ -1548,6 +1561,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return renderDashboard(app);
   };
   const disposeCurrentSurface = (): void => {
+    resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
@@ -1933,6 +1947,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.navigateSqlRoute = async (route, method) => {
+    resetShortcutChord(app);
     const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
     writeRoute(route, method);
     if (workspaceChanged) {
@@ -1947,6 +1962,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.handleSqlPopState = async () => {
+    resetShortcutChord(app);
     const previousKey = app.sqlRoute.workspaceKey;
     routeSearch = loc.search;
     app.sqlRoute = parseSqlRoute(routeSearch);
@@ -2054,6 +2070,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.renderApp = () => {
+    resetShortcutChord(app);
     surfaceGeneration += 1;
     app.surfaceCommands = null;
     closeAnchoredPopovers();
