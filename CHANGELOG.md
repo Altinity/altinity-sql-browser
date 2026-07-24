@@ -15,7 +15,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Dashboard gains refresh, View/Edit, and `G` navigation commands while stale
   viewer sessions, loading routes, stacked overlays, and nested text inputs
   fail closed. Contextual help is torn down on route and authentication
-  transitions so it cannot survive onto another surface or Login.
+  transitions so it cannot survive onto another surface or Login. Dashboard
+  Style adds `G G`, `G F`, `G R`, `G 2`, and `G 3` for Grid Tiles, Full view,
+  Report, and two/three columns; View mode previews every style without
+  changing the shared dashboard.
 
 ## [0.6.4] - 2026-07-24
 

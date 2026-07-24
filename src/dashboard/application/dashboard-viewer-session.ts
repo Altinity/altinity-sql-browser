@@ -172,6 +172,11 @@ export type DashboardLayoutView =
   | (FlowLayoutModel & { engine: 'flow' })
   | { engine: 'grafana-grid'; grid: GrafanaGridLayoutModel; renderMode: GridRenderMode };
 
+/** The five presentation styles exposed by the Dashboard header. This is a
+ * runtime choice: View mode can select any style without changing the shared
+ * document, while Edit mode maps the same values to authoring commands. */
+export type DashboardStyle = 'grafana-grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
+
 export interface DashboardViewState {
   /** Search-matched tiles only, in their unchanged saved order. */
   tiles: ViewerTileState[];
@@ -182,6 +187,8 @@ export interface DashboardViewState {
   resettableFilterIds: string[];
   filters: ViewerFilterState[];
   layout: DashboardLayoutView;
+  /** The effective header style, including any session-local View-mode choice. */
+  style: DashboardStyle;
   /** Count of ACTIVE filter DEFINITIONS (not non-empty stored values, #188). */
   activeFilterCount: number;
   running: boolean;
@@ -332,6 +339,9 @@ export interface DashboardViewerSession {
    *  `documentRef` entirely. A fresh session (reload/new viewer) always starts
    *  at 'tiles'. */
   setGridRenderMode(mode: GridRenderMode): void;
+  /** Select a complete session-local Dashboard style. Unlike `syncDocument`,
+   * this never changes the source document or re-runs tile queries. */
+  setDashboardStyle(style: DashboardStyle): void;
   /** Cancel all work and turn every later entry point into a no-op. */
   destroy(): void;
 }
@@ -489,6 +499,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // outside `documentRef` — never read/written by any command, never
   // persisted. A fresh session always starts at 'tiles'.
   let gridRenderMode: GridRenderMode = 'tiles';
+  // View mode may preview any header style without authoring a layout. `null`
+  // means render the document's authored style (plus the legacy Full override).
+  let dashboardStyleOverride: DashboardStyle | null = null;
   let tileSearch = '';
   // #335: the single wall-clock snapshot the LATEST execution wave resolved its
   // relative tokens against (published as `state.waveWallNowMs`). `null` until
@@ -905,16 +918,31 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // primary with a valid flow@1 fallback still resolves to the flow plugin
     // here, exactly as before #291 (`computeFlowLayout`'s own fallback
     // handling, untouched) — flow behavior stays bit-identical.
-    const plugin = resolveLayoutPluginSync(documentRef.layout);
+    const selectedStyle: DashboardStyle = dashboardStyleOverride
+      ?? (documentRef.layout.type === 'grafana-grid'
+        ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
+        : (documentRef.layout.preset as DashboardStyle));
+    const layoutDocument = dashboardStyleOverride === null
+      ? documentRef.layout
+      : selectedStyle === 'grafana-grid' || selectedStyle === 'full'
+        ? (documentRef.layout.type === 'grafana-grid'
+          ? documentRef.layout
+          : { type: 'grafana-grid', version: 1, items: {} })
+        : {
+          type: 'flow', version: 1, preset: selectedStyle,
+          items: documentRef.layout.type === 'flow' ? documentRef.layout.items : {},
+        };
+    const renderMode: GridRenderMode = selectedStyle === 'full' ? 'full' : 'tiles';
+    const plugin = resolveLayoutPluginSync(layoutDocument);
     const layout: DashboardLayoutView = plugin.type === 'grafana-grid'
       ? {
         engine: 'grafana-grid',
         grid: computeGrafanaGridLayout({
-          tiles: visible, layout: documentRef.layout, containerWidth: deps.containerWidth?.(), renderMode: gridRenderMode,
+          tiles: visible, layout: layoutDocument, containerWidth: deps.containerWidth?.(), renderMode,
         }),
-        renderMode: gridRenderMode,
+        renderMode,
       }
-      : { engine: 'flow', ...computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }) };
+      : { engine: 'flow', ...computeFlowLayout({ tiles: visible, layout: layoutDocument, mobile }) };
     return {
       tiles: visibleRuntimes.map((runtime) => ({ ...runtime.state })),
       totalTileCount: tiles.length,
@@ -927,6 +955,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       }).map((filter) => filter.def.id),
       filters: filters.map((filter) => ({ ...filter.state })),
       layout,
+      style: selectedStyle,
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
       running, updatedAt, diagnostics: presentationDiagnostics,
       // #189: construction-time selection-resolution diagnostics are PERSISTENT
@@ -1759,6 +1788,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     publish();
   }
 
+  function setDashboardStyle(style: DashboardStyle): void {
+    if (destroyed || dashboardStyleOverride === style) return;
+    dashboardStyleOverride = style;
+    publish();
+  }
+
   function destroy(): void {
     destroyed = true;
     for (const runtime of tiles) {
@@ -1781,6 +1816,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     state: stateSignal as ReadonlySignal<DashboardViewState>,
     controls, timeRangeGroups, getFilterField,
     start, refresh, refreshTile, setFilter, applyFilter, applyFilters, clearFilter, clearAllFilters, resetFilters,
-    setTileSearch, cancelTile, syncDocument, setGridRenderMode, destroy,
+    setTileSearch, cancelTile, syncDocument, setGridRenderMode, setDashboardStyle, destroy,
   };
 }

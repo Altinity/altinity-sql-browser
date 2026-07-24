@@ -8,7 +8,8 @@ import type { SqlRoute } from '../core/sql-route.js';
 type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
 type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
 type ShortcutDispatch = 'application' | 'editor';
-type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'g-v' | 'g-e' | 'question' | 'escape';
+type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'g-v' | 'g-e' | 'g-g' | 'g-f' | 'g-r' | 'g-2' | 'g-3' | 'g-style' | 'question' | 'escape';
+type DashboardStyle = 'grafana-grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
 
 export interface ShortcutDefinition {
   id: string;
@@ -19,6 +20,8 @@ export interface ShortcutDefinition {
   dispatch: ShortcutDispatch;
   sequence?: readonly [string, string];
   available?: (app: ShortcutsApp) => boolean;
+  /** Dispatch-only entries can be summarized by a single help row. */
+  help?: boolean;
   matches?: (e: ShortcutKeydownEvent, app: ShortcutsApp) => boolean;
   run?: (e: ShortcutKeydownEvent, app: ShortcutsApp) => string | null;
 }
@@ -40,6 +43,11 @@ export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
   { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', dispatch: 'application', available: (a) => validDashboardPort(a), matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.surfaceCommands!.refresh(); return 'dashboardRefresh'; } },
   { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v', dispatch: 'application', sequence: ['g', 'v'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'view') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'view' }, 'replace'); return 'dashboardView'; } },
   { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e', dispatch: 'application', sequence: ['g', 'e'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'edit') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'edit' }, 'replace'); return 'dashboardEdit'; } },
+  { id: 'dashboard-grid-tiles', label: 'Grid Tiles', section: 'dashboard', surface: 'dashboard', key: 'g-g', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'g'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('grafana-grid'); return 'dashboardGridTiles'; } },
+  { id: 'dashboard-full-view', label: 'Full view', section: 'dashboard', surface: 'dashboard', key: 'g-f', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'f'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('full'); return 'dashboardFullView'; } },
+  { id: 'dashboard-report', label: 'Report', section: 'dashboard', surface: 'dashboard', key: 'g-r', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'r'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('report'); return 'dashboardReport'; } },
+  { id: 'dashboard-columns-2', label: '2 columns', section: 'dashboard', surface: 'dashboard', key: 'g-2', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', '2'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('columns-2'); return 'dashboardColumns2'; } },
+  { id: 'dashboard-columns-3', label: '3 columns', section: 'dashboard', surface: 'dashboard', key: 'g-3', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', '3'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('columns-3'); return 'dashboardColumns3'; } },
   { id: 'open-help', label: 'Show this dialog', section: 'general', surface: 'all', key: 'question', dispatch: 'application', matches: (e) => e.key === '?' && !modKey(e) && !isTypingTarget(e.target), run: (e, a) => { e.preventDefault(); a.actions.openShortcuts(); return 'shortcuts'; } },
   { id: 'close-overlay', label: 'Close dialog', section: 'general', surface: 'all', key: 'escape', dispatch: 'application', matches: (e) => e.key === 'Escape', run: (e, a) => { if (a.sqlRoute.surface === 'workspace' && a.closeDocPane?.()) { e.preventDefault(); return 'close-doc-pane'; } if (a.sqlRoute.surface === 'workspace' && a.state.running.value) { e.preventDefault(); a.actions.cancel(); return 'cancel'; } return null; } },
 ];
@@ -52,6 +60,7 @@ export interface SurfaceCommandPort {
   surface: 'dashboard';
   generation: number;
   refresh(): void;
+  setDashboardStyle(style: DashboardStyle): void;
 }
 
 /** Narrow controller contract; it deliberately avoids importing the full App. */
@@ -82,7 +91,9 @@ function keyParts(key: KeyName, mac: boolean): string[] {
     'mod-enter': [mod, 'Enter'], 'mod-shift-enter': [mod, shift, 'Enter'], 'mod-s': [mod, 'S'],
     'mod-shift-s': [mod, shift, 'S'], 'mod-alt-1': [mod, alt, '1'], 'mod-alt-2': [mod, alt, '2'],
     'mod-z': [mod, 'Z'], 'mod-shift-z': [mod, shift, 'Z'], f1: ['F1'], 'g-d': ['G', 'then', 'D'],
-    'g-w': ['G', 'then', 'W'], 'g-v': ['G', 'then', 'V'], 'g-e': ['G', 'then', 'E'], question: ['?'], escape: ['Esc'],
+    'g-w': ['G', 'then', 'W'], 'g-v': ['G', 'then', 'V'], 'g-e': ['G', 'then', 'E'],
+    'g-g': ['G', 'then', 'G'], 'g-f': ['G', 'then', 'F'], 'g-r': ['G', 'then', 'R'],
+    'g-2': ['G', 'then', '2'], 'g-3': ['G', 'then', '3'], 'g-style': ['G', 'plus', 'G/F/R/2/3'], question: ['?'], escape: ['Esc'],
   };
   return keys[key];
 }
@@ -97,7 +108,7 @@ function visibleDefinitions(app: ShortcutsApp): ShortcutDefinition[] {
 function keyCaps(parts: string[]): HTMLElement[] {
   return parts.map((part, index) => part === 'then'
     ? h('span', { class: 'shortcut-then' }, 'then')
-    : h('kbd', { key: String(index) }, part));
+    : part === 'plus' ? h('span', { class: 'shortcut-plus' }, '+') : h('kbd', { key: String(index) }, part));
 }
 
 const sectionNames: Record<Section, string> = {
@@ -138,12 +149,17 @@ export function openShortcuts(app: ShortcutsApp, onClose?: () => void): { backdr
   const mac = platformIsMac(doc);
   const sections: HTMLElement[] = [];
   for (const section of ['application', 'workspace', 'dashboard', 'general'] as const) {
-    const entries = rows.filter((row) => row.section === section);
+    const entries = rows.filter((row) => row.section === section && row.help !== false);
     if (!entries.length) continue;
+    const styleHelp = section === 'dashboard' && rows.some((row) => row.id === 'dashboard-grid-tiles')
+      ? [h('div', { class: 'row' }, h('span', { class: 'label' }, 'Style'),
+        h('span', { class: 'shortcut-keys' }, ...keyCaps(keyParts('g-style', mac))))]
+      : [];
     sections.push(h('section', { class: 'shortcut-section', 'aria-label': sectionNames[section] },
       h('h3', { class: 'section-label' }, sectionNames[section]),
       ...entries.map((row) => h('div', { class: 'row' }, h('span', { class: 'label' }, row.label),
         h('span', { class: 'shortcut-keys' }, ...keyCaps(keyParts(row.key, mac))))),
+      ...styleHelp,
     ));
   }
   if (app.sqlRoute.surface === 'workspace') {
@@ -209,10 +225,11 @@ function consumeChord(e: ShortcutKeydownEvent, app: ShortcutsApp): string | null
     && (chord.generation === null || chord.generation === app.captureSurfaceGeneration?.());
   if (!stillCurrent) return null;
   const key = e.key.toLowerCase();
-  if (key === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
   const command = visibleDefinitions(app).find((definition) => definition.sequence?.[0] === 'g'
     && definition.sequence[1] === key);
-  return command?.run ? command.run(e, app) : null;
+  if (command?.run) return command.run(e, app);
+  if (key === 'g') { beginChord(app); e.preventDefault(); return 'chord'; }
+  return null;
 }
 
 /** Global dispatcher. Commands are gated by current route, identity and surface. */

@@ -20,16 +20,18 @@ function itemRow(label: string, onClick = vi.fn(), extra: Partial<MenuRow & { ki
 }
 
 describe('openMenu — structure (every row kind)', () => {
-  it('renders item (icon+label+meta), section, sep, and a plain custom row', () => {
+  it('renders item (leading+icon+label+trailing+meta), section, sep, and a plain custom row', () => {
     const btn = trigger();
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const leading = document.createElement('kbd'); leading.textContent = 'G';
+    const trailing = document.createElement('kbd'); trailing.textContent = 'G + G';
     const custom = document.createElement('div');
     custom.className = 'my-custom-row';
     const onClick = vi.fn();
     const handle = openMenu({
       document, trigger: btn,
       rows: [
-        { kind: 'item', icon, label: 'Do thing', meta: '.json', onClick },
+        { kind: 'item', leading, icon, label: 'Do thing', trailing, meta: '.json', onClick },
         { kind: 'section', label: 'A section' },
         { kind: 'sep' },
         { kind: 'custom', node: custom },
@@ -38,8 +40,10 @@ describe('openMenu — structure (every row kind)', () => {
     expect(handle.el.classList.contains('file-menu')).toBe(true);
     expect(handle.el.getAttribute('role')).toBe('menu');
     const item = handle.el.querySelector('.fm-item')!;
+    expect(item.querySelector('.fm-leading')!.textContent).toBe('G');
     expect(item.querySelector('.fm-icon svg')).not.toBeNull();
     expect(item.querySelector('.fm-label')!.textContent).toBe('Do thing');
+    expect(item.querySelector('.fm-trailing')!.textContent).toBe('G + G');
     expect(item.querySelector('.fm-meta')!.textContent).toBe('.json');
     expect(item.getAttribute('role')).toBe('menuitem');
     expect(handle.el.querySelector('.fm-section')!.textContent).toBe('A section');
