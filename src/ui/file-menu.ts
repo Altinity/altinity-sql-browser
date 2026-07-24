@@ -1,8 +1,8 @@
 // The header "File ▾" menu (#287 W5): resource-oriented portable-bundle
 // workspace operations — New workspace / Import queries / Import Dashboard /
 // Import workspace / Export Dashboard / Export workspace — plus the kept
-// "Open as dashboard" (#149), the Variable history section, and the one-way
-// Markdown/SQL "share" downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
+// "Open as dashboard" (#149), and the one-way Markdown/SQL "share"
+// downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
 // #406 makes workspace import additive: local identity is reminted, the
 // generated key is made unique, and the previously active record is untouched.
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
@@ -153,28 +153,11 @@ export function openFileMenu(app: App): void {
   const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
   const openWorkspaceInput = pickerInput(app, (f) => onOpenWorkspaceFile(app, f));
 
-  // Variable recent-value history (#171): this is the closest thing the app
-  // has to a "settings" surface today (no dedicated preferences panel exists
-  // yet — rg for one turned up nothing), so it follows the File menu's own
-  // established pattern (a labeled section + `.fm-item` rows) rather than
-  // inventing a new surface. "Remember recent variable values" toggles
-  // recording only — existing history is retained until explicitly cleared,
-  // by this action or a field's own "Clear recent" (combo-footer.js).
-  const historyToggle = h('label', { class: 'fm-item fm-toggle' },
-    h('input', {
-      type: 'checkbox', class: 'fm-checkbox',
-      checked: !app.state.varRecentDisabled,
-      onchange: (e: Event) => {
-        app.state.varRecentDisabled = !(e.target as HTMLInputElement).checked;
-        app.params.saveVarRecentDisabled();
-      },
-    }),
-    h('span', { class: 'fm-label' }, 'Remember recent variable values'));
   const countRow = h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace');
 
   // #342: the first four rows are one unlabeled primary-workspace-action
-  // group (no heading) in this exact order, followed by Share / Publish,
-  // then Variable history — the query-count footer stays last.
+  // group (no heading) in this exact order, followed by Share / Publish —
+  // the query-count footer stays last.
   const rows: MenuRow[] = [
     { kind: 'item', icon: Icon.plus(), label: 'New workspace…', onClick: () => newWorkspaceAction(app) },
     { kind: 'item', icon: Icon.folderOpen(), label: 'Import workspace…', onClick: () => openWorkspaceInput.click() },
@@ -184,16 +167,6 @@ export function openFileMenu(app: App): void {
     { kind: 'section', label: 'Share / Publish' },
     { kind: 'item', icon: Icon.download(), label: 'Download Markdown', meta: '.md', onClick: () => downloadAction(app, 'md') },
     { kind: 'item', icon: Icon.download(), label: 'Download SQL', meta: '.sql', onClick: () => downloadAction(app, 'sql') },
-    { kind: 'sep' },
-    { kind: 'section', label: 'Variable history' },
-    { kind: 'custom', node: historyToggle, focusable: true },
-    {
-      kind: 'item', icon: Icon.trash(), label: 'Clear all recent values',
-      onClick: () => {
-        app.params.clearAllVarRecent();
-        flashToast('Cleared recent variable values', { document: app.document });
-      },
-    },
     { kind: 'custom', node: countRow },
   ];
 

@@ -142,33 +142,6 @@ describe('header Dashboard nav (#302)', () => {
   });
 });
 
-describe('variable history (#171)', () => {
-  it('the toggle reflects the current preference and flips it on change', () => {
-    const app = mount();
-    app.state.varRecentDisabled = false;
-    openFileMenu(app);
-    const checkbox = document.querySelector<HTMLInputElement>('.fm-checkbox')!;
-    expect(checkbox.checked).toBe(true); // recording ON ⇒ box checked
-    checkbox.checked = false;
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.state.varRecentDisabled).toBe(true);
-    expect(app.params.saveVarRecentDisabled).toHaveBeenCalled();
-  });
-  it('starts unchecked when the preference is already disabled', () => {
-    const app = mount();
-    app.state.varRecentDisabled = true;
-    openFileMenu(app);
-    expect(document.querySelector<HTMLInputElement>('.fm-checkbox')!.checked).toBe(false);
-  });
-  it('"Clear all recent values" calls app.params.clearAllVarRecent and toasts', () => {
-    const app = mount();
-    openFileMenu(app);
-    click(item(/Clear all recent values/)!);
-    expect(app.params.clearAllVarRecent).toHaveBeenCalled();
-    expect(toast()).toContain('Cleared recent variable values');
-  });
-});
-
 describe('workspace title', () => {
   it('renders the name + dirty dot; inline rename commits on Enter through the workspace aggregate', async () => {
     const app = mount();
@@ -230,10 +203,10 @@ describe('file menu structure', () => {
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
       'New workspace…', 'Import workspace…', 'Export workspace…', 'Import queries…',
       'Download Markdown', 'Download SQL',
-      'Remember recent variable values', 'Clear all recent values',
     ]);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Share / Publish', 'Variable history']);
+      ['Share / Publish']);
+    expect(document.querySelector('.fm-checkbox')).toBeNull();
     expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in workspace');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);

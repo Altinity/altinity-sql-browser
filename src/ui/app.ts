@@ -443,12 +443,16 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (!chip) return;
     chip.classList.toggle('dim', !online);
     const host = app.conn.host();
-    const full = app.state.serverVersion;
-    // Show a short version (e.g. 26.3.10); full string on hover so the header
-    // doesn't crowd/overflow on a narrow window.
-    const version = chip.querySelector<HTMLElement>('.ver');
-    if (version) version.textContent = online ? `CH ${shortVersion(full)}` : 'offline';
-    chip.title = online ? `${host} · ClickHouse ${full}` : `${host} · offline`;
+    chip.title = online ? host : `${host} · offline`;
+    chip.setAttribute('aria-label', `ClickHouse connection: ${online ? 'connected' : 'offline'}`);
+    const state = chip.querySelector<HTMLElement>('.connection-state');
+    if (state) state.textContent = online ? 'Connected' : 'Offline';
+    const server = app.dom.userMenu?.querySelector<HTMLElement>('.um-server');
+    if (server) {
+      const version = app.state.serverVersion;
+      server.hidden = !version;
+      server.textContent = version ? `CH ${shortVersion(version)}` : '';
+    }
   }
   const catalog = createSchemaCatalogService({
     loadServerVersion: ch.loadServerVersion,
@@ -1497,7 +1501,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     const menu = h('div', { class: 'user-menu' },
       h('div', { class: 'um-id' }, conn.email()),
       logoutBtn,
-      h('div', { class: 'um-build', title: 'App version / build' }, app.build));
+      h('div', { class: 'um-build', title: 'App version / build' }, app.build),
+      h('div', {
+        class: 'um-server', title: 'ClickHouse version', hidden: !app.state.serverVersion,
+      }, app.state.serverVersion ? `CH ${shortVersion(app.state.serverVersion)}` : ''));
     ({ close } = anchoredPopover(menu, app.dom.userBtn!, 'userMenu'));
     setTimeout(() => logoutBtn.focus());
   }

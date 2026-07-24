@@ -8,9 +8,8 @@ import type { SpecEditorApp } from '../../src/editor/spec-editor.js';
 import type { EditorPort } from '../../src/editor/editor-port.types.js';
 import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
-import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
+import { libraryControls } from '../../src/ui/file-menu.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
-import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
@@ -992,12 +991,14 @@ describe('renderApp shell', () => {
     expect(app.dom.userBtn!.getAttribute('title')).toBe('me@example.com');
     await Promise.resolve();
   });
-  it('renders an already-probed ClickHouse version on the Workbench header', () => {
+  it('keeps the Workbench header focused on the ClickHouse endpoint', () => {
     const app = createApp(env());
     app.state.serverVersion = '26.7.1.42';
     app.renderApp();
-    expect(qs(app.root, '.conn-status').textContent).toBe('ch.example·CH 26.7.1');
-    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ch.example · ClickHouse 26.7.1.42');
+    expect(qs(app.root, '.connection-host').textContent).toBe('ch.example');
+    expect(qs(app.root, '.connection-state').textContent).toBe('Connected');
+    expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ch.example');
+    expect(qs(app.root, '.conn-status').getAttribute('aria-label')).toBe('ClickHouse connection: connected');
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
@@ -1007,11 +1008,14 @@ describe('renderApp shell', () => {
   });
   it('user menu: open → Log out clears tokens and shows login', () => {
     const { app, e } = rendered();
+    app.state.serverVersion = '26.7.1.42';
     app.dom.userBtn!.dispatchEvent(new Event('click'));
     const menu = qs(document, '.user-menu');
     expect(menu).not.toBeNull();
     expect(qs(menu, '.um-id').textContent).toBe('me@example.com');
     expect(qs(menu, '.um-build').textContent).toBe(app.build); // build stamp ('dev' here)
+    expect(qs(menu, '.um-server').textContent).toBe('CH 26.7.1');
+    expect(qs<HTMLElement>(menu, '.um-server').hidden).toBe(false);
     qs(menu, '.um-item.danger').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.conn.token()).toBeNull();
     expect(e.sessionStorage!.getItem('oauth_id_token')).toBeNull();
@@ -1065,18 +1069,30 @@ describe('loadVersion / loadSchema', () => {
     app.renderApp();
     await app.catalog.loadVersion();
     expect(app.state.serverVersion).toBe('26.3.1');
-    expect(app.dom.connStatus!.textContent).toContain('26.3.1');
     expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
-    expect(qs(app.dom.connStatus!, '.connection-sep')).not.toBeNull();
-    expect(app.dom.connStatus!.title).toBe(`${app.conn.host()} · ClickHouse 26.3.1`);
+    expect(app.dom.connStatus!.title).toBe(app.conn.host());
+    expect(qs(app.dom.connStatus!, '.connection-state')?.textContent).toBe('Connected');
   });
   it('marks offline when the version query fails', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ ok: false, status: 500, text: 'err' })]]) });
     const app = createApp(e);
     app.renderApp();
     await app.catalog.loadVersion();
-    expect(app.dom.connStatus!.textContent).toContain('offline');
+    expect(app.dom.connStatus!.title).toBe(`${app.conn.host()} · offline`);
     expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
+    expect(qs(app.dom.connStatus!, '.connection-state')?.textContent).toBe('Offline');
+    expect(app.dom.connStatus!.getAttribute('aria-label')).toBe('ClickHouse connection: offline');
+  });
+  it('updates an open user menu when the server-version probe finishes', async () => {
+    const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ json: { data: [{ v: '26.3.1.42' }] } })]]) });
+    const app = createApp(e);
+    app.renderApp();
+    app.dom.userBtn!.click();
+    const server = qs<HTMLElement>(document, '.um-server');
+    expect(server.hidden).toBe(true);
+    await app.catalog.loadVersion();
+    expect(server.hidden).toBe(false);
+    expect(server.textContent).toBe('CH 26.3.1');
   });
   it('records a schema error', async () => {
     const e = env({ fetch: makeFetch([
@@ -2905,22 +2921,6 @@ describe('recent-value history (#171)', () => {
     expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecent')!)).toEqual({ version: 1, nextSeq: 1, byName: {} });
   });
 
-  it('the File menu\'s "Clear all recent values" + preference toggle drive the same app seams', () => {
-    vi.stubGlobal('localStorage', memStore());
-    const { app } = appForRun([]);
-    app.state.varRecent = recordRecent(emptyRecentMap(), 'a', '1');
-    for (const node of libraryControls(app)) document.body.appendChild(node);
-    openFileMenu(app);
-    const checkbox = qs<HTMLInputElement>(document, '.fm-checkbox');
-    checkbox.checked = false;
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.state.varRecentDisabled).toBe(true);
-    expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecentDisabled')!)).toBe(true);
-    const clearAll = [...qsa(document, '.fm-item')].find((b) => /Clear all recent values/.test(b.textContent))!;
-    clearAll.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.state.varRecent.byName.a).toBeUndefined();
-    document.body.replaceChildren();
-  });
 });
 
 describe('formatQuery', () => {

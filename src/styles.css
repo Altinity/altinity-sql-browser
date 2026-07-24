@@ -324,17 +324,16 @@ body {
   background: var(--bg-chip);
 }
 .connection-host {
-  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 234px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--mono); color: var(--fg);
 }
-.connection-sep { color: var(--fg-faint); }
+.connection-state { display: none; }
 .conn-status::before {
   content: ''; width: 7px; height: 7px; border-radius: 4px;
   background: #22c55e; box-shadow: 0 0 6px #22c55e;
   flex-shrink: 0;
 }
 .conn-status.dim::before { background: var(--fg-faint); box-shadow: none; }
-.conn-status .ver { font-family: var(--mono); }
 .user-email {
   font-size: 11.5px; color: var(--fg-mute);
   font-family: var(--mono);
@@ -379,6 +378,10 @@ body {
 .user-menu .um-build {
   margin-top: 3px; padding: 7px 9px; border-top: 1px solid var(--border-faint);
   font-size: 10.5px; color: var(--fg-faint); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.user-menu .um-server {
+  padding: 0 9px 7px; font-size: 10.5px; color: var(--fg-faint); font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -2390,8 +2393,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
   .logo-name, .env-chip, .app-header .hd-divider, .hd-hide-mobile { display: none; }
-  .connection-chip .connection-host,
-  .connection-chip .connection-sep { display: none; }
+  .connection-chip .connection-host { display: none; }
+  .connection-chip .connection-state { display: inline; }
   /* Legacy header controls may still opt into hiding a nonessential label. */
   .hd-hide-mobile-label { display: none; }
   /* Cap the user-menu label so a long local-part (`user ▾`) can't widen the

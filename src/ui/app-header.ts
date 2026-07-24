@@ -1,6 +1,6 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { shortVersion, userShortName } from '../core/format.js';
+import { userShortName } from '../core/format.js';
 import { buildWorkspaceTitle, libraryControls } from './file-menu.js';
 import type { App } from './app.types.js';
 
@@ -48,13 +48,13 @@ export function buildAppHeader(app: App, options: AppHeaderOptions = {}): HTMLEl
     class: 'hd-btn', title: 'Toggle theme', onclick: () => app.toggleTheme(),
   }, app.state.theme === 'dark' ? Icon.sun() : Icon.moon());
 
-  const version = app.state.serverVersion;
   app.dom.connStatus = h('div', {
-    class: `conn-status connection-chip${version ? '' : ' dim'}`,
-    title: version ? `${app.conn.host()} · ClickHouse ${version}` : app.conn.host(),
+    class: `conn-status connection-chip${app.state.serverVersion ? '' : ' dim'}`,
+    role: 'status',
+    'aria-label': app.state.serverVersion ? 'ClickHouse connection: connected' : 'ClickHouse connection: connecting',
+    title: app.conn.host(),
   }, h('span', { class: 'connection-host' }, app.conn.host()),
-  h('span', { class: 'connection-sep', 'aria-hidden': 'true' }, '·'),
-  h('span', { class: 'ver' }, version ? `CH ${shortVersion(version)}` : 'Connecting…'));
+  h('span', { class: 'connection-state' }, app.state.serverVersion ? 'Connected' : 'Connecting…'));
   app.dom.userBtn = h('button', {
     class: 'hd-btn user-btn', title: app.conn.email(), onclick: () => app.actions.openUserMenu(),
   }, h('span', { class: 'user-short' }, userShortName(app.conn.email())), Icon.chevDown());
