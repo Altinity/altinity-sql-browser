@@ -22,6 +22,11 @@ const filterQuery = (id: string, name = id): SavedQueryV2 => ({
   spec: { name, dashboard: { role: 'filter' } },
 });
 
+const setupQuery = (id: string, name = id): SavedQueryV2 => ({
+  id, sql: 'SELECT 1', specVersion: 1,
+  spec: { name, dashboard: { role: 'setup' } },
+});
+
 const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
@@ -259,13 +264,37 @@ describe('planImportQueries', () => {
     });
   });
 
-  it('adds a favorite panel query to an existing Dashboard', () => {
-    const dash = dashboardDoc({ tiles: [] });
+  it('adds one favorite panel query to an existing Dashboard and increments its revision once', () => {
+    const dash = dashboardDoc({ revision: 7, tiles: [] });
     const ws = workspace({ queries: [panelQuery('a')], dashboard: dash });
     const favorite = panelQuery('b');
     favorite.spec.favorite = true;
     const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
     expect(plan.candidateWorkspace?.dashboard?.tiles).toEqual([{ id: 'id-1', queryId: 'b' }]);
+    expect(plan.candidateWorkspace?.dashboard?.revision).toBe(8);
+  });
+
+  it('adds several favorite panel queries but increments an existing Dashboard revision only once', () => {
+    const dash = dashboardDoc({ revision: 7, tiles: [] });
+    const one = panelQuery('one');
+    const two = panelQuery('two');
+    one.spec.favorite = true;
+    two.spec.favorite = true;
+    const plan = planImportQueries(workspace({ dashboard: dash }), bundle({ queries: [one, two] }), [], counter());
+    expect(plan.candidateWorkspace?.dashboard?.tiles).toEqual([
+      { id: 'id-1', queryId: 'one' }, { id: 'id-2', queryId: 'two' },
+    ]);
+    expect(plan.candidateWorkspace?.dashboard?.revision).toBe(8);
+  });
+
+  it('does not advance revision when an imported favorite already has Dashboard membership', () => {
+    const favorite = panelQuery('p1');
+    favorite.spec.favorite = true;
+    const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
+    const decisions: QueryDecision[] = [{ sourceId: 'p1', action: 'replace' }];
+    const plan = planImportQueries(workspace({ queries: [favorite], dashboard: dash }), bundle({ queries: [favorite] }), decisions, counter());
+    expect(plan.candidateWorkspace?.dashboard).toBe(dash);
+    expect(plan.candidateWorkspace?.dashboard?.revision).toBe(7);
   });
 
   it('overwrites the existing entry in place on a replace decision', () => {
@@ -274,6 +303,35 @@ describe('planImportQueries', () => {
     const plan = planImportQueries(ws, bundle({ queries: [panelQuery('a', 'new name')] }), decisions, counter());
     expect(ids(plan.candidateWorkspace!.queries)).toEqual(['a']);
     expect(plan.candidateWorkspace!.queries[0].spec.name).toBe('new name');
+  });
+
+  it('removes tile membership and increments revision when a tiled favorite is replaced as unfavorited', () => {
+    const current = panelQuery('p1');
+    current.spec.favorite = true;
+    const replacement = panelQuery('p1', 'Replacement');
+    replacement.spec.favorite = false;
+    const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
+    const plan = planImportQueries(
+      workspace({ queries: [current], dashboard: dash }), bundle({ queries: [replacement] }),
+      [{ sourceId: 'p1', action: 'replace' }], counter(),
+    );
+    expect(plan.candidateWorkspace?.dashboard).toMatchObject({ revision: 8, tiles: [] });
+    expect(plan.candidateWorkspace?.queries[0].spec.favorite).toBe(false);
+  });
+
+  it.each([
+    ['filter', filterQuery('p1')],
+    ['setup', setupQuery('p1')],
+  ])('removes tile membership when a tiled panel is replaced with a %s query', (_role, replacement) => {
+    const current = panelQuery('p1');
+    current.spec.favorite = true;
+    replacement.spec.favorite = true;
+    const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
+    const plan = planImportQueries(
+      workspace({ queries: [current], dashboard: dash }), bundle({ queries: [replacement] }),
+      [{ sourceId: 'p1', action: 'replace' }], counter(),
+    );
+    expect(plan.candidateWorkspace?.dashboard).toMatchObject({ revision: 8, tiles: [] });
   });
 
   it('allows skip on a conflicting query with no Dashboard dependency (queries-only skip is fine)', () => {

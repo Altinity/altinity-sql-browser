@@ -24,6 +24,7 @@ import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagno
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
 import { toggleTileMembership } from '../dashboard/application/tile-membership.js';
+import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
@@ -300,7 +301,8 @@ function replaceIncomingQueries(
 /** Restore the Workbench star's Dashboard-membership contract for imported
  * entries. A portable query-only import carries the compatibility
  * `spec.favorite` flag, while the live application represents a favorited
- * panel query as a Dashboard tile.
+ * panel query as a Dashboard tile. A replacement also removes obsolete tiles
+ * when the replacement is no longer a favorited panel.
  *
  * Only copied/replaced incoming entries participate: an entry skipped by the
  * import or resolved to an existing local query must not change the current
@@ -311,14 +313,27 @@ function addImportedFavoriteTiles(
   queries: readonly SavedQueryV2[], genId: WorkspaceIdGen,
 ): DashboardDocumentV1 | null {
   const queriesById = new Map(queries.map((query) => [query.id, query] as const));
+  const original = dashboard;
   let next = dashboard;
   for (const source of incoming) {
     const resolution = mapping[source.id];
     if (!resolution || resolution.action === 'skip' || resolution.action === 'use-existing') continue;
-    const imported = queriesById.get(resolution.targetId as string);
-    if (imported?.spec.favorite === true) next = toggleTileMembership(next, imported, true, genId);
+    // Every copy/replace resolution contributes its target to `queries` above.
+    const imported = queriesById.get(resolution.targetId as string) as SavedQueryV2;
+    const shouldBeMember = imported.spec.favorite === true && queryDashboardRole(imported) === 'panel';
+    const isMember = next?.tiles.some((tile) => tile.queryId === imported.id) === true;
+    // A newly copied, unfavorited query cannot have a tile. A replacement must
+    // also reconcile removal, so stale tile/filter references do not survive.
+    if ((resolution.action === 'replace' || shouldBeMember) && isMember !== shouldBeMember) {
+      next = toggleTileMembership(next, imported, shouldBeMember, genId);
+    }
   }
-  return next;
+  // Tile changes are one Dashboard document mutation regardless of how many
+  // imported queries participate. A newly minted Dashboard starts at revision
+  // 1; only an existing document advances its revision.
+  return original && next !== original
+    ? { ...(next as DashboardDocumentV1), revision: original.revision + 1 }
+    : next;
 }
 
 // --- Plans --------------------------------------------------------------------
