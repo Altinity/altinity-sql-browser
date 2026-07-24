@@ -427,31 +427,19 @@ function zonedParts(epochMs: number, timeZone: string): number[] | null {
   }
 }
 
-/** Convert Chart.js's local-wall-clock scale convention into one canonical
- * epoch instant, honoring an explicit ClickHouse timezone when present. */
+/** Chart.js time scales already exchange real epoch instants. Validate an
+ * explicit ClickHouse timezone (so an invalid declaration still fails closed),
+ * but do not reinterpret the epoch through the browser's local timezone. */
 export function chartScaleTimeToInstant(ms: number, type: ParsedParamType | string): number | null {
   if (!Number.isFinite(ms)) return null;
-  const d = new Date(ms);
-  const desired = [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
-  const desiredUtc = Date.UTC(desired[0], desired[1] - 1, desired[2], desired[3], desired[4], desired[5], d.getMilliseconds());
   const zone = dateTimeTimeZone(type) || 'UTC';
-  let candidate = desiredUtc;
-  for (let i = 0; i < 2; i++) {
-    const shown = zonedParts(candidate, zone);
-    if (!shown) return null;
-    const shownUtc = Date.UTC(shown[0], shown[1] - 1, shown[2], shown[3], shown[4], shown[5], d.getMilliseconds());
-    candidate += desiredUtc - shownUtc;
-  }
-  return candidate;
+  return zonedParts(ms, zone) ? ms : null;
 }
 
-/** Convert a canonical instant to the pseudo-local epoch expected by the
- * existing Chart.js wall-clock parser for a declared ClickHouse timezone. */
+/** Chart.js time scales accept canonical epoch instants directly. */
 export function instantToChartScaleTime(ms: number, type: ParsedParamType | string): number | null {
   if (!Number.isFinite(ms)) return null;
-  const shown = zonedParts(ms, dateTimeTimeZone(type) || 'UTC');
-  if (!shown) return null;
-  return new Date(shown[0], shown[1] - 1, shown[2], shown[3], shown[4], shown[5], new Date(ms).getUTCMilliseconds()).getTime();
+  return zonedParts(ms, dateTimeTimeZone(type) || 'UTC') ? ms : null;
 }
 
 /** Human label for one Chart.js time-scale value, preserving the server's

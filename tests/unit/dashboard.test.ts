@@ -1287,8 +1287,12 @@ describe('renderDashboard — KPI bands (#240)', () => {
       return el === members[0] ? new Proxy(style, { get: (target, key) => key === 'display' ? 'contents' : Reflect.get(target, key) }) : style;
     });
     const start = tileCenter(0);
+    // WebKit can omit ctrlKey from pointer events. The Dashboard remembers the
+    // held key from the keyboard stream, so a modifier-less pointer still
+    // starts this deliberate reorder gesture.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', ctrlKey: true }));
     members[0].dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y,
     }));
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: start.y + 5 }));
     expect(members[0].classList.contains('dash-floating')).toBe(true);
@@ -1296,6 +1300,7 @@ describe('renderDashboard — KPI bands (#240)', () => {
     expect(members[0].style.width).toBe('150px');
     expect(members[0].style.height).toBe('50px');
     window.dispatchEvent(new PointerEvent('pointercancel'));
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control' }));
     expect(members[0].classList.contains('dash-floating')).toBe(false);
     expect(members[0].getAttribute('style') ?? '').toBe('');
     expect(commit).not.toHaveBeenCalled();

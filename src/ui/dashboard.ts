@@ -1190,6 +1190,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // DOM rebuild. `null` before the first publish (never actually read then —
   // no pointer/click interaction can precede it).
   let activeEngine: 'flow' | 'grafana-grid' | null = null;
+  // Retained from the window keyboard stream because WebKit may omit a held
+  // Control key from a subsequent pointer event.
+  let reorderModifierHeld = false;
   // The tile's LAST rendered grid placement (span/height/colStart) — read at
   // the start of a corner-drag so the drag continues from the actual
   // rendered values, not a stale/default guess. `colStart` (#291 review F3)
@@ -1368,7 +1371,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     card.addEventListener('click', (event) => {
       if (clickSuppressCard === card) { event.stopPropagation(); event.preventDefault(); clickSuppressCard = null; }
     }, true);
-    card.addEventListener('pointerdown', (event) => {
+    const onPointerDown: EventListener = (event) => {
       const pe = event as PointerEvent;
       if (pe.button !== 0) return; // primary button only
       // The resize handle (own stopPropagation) and delete button own their own
@@ -1379,7 +1382,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
       const fromGrip = !!target.closest('.dash-gg-grip');
-      if (!fromGrip && !(pe.metaKey || pe.ctrlKey)) return;
+      // WebKit can leave `ctrlKey` false on pointer events synthesized while
+      // Control is held. Its modifier-state query remains authoritative, so
+      // use both representations for the cross-browser body-drag shortcut.
+      const hasReorderModifier = (input: PointerEvent): boolean => reorderModifierHeld || input.metaKey || input.ctrlKey
+        || input.getModifierState?.('Meta') || input.getModifierState?.('Control');
+      const modified = hasReorderModifier(pe);
+      if (!fromGrip && !modified) return;
       if (gestureActive) return; // one drag at a time — ignore a second concurrent pointer
       pe.preventDefault(); // suppress the text selection this press would otherwise start
       gestureActive = true;
@@ -1645,7 +1654,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       card.addEventListener('lostpointercapture', onCancel as EventListener);
       if (typeof card.setPointerCapture === 'function') card.setPointerCapture(pe.pointerId);
       installedGestureCancel = cleanup;
-    });
+    };
+    card.addEventListener('pointerdown', onPointerDown);
   }
 
   // #332: a Dashboard Text (Markdown) tile is click/keyboard-openable into the
@@ -2242,9 +2252,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // Edit mode only — a read-only view is never reorderable, so it never leaks
   // the affordance. Torn down at the next renderDashboard (see top of fn).
   if (gridWin && !readOnly) {
-    const onKeyDown = (e: KeyboardEvent): void => { if (e.metaKey || e.ctrlKey) grid.classList.add('modkey'); };
-    const onKeyUp = (e: KeyboardEvent): void => { if (!(e.metaKey || e.ctrlKey)) grid.classList.remove('modkey'); };
-    const onBlur = (): void => grid.classList.remove('modkey');
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.metaKey || e.ctrlKey || e.key === 'Meta' || e.key === 'Control') {
+        reorderModifierHeld = true;
+        grid.classList.add('modkey');
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent): void => {
+      reorderModifierHeld = e.metaKey || e.ctrlKey;
+      if (!reorderModifierHeld) grid.classList.remove('modkey');
+    };
+    const onBlur = (): void => { reorderModifierHeld = false; grid.classList.remove('modkey'); };
     gridWin.addEventListener('keydown', onKeyDown);
     gridWin.addEventListener('keyup', onKeyUp);
     gridWin.addEventListener('blur', onBlur);

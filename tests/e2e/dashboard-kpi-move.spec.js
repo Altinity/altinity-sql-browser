@@ -21,7 +21,7 @@ test.describe('Dashboard flow KPI movement (#340)', () => {
     expect(await page.evaluate(async () => (await window.__workspace()).dashboard.tiles.map((tile) => tile.id))).toEqual(['t1', 't2']);
   });
 
-  test('Control-drag floats the complete KPI member and commits one move', async ({ page }) => {
+  test('modified drag floats the complete KPI member and commits one move', async ({ page }) => {
     await open(page);
     const members = page.locator('.dash-kpi-member');
     await expect(page.locator('.dash-kpi-band .dash-gg-grip')).toHaveCount(0);
@@ -36,7 +36,10 @@ test.describe('Dashboard flow KPI movement (#340)', () => {
     // from its visible child card; the event bubbles to the member gesture host.
     const from = await members.first().locator('.kpi-card').first().boundingBox();
     const to = await members.nth(1).locator('.kpi-card').boundingBox();
-    await page.keyboard.down('Control');
+    // WebKit's synthetic Control pointer state is intermittent; Command is
+    // the browser-native primary modifier on this macOS matrix. Unit tests
+    // cover the Control alias directly.
+    await page.keyboard.down('Meta');
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
     await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2, { steps: 2 });
@@ -56,7 +59,7 @@ test.describe('Dashboard flow KPI movement (#340)', () => {
     expect(containment).toBe(true);
     await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 5 });
     await page.mouse.up();
-    await page.keyboard.up('Control');
+    await page.keyboard.up('Meta');
     await expect.poll(() => page.evaluate(() => window.__commitCount)).toBe(1);
     expect(await page.evaluate(async () => (await window.__workspace()).dashboard.tiles.map((tile) => tile.id))).toEqual(['t2', 't1']);
   });

@@ -59,12 +59,11 @@ describe('chart time-range formatting', () => {
     expect(formatTimeRangeDisplayValue('1784750189', 'Date')).toBe('1784750189');
   });
 
-  it('round-trips Chart.js wall-clock coordinates through an explicit column timezone', () => {
-    const chartMs = new Date(2026, 0, 2, 3, 4, 5, 123).getTime();
-    const instant = Date.UTC(2026, 0, 2, 11, 4, 5, 123);
+  it('preserves Chart.js epoch coordinates through an explicit column timezone', () => {
+    const chartMs = Date.UTC(2026, 0, 2, 3, 4, 5, 123);
     const type = "DateTime64(3, 'America/Los_Angeles')";
-    expect(chartScaleTimeToInstant(chartMs, type)).toBe(instant);
-    expect(instantToChartScaleTime(instant, type)).toBe(chartMs);
+    expect(chartScaleTimeToInstant(chartMs, type)).toBe(chartMs);
+    expect(instantToChartScaleTime(chartMs, type)).toBe(chartMs);
   });
 
   it('fails closed for invalid explicit chart timezones and non-finite values', () => {
