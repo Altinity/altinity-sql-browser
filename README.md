@@ -18,8 +18,9 @@ EXPLAIN pipeline-graph layout), and
 **@preact/signals-core** (state reactivity), and **marked** (Markdown
 tokenization for reference documentation) — are inlined into that one file.
 
-Refactored from a single-file SPA into a fully modular, test-first codebase
-held at **100% test coverage**.
+Refactored from a single-file SPA into a fully modular, test-first TypeScript
+codebase. Pure, network, state, and DOM/render modules have a per-file 100%
+coverage gate; the browser bootstrap and controller are integration-tested.
 
 ## Demo & examples
 
@@ -36,9 +37,11 @@ fixtures:
   [`examples/shop-demo.sql`](examples/shop-demo.sql).
 - [**ClickHouse Operations**](docs/CLICKHOUSE-OPERATIONS-DEMO.md) — sixteen
   operator-first tiles for live health, resources, background work, and
-  investigation, with the remaining operational queries kept in the Library.
+  investigation, with the remaining operational queries kept in the saved-query
+  collection.
 
-Load the corresponding portable bundle from `examples/` with **File ▾ → Open…**.
+Load the corresponding portable bundle from `examples/` with
+**File ▾ → Import workspace…**.
 The [**Iceberg catalog explorer**](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md) is a
 distributable installer + two dashboards for Iceberg data-lake catalogs:
 [`examples/iceberg-install.json`](examples/iceberg-install.json) generates the
@@ -82,8 +85,8 @@ success footer. The
 [schema-service notes](docs/drafts/saved-query-spec-json-schema.md) and
 [visualization authoring guide](docs/drafts/visualization-spec-authoring-guide.md)
 document the reusable validation and panel contracts. The
-[complete Library schema guide](docs/library-json-schema.md) documents the
-saved-query and Library envelopes plus the offline schema bundle. Its toolbar is deliberately small: **Format**,
+[saved-query and legacy Library schema guide](docs/library-json-schema.md)
+documents those compatibility envelopes plus the offline schema bundle. Its toolbar is deliberately small: **Format**,
 **Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
 never persisted; unknown fields remain valid and survive Save.
 
@@ -122,9 +125,9 @@ SELECT CAST(
 Without the setting or cast, ClickHouse reports `Tuple(Float64, Float64)`,
 which is positional and intentionally ineligible for KPI value/delta roles.
 
-Panel controls and Library favorite/pencil edits merge their fields into valid
+Panel controls and Queries-panel favorite/pencil edits merge their fields into valid
 open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
-schema/feature errors block the staged writer before any draft or Library entry
+schema/feature errors block the staged writer before any draft or saved-query entry
 is changed; invalid JSON focuses the affected Spec tab with a
 **Fix Spec JSON first** message. Run,
 Explain, SQL formatting, Export, and Share are SQL-mode actions; switch back to
@@ -161,7 +164,7 @@ The SQL editor provides:
   built-in keyword-doc set — so they never query on the keystroke path.
   (In-call signature help was dropped in the CM6 parity cut; the reference
   docs pane (#60) rebuilds it properly.)
-- **Drag to insert** — drag a schema table/column, or a **Library/History** row,
+- **Drag to insert** — drag a schema table/column, or a **Queries/History** row,
   onto the editor: a schema identifier drops as text at the drop point (the
   drop cursor tracks the pointer), and a saved/history query drops there as a
   `( … )` subquery (its trailing `FORMAT`/`;` stripped). Undoable;
@@ -428,7 +431,7 @@ These are metadata-only and stay row-filtered to the databases the role can alre
 read; DDL secrets remain masked unless the role separately holds
 `displaySecretsInShowAndSelect`.
 
-## Saved queries & the Library
+## Saved queries & workspaces
 
 Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Queries**
 panel. Each carries a name, an optional **description**, and — when set — its
@@ -515,112 +518,10 @@ SELECT
 FROM ontime
 ```
 
-## Quick start (development)
+## Local install
 
-Source development requires **Node.js 22 or newer**. The committed `.nvmrc`
-selects Node 22 for version managers such as `nvm`; `npm ci` exits with an
-unsupported-engine error on older Node releases.
-
-```bash
-nvm use                # optional; reads Node 22 from .nvmrc
-npm ci                 # exact dependency tree from the committed lockfile
-npm test               # vitest + 100% coverage gate
-npm run build          # → dist/sql.html (single file)
-npm run dev            # build + serve dist/ at http://localhost:8900
-```
-
-### Run in Docker
-
-The production image is a static **nginx** server for the single-file SPA — no
-application backend. It serves `/sql`, including Workbench and Dashboard
-surfaces selected by query parameters, serves a `config.json` you provide at
-`/sql/config.json`, and answers `/healthz` for probes. Queries are **not**
-proxied: the browser POSTs them straight to the chosen ClickHouse cluster,
-exactly like the on-cluster deployment.
-
-Pull the published multi-arch image (`linux/amd64` + `linux/arm64`):
-
-```bash
-docker run --rm -p 8900:8080 \
-  -v "$PWD/config.json:/config/config.json:ro" \
-  ghcr.io/altinity/altinity-sql-browser:latest
-```
-
-Then open `http://localhost:8900/sql`. Tags: `latest` and `X.Y.Z` (releases),
-`edge` (main), `sha-<commit>`.
-
-The container listens on **8080** (non-root nginx). Provide your OAuth/host
-config as a `config.json` (see [`deploy/config.json.example`](deploy/config.json.example)
-and [docs/LOGIN-SCREEN.md](docs/LOGIN-SCREEN.md)) mounted at
-`/config/config.json`. **With no mount** the image serves a built-in demo config
-for the public Altinity clusters (antalya + github.demo), each offered as a
-`demo:demo` credentials entry and a Google-SSO entry — so a bare
-`docker run -p 8900:8080 ghcr.io/altinity/altinity-sql-browser:latest` is
-immediately usable.
-
-Set **`CONNECT_SRC`** to the space-separated origins the browser must reach —
-your IdP endpoints plus every ClickHouse cluster origin in your `config.json`;
-it fills the CSP `connect-src` (same-origin `'self'` is always included):
-
-```bash
-docker run --rm -p 8900:8080 \
-  -v "$PWD/config.json:/config/config.json:ro" \
-  -e CONNECT_SRC="https://accounts.google.com https://oauth2.googleapis.com https://clickhouse.example.com" \
-  ghcr.io/altinity/altinity-sql-browser:latest
-```
-
-Or with Compose (builds locally, mounts the demo config, publishes on `$PORT`):
-
-```bash
-docker compose up --build          # → http://localhost:8900/sql
-PORT=9000 docker compose up --build
-```
-
-Two caveats for the baked demo config:
-
-- **OAuth from `localhost` won't complete** — the demo clusters' Google clients
-  register redirect URIs on their own hosts, not `http://localhost:8900/sql`. Use
-  the `demo:demo` credentials entries locally; the SSO entries work once the app
-  is served from a registered origin.
-- **Cross-origin queries need CORS** on the target cluster. ClickHouse's HTTP
-  interface sends `Access-Control-Allow-Origin` for requests carrying an `Origin`
-  by default, so the public demos work out of the box.
-
-### Kubernetes (Helm)
-
-A Helm chart is published to GHCR as an OCI artifact:
-
-```bash
-helm install sql-browser \
-  oci://ghcr.io/altinity/altinity-sql-browser/helm/altinity-sql-browser \
-  -n <namespace> -f values.yaml
-```
-
-Key values: `image.tag`, `connectSrc` (→ CSP `connect-src`), `config` (the
-`config.json` served at `/sql/config.json`, rendered into a ConfigMap), and
-`service.annotations`. The container serves plain HTTP on **8080** and runs
-non-root (uid 101).
-
-**Exposing a hostname.** For a standard cluster, enable `ingress` in values. In
-an **Altinity edge-proxy** environment (e.g. `*.demo.altinity.cloud`) you instead
-put edge-proxy annotations on the ClusterIP Service — TLS terminates at the edge
-(wildcard cert) and wildcard DNS already resolves, so no ingress/cert/DNS is
-needed:
-
-```yaml
-service:
-  type: ClusterIP
-  port: 8080
-  annotations:
-    edge-proxy.altinity.com/port-mapping: "443:tls-to-tcp:8080"
-    edge-proxy.altinity.com/tls-server-name: sql.example.demo.altinity.cloud
-```
-
-The chart source is in [`helm/altinity-sql-browser/`](helm/altinity-sql-browser/);
-a ready-made demo overlay is [`deploy/helm/values-demo.yaml`](deploy/helm/values-demo.yaml).
-Plain (no-Helm) manifests are in [`deploy/k8s/`](deploy/k8s/).
-
-### Run locally against your own ClickHouse
+For source development, Docker, and Kubernetes/Helm instructions, see
+[Development and alternative runtimes](docs/DEVELOPMENT.md).
 
 **Install (no clone, no Node — just `python3`):**
 
@@ -645,33 +546,6 @@ answers `Ok.` on `/ping`. The native `<port>` (9440/9000) is never used — it's
 different interface. The probe **prints a reachability table** and skips any host
 with no HTTP interface on any port (e.g. a native-only endpoint) so it isn't a dead
 pick. Set `SQL_BROWSER_PROBE=0` to skip probing and keep all hosts (`8443`/`8123`).
-
-**From a checkout** (also builds the SPA, requires Node.js 22 or newer):
-
-```bash
-npm run local          # build + serve → open http://localhost:8900/sql
-```
-
-The app is a thin client — queries go straight from the browser to the chosen
-ClickHouse — so the local server only serves the page plus a generated
-`config.json`. It reads your **`~/.clickhouse-client/config.xml`** connections and
-offers them as a **Saved connection** dropdown on the login screen, or you can
-ignore the picker and type a host/user/password by hand (host: include the
-scheme, e.g. `http://localhost:8123`; a bare host defaults to
-`https://<host>:8443`). See
-[docs/LOGIN-SCREEN.md](docs/LOGIN-SCREEN.md#the-saved-connection-picker-multi-host)
-for exactly how the picker and manual host entry behave (including the
-insecure-certificate flow).
-
-The target ClickHouse must allow cross-origin requests — ClickHouse's HTTP
-interface sends `Access-Control-Allow-Origin` for requests with an `Origin` header
-by default, so a stock server works. For an **OAuth** connection you also register
-`http://localhost:8900/sql` as a redirect URI with the IdP. Override the serve port
-with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
-
-**From Docker** — the container is a static nginx server that takes an explicit
-`config.json` rather than reading `~/.clickhouse-client`. See
-[Run in Docker](#run-in-docker) above.
 
 ## Installing on any ClickHouse cluster
 
@@ -752,25 +626,30 @@ Preview the rendered artifacts without touching ClickHouse:
 
 ```
 src/
+  application/ application services that coordinate state, persistence, and I/O
   core/      pure logic — format, jwt, pkce, Spec schema service, share, sort,
              stream, storage, chart-data, completions (editor reference data
              + ranking) — no DOM, no globals
+  dashboard/ Dashboard model, application services, and layouts
   net/       oauth-config, oauth, ch-client (injected fetch seam)
   editor/    injected CodeMirror islands: editable SQL + Spec adapters and the
              smaller read-only CodeViewer, sharing presentation/search base
   ui/        dom (hyperscript), icons, + render modules (login, tabs, schema,
-             results, saved-history, shortcuts, splitters, toast, app)
-  state.js   state model + pure operations
-  main.js    bootstrap (OAuth callback, share-links, initial render)
+             results, saved-history, shortcuts, splitters, toast, app, workbench)
+  workspace/ IndexedDB-backed workspace persistence, import, and synchronization
+  state.ts   state model + operations
+  main.ts    bootstrap (OAuth callback, share-links, initial render)
   styles.css
-schemas/      canonical Library, saved-query, and query.spec JSON Schemas;
+schemas/      canonical workspace, portable-bundle, Dashboard, saved-query, and
+              query.spec JSON Schemas;
               generated offline bundle + schema catalog
 build/        schema compilation/bundling + esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
 deploy/k8s/   sample Deployment, Service, ConfigMap, Ingress example
+helm/         published Helm chart source
 tests/        vitest + happy-dom, one spec per module
-docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
-              CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
+docs/         DEVELOPMENT.md, ARCHITECTURE.md, DEPLOYMENT.md,
+              ASSET-DISTRIBUTION.md, CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
 ```
 
 ## Supported browsers
@@ -789,7 +668,7 @@ panel-sizing spec.
 > The app targets **desktop** browsers, plus a **best-effort mobile mode**
 > (#126): below a 768px viewport the shell becomes a bottom-tab-nav workbench — a
 > bottom bar switches between three full-screen panels (**Tables / Editor /
-> Results**), with a Schema|Library toggle in Tables and a row-count badge on
+> Results**), with a Schema|Queries toggle in Tables and a row-count badge on
 > Results, and it auto-navigates (tap a column → Editor, Run → Results). The core
 > SQL loop (tap to browse the schema, write, run, read results, chart, and 4 of
 > the 5 EXPLAIN views) is fully usable on a phone. Pointer-only extras (resizing,
@@ -814,10 +693,10 @@ npm run test:watch
 ```
 
 Coverage is enforced **per file** (no global aggregate can hide a weak module).
-Every module — pure logic, network, state, DOM, render modules, the controller,
-and the bootstrap — is held at **100/100/100/100** (statements / branches /
-functions / lines). The fetch, crypto, and storage seams are injected, so the
-suite needs no mocking libraries.
+Pure, network, state, and DOM/render modules are held at
+**100/100/100/100** (statements / branches / functions / lines); the browser
+controller and bootstrap have lower gates and integration coverage. The fetch,
+crypto, and storage seams are injected, so the suite needs no mocking libraries.
 
 ### End-to-end (real browser)
 
