@@ -272,6 +272,21 @@ const completionsOf = (app: App): CompletionItem[] => asCompletions(app.catalog.
 const qs = <T extends Element = HTMLElement>(root: ParentNode | null, selector: string): T => root!.querySelector(selector) as T;
 const qsa = <T extends Element = HTMLElement>(root: ParentNode | null, selector: string): T[] =>
   [...root!.querySelectorAll(selector)] as T[];
+/**
+ * #425: which main work surface is EXPOSED. Both hosts stay mounted — that is
+ * what preserves the Query surface across a Dashboard round trip — so presence
+ * alone no longer distinguishes them; the contract is which host is `hidden`.
+ * The Dashboard's own DOM is still torn down when it is left (its viewer session
+ * goes with it), so `.dash-page` is genuinely absent in Query mode, while
+ * `.workbench` survives either way.
+ */
+const expectSurface = (app: App, kind: 'query' | 'dashboard'): void => {
+  expect(qs(app.root, '.workbench')).not.toBeNull();
+  expect(qs<HTMLElement>(app.root, '.query-host').hidden).toBe(kind !== 'query');
+  expect(qs<HTMLElement>(app.root, '.dashboard-host').hidden).toBe(kind !== 'dashboard');
+  expect(qs(app.root, '.dash-page') === null).toBe(kind !== 'dashboard');
+  expect(qs(app.root, '.main-row').dataset.surface).toBe(kind);
+};
 // `AppDom` (app.types.ts) documents "known-consumed keys, not a closed
 // interface" — a couple of assertions below confirm a legacy/never-built key
 // (validateSpecBtn/revertSpecBtn) stays absent, which needs a read outside the
@@ -5707,8 +5722,7 @@ describe('unified /sql routing', () => {
     await app.flushWorkspaceWrites();
     await vi.waitFor(() => expect(app.currentWorkspace!.dashboards[0] ?? null).not.toBeNull());
 
-    expect(qs(app.root, '.workbench')).not.toBeNull();
-    expect(qs(app.root, '.dash-page')).toBeNull();
+    expectSurface(app, 'query');
   });
 
   it('discards a slower workspace navigation after a newer destination wins', async () => {
@@ -5974,8 +5988,7 @@ describe('unified /sql routing', () => {
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'w', mode: 'view',
     });
-    expect(qs(app.root, '.dash-page')).not.toBeNull();
-    expect(qs(app.root, '.workbench')).toBeNull();
+    expectSurface(app, 'dashboard');
     expect(qs(app.root, '.dash-gg-del')).toBeNull();
   });
 
@@ -5998,8 +6011,7 @@ describe('unified /sql routing', () => {
     });
 
     expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'w' });
-    expect(qs(app.root, '.workbench')).not.toBeNull();
-    expect(qs(app.root, '.dash-page')).toBeNull();
+    expectSurface(app, 'query');
   });
 
   it('a stale Dashboard rollback callback never replaces the current Workbench DOM', async () => {
@@ -6021,8 +6033,7 @@ describe('unified /sql routing', () => {
     await app.flushWorkspaceWrites();
     await Promise.resolve();
 
-    expect(qs(app.root, '.workbench')).not.toBeNull();
-    expect(qs(app.root, '.dash-page')).toBeNull();
+    expectSurface(app, 'query');
     expect(document.querySelector('.share-toast')).toBeNull();
   });
 
@@ -6052,8 +6063,7 @@ describe('unified /sql routing', () => {
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
     });
-    expect(qs(app.root, '.dash-page')).not.toBeNull();
-    expect(qs(app.root, '.workbench')).toBeNull();
+    expectSurface(app, 'dashboard');
   });
 
   it('a Workbench Save-as completion cannot settle its removed popover after switching to Dashboard', async () => {
@@ -6077,8 +6087,7 @@ describe('unified /sql routing', () => {
     await vi.waitFor(() => expect(app.currentWorkspace!.queries).toHaveLength(1));
 
     expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 42');
-    expect(qs(app.root, '.dash-page')).not.toBeNull();
-    expect(qs(app.root, '.workbench')).toBeNull();
+    expectSurface(app, 'dashboard');
     expect(document.querySelector('.save-popover')).toBeNull();
   });
 

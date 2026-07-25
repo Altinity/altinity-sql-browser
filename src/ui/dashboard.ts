@@ -80,7 +80,9 @@ import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.j
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import { selectedDashboardId as sessionDashboardId } from '../application/main-surface.js';
+import type {
+  DashboardFocusTarget, DashboardSurfaceMode,
+} from '../application/main-surface.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -111,6 +113,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
+  chevLeft(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -118,6 +121,25 @@ const Icon: {
 
 const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
 const formatBytes: (n: number | null | undefined) => string = formatBytesUntyped;
+
+/**
+ * Everything the application shell hands this surface for ONE render (#425).
+ * Nothing here is re-derived from the route or from collection position: the
+ * shell owns the hosts and the selection, this module owns the rendering.
+ */
+export interface DashboardRenderTarget {
+  /** The main-surface host to render into — NOT `app.root`. The Query surface
+   *  stays mounted in its own sibling host. */
+  host: Element;
+  /** The selected Dashboard's stable id, or `null` for the legacy entry point
+   *  against a workspace with no Dashboard yet (→ "Create dashboard"). */
+  dashboardId: string | null;
+  mode: DashboardSurfaceMode;
+  /** Where to land navigation focus once this Dashboard's DOM exists. */
+  focus: DashboardFocusTarget | null;
+  /** Install this surface's header into the shell's shared header slot. */
+  setHeader(header: Element): void;
+}
 
 /** The narrow `app` surface this render module reads (not the full App —
  *  matches the convention results.ts/filter-bar.ts established). */
@@ -206,6 +228,12 @@ let installedModifierListeners:
 let installedGestureCancel: (() => void) | null = null;
 let installedDashboardChartInteraction: DashboardChartInteractionController | null = null;
 let installedDashboardCleanup: (() => void) | null = null;
+// #425: the shell-owned host this surface last rendered into. The host itself
+// OUTLIVES the surface (it is a permanent sibling of the query host), so
+// teardown has to empty it explicitly — otherwise a disposed Dashboard's DOM
+// would linger behind the Query surface, still answering `.dash-page` queries
+// with a page whose viewer session is already destroyed.
+let installedDashboardHost: Element | null = null;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
 function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
@@ -231,6 +259,8 @@ export function disposeDashboardSurface(): void {
   if (installedGestureCancel) installedGestureCancel();
   installedDashboardCleanup?.();
   installedDashboardCleanup = null;
+  installedDashboardHost?.replaceChildren();
+  installedDashboardHost = null;
 }
 
 /** Build the Dashboard style picker with the same trigger and dropdown
@@ -353,16 +383,16 @@ function synthesizeImplicitFilters(
 }
 
 /** #407 — an explicit workspace route that no longer resolves. */
-function renderDashboardNotFound(app: DashboardApp): void {
-  // `!`: the dashboard renders only into a mounted page.
-  app.root!.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
+function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarget): void {
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
     h('div', { class: 'dash-empty' },
       h('h2', { class: 'dash-notfound-title' }, 'Workspace not found'),
       h('p', null, 'This workspace no longer exists on this browser.'))));
 }
 
 function renderMissingDashboard(
-  app: DashboardApp, readOnly: boolean, surfaceGeneration: number,
+  app: DashboardApp, target: DashboardRenderTarget, readOnly: boolean, surfaceGeneration: number,
 ): void {
   const body = readOnly
     ? h('div', { class: 'dash-empty' },
@@ -382,25 +412,49 @@ function renderMissingDashboard(
           if (outcome.ok) app.renderDashboard();
         },
       }, 'Create dashboard'));
-  app.root!.replaceChildren(h('div', { class: 'dash-page' },
+  target.setHeader(buildAppHeader(app as App, {
+    fileButton: buildDashboardFileMenu(app, readOnly),
+    workspaceTitleEditable: !readOnly,
+  }));
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      buildAppHeader(app as App, {
-        fileButton: buildDashboardFileMenu(app, readOnly),
-        workspaceTitleEditable: !readOnly,
-      }),
+      dashboardSurfaceToolbar(app, null, target.mode),
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-        h('span', { class: 'dash-toolbar-spacer' }),
-        buildDashboardModeSwitch(app))),
+        h('span', { class: 'dash-toolbar-spacer' }))),
     body));
 }
 
-function buildDashboardModeSwitch(app: DashboardApp): HTMLElement {
-  const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
+/**
+ * The Dashboard surface's own compact toolbar (#425):
+ *   [Back to query]  <dashboard title>                       [View | Edit]
+ * `Back to query` returns to the PRESERVED Query surface; View/Edit retains the
+ * same Dashboard id (the main-surface API keeps it — writing a route here would
+ * re-resolve the collection's first entry). `title` is null only for the
+ * no-Dashboard placeholder, which has no document to name.
+ */
+function dashboardSurfaceToolbar(
+  app: DashboardApp, title: string | null, mode: DashboardSurfaceMode,
+): HTMLElement {
+  return h('div', { class: 'dash-toolbar dash-surface-toolbar' },
+    h('button', {
+      class: 'tb-btn dash-back-to-query', type: 'button',
+      title: 'Back to the SQL editor', 'aria-label': 'Back to query',
+      onclick: () => { app.showQuerySurface(); },
+    }, Icon.chevLeft(), h('span', null, 'Back to query')),
+    title === null ? null : h('h2', { class: 'dash-surface-title', title }, title),
+    h('span', { class: 'dash-toolbar-spacer' }),
+    buildDashboardModeSwitch(app, mode));
+}
+
+function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {
   // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
   // API keeps the id and re-opens the same document in the other mode, instead of
-  // writing a route that would re-resolve the collection's first entry.
-  const button = (label: 'View' | 'Edit', mode: 'view' | 'edit'): HTMLButtonElement =>
-    routeButton(label, route.mode === mode, () => { app.showDashboardSurface(mode); });
+  // writing a route that would re-resolve the collection's first entry. The active
+  // mode comes from the render target, not the route, so the control reflects what
+  // is actually on screen.
+  const button = (label: 'View' | 'Edit', value: DashboardSurfaceMode): HTMLButtonElement =>
+    routeButton(label, mode === value, () => { app.showDashboardSurface(value); });
   return h('div', {
     class: 'editor-mode-switch dashboard-mode-switch',
     role: 'group', 'aria-label': 'Dashboard mode',
@@ -461,13 +515,21 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
   return btn;
 }
 
-/** Render the dashboard into `app.root`. */
-export async function renderDashboard(app: DashboardApp): Promise<void> {
+/** Render the selected Dashboard into the main-surface host the application
+ *  shell owns (#425). Everything this surface needs to know about WHICH
+ *  Dashboard, in which mode, with which navigation focus, arrives here — it is
+ *  never re-derived from the route or from collection position. */
+export async function renderDashboard(
+  app: DashboardApp, target: DashboardRenderTarget,
+): Promise<void> {
   const { document: doc, state } = app;
   const surfaceGeneration = app.captureSurfaceGeneration();
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
-  app.dom = {};
+  // #425: NO `app.dom = {}` reset here. The Query surface stays mounted behind
+  // this one and its DOM refs live in that same shared bag — resetting it would
+  // strand every workbench reference (and the sidebar's) while the elements are
+  // still in the document. The shell owns the one reset, at its own mount.
 
   // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
   // call installed on this window before this call installs its own (see
@@ -476,25 +538,23 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.surfaceCommands = null;
 
   const workspace = app.currentWorkspace;
-  const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
-  if (!workspace) { renderDashboardNotFound(app); return; }
+  const readOnly = target.mode === 'view';
+  if (!workspace) { renderDashboardNotFound(app, target); return; }
   app.onWorkspaceExternallyChanged = () => {
     if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
   };
-  // #424/#425: the ONE place this surface decides which Dashboard it renders.
-  // An explicit session selection wins and is resolved BY ID under the
-  // exactly-one-match rule; only a legacy entry point that has not been
-  // converted yet (no selection at all) falls back to the compatibility
-  // Dashboard. The id is pinned for the whole render so every commit below is
-  // addressed BY ID rather than by array position — a concurrent write that
-  // reorders or replaces the collection is then detected instead of silently
-  // retargeting.
-  const sessionSelectedId = sessionDashboardId(app.mainSurface);
-  const selected = sessionSelectedId === null
+  // #424/#425: the ONE place this surface resolves the document it renders. The
+  // selected id arrives on `target`; only a legacy entry point that has not been
+  // converted yet (an empty collection, so nothing to select) falls back to the
+  // compatibility Dashboard. The id is pinned for the whole render so every
+  // commit below is addressed BY ID rather than by array position — a concurrent
+  // write that reorders or replaces the collection is then detected instead of
+  // silently retargeting.
+  const selected = target.dashboardId === null
     ? resolveCompatibilityDashboard(workspace).dashboard
-    : findDashboard(workspace, sessionSelectedId);
+    : findDashboard(workspace, target.dashboardId);
   if (!selected) {
-    renderMissingDashboard(app, readOnly, surfaceGeneration);
+    renderMissingDashboard(app, target, readOnly, surfaceGeneration);
     return;
   }
   const selectedDashboardId = selected.id;
@@ -671,13 +731,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
 
   // Dashboard keeps the shared header's File word and placement. View exposes
-  // the safe Export row only; edit additionally exposes Import.
-  const header = buildAppHeader(app as App, {
+  // the safe Export row only; edit additionally exposes Import. #425: the header
+  // goes into the SHELL's slot (the shell owns the frame now), not into this
+  // surface's own DOM.
+  target.setHeader(buildAppHeader(app as App, {
     fileButton: buildDashboardFileMenu(app, readOnly),
     workspaceTitleEditable: !readOnly,
-  });
+  }));
 
-  const dashboardModeSwitch = buildDashboardModeSwitch(app);
+  const surfaceToolbar = dashboardSurfaceToolbar(app, currentDoc.title, target.mode);
 
   let tileSearchTimer: ReturnType<typeof setTimeout> | null = null;
   const commitTileSearch = (input: HTMLInputElement): void => {
@@ -2239,6 +2301,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
   });
 
+  // The style/refresh/search controls stay exactly where they were; #425's
+  // Back-to-query + title + View/Edit toolbar sits above them.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
     layoutWrap,
     tileCount,
@@ -2246,17 +2310,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     timeFilterHost,
     h('span', { class: 'dash-toolbar-spacer' }),
     updated,
-    refreshControl,
-    dashboardModeSwitch);
+    refreshControl);
   const hasOrdinaryFilters = ordinaryFilterIds.length > 0;
   const filterToolbar = h('div', {
     class: 'dash-toolbar dash-toolbar-filters',
     style: hasOrdinaryFilters ? undefined : { display: 'none' },
   }, ordinaryFilterHost, clearFiltersBtn);
 
-  // `!`: the dashboard renders only into a mounted page.
-  app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, primaryToolbar, filterToolbar, filterRefreshLiveEl),
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page' },
+    h('div', { class: 'dash-topbar' },
+      surfaceToolbar, primaryToolbar, filterToolbar, filterRefreshLiveEl),
     filterDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard

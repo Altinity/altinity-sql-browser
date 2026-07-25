@@ -61,15 +61,29 @@ export interface AppShellDeps {
   startDrag: typeof startDrag;
 }
 
-/** `mountAppShell`'s return value — the two swappable hosts a later commit
- *  can drive independently, and the header slot's own setter. */
+/** Which main work surface owns the right-hand work area. */
+export type SurfaceHostKind = 'query' | 'dashboard';
+
+/** `mountAppShell`'s return value — the two swappable hosts, the header slot's
+ *  setter, and the visibility switch between them. */
 export interface AppShellHandle {
   /** Replace the header slot's content (each surface builds its own header). */
   setHeader(header: Element): void;
-  /** Host the workbench column mounts into. */
+  /** Host the workbench column (SQL editor + result/data drawer) mounts into. */
   queryHost: HTMLElement;
-  /** Host a Dashboard mounts into (empty and hidden for now). */
+  /** Host a Dashboard mounts into. */
   dashboardHost: HTMLElement;
+  /**
+   * Expose exactly one host (#425). The hidden one keeps its DOM and its state —
+   * that is what preserves editor contents, selection, scroll, the active tab,
+   * the result view, and the result-drawer size across a Dashboard round trip —
+   * but contributes no layout, so a Dashboard genuinely owns the whole
+   * right-hand work area and no invisible result drawer consumes space.
+   *
+   * Also mirrored onto `.main-row[data-surface]` for the mobile rules, which
+   * need to drop the sidebar and the bottom nav for a full-bleed Dashboard.
+   */
+  showHost(kind: SurfaceHostKind): void;
   dispose(): void;
 }
 
@@ -137,9 +151,9 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // like `sidebar.style.width`), including the `[hidden]` override a
   // `display: flex` class rule needs to actually hide.
   const queryHost = h('div', { class: 'query-host' });
-  // A future in-place Dashboard host (#425 follow-up) — empty and hidden for
-  // now, a sibling of `queryHost` so a later commit can toggle which of the
-  // two is visible without rebuilding the sidebar around them.
+  // The Dashboard host (#425) — a SIBLING of `queryHost`, so switching surfaces
+  // toggles which of the two is exposed without rebuilding the sidebar (or the
+  // query surface's own state) around them.
   const dashboardHost = h('div', { class: 'dashboard-host', hidden: true });
   const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost);
 
@@ -225,6 +239,11 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     setHeader: (header: Element) => { headerSlot.replaceChildren(header); },
     queryHost,
     dashboardHost,
+    showHost: (kind) => {
+      queryHost.hidden = kind !== 'query';
+      dashboardHost.hidden = kind !== 'dashboard';
+      mainRow.dataset.surface = kind;
+    },
     dispose: () => {
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);

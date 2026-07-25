@@ -7,6 +7,7 @@ import { KEYS } from '../../src/state.js';
 import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
+import type { DashboardRenderTarget } from '../../src/ui/dashboard.js';
 import { applyCommand } from '../../src/dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
 import { resolveLayoutPluginSync } from '../../src/dashboard/layouts/layout-registry.js';
@@ -263,12 +264,31 @@ function dashApp(opts: {
     workspaceRouteStatus: current ? 'ready' : 'not-found',
     sqlRoute: { surface: 'dashboard', workspaceKey: current?.key ?? 'workspace', mode: 'edit' },
   }) as TestApp;
+  // #425: the application shell owns the surface hosts and the header slot, and
+  // hands this surface a render target. Both live under `app.root` here, so every
+  // `qs(app.root, …)` assertion (including `.app-header`) still resolves — but the
+  // Dashboard now renders into its own host rather than replacing the whole root.
+  const headerSlot = document.createElement('div');
+  headerSlot.className = 'app-header-slot';
+  const host = document.createElement('div');
+  host.className = 'dashboard-host';
+  rootEl(app).replaceChildren(headerSlot, host);
+  targets.set(app, {
+    host,
+    // Mirrors production's default: the selected id is the one the workspace
+    // exposes. A test opening a DIFFERENT Dashboard passes `dashboardId` to
+    // `render`.
+    dashboardId: current?.dashboards[0]?.id ?? null,
+    mode: 'edit',
+    focus: null,
+    setHeader: (header) => { headerSlot.replaceChildren(header); },
+  });
   let surfaceGeneration = 0;
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
   app.renderDashboard = () => {
     surfaceGeneration += 1;
-    void renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+    void render(app);
   };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
@@ -280,7 +300,18 @@ function dashApp(opts: {
   return { app, calls, commit, loadActive };
 }
 
-const render = (app: TestApp): Promise<void> => renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+/** Each fixture app's render target (#425), so `render(app)` stays a one-argument
+ *  call at the ~100 existing call sites. */
+const targets = new WeakMap<object, DashboardRenderTarget>();
+/** Render the fixture's Dashboard. `mode` follows `app.sqlRoute` (that is how
+ *  `modeApp` and the View/Edit tests express it); pass `over` to open a different
+ *  Dashboard by id, or with a focus target. */
+const render = (app: TestApp, over: Partial<DashboardRenderTarget> = {}): Promise<void> =>
+  renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0], {
+    ...targets.get(app)!,
+    mode: app.sqlRoute.surface === 'dashboard' ? app.sqlRoute.mode : 'edit',
+    ...over,
+  });
 // #341: `runCommand` now commits through `app.serializeWrite` (a real
 // microtask-chained queue, same as saved-history.test.ts's own convention) —
 // a synchronous assertion right after triggering a command can no longer
@@ -1980,7 +2011,11 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // ...but the FIRST render's grid is untouched — its listener was removed
     // at the start of the second `renderDashboard` call, so it never saw
     // this resize event (it would otherwise have reflowed to 2 columns).
-    expect((qs(app1.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    // #425: the same teardown now also EMPTIES that render's host (the host
+    // outlives the surface, so a disposed Dashboard must not leave its DOM
+    // behind), hence the assertion is on the element captured above.
+    expect((grid1.style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    expect(qs(app1.root, '.dash-page')).toBeNull();
   });
 });
 
@@ -4061,6 +4096,47 @@ describe('renderDashboard — unified live modes (#407)', () => {
   // itself would re-resolve the collection's first entry instead. The
   // push-for-surface / replace-for-mode history semantics live with that API and
   // are asserted against the real controller in app.test.ts.
+  // #425 — the Dashboard surface's own toolbar: [Back to query] title [View|Edit]
+  it('renders a surface toolbar with Back to query, the Dashboard title, and View/Edit', async () => {
+    const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    await render(app);
+    const toolbar = qs(app.root, '.dash-surface-toolbar');
+    expect(qs(toolbar, '.dash-surface-title').textContent).toBe('Ops overview');
+    const back = qs<HTMLButtonElement>(toolbar, '.dash-back-to-query');
+    // Accessible name + keyboard-reachable button, not a bare clickable div.
+    expect(back.tagName).toBe('BUTTON');
+    expect(back.getAttribute('aria-label')).toBe('Back to query');
+    back.click();
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
+    expect(qsa<HTMLButtonElement>(toolbar, '.dashboard-mode-switch .editor-mode-btn')
+      .map((button) => [button.textContent, button.disabled]))
+      .toEqual([['View', false], ['Edit', true]]);
+  });
+
+  it('names no Dashboard in the toolbar when the workspace has none yet', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
+    await render(app, { dashboardId: 'not-in-this-workspace' });
+    expect(qs(app.root, '.dash-create')).not.toBeNull();
+    expect(qs(app.root, '.dash-surface-title')).toBeNull();
+    expect(qs(app.root, '.dash-back-to-query')).not.toBeNull();
+  });
+
+  it('renders the SELECTED Dashboard only, by stable id, whatever its position', async () => {
+    const workspace = wsWith();
+    workspace.dashboards = [
+      workspace.dashboards[0],
+      { ...workspace.dashboards[0], id: 'second', title: 'Second' },
+    ];
+    const { app } = modeApp({ workspace, mode: 'edit' });
+    await render(app, { dashboardId: 'second' });
+    expect(qs(app.root, '.dash-surface-title').textContent).toBe('Second');
+    // Exactly one Dashboard is on screen — a hidden sibling is never rendered.
+    expect(qsa(app.root, '.dash-page')).toHaveLength(1);
+  });
+
   it('surface and mode controls delegate to the main-surface navigation API', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     const showQuerySurface = vi.fn();

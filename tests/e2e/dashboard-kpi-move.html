@@ -73,7 +73,19 @@
       const loaded = await app.workspace.loadById(seed.id);
       return loaded.status === 'ok' ? loaded.workspace : null;
     };
-    await renderDashboard(app);
+    // #425: the application shell owns the surface hosts and the header slot and
+    // hands the Dashboard a render target. This harness plays that role with two
+    // plain divs, so the fixture keeps exercising the real `renderDashboard`.
+    const headerSlot = document.createElement('div');
+    const dashboardHost = document.createElement('div');
+    root.replaceChildren(headerSlot, dashboardHost);
+    await renderDashboard(app, {
+      host: dashboardHost,
+      dashboardId: seeded.workspace.dashboards[0].id,
+      mode: 'edit',
+      focus: null,
+      setHeader: (header) => headerSlot.replaceChildren(header),
+    });
     window.__ready = true;
   </script>
 </body>

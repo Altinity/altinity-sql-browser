@@ -43,6 +43,7 @@ import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
 import { disposeDashboardSurface, renderDashboard } from './dashboard.js';
+import type { DashboardRenderTarget } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';
 import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
@@ -101,6 +102,7 @@ import { createQueryDocumentSession } from '../application/query-document-sessio
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 import { mountAppShell } from './app-shell.js';
+import type { AppShellHandle } from './app-shell.js';
 import { buildAppHeader } from './app-header.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
@@ -430,6 +432,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   const renderLoginApp = (msg?: string): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
+    // #425: login replaces `#root` wholesale, so the persistent shell must be
+    // disposed AND forgotten here — otherwise its effects keep repainting a
+    // detached sidebar, and the next sign-in would skip re-mounting a shell that
+    // is no longer in the document, leaving a blank page.
+    disposeShell();
     renderLogin(app as App & { root: Element }, msg);
   };
   // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
@@ -1597,18 +1604,79 @@ export function createApp(env: CreateAppEnv = {}): App {
   // `runSlotTile`), the same path run() and the detached Data view use; the
   // former bespoke `runTile`/`queryDashboardTile`/`parseJsonResult` machinery
   // was retired so cap/settings fixes can't apply to only one path.
+  // #425: the persistent shell and the query column are each mounted ONCE per
+  // signed-in workspace and survive every surface switch — that is what preserves
+  // the editor's contents, selection and scroll, the active tab, the result view,
+  // and the result-drawer size across a Dashboard round trip. Only a real
+  // end-of-life event (a workspace switch, workspace-not-found/loading, or
+  // sign-out) tears them down; `shell === null` is then the signal to rebuild,
+  // and it MUST be nulled by everything that replaces `#root` wholesale, or the
+  // next render would skip a mount that is no longer in the document.
+  let shell: AppShellHandle | null = null;
   let disposeWorkbenchMount: (() => void) | null = null;
   const ignoreExternalWorkspaceChange = (): void => {};
-  app.renderDashboard = () => {
+  const ensureShell = (): AppShellHandle => {
+    shell ??= mountAppShell({
+      app,
+      root: app.root,
+      document: doc,
+      state: app.state,
+      catalog,
+      prefs,
+      matchMedia: app.matchMedia,
+      updateBanner: app.updateBanner,
+      startDrag,
+    });
+    if (!disposeWorkbenchMount) disposeWorkbenchMount = renderApp(app, { startDrag }, shell.queryHost);
+    return shell;
+  };
+  const disposeShell = (): void => {
+    disposeWorkbenchMount?.();
+    disposeWorkbenchMount = null;
+    shell?.dispose();
+    shell = null;
+  };
+  // What the Dashboard surface renders THIS pass. `dashboardId` is `null` only
+  // for the legacy empty-collection entry point, which lands on the Dashboard's
+  // own "Create dashboard" state; its mode then comes from the route, since there
+  // is no selection to carry one.
+  const dashboardRenderTarget = (mounted: AppShellHandle): DashboardRenderTarget => {
+    const surface = app.mainSurface;
+    const routeMode = app.sqlRoute.surface === 'dashboard' ? app.sqlRoute.mode : 'edit';
+    return {
+      host: mounted.dashboardHost,
+      dashboardId: surface.kind === 'dashboard' ? surface.dashboardId : null,
+      mode: surface.kind === 'dashboard' ? surface.mode : routeMode,
+      focus: surface.kind === 'dashboard' ? surface.focus : null,
+      setHeader: (header) => mounted.setHeader(header),
+    };
+  };
+  // Everything a transition BETWEEN the two surfaces must clear, and nothing
+  // more. Notably absent: `workbench.destroy()`. It aborts the in-flight request
+  // and issues KILL QUERY, and a surface change must never execute or cancel the
+  // currently open editor query (#425) — it belongs to the teardown paths below.
+  const beginSurfaceTransition = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
     advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
-    disposeWorkbenchMount?.();
-    disposeWorkbenchMount = null;
-    workbench.destroy();
-    return renderDashboard(app);
+    // The doc pane mounts on `document.body`, so it would otherwise float over
+    // the surface that replaced the one it was opened from. (The cell-detail
+    // drawer is modal and traps the keyboard, so no surface control is reachable
+    // while it is open — and it owns a keyboard-owner release that only its own
+    // close path runs, which is why this does not reach in and remove it.)
+    closeDocPane(app);
+  };
+  app.renderDashboard = () => {
+    beginSurfaceTransition();
+    const mounted = ensureShell();
+    // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
+    // width immediately after mount, and a hidden host measures 0 — which
+    // silently pins every Dashboard to the widest 12-column breakpoint. happy-dom
+    // always reports 0, so only a real browser can catch a regression here.
+    mounted.showHost('dashboard');
+    return renderDashboard(app, dashboardRenderTarget(mounted));
   };
   const disposeCurrentSurface = (): void => {
     app.closeShortcutDialog();
@@ -1620,8 +1688,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();
-    disposeWorkbenchMount?.();
-    disposeWorkbenchMount = null;
+    disposeShell();
     workbench.destroy();
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   };
@@ -2040,7 +2107,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     routeSearch = loc.search;
     app.sqlRoute = parseSqlRoute(routeSearch);
     if (app.sqlRoute.workspaceKey === previousKey) {
-      disposeCurrentSurface();
+      // #425: Back/Forward between surfaces of the SAME workspace is a surface
+      // transition, not a teardown — the shell and the query column stay mounted
+      // so the editor state survives it. (It used to run `disposeCurrentSurface`,
+      // whose blanket control-disable would now inert the still-mounted editor
+      // toolbar, tabs, and sidebar inputs permanently.)
       adoptRouteMainSurface();
       app.renderCurrentSurface();
       return;
@@ -2254,15 +2325,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.renderApp = () => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    advanceSurfaceGeneration();
-    closeAnchoredPopovers();
-    disposeFileMenuOverlays(app);
+    beginSurfaceTransition();
+    // The Dashboard's own route-scoped resources go; the query column does NOT
+    // (it is mounted once and preserved — see `ensureShell`).
     disposeDashboardSurface();
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-    disposeWorkbenchMount?.();
-    disposeWorkbenchMount = renderApp(app, { startDrag });
+    const mounted = ensureShell();
+    mounted.setHeader(buildAppHeader(app));
+    mounted.showHost('query');
+    // Repaint the results pane on every return to this surface. A query that
+    // finished while the Dashboard was visible built its Chart.js canvas in a
+    // zero-size host, and chart-render only auto-resizes a laid-out one — so
+    // without this the chart comes back blank. Cheap and idempotent otherwise.
+    renderResults(app);
   };
   if (typeof win.addEventListener === 'function') {
     win.addEventListener('popstate', () => { void app.handleSqlPopState(); });
@@ -2280,36 +2355,21 @@ export interface RenderAppHelpers {
 }
 
 
-/** Build the signed-in shell and mount all regions — a thin composition call
- *  onto `ui/app-shell.ts`'s `mountAppShell` (the persistent frame: header
- *  slot/sidebar/mobile-nav) and `ui/workbench/workbench-shell.ts`'s
- *  `mountWorkbenchShell` (the query column), mounted into the frame's
- *  `queryHost` (#425 follow-up prep split of #276 Phase 5's former single
- *  `mountWorkbenchShell`). Every line either shell runs is still the same
- *  byte-identical code, now driven by two narrow dep bags instead of the
- *  full `App` — see each module's header comment for what stays coupled to
- *  `app` and why.
+/** Mount the QUERY surface's column into the persistent shell's `queryHost` —
+ *  a thin composition call onto `ui/workbench/workbench-shell.ts`'s
+ *  `mountWorkbenchShell` (#276 Phase 5, narrowed by #425's shell split): every
+ *  line it runs is still the same byte-identical code, driven by a narrow
+ *  `WorkbenchShellDeps` bag instead of the full `App` — see that module's header
+ *  comment for what stays coupled to `app` and why.
  *
- *  Always mounts BOTH fresh (no conditional/idempotent mounting yet — that's
- *  for a later commit once a Dashboard host actually shares this frame): the
- *  app shell resets `app.dom` and builds the sidebar/mobile-nav first, then
- *  the workbench shell mounts the query column into its `queryHost`, then
- *  the header is built and spliced in last via `setHeader` — see
- *  app-shell.ts's own header comment for why that order still satisfies
- *  every module that reaches into `app.dom.*` directly. */
-export function renderApp(app: App, helpers: RenderAppHelpers): () => void {
-  const shell = mountAppShell({
-    app,
-    root: app.root,
-    document: app.document,
-    state: app.state,
-    catalog: app.catalog,
-    prefs: app.prefs,
-    matchMedia: app.matchMedia,
-    updateBanner: app.updateBanner,
-    startDrag: helpers.startDrag,
-  });
-  const disposeWorkbench = mountWorkbenchShell({
+ *  The persistent frame itself (header slot, sidebar, mobile nav) is mounted by
+ *  `createApp`'s own `ensureShell`, once per signed-in workspace, and this column
+ *  is mounted into it exactly once too: #425 preserves the Query surface across a
+ *  Dashboard round trip rather than reconstructing it. */
+export function renderApp(
+  app: App, helpers: RenderAppHelpers, queryHost: HTMLElement,
+): () => void {
+  return mountWorkbenchShell({
     app,
     document: app.document,
     state: app.state,
@@ -2319,7 +2379,7 @@ export function renderApp(app: App, helpers: RenderAppHelpers): () => void {
     workbench: app.workbench,
     queryDoc: app.queryDoc,
     prefs: app.prefs,
-    queryHost: shell.queryHost,
+    queryHost,
     activeTab: app.activeTab,
     updateSaveBtn: app.updateSaveBtn,
     specBlocked: app.specBlocked,
@@ -2328,9 +2388,4 @@ export function renderApp(app: App, helpers: RenderAppHelpers): () => void {
     setExportBtn: app.setExportBtn,
     startDrag: helpers.startDrag,
   });
-  shell.setHeader(buildAppHeader(app));
-  return () => {
-    disposeWorkbench();
-    shell.dispose();
-  };
 }

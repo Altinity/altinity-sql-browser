@@ -2498,6 +2498,15 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   /* Editor / Results → sidebar hidden, workbench fills. */
   .main-row[data-mobile-view="editor"] .sidebar,
   .main-row[data-mobile-view="results"] .sidebar { display: none; }
+  /* #425: a Dashboard is full-bleed on mobile (#248) — the sidebar and the
+     bottom Tables/Editor/Results nav belong to the Query surface, and its three
+     `data-mobile-view` values say nothing about a Dashboard. Hiding both keeps
+     the pre-#425 mobile Dashboard presentation exactly as it was, and takes
+     precedence over the `[data-mobile-view="tables"]` sidebar rule above by
+     being later with equal specificity. */
+  .main-row[data-surface="dashboard"] .sidebar,
+  .main-row[data-surface="dashboard"] .col-resize { display: none; }
+  .main-row[data-surface="dashboard"] ~ .mobile-nav { display: none; }
   /* Editor view: query tabs + toolbar + editor; hide the results half. */
   .main-row[data-mobile-view="editor"] .results-region,
   .main-row[data-mobile-view="editor"] .editor-results-split { display: none; }
@@ -2555,11 +2564,22 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .docs-panel { width: 100vw !important; min-width: 0; }
 }
 
-/* ── Dashboard (#149 D1 / #407) ─────────────────────────────────────────────
-   The `/sql?surface=dashboard` surface: sticky header + responsive tiles. */
-/* The dashboard's own scroll container: #root is a fixed overflow:hidden flex
-   column (the workbench shell), so the dashboard fills it and scrolls itself. */
+/* ── Dashboard (#149 D1 / #407 / #425) ──────────────────────────────────────
+   The Dashboard main work surface: sticky toolbars + responsive tiles. */
+/* The dashboard's own scroll container. #425: it now fills `.dashboard-host` —
+   the flex:1 sibling of the sidebar inside `.main-row` — rather than all of
+   `#root`, so a Dashboard owns the whole editor-plus-results area while the
+   sidebar stays visible. The host is itself a `min-height:0` flex column, so
+   `height:100%` here still resolves and the page still scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
+/* #425 — the Dashboard surface's own toolbar row: Back to query, the Dashboard
+   title, then the View/Edit switch pushed right by the shared spacer. */
+.dash-surface-toolbar { gap: 8px; }
+.dash-surface-title {
+  margin: 0; font-size: 13px; font-weight: 600; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.dash-back-to-query { flex-shrink: 0; }
 /* The one-row application header and optional filter toolbar share one sticky
    top bar so Dashboard controls stay visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }

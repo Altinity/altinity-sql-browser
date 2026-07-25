@@ -14,6 +14,12 @@
 </head>
 <body data-theme="dark">
   <div id="root">
+    <!-- #425: production nests `.dash-page` inside the shell's `.dashboard-host`
+         (the flex:1 sibling of the sidebar in `.main-row`), not directly in
+         `#root`. Mirrored here so this fixture's sticky-topbar, scroll-host and
+         tile-width assertions keep measuring the real box model. -->
+    <div class="main-row" data-surface="dashboard">
+    <div class="dashboard-host">
     <div class="dash-page">
       <div class="dash-topbar">
         <div id="shared-header"></div>
@@ -30,6 +36,8 @@
         <section class="dash-tile"><div class="dash-tile-head">Panel three</div></section>
         <section class="dash-tile"><div class="dash-tile-head">Panel four</div></section>
       </main>
+    </div>
+    </div>
     </div>
   </div>
   <script type="module">
