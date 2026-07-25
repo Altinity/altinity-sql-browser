@@ -331,7 +331,11 @@ function renderExplainView(app: ResultsApp, r: QueryResult): HTMLElement {
 function streamStrip(r: Result | null): HTMLDivElement {
   return h('div', { class: 'stream-strip' },
     r && 'pct' in r && r.pct > 0
-      ? h('i', { class: 'fill', style: { width: r.pct + '%' } })
+      // `scaleX`, not `width`: this strip updates on every streaming progress
+      // event, and animating width relayouts the results region each time.
+      // The bar is full-width in CSS with a left transform-origin, so the
+      // scale factor IS the fraction complete.
+      ? h('i', { class: 'fill', style: { transform: `scaleX(${r.pct / 100})` } })
       : h('i', { class: 'sweep' }));
 }
 

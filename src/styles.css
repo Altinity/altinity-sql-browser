@@ -94,6 +94,10 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   --shadow-popover: 0 8px 28px rgba(0, 0, 0, .4);     /* menus, compact floating choices */
   --shadow-dialog: 0 20px 60px rgba(0, 0, 0, .45);    /* blocking overlays */
   --shadow-drawer: -8px 0 28px rgba(0, 0, 0, .35);    /* lateral: the side drawers */
+  /* A key cap sitting ON a filled button (the Run button's ⌘↵) needs to darken
+     whatever it sits on rather than pick a colour, so this is deliberately a
+     translucent black and not a palette entry. */
+  --kbd-tint: rgba(0, 0, 0, .2);
 
   /* Focus rings. A 3px translucent ring in the state's own hue, so the ring says
      which KIND of state has focus rather than only that something does. */
@@ -155,13 +159,21 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   justify-content: start;
 }
 .kpi-card {
-  --kpi-accent: var(--accent);
+  /* The author's per-KPI colour hint (query-spec `presentation.color`, applied by
+     kpi-panel.ts) tints the card's own 1px frame. It used to be a 3px accent bar
+     across the top, which was the wrong shape twice over: it mitred against the
+     8px radius, and a coloured stripe on a metric card is the single most
+     over-used dashboard cliché — precisely the "decorative dashboard" PRODUCT.md
+     lists as an anti-reference. Tinting the frame says the same thing quietly.
+     Defaulting to --border (not --accent) matters: an author who supplies no hint
+     gets a neutral card, so ClickHouse Blue stays scarce instead of appearing on
+     every KPI in the grid. */
+  --kpi-accent: var(--border);
   display: flex;
   flex-direction: column;
   min-width: 0;
   padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-top: 3px solid var(--kpi-accent);
+  border: 1px solid var(--kpi-accent);
   border-radius: var(--r-md);
   background: var(--bg-modal);
 }
@@ -757,23 +769,27 @@ h1, h2, h3, h4, h5, h6 {
 .schema-detail-handle::before, .cd-resize-h::before {
   content: ''; position: absolute; pointer-events: none;
   background: var(--border);
-  transition: width 100ms ease, height 100ms ease, background-color 100ms ease;
+  /* The rest/hover states differ by 1px vs 3px. Animating width/height relayouts
+     on every pointer cross of a resize handle — which is a high-frequency
+     surface, since these sit on every column edge. The bar is its full 3px and
+     scales down at rest, so only `transform` animates. */
+  transition: transform 100ms ease, background-color 100ms ease;
 }
 .col-resize::before, .cd-resize-h::before {
   top: 0; bottom: 0; left: 50%;
-  width: 1px; transform: translateX(-50%);
+  width: 3px; transform: translateX(-50%) scaleX(.34);
 }
 .row-resize::before, .schema-detail-handle::before {
   left: 0; right: 0; top: 50%;
-  height: 1px; transform: translateY(-50%);
+  height: 3px; transform: translateY(-50%) scaleY(.34);
 }
 .col-resize:hover::before, .col-resize.dragging::before,
 .cd-resize-h:hover::before, .cd-resize-h.dragging::before {
-  width: 3px; background: var(--accent);
+  transform: translateX(-50%) scaleX(1); background: var(--accent);
 }
 .row-resize:hover::before, .row-resize.dragging::before,
 .schema-detail-handle:hover::before, .schema-detail-handle.dragging::before {
-  height: 3px; background: var(--accent);
+  transform: translateY(-50%) scaleY(1); background: var(--accent);
 }
 
 .workbench { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -2077,7 +2093,7 @@ body.detached-tab .graph-overlay-panel {
 .run-btn:disabled { opacity: .7; cursor: wait; }
 .run-btn kbd {
   font-size: var(--text-micro); opacity: .85;
-  padding: 1px 5px; background: rgba(0,0,0,.2);
+  padding: 1px 5px; background: var(--kbd-tint);
   border-radius: var(--r-xs); margin-left: 4px;
   font-family: var(--mono);
 }
@@ -2498,7 +2514,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-md-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
 .docs-md-li { word-break: break-word; }
 .docs-md-li > .docs-md-list { margin-top: 4px; }
-.docs-md-quote { margin: 0; padding: 4px 12px; border-left: 3px solid var(--border); color: var(--fg-mute); }
+/* A left rule is the right convention for quoted prose, but at hairline weight:
+   a 3px stripe in a dense docs pane competes with the admonitions below, which
+   genuinely need to be noticed. Wider padding carries the indent instead. */
+.docs-md-quote { margin: 0; padding: 4px 14px; border-left: 1px solid var(--border); color: var(--fg-mute); }
 .docs-md-hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 .docs-md-table { border-collapse: collapse; width: 100%; font-size: var(--text-body); }
 .docs-md-table th, .docs-md-table td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; word-break: break-word; }
@@ -2515,11 +2534,23 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    `.docs-md-*` spacing/typography untouched. tip/note/info share the
    pane's own accent color (an informational tri-variant, no dedicated
    token); warning/danger/important reuse the existing warn/error tokens. */
-.docs-md-admonition { border-left: 3px solid var(--border); border-radius: var(--r-md); padding: 8px 12px; background: var(--bg-chip); display: flex; flex-direction: column; gap: 8px; }
+/* The variant reads from a uniform 1px frame in its own hue plus a coloured
+   title, not from a 3px left stripe. Two reasons: the stripe mitred against the
+   rounded corner the same way the KPI card's top border did, and an accent bar on
+   a tinted callout is the most over-used shape in the category — the frame plus
+   the title word says the same thing and keeps colour paired with text, which is
+   what DESIGN.md's Evidence Rule actually asks for. */
+.docs-md-admonition { border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 12px; background: var(--bg-chip); display: flex; flex-direction: column; gap: 8px; }
 .docs-md-admonition-title { font-weight: var(--fw-semibold); font-size: var(--text-body); color: var(--fg); }
-.docs-md-admonition-tip, .docs-md-admonition-note, .docs-md-admonition-info { border-left-color: var(--accent); }
-.docs-md-admonition-warning { border-left-color: var(--warn-fg); background: var(--warn-bg); }
-.docs-md-admonition-danger, .docs-md-admonition-important { border-left-color: var(--error-fg); background: var(--error-bg); }
+.docs-md-admonition-tip, .docs-md-admonition-note, .docs-md-admonition-info { border-color: color-mix(in oklab, var(--accent) 40%, var(--border)); }
+.docs-md-admonition-tip .docs-md-admonition-title,
+.docs-md-admonition-note .docs-md-admonition-title,
+.docs-md-admonition-info .docs-md-admonition-title { color: var(--accent-text); }
+.docs-md-admonition-warning { border-color: var(--warn-bd); background: var(--warn-bg); }
+.docs-md-admonition-warning .docs-md-admonition-title { color: var(--warn-fg); }
+.docs-md-admonition-danger, .docs-md-admonition-important { border-color: var(--error-bd); background: var(--error-bg); }
+.docs-md-admonition-danger .docs-md-admonition-title,
+.docs-md-admonition-important .docs-md-admonition-title { color: var(--error-fg); }
 /* #315 phase-3 disambiguation state */
 .docs-disambiguate { flex-direction: column; align-items: stretch; gap: 10px; }
 .docs-disambiguate-intro { margin: 0; font-size: var(--text-body); color: var(--fg); }
@@ -2565,7 +2596,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   overflow: hidden; pointer-events: none; z-index: 2;
 }
 .stream-strip > i { display: block; height: 100%; background: var(--accent); }
-.stream-strip > i.fill { transition: width .3s linear; }
+/* Determinate fill: full width, scaled from the left by results.ts. Transitioning
+   `transform` rather than `width` keeps a streaming query's progress updates off
+   the layout path — this fires on every progress event. */
+.stream-strip > i.fill { width: 100%; transform-origin: left center; transition: transform .3s linear; }
 .stream-strip > i.sweep { width: 40%; animation: runsweep 1.1s ease-in-out infinite; }
 @keyframes runsweep {
   0% { transform: translateX(-110%); }
@@ -3183,10 +3217,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .dash-kpi-state-card {
-  --kpi-accent: var(--accent);
+  --kpi-accent: var(--border);  /* see .kpi-card */
   min-width: 160px; max-width: 320px; padding: 14px 16px;
-  border: 1px solid var(--border); border-top: 3px solid var(--kpi-accent);
-  border-radius: var(--r-md); background: var(--bg-modal);
+  border: 1px solid var(--kpi-accent); border-radius: var(--r-md);
+  background: var(--bg-modal);
 }
 .dash-kpi-state-label {
   color: var(--fg-mute); font-size: var(--text-body); font-weight: var(--fw-semibold); letter-spacing: .02em;

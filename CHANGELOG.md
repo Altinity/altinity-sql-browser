@@ -38,6 +38,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   changing the shared dashboard.
 
 ### Changed
+- Radii, elevation and the semantic/object-kind/syntax palettes are tokens too
+  (`--r-*`, `--shadow-*`, `--ring-*`, `--kind-*`, `--role-*`, `--sql-*`). Fourteen
+  radius values against a documented four-step scale became four plus `--r-pill`;
+  fourteen shadows across eleven black alphas became one token per documented
+  entry. `.dash-tile` was at 10px while DESIGN.md's own Dashboard Tiles section
+  said 8px.
+- KPI cards no longer wear a 3px accent bar across the top. The author's per-KPI
+  colour hint (`presentation.color`) tints the card's own 1px frame instead: the
+  bar mitred against the 8px radius, and a coloured stripe on a metric card is
+  the dashboard cliché PRODUCT.md lists as an anti-reference. `--kpi-accent` now
+  defaults to `--border` rather than `--accent`, so a KPI with no author hint is
+  neutral and ClickHouse Blue stays scarce instead of appearing on every card.
+- Reference-doc admonitions state their variant with a 1px frame in the variant
+  colour plus a coloured title word, replacing the 3px left stripe — colour paired
+  with text, per the Evidence Rule. Blockquotes drop to a hairline left rule.
+- The streaming progress bar and the column/row resize handles animate `transform`
+  instead of `width`/`height`, keeping two high-frequency surfaces off the layout
+  path. The progress fill is full-width and scaled from the left by `results.ts`.
+- The Altinity logomark moved to `src/ui/brand-logo.ts`. Its 26 gradient stops are
+  a supplied brand asset, deliberately outside the palette and never to be
+  borrowed for UI chrome; its own module lets `.impeccable/config.json` exclude
+  exactly that file from the design-system colour check instead of all ~60 icons.
 - The type ramp is collapsed from 22 ad-hoc values to six interface steps
   (9 / 10.5 / 11.5 / 12.5 / 14 / 16px) plus a document ramp for Read surfaces
   and two display sizes. 231 literal `font-size` declarations became tokens, nine
