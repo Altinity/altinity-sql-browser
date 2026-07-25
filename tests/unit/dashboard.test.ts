@@ -24,7 +24,7 @@ import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
-import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
 
@@ -162,7 +162,7 @@ function memSession(initial: Record<string, string> = {}): MemSession {
 
 // ── ui/dashboard.js (viewer-driven render, #286 — reads dashboard.tiles[]) ────
 // The favorites-derived render was replaced by a DashboardViewerSession bound
-// to the persisted StoredWorkspaceV2; these tests drive renderDashboard through
+// to the persisted StoredWorkspaceV3; these tests drive renderDashboard through
 // a controlled current workspace + a fake streaming `executeRead`, exactly as
 // the app wires the real repository projection + exec seam.
 
@@ -202,20 +202,20 @@ const q = (id: string, sql: string, extra: Partial<SavedQueryFixture> = {}): Sav
 interface WsOver {
   id?: string;
   key?: string;
-  tiles?: NonNullable<StoredWorkspaceV2['dashboard']>['tiles'];
+  tiles?: StoredWorkspaceV3['dashboards'][number]['tiles'];
   filters?: Record<string, unknown>[];
   layout?: Record<string, unknown>;
   queries?: ReturnType<typeof savedQuery>[];
   title?: string;
 }
 const wsWith = (over: WsOver = {}) => ({
-  storageVersion: 2 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
+  storageVersion: 3 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
   queries: over.queries ?? [],
-  dashboard: {
+  dashboards: [{
     documentVersion: 1 as const, id: over.id ?? 'd', title: over.title ?? 'My Dash', revision: 1,
     layout: over.layout ?? { type: 'flow', version: 1, preset: 'columns-2', items: {} },
     filters: over.filters ?? [], tiles: over.tiles ?? [],
-  },
+  }],
 });
 
 function dashApp(opts: {
@@ -235,14 +235,14 @@ function dashApp(opts: {
   // then a success, or a slow-to-resolve first call — still keeps
   // `loadById` in sync: only a genuinely OK result advances `current`,
   // exactly like the real `WorkspaceRepository`).
-  let current: StoredWorkspaceV2 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV2 | null;
+  let current: StoredWorkspaceV3 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV3 | null;
   // #341: default commit ECHOES the candidate it was given (mirrors
   // `appDefaults.workspace.commit` in fake-app.ts) — `runCommand`'s post-commit
   // projection (`applyCommittedWorkspace(result.workspace)`, `currentDoc =
   // result.workspace.dashboard`) needs a REAL committed dashboard back, not an
   // opaque `{}`, for projection assertions to be meaningful.
   const commitImpl = opts.commit ?? vi.fn(async (candidate: Parameters<App['workspace']['commit']>[0]) => ({
-    ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null,
+    ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null,
   }));
   const commit = vi.fn(async (candidate: Parameters<App['workspace']['commit']>[0]) => {
     const result = await commitImpl(candidate);
@@ -272,7 +272,7 @@ function dashApp(opts: {
   };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
-  const loadActive = async (): Promise<StoredWorkspaceV2> => {
+  const loadActive = async (): Promise<StoredWorkspaceV3> => {
     const loaded = await app.workspace.loadById(app.state.workspaceId);
     if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
     return loaded.workspace;
@@ -917,7 +917,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(down.defaultPrevented).toBe(true);
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t1', 't2', 't0']);
+    expect(commit.mock.calls[0][0].dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t1', 't2', 't0']);
     expect(qsa(app.root, '.dash-kpi-member')).toHaveLength(1); // band regrouped after commit
   });
 
@@ -1241,7 +1241,7 @@ describe('renderDashboard — KPI bands (#240)', () => {
       pointerDragTo(members, 1, tileCenter(0), { metaKey: true });
       await flush();
       expect(commit).toHaveBeenCalledTimes(1);
-      expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
+      expect(commit.mock.calls[0][0].dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
       expect(qsa<HTMLElement>(app.root, '.dash-kpi-member').map((member) => member.dataset.tile)).toEqual(['t2', 't1']);
     },
   );
@@ -1341,7 +1341,7 @@ describe('renderDashboard — KPI bands (#240)', () => {
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: 275, clientY: 125 }));
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
+    expect(commit.mock.calls[0][0].dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
   });
 
   it('shows a KPI member state card for an errored or unfilled KPI source — error is role=alert, unfilled is role=status, both name their tile (#316)', async () => {
@@ -1597,7 +1597,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     gridDrag(cards, 0, 1, { viaGrip: false });
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit.mock.calls[0][0].dashboard?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
+    expect(commit.mock.calls[0][0].dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t2', 't1']);
   });
 
   it('a non-KPI grid tile keeps its footer visible and populated (#316 — the KPI-only fix leaves ordinary tiles alone)', async () => {
@@ -1824,7 +1824,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     await render(app);
     let handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
     const lastPlacement = (): { span: number; height: number } | undefined => {
-      const layout = commit.mock.calls.at(-1)?.[0].dashboard?.layout as { items?: Record<string, { span: number; height: number }> } | undefined;
+      const layout = commit.mock.calls.at(-1)?.[0].dashboards[0]?.layout as { items?: Record<string, { span: number; height: number }> } | undefined;
       return layout?.items?.t1;
     };
     const press = (key: string): KeyboardEvent => {
@@ -1884,7 +1884,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(commit).not.toHaveBeenCalled(); // authored span already at the 12-column maximum
     handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
     await flush();
-    const layout = commit.mock.calls[0][0].dashboard?.layout as unknown as { items: Record<string, { span: number }> };
+    const layout = commit.mock.calls[0][0].dashboards[0]?.layout as unknown as { items: Record<string, { span: number }> };
     expect(layout.items.t1.span).toBe(11); // authored 12→11, never effective 4→3
   });
 
@@ -2655,14 +2655,14 @@ describe('renderDashboard — Full view (#321)', () => {
     const base = twoTilesGrid();
     const queries = [...base.queries, q3];
     const added = applyCommand(
-      base.dashboard as unknown as Parameters<typeof applyCommand>[0],
+      base.dashboards[0] as unknown as Parameters<typeof applyCommand>[0],
       { type: 'add-query', queryId: 'q3' },
-      { resolver: createQueryResolver(queries), genTileId: () => 't3', plugin: resolveLayoutPluginSync(base.dashboard.layout) },
+      { resolver: createQueryResolver(queries), genTileId: () => 't3', plugin: resolveLayoutPluginSync(base.dashboards[0].layout) },
     );
     expect(added.ok).toBe(true);
     if (!added.ok) return;
     const normalized = resolveLayoutPluginSync(added.dashboard.layout).normalize(added.dashboard);
-    const workspace = { ...base, queries, dashboard: normalized };
+    const workspace = { ...base, queries, dashboards: [normalized] };
 
     const { app, commit } = dashApp({ workspace: workspace as unknown as ReturnType<typeof wsWith> });
     await render(app);
@@ -3931,12 +3931,12 @@ describe('app.renderDashboard', () => {
       ]),
     })]]);
     const app = realApp(appEnv({ fetch: asFetch(fetch) }));
-    // Drive the read-flip deterministically: a StoredWorkspaceV2 whose one tile
+    // Drive the read-flip deterministically: a StoredWorkspaceV3 whose one tile
     // references the query (bypassing IndexedDB), then the real exec seam runs it.
     const query = savedQuery({ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart' });
     app.currentWorkspace = {
-      storageVersion: 2, id: 'w', key: 'workspace', name: 'W', queries: [query],
-      dashboard: { documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] },
+      storageVersion: 3, id: 'w', key: 'workspace', name: 'W', queries: [query],
+      dashboards: [{ documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] }],
     };
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' };
     await app.renderDashboard();
@@ -4008,7 +4008,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
   });
 
   it('missing dashboard differs in view and edit, and Create persists only on click', async () => {
-    const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const viewed = modeApp({ workspace: empty, mode: 'view' });
     await render(viewed.app);
     expect(viewed.app.root?.textContent).toContain('This workspace has no dashboard');
@@ -4024,18 +4024,18 @@ describe('renderDashboard — unified live modes (#407)', () => {
     create.click();
     await flush();
     expect(edited.commit).toHaveBeenCalledOnce();
-    expect(edited.commit.mock.calls[0][0].dashboard).not.toBeNull();
+    expect(edited.commit.mock.calls[0][0].dashboards[0]).not.toBeUndefined();
   });
 
   it.each(['view', 'edit'] as const)(
     'a missing Dashboard in %s mode rerenders when another tab creates it',
     async (mode) => {
-      const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+      const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
       const { app } = modeApp({ workspace: empty, mode });
       const rerender = vi.fn();
       app.renderDashboard = rerender;
       await render(app);
-      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV2;
+      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV3;
       app.currentWorkspace = created;
       app.onWorkspaceExternallyChanged({ workspace: created, queriesChanged: false });
       expect(rerender).toHaveBeenCalledOnce();
@@ -4043,10 +4043,10 @@ describe('renderDashboard — unified live modes (#407)', () => {
   );
 
   it('Create dashboard aborts if another producer created one before the click commits', async () => {
-    const empty = { ...wsWith(), dashboard: null } as unknown as ReturnType<typeof wsWith>;
+    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
     await render(app);
-    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV2;
+    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV3;
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const, workspace: concurrentlyUpdated,
     }));
@@ -4288,7 +4288,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const,
       workspace: {
-        storageVersion: 2 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboard: null,
+        storageVersion: 3 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
       },
     }));
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
@@ -4353,8 +4353,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     await flush();
     const candidate = commit.mock.calls[0][0];
     expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(false);
-    expect(candidate.dashboard?.filters.map((filter) => filter.targets)).toEqual([['t2'], []]);
-    expect(candidate.dashboard?.revision).toBe(2);
+    expect(candidate.dashboards[0]?.filters.map((filter) => filter.targets)).toEqual([['t2'], []]);
+    expect(candidate.dashboards[0]?.revision).toBe(2);
   });
 
   it('remove-tile keeps favorite true when another tile instance references the query', async () => {
@@ -4368,9 +4368,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
     await flush();
     const candidate = commit.mock.calls[0][0];
-    expect(candidate.dashboard?.tiles).toEqual([{ id: 't2', queryId: 'q1' }]);
+    expect(candidate.dashboards[0]?.tiles).toEqual([{ id: 't2', queryId: 'q1' }]);
     expect(candidate.queries[0].spec.favorite).toBe(true);
-    expect(candidate.dashboard?.revision).toBe(2);
+    expect(candidate.dashboards[0]?.revision).toBe(2);
   });
 
   it('missing workspace renders a dedicated not-found state and never commits', async () => {
@@ -4386,10 +4386,10 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('rapid commands commit in STRICT invocation order — a slow-to-resolve first commit is never skipped or reordered by a second', async () => {
     const seen: string[] = [];
     let resolveFirst!: (v: unknown) => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV2) => {
-      const layout = candidate.dashboard!.layout;
+    const commit = vi.fn((candidate: StoredWorkspaceV3) => {
+      const layout = candidate.dashboards[0]!.layout;
       seen.push(layout.type === 'flow' ? String(layout.preset) : layout.type);
-      const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard!.revision };
+      const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision };
       if (seen.length === 1) return new Promise((resolve) => { resolveFirst = resolve; }).then(() => result);
       return Promise.resolve(result);
     });
@@ -4424,8 +4424,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV2) => (
-        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
     await render(app);
@@ -4458,8 +4458,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     let resolveA!: (v: unknown) => void;
     const commit = vi.fn()
       .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
-      .mockImplementation(async (candidate: StoredWorkspaceV2) => (
-        { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+        { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTilesGrid(), commit });
     await render(app);
@@ -4535,8 +4535,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // it moments before the command below dequeues. This never touches
     // `currentDoc`/the rendered session directly (only a later `runCommand`
     // resolution does) — the sanity check confirms it landed in the store.
-    await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } } : null));
-    expect((await loadActive()).dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
+    await app.mutateWorkspace((latest) => (latest ? { candidate: { ...latest, dashboards: [{ ...latest.dashboards[0]!, tiles: [latest.dashboards[0]!.tiles[1]], revision: latest.dashboards[0]!.revision + 1 }] } } : null));
+    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t2']);
     // Resize t1's placement through the UI — t1 is still present in this
     // route's OWN optimistic `currentDoc` (it hasn't seen the concurrent
     // removal yet), so it applies optimistically (a plain placement change,
@@ -4561,7 +4561,109 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // so removing it empties the persisted tiles list.
     qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[0].click();
     await flush();
-    expect((await loadActive()).dashboard?.tiles).toEqual([]);
+    expect((await loadActive()).dashboards[0]?.tiles).toEqual([]);
+  });
+
+  // #424: an ORDINARY edit on the visible Dashboard must leave every other
+  // stored Dashboard byte-identical, revision included. Without this the
+  // ID-addressed commit could be swapped for a plain one-element write and
+  // nothing else in the suite would notice.
+  it('an ordinary tile edit preserves every other stored Dashboard, revisions included', async () => {
+    const hidden = {
+      documentVersion: 1 as const, id: 'hidden', title: 'Hidden', revision: 12,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    const base = twoTilesGrid();
+    const workspace = { ...base, dashboards: [base.dashboards[0], hidden] };
+    const { app, loadActive } = dashApp({ workspace });
+    await render(app);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+
+    const committed = await loadActive();
+    expect(committed.dashboards).toHaveLength(2);
+    // The visible Dashboard advanced…
+    expect(committed.dashboards[0].id).toBe(base.dashboards[0].id);
+    expect(committed.dashboards[0].revision).toBe(2);
+    expect(committed.dashboards[0].tiles.map((t) => t.id)).toEqual(['t2']);
+    // …and the hidden one did not move at all.
+    expect(committed.dashboards[1]).toEqual(hidden);
+    // The visible surface still shows exactly one Dashboard and no selector.
+    expect(app.state.dashboard?.id).toBe(base.dashboards[0].id);
+    expect(qsa(app.root, '[class*="dashboard-select"], [class*="dash-tabstrip"]')).toHaveLength(0);
+  });
+
+  // #424: the route pins the compatibility Dashboard's ID at render and
+  // commits BY ID. If that document disappears from committed truth while a
+  // command is queued (an Import Dashboard replaced the compatibility slot),
+  // the command must abort rather than silently retarget whatever Dashboard
+  // now sits at index 0 — and the route must rebuild instead of keeping a
+  // phantom Dashboard on screen.
+  it('aborts and rebuilds when the pinned Dashboard is replaced by another while a command is queued', async () => {
+    const { app, loadActive } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const [card0] = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+
+    // Another producer swaps the compatibility slot for a DIFFERENT document
+    // (a fresh id), exactly as `planImportDashboard` does.
+    await app.mutateWorkspace((latest) => (latest ? {
+      candidate: {
+        ...latest,
+        dashboards: [{
+          documentVersion: 1, id: 'imported', title: 'Imported', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+          filters: [], tiles: [],
+        }],
+      },
+    } : null));
+    expect((await loadActive()).dashboards[0]?.id).toBe('imported');
+
+    qs<HTMLElement>(card0, '.dash-gg-resize').dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
+
+    // The stale command was dropped, not applied to the imported Dashboard…
+    expect(document.querySelector('.share-toast')?.textContent).toBe('Change no longer applies — undone');
+    expect((await loadActive()).dashboards.map((d) => d.id)).toEqual(['imported']);
+    expect((await loadActive()).dashboards[0]?.revision).toBe(1);
+    // …and the route rebuilt onto the document that actually exists now.
+    expect(app.state.dashboard?.id).toBe('imported');
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(0);
+  });
+
+  // The ID-addressed write refuses an AMBIGUOUS target too: a workspace whose
+  // committed truth somehow holds two Dashboards under one id must not have
+  // one of them silently overwritten. (Validation rejects such a workspace, so
+  // this can only arrive through the injected mutation seam — the guard is
+  // what keeps that impossible state from becoming a lossy write.)
+  it('aborts a command when the pinned Dashboard id is ambiguous in committed truth', async () => {
+    const { app, loadActive } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const [card0] = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+
+    const pinned = (await loadActive()).dashboards[0]!;
+    await app.mutateWorkspace((latest) => (latest ? {
+      candidate: { ...latest, dashboards: [pinned, { ...pinned, title: 'Duplicate' }] },
+    } : null));
+
+    qs<HTMLElement>(card0, '.dash-gg-resize').dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
+
+    expect(document.querySelector('.share-toast')?.textContent).toBe('Change no longer applies — undone');
+    // Neither duplicate was rewritten — no revision moved.
+    const after = await loadActive();
+    expect(after.dashboards.map((d) => d.revision)).toEqual([pinned.revision, pinned.revision]);
+    expect(after.dashboards.map((d) => d.title)).toEqual([pinned.title, 'Duplicate']);
   });
 
   // #350 (pulled into scope by review 2): a rebase that RESTORES membership —
@@ -4575,8 +4677,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV2) => (
-        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const workspace = wsWith({
       queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
@@ -4599,11 +4701,11 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
     expect(app.state.dashboard?.filters[0].targets).toEqual(['t1']);
     expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'q1'))).toBe(true);
-    expect((await loadActive()).dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
     // The rebuilt route is fully functional — a later command still commits.
     qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();
     await flush();
-    expect((await loadActive()).dashboard?.tiles.map((t) => t.id)).toEqual(['t1']);
+    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1']);
   });
 
   // #344 review fix (coordinator hardening): a commit that REJECTS (the store
@@ -4614,8 +4716,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('a REJECTED commit (storage threw) rolls back, toasts, and does not wedge the queue or the pending-command bookkeeping', async () => {
     const commit = vi.fn()
       .mockRejectedValueOnce(new Error('storage blocked'))
-      .mockImplementation(async (candidate: StoredWorkspaceV2) => (
-        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
     await render(app);
@@ -4663,10 +4765,10 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     // Another tab commits a tile removal — this advances the shared store and
     // projects onto `app.state`, but does NOT rebuild this route's session.
     await app.mutateWorkspace((latest) => {
-      const d = latest!.dashboard!;
-      return { candidate: { ...latest!, dashboard: {
+      const d = latest!.dashboards[0]!;
+      return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1, tiles: d.tiles.filter((t) => t.id !== 't2'),
-      } } };
+      }] } };
     });
     expect(tileNames(app)).toEqual(['q1', 'q2']); // session still shows both tiles
     // The app-level refresh fires the hook after projecting the external change.
@@ -4696,7 +4798,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app, calls } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV2;
+    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV3;
     app.currentWorkspace = changed;
     const before = calls.length;
     app.onWorkspaceExternallyChanged({ workspace: changed as never, queriesChanged: true });
@@ -4706,8 +4808,8 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
 
   it('a stale rebuild waits until pending Dashboard command descriptors settle', async () => {
     let resolveCommit!: () => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV2) => new Promise((resolve) => {
-      resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboard!.revision });
+    const commit = vi.fn((candidate: StoredWorkspaceV3) => new Promise((resolve) => {
+      resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision });
     }));
     const { app, calls, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);

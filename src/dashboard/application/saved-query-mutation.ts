@@ -16,6 +16,7 @@
 // another variant, or remap references to another query.
 
 import { cloneJson } from '../../core/saved-query.js';
+import { canonicalEqual, DASHBOARD_DOCUMENT_SHAPE } from '../model/canonical-json.js';
 import type { JsonSchemaValidationService } from '../../core/json-schema-validation.js';
 import type { SpecSchemaService } from '../../core/spec-schema.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
@@ -24,7 +25,7 @@ import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV2,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
 } from '../../generated/json-schema.types.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -51,7 +52,7 @@ export type SavedQueryRepair =
  *  can offer. */
 export interface SavedQueryMutationPlan {
   ok: boolean;
-  candidate: StoredWorkspaceV2 | null;
+  candidate: StoredWorkspaceV3 | null;
   diagnostics: WorkspaceDiagnostic[];
   repairs: SavedQueryRepairKind[];
 }
@@ -145,40 +146,70 @@ export function suggestRepairs(diagnostics: readonly WorkspaceDiagnostic[]): Sav
 }
 
 function validateWorkspace(
-  candidate: StoredWorkspaceV2, options: SavedQueryMutationOptions,
+  candidate: StoredWorkspaceV3, options: SavedQueryMutationOptions,
 ): WorkspaceDiagnostic[] {
   const codecOptions = options.validationService ? { validationService: options.validationService } : {};
   const structural = validateStoredWorkspaceDocument(candidate, codecOptions);
   if (structural.length) return structural;
-  if (candidate.dashboard === null) return [];
-  return resolveDashboardPresentations({
-    dashboard: candidate.dashboard, queries: candidate.queries,
-    schemaService: options.schemaService, path: ['dashboard'],
-  });
+  // #424: presentation resolution runs for EVERY Dashboard, each at its own
+  // indexed path, so a candidate can never be committed with one Dashboard
+  // repaired and another left holding a dangling or incompatible reference.
+  return candidate.dashboards.flatMap((dashboard, index) => resolveDashboardPresentations({
+    dashboard, queries: candidate.queries,
+    schemaService: options.schemaService, path: ['dashboards', index],
+  }));
 }
 
-/** Plan one saved-query mutation against a workspace, optionally applying an
- *  atomic repair. Returns a valid candidate to commit, or the diagnostics and
- *  available repairs when the mutation would invalidate the workspace. */
-export function planSavedQueryMutation(
-  workspace: StoredWorkspaceV2, mutation: SavedQueryMutation,
-  repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},
-): SavedQueryMutationPlan {
-  const queries = applyQueryMutation(workspace.queries, mutation);
-  let dashboard: DashboardDocumentV1 | null = workspace.dashboard ? cloneJson(workspace.dashboard) : null;
-  if (dashboard && repair) dashboard = applyRepair(dashboard, mutation.queryId, repair);
+/** Apply the repair to ONE Dashboard, then normalize it only if the repair
+ *  actually changed it (#424): a Dashboard the mutation does not touch must
+ *  come out canonically identical and keep its revision, so it is never
+ *  re-normalized or fallback-regenerated as a side effect of another
+ *  Dashboard's repair. */
+function repairedDashboard(
+  dashboard: DashboardDocumentV1, affectedId: string, repair: SavedQueryRepair | undefined,
+): DashboardDocumentV1 {
+  const clone = cloneJson(dashboard);
+  if (!repair) return clone;
+  const repaired = applyRepair(clone, affectedId, repair);
+  if (canonicalEqual(repaired, clone, DASHBOARD_DOCUMENT_SHAPE)) return clone;
   // Normalize through the ACTIVE layout engine's own plugin (#291: flow@1 or
   // grafana-grid@1, resolved from the document's own `layout.type`) rather
   // than a hardcoded flow plugin, then regenerate the flow@1 fallback when
   // grafana-grid@1 is active (a repair can add/remove tiles, exactly like the
   // authoring commands do) — a no-op under flow@1.
-  if (dashboard) {
-    dashboard = resolveLayoutPluginSync(dashboard.layout).normalize(dashboard);
-    regenerateGridFallback(dashboard.layout, dashboard.tiles);
-  }
-  const candidate: StoredWorkspaceV2 = {
-    storageVersion: 2, id: workspace.id, key: workspace.key, name: workspace.name,
-    queries: cloneJson(queries), dashboard,
+  const normalized = resolveLayoutPluginSync(repaired.layout).normalize(repaired);
+  regenerateGridFallback(normalized.layout, normalized.tiles);
+  return normalized;
+}
+
+/** Plan one saved-query mutation against a workspace, optionally applying an
+ *  atomic repair. Returns a valid candidate to commit, or the diagnostics and
+ *  available repairs when the mutation would invalidate the workspace.
+ *
+ *  #424: EVERY Dashboard in the workspace is part of the one atomic candidate.
+ *  References are inspected and validated across the whole collection — the
+ *  current UI may only offer repairs for what it can show, but the planner
+ *  still detects a break in a Dashboard the UI never renders, so a mutation
+ *  can never silently corrupt hidden data.
+ *
+ *  Note for the caller that eventually wires this up (it has no production
+ *  caller yet): ONE `repair` is applied to EVERY Dashboard. That is right for
+ *  `remap-query` (a query id is workspace-global) but blunt for the
+ *  tile-scoped repairs — `switch-variant` keys off `tileVariants[tile.id]`,
+ *  and tile ids are Dashboard-LOCAL, so a coincidental id collision would
+ *  rewrite an unrelated Dashboard's tile. A per-Dashboard repair map is the
+ *  natural extension once a UI can actually address more than one Dashboard. */
+export function planSavedQueryMutation(
+  workspace: StoredWorkspaceV3, mutation: SavedQueryMutation,
+  repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},
+): SavedQueryMutationPlan {
+  const queries = applyQueryMutation(workspace.queries, mutation);
+  const dashboards = workspace.dashboards.map(
+    (dashboard) => repairedDashboard(dashboard, mutation.queryId, repair),
+  );
+  const candidate: StoredWorkspaceV3 = {
+    storageVersion: 3, id: workspace.id, key: workspace.key, name: workspace.name,
+    queries: cloneJson(queries), dashboards,
   };
   const diagnostics = validateWorkspace(candidate, options);
   if (diagnostics.length === 0) return { ok: true, candidate, diagnostics: [], repairs: [] };

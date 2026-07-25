@@ -350,7 +350,13 @@ reactivity:
 
 `StoredWorkspaceV2` and the collection repository introduced by #406 preserve
 this projection/commit model per workspace; they replace only the fixed-current
-record and V1 identity contract.
+record and V1 identity contract. `StoredWorkspaceV3` (#424) turns the singular
+`dashboard` field into a `dashboards[]` collection without changing the model
+either: `state.dashboard` stays a projection of exactly ONE document — the
+compatibility Dashboard resolved through `src/workspace/workspace-dashboards.ts`
+— and every commit still replaces the whole aggregate, so the additional
+Dashboards are carried through untouched rather than becoming a second
+reactive slice.
 
 - `state.savedQueries` is now a **projection** of the committed workspace, not a
   directly-mutated array. Boot loads the aggregate and projects it (queries,

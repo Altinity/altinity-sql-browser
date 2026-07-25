@@ -14,7 +14,7 @@ import { createApp } from '../../src/ui/app.js';
 import { createSavedQuery, commitSavedQuery, deleteSaved, renameSaved } from '../../src/state.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { SavedQueryV2, StoredWorkspaceV2, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV3, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
 
 // A minimal real `createApp` over an injected shared store — the editor/spec
 // seams fall back to their noop ports (createApp's own defaults), so no
@@ -39,26 +39,26 @@ const twoTileDashboard = (): DashboardDocumentV1 => ({
   filters: [], tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
 } as DashboardDocumentV1);
 
-const dashboardSeed = (): StoredWorkspaceV2 => ({
-  storageVersion: 2, id: 'w1', key: 'team', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
-  dashboard: twoTileDashboard(),
+const dashboardSeed = (): StoredWorkspaceV3 => ({
+  storageVersion: 3, id: 'w1', key: 'team', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
+  dashboards: [twoTileDashboard()],
 });
 
 /** Load the committed workspace from the shared store (fails loudly if empty). */
-async function committed(app: App): Promise<StoredWorkspaceV2> {
+async function committed(app: App): Promise<StoredWorkspaceV3> {
   const loaded = await app.workspace.loadById(app.state.workspaceId);
   if (loaded.status !== 'ok') throw new Error('expected a committed workspace');
   return loaded.workspace;
 }
 
-const layoutItems = (workspace: StoredWorkspaceV2): Record<string, { span: number }> =>
-  workspace.dashboard!.layout.items as Record<string, { span: number }>;
-const queryById = (workspace: StoredWorkspaceV2, id: string): SavedQueryV2 | undefined =>
+const layoutItems = (workspace: StoredWorkspaceV3): Record<string, { span: number }> =>
+  workspace.dashboards[0].layout.items as Record<string, { span: number }>;
+const queryById = (workspace: StoredWorkspaceV3, id: string): SavedQueryV2 | undefined =>
   workspace.queries.find((q) => q.id === id);
 
 /** Seed the shared store (via A) and project it into both tabs, mirroring two
  *  tabs that each loaded the same committed aggregate on boot. */
-async function seed(a: App, b: App, workspace: StoredWorkspaceV2): Promise<void> {
+async function seed(a: App, b: App, workspace: StoredWorkspaceV3): Promise<void> {
   const outcome = await a.workspace.create(workspace);
   expect(outcome.ok).toBe(true);
   if (outcome.ok) a.applyCommittedWorkspace(outcome.workspace);
@@ -72,11 +72,11 @@ describe('cross-tab read-before-write (#343)', () => {
     await seed(a, b, dashboardSeed());
 
     await a.mutateWorkspace((latest) => {
-      const d = latest!.dashboard!;
-      return { candidate: { ...latest!, dashboard: {
+      const d = latest!.dashboards[0];
+      return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1,
         layout: { ...d.layout, items: { ...d.layout.items, t1: { span: 3, height: 'medium' } } },
-      } } };
+      }] } };
     });
     const renamed = await renameSaved(b.state, 'q1', 'Q1 renamed', undefined, b.mutateWorkspace);
     expect(renamed?.ok).toBe(true);
@@ -101,13 +101,13 @@ describe('cross-tab read-before-write (#343)', () => {
 
     // B reorders the tiles (move t2 ahead of t1).
     await b.mutateWorkspace((latest) => {
-      const d = latest!.dashboard!;
-      return { candidate: { ...latest!, dashboard: { ...d, revision: d.revision + 1, tiles: [...d.tiles].reverse() } } };
+      const d = latest!.dashboards[0];
+      return { candidate: { ...latest!, dashboards: [{ ...d, revision: d.revision + 1, tiles: [...d.tiles].reverse() }] } };
     });
 
     const final = await committed(a);
     expect(queryById(final, 'q1')!.sql).toBe('SELECT a, b, c'); // A's SQL edit survives
-    expect(final.dashboard!.tiles.map((t) => t.id)).toEqual(['t2', 't1']); // and B's move
+    expect(final.dashboards[0].tiles.map((t: { id: string }) => t.id)).toEqual(['t2', 't1']); // and B's move
   });
 
   it('Dashboard A removes a tile; Workbench B saves an unrelated query — the tile stays removed', async () => {
@@ -116,12 +116,12 @@ describe('cross-tab read-before-write (#343)', () => {
     await seed(a, b, dashboardSeed());
 
     await a.mutateWorkspace((latest) => {
-      const d = latest!.dashboard!;
+      const d = latest!.dashboards[0];
       const items = { ...d.layout.items };
       delete (items as Record<string, unknown>).t2;
-      return { candidate: { ...latest!, dashboard: {
+      return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1, tiles: d.tiles.filter((t) => t.id !== 't2'), layout: { ...d.layout, items },
-      } } };
+      }] } };
     });
 
     const bTab = b.state.tabs.value[0];
@@ -130,7 +130,7 @@ describe('cross-tab read-before-write (#343)', () => {
     expect(created.ok).toBe(true);
 
     const final = await committed(a);
-    expect(final.dashboard!.tiles.map((t) => t.id)).toEqual(['t1']); // t2 stays removed
+    expect(final.dashboards[0].tiles.map((t: { id: string }) => t.id)).toEqual(['t1']); // t2 stays removed
     expect(final.queries.some((q) => q.spec.name === 'Unrelated')).toBe(true); // B's save landed
   });
 
@@ -145,11 +145,11 @@ describe('cross-tab read-before-write (#343)', () => {
     expect(created.ok).toBe(true);
 
     await b.mutateWorkspace((latest) => {
-      const d = latest!.dashboard!;
-      return { candidate: { ...latest!, dashboard: {
+      const d = latest!.dashboards[0];
+      return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1,
         layout: { ...d.layout, items: { ...d.layout.items, t1: { span: 2, height: 'large' } } },
-      } } };
+      }] } };
     });
 
     const final = await committed(a);
@@ -160,10 +160,10 @@ describe('cross-tab read-before-write (#343)', () => {
   it('save-linked to an externally deleted query aborts and does not recreate it', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const seedNoDash: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
+    const seedNoDash: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
       queries: [{ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2],
-      dashboard: null,
+      dashboards: [],
     };
     await seed(a, b, seedNoDash);
 
@@ -192,10 +192,10 @@ describe('cross-tab read-before-write (#343)', () => {
 // linked tabs adopt/conflict/detach/orphan, refresh coalesces + orders through
 // the write queue, and a failed reload never wedges it.
 describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
-  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV2 => ({
-    storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
+  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV3 => ({
+    storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
     queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
-    dashboard: null,
+    dashboards: [],
   });
   /** Open q1 into a fresh linked tab on `app` (from its projected copy). */
   const openQ1 = (app: App): void => {
@@ -236,13 +236,13 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
   it('a flagged conflict survives a Library star/rename plus an unrelated external change (#343 review blocker)', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const twoQueries: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'team', name: 'Team',
+    const twoQueries: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
       queries: [
         { id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2,
         { id: 'q2', sql: 'SELECT 2', specVersion: 1, spec: { name: 'q2', favorite: false } } as SavedQueryV2,
       ],
-      dashboard: null,
+      dashboards: [],
     };
     await seed(a, b, twoQueries);
     // B opens q1 and edits it (dirty draft).

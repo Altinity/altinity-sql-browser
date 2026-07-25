@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json",
+  "title": "Altinity SQL Browser stored workspace v3",
+  "description": "One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v2, whose singular zero-or-one `dashboard` field becomes the required `dashboards` array; v2 records remain readable and migrate deterministically on read. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
+  "x-altinity-kind": "stored-workspace",
+  "x-altinity-version": 3,
+  "type": "object",
+  "required": ["storageVersion", "id", "key", "name", "queries", "dashboards"],
+  "properties": {
+    "storageVersion": {
+      "title": "Storage version",
+      "description": "Stored-workspace contract version; always 3 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 3
+    },
+    "id": {
+      "title": "Workspace identifier",
+      "description": "Stable generated application identity. Two workspaces with the same display name still have distinct IDs.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "key": {
+      "title": "Workspace URL key",
+      "description": "Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "name": {
+      "title": "Workspace name",
+      "description": "Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Required even when empty.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "saved-query-v2.schema.json" }
+    },
+    "dashboards": {
+      "title": "Dashboards",
+      "description": "This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile, filter, and layout placement IDs stay Dashboard-local. The bound matches the portable-bundle Dashboard capacity rather than introducing a second one. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "dashboard-v1.schema.json" }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": ["storageVersion", "id", "key", "name", "queries", "dashboards"]
+}

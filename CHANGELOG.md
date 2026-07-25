@@ -9,6 +9,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- A workspace now stores an ordered **collection** of Dashboard documents
+  (`StoredWorkspaceV3`, #424) instead of zero or one. Records written under the
+  previous contract are read and migrated deterministically on open — Dashboard
+  ids, revisions, layouts, filters, tiles, favorites, and unknown
+  forward-compatible fields are preserved exactly, no tile is derived from or
+  removed because of a favorite flag, and nothing is reordered; every new write
+  is `storageVersion: 3`. Dashboard ids are unique per workspace and each
+  Dashboard is validated independently against the shared query collection,
+  while tile, filter, and layout ids stay Dashboard-local. **No UI change:** the
+  Workbench and Dashboard still expose exactly one Dashboard, resolved through a
+  single compatibility selector, and the favorite star drives its membership
+  exactly as before. Additional Dashboards are preserved, validated, exported,
+  and never modified by an action that did not target them. Two import/export
+  consequences: a workspace export now carries every stored Dashboard rather
+  than only the visible one, and **Import workspace** imports every Dashboard in
+  the file (in file order) instead of asking which single one to keep.
+
 ### Added
 - Surface-aware keyboard shortcuts for SQL Browser and Dashboard (#417). The
   shared, platform-aware shortcut catalog now drives both help and dispatch;

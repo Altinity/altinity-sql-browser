@@ -21,7 +21,7 @@ import type { SchemaGraphSession } from '../application/schema-graph-session.js'
 import type { AppPreferences } from '../application/app-preferences.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
-import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
 import type { SurfaceCommandPort } from './shortcuts.js';
@@ -42,7 +42,7 @@ type Json = Record<string, unknown>;
  *  commit resolves (e.g. the created query id a tab must link to). Returning the
  *  whole object as `null` also aborts. */
 export interface WorkspaceMutationInput<T = unknown> {
-  candidate: StoredWorkspaceV2 | null;
+  candidate: StoredWorkspaceV3 | null;
   data?: T;
 }
 
@@ -54,7 +54,7 @@ export interface WorkspaceMutationInput<T = unknown> {
  *  three outcomes (undefined when the queued op rejected before the transform
  *  ran). */
 export type WorkspaceMutationOutcome<T = unknown> =
-  | { ok: true; workspace: StoredWorkspaceV2; dashboardRevision: number | null; data?: T }
+  | { ok: true; workspace: StoredWorkspaceV3; dashboardRevision: number | null; data?: T }
   | { ok: false; aborted: true; data?: T }
   | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
 
@@ -73,7 +73,7 @@ export interface WorkspaceChangedMessage {
  *  relative to the previous projection — the Dashboard route rebuilds its viewer
  *  session on a query-only change even when the Dashboard document is identical. */
 export interface WorkspaceExternallyChangedInfo {
-  workspace: StoredWorkspaceV2 | null;
+  workspace: StoredWorkspaceV3 | null;
   queriesChanged: boolean;
 }
 
@@ -323,7 +323,7 @@ export interface App {
    *  `App.savePref` delegate); `toggleTheme`'s preference-write half also
    *  delegates here, the DOM half stays in app.ts. */
   prefs: AppPreferences;
-  /** Atomic StoredWorkspaceV2 aggregate persistence (#280 Phase 2 / #284),
+  /** Atomic StoredWorkspaceV3 aggregate persistence (#280 Phase 2 / #284),
    *  behind the injected IndexedDB seam (`env.indexedDB`). Pure/testable — no
    *  App/AppState/DOM dependency. In this phase it is constructed but the
    *  favorites-driven Dashboard render still reads legacy keys; Phases 3-6 of
@@ -447,7 +447,7 @@ export interface App {
   openDashboard(): void;
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
-  currentWorkspace: StoredWorkspaceV2 | null;
+  currentWorkspace: StoredWorkspaceV3 | null;
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
   /** Route-local commands registered by the mounted surface. They are cleared
    * before every transition, so a disposed Dashboard viewer cannot be called. */
@@ -480,8 +480,8 @@ export interface App {
    *  this before the first `renderApp()`. On a null/failed load, `state`
    *  keeps whatever the legacy-projected `createState()` synchronous read
    *  already populated (a brand-new install, or a degraded IndexedDB). */
-  loadWorkspaceOnBoot(): Promise<StoredWorkspaceV2 | null>;
-  /** #287 W5: project a committed `StoredWorkspaceV2` onto `state`
+  loadWorkspaceOnBoot(): Promise<StoredWorkspaceV3 | null>;
+  /** #287 W5: project a committed `StoredWorkspaceV3` onto `state`
    *  (`savedQueries`/`dashboard`/`workspaceId`/`libraryName`, and clear
    *  `libraryDirty` — a fresh committed workspace is, by construction, in
    *  sync with what's persisted) — the exact projection `loadWorkspaceOnBoot`
@@ -490,7 +490,7 @@ export interface App {
    *  (`updateSaveBtn`/`updateEditorModeUi`/`renderSavedHistory`) is the
    *  caller's job — this never touches `app.dom` (it also runs during boot,
    *  before the first `renderApp()`/mount). */
-  applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV3): void;
   /** #287 W5: a fresh, unguessable id (`uid('ws-')`), exposed here as the
    *  injected `WorkspaceIdGen` the file-menu's New workspace / Import /
    *  Replace operations pass to `createNewWorkspace`/the import planner. One
@@ -527,7 +527,7 @@ export interface App {
    *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
    *  the queue itself never wedges. */
   mutateWorkspace<T = unknown>(
-    transform: (latest: StoredWorkspaceV2 | null) =>
+    transform: (latest: StoredWorkspaceV3 | null) =>
       WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
   ): Promise<WorkspaceMutationOutcome<T>>;
   /** #343 §5: this tab's random per-session id, minted through the crypto seam.

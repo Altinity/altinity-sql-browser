@@ -12,7 +12,7 @@ test('Workbench star → Dashboard delete → Workbench reload keeps membership 
   await page.waitForFunction(async () => (await window.__workspace()).queries[0].spec.favorite === true);
   let workspace = await page.evaluate(() => window.__workspace());
   expect(workspace.queries[0].spec.favorite).toBe(true);
-  expect(workspace.dashboard.tiles).toHaveLength(1);
+  expect(workspace.dashboards[0].tiles).toHaveLength(1);
 
   await page.getByRole('button', { name: 'Open Dashboard' }).click();
   expect(pageErrors).toEqual([]);
@@ -21,8 +21,8 @@ test('Workbench star → Dashboard delete → Workbench reload keeps membership 
   await page.waitForFunction(async () => (await window.__workspace()).queries[0].spec.favorite === false);
   workspace = await page.evaluate(() => window.__workspace());
   expect(workspace.queries[0].spec.favorite).toBe(false);
-  expect(workspace.dashboard.tiles).toEqual([]);
-  expect(workspace.dashboard.revision).toBe(2);
+  expect(workspace.dashboards[0].tiles).toEqual([]);
+  expect(workspace.dashboards[0].revision).toBe(2);
 
   await page.reload();
   await page.waitForFunction(() => window.__ready === true);
