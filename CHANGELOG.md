@@ -47,6 +47,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Dashboard rather than the workspace's first one; the favourite star, which
   still drives panel membership through the first Dashboard, declines with an
   explanation while a different one is open (it is rewired in #427).
+- Inter and JetBrains Mono are now **shipped with the artifact** instead of only
+  being named in the font stacks. DESIGN.md has always specified both, but with
+  no `@font-face` and no CDN allowed, they rendered only for users who happened
+  to have them installed locally — everyone else silently got the platform UI
+  face and Menlo/Consolas. `build/fonts.mjs` inlines latin-subset, upright,
+  variable-weight woff2 as base64 `@font-face` sources: ~89 KB of woff2, +19%
+  gzip on `dist/sql.html`, still zero third-party requests. `unicode-range` is
+  preserved so codepoints outside the subset (Cyrillic, CJK, the ⌘/↵/→ glyphs)
+  keep falling through to the platform font rather than rendering tofu. The KPI
+  metric gains `tabular-nums` so a refreshing value no longer twitches.
+- A named type scale (`--text-*`, `--fw-*`, `--lh-*`) and
+  `tests/unit/typography-contract.test.js`, which gates it: every `font-size` in
+  `src/styles.css` must resolve to a token, no two steps within a ramp may sit
+  closer than 1px, the tokens must match the DESIGN.md frontmatter, no class the
+  UI renders may be left with no CSS rule, and token contrast must clear WCAG AA
+  in both themes. Nothing previously enforced any of this — behaviour coverage
+  cannot see a missing stylesheet.
 - Surface-aware keyboard shortcuts for SQL Browser and Dashboard (#417). The
   shared, platform-aware shortcut catalog now drives both help and dispatch;
   Dashboard gains refresh, View/Edit, and `G` navigation commands while stale
@@ -56,6 +73,115 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Style adds `G G`, `G F`, `G R`, `G 2`, and `G 3` for Grid Tiles, Full view,
   Report, and two/three columns; View mode previews every style without
   changing the shared dashboard.
+
+### Changed
+- Radii, elevation and the semantic/object-kind/syntax palettes are tokens too
+  (`--r-*`, `--shadow-*`, `--ring-*`, `--kind-*`, `--role-*`, `--sql-*`). Fourteen
+  radius values against a documented four-step scale became four plus `--r-pill`;
+  fourteen shadows across eleven black alphas became one token per documented
+  entry. `.dash-tile` was at 10px while DESIGN.md's own Dashboard Tiles section
+  said 8px.
+- KPI cards no longer wear a 3px accent bar across the top. The author's per-KPI
+  colour hint (`presentation.color`) tints the card's own 1px frame instead: the
+  bar mitred against the 8px radius, and a coloured stripe on a metric card is
+  the dashboard cliché PRODUCT.md lists as an anti-reference. `--kpi-accent` now
+  defaults to `--border` rather than `--accent`, so a KPI with no author hint is
+  neutral and ClickHouse Blue stays scarce instead of appearing on every card.
+- Reference-doc admonitions state their variant with a 1px frame in the variant
+  colour plus a coloured title word, replacing the 3px left stripe — colour paired
+  with text, per the Evidence Rule. Blockquotes drop to a hairline left rule.
+- The streaming progress bar and the column/row resize handles animate `transform`
+  instead of `width`/`height`, keeping two high-frequency surfaces off the layout
+  path. The progress fill is full-width and scaled from the left by `results.ts`.
+- The Altinity logomark moved to `src/ui/brand-logo.ts`. Its 26 gradient stops are
+  a supplied brand asset, deliberately outside the palette and never to be
+  borrowed for UI chrome; its own module lets `.impeccable/config.json` exclude
+  exactly that file from the design-system colour check instead of all ~60 icons.
+- The type ramp is collapsed from 22 ad-hoc values to six interface steps
+  (9 / 10.5 / 11.5 / 12.5 / 14 / 16px) plus a document ramp for Read surfaces
+  and two display sizes. 231 literal `font-size` declarations became tokens, nine
+  `font:` shorthands carrying hidden literal sizes were expanded, and five values
+  that sat below the documented 11px floor are gone. The half-pixel neighbours it
+  removed (9/9.5, 10/10.5, 13.5/14/14.5) could not carry hierarchy: at these
+  sizes a 0.5px step buys ~0.26px of x-height, below one device pixel at 1×.
+- `body` now sets an explicit base size and `h1`–`h6` reset to `font-size:
+  inherit`, so a heading or surface the stylesheet misses degrades to the
+  product's own body size instead of to user-agent typography.
+
+### Fixed
+- The Dashboard surface (#425) is brought onto the token system it was written
+  before. Its **title** was `13px/600` — half a pixel above `--text-body`, a step
+  the One-Pixel Floor forbids because nobody can see it — and now steps up by
+  weight instead, at `--text-body`/`--fw-semibold`, one weight above the
+  `--text-label` controls beside it. Its **navigation highlight** mixed its own
+  translucent accent (`in srgb … 25%`) beside the ring family's `in oklab … 22%`:
+  one halo in two spellings, already drifting. It is `--ring-nav` now, a fourth
+  member of that family. That highlight also forced `border-radius: 6px` onto
+  whatever it marked, so a `--r-md` dashboard tile visibly **changed shape** while
+  highlighted and the ring mitred against the corner it was pointing at; it now
+  sets no radius and follows the target's own. A dead `gap: 8px` — overridden by
+  `.dash-toolbar`'s later, equally specific `gap: 10px` since the day it landed —
+  is removed, so the surface toolbar and the filter row beneath it are visibly one
+  sticky bar.
+- The pane-splitter indicator is a real `1px` line again. Moving it off the
+  layout path (see below) had left it a `3px` bar held down by `scaleX(.34)`,
+  which painted `1.02px` and, worse, reported `3px` to anything reading the
+  computed box — so `splitters.spec.js` had been failing on this branch, unrun,
+  since that change. It now scales **up** from an honest `1px`, and the spec
+  measures the painted extent (layout size × the transform's own scale) rather
+  than the untransformed box, which is what it always meant to assert.
+- Three gaps in the design-system gate, each of which is why the above shipped.
+  The shadow check tested for `rgba(` only, so a hand-mixed
+  `color-mix(…, transparent)` passed; it now rejects any box-shadow that builds
+  its own translucent colour, and a companion test pins every ring halo to one
+  colour space at one alpha. The unstyled-class check reads a curated file list,
+  and #425 split `app.ts` into `app-shell.ts` and `workbench/workbench-shell.ts` —
+  moving the application frame, the sidebar and both surface hosts out of its
+  view; the list follows the markup now.
+- Two DOM state badges (`.qtab-external`, `.mnav-badge`) were sitting on
+  `--text-nano`, the 9px tier DESIGN.md reserves for SVG text inside the zoomable
+  graphs — one because the mechanical 9px→token mapping put it there, one because it
+  was authored in the same change that wrote the restriction. Both now use
+  `--text-micro`, the documented tier for state badges. The contract test now
+  enforces the restrictions themselves rather than only that *some* token is used:
+  `--text-nano` is confined to the graph surfaces, the display tier to the login
+  mark and the KPI metric, and the document ramp to Read surfaces.
+- `font-src 'self'` blocked both inlined typefaces in every real deployment. CSP
+  `'self'` is an origin match and does not cover the `data:` scheme — it has to be
+  listed explicitly, exactly as the neighbouring `img-src data:` already did. Fixed
+  in both configs that ship a policy (`deploy/http_handlers.xml` and
+  `deploy/nginx/default.conf.template`). The failure was invisible by construction:
+  a blocked `@font-face` renders no tofu, it falls through to the platform face and
+  looks correct, so the deployed app would have kept using system fonts with only a
+  console violation as evidence — while every local check passed, because the CSP
+  exists only in the deploy configs. `tests/unit/csp-contract.test.js` now asserts
+  every URL scheme the built artifact references is permitted by the corresponding
+  directive, in every config that ships a CSP, and that those configs agree.
+- `--fg-faint` met no accessibility bar in either theme (2.55:1 light, 3.10:1
+  dark at worst) while carrying most of the smallest text in the product — row
+  counts, capped/cancelled badges, tile footers, the "Press ⌘↵ to run query"
+  hint. Now 4.61:1 light / 4.79:1 dark against their worst backgrounds
+  (WCAG 2.2 AA 1.4.3).
+- ClickHouse Blue as *text* failed AA too (4.10:1 on light chips, 3.83:1 on dark
+  surfaces). Text now uses `--accent-text` — the palette's existing Deep
+  ClickHouse Blue in light theme, a lifted `#2596CC` in dark. Fills, borders,
+  focus rings, carets and icons keep `--accent`, where the 3:1 non-text
+  threshold applies.
+- The destructive Overwrite button in the linked-tab conflict chooser uses a new
+  `--error-fill` rather than `--error-fg`. A foreground token is tuned to be legible
+  AS text on its plane, so dark theme's `#f87171` carried white at only 2.77:1 as a
+  fill. `--error-fill` is dark enough for white text in both themes (4.98:1 dark,
+  6.47:1 light) and keeps a visible edge against the dialog behind it.
+- Six surfaces shipped with no CSS rule at all and therefore rendered in browser
+  chrome. The linked-tab conflict chooser (#343) — the dialog that decides
+  whether to overwrite work saved in another tab — had 13.333px Arial buttons
+  with `2px outset` borders and a title visually identical to its description.
+  The query-tab marker warning that a linked query changed or was deleted
+  rendered as an unstyled stray `!`/`⌫` character. `workspace-not-found` had a
+  32px `h1` and a raw `#0000EE` underlined link; `workspace-loading` and two
+  dashboard empty states had 19.5px user-agent headings. All are now typeset in
+  the product's own vocabulary, with the destructive Overwrite action carrying
+  error tokens and the safe Reload action as the accented default.
 
 ## [0.6.4] - 2026-07-24
 

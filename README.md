@@ -607,6 +607,14 @@ response. The CSP is `default-src 'none'` with everything re-allowed explicitly:
   `sessionStorage` tokens to an attacker. `'self'` covers ClickHouse queries +
   `config.json`; the IdP origins cover OIDC discovery and the token endpoint.
 - `img-src data:`, `frame-ancestors 'none'` (anti-clickjacking), `base-uri 'none'`.
+- `font-src 'self' data:` — Inter and JetBrains Mono are inlined into the artifact
+  as base64 `@font-face` sources, and `'self'` does **not** cover the `data:`
+  scheme, so it has to be listed explicitly (exactly as `img-src` already does).
+  Omitting it fails silently and deceptively: a blocked `@font-face` doesn't render
+  tofu, it falls through the stack to the platform UI face and looks perfectly
+  fine, so the only symptom is a console CSP violation. `tests/unit/csp-contract.test.js`
+  asserts every URL scheme the built artifact references is permitted by the
+  corresponding directive, in every deployment config that ships a CSP.
 - `frame-src 'self'` — lets the result cell-detail drawer preview an HTML value
   in a `sandbox=""` (script-less, inert) `srcdoc` iframe. The sandbox blocks any
   script/form/navigation, so the relaxation can't run injected code.
