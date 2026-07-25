@@ -557,6 +557,114 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     expect(qsa(app.root, '.dash-tile canvas').length).toBeGreaterThan(0);
   });
 
+  // #437: the compact freshness control — icon-only refresh, a spinner +
+  // aria-busy while a run is in flight, and a tooltip/aria-label that only
+  // claims a last-updated time once a run has actually completed.
+  it('shows a spinner and aria-busy while refreshing, then a completed last-updated label', async () => {
+    let resolveResponder!: (value: ExecResp) => void;
+    const pending = new Promise<ExecResp>((resolve) => { resolveResponder = resolve; });
+    const { app } = dashApp({
+      responder: () => pending,
+      workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    const rendering = render(app);
+    // Flush the microtasks up to (but not past) the in-flight `executeRead`
+    // await, same as the KPI loading-state test above.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const refreshBtn = qs<HTMLButtonElement>(app.root, '.dash-refresh');
+    expect(refreshBtn.disabled).toBe(true);
+    expect(refreshBtn.getAttribute('aria-busy')).toBe('true');
+    expect(qs(refreshBtn, '.spin')).not.toBeNull();
+    // No run has completed yet — the label makes no last-updated claim.
+    expect(refreshBtn.getAttribute('aria-label')).toBe('Refresh dashboard');
+    resolveResponder({ columns: [{ name: 'x', type: 'UInt64' }], rows: [[1]] });
+    await rendering;
+    expect(refreshBtn.disabled).toBe(false);
+    expect(refreshBtn.getAttribute('aria-busy')).toBe('false');
+    expect(qs(refreshBtn, '.spin')).toBeNull();
+    expect(refreshBtn.getAttribute('aria-label')).toMatch(/^Refresh dashboard\. Last updated at /);
+    expect(refreshBtn.title).toBe(refreshBtn.getAttribute('aria-label'));
+    expect(qs(app.root, '.dash-updated').textContent).not.toBe('');
+  });
+
+  // #437 review, blocker 1: a publish unrelated to a completed refresh (tile
+  // Search, a layout-mode switch) must never re-stamp the freshness control —
+  // it reflects `session.state.lastSuccessWallMs`, which only a refresh that
+  // actually completes ever advances, not "now" at whatever moment a render
+  // happens to run.
+  it('keeps the "last updated" time and label stable across Search and layout publishes', async () => {
+    let wall = 1_000_000;
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    app.wallNow = () => wall;
+    await render(app);
+    const refreshBtn = qs<HTMLButtonElement>(app.root, '.dash-refresh');
+    const timeBefore = qs(app.root, '.dash-updated').textContent;
+    const labelBefore = refreshBtn.getAttribute('aria-label');
+    expect(timeBefore).not.toBe('');
+
+    wall += 3_600_000; // the wall clock keeps advancing in the background
+    const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+    search.value = 'nomatch';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(qs(app.root, '.dash-updated').textContent).toBe(timeBefore);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(labelBefore);
+
+    wall += 3_600_000;
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expect(qs(app.root, '.dash-updated').textContent).toBe(timeBefore);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(labelBefore);
+  });
+
+  // #437 review, blocker 2: a refresh that leaves a tile in `error` status
+  // must not silently advance the freshness control's timestamp — it shows
+  // an accessible failure state instead, and the LAST successful time
+  // survives underneath it for the next completed refresh to build on.
+  it('shows "Refresh failed" and keeps the prior successful time when a refresh leaves a tile in error', async () => {
+    let shouldFail = false;
+    let wall = 1_000_000;
+    const { app } = dashApp({
+      responder: () => (shouldFail ? { error: 'boom' } : { columns: [{ name: 'k', type: 'UInt64' }], rows: [[1]] }),
+      workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    app.wallNow = () => wall;
+    await render(app);
+    const refreshBtn = qs<HTMLButtonElement>(app.root, '.dash-refresh');
+    const goodTime = qs(app.root, '.dash-updated').textContent;
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh dashboard. Last updated at ${goodTime}`);
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(false);
+
+    shouldFail = true;
+    wall += 3_600_000;
+    await (runOnclick(refreshBtn) as Promise<void>);
+    expect(qs(app.root, '.dash-tile-error')).not.toBeNull();
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(true);
+    expect(qs(app.root, '.dash-updated').textContent).toBe('Refresh failed');
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh failed. Last successfully updated at ${goodTime}`);
+    expect(refreshBtn.title).toBe(refreshBtn.getAttribute('aria-label'));
+
+    // A later SUCCESSFUL refresh clears the failure state and advances past it.
+    shouldFail = false;
+    wall += 3_600_000;
+    await (runOnclick(refreshBtn) as Promise<void>);
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(false);
+    const newTime = qs(app.root, '.dash-updated').textContent;
+    expect(newTime).not.toBe(goodTime);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh dashboard. Last updated at ${newTime}`);
+  });
+
+  it('shows a short "Search" placeholder but keeps the descriptive aria-label', async () => {
+    const { app } = dashApp({ workspace: wsWith({ tiles: [] }) });
+    await render(app);
+    const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+    expect(search.placeholder).toBe('Search');
+    expect(search.getAttribute('aria-label')).toBe('Search dashboard tiles');
+  });
+
   it('signs out when the token preflight fails, running no tiles', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -4103,43 +4211,49 @@ describe('renderDashboard — unified live modes (#407)', () => {
   // itself would re-resolve the collection's first entry instead. The
   // push-for-surface / replace-for-mode history semantics live with that API and
   // are asserted against the real controller in app.test.ts.
-  // #425 — the Dashboard surface's own toolbar: [Back to query] title [View|Edit]
-  it('renders a surface toolbar with Back to query, the Dashboard title, and View/Edit', async () => {
+  // #437: the separate Back-to-query + title surface row is gone — View/Edit is
+  // the only Dashboard-owned control left, and it lives directly in the one
+  // compact primary toolbar (navigation back to Query is the application
+  // header's own `.app-surface-switch`, asserted separately below).
+  it('renders one compact toolbar row with no separate surface row, and View/Edit', async () => {
     const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
-    const showQuerySurface = vi.fn();
-    app.showQuerySurface = showQuerySurface;
     await render(app);
-    const toolbar = qs(app.root, '.dash-surface-toolbar');
-    expect(qs(toolbar, '.dash-surface-title').textContent).toBe('Ops overview');
-    const back = qs<HTMLButtonElement>(toolbar, '.dash-back-to-query');
-    // Accessible name + keyboard-reachable button, not a bare clickable div.
-    expect(back.tagName).toBe('BUTTON');
-    expect(back.getAttribute('aria-label')).toBe('Back to query');
-    back.click();
-    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
+    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
+    expect(qs(app.root, '.dash-surface-title')).toBeNull();
+    const primary = qs(app.root, '.dash-toolbar-primary');
     // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
-    expect(qsa<HTMLButtonElement>(toolbar, '.dashboard-mode-switch .editor-mode-btn')
+    expect(qsa<HTMLButtonElement>(primary, '.dashboard-mode-switch .editor-mode-btn')
       .map((button) => [button.textContent, button.disabled]))
       .toEqual([['View', false], ['Edit', true]]);
   });
 
-  it('names no Dashboard in the toolbar when the workspace has none yet', async () => {
+  it('shows no back-to-query control or title in the no-Dashboard placeholder, but keeps View/Edit', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     await render(app, { dashboardId: 'not-in-this-workspace' });
     expect(qs(app.root, '.dash-create')).not.toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
-    expect(qs(app.root, '.dash-back-to-query')).not.toBeNull();
+    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
+    expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
+    // Acceptance: "The empty-Dashboard state uses the same one-row toolbar
+    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch.
+    expect(qsa(app.root, '.dash-toolbar')).toHaveLength(1);
+    expect(qs(app.root, '.dash-toolbar-primary .dashboard-mode-switch')).not.toBeNull();
   });
 
   it('renders the SELECTED Dashboard only, by stable id, whatever its position', async () => {
-    const workspace = wsWith();
+    const workspace = wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     workspace.dashboards = [
       workspace.dashboards[0],
-      { ...workspace.dashboards[0], id: 'second', title: 'Second' },
+      { ...workspace.dashboards[0], id: 'second', title: 'Second', tiles: [] },
     ];
     const { app } = modeApp({ workspace, mode: 'edit' });
     await render(app, { dashboardId: 'second' });
-    expect(qs(app.root, '.dash-surface-title').textContent).toBe('Second');
+    // #437: the per-Dashboard title is no longer rendered into the content
+    // area — prove selection by id (not array position) through the rendered
+    // TILE set instead: position 0 has one tile, 'second' has none.
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(0);
+    expect(qs(app.root, '.dash-tile-count')?.textContent).toBe('0 tiles');
     // Exactly one Dashboard is on screen — a hidden sibling is never rendered.
     expect(qsa(app.root, '.dash-page')).toHaveLength(1);
   });
@@ -4666,7 +4780,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     const workspace = { ...base, dashboards: [first, selected] };
     const { app, loadActive } = dashApp({ workspace });
     await render(app, { dashboardId: selected.id });
-    expect(qs(app.root, '.dash-surface-title').textContent).toBe(selected.title);
+    // #437: no per-Dashboard title in the DOM to scrape — `first` (position 0)
+    // has zero tiles, `selected`'s two tiles prove the SELECTED entry rendered.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
     Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
 
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();

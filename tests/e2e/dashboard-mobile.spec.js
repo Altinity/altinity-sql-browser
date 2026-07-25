@@ -319,7 +319,10 @@ test.describe('Dashboard mobile layout', () => {
       const refresh = document.querySelector('.dash-refresh').getBoundingClientRect();
       return { edit: [edit.width, edit.height], refresh: [refresh.width, refresh.height] };
     });
-    expect(controlSizes.refresh).toEqual(controlSizes.edit);
+    // #437: refresh is now an icon-only square control — same control HEIGHT as
+    // Edit (both `.editor-mode-btn`), but narrower since it carries no label text.
+    expect(controlSizes.refresh[1]).toBe(controlSizes.edit[1]);
+    expect(controlSizes.refresh[0]).toBeLessThan(controlSizes.edit[0]);
 
     const geometry = await page.evaluate(() => {
       const toolbar = document.querySelector('.dash-toolbar-primary');

@@ -30,9 +30,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ### Added
 - **A Dashboard is now a full-size main work surface, selected by stable id**
   (#425). Opening one replaces the complete SQL editor and result/data-drawer
-  area — the left sidebar stays visible — and a new toolbar carries
-  **Back to query**, the Dashboard title, and the View/Edit switch. Returning
-  finds the Query surface exactly as it was: the same editor contents,
+  area — the left sidebar stays visible — and the View/Edit switch lives in the
+  primary toolbar (the separate Back-to-query/title row was folded into the
+  compact toolbar by #437). Returning finds the Query surface exactly as it was: the same editor contents,
   selection, scroll, active tab, result view, and editor/results split, because
   the surface is hidden rather than rebuilt. A surface change no longer cancels
   the query running in the editor, and Back/Forward between surfaces of one
@@ -75,6 +75,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   changing the shared dashboard.
 
 ### Changed
+- The Dashboard toolbar is one compact row instead of two (#437). The #425
+  surface row (Back to query, the Dashboard title) is gone — the application
+  header's existing SQL Browser / Dashboard switch is the navigation path back
+  to Query, and View/Edit now sits at the end of the primary toolbar, after a
+  combined freshness control. That control replaces the separate "Updated
+  HH:MM" label and text "Refresh" button with the bare time plus an icon-only
+  refresh action (a spinner while running, a tooltip/`aria-label` naming the
+  last-updated time once a run completes). That time is a genuine wall clock
+  (`DashboardViewState.lastSuccessWallMs`, only ever advanced by a `refresh()`
+  wave that leaves every tile it ran out of `error` status) rather than "now"
+  at whatever moment a render happens to run, so it stays stable across an
+  unrelated publish (tile Search, a layout switch) and a refresh that leaves a
+  tile in error shows an accessible "Refresh failed" state instead of silently
+  claiming a fresh time — the last known-good time survives underneath it. The
+  tile-search placeholder shortens to "Search" (its accessible label is
+  unchanged) and the field itself narrows to a ~120–145px responsive range.
+  The empty-Dashboard placeholder gets the same one-row treatment.
 - Radii, elevation and the semantic/object-kind/syntax palettes are tokens too
   (`--r-*`, `--shadow-*`, `--ring-*`, `--kind-*`, `--role-*`, `--sql-*`). Fourteen
   radius values against a documented four-step scale became four plus `--r-pill`;

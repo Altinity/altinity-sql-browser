@@ -113,7 +113,6 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
-  chevLeft(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -444,34 +443,17 @@ function renderMissingDashboard(
   installedDashboardHost = target.host;
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      dashboardSurfaceToolbar(app, null, target.mode),
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-        h('span', { class: 'dash-toolbar-spacer' }))),
+        h('span', { class: 'dash-toolbar-spacer' }),
+        buildDashboardModeSwitch(app, target.mode))),
     body));
 }
 
-/**
- * The Dashboard surface's own compact toolbar (#425):
- *   [Back to query]  <dashboard title>                       [View | Edit]
- * `Back to query` returns to the PRESERVED Query surface; View/Edit retains the
- * same Dashboard id (the main-surface API keeps it — writing a route here would
- * re-resolve the collection's first entry). `title` is null only for the
- * no-Dashboard placeholder, which has no document to name.
- */
-function dashboardSurfaceToolbar(
-  app: DashboardApp, title: string | null, mode: DashboardSurfaceMode,
-): HTMLElement {
-  return h('div', { class: 'dash-toolbar dash-surface-toolbar' },
-    h('button', {
-      class: 'tb-btn dash-back-to-query', type: 'button',
-      title: 'Back to the SQL editor', 'aria-label': 'Back to query',
-      onclick: () => { app.showQuerySurface(); },
-    }, Icon.chevLeft(), h('span', null, 'Back to query')),
-    title === null ? null : h('h2', { class: 'dash-surface-title', title }, title),
-    h('span', { class: 'dash-toolbar-spacer' }),
-    buildDashboardModeSwitch(app, mode));
-}
-
+/** #425/#437: View/Edit — the one Dashboard-owned control the compact primary
+ *  toolbar carries (navigation back to Query lives in the application header's
+ *  `.app-surface-switch` instead). Switching retains the same Dashboard id (the
+ *  main-surface API keeps it — writing a route here would re-resolve the
+ *  collection's first entry). */
 function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {
   // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
   // API keeps the id and re-opens the same document in the other mode, instead of
@@ -662,11 +644,17 @@ export async function renderDashboard(
   // ── Header chrome ───────────────────────────────────────────────────────
   const tileCountLabel = h('span');
   const tileCount = h('span', { class: 'dash-chip dash-tile-count' }, tileCountLabel);
+  // #437: one compact freshness control replaces the separate "Updated HH:MM"
+  // label + "Refresh" text button — `updated` shows the bare time, the icon-only
+  // button carries the same information in its tooltip/aria-label (kept current
+  // by the render effect below).
   const updated = h('span', { class: 'dash-updated' });
   const refreshBtn = h('button', {
-    class: 'editor-mode-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
-  }, 'Refresh');
+    class: 'editor-mode-btn dash-refresh', type: 'button',
+    title: 'Refresh dashboard', 'aria-label': 'Refresh dashboard',
+  }, Icon.refresh()) as HTMLButtonElement;
   const refreshControl = h('div', { class: 'editor-mode-switch dash-refresh-wrap' }, refreshBtn);
+  const freshness = h('div', { class: 'dash-freshness' }, updated, refreshControl);
   refreshBtn.onclick = () => session.refresh();
   // ── Preset switcher (change-layout command) ───────────────────────────────
   // #321: the local mirror of the viewer session's TRANSIENT grid render-mode
@@ -764,8 +752,6 @@ export async function renderDashboard(
     workspaceTitleEditable: !readOnly,
   }));
 
-  const surfaceToolbar = dashboardSurfaceToolbar(app, currentDoc.title, target.mode);
-
   let tileSearchTimer: ReturnType<typeof setTimeout> | null = null;
   const commitTileSearch = (input: HTMLInputElement): void => {
     if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
@@ -773,7 +759,7 @@ export async function renderDashboard(
     session.setTileSearch(input.value);
   };
   const tileSearchInput = h('input', {
-    class: 'dash-tile-search', type: 'search', placeholder: 'Search tiles',
+    class: 'dash-tile-search', type: 'search', placeholder: 'Search',
     'aria-label': 'Search dashboard tiles',
     oninput: (event: Event) => {
       const input = event.target as HTMLInputElement;
@@ -2320,22 +2306,48 @@ export async function renderDashboard(
     }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
     else reconcileGrid(sview, sview.layout);
+    // #437: the freshness control's icon-only refresh swaps in the spinner
+    // while running, and its tooltip/aria-label carry the last-updated time
+    // the visible `.dash-updated` span shows — `aria-busy` covers the running
+    // state for assistive tech. `sview.lastSuccessWallMs` (a real
+    // `deps.wallNow()` value, only ever advanced by `refresh()` itself — see
+    // the session) is stable across every OTHER publish (Search, layout
+    // switch, a document sync), so formatting it directly here — rather than
+    // reading `new Date()` at whatever moment this effect happens to run — is
+    // what keeps the label from silently advancing on an unrelated publish
+    // (#437 review). A wave that leaves a tile in `error` status never moves
+    // `lastSuccessWallMs` forward, so a failure shows the label the LAST good
+    // run left behind, not a fabricated new one.
     refreshBtn.disabled = sview.running;
-    if (!sview.running && sview.updatedAt != null) {
-      updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    refreshBtn.setAttribute('aria-busy', sview.running ? 'true' : 'false');
+    refreshBtn.replaceChildren(sview.running ? h('span', { class: 'spin' }, Icon.spinner()) : Icon.refresh());
+    if (!sview.running) {
+      const failed = sview.lastRefreshOutcome === 'failure';
+      freshness.classList.toggle('is-error', failed);
+      const time = sview.lastSuccessWallMs != null
+        ? new Date(sview.lastSuccessWallMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : null;
+      updated.textContent = failed ? 'Refresh failed' : (time ?? '');
+      const label = failed
+        ? (time != null ? `Refresh failed. Last successfully updated at ${time}` : 'Refresh dashboard. Refresh failed.')
+        : (time != null ? `Refresh dashboard. Last updated at ${time}` : 'Refresh dashboard');
+      refreshBtn.title = label;
+      refreshBtn.setAttribute('aria-label', label);
     }
   });
 
-  // The style/refresh/search controls stay exactly where they were; #425's
-  // Back-to-query + title + View/Edit toolbar sits above them.
+  // #437: one compact toolbar row — style/count/search/time-filters, then the
+  // freshness control, then View/Edit last. The separate #425 surface row
+  // (Back to query + title) is gone; the header's own surface switch is the
+  // navigation path back to Query.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
     layoutWrap,
     tileCount,
     tileSearch,
     timeFilterHost,
     h('span', { class: 'dash-toolbar-spacer' }),
-    updated,
-    refreshControl);
+    freshness,
+    buildDashboardModeSwitch(app, target.mode));
   const hasOrdinaryFilters = ordinaryFilterIds.length > 0;
   const filterToolbar = h('div', {
     class: 'dash-toolbar dash-toolbar-filters',
@@ -2345,7 +2357,7 @@ export async function renderDashboard(
   installedDashboardHost = target.host;
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      surfaceToolbar, primaryToolbar, filterToolbar, filterRefreshLiveEl),
+      primaryToolbar, filterToolbar, filterRefreshLiveEl),
     filterDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard

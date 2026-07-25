@@ -193,6 +193,18 @@ export interface DashboardViewState {
   activeFilterCount: number;
   running: boolean;
   updatedAt: number | null;
+  /** #437: wall-clock ms (`deps.wallNow()`) of the last `refresh()` wave that
+   *  left every tile IT ran out of `error` status — distinct from `updatedAt`
+   *  (a monotonic `deps.now()` value used only to detect that SOME wave
+   *  finished, never suitable to format as a real time — see the #437 review).
+   *  A wave that ends with a tile in `error` status never advances this, so
+   *  the UI keeps showing the last known-good time rather than silently
+   *  overwriting it with "now". `null` before any wave has ever succeeded. */
+  lastSuccessWallMs: number | null;
+  /** Outcome of the MOST RECENTLY COMPLETED `refresh()` wave, independent of
+   *  `lastSuccessWallMs` — `'failure'` when that wave left any tile it ran in
+   *  `error` status. `null` before the first wave completes. */
+  lastRefreshOutcome: 'success' | 'failure' | null;
   /** Presentation/structural diagnostics that make a tile invalid. */
   diagnostics: WorkspaceDiagnostic[];
   /** Every diagnostic the LAST filter wave's shared-source merge produced
@@ -510,6 +522,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // entry, sets this, and threads that same instant into every `prepareBatch`/
   // filter-source resolution it runs.
   let waveWallNowMs: number | null = null;
+  // #437: the freshness control's own state — see `DashboardViewState` above.
+  // Set only by `recordRefreshOutcome`, called from `refresh()` right before
+  // its completion publish.
+  let lastSuccessWallMs: number | null = null;
+  let lastRefreshOutcome: 'success' | 'failure' | null = null;
 
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) {
@@ -957,7 +974,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       layout,
       style: selectedStyle,
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
-      running, updatedAt, diagnostics: presentationDiagnostics,
+      running, updatedAt, lastSuccessWallMs, lastRefreshOutcome, diagnostics: presentationDiagnostics,
       // #189: construction-time selection-resolution diagnostics are PERSISTENT
       // (never reset by a wave) — concatenated ahead of the per-wave
       // `filterDiagnostics` on every publish, rather than merged into that
@@ -1065,6 +1082,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // presentation error — `isRunnableTileRuntime`, the same predicate
   // `executableTileIds` (#189) is built from.
   const runnableTiles = (): TileRuntime[] => tiles.filter(isRunnableTileRuntime);
+
+  /** #437: classify a just-finished `refresh()` wave from the tiles it
+   *  actually ran to completion, and — only on success — advance the
+   *  wall-clock time the freshness control shows. A wave that leaves any of
+   *  those tiles in `error` status is a `'failure'`: it still completes
+   *  (`updatedAt` advances via the caller's own `publish`, unblocking the next
+   *  refresh) but must never overwrite the last known-good time. Skipped
+   *  entirely once destroyed — there is no UI left to reflect it. */
+  function recordRefreshOutcome(ranTiles: TileRuntime[], waveMs: number): void {
+    if (destroyed) return;
+    const failed = ranTiles.some((runtime) => runtime.state.status === 'error');
+    lastRefreshOutcome = failed ? 'failure' : 'success';
+    if (!failed) lastSuccessWallMs = waveMs;
+  }
 
   // ── Filter wave ─────────────────────────────────────────────────────────
 
@@ -1482,6 +1513,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       // is done either way — the unaffected tiles already ran/are running,
       // and the affected side is delegated to the superseding commit.
       await unaffectedWave;
+      // #437: only `unaffected` ran to completion under THIS wave — `affected`
+      // is delegated to the superseding commit's own wave, so its tiles'
+      // eventual status must not be attributed to this refresh.
+      recordRefreshOutcome(unaffected, waveMs);
       publish(false, destroyed ? null : deps.now());
       return;
     }
@@ -1491,6 +1526,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const affectedWave = runPool(affected, VIEWER_TILE_CONCURRENCY,
       (runtime) => runTile(runtime, secondBatch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
     await Promise.all([unaffectedWave, affectedWave]);
+    recordRefreshOutcome(runnable, waveMs);
     publish(false, destroyed ? null : deps.now());
   }
 

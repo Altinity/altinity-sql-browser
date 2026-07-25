@@ -93,6 +93,39 @@ describe('createDashboardViewerSession', () => {
     expect(VIEWER_TILE_CONCURRENCY).toBe(6);
   });
 
+  // #437 review, blocker 2: the freshness control needs a WALL-CLOCK "last
+  // successful update" distinct from `updatedAt` (a monotonic value that only
+  // marks "a wave finished", never suitable to format as a real time) — and a
+  // refresh that leaves a tile in `error` status must not silently advance it.
+  it('advances lastSuccessWallMs/lastRefreshOutcome on a clean refresh, and preserves the last good time when a later refresh leaves a tile in error', async () => {
+    let shouldFail = false;
+    let wall = 1000;
+    const { exec } = makeExec(() => (shouldFail ? { error: 'boom' } : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT 1')], wallNow: () => wall,
+    }));
+    await session.start();
+    expect(session.state.value.lastRefreshOutcome).toBe('success');
+    expect(session.state.value.lastSuccessWallMs).toBe(1000);
+
+    shouldFail = true;
+    wall = 2000;
+    await session.refresh();
+    expect(session.state.value.tiles[0].status).toBe('error');
+    expect(session.state.value.lastRefreshOutcome).toBe('failure');
+    // Unchanged — the wave completed (`updatedAt` moved on) but did not
+    // succeed, so the LAST GOOD time must survive underneath the failure.
+    expect(session.state.value.lastSuccessWallMs).toBe(1000);
+    expect(session.state.value.updatedAt).not.toBeNull();
+
+    shouldFail = false;
+    wall = 3000;
+    await session.refresh();
+    expect(session.state.value.lastRefreshOutcome).toBe('success');
+    expect(session.state.value.lastSuccessWallMs).toBe(3000);
+  });
+
   it('marks a tile whose query is missing as an error and reports a presentation diagnostic', async () => {
     const document = doc({ tiles: [tile('t1', 'ghost')] });
     const session = createDashboardViewerSession(makeDeps({ document, queries: [] }));
@@ -2154,6 +2187,40 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
     await wave;
 
     expect(tileCallCount(calls)).toBe(before); // no panel request fired after destroy
+  });
+
+  // #437 review: a `refresh()` destroyed while its own tile wave is still in
+  // flight must never record an outcome — the tile's status is left at
+  // `loading` (never advanced to `ready`/`error`) by the SAME destroyed-tile-
+  // generation guard `runTile` already uses, so an unguarded
+  // `recordRefreshOutcome` would misread it as a clean success and wrongly
+  // advance `lastSuccessWallMs` to a wave that never actually finished.
+  it('a refresh destroyed mid-wave never records an outcome, leaving lastSuccessWallMs untouched', async () => {
+    let execCalls = 0;
+    let releaseSecond!: (value: Resp) => void;
+    const gate = new Promise<Resp>((resolve) => { releaseSecond = resolve; });
+    const { exec } = makeExec(() => {
+      execCalls += 1;
+      return execCalls === 1 ? { columns: [{ name: 'n' }], rows: [[1]] } : gate;
+    });
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    let wall = 1000;
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT 1')], wallNow: () => wall,
+    }));
+    await session.start();
+    expect(session.state.value.lastSuccessWallMs).toBe(1000);
+
+    wall = 2000;
+    const refreshing = session.refresh();
+    await flush();
+    session.destroy();
+    releaseSecond({ columns: [{ name: 'n' }], rows: [[1]] });
+    await refreshing;
+
+    // A buggy `recordRefreshOutcome` with no destroyed guard would have
+    // advanced this to 2000, even though the session was torn down mid-wave.
+    expect(session.state.value.lastSuccessWallMs).toBe(1000);
   });
 });
 
