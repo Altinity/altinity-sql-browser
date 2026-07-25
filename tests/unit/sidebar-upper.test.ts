@@ -4,7 +4,7 @@ import type { SidebarUpperApp } from '../../src/ui/sidebar-upper.js';
 import { renderDashboardTree } from '../../src/ui/dashboard-tree.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { h } from '../../src/ui/dom.js';
-import { readTreeUi, setTreeSearch } from '../../src/application/dashboard-tree-ui-state.js';
+import { readTreeUi, setTreeSearch } from '../../src/core/dashboard-tree-ui-state.js';
 import type { TreeWorkspace } from '../../src/application/dashboard-tree-model.js';
 
 type FakeApp = ReturnType<typeof makeApp>;

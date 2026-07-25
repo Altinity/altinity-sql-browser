@@ -90,15 +90,24 @@ export function resolveOpenDashboard(
   // A request that names a member both SELECTS it (styling) and OWES a delivery;
   // one that names none clears the selection, per #426's "opening a Dashboard row
   // without a member clears currentMember".
-  const member = request.focus ?? null;
+  //
+  // The two fields validate DIFFERENTLY, on purpose:
+  //   - `currentMember` is styling, so it is checked against the resolved document.
+  //     Marking a tile/filter this Dashboard does not have would leave a phantom id
+  //     sitting there until the next reconciliation — and light up spuriously if an
+  //     import later reintroduced that id.
+  //   - `pendingFocus` is the REQUEST, and is passed through unchecked. The delivery
+  //     path is what reports a miss ("That panel is no longer on this dashboard"),
+  //     and dropping the request here would silently swallow that diagnostic.
+  const requested = request.focus ?? null;
   return {
     status: 'ok',
     surface: {
       kind: 'dashboard',
       dashboardId: request.dashboardId,
       mode: request.mode,
-      currentMember: member,
-      pendingFocus: member,
+      currentMember: presentMember(lookup.dashboard, requested),
+      pendingFocus: requested,
     },
   };
 }
@@ -127,15 +136,24 @@ export function reconcileMainSurface(
   return retainMember(surface, lookup.dashboard);
 }
 
+/** A member reference the document actually contains, or `null`. Resolved against
+ *  the member's OWN collection, so a tile id colliding with a filter id cannot
+ *  cross-resolve. The one definition of "this member exists", shared by open-time
+ *  validation and post-commit reconciliation. */
+function presentMember(
+  dashboard: DashboardDocumentV1, member: DashboardFocusTarget | null,
+): DashboardFocusTarget | null {
+  if (member === null) return null;
+  const members = member.kind === 'tile' ? dashboard.tiles : dashboard.filters;
+  return members.some((entry) => entry.id === member.id) ? member : null;
+}
+
 /** Keep only the member references the committed document still contains. */
 function retainMember(
   surface: Extract<MainSurfaceState, { kind: 'dashboard' }>, dashboard: DashboardDocumentV1,
 ): MainSurfaceState {
-  const present = (member: DashboardFocusTarget | null): DashboardFocusTarget | null => {
-    if (member === null) return null;
-    const members = member.kind === 'tile' ? dashboard.tiles : dashboard.filters;
-    return members.some((entry) => entry.id === member.id) ? member : null;
-  };
+  const present = (member: DashboardFocusTarget | null): DashboardFocusTarget | null =>
+    presentMember(dashboard, member);
   const currentMember = present(surface.currentMember);
   const pendingFocus = present(surface.pendingFocus);
   if (currentMember === surface.currentMember && pendingFocus === surface.pendingFocus) return surface;

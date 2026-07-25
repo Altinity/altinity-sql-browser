@@ -14,7 +14,7 @@ import { createClickArbiter } from '../../src/core/tree-click-arbiter.js';
 import type { ClickArbiter } from '../../src/core/tree-click-arbiter.js';
 import {
   EMPTY_TREE_UI, readTreeUi, toggleDashboardExpanded, toggleGroupExpanded,
-} from '../../src/application/dashboard-tree-ui-state.js';
+} from '../../src/core/dashboard-tree-ui-state.js';
 import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
@@ -5309,10 +5309,14 @@ describe('unified /sql routing', () => {
   // #425 — the main-surface navigation API. Selection is session state keyed by
   // the stable Dashboard id; the route is always DERIVED from it.
   describe('main surface selection (#425)', () => {
+    // Carries the members these specs focus, because #426 validates a focused
+    // member against the resolved document before marking it current — a fixture
+    // with empty collections would mark nothing.
     const dash = (id: string): DashboardDocumentV1 => ({
       documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      filters: [], tiles: [],
+      filters: [{ id: 'f1', parameter: 'p' }],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't7', queryId: 'q1' }],
     });
     /** `live: true` renders for real — for the surface-HOST contract (what stays
      *  mounted, what is exposed). Otherwise rendering is stubbed, so a test can
