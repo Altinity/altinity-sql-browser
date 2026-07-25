@@ -2577,8 +2577,13 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-surface-toolbar { gap: 8px; }
 .dash-surface-title {
   margin: 0; font-size: 13px; font-weight: 600; color: var(--fg);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The title is the ONLY control in this row allowed to shrink, so a long
+   Dashboard name ellipsizes instead of pushing View/Edit off a narrow screen.
+   Two-class specificity is required to beat `.dash-toolbar > * { flex-shrink: 0 }`
+   below, which correctly pins every other toolbar child. */
+.dash-surface-toolbar .dash-surface-title { flex: 0 1 auto; min-width: 0; }
 .dash-back-to-query { flex-shrink: 0; }
 /* #425 — the temporary navigation highlight, IN ADDITION to the normal focus
    ring (which is untouched): it marks the tile or filter a caller navigated to,
