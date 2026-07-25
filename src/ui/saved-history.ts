@@ -18,6 +18,7 @@ import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryName, queryPanel, queryView } from '../core/saved-query.js';
 import { queryMembershipFavorite } from '../dashboard/application/tile-membership.js';
 import { selectedDashboardId } from '../application/main-surface.js';
+import { resolveCompatibilityDashboard } from '../workspace/workspace-dashboards.js';
 import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
 import { filterRoleBadge } from './tabs.js';
 import type { App } from './app.types.js';
@@ -48,7 +49,8 @@ const dragProps = (sql: string): { draggable: string; ondragstart: (e: DragEvent
 function starTargetsSelectedDashboard(app: App): boolean {
   const selectedId = selectedDashboardId(app.mainSurface);
   if (selectedId === null) return true;
-  return app.currentWorkspace?.dashboards[0]?.id === selectedId;
+  if (!app.currentWorkspace) return false;
+  return resolveCompatibilityDashboard(app.currentWorkspace).selectedId === selectedId;
 }
 
 export function renderSavedHistory(app: App): void {

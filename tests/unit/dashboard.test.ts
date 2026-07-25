@@ -4051,6 +4051,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
       .toEqual(['View', 'Edit']);
     expect(viewed.calls).toHaveLength(0);
     const edited = modeApp({ workspace: empty, mode: 'edit' });
+    const openDashboard = vi.fn();
+    edited.app.openDashboard = openDashboard;
     await render(edited.app);
     expect(qsa(edited.app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
@@ -4059,7 +4061,12 @@ describe('renderDashboard — unified live modes (#407)', () => {
     create.click();
     await flush();
     expect(edited.commit).toHaveBeenCalledOnce();
-    expect(edited.commit.mock.calls[0][0].dashboards[0]).not.toBeUndefined();
+    const created = edited.commit.mock.calls[0][0].dashboards[0];
+    expect(created).not.toBeUndefined();
+    // #425: the new document is SELECTED, by the id that was actually committed —
+    // otherwise the session would keep reporting Query mode with a Dashboard on
+    // screen, which #426's tree would render as "nothing selected".
+    expect(openDashboard).toHaveBeenCalledWith({ dashboardId: created.id, mode: 'edit' });
   });
 
   it.each(['view', 'edit'] as const)(
@@ -4644,6 +4651,37 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect((await loadActive()).dashboards[0]?.tiles).toEqual([]);
   });
 
+  // #425: the same guarantee from a NON-FIRST selection — the case where an
+  // accidental `dashboards[0]` write would silently pass every index-0 test
+  // above. This is the acceptance criterion "commit replaces only the selected
+  // Dashboard entry; other Dashboards remain unchanged".
+  it('commits an edit to the SELECTED entry, not the collection\'s first', async () => {
+    const first = {
+      documentVersion: 1 as const, id: 'first', title: 'First', revision: 12,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    const base = twoTilesGrid();
+    const selected = base.dashboards[0];
+    const workspace = { ...base, dashboards: [first, selected] };
+    const { app, loadActive } = dashApp({ workspace });
+    await render(app, { dashboardId: selected.id });
+    expect(qs(app.root, '.dash-surface-title').textContent).toBe(selected.title);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+
+    const committed = await loadActive();
+    expect(committed.dashboards.map((d) => d.id)).toEqual(['first', selected.id]);
+    // The SELECTED entry advanced by exactly one revision…
+    expect(committed.dashboards[1].revision).toBe(selected.revision + 1);
+    expect(committed.dashboards[1].tiles.map((t) => t.id)).toEqual(['t2']);
+    // …and the first entry — which an unscoped write would have clobbered — is
+    // byte-identical.
+    expect(committed.dashboards[0]).toEqual(first);
+  });
+
   // #424: an ORDINARY edit on the visible Dashboard must leave every other
   // stored Dashboard byte-identical, revision included. Without this the
   // ID-addressed commit could be swapped for a plain one-element write and
@@ -5069,6 +5107,22 @@ describe('renderDashboard — navigation focus (#425)', () => {
     expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
     // Non-destructive: no diagnostic either — the target existed, the render did not.
     expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+  });
+
+  it('skips a late filter focus once the user has already interacted', async () => {
+    const { app } = focusApp(wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    }));
+    // Filter focus is delivered only AFTER the opening wave resolves, which can
+    // take seconds — long enough for the user to Tab into another field and type.
+    // The filter bar's own rebuild already restored focus there; stealing it back
+    // mid-keystroke is worse than not navigating.
+    const render1 = render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    document.dispatchEvent(new Event('keydown', { bubbles: true }));
+    await render1;
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
   });
 
   it('retires a prior render\'s highlight so it cannot fire against a detached node', async () => {

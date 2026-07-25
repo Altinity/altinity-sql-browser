@@ -463,7 +463,8 @@ export interface App {
    *  the Dashboard by exact id in the active workspace; a missing or duplicate id
    *  is reported through the shared diagnostic path and changes no state. Never
    *  mutates the Dashboard merely by opening it. A repeated open of the same
-   *  id+mode keeps the live viewer session and only re-applies the focus target. */
+   *  id+mode with no focus target is a no-op that leaves the live viewer session
+   *  alone; one WITH a focus target re-renders in order to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
   /** #425 — return to the preserved Query surface (editor + result drawer). */
   showQuerySurface(): void;

@@ -619,9 +619,14 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
     // UI shows (#280 "Import Dashboard replaces the current Dashboard", scoped
     // to the compatibility slot by #424). The confirm above gates the
     // destructive case.
+    // #425: replace the SELECTED Dashboard, not the compatibility slot — an
+    // import invoked from Dashboard #2's own File menu must not overwrite #1.
+    const targetId = selectedDashboardId(app.mainSurface);
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
-        (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, 'copy', app.genId)),
+        (base, revalidated) => planImportDashboard(
+          base, bundle, dashboardId, revalidated, 'copy', app.genId, {}, targetId,
+        )),
       'Imported dashboard',
     );
   });

@@ -2585,12 +2585,13 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    below, which correctly pins every other toolbar child. */
 .dash-surface-toolbar .dash-surface-title { flex: 0 1 auto; min-width: 0; }
 .dash-back-to-query { flex-shrink: 0; }
-/* #425 — the temporary navigation highlight, IN ADDITION to the normal focus
-   ring (which is untouched): it marks the tile or filter a caller navigated to,
-   and is cleared after a bounded interval or on the next user interaction. */
+/* #425 — the temporary navigation highlight marking the tile or filter a caller
+   navigated to, cleared after a bounded interval or on the next user interaction.
+   A `box-shadow` ring, NOT an outline: an element has exactly one outline, so an
+   outline here would replace the focus ring rather than sit alongside it, and
+   #425 asks for a highlight in ADDITION to the normal focus indicator. */
 .is-nav-target {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: 6px;
 }
 /* The one-row application header and optional filter toolbar share one sticky

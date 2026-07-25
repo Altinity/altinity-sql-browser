@@ -279,7 +279,19 @@ describe('renderSavedHistory', () => {
     expect(document.querySelector('.share-toast')!.textContent)
       .toContain('first dashboard');
 
+    // No loaded workspace at all: nothing to compare the selection against, so
+    // the star stays refused rather than writing blind.
+    app.currentWorkspace = null;
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+
     // Selecting that first Dashboard makes the star honest again.
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
+    };
     app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null };
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));

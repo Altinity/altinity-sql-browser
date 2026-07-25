@@ -14,7 +14,7 @@ import {
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
-  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
@@ -80,7 +80,7 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId,
+  resolveOpenDashboard, selectedDashboardId, withoutFocus,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -291,8 +291,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
     if (generation === surfaceGeneration) return true;
     const routeKey = app.sqlRoute.workspaceKey;
-    if (committed && app.workspaceRouteStatus === 'ready' && app.currentWorkspace
-      && (routeKey === null || routeKey === app.currentWorkspace.key)) {
+    // #425: `conn.isSignedIn()` is load-bearing, not defensive. Sign-out now
+    // advances the surface generation (so a late Dashboard callback can't settle
+    // against a replacement renderer) but deliberately leaves the projected
+    // workspace in place for the next sign-in — which would otherwise let a write
+    // that resolves just after sign-out re-mount the whole signed-in shell OVER
+    // the login screen, with no credentials.
+    if (committed && app.conn.isSignedIn() && app.workspaceRouteStatus === 'ready'
+      && app.currentWorkspace && (routeKey === null || routeKey === app.currentWorkspace.key)) {
       app.renderCurrentSurface();
     }
     return false;
@@ -436,6 +442,17 @@ export function createApp(env: CreateAppEnv = {}): App {
     // disposed AND forgotten here — otherwise its effects keep repainting a
     // detached sidebar, and the next sign-in would skip re-mounting a shell that
     // is no longer in the document, leaving a blank page.
+    //
+    // The Dashboard surface goes here too, not just in `signOut`: this is the ONE
+    // place that knows the login screen is now showing, and `onAuthLost` (a 401 or
+    // an expired token) arrives here without passing through `signOut`. Left
+    // alive, a mounted Dashboard keeps its window listeners, its viewer session,
+    // and a generation-matching `surfaceCommands` — so its refresh and style
+    // shortcuts stay dispatchable FROM the login screen, executing tile queries
+    // against a dead session. Advancing the generation is what closes that port.
+    disposeDashboardSurface();
+    advanceSurfaceGeneration();
+    app.mainSurface = QUERY_SURFACE;
     disposeShell();
     renderLogin(app as App & { root: Element }, msg);
   };
@@ -484,14 +501,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #313: pane content must never survive a connection change — closed
     // alongside the catalog reset, before the login screen renders.
     closeDocPane(app);
-    // #425: a mounted Dashboard is a real end-of-session resource too — its
-    // viewer session, listeners, and any pending focus/render callback must be
-    // torn down and logically cancelled here, not left alive behind the login
-    // screen where a late callback would still read as the current generation.
-    disposeDashboardSurface();
-    advanceSurfaceGeneration();
-    app.mainSurface = QUERY_SURFACE;
     conn.signOut();
+    // #425: the Dashboard teardown, the surface-generation bump and the
+    // main-surface reset live in `renderLoginApp` — the one place that knows the
+    // login screen is showing — so `onAuthLost` gets them as well.
     renderLoginApp();
   };
   app.showLogin = (msg) => renderLoginApp(msg);
@@ -1643,13 +1656,20 @@ export function createApp(env: CreateAppEnv = {}): App {
   const dashboardRenderTarget = (mounted: AppShellHandle): DashboardRenderTarget => {
     const surface = app.mainSurface;
     const routeMode = app.sqlRoute.surface === 'dashboard' ? app.sqlRoute.mode : 'edit';
-    return {
+    const target: DashboardRenderTarget = {
       host: mounted.dashboardHost,
       dashboardId: surface.kind === 'dashboard' ? surface.dashboardId : null,
       mode: surface.kind === 'dashboard' ? surface.mode : routeMode,
       focus: surface.kind === 'dashboard' ? surface.focus : null,
       setHeader: (header) => mounted.setHeader(header),
     };
+    // #425: a focus target is delivered ONCE. Every later repaint of the same
+    // selection — an external commit, a style switch, a stale-write refresh —
+    // re-reads this target, so leaving the request on the selection would yank
+    // focus back to that tile (and re-flash its highlight) long after the user
+    // navigated elsewhere.
+    app.mainSurface = withoutFocus(surface);
+    return target;
   };
   // Everything a transition BETWEEN the two surfaces must clear, and nothing
   // more. Notably absent: `workbench.destroy()`. It aborts the in-flight request
@@ -1713,10 +1733,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // explicitly selected id.
     const previousSurface = app.mainSurface;
     app.mainSurface = reconcileMainSurface(previousSurface, workspace);
-    if (previousSurface.kind === 'dashboard' && app.mainSurface.kind === 'query'
-      && app.sqlRoute.surface === 'dashboard') {
-      writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
-    }
+    const lostSelection = previousSurface.kind === 'dashboard' && app.mainSurface.kind === 'query';
     const workspaceChanged = app.state.workspaceId !== workspace.id;
     if (workspaceChanged) detachWorkspaceBoundTabs(app.state);
     app.state.savedQueries = workspace.queries;
@@ -1732,7 +1749,14 @@ export function createApp(env: CreateAppEnv = {}): App {
         if (q) tab.lastCommittedQueryToken = queryToken(q);
       }
     }
-    app.state.dashboard = resolveCompatibilityDashboard(workspace).dashboard;
+    // #425: project the SELECTED Dashboard. `state.dashboard` is what
+    // `reloadDashboardRoute` folds back into the collection, so projecting the
+    // compatibility entry while a different one is selected would write the wrong
+    // document into the selected slot (and mint a duplicate id).
+    const projectedId = selectedDashboardId(app.mainSurface);
+    app.state.dashboard = projectedId === null
+      ? resolveCompatibilityDashboard(workspace).dashboard
+      : findDashboard(workspace, projectedId);
     app.state.workspaceId = workspace.id;
     app.state.workspaceKey = workspace.key;
     app.state.libraryName.value = workspace.name;
@@ -1742,6 +1766,20 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Every projection funnels through here (boot, mutateWorkspace, reset), so
     // the token stays consistent with what's on screen.
     lastCommittedToken = workspaceToken(workspace);
+    // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
+    // leaving the Dashboard host exposed wedges the app: every path back —
+    // `showQuerySurface`, the header switch, `g w`, a Library click — early-returns
+    // because state and route now agree that Query mode is active, while the
+    // deleted Dashboard's DOM is still what the user sees. Both the callers that
+    // would otherwise repaint (`afterLibraryChange`, `runWorkspaceRefresh`) branch
+    // on `sqlRoute.surface`, which this fallback just changed under them, so the
+    // render has to happen here.
+    if (lostSelection) {
+      if (app.sqlRoute.surface === 'dashboard') {
+        writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
+      }
+      app.renderCurrentSurface();
+    }
   };
   app.applyCommittedWorkspace = applyCommittedWorkspace;
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
@@ -2157,9 +2195,12 @@ export function createApp(env: CreateAppEnv = {}): App {
         : 'That dashboard is no longer part of this workspace.', { document: doc });
       return;
     }
-    // A repeated open of the SAME id in the SAME mode keeps the live viewer
-    // session rather than building a duplicate one; only the (possibly new)
-    // focus target is re-applied.
+    // A repeated open of the SAME id in the SAME mode with NO focus target is a
+    // no-op: nothing to change, so the live viewer session is left alone rather
+    // than rebuilt. A focus target does re-render (the surface has to deliver it),
+    // which rebuilds the session — acceptable while the only caller is a direct
+    // API call; #426's tree, which navigates within an already-open Dashboard,
+    // will want an in-place focus path instead.
     const sameSelection = isSameDashboardSelection(app.mainSurface, request)
       && app.sqlRoute.surface === 'dashboard';
     if (sameSelection && resolution.surface.kind === 'dashboard'
@@ -2167,7 +2208,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.mainSurface = resolution.surface;
       return;
     }
-    applyMainSurface(resolution.surface, sameSelection || app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
+    applyMainSurface(resolution.surface, app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
   };
 
   app.showQuerySurface = () => {

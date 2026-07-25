@@ -497,6 +497,42 @@ describe('imports preserve the non-compatibility Dashboards', () => {
     expect(dashboards[1]).toEqual(hidden());
   });
 
+  // #425: an import invoked from a Dashboard's own File menu must replace THAT
+  // Dashboard. Addressing the compatibility slot would import "into" a Dashboard
+  // the user is not looking at, once a non-first one can be open.
+  it('planImportDashboard replaces the TARGET Dashboard by id, preserving the first', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({
+        id: 'incoming', revision: 3, tiles: [{ id: 't1', queryId: 'a' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      {}, 'hidden',
+    );
+    const dashboards = plan.candidateWorkspace!.dashboards;
+    expect(dashboards.map((d) => d.id)).toEqual(['visible', 'new-1']);
+    // The first entry is byte-identical; only the addressed one was replaced.
+    expect(dashboards[0]).toEqual(dashboardDoc({ id: 'visible', revision: 4 }));
+  });
+
+  it('planImportDashboard falls back to the compatibility slot for an unknown target', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({ id: 'incoming' })],
+    });
+    // Deleted concurrently: the import still lands rather than being dropped.
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      {}, 'gone',
+    );
+    expect(plan.candidateWorkspace!.dashboards.map((d) => d.id)).toEqual(['new-1', 'hidden']);
+  });
+
   it('planImportDashboard diagnoses a replace-mode id that collides with a hidden Dashboard', () => {
     const ws = twoDashboards(dashboardDoc({ id: 'visible' }));
     const incoming = bundle({

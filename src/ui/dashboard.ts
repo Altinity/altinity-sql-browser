@@ -162,6 +162,7 @@ export interface DashboardApp {
    *  navigation API its own chrome (View/Edit, Back to query) transitions
    *  through. */
   mainSurface: App['mainSurface'];
+  openDashboard: App['openDashboard'];
   showDashboardSurface: App['showDashboardSurface'];
   showQuerySurface: App['showQuerySurface'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
@@ -393,6 +394,13 @@ function synthesizeImplicitFilters(
 
 /** #407 — an explicit workspace route that no longer resolves. */
 function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarget): void {
+  // #425: install this surface's own header too. Without it the PREVIOUS surface's
+  // header stays above a "Workspace not found" work area, reading as a
+  // Dashboard-scoped error rather than the page-level one it is.
+  target.setHeader(buildAppHeader(app as App, {
+    fileButton: buildDashboardFileMenu(app, true),
+    workspaceTitleEditable: false,
+  }));
   installedDashboardHost = target.host;
   target.host.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
     h('div', { class: 'dash-empty' },
@@ -411,14 +419,22 @@ function renderMissingDashboard(
       h('button', {
         class: 'dash-btn dash-create',
         onclick: async () => {
-          const outcome = await app.mutateWorkspace((latest) => {
+          const outcome = await app.mutateWorkspace<string>((latest) => {
             // #424: "no Dashboard yet" is asked through the one compatibility
             // seam, and the new document becomes the collection's first entry.
             if (!latest || resolveCompatibilityDashboard(latest).dashboard) return null;
-            return { candidate: withCompatibilityDashboard(latest, createEmptyDashboard(app.genId())) };
+            const created = createEmptyDashboard(app.genId());
+            // The new id rides back through the mutation's own `data` channel, so
+            // the open below cannot disagree with what was committed.
+            return { candidate: withCompatibilityDashboard(latest, created), data: created.id };
           });
           if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
-          if (outcome.ok) app.renderDashboard();
+          // #425: SELECT what we just created rather than re-rendering an
+          // unselected surface. Without this the session would keep reporting
+          // Query mode while a Dashboard is on screen — harmless today (every
+          // consumer falls back to the compatibility entry) but a lie that #426's
+          // tree would render as "nothing selected".
+          if (outcome.ok) app.openDashboard({ dashboardId: outcome.data!, mode: target.mode });
         },
       }, 'Create dashboard'));
   target.setHeader(buildAppHeader(app as App, {
@@ -2411,6 +2427,22 @@ export async function renderDashboard(
   // the node it names actually exists and is stable. Both are straight-line
   // sequencing off real completion signals, never a timeout.
   //
+  // Arm the "user got there first" signal for the deferred (filter) delivery
+  // below, before the wave starts. Capture phase, so a click that a control's own
+  // handler stops still counts.
+  let userInteracted = false;
+  if (target.focus) {
+    const noteInteraction = (): void => { userInteracted = true; };
+    doc.addEventListener('pointerdown', noteInteraction, true);
+    doc.addEventListener('keydown', noteInteraction, true);
+    const previousCleanup = installedDashboardCleanup;
+    installedDashboardCleanup = () => {
+      doc.removeEventListener('pointerdown', noteInteraction, true);
+      doc.removeEventListener('keydown', noteInteraction, true);
+      previousCleanup?.();
+    };
+  }
+
   // A TILE card exists already: the viewer session seeds its state with every
   // tile at construction, so the render effect built each card synchronously
   // above, and the host is now in the document (without which `focus()` is a
@@ -2436,6 +2468,12 @@ export async function renderDashboard(
     // that belonged to a superseded render must not steal focus from the one now
     // on screen.
     if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
+    // The user got there first. Filter focus is delivered after the opening wave
+    // resolves, which can take seconds — long enough to Tab into another filter
+    // and start typing, and the filter bar's own rebuild already restores focus to
+    // whatever field that was. Yanking it away mid-keystroke is worse than not
+    // navigating at all.
+    if (userInteracted) return;
     const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
     if (!node) {
       // Non-destructive: the Dashboard is already open and stays open.
@@ -2473,20 +2511,23 @@ export async function renderDashboard(
    *  comes first, so it never lingers as permanent chrome. */
   function highlightNavigationTarget(node: HTMLElement): void {
     node.classList.add('is-nav-target');
-    let done = false;
+    // `clear` runs at most once: it removes the timer AND both listeners that
+    // could call it, and drops the module reference `disposeDashboardSurface`
+    // would call it through — so no re-entrance guard is reachable.
     const clear = (): void => {
-      if (done) return;
-      done = true;
       node.classList.remove('is-nav-target');
       clearTimeout(timer);
       doc.removeEventListener('pointerdown', clear, true);
       doc.removeEventListener('keydown', clear, true);
+      // Drop the module's reference too, so a cleared highlight stops retaining
+      // this tile's whole subtree until the next render.
+      if (installedNavHighlightClear === clear) installedNavHighlightClear = null;
     };
     const timer = setTimeout(clear, NAV_HIGHLIGHT_MS);
     doc.addEventListener('pointerdown', clear, true);
     doc.addEventListener('keydown', clear, true);
-    const previous = installedNavHighlightClear;
+    // At most one highlight is live at a time: `disposeDashboardSurface` (which
+    // every render calls first) already retired any prior render's.
     installedNavHighlightClear = clear;
-    previous?.();
   }
 }

@@ -5572,6 +5572,57 @@ describe('unified /sql routing', () => {
       expect(qs<HTMLInputElement>(app.root, '.schema-search input').disabled).toBe(false);
     });
 
+    it('RENDERS the Query surface when the selected Dashboard is deleted', () => {
+      const { app } = liveApp(['first', 'second'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'second', mode: 'edit' });
+      expectSurface(app, 'dashboard');
+      // A commit that drops the selection must not just record the fallback in
+      // state: leaving the Dashboard host exposed wedges the app, because every
+      // route back then early-returns on "state and route already agree".
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
+      });
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+      expectSurface(app, 'query');
+    });
+
+    it('does not re-mount the signed-in shell over the login screen after sign-out', () => {
+      const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
+      app.renderCurrentSurface();
+      const staleGeneration = app.captureSurfaceGeneration();
+      app.signOut();
+      expect(qs(app.root, '.login-screen')).not.toBeNull();
+      // A write that resolves just AFTER sign-out reports its surface stale. It
+      // must not take the "refresh the ready surface" branch — the projected
+      // workspace is deliberately still there for the next sign-in.
+      expect(app.refreshCurrentSurfaceAfterStale(staleGeneration, true)).toBe(false);
+      expect(qs(app.root, '.login-screen')).not.toBeNull();
+      expect(qs(app.root, '.workbench')).toBeNull();
+    });
+
+    it('closes the Dashboard command port when auth is lost mid-session', () => {
+      const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
+      app.renderCurrentSurface();
+      expect(app.surfaceCommands).not.toBeNull();
+      // A 401 / expired token reaches `showLogin`, not `signOut` — the Dashboard's
+      // refresh and style shortcuts must not stay dispatchable from Login.
+      app.showLogin('Session expired');
+      expect(app.surfaceCommands).toBeNull();
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(qs(app.root, '.login-screen')).not.toBeNull();
+    });
+
+    it('delivers a focus target once, not on every later repaint', () => {
+      const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
+      // Consumed by the render that received it, so an external commit or a style
+      // switch cannot yank focus back to that tile minutes later.
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: null,
+      });
+    });
+
     it('Back/Forward inside the Dashboard surface keeps the explicit selection', async () => {
       const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
@@ -5665,7 +5716,13 @@ describe('unified /sql routing', () => {
       dashboards: [dash('first', 1), dash('second', 1)],
     };
     app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
-    app.state.dashboard = dash('second', 7);
+    // Project through the real path: `state.dashboard` is whatever
+    // `applyCommittedWorkspace` put there — the SELECTED document — never a
+    // hand-made one production could not produce.
+    app.applyCommittedWorkspace(app.currentWorkspace);
+    expect(app.state.dashboard!.id).toBe('second');
+    // The Dashboard surface edits that projection in place before folding it back.
+    app.state.dashboard = { ...app.state.dashboard!, revision: 7 };
     app.renderDashboard = vi.fn();
     app.reloadDashboardRoute();
     expect(app.currentWorkspace!.dashboards.map((d) => [d.id, d.revision]))
@@ -5709,11 +5766,13 @@ describe('unified /sql routing', () => {
     app.currentWorkspace = {
       storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [only],
     };
+    // A selection pinned before the entry was deleted elsewhere: the fold must
+    // not guess into another slot. (`state.dashboard` still holds the document
+    // that surface was editing.)
     app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', focus: null };
     app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
     app.renderDashboard = vi.fn();
     app.reloadDashboardRoute();
-    // Never guessed into another entry.
     expect(app.currentWorkspace!.dashboards).toEqual([only]);
   });
 

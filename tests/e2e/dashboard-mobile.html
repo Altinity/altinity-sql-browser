@@ -19,6 +19,12 @@
          `#root`. Mirrored here so this fixture's sticky-topbar, scroll-host and
          tile-width assertions keep measuring the real box model. -->
     <div class="main-row" data-surface="dashboard">
+    <!-- #425: the sidebar and the col-resize handle are real siblings of the
+         Dashboard host in production. Present here so the mobile rules that hide
+         them for a full-bleed Dashboard are actually exercised — nothing else in
+         the suite can, since happy-dom applies no CSS. -->
+    <div class="sidebar" style="width: 248px"><div class="schema-list"></div></div>
+    <div class="col-resize"></div>
     <div class="dashboard-host">
     <div class="dash-page">
       <div class="dash-topbar">
@@ -39,6 +45,9 @@
     </div>
     </div>
     </div>
+    <!-- The bottom nav is a sibling of `.main-row`, which is exactly the
+         relationship the `~ .mobile-nav` rule depends on. -->
+    <div class="mobile-nav"><button class="mobile-nav-btn" data-view="tables">Tables</button></div>
   </div>
   <script type="module">
     import { buildRecentField } from '/src/ui/recent-field.js';
@@ -132,9 +141,14 @@
       actions: {
         openUserMenu: () => {},
         openShortcuts: () => {},
-        openDashboard: () => {},
+        showDashboard: () => {},
       },
       toggleTheme: () => {},
+      // #425: the header's surface switch goes through these two seams now, not
+      // `navigateSqlRoute` — without them a click on "SQL Browser" would throw.
+      showQuerySurface: () => {},
+      showDashboardSurface: () => {},
+      mainSurface: { kind: 'query' },
       navigateSqlRoute: async () => {},
       editingLibrary: false,
     };
