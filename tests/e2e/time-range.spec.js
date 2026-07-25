@@ -172,6 +172,43 @@ test.describe('Dashboard compound time-range control', () => {
     await expect(page.locator('.trf-popover')).toHaveCount(0);
   });
 
+  // #439: the shared anchored-dialog focus trap must own every Tab transition
+  // for THIS consumer too, including through a dynamically rendered set (the
+  // right column's constants list) whose membership changes while the dialog
+  // stays open — proving the trap recomputes on every press rather than
+  // caching the set it saw when the popover first mounted.
+  test('Tab reaches Apply through the dynamically rendered constants column, and a narrower re-render is honored by the very next Tab', async ({ page }) => {
+    await open(page);
+    // A genuine focus (not the initial programmatic one) activates To,
+    // rendering its constants as dynamic buttons in the right column.
+    await toBox(page).focus();
+    await expect(page.locator('.trf-right-header')).toHaveText('To · constants');
+    expect(await page.locator('.trf-const').count()).toBeGreaterThan(1);
+
+    const dialog = page.getByRole('dialog', { name: 'Time range' });
+    const toCaret = page.locator('.trf-caret[aria-label="Show constants for To"]');
+    await page.keyboard.press('Tab'); // To input -> To's caret
+    await expect(toCaret).toBeFocused();
+    await page.keyboard.press('Tab'); // caret -> first constant button
+    await expect(page.locator('.trf-const').first()).toBeFocused();
+    expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+
+    // Narrow the right column to a single constant — the trap must use the
+    // FRESHLY rendered set on the next press, not the one captured before.
+    // 'now' is the one constant whose value/label contains "now" (no "-Nx
+    // ago" token does), and it stays a valid, in-range bound so Apply stays
+    // enabled and reachable afterward.
+    await toBox(page).fill('now');
+    await expect(page.locator('.trf-const')).toHaveCount(1);
+    await page.keyboard.press('Tab'); // To input -> To's caret
+    await page.keyboard.press('Tab'); // caret -> the ONE remaining constant
+    await expect(page.locator('.trf-const')).toBeFocused();
+    await page.keyboard.press('Tab'); // -> Cancel
+    await expect(page.locator('.trf-btn:not(.trf-btn-primary)')).toBeFocused();
+    await page.keyboard.press('Tab'); // -> Apply
+    await expect(applyBtn(page)).toBeFocused();
+  });
+
   test('renders the control and popover in both light and dark themes', async ({ page }) => {
     const bg = async () => page.locator('.trf-popover').evaluate((n) => getComputedStyle(n).backgroundColor);
 

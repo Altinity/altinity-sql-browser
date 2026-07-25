@@ -179,28 +179,12 @@ describe('openAnchoredDialog — dismissal paths', () => {
   });
 });
 
-describe('openAnchoredDialog — Tab focus trap', () => {
+describe('openAnchoredDialog — Tab focus trap (#439: primitive owns every transition)', () => {
   const tab = (target: EventTarget, shiftKey = false): boolean => key(target, 'Tab', shiftKey);
 
-  it('Tab from the last focusable wraps to the first', () => {
-    const { open, input, button } = setup();
-    open();
-    button.focus(); // last focusable
-    tab(dialogEl()!);
-    expect(document.activeElement).toBe(input); // first
-  });
-
-  it('Shift+Tab from the first focusable wraps to the last', () => {
-    const { open, input, button } = setup();
-    open();
-    input.focus(); // first focusable
-    tab(dialogEl()!, true);
-    expect(document.activeElement).toBe(button); // last
-  });
-
-  it('recomputes the focusable set on every press: disabling the last row moves the wrap target', () => {
-    // Three rows; disable the last so the trap must recompute rather than reuse
-    // a cached list.
+  // A three-row dialog (a, b, c) is enough to exercise first/middle/last for
+  // both directions without depending on `setup()`'s two-row fixture.
+  function setupThree(): { trigger: HTMLButtonElement; a: HTMLInputElement; b: HTMLButtonElement; c: HTMLButtonElement } {
     const trigger = h('button', {}) as HTMLButtonElement;
     document.body.appendChild(trigger);
     const a = h('input', { class: 'r-a' }) as HTMLInputElement;
@@ -208,56 +192,239 @@ describe('openAnchoredDialog — Tab focus trap', () => {
     const c = h('button', { class: 'r-c' }) as HTMLButtonElement;
     const content = h('div', { style: { display: 'contents' } }, a, b, c);
     openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
-    c.disabled = true; // now the last focusable is b
-    b.focus();
-    tab(dialogEl()!); // from the (new) last → wraps to first (a)
-    expect(document.activeElement).toBe(a);
+    return { trigger, a, b, c };
+  }
+
+  describe('forward traversal', () => {
+    it('Tab from the first element focuses the second', () => {
+      const { a, b } = setupThree();
+      a.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(b);
+    });
+
+    it('Tab from a middle element focuses the next element', () => {
+      const { b, c } = setupThree();
+      b.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(c);
+    });
+
+    it('Tab from the last element wraps to the first', () => {
+      const { a, c } = setupThree();
+      c.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(a);
+    });
+
+    it('preventDefault()s every non-empty forward traversal', () => {
+      const { a } = setupThree();
+      a.focus();
+      const handled = tab(dialogEl()!);
+      expect(handled).toBe(false); // preventDefault-ed
+    });
   });
 
-  it('a hidden row is excluded from the trap', () => {
+  describe('backward traversal', () => {
+    it('Shift+Tab from the last element focuses the previous element', () => {
+      const { b, c } = setupThree();
+      c.focus();
+      tab(dialogEl()!, true);
+      expect(document.activeElement).toBe(b);
+    });
+
+    it('Shift+Tab from a middle element focuses the previous element', () => {
+      const { a, b } = setupThree();
+      b.focus();
+      tab(dialogEl()!, true);
+      expect(document.activeElement).toBe(a);
+    });
+
+    it('Shift+Tab from the first element wraps to the last', () => {
+      const { a, c } = setupThree();
+      a.focus();
+      tab(dialogEl()!, true);
+      expect(document.activeElement).toBe(c);
+    });
+
+    it('preventDefault()s every non-empty backward traversal', () => {
+      const { c } = setupThree();
+      c.focus();
+      const handled = tab(dialogEl()!, true);
+      expect(handled).toBe(false); // preventDefault-ed
+    });
+  });
+
+  describe('dynamic eligibility', () => {
+    it('disabling a middle element is reflected on the very next press', () => {
+      const { a, b, c } = setupThree();
+      b.disabled = true; // eligible set is now [a, c]
+      a.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(c);
+    });
+
+    it('disabling the last element moves the wrap target', () => {
+      const { a, b, c } = setupThree();
+      c.disabled = true; // eligible set is now [a, b]
+      b.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(a);
+    });
+
+    it('an element inside a hidden ancestor is excluded', () => {
+      const trigger = h('button', {}) as HTMLButtonElement;
+      document.body.appendChild(trigger);
+      const a = h('input', { class: 'r-a' }) as HTMLInputElement;
+      const wrap = h('div', { hidden: true }, h('button', { class: 'r-b' }));
+      const c = h('button', { class: 'r-c' }) as HTMLButtonElement;
+      const content = h('div', { style: { display: 'contents' } }, a, wrap, c);
+      openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+      a.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(c);
+    });
+
+    it('re-enabling a disabled element makes it eligible again without reopening the dialog', () => {
+      const { a, b, c } = setupThree();
+      b.disabled = true;
+      a.focus();
+      tab(dialogEl()!); // skips disabled b → c
+      expect(document.activeElement).toBe(c);
+      b.disabled = false;
+      tab(dialogEl()!); // c → wraps to a
+      expect(document.activeElement).toBe(a);
+      tab(dialogEl()!); // a → b, now eligible again
+      expect(document.activeElement).toBe(b);
+    });
+
+    it('a focused element disabled before the next Tab is treated as out of the set: Tab chooses the first', () => {
+      const { a, b } = setupThree();
+      b.focus();
+      b.disabled = true;
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(a);
+    });
+
+    it('a focused element disabled before the next Shift+Tab is treated as out of the set: Shift+Tab chooses the last', () => {
+      const { b, c } = setupThree();
+      b.focus();
+      b.disabled = true;
+      tab(dialogEl()!, true);
+      expect(document.activeElement).toBe(c);
+    });
+
+    it('a focused element removed before the next Tab is treated as out of the set: Tab chooses the first', () => {
+      const { a, b } = setupThree();
+      b.focus();
+      b.remove();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(a);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('a single eligible element retains focus on Tab', () => {
+      const trigger = h('button', {}) as HTMLButtonElement;
+      document.body.appendChild(trigger);
+      const only = h('button', { class: 'only' }) as HTMLButtonElement;
+      const content = h('div', { style: { display: 'contents' } }, only);
+      openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+      only.focus();
+      tab(dialogEl()!);
+      expect(document.activeElement).toBe(only);
+    });
+
+    it('a single eligible element retains focus on Shift+Tab', () => {
+      const trigger = h('button', {}) as HTMLButtonElement;
+      document.body.appendChild(trigger);
+      const only = h('button', { class: 'only' }) as HTMLButtonElement;
+      const content = h('div', { style: { display: 'contents' } }, only);
+      openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+      only.focus();
+      tab(dialogEl()!, true);
+      expect(document.activeElement).toBe(only);
+    });
+
+    it('Tab with no focusable content is a no-op (empty-set guard)', () => {
+      const trigger = h('button', {}) as HTMLButtonElement;
+      document.body.appendChild(trigger);
+      const content = h('div', {}, h('span', {}, 'no focusables here'));
+      openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+      const handled = tab(dialogEl()!);
+      expect(handled).toBe(true); // untrapped — browser handles it
+    });
+
+    it('a non-Tab key inside the dialog is ignored by the trap', () => {
+      const { open, button } = setup();
+      open();
+      button.focus();
+      const handled = key(dialogEl()!, 'ArrowDown');
+      expect(handled).toBe(true); // not preventDefault-ed
+      expect(document.activeElement).toBe(button); // focus unchanged
+    });
+
+    it('the listener is scoped to the live dialog and removed on close', () => {
+      const { open, input } = setup();
+      const handle = open();
+      handle.close();
+      // Re-append the (now-detached) dialog-scoped input to the body and Tab
+      // on it directly — with the listener removed, nothing intercepts it, so
+      // the key event is left unhandled and focus is untouched.
+      document.body.appendChild(input);
+      input.focus();
+      const handled = tab(input);
+      expect(handled).toBe(true); // no trap left listening
+      expect(document.activeElement).toBe(input); // no trap side effect moved focus
+    });
+  });
+});
+
+describe('openAnchoredDialog — reclaimFocus (#439)', () => {
+  // A caller that disables the currently-focused control (e.g. a busy-state
+  // toggle) natively evicts focus past the dialog-scoped Tab trap's reach —
+  // the trap only runs on an event whose target is inside `dialog`, and a
+  // disabled element can no longer be that target. `reclaimFocus()` is the
+  // escape hatch: called right after the mutation, it recovers focus onto
+  // the first still-eligible element.
+
+  it('is a no-op when the active element is still eligible', () => {
+    const { open, input, button } = setup();
+    const handle = open();
+    button.focus();
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('moves focus to the first eligible element when the active element was just disabled', () => {
     const trigger = h('button', {}) as HTMLButtonElement;
     document.body.appendChild(trigger);
     const a = h('input', { class: 'r-a' }) as HTMLInputElement;
-    const wrap = h('div', { hidden: true }, h('button', { class: 'r-b' }));
-    const c = h('button', { class: 'r-c' }) as HTMLButtonElement;
-    const content = h('div', { style: { display: 'contents' } }, a, wrap, c);
-    openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
-    c.focus(); // last visible focusable
-    tab(dialogEl()!);
-    expect(document.activeElement).toBe(a);
-  });
-
-  it('Tab from a middle element does not trap (browser default order applies)', () => {
-    const trigger = h('button', {}) as HTMLButtonElement;
-    document.body.appendChild(trigger);
-    const a = h('input', { class: 'r-a' }) as HTMLInputElement;
-    const b = h('input', { class: 'r-b' }) as HTMLInputElement;
+    const b = h('button', { class: 'r-b' }) as HTMLButtonElement;
     const c = h('button', { class: 'r-c' }) as HTMLButtonElement;
     const content = h('div', { style: { display: 'contents' } }, a, b, c);
-    openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
-    b.focus(); // middle
-    const forward = tab(dialogEl()!);
-    const backward = tab(dialogEl()!, true);
-    expect(forward).toBe(true); // not preventDefault-ed
-    expect(backward).toBe(true);
+    const handle = openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+    b.focus();
+    b.disabled = true; // the mutation a busy-state toggle performs
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(a); // first still-eligible row
   });
 
-  it('a non-Tab key inside the dialog is ignored by the trap', () => {
-    const { open, button } = setup();
-    open();
-    button.focus();
-    const handled = key(dialogEl()!, 'ArrowDown');
-    expect(handled).toBe(true); // not preventDefault-ed
-    expect(document.activeElement).toBe(button); // focus unchanged
+  it('recovers focus that a caller mutation already moved outside the dialog entirely', () => {
+    const { trigger, open, input } = setup();
+    const handle = open();
+    trigger.focus(); // simulates the native evict-to-outside-the-dialog case
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(input); // first eligible row inside the dialog
   });
 
-  it('Tab with no focusable content is a no-op (empty-set guard)', () => {
+  it('is a no-op (safe) when nothing in the dialog is eligible', () => {
     const trigger = h('button', {}) as HTMLButtonElement;
     document.body.appendChild(trigger);
-    const content = h('div', {}, h('span', {}, 'no focusables here'));
-    openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
-    const handled = tab(dialogEl()!);
-    expect(handled).toBe(true); // untrapped — browser handles it
+    const only = h('button', { class: 'only', disabled: true }) as HTMLButtonElement;
+    const content = h('div', { style: { display: 'contents' } }, only);
+    const handle = openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+    expect(() => handle.reclaimFocus()).not.toThrow();
   });
 });
 

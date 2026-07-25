@@ -439,8 +439,16 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       for (const row of rows) row.cb.disabled = busy;
       clearBtn.disabled = busy;
       applyBtn.disabled = busy;
-      if (busy) liveEl.textContent = 'Loading options…';
-      else applyFilter(); // restores the normal "N of M options" live text
+      if (busy) {
+        liveEl.textContent = 'Loading options…';
+        // #439: disabling the currently-focused control (Search/an option/
+        // Clear/Apply — every non-Cancel row above) natively blurs it OUT of
+        // the dialog, past the shared Tab trap's reach (dialog-scoped, so it
+        // only sees events targeting its own subtree). Reclaim focus onto
+        // Cancel — the one row this loop never disables — so it never lands
+        // on the page behind the modal.
+        handle.reclaimFocus();
+      } else applyFilter(); // restores the normal "N of M options" live text
     }
 
     // The generic dialog chrome (#335): overlay + backdrop-close, the ARIA

@@ -77,6 +77,16 @@ export interface AnchoredDialogHandle {
    *  `skipFocus`. Idempotent — every dismissal path funnels here, and a second
    *  call is a harmless no-op that never re-fires `onClose`. */
   close(opts?: { skipFocus?: boolean }): void;
+  /** #439: call this immediately after mutating disabled/hidden state on the
+   *  dialog's own content (e.g. a busy-state toggle) — the dialog-scoped Tab
+   *  trap only runs on an event whose target is inside `dialog`, but DISABLING
+   *  the currently-focused control natively blurs it out to `<body>` (outside
+   *  the trap's reach) rather than to another element, so an ordinary Tab
+   *  press right after can leave the modal entirely undetected. Recomputes the
+   *  eligible set and, if the active element is no longer in it (evicted, or
+   *  never was — outside the dialog), moves focus to the first eligible
+   *  element; a no-op when the active element is still eligible. */
+  reclaimFocus(): void;
 }
 
 export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogHandle {
@@ -102,19 +112,39 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
     return [...dialog.querySelectorAll<HTMLElement>('input, button')]
       .filter((el) => !el.closest('[hidden]') && !(el as HTMLInputElement | HTMLButtonElement).disabled);
   }
+  // #439: the primitive owns EVERY Tab/Shift+Tab transition, not just
+  // boundary wrapping — native sequential-focus policy is not portable
+  // (WebKit/Safari's default "Tab highlights every item" preference is OFF,
+  // so browser-delegated middle-of-list traversal can skip buttons and
+  // checkboxes entirely, stranding keyboard users before Apply). Current
+  // index in the freshly-recomputed set decides the next stop; an
+  // out-of-set active element (focus outside the dialog, or on a node the
+  // last recompute dropped via disable/hide/removal) is treated as if
+  // nothing were focused, per the issue's boundary rule.
   const onTabTrap = (e: KeyboardEvent): void => {
     if (e.key !== 'Tab') return;
     const items = focusableEls();
     if (items.length === 0) return; // nothing to trap — let the browser handle it
-    const first = items[0];
-    const last = items[items.length - 1];
-    const activeEl = d.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (!activeEl || activeEl === first || !dialog.contains(activeEl)) { e.preventDefault(); last.focus(); }
-    } else if (!activeEl || activeEl === last || !dialog.contains(activeEl)) {
-      e.preventDefault(); first.focus();
-    }
+    const active = d.activeElement as HTMLElement | null;
+    const current = active ? items.indexOf(active) : -1;
+    const delta = e.shiftKey ? -1 : 1;
+    const next = current < 0 ? (e.shiftKey ? items.length - 1 : 0) : (current + delta + items.length) % items.length;
+    e.preventDefault();
+    items[next].focus();
   };
+
+  // #439: the consumer-facing escape hatch — see the handle's own doc comment
+  // for why disabling the focused control natively evicts it past the
+  // dialog-scoped trap's reach. `items.includes(active)` (not an
+  // `dialog.contains` check alone) is what catches this: a just-disabled
+  // element stays `dialog.contains`-true but drops out of `focusableEls()`.
+  function reclaimFocus(): void {
+    const items = focusableEls();
+    if (items.length === 0) return;
+    const active = d.activeElement as HTMLElement | null;
+    if (active && items.includes(active)) return; // still eligible — no-op
+    items[0].focus();
+  }
 
   // The single teardown funnel. Idempotent: the `open` guard means teardown +
   // `onClose` run exactly once no matter how many dismissal paths reach it.
@@ -160,5 +190,5 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
   const focusTarget = opts.initialFocus?.(dialog);
   if (focusTarget) focusTarget.focus();
 
-  return { dialog, isOpen: () => open, close };
+  return { dialog, isOpen: () => open, close, reclaimFocus };
 }

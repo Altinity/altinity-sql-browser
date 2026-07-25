@@ -20,6 +20,7 @@
       onApply: () => {}, onFallbackCommit: () => {},
     });
     document.querySelector('#root').append(field.el);
+    window.__field = field; // #439: lets specs drive updateStatus() to exercise the busy/focus-eviction path
     window.__ready = true;
   </script>
 </body>

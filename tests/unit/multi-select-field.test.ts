@@ -616,15 +616,22 @@ describe('buildMultiSelectField — Tab focus trap inside the dialog (#189 F3)',
     expect(document.activeElement).toBe(applyBtn());
   });
 
-  it('Tab/Shift-Tab from an element in the middle of the dialog does not trap (default behavior)', () => {
+  it('Tab/Shift-Tab from an element in the middle of the dialog moves deterministically (#439)', () => {
+    // The primitive owns every transition now, not just the boundary wrap —
+    // native browser traversal is not portable (WebKit/Safari can skip
+    // buttons/checkboxes with the default "Tab highlights every item"
+    // preference off). Declared order: search, select-visible, option
+    // checkboxes (a/b/c), Clear, Cancel, Apply.
     const handle = buildMultiSelectField(baseOpts());
     document.body.appendChild(handle.el);
     click(triggerEl(handle.el));
     selectAllCb().focus();
     const forward = tab(popover()!);
+    expect(forward).toBe(false); // preventDefault-ed
+    expect(document.activeElement).toBe(optionCbs()[0]); // next: first option row
     const backward = tab(popover()!, true);
-    expect(forward).toBe(true); // not preventDefault-ed — the browser's own Tab order applies
-    expect(backward).toBe(true);
+    expect(backward).toBe(false); // preventDefault-ed
+    expect(document.activeElement).toBe(selectAllCb()); // back to select-visible
   });
 });
 
@@ -645,6 +652,21 @@ describe('buildMultiSelectField — loading affordance while the popover is open
     // The popover itself is still open — a status-only publish is never a
     // rebuild, so the draft can't have changed.
     expect(handle.isOpen()).toBe(true);
+  });
+
+  it('reclaims focus onto Cancel when entering busy state evicts the focused control (#439)', () => {
+    // Disabling the currently-focused control natively blurs it OUT of the
+    // dialog, past the shared Tab trap's dialog-scoped reach — verified for
+    // each row the busy toggle disables (every row except Cancel itself).
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    for (const focusTarget of [searchInput, selectAllCb, () => optionCbs()[0], clearBtn, applyBtn]) {
+      handle.updateStatus({ status: 'ready' }); // reset to interactive before each focus
+      focusTarget().focus();
+      handle.updateStatus({ status: 'loading' });
+      expect(document.activeElement).toBe(cancelBtn());
+    }
   });
 
   it('restores the checklist body and the normal live-region count once status returns to ready', () => {
