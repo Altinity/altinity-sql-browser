@@ -128,10 +128,11 @@ describe('handleKeydown', () => {
 
   it('dispatches Dashboard refresh and mode navigation only for the current viewer generation', () => {
     const refresh = vi.fn(); const setDashboardStyle = vi.fn();
+    const showDashboardSurface = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' },
       captureSurfaceGeneration: () => 7,
       surfaceCommands: { surface: 'dashboard', generation: 7, refresh, setDashboardStyle },
-      navigateSqlRoute: vi.fn(async () => {}) });
+      showDashboardSurface });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
     expect(refresh).toHaveBeenCalledOnce();
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
@@ -142,11 +143,14 @@ describe('handleKeydown', () => {
     expect(setDashboardStyle).toHaveBeenLastCalledWith('columns-2');
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'v' }), app)).toBe('dashboardView');
-    expect(app.navigateSqlRoute).toHaveBeenCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' }, 'replace');
+    // #425: mode navigation goes through the main-surface API, which retains the
+    // SELECTED Dashboard's id rather than writing a route that would re-resolve
+    // the collection's first entry.
+    expect(showDashboardSurface).toHaveBeenCalledWith('view');
     (app.sqlRoute as { mode?: 'view' | 'edit' }).mode = 'view';
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'e' }), app)).toBe('dashboardEdit');
-    expect(app.navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'replace');
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
     const viewing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' } });
     expect(handleKeydown(ev({ key: 'g' }), viewing)).toBe('chord');
     expect(handleKeydown(ev({ key: 'v' }), viewing)).toBeNull();
@@ -175,9 +179,10 @@ describe('handleKeydown', () => {
 
   it('routes the G chord by current surface, and resets it on mismatch, timeout, blur and stale generation', () => {
     vi.useFakeTimers();
-    const navigateSqlRoute = vi.fn(async () => {});
+    const showQuerySurface = vi.fn();
+    const showDashboardSurface = vi.fn();
     let generation = 1;
-    const app = makeApp({ navigateSqlRoute, captureSurfaceGeneration: () => generation });
+    const app = makeApp({ showQuerySurface, showDashboardSurface, captureSurfaceGeneration: () => generation });
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     // A repeated G deliberately restarts the chord's expiration window.
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
@@ -187,11 +192,11 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: 'd' }), app)).toBeNull();
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'd' }), app)).toBe('openDashboard');
-    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' }, 'push');
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' };
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'w' }), app)).toBe('openWorkbench');
-    expect(navigateSqlRoute).toHaveBeenLastCalledWith({ surface: 'workspace', workspaceKey: 'sql_library' }, 'push');
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     window.dispatchEvent(new Event('blur'));
     expect(handleKeydown(ev({ key: 'w' }), app)).toBeNull();

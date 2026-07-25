@@ -26,20 +26,17 @@ export function routeButton(
 
 function surfaceSwitch(app: App): HTMLElement {
   const dashboard = app.sqlRoute.surface === 'dashboard';
-  // The header stays mounted when File → New workspace swaps the active
-  // aggregate. Resolve at click time so its route never retains the workspace
-  // key from the header's original render.
-  const workspaceKey = (): string => app.currentWorkspace?.key ?? app.state.workspaceKey;
+  // #425: both controls go through the main-surface navigation API rather than
+  // writing a route themselves, so the session surface stays the ONE writer of
+  // the URL. The Dashboard side has no chooser yet (#426 adds the tree), so it
+  // opens the compatibility Dashboard by id. Resolved at click time — the header
+  // stays mounted when File → New workspace swaps the active aggregate.
   return h('div', {
     class: 'editor-mode-switch app-surface-switch',
     role: 'group', 'aria-label': 'Application surface',
   },
-  routeButton('SQL Browser', !dashboard, () => {
-    void app.navigateSqlRoute({ surface: 'workspace', workspaceKey: workspaceKey() }, 'push');
-  }),
-  routeButton('Dashboard', dashboard, () => {
-    void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: workspaceKey(), mode: 'edit' }, 'push');
-  }));
+  routeButton('SQL Browser', !dashboard, () => { app.showQuerySurface(); }),
+  routeButton('Dashboard', dashboard, () => { app.showDashboardSurface('edit'); }));
 }
 
 /** The one application header used by both Workbench and Dashboard. */

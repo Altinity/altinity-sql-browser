@@ -28,7 +28,9 @@ import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
-import { resolveCompatibilityDashboard, withCompatibilityDashboard } from './workspace-dashboards.js';
+import {
+  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from './workspace-dashboards.js';
 import type { WorkspaceIdGen } from './workspace-operations.js';
 import { validateStoredWorkspaceDocument } from './stored-workspace.js';
 import type { WorkspaceCodecOptions } from './stored-workspace.js';
@@ -391,6 +393,22 @@ function invalidatedDashboardPlan(
   );
 }
 
+/** #425: an EXPLICIT import target that no longer resolves to exactly one stored
+ *  Dashboard — deleted concurrently, or ambiguous under a duplicate id. The import
+ *  commits nothing rather than retargeting the compatibility slot: the caller
+ *  named a Dashboard, and writing a different one would destroy an entry the
+ *  import never mentioned. */
+function staleImportTargetPlan(
+  sourceDashboardId: string, targetDashboardId: string, queryMappings: IdMapping,
+): PortableBundleImportPlan {
+  return invalidPlan(
+    [diagnostic(['dashboards'], 'dashboard-import-target-stale',
+      'The dashboard this import targets was removed, or its id became ambiguous, before the import completed',
+      targetDashboardId)],
+    queryMappings, sourceDashboardId,
+  );
+}
+
 /** Queries-only import: merge the bundle's queries into the workspace's query
  * catalog per `decisions`. Imported favorited panels restore their Dashboard
  * tile membership — in the COMPATIBILITY Dashboard only (#424); every other
@@ -415,15 +433,21 @@ export function planImportQueries(
  *  or unmapped required dependency invalidates the plan (`candidateWorkspace:
  *  null`) rather than silently dropping the reference.
  *
- *  #424: the imported Dashboard takes the COMPATIBILITY slot — the one the
- *  current single-surface UI shows — and every other stored Dashboard is
- *  preserved in place. A `mode: 'replace'` id that collides with one of those
- *  is diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule
- *  rather than silently overwriting an unrelated Dashboard. */
+ *  #424/#425: the imported Dashboard REPLACES the Dashboard the import was
+ *  invoked from — `targetDashboardId` when the caller has an explicit selection,
+ *  otherwise the COMPATIBILITY slot — and every other stored Dashboard is
+ *  preserved in place. Addressing the target by id matters once a non-first
+ *  Dashboard can be open: writing the compatibility slot would import "into" a
+ *  Dashboard the user is not looking at. An unknown `targetDashboardId` (deleted
+ *  concurrently) falls back to the compatibility slot rather than dropping the
+ *  import. A `mode: 'replace'` id that collides with another stored Dashboard is
+ *  diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule rather
+ *  than silently overwriting an unrelated Dashboard. */
 export function planImportDashboard(
   workspace: StoredWorkspaceV3, bundle: PortableBundleV1, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
+  targetDashboardId: string | null = null,
 ): PortableBundleImportPlan {
   const source = bundle.dashboards.find((dashboard) => dashboard.id === sourceDashboardId);
   if (!source) return dashboardNotFoundPlan(sourceDashboardId, {});
@@ -441,10 +465,22 @@ export function planImportDashboard(
     ? { ...rewritten.dashboard, id: genId(), revision: 1 }
     : rewritten.dashboard;
 
-  const candidate = withCompatibilityDashboard(
-    replaceWorkspaceContents(workspace, { queries: nextQueries, dashboards: workspace.dashboards }),
-    finalDashboard,
+  const base = replaceWorkspaceContents(
+    workspace, { queries: nextQueries, dashboards: workspace.dashboards },
   );
+  // No explicit target: the legacy entry point writes the compatibility slot.
+  if (targetDashboardId === null) {
+    return validatedPlan(
+      withCompatibilityDashboard(base, finalDashboard), mapping, options, sourceDashboardId,
+    );
+  }
+  // An EXPLICIT target fails closed. `replaceDashboard` returns null when the id
+  // names no entry (deleted concurrently) or names more than one (ambiguous), and
+  // falling back to the compatibility slot there would overwrite the collection's
+  // FIRST Dashboard — silently retargeting exactly the way #425 forbids, and
+  // destroying a Dashboard the import never named.
+  const candidate = replaceDashboard(base, targetDashboardId, finalDashboard);
+  if (!candidate) return staleImportTargetPlan(sourceDashboardId, targetDashboardId, mapping);
   return validatedPlan(candidate, mapping, options, sourceDashboardId);
 }
 

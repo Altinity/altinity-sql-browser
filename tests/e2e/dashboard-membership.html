@@ -55,14 +55,27 @@
       return result;
     };
 
+    // #425: the application shell owns the surface hosts and the header slot and
+    // hands the Dashboard a render target. This harness plays that role with two
+    // plain divs, so the fixture keeps exercising the real `renderDashboard`.
+    const headerSlot = document.createElement('div');
+    const dashboardHost = document.createElement('div');
+    const dashboardTarget = () => ({
+      host: dashboardHost,
+      dashboardId: (app.currentWorkspace?.dashboards[0] ?? null)?.id ?? null,
+      mode: 'edit',
+      focus: null,
+      setHeader: (header) => headerSlot.replaceChildren(header),
+    });
+
     function renderWorkbench() {
       const tabs = document.createElement('div');
       const search = document.createElement('div');
       const list = document.createElement('div');
       const open = document.createElement('button');
       open.textContent = 'Open Dashboard';
-      open.onclick = () => { void renderDashboard(app); };
-      root.replaceChildren(tabs, search, list, open);
+      open.onclick = () => { void renderDashboard(app, dashboardTarget()); };
+      root.replaceChildren(tabs, search, list, open, headerSlot, dashboardHost);
       app.dom.savedTabsRow = tabs;
       app.dom.savedSearch = search;
       app.dom.savedList = list;

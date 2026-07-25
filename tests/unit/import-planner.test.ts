@@ -497,6 +497,66 @@ describe('imports preserve the non-compatibility Dashboards', () => {
     expect(dashboards[1]).toEqual(hidden());
   });
 
+  // #425: an import invoked from a Dashboard's own File menu must replace THAT
+  // Dashboard. Addressing the compatibility slot would import "into" a Dashboard
+  // the user is not looking at, once a non-first one can be open.
+  it('planImportDashboard replaces the TARGET Dashboard by id, preserving the first', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({
+        id: 'incoming', revision: 3, tiles: [{ id: 't1', queryId: 'a' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      {}, 'hidden',
+    );
+    const dashboards = plan.candidateWorkspace!.dashboards;
+    expect(dashboards.map((d) => d.id)).toEqual(['visible', 'new-1']);
+    // The first entry is byte-identical; only the addressed one was replaced.
+    expect(dashboards[0]).toEqual(dashboardDoc({ id: 'visible', revision: 4 }));
+  });
+
+  // #425: an explicit target FAILS CLOSED. Retargeting the compatibility slot
+  // would overwrite the collection's first Dashboard — silently retargeting the
+  // way #425 forbids, and destroying an entry the import never named.
+  it('planImportDashboard commits nothing when an explicit target was deleted', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({ id: 'incoming' })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      {}, 'gone',
+    );
+    expect(plan.candidateWorkspace).toBeNull();
+    expect(plan.diagnostics.map((d) => d.code)).toEqual(['dashboard-import-target-stale']);
+    // Neither stored Dashboard was touched.
+    expect(ws.dashboards.map((d) => d.id)).toEqual(['visible', 'hidden']);
+  });
+
+  it('planImportDashboard commits nothing when an explicit target id is ambiguous', () => {
+    const duplicated = dashboardDoc({ id: 'twin', revision: 2 });
+    const ws = {
+      ...twoDashboards(dashboardDoc({ id: 'visible' })),
+      dashboards: [duplicated, { ...duplicated, revision: 3 }],
+    };
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({ id: 'incoming' })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      {}, 'twin',
+    );
+    expect(plan.candidateWorkspace).toBeNull();
+    expect(plan.diagnostics.map((d) => d.code)).toEqual(['dashboard-import-target-stale']);
+    expect(ws.dashboards.map((d) => d.revision)).toEqual([2, 3]);
+  });
+
   it('planImportDashboard diagnoses a replace-mode id that collides with a hidden Dashboard', () => {
     const ws = twoDashboards(dashboardDoc({ id: 'visible' }));
     const incoming = bundle({

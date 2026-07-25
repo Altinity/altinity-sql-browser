@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach, type Mock } from 'vitest';
 import {
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
@@ -7,6 +7,7 @@ import { KEYS } from '../../src/state.js';
 import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
+import type { DashboardRenderTarget } from '../../src/ui/dashboard.js';
 import { applyCommand } from '../../src/dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
 import { resolveLayoutPluginSync } from '../../src/dashboard/layouts/layout-registry.js';
@@ -263,12 +264,31 @@ function dashApp(opts: {
     workspaceRouteStatus: current ? 'ready' : 'not-found',
     sqlRoute: { surface: 'dashboard', workspaceKey: current?.key ?? 'workspace', mode: 'edit' },
   }) as TestApp;
+  // #425: the application shell owns the surface hosts and the header slot, and
+  // hands this surface a render target. Both live under `app.root` here, so every
+  // `qs(app.root, …)` assertion (including `.app-header`) still resolves — but the
+  // Dashboard now renders into its own host rather than replacing the whole root.
+  const headerSlot = document.createElement('div');
+  headerSlot.className = 'app-header-slot';
+  const host = document.createElement('div');
+  host.className = 'dashboard-host';
+  rootEl(app).replaceChildren(headerSlot, host);
+  targets.set(app, {
+    host,
+    // Mirrors production's default: the selected id is the one the workspace
+    // exposes. A test opening a DIFFERENT Dashboard passes `dashboardId` to
+    // `render`.
+    dashboardId: current?.dashboards[0]?.id ?? null,
+    mode: 'edit',
+    focus: null,
+    setHeader: (header) => { headerSlot.replaceChildren(header); },
+  });
   let surfaceGeneration = 0;
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
   app.renderDashboard = () => {
     surfaceGeneration += 1;
-    void renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+    void render(app);
   };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
@@ -280,7 +300,18 @@ function dashApp(opts: {
   return { app, calls, commit, loadActive };
 }
 
-const render = (app: TestApp): Promise<void> => renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+/** Each fixture app's render target (#425), so `render(app)` stays a one-argument
+ *  call at the ~100 existing call sites. */
+const targets = new WeakMap<object, DashboardRenderTarget>();
+/** Render the fixture's Dashboard. `mode` follows `app.sqlRoute` (that is how
+ *  `modeApp` and the View/Edit tests express it); pass `over` to open a different
+ *  Dashboard by id, or with a focus target. */
+const render = (app: TestApp, over: Partial<DashboardRenderTarget> = {}): Promise<void> =>
+  renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0], {
+    ...targets.get(app)!,
+    mode: app.sqlRoute.surface === 'dashboard' ? app.sqlRoute.mode : 'edit',
+    ...over,
+  });
 // #341: `runCommand` now commits through `app.serializeWrite` (a real
 // microtask-chained queue, same as saved-history.test.ts's own convention) —
 // a synchronous assertion right after triggering a command can no longer
@@ -1980,7 +2011,11 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // ...but the FIRST render's grid is untouched — its listener was removed
     // at the start of the second `renderDashboard` call, so it never saw
     // this resize event (it would otherwise have reflowed to 2 columns).
-    expect((qs(app1.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    // #425: the same teardown now also EMPTIES that render's host (the host
+    // outlives the surface, so a disposed Dashboard must not leave its DOM
+    // behind), hence the assertion is on the element captured above.
+    expect((grid1.style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    expect(qs(app1.root, '.dash-page')).toBeNull();
   });
 });
 
@@ -4016,6 +4051,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
       .toEqual(['View', 'Edit']);
     expect(viewed.calls).toHaveLength(0);
     const edited = modeApp({ workspace: empty, mode: 'edit' });
+    const openDashboard = vi.fn();
+    edited.app.openDashboard = openDashboard;
     await render(edited.app);
     expect(qsa(edited.app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
@@ -4024,7 +4061,12 @@ describe('renderDashboard — unified live modes (#407)', () => {
     create.click();
     await flush();
     expect(edited.commit).toHaveBeenCalledOnce();
-    expect(edited.commit.mock.calls[0][0].dashboards[0]).not.toBeUndefined();
+    const created = edited.commit.mock.calls[0][0].dashboards[0];
+    expect(created).not.toBeUndefined();
+    // #425: the new document is SELECTED, by the id that was actually committed —
+    // otherwise the session would keep reporting Query mode with a Dashboard on
+    // screen, which #426's tree would render as "nothing selected".
+    expect(openDashboard).toHaveBeenCalledWith({ dashboardId: created.id, mode: 'edit' });
   });
 
   it.each(['view', 'edit'] as const)(
@@ -4055,33 +4097,78 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
-  it('route controls use push for surface and replace for mode', async () => {
+  // #425: this surface's own chrome no longer writes routes. It delegates to the
+  // main-surface navigation API, which is what keeps the SELECTED Dashboard's id
+  // across a View/Edit switch — a control that wrote `{surface:'dashboard',mode}`
+  // itself would re-resolve the collection's first entry instead. The
+  // push-for-surface / replace-for-mode history semantics live with that API and
+  // are asserted against the real controller in app.test.ts.
+  // #425 — the Dashboard surface's own toolbar: [Back to query] title [View|Edit]
+  it('renders a surface toolbar with Back to query, the Dashboard title, and View/Edit', async () => {
+    const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    await render(app);
+    const toolbar = qs(app.root, '.dash-surface-toolbar');
+    expect(qs(toolbar, '.dash-surface-title').textContent).toBe('Ops overview');
+    const back = qs<HTMLButtonElement>(toolbar, '.dash-back-to-query');
+    // Accessible name + keyboard-reachable button, not a bare clickable div.
+    expect(back.tagName).toBe('BUTTON');
+    expect(back.getAttribute('aria-label')).toBe('Back to query');
+    back.click();
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
+    expect(qsa<HTMLButtonElement>(toolbar, '.dashboard-mode-switch .editor-mode-btn')
+      .map((button) => [button.textContent, button.disabled]))
+      .toEqual([['View', false], ['Edit', true]]);
+  });
+
+  it('names no Dashboard in the toolbar when the workspace has none yet', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
-    app.navigateSqlRoute = vi.fn(async () => {});
+    await render(app, { dashboardId: 'not-in-this-workspace' });
+    expect(qs(app.root, '.dash-create')).not.toBeNull();
+    expect(qs(app.root, '.dash-surface-title')).toBeNull();
+    expect(qs(app.root, '.dash-back-to-query')).not.toBeNull();
+  });
+
+  it('renders the SELECTED Dashboard only, by stable id, whatever its position', async () => {
+    const workspace = wsWith();
+    workspace.dashboards = [
+      workspace.dashboards[0],
+      { ...workspace.dashboards[0], id: 'second', title: 'Second' },
+    ];
+    const { app } = modeApp({ workspace, mode: 'edit' });
+    await render(app, { dashboardId: 'second' });
+    expect(qs(app.root, '.dash-surface-title').textContent).toBe('Second');
+    // Exactly one Dashboard is on screen — a hidden sibling is never rendered.
+    expect(qsa(app.root, '.dash-page')).toHaveLength(1);
+  });
+
+  it('surface and mode controls delegate to the main-surface navigation API', async () => {
+    const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
+    const showQuerySurface = vi.fn();
+    const showDashboardSurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    app.showDashboardSurface = showDashboardSurface;
     await render(app);
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((b) => b.textContent === 'SQL Browser')!.click();
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // Already on the Dashboard surface: its own button is inert.
     const dashboardButton = qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Dashboard')!;
     expect(dashboardButton.disabled).toBe(true);
     dashboardButton.click();
+    expect(showDashboardSurface).not.toHaveBeenCalled();
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'View')!.click();
-    qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'Edit')!.click();
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('view');
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' };
     await render(app);
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Edit')!.click();
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      1, { surface: 'workspace', workspaceKey: 'workspace' }, 'push',
-    );
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      2, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' }, 'replace',
-    );
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      3, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' }, 'replace',
-    );
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
   });
 
   it('puts all Dashboard chrome in the shared compact application header', async () => {
@@ -4564,6 +4651,37 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect((await loadActive()).dashboards[0]?.tiles).toEqual([]);
   });
 
+  // #425: the same guarantee from a NON-FIRST selection — the case where an
+  // accidental `dashboards[0]` write would silently pass every index-0 test
+  // above. This is the acceptance criterion "commit replaces only the selected
+  // Dashboard entry; other Dashboards remain unchanged".
+  it('commits an edit to the SELECTED entry, not the collection\'s first', async () => {
+    const first = {
+      documentVersion: 1 as const, id: 'first', title: 'First', revision: 12,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    const base = twoTilesGrid();
+    const selected = base.dashboards[0];
+    const workspace = { ...base, dashboards: [first, selected] };
+    const { app, loadActive } = dashApp({ workspace });
+    await render(app, { dashboardId: selected.id });
+    expect(qs(app.root, '.dash-surface-title').textContent).toBe(selected.title);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+
+    const committed = await loadActive();
+    expect(committed.dashboards.map((d) => d.id)).toEqual(['first', selected.id]);
+    // The SELECTED entry advanced by exactly one revision…
+    expect(committed.dashboards[1].revision).toBe(selected.revision + 1);
+    expect(committed.dashboards[1].tiles.map((t) => t.id)).toEqual(['t2']);
+    // …and the first entry — which an unscoped write would have clobbered — is
+    // byte-identical.
+    expect(committed.dashboards[0]).toEqual(first);
+  });
+
   // #424: an ORDINARY edit on the visible Dashboard must leave every other
   // stored Dashboard byte-identical, revision included. Without this the
   // ID-addressed commit could be swapped for a plain one-element write and
@@ -4877,5 +4995,142 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     expect(tileNames(app)).toEqual(['q2', 'q1']); // reorder visible synchronously, before any commit
     await flush();
     expect(commit).toHaveBeenCalled();
+  });
+});
+
+// #425 — the explicit navigation focus contract: a caller can ask to land on one
+// tile or one curated filter of the Dashboard it opens.
+describe('renderDashboard — navigation focus (#425)', () => {
+  const focusWs = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+  // happy-dom's `scrollIntoView` is an empty method and `focus()` is a no-op on a
+  // DISCONNECTED element, so the fixture root must be in the document and the
+  // scroll call has to be observed on the prototype.
+  let scrollCalls: Element[];
+  beforeEach(() => {
+    scrollCalls = [];
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrollCalls.push(this);
+    });
+  });
+
+  const focusApp = (workspace = focusWs()) => {
+    const built = dashApp({ workspace });
+    document.body.appendChild(rootEl(built.app));
+    return built;
+  };
+
+  it('focuses, scrolls to, and temporarily highlights the tile named by TILE id', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't2' } });
+    const cards = qsa(app.root, '.dash-tile');
+    const second = cards[1];
+    expect(document.activeElement).toBe(second);
+    expect(scrollCalls).toContain(second);
+    expect(second.classList.contains('is-nav-target')).toBe(true);
+    // Programmatic focus only — the tile never joins the Tab order.
+    expect(second.getAttribute('tabindex')).toBe('-1');
+    // The other tile is untouched.
+    expect(cards[0].classList.contains('is-nav-target')).toBe(false);
+  });
+
+  it('never resolves a tile by its QUERY id', async () => {
+    const { app } = focusApp();
+    // 'q2' is the saved-query id of the second tile; its TILE id is 't2'.
+    await render(app, { focus: { kind: 'tile', id: 'q2' } });
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('no longer on this dashboard');
+  });
+
+  it('clears only the temporary highlight on the next user interaction, keeping focus', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    const card = qsa(app.root, '.dash-tile')[0];
+    expect(card.classList.contains('is-nav-target')).toBe(true);
+    document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(card.classList.contains('is-nav-target')).toBe(false);
+    // Normal keyboard focus styling is retained — only the extra highlight went.
+    expect(document.activeElement).toBe(card);
+    expect(card.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('clears the highlight after a bounded interval with no interaction', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app } = focusApp();
+      await render(app, { focus: { kind: 'tile', id: 't1' } });
+      const card = qsa(app.root, '.dash-tile')[0];
+      expect(card.classList.contains('is-nav-target')).toBe(true);
+      vi.advanceTimersByTime(2000);
+      expect(card.classList.contains('is-nav-target')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('focuses a curated filter by FILTER id, without scrolling the tile grid', async () => {
+    const { app } = focusApp(wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    }));
+    await render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    const field = qs(app.root, '[data-field-key="region"]');
+    expect(field).not.toBeNull();
+    expect(document.activeElement).toBe(field);
+    expect(field.classList.contains('is-nav-target')).toBe(true);
+    // Filters live at the top and have no layout placement, so no tile is
+    // scrolled for them.
+    expect(scrollCalls.some((node) => (node as HTMLElement).classList.contains('dash-tile'))).toBe(false);
+  });
+
+  it('opens the Dashboard anyway when the focus target is missing', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'filter', id: 'no-such-filter' } });
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('no longer on this dashboard');
+  });
+
+  it('suppresses a focus request from a SUPERSEDED render', async () => {
+    const { app } = focusApp();
+    // The fixture's `captureSurfaceGeneration` advances on each `renderDashboard`;
+    // a stale generation is exactly what a late request from a prior Dashboard
+    // (or from before a return to the Query surface) carries.
+    app.isSurfaceGenerationCurrent = () => false;
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    // Non-destructive: no diagnostic either — the target existed, the render did not.
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+  });
+
+  it('skips a late filter focus once the user has already interacted', async () => {
+    const { app } = focusApp(wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    }));
+    // Filter focus is delivered only AFTER the opening wave resolves, which can
+    // take seconds — long enough for the user to Tab into another field and type.
+    // The filter bar's own rebuild already restored focus there; stealing it back
+    // mid-keystroke is worse than not navigating.
+    const render1 = render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    document.dispatchEvent(new Event('keydown', { bubbles: true }));
+    await render1;
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+  });
+
+  it('retires a prior render\'s highlight so it cannot fire against a detached node', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    const first = qsa(app.root, '.dash-tile')[0];
+    await render(app, { focus: { kind: 'tile', id: 't2' } });
+    expect(first.classList.contains('is-nav-target')).toBe(false);
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(1);
   });
 });

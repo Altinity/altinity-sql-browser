@@ -338,6 +338,13 @@ export interface FilterBarHandle {
    *  `openPopoverKey()` (or, absent that, `focusedFieldKey()`) reported on the
    *  OUTGOING bar just before disposing it. */
   focusFieldTrigger(key: string): void;
+  /** #425 — the field ROOT this bar built for `key`, for navigation that has to
+   *  scroll to and highlight a control rather than just focus it. `key` is a
+   *  parameter name or a `group:${key}` time-range key; a parameter OWNED by a
+   *  time-range group resolves to that group's compound control, since no
+   *  standalone field exists for it. `null` when this bar built nothing for the
+   *  key. */
+  fieldElement(key: string): HTMLElement | null;
   /** #335: re-resolve every time-range control's closed-trigger label + aria
    *  against a new wall-clock snapshot (per execution wave, no timers) — a
    *  relative range (`-1d` → `now`) re-displays its absolute bounds without a
@@ -383,7 +390,8 @@ export function buildFilterBar(
       timeEl, ordinaryEl,
       dispose: () => {}, updateStatus: () => {},
       openPopoverKey: () => null, focusedFieldKey: () => null,
-      focusFieldTrigger: () => {}, refreshTimeRangeLabels: () => {},
+      focusFieldTrigger: () => {}, fieldElement: () => null,
+      refreshTimeRangeLabels: () => {},
     };
   }
   const timerClears: Array<() => void> = [];
@@ -395,6 +403,16 @@ export function buildFilterBar(
   // `focusedFieldKey`/`focusFieldTrigger`/`refreshTimeRangeLabels` all fold
   // over this one map.
   const handles = new Map<string, FieldHandle>();
+  // #425: the DOM counterpart of the `handles` key, stamped on every field's own
+  // root so navigation can FIND a field it was asked to focus. `handles` alone
+  // isn't enough: a curated scalar registers no `el` (its adapter carries only
+  // `updateStatus`), and a plain field has no handle entry at all — yet either
+  // can be a curated Dashboard filter a caller navigates to. Applied at the one
+  // composition point below rather than in each of the four build branches.
+  const stampFieldKey = (el: HTMLElement, key: string): HTMLElement => {
+    el.dataset.fieldKey = key;
+    return el;
+  };
   // #335: the time-range group entries, and the set of parameter names those
   // groups OWN — those params are represented by the compound control and so
   // are suppressed from the per-param loop below.
@@ -598,13 +616,14 @@ export function buildFilterBar(
         onKeyboardOwnerChange: options.onKeyboardOwnerChange,
       });
       handles.set(`group:${tr.group.key}`, trField);
-      timeSection.push(trField.el);
+      timeSection.push(stampFieldKey(trField.el, `group:${tr.group.key}`));
     }
     timeSection.push(h('span', { class: 'trf-sep', 'aria-hidden': 'true' }));
   }
 
   // The per-param fields (every param NOT owned by a time-range group).
-  const perParamFields = params.filter((p) => !suppressed.has(p.name)).map(buildParamField);
+  const perParamFields = params.filter((p) => !suppressed.has(p.name))
+    .map((p) => stampFieldKey(buildParamField(p), p.name));
 
   // Compose: Time section, then a "Filters" section label (only when BOTH a
   // Time section rendered AND at least one non-group field remains), then the
@@ -661,6 +680,27 @@ export function buildFilterBar(
       return null;
     },
     focusFieldTrigger: (key) => { handles.get(key)?.focusTrigger?.(); },
+    // #425: resolve by the stamped DOM key. A parameter a time-range group OWNS
+    // has no standalone field (it is suppressed from the per-param loop), so it
+    // resolves to that group's compound control — otherwise navigating to a
+    // from/to filter would wrongly report "no such filter".
+    fieldElement: (key) => {
+      const owning = timeRange.find((tr) =>
+        tr.group.fromParameter === key || tr.group.toParameter === key);
+      const stamped = owning ? `group:${owning.group.key}` : key;
+      // Searched from `timeEl`/`ordinaryEl`, NOT from `el`: the caller mounts
+      // those two regions separately (dashboard.ts splits the compound time
+      // controls into the primary toolbar and the ordinary fields into the filter
+      // row), which re-parents them out of `el` and leaves it empty.
+      // Matched by dataset read rather than an attribute selector: a parameter
+      // name is user data and would need escaping to be selector-safe.
+      for (const region of [timeEl, ordinaryEl]) {
+        for (const node of region.querySelectorAll<HTMLElement>('[data-field-key]')) {
+          if (node.dataset.fieldKey === stamped) return node;
+        }
+      }
+      return null;
+    },
     // #335: fold `refreshLabel` over the map — only time-range handles carry
     // it; every other handle skips (optional chaining), so this is a no-op for
     // a bar with no time-range controls.

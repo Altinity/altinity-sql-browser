@@ -1,9 +1,9 @@
 # ADR-0003: Dashboard viewing and unified `/sql` routes
 
 - **Status:** Accepted; detached-snapshot decision superseded by #407 on
-  2026-07-23
-- **Date:** 2026-07-18; revised 2026-07-23
-- **Context tracking:** roadmap #68; #288, #302, #406, #407
+  2026-07-23; surface lifecycle amended by #425 on 2026-07-25 (see the addendum)
+- **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25
+- **Context tracking:** roadmap #68; #288, #302, #406, #407, #425
 
 ## Context
 
@@ -88,6 +88,56 @@ records.
   listeners before remounting.
 - OAuth uses one `/sql` redirect URI. Callback cleanup retains route parameters
   while removing only OAuth callback parameters.
+
+## Addendum (#425, 2026-07-25): surfaces are hosts in one persistent shell
+
+The consequence above — "Dashboard route resources are disposed when switching
+surfaces or rebuilding the current surface; the Workbench shell likewise disposes
+signal and media listeners before remounting" — described a model where each
+surface owned the whole page and every switch was a dispose-and-remount. #425
+amends it, because a Dashboard must own the complete editor-plus-results area
+*while the left sidebar stays visible*, and returning to the Query surface must
+not reconstruct it.
+
+What changes:
+
+- One persistent shell (`ui/app-shell.ts`) owns `#root`: a header slot, the
+  sidebar, the mobile nav, and two sibling hosts — the query column
+  (`ui/workbench/workbench-shell.ts`) and the Dashboard. Exactly one host is
+  exposed; the hidden one keeps its DOM and its state and contributes no layout.
+- The query column is mounted once per signed-in workspace. A surface switch no
+  longer disposes it and no longer calls `workbench.destroy()` — that aborts the
+  in-flight request and issues `KILL QUERY`, and a presentation change must never
+  cancel the query in the editor. Real end-of-life events (a workspace switch,
+  workspace-not-found/loading, sign-out) still tear everything down, and every
+  path that replaces `#root` wholesale must forget the shell handle so the next
+  render re-mounts.
+- The Dashboard surface is still disposed when left: its viewer session, window
+  listeners, and pending focus work go, and its host is emptied — the host
+  outlives the surface, so a disposed Dashboard must not leave DOM behind.
+- Each surface still builds its own header, now into the shell's slot, so only
+  one header is ever mounted.
+
+Selected-Dashboard state (`application/main-surface.ts`) is session state: which
+Dashboard, in which mode, with an optional focus target, identified only by
+`DashboardDocumentV1.id` and never by collection position. It is not persisted —
+`StoredWorkspaceV3` gains no `activeDashboardId`/`defaultDashboardId` — is cleared
+on sign-out, and is re-validated against every committed workspace, falling back
+to Query mode rather than silently retargeting another Dashboard. It is also the
+single writer of the route's `surface`/`mode`, so the URL is always derived from
+it. **Routes are unchanged:** the URL still carries only `ws`, `surface`, and
+`mode`, which is why Back/Forward inside the Dashboard surface deliberately
+preserves the explicit selection instead of re-deriving one from the
+compatibility selector.
+
+Two consequences worth recording:
+
+- Edit mode renders the same single filter bar as View, so #425's "focus the
+  filter editor/control in Edit mode" collapses to one control per filter — not a
+  dropped requirement.
+- The schema tree is no longer refetched on a Dashboard→Workbench round trip
+  (`catalog.loadSchema()` moved to the shell's one-time mount). The #343
+  external-change refresh path still covers staleness.
 
 ## Alternatives considered
 
