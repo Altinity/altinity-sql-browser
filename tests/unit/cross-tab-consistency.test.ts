@@ -14,7 +14,7 @@ import { createApp } from '../../src/ui/app.js';
 import { createSavedQuery, commitSavedQuery, deleteSaved, renameSaved } from '../../src/state.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { SavedQueryV2, StoredWorkspaceV3, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV4, DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
 
 // A minimal real `createApp` over an injected shared store — the editor/spec
 // seams fall back to their noop ports (createApp's own defaults), so no
@@ -39,26 +39,26 @@ const twoTileDashboard = (): DashboardDocumentV1 => ({
   filters: [], tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
 } as DashboardDocumentV1);
 
-const dashboardSeed = (): StoredWorkspaceV3 => ({
-  storageVersion: 3, id: 'w1', key: 'team', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
+const dashboardSeed = (): StoredWorkspaceV4 => ({
+  storageVersion: 4, id: 'w1', key: 'team', name: 'Team', queries: [tiledQuery('q1'), tiledQuery('q2')],
   dashboards: [twoTileDashboard()],
 });
 
 /** Load the committed workspace from the shared store (fails loudly if empty). */
-async function committed(app: App): Promise<StoredWorkspaceV3> {
+async function committed(app: App): Promise<StoredWorkspaceV4> {
   const loaded = await app.workspace.loadById(app.state.workspaceId);
   if (loaded.status !== 'ok') throw new Error('expected a committed workspace');
   return loaded.workspace;
 }
 
-const layoutItems = (workspace: StoredWorkspaceV3): Record<string, { span: number }> =>
+const layoutItems = (workspace: StoredWorkspaceV4): Record<string, { span: number }> =>
   workspace.dashboards[0].layout.items as Record<string, { span: number }>;
-const queryById = (workspace: StoredWorkspaceV3, id: string): SavedQueryV2 | undefined =>
+const queryById = (workspace: StoredWorkspaceV4, id: string): SavedQueryV2 | undefined =>
   workspace.queries.find((q) => q.id === id);
 
 /** Seed the shared store (via A) and project it into both tabs, mirroring two
  *  tabs that each loaded the same committed aggregate on boot. */
-async function seed(a: App, b: App, workspace: StoredWorkspaceV3): Promise<void> {
+async function seed(a: App, b: App, workspace: StoredWorkspaceV4): Promise<void> {
   const outcome = await a.workspace.create(workspace);
   expect(outcome.ok).toBe(true);
   if (outcome.ok) a.applyCommittedWorkspace(outcome.workspace);
@@ -160,8 +160,8 @@ describe('cross-tab read-before-write (#343)', () => {
   it('save-linked to an externally deleted query aborts and does not recreate it', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const seedNoDash: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
+    const seedNoDash: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'team', name: 'Team',
       queries: [{ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2],
       dashboards: [],
     };
@@ -192,8 +192,8 @@ describe('cross-tab read-before-write (#343)', () => {
 // linked tabs adopt/conflict/detach/orphan, refresh coalesces + orders through
 // the write queue, and a failed reload never wedges it.
 describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
-  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV3 => ({
-    storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
+  const oneQuery = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV4 => ({
+    storageVersion: 4, id: 'w1', key: 'team', name: 'Team',
     queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
     dashboards: [],
   });
@@ -236,8 +236,8 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
   it('a flagged conflict survives a Library star/rename plus an unrelated external change (#343 review blocker)', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);
-    const twoQueries: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'team', name: 'Team',
+    const twoQueries: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'team', name: 'Team',
       queries: [
         { id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2,
         { id: 'q2', sql: 'SELECT 2', specVersion: 1, spec: { name: 'q2', favorite: false } } as SavedQueryV2,

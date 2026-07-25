@@ -36,11 +36,24 @@
     import { renderSavedHistory } from '/src/ui/saved-history.js';
     import { renderDashboard } from '/src/ui/dashboard.js';
 
+    // #427: a Library query plus a Dashboard whose tile owns its OWN dedicated
+    // copy. The star no longer creates membership, so a tile has to be seeded to
+    // exercise removal — and the owned copy must stay out of the Library list.
     const seed = {
-      storageVersion: 3, id: 'workspace', key: 'workspace', name: 'Workspace', dashboards: [],
-      queries: [{
-        id: 'q1', sql: 'SELECT 1', specVersion: 1,
-        spec: { name: 'Revenue', favorite: false },
+      storageVersion: 4, id: 'workspace', key: 'workspace', name: 'Workspace',
+      queries: [
+        { id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Revenue', favorite: false } },
+        { id: 'q1-owned', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Revenue', dashboard: { role: 'panel' } } },
+      ],
+      dashboards: [{
+        documentVersion: 1, id: 'dashboard', title: 'Membership', revision: 1,
+        // grafana-grid@1, because the per-tile remove affordance this spec drives
+        // (`.dash-gg-del`) is a grid-layout control.
+        layout: {
+          type: 'grafana-grid', version: 1, items: { t1: { span: 12 } },
+          fallback: { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'medium' } } },
+        },
+        filters: [], tiles: [{ id: 't1', queryId: 'q1-owned' }],
       }],
     };
     const root = document.querySelector('#surface');

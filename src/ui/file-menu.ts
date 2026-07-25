@@ -29,6 +29,7 @@ import { buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
 import { queryName } from '../core/saved-query.js';
 import { decodePortableBundleJson, encodePortableBundleJson } from '../dashboard/model/portable-bundle-codec.js';
 import { normalizeLegacyLibraryToBundle } from '../dashboard/model/legacy-bundle.js';
+import { libraryQueries } from '../dashboard/model/query-ownership.js';
 import { buildDashboardExportBundle, buildWorkspaceExportBundle } from '../dashboard/model/dashboard-export.js';
 import { dashboardDependencyQueryIds } from '../dashboard/model/bundle-order.js';
 import {
@@ -45,7 +46,7 @@ import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import { selectedDashboardId } from '../application/main-surface.js';
-import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
+import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
@@ -250,9 +251,9 @@ function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV
  *  Dashboard) with the live projection folded back into its compatibility slot.
  *  Falling back to `state.dashboard` alone would silently truncate a
  *  multi-Dashboard workspace on the degraded Export path. */
-function currentWorkspace(app: App): StoredWorkspaceV3 {
-  const envelope: StoredWorkspaceV3 = {
-    storageVersion: 3,
+function currentWorkspace(app: App): StoredWorkspaceV4 {
+  const envelope: StoredWorkspaceV4 = {
+    storageVersion: 4,
     id: app.state.workspaceId,
     key: app.state.workspaceKey,
     name: app.state.libraryName.value,
@@ -289,7 +290,7 @@ function afterLibraryChange(app: App): void {
  *  (schema/persistence failure) toasts the first diagnostic. Never a partial
  *  write either way. */
 async function commitWorkspace(
-  app: App, build: (latest: StoredWorkspaceV3 | null) => StoredWorkspaceV3 | null,
+  app: App, build: (latest: StoredWorkspaceV4 | null) => StoredWorkspaceV4 | null,
   successMsg?: string | (() => string),
 ): Promise<boolean> {
   const result = await app.mutateWorkspace((latest) => {
@@ -321,7 +322,7 @@ async function commitWorkspace(
  *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
  *  import and decide against the workspace as it now is. */
 function revalidateDecisions(
-  base: StoredWorkspaceV3, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  base: StoredWorkspaceV4, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
 ): QueryDecision[] | null {
   const conflicts = detectQueryConflicts(base.queries, incoming);
   const decided = new Set(decisions.map((decision) => decision.sourceId));
@@ -340,8 +341,8 @@ function revalidateDecisions(
  *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
 function planBuild(
   app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
-  run: (base: StoredWorkspaceV3, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
-): (latest: StoredWorkspaceV3 | null) => StoredWorkspaceV3 | null {
+  run: (base: StoredWorkspaceV4, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV4 | null) => StoredWorkspaceV4 | null {
   return (latest) => {
     const base = latest ?? currentWorkspace(app);
     const revalidated = revalidateDecisions(base, incoming, decisions);
@@ -680,7 +681,7 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
  *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
  *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
  *  export never becomes a silent no-op on an unhandled rejection. */
-async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV3 | null> {
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV4 | null> {
   try {
     await app.flushWorkspaceWrites();
     const result = await app.workspace.loadById(app.state.workspaceId);
@@ -717,7 +718,13 @@ async function exportWorkspaceAction(app: App): Promise<void> {
 }
 
 function downloadAction(app: App, fmt: 'md' | 'sql'): void {
-  const qs = app.state.savedQueries;
+  // #427: the LIBRARY projection, not every stored query. Each Dashboard member
+  // owns a dedicated copy of its query, so exporting the raw collection would
+  // emit every panel twice — once as the Library source and once as the owned
+  // copy, with identical names and SQL. A document export is the Library.
+  const qs = app.currentWorkspace
+    ? libraryQueries({ queries: app.state.savedQueries, dashboards: app.currentWorkspace.dashboards })
+    : app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName.value) + '.md', 'text/markdown', buildMarkdownDoc(qs));
   else app.downloadFile(fileBase(app.state.libraryName.value) + '.sql', 'application/sql', buildSqlDoc(qs));

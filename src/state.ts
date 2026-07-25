@@ -15,9 +15,6 @@ import {
   loadStr as loadStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
-import {
-  queryMembershipFavorite, toggleTileMembership,
-} from './dashboard/application/tile-membership.js';
 import type { ResultSort } from './core/sort.js';
 // Type-only: `dashboard-tree-ui-state.ts` is a pure leaf with no imports of its
 // own, so naming its state shape here introduces no cycle.
@@ -31,7 +28,7 @@ import {
 } from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
-import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV3 } from './generated/json-schema.types.js';
+import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV4 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
 import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
@@ -68,7 +65,7 @@ export type SaveJSON = (key: string, value: unknown) => void;
 export type SaveStr = (key: string, value: string) => void;
 
 // ── Read-before-write mutation seam (#287 W4 / #343) ───────────────────────
-// The saved-query CRUD ops below persist through the StoredWorkspaceV3
+// The saved-query CRUD ops below persist through the StoredWorkspaceV4
 // aggregate (IndexedDB), never the flat `asb:saved` localStorage key. #343:
 // they no longer take a raw `commit(candidate)` callback that would let them
 // build a whole candidate from stale in-memory `AppState` and clobber a change
@@ -90,7 +87,7 @@ export type SaveStr = (key: string, value: string) => void;
  *  committed workspace (or `null` when nothing is persisted yet) and returns the
  *  complete candidate to commit — or `null` to abort committing nothing. */
 export type MutateWorkspace = <T = unknown>(
-  transform: (latest: StoredWorkspaceV3 | null) =>
+  transform: (latest: StoredWorkspaceV4 | null) =>
     WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
 ) => Promise<WorkspaceMutationOutcome<T>>;
 
@@ -132,10 +129,10 @@ const asSpecDiagnostics = (diagnostics: readonly WorkspaceDiagnostic[]): SpecDia
  *  a candidate from a stale in-memory projection (#343). Pure. */
 function baselineWorkspace(
   state: Pick<AppState, 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard' | 'savedQueries'>,
-  latest: StoredWorkspaceV3 | null,
-): StoredWorkspaceV3 {
+  latest: StoredWorkspaceV4 | null,
+): StoredWorkspaceV4 {
   return latest ?? {
-    storageVersion: 3, id: state.workspaceId, key: state.workspaceKey, name: state.libraryName.value,
+    storageVersion: 4, id: state.workspaceId, key: state.workspaceKey, name: state.libraryName.value,
     // Nothing is persisted yet, so the compatibility Dashboard is the ONLY
     // Dashboard there can be — no hidden entry is lost by this fallback.
     queries: state.savedQueries, dashboards: state.dashboard ? [state.dashboard] : [],
@@ -147,10 +144,10 @@ function baselineWorkspace(
  *  explicitly changes it — the base Dashboard COLLECTION byte-for-byte (#424:
  *  a saved-query mutation never touches a Dashboard it did not target). Pure. */
 const candidateFrom = (
-  base: StoredWorkspaceV3, queries: SavedQueryV2[],
+  base: StoredWorkspaceV4, queries: SavedQueryV2[],
   dashboards: DashboardDocumentV1[] = base.dashboards,
-): StoredWorkspaceV3 => ({
-  storageVersion: 3, id: base.id, key: base.key, name: base.name, queries, dashboards,
+): StoredWorkspaceV4 => ({
+  storageVersion: 4, id: base.id, key: base.key, name: base.name, queries, dashboards,
 });
 
 /** The committed entry, re-read from the just-committed canonical `queries`
@@ -358,7 +355,7 @@ export interface AppState {
    * workspace id. A plain Map, NOT a signal: see
    * `application/dashboard-tree-ui-state.ts` for why observing it would lose the
    * search caret and repaint on every scroll frame. Session only; never
-   * persisted, never part of `StoredWorkspaceV3`.
+   * persisted, never part of `StoredWorkspaceV4`.
    */
   dashboardTreeUi: Map<string, DashboardTreeUiState>;
   savedQueries: SavedQueryV2[];
@@ -367,14 +364,14 @@ export interface AppState {
   history: HistoryEntry[];
   libraryName: Signal<string>;
   libraryDirty: Signal<boolean>;
-  /** #287 W4: the current committed StoredWorkspaceV3's Dashboard document —
+  /** #287 W4: the current committed StoredWorkspaceV4's Dashboard document —
    *  the Workbench NEVER mutates this (that's the /dashboard route's job); it
    *  is only carried through, unchanged, in every saved-query CRUD commit
    *  candidate. `null` until the boot projection (app.ts's
    *  `loadWorkspaceOnBoot`) resolves the aggregate, or when the workspace
    *  genuinely has no Dashboard yet. */
   dashboard: DashboardDocumentV1 | null;
-  /** #287 W4: the current committed StoredWorkspaceV3's id, carried forward
+  /** #287 W4: the current committed StoredWorkspaceV4's id, carried forward
    *  unchanged by every saved-query CRUD commit candidate. `createState`
    *  mints a session-local placeholder synchronously (never blank — the
    *  stored-workspace schema requires a non-empty id), so a CRUD op run
@@ -645,7 +642,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     libraryDirty: signal(false),
     // The synchronous constructor has no persisted workspace to project yet:
     // `dashboard` starts null and app.ts's async `loadWorkspaceOnBoot` fills it
-    // after resolving the explicit or last-used StoredWorkspaceV3.
+    // after resolving the explicit or last-used StoredWorkspaceV4.
     // `workspaceId` is minted here rather than left blank because the persisted
     // schema requires a non-empty id. A save attempted before boot projection
     // completes (or by a fixture that never runs it) can therefore still commit
@@ -837,7 +834,7 @@ export interface LinkedTabReconcileSummary {
  *  erase the orphan/detach distinction. Pure over the tab objects. */
 export function reconcileLinkedTabsToLatest(
   state: Pick<AppState, 'tabs'>,
-  latest: StoredWorkspaceV3 | null,
+  latest: StoredWorkspaceV4 | null,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): LinkedTabReconcileSummary {
   const tabs = state.tabs.value;
@@ -1019,15 +1016,6 @@ export async function commitSavedQuery(
   return { ok: true, entry: saved, ...(inferred.diagnostics.length ? { diagnostics: inferred.diagnostics } : {}) };
 }
 
-/** A pure transform folded into the SAME commit candidate as a `patchSavedSpec`
- *  write (#299) — e.g. `toggleFavorite` reflects its favorite flip onto
- *  Dashboard tile membership atomically alongside the Spec patch. Defaults to
- *  identity, so `renameSaved`/other callers that don't touch the Dashboard are
- *  unaffected. Receives the COMMITTED entry (the one about to be sent to
- *  `commit`, post-patch) so a role/id-dependent transform sees the final Spec. */
-export type DashboardTransform = (dashboard: DashboardDocumentV1 | null, entry: SavedQueryV2) => DashboardDocumentV1 | null;
-
-const identityDashboardTransform: DashboardTransform = (dashboard) => dashboard;
 
 /**
  * Generic committed-Spec writer for pencil/star/future controls. The patch is
@@ -1044,15 +1032,14 @@ export async function patchSavedSpec(
   id: string, patch: SpecPatch,
   mutate: MutateWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
-  transformDashboard: DashboardTransform = identityDashboardTransform,
 ): Promise<PatchSavedResult> {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
-  // The PERSISTED entry patch + Dashboard membership fold into the LATEST
-  // workspace (#343): resolve the entry by id against `latest.queries` (not
-  // stale `state`), derive tile membership from `latest`'s compatibility
-  // Dashboard, and preserve
-  // every other latest query. Validation runs INSIDE the transform, entry
+  // The PERSISTED entry patch folds into the LATEST workspace (#343): resolve
+  // the entry by id against `latest.queries` (not stale `state`) and preserve
+  // every other latest query. #427 removed the Dashboard-membership half — a
+  // Spec patch touches queries ONLY, so no Dashboard document is read or
+  // rewritten here at all. Validation runs INSIDE the transform, entry
   // FIRST then each linked draft (matching the pre-#343 order): the transform
   // returns null (aborts) when the patched entry Spec blocks (`entryDiagnostics`
   // set), a linked draft blocks (`blockedDraft` set), or the entry was deleted
@@ -1082,13 +1069,9 @@ export async function patchSavedSpec(
     }
     const nextQueries = base.queries.slice();
     nextQueries[index] = entry;
-    // #424: the transform stays Dashboard-LOCAL — it sees and returns one
-    // document. Which document that is, and how the result folds back into the
-    // collection preserving every other entry, is the one compatibility seam's
-    // job (`workspace-dashboards.ts`), never this op's.
-    const selected = resolveCompatibilityDashboard(base).dashboard;
-    const nextDashboards = withCompatibilityDashboard(base, transformDashboard(selected, entry)).dashboards;
-    return { candidate: candidateFrom(base, nextQueries, nextDashboards), data: entry };
+    // Every Dashboard is carried through untouched: #427 made favourite a
+    // Library preference, so nothing about a Spec patch can change membership.
+    return { candidate: candidateFrom(base, nextQueries, base.dashboards), data: entry };
   });
   if (!outcome.ok) {
     // A rejected COMMIT (schema/persistence) surfaces its bridged diagnostics.
@@ -1171,39 +1154,30 @@ export async function renameSaved(
 }
 
 /**
- * Toggle a saved query's favorite flag, atomically committing any Dashboard
- * tile-membership change the flip implies in the SAME candidate (#299): a
- * favorited panel-role query gets a tile (unless one already references it),
- * an unfavorited query loses every tile that references it. `spec.favorite`
- * stays the star's own visual state either way — this only ADDS the tile
- * side effect, it does not retire the favorite dual-write. `genId` mints a
- * Dashboard id when needed and the fresh tile id.
+ * Flip `spec.favorite` on one saved query, and NOTHING else (#427).
+ *
+ * Before #427 the star WAS Dashboard membership: it appended or removed a tile
+ * in the same commit, and read its own state back off `dashboard.tiles[]`. That
+ * is gone. A favourite is a Library/workbench preference now, so this can never
+ * create a Dashboard, add or remove a tile or a filter, select a Dashboard, or
+ * modify a Dashboard-owned copy — Dashboard membership is an explicit reference
+ * to a query the member owns, created by #428's assignment instead.
  */
 export async function toggleFavorite(
   state: AppState, id: string,
   mutate: MutateWorkspace,
-  genId: () => string,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): Promise<PatchSavedResult | undefined> {
-  const index = state.savedQueries.findIndex((q) => q.id === id);
-  const entry = index >= 0 ? state.savedQueries[index] : null;
+  const entry = state.savedQueries.find((q) => q.id === id);
   if (!entry) return;
-  // Star = explicit DESIRED membership (#343 §Operation intent): the UI derives
-  // the desired boolean from the query it displays, and the transform re-checks
-  // applicability against `latest` — tile membership is derived from
-  // `latest`'s compatibility Dashboard (passed as `dashboard` below), never
-  // stale `state.dashboard`.
-  const favorite = !queryMembershipFavorite(state.dashboard, entry);
-  return patchSavedSpec(state, id, { favorite }, mutate, validationService,
-    (dashboard, patchedEntry) => toggleTileMembership(dashboard, patchedEntry, favorite, genId));
+  return patchSavedSpec(state, id, { favorite: !queryFavorite(entry) }, mutate, validationService);
 }
 
 /** Saved queries with favorites first (stable within each group). */
 export function sortedSaved(state: AppState): SavedQueryV2[] {
   return state.savedQueries
     .map((q, i): [SavedQueryV2, number] => [q, i])
-    .sort((a, b) => (queryMembershipFavorite(state.dashboard, b[0]) ? 1 : 0)
-      - (queryMembershipFavorite(state.dashboard, a[0]) ? 1 : 0) || a[1] - b[1])
+    .sort((a, b) => (queryFavorite(b[0]) ? 1 : 0) - (queryFavorite(a[0]) ? 1 : 0) || a[1] - b[1])
     .map(([q]) => q);
 }
 
