@@ -10,6 +10,46 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Every Dashboard panel and curated filter now owns a dedicated saved-query
+  copy, and the lower-left pane is the Library** (#427). A workspace's queries
+  split into two kinds: a **Library** query, which no Dashboard member
+  references, and a Dashboard-**owned** copy, referenced by exactly one panel
+  tile or one curated filter. Ownership is derived from those references alone —
+  there is no flag on the query — and no query may be shared by two tiles, two
+  filters, a panel and a filter, or members of different Dashboards. Existing
+  workspaces migrate on open (`storageVersion: 4`): every original query stays
+  exactly where it was as the Library source, and each member gains its own copy
+  with the owner's role and no favourite. Dashboard, tile, filter and layout ids,
+  their order, and every Dashboard revision are preserved, so the #426 tree's
+  expansion and selection survive the migration untouched. The clone ids are
+  DERIVED from the member each copy belongs to rather than generated, so opening
+  the same record twice — or in two tabs — produces the same document instead of
+  two tabs fighting over ids. The stored query bound rose from 1000 to 5224
+  (1000 originals plus the 4224 members a valid workspace can hold), because at
+  the old bound migrating a large workspace produced a record that would fail
+  validation on every future open; portable bundles track the same bound, so an
+  older build will reject a very large new bundle.
+- **The lower pane is `Library | History`** and lists only standalone queries,
+  with a matching count, `Search library queries…`, and Library-worded empty
+  states; on phones the segment is relabelled the same way. A Dashboard-owned
+  copy stays stored and stays openable from the Dashboards tree — it simply is
+  not a Library entry. Markdown/SQL document exports and the workspace picker's
+  query count follow the same projection, so a migrated workspace no longer
+  exports every panel twice.
+- **The favourite star is a Library preference, with no Dashboard meaning
+  whatsoever** (#427, closes #434). It used to BE membership: starring a query
+  appended a tile — minting a whole Dashboard if the workspace had none — and
+  unstarring removed every tile referencing it, which is why #425 had to refuse
+  starring while a non-first Dashboard was selected. All of that is gone: a star
+  writes `spec.favorite` and nothing else, the refusal and its toast are
+  retired, taking a tile off a Dashboard no longer rewrites the query, and
+  importing a favourited query no longer creates Dashboard content (so a
+  queries-only bundle no longer arrives with a Dashboard attached). Starred
+  queries still sort first in the Library. An implicit filter's option source is
+  now matched by parameter NAME against Library filter-role queries, with the
+  favourite requirement dropped — so an unstarred query can supply options, and
+  a copy some Dashboard already owns can no longer be borrowed as another
+  Dashboard's source.
 - A workspace now stores an ordered **collection** of Dashboard documents
   (`StoredWorkspaceV3`, #424) instead of zero or one. Records written under the
   previous contract are read and migrated deterministically on open — Dashboard

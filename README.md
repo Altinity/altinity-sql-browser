@@ -125,7 +125,7 @@ SELECT CAST(
 Without the setting or cast, ClickHouse reports `Tuple(Float64, Float64)`,
 which is positional and intentionally ineligible for KPI value/delta roles.
 
-Panel controls and Queries-panel favorite/pencil edits merge their fields into valid
+Panel controls and Library-panel favorite/pencil edits merge their fields into valid
 open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
 schema/feature errors block the staged writer before any draft or saved-query entry
 is changed; invalid JSON focuses the affected Spec tab with a
@@ -164,7 +164,7 @@ The SQL editor provides:
   built-in keyword-doc set — so they never query on the keystroke path.
   (In-call signature help was dropped in the CM6 parity cut; the reference
   docs pane (#60) rebuilds it properly.)
-- **Drag to insert** — drag a schema table/column, or a **Queries/History** row,
+- **Drag to insert** — drag a schema table/column, or a **Library/History** row,
   onto the editor: a schema identifier drops as text at the drop point (the
   drop cursor tracks the pointer), and a saved/history query drops there as a
   `( … )` subquery (its trailing `FORMAT`/`;` stripped). Undoable;
@@ -433,9 +433,12 @@ read; DDL secrets remain masked unless the role separately holds
 
 ## Saved queries & workspaces
 
-Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Queries**
+Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**
 panel. Each carries a name, an optional **description**, and — when set — its
-remembered result view and chart config. Saving or editing a query opens a small
+remembered result view and chart config. The Library lists your **standalone**
+queries; a query a Dashboard panel or curated filter owns is reached through the
+**Dashboards** tree instead (#427), and the ★ star is purely a Library ordering
+preference — it never adds or removes a Dashboard panel. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the
 row and is included in Markdown/SQL exports.
 
@@ -677,7 +680,7 @@ panel-sizing spec.
 > The app targets **desktop** browsers, plus a **best-effort mobile mode**
 > (#126): below a 768px viewport the shell becomes a bottom-tab-nav workbench — a
 > bottom bar switches between three full-screen panels (**Tables / Editor /
-> Results**), with a Schema|Queries toggle in Tables and a row-count badge on
+> Results**), with a Schema|Library toggle in Tables and a row-count badge on
 > Results, and it auto-navigates (tap a column → Editor, Run → Results). The core
 > SQL loop (tap to browse the schema, write, run, read results, chart, and 4 of
 > the 5 EXPLAIN views) is fully usable on a phone. Pointer-only extras (resizing,
