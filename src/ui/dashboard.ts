@@ -2309,16 +2309,28 @@ export async function renderDashboard(
     // #437: the freshness control's icon-only refresh swaps in the spinner
     // while running, and its tooltip/aria-label carry the last-updated time
     // the visible `.dash-updated` span shows — `aria-busy` covers the running
-    // state for assistive tech. Only a COMPLETED run (never `running`, and
-    // `updatedAt` set) advances either label — a still-running or not-yet-run
-    // wave preserves whatever the previous completed run last showed.
+    // state for assistive tech. `sview.lastSuccessWallMs` (a real
+    // `deps.wallNow()` value, only ever advanced by `refresh()` itself — see
+    // the session) is stable across every OTHER publish (Search, layout
+    // switch, a document sync), so formatting it directly here — rather than
+    // reading `new Date()` at whatever moment this effect happens to run — is
+    // what keeps the label from silently advancing on an unrelated publish
+    // (#437 review). A wave that leaves a tile in `error` status never moves
+    // `lastSuccessWallMs` forward, so a failure shows the label the LAST good
+    // run left behind, not a fabricated new one.
     refreshBtn.disabled = sview.running;
     refreshBtn.setAttribute('aria-busy', sview.running ? 'true' : 'false');
     refreshBtn.replaceChildren(sview.running ? h('span', { class: 'spin' }, Icon.spinner()) : Icon.refresh());
-    if (!sview.running && sview.updatedAt != null) {
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      updated.textContent = time;
-      const label = `Refresh dashboard. Last updated at ${time}`;
+    if (!sview.running) {
+      const failed = sview.lastRefreshOutcome === 'failure';
+      freshness.classList.toggle('is-error', failed);
+      const time = sview.lastSuccessWallMs != null
+        ? new Date(sview.lastSuccessWallMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : null;
+      updated.textContent = failed ? 'Refresh failed' : (time ?? '');
+      const label = failed
+        ? (time != null ? `Refresh failed. Last successfully updated at ${time}` : 'Refresh dashboard. Refresh failed.')
+        : (time != null ? `Refresh dashboard. Last updated at ${time}` : 'Refresh dashboard');
       refreshBtn.title = label;
       refreshBtn.setAttribute('aria-label', label);
     }

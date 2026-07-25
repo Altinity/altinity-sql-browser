@@ -587,6 +587,76 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     expect(qs(app.root, '.dash-updated').textContent).not.toBe('');
   });
 
+  // #437 review, blocker 1: a publish unrelated to a completed refresh (tile
+  // Search, a layout-mode switch) must never re-stamp the freshness control —
+  // it reflects `session.state.lastSuccessWallMs`, which only a refresh that
+  // actually completes ever advances, not "now" at whatever moment a render
+  // happens to run.
+  it('keeps the "last updated" time and label stable across Search and layout publishes', async () => {
+    let wall = 1_000_000;
+    const { app } = dashApp({
+      workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    app.wallNow = () => wall;
+    await render(app);
+    const refreshBtn = qs<HTMLButtonElement>(app.root, '.dash-refresh');
+    const timeBefore = qs(app.root, '.dash-updated').textContent;
+    const labelBefore = refreshBtn.getAttribute('aria-label');
+    expect(timeBefore).not.toBe('');
+
+    wall += 3_600_000; // the wall clock keeps advancing in the background
+    const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+    search.value = 'nomatch';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(qs(app.root, '.dash-updated').textContent).toBe(timeBefore);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(labelBefore);
+
+    wall += 3_600_000;
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expect(qs(app.root, '.dash-updated').textContent).toBe(timeBefore);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(labelBefore);
+  });
+
+  // #437 review, blocker 2: a refresh that leaves a tile in `error` status
+  // must not silently advance the freshness control's timestamp — it shows
+  // an accessible failure state instead, and the LAST successful time
+  // survives underneath it for the next completed refresh to build on.
+  it('shows "Refresh failed" and keeps the prior successful time when a refresh leaves a tile in error', async () => {
+    let shouldFail = false;
+    let wall = 1_000_000;
+    const { app } = dashApp({
+      responder: () => (shouldFail ? { error: 'boom' } : { columns: [{ name: 'k', type: 'UInt64' }], rows: [[1]] }),
+      workspace: wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    });
+    app.wallNow = () => wall;
+    await render(app);
+    const refreshBtn = qs<HTMLButtonElement>(app.root, '.dash-refresh');
+    const goodTime = qs(app.root, '.dash-updated').textContent;
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh dashboard. Last updated at ${goodTime}`);
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(false);
+
+    shouldFail = true;
+    wall += 3_600_000;
+    await (runOnclick(refreshBtn) as Promise<void>);
+    expect(qs(app.root, '.dash-tile-error')).not.toBeNull();
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(true);
+    expect(qs(app.root, '.dash-updated').textContent).toBe('Refresh failed');
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh failed. Last successfully updated at ${goodTime}`);
+    expect(refreshBtn.title).toBe(refreshBtn.getAttribute('aria-label'));
+
+    // A later SUCCESSFUL refresh clears the failure state and advances past it.
+    shouldFail = false;
+    wall += 3_600_000;
+    await (runOnclick(refreshBtn) as Promise<void>);
+    expect(qs(app.root, '.dash-freshness').classList.contains('is-error')).toBe(false);
+    const newTime = qs(app.root, '.dash-updated').textContent;
+    expect(newTime).not.toBe(goodTime);
+    expect(refreshBtn.getAttribute('aria-label')).toBe(`Refresh dashboard. Last updated at ${newTime}`);
+  });
+
   it('shows a short "Search" placeholder but keeps the descriptive aria-label', async () => {
     const { app } = dashApp({ workspace: wsWith({ tiles: [] }) });
     await render(app);

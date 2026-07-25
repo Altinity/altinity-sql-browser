@@ -3095,6 +3095,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   width: 26px; min-width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
 }
 .dash-refresh .spin { color: var(--accent); }
+/* #437: a wave that leaves a tile in `error` status — the visible "Refresh
+   failed" text and the refresh icon both tint with the shared error color,
+   matching `.kpi-diagnostic.is-error` / `.filter-preview-message.is-error`. */
+.dash-freshness.is-error .dash-updated,
+.dash-freshness.is-error .dash-refresh { color: var(--error-fg); }
 .dash-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
   background: var(--bg-chip); color: var(--fg); border: 1px solid var(--border);

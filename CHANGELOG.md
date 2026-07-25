@@ -82,10 +82,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   combined freshness control. That control replaces the separate "Updated
   HH:MM" label and text "Refresh" button with the bare time plus an icon-only
   refresh action (a spinner while running, a tooltip/`aria-label` naming the
-  last-updated time once a run completes). The tile-search placeholder shortens
-  to "Search" (its accessible label is unchanged) and the field itself narrows
-  to a ~120–145px responsive range. The empty-Dashboard placeholder gets the
-  same one-row treatment.
+  last-updated time once a run completes). That time is a genuine wall clock
+  (`DashboardViewState.lastSuccessWallMs`, only ever advanced by a `refresh()`
+  wave that leaves every tile it ran out of `error` status) rather than "now"
+  at whatever moment a render happens to run, so it stays stable across an
+  unrelated publish (tile Search, a layout switch) and a refresh that leaves a
+  tile in error shows an accessible "Refresh failed" state instead of silently
+  claiming a fresh time — the last known-good time survives underneath it. The
+  tile-search placeholder shortens to "Search" (its accessible label is
+  unchanged) and the field itself narrows to a ~120–145px responsive range.
+  The empty-Dashboard placeholder gets the same one-row treatment.
 - Radii, elevation and the semantic/object-kind/syntax palettes are tokens too
   (`--r-*`, `--shadow-*`, `--ring-*`, `--kind-*`, `--role-*`, `--sql-*`). Fourteen
   radius values against a documented four-step scale became four plus `--r-pill`;
