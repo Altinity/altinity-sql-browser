@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- Inter and JetBrains Mono are now **shipped with the artifact** instead of only
+  being named in the font stacks. DESIGN.md has always specified both, but with
+  no `@font-face` and no CDN allowed, they rendered only for users who happened
+  to have them installed locally — everyone else silently got the platform UI
+  face and Menlo/Consolas. `build/fonts.mjs` inlines latin-subset, upright,
+  variable-weight woff2 as base64 `@font-face` sources: ~89 KB of woff2, +19%
+  gzip on `dist/sql.html`, still zero third-party requests. `unicode-range` is
+  preserved so codepoints outside the subset (Cyrillic, CJK, the ⌘/↵/→ glyphs)
+  keep falling through to the platform font rather than rendering tofu. The KPI
+  metric gains `tabular-nums` so a refreshing value no longer twitches.
+- A named type scale (`--text-*`, `--fw-*`, `--lh-*`) and
+  `tests/unit/typography-contract.test.js`, which gates it: every `font-size` in
+  `src/styles.css` must resolve to a token, no two steps within a ramp may sit
+  closer than 1px, the tokens must match the DESIGN.md frontmatter, no class the
+  UI renders may be left with no CSS rule, and token contrast must clear WCAG AA
+  in both themes. Nothing previously enforced any of this — behaviour coverage
+  cannot see a missing stylesheet.
 - Surface-aware keyboard shortcuts for SQL Browser and Dashboard (#417). The
   shared, platform-aware shortcut catalog now drives both help and dispatch;
   Dashboard gains refresh, View/Edit, and `G` navigation commands while stale
@@ -19,6 +36,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Style adds `G G`, `G F`, `G R`, `G 2`, and `G 3` for Grid Tiles, Full view,
   Report, and two/three columns; View mode previews every style without
   changing the shared dashboard.
+
+### Changed
+- The type ramp is collapsed from 22 ad-hoc values to six interface steps
+  (9 / 10.5 / 11.5 / 12.5 / 14 / 16px) plus a document ramp for Read surfaces
+  and two display sizes. 231 literal `font-size` declarations became tokens, nine
+  `font:` shorthands carrying hidden literal sizes were expanded, and five values
+  that sat below the documented 11px floor are gone. The half-pixel neighbours it
+  removed (9/9.5, 10/10.5, 13.5/14/14.5) could not carry hierarchy: at these
+  sizes a 0.5px step buys ~0.26px of x-height, below one device pixel at 1×.
+- `body` now sets an explicit base size and `h1`–`h6` reset to `font-size:
+  inherit`, so a heading or surface the stylesheet misses degrades to the
+  product's own body size instead of to user-agent typography.
+
+### Fixed
+- `--fg-faint` met no accessibility bar in either theme (2.55:1 light, 3.10:1
+  dark at worst) while carrying most of the smallest text in the product — row
+  counts, capped/cancelled badges, tile footers, the "Press ⌘↵ to run query"
+  hint. Now 4.61:1 light / 4.79:1 dark against their worst backgrounds
+  (WCAG 2.2 AA 1.4.3).
+- ClickHouse Blue as *text* failed AA too (4.10:1 on light chips, 3.83:1 on dark
+  surfaces). Text now uses `--accent-text` — the palette's existing Deep
+  ClickHouse Blue in light theme, a lifted `#2596CC` in dark. Fills, borders,
+  focus rings, carets and icons keep `--accent`, where the 3:1 non-text
+  threshold applies.
+- Six surfaces shipped with no CSS rule at all and therefore rendered in browser
+  chrome. The linked-tab conflict chooser (#343) — the dialog that decides
+  whether to overwrite work saved in another tab — had 13.333px Arial buttons
+  with `2px outset` borders and a title visually identical to its description.
+  The query-tab marker warning that a linked query changed or was deleted
+  rendered as an unstyled stray `!`/`⌫` character. `workspace-not-found` had a
+  32px `h1` and a raw `#0000EE` underlined link; `workspace-loading` and two
+  dashboard empty states had 19.5px user-agent headings. All are now typeset in
+  the product's own vocabulary, with the destructive Overwrite action carrying
+  error tokens and the safe Reload action as the accented default.
 
 ## [0.6.4] - 2026-07-24
 

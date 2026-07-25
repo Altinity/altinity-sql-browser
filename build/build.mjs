@@ -9,6 +9,7 @@
 
 import { build, transform } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { buildFontFaces } from './fonts.mjs';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -75,8 +76,16 @@ export async function buildArtifact({ metafile = false } = {}) {
   const script = result.outputFiles[0].text.replaceAll('__ASB_BUILD__', await buildStamp());
   // esbuild's CSS transform (same minifier as the JS path above) — src/styles.css
   // was previously inlined raw, shipping every source comment/indent to the browser.
+  // The `/*__FONTS__*/` token at the top of the stylesheet is replaced first with
+  // the base64 @font-face rules (see build/fonts.mjs): the artifact must carry the
+  // typefaces DESIGN.md specifies, and it may not fetch them. Splicing pre-minified
+  // rules in before the transform keeps the font bytes inside the same single pass.
   const stylesSrc = await readFile(resolve(root, 'src/styles.css'), 'utf8');
-  const styles = (await transform(stylesSrc, { loader: 'css', minify: true })).code;
+  const fonts = await buildFontFaces();
+  const styles = (await transform(
+    stylesSrc.replace('/*__FONTS__*/', () => fonts.css),
+    { loader: 'css', minify: true },
+  )).code;
   const template = await readFile(resolve(here, 'template.html'), 'utf8');
 
   // The runtime deps and generated Ajv/ajv-formats helpers are MIT and inlined into the bundle,
@@ -91,14 +100,15 @@ export async function buildArtifact({ metafile = false } = {}) {
     .replace('/*__STYLES__*/', () => styles)
     .replace('/*__SCRIPT__*/', () => script);
 
-  return { html, script, styles, thirdParty, metafile: result.metafile };
+  return { html, script, styles, thirdParty, fonts, metafile: result.metafile };
 }
 
 async function main() {
-  const { html } = await buildArtifact();
+  const { html, fonts } = await buildArtifact();
   await mkdir(resolve(root, 'dist'), { recursive: true });
   await writeFile(resolve(root, 'dist/sql.html'), html);
-  console.log('built dist/sql.html (' + html.length + ' bytes)');
+  console.log('built dist/sql.html (' + html.length + ' bytes, '
+    + 'incl. ' + fonts.rawBytes + ' bytes of inlined woff2)');
 }
 
 // Only run the release build when invoked as a script, not when imported for its

@@ -69,6 +69,21 @@ all bundled — see hard rule 4). Quality is held by tests.
    the canonical Library/saved-query/Spec schema graph to deterministic,
    self-contained generated ESM. The production
    artifact ships the generated validator, never the general Ajv engine.
+   `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono` are
+   **dev dependencies** on the same footing: no code from them ships, but
+   `build/fonts.mjs` reads their latin-subset woff2 files and inlines them as
+   base64 `@font-face` sources (~89 KB of woff2 for the pair, +19% gzip on the
+   artifact). DESIGN.md names both faces, and before this they were referenced
+   by name with no `@font-face` anywhere — so they rendered only for users who
+   already had them installed. Font weight is a deliberate cost like any other:
+   `FONT_BYTE_BUDGET` in `build/fonts.mjs` is asserted by
+   `tests/unit/typography-contract.test.js`, so adding latin-ext or an italic cut
+   has to be a reviewed edit rather than silent growth. That same test is the
+   gate on the whole type system — every `font-size` in `src/styles.css` must
+   resolve to a `--text-*` token, no two steps in a ramp may sit closer than 1px,
+   token contrast must clear WCAG AA in both themes, and no class the UI renders
+   may be left with no CSS rule at all (which is how a browser-default Arial
+   confirmation dialog once shipped).
 5. **No UI framework; signals for state, imperative adapters for islands.** State
    reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),
    migrated slice-by-slice (ADR-0001). **No React/Preact/Solid** — a Preact spike

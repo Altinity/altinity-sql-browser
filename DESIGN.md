@@ -4,13 +4,15 @@ description: A precise, calm, ClickHouse-native workspace for querying, investig
 colors:
   clickhouse-blue: "#0079AD"
   clickhouse-blue-deep: "#005F8A"
+  accent-text-light: "#005F8A"
+  accent-text-dark: "#2596CC"
   light-canvas: "#FAFAFA"
   light-surface: "#FFFFFF"
   light-subtle: "#F5F5F4"
   light-chip: "#EEECE8"
   light-ink: "#1A1A1F"
   light-muted: "#57575E"
-  light-faint: "#94949C"
+  light-faint: "#696971"
   light-border: "#E5E3DE"
   dark-canvas: "#0E0E10"
   dark-surface: "#131316"
@@ -18,7 +20,7 @@ colors:
   dark-chip: "#1F1F26"
   dark-ink: "#E6E6E8"
   dark-muted: "#A0A0A8"
-  dark-faint: "#6B6B74"
+  dark-faint: "#8A8A93"
   dark-border: "#1F1F26"
   numeric-light: "#0F766E"
   numeric-dark: "#92E1D8"
@@ -35,7 +37,7 @@ typography:
     letterSpacing: "-0.01em"
   body:
     fontFamily: "Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
-    fontSize: "13px"
+    fontSize: "12.5px"
     fontWeight: 400
     lineHeight: 1.5
     letterSpacing: "normal"
@@ -120,14 +122,15 @@ The palette pairs ClickHouse Blue with Porcelain light surfaces and Graphite dar
 
 ### Primary
 - **ClickHouse Blue** (`#0079AD`): primary actions, current selections, focus, sort state, and purposeful links.
-- **Deep ClickHouse Blue** (`#005F8A`): pressed or strengthened accent treatment; never a second competing accent.
+- **Deep ClickHouse Blue** (`#005F8A`): pressed or strengthened accent treatment; never a second competing accent. It is also `--accent-text` in light theme — text-grade accent *is* a strengthened accent treatment, so this needs no new hue.
+- **Lifted ClickHouse Blue** (`#2596CC`): `--accent-text` in dark theme only. The one genuinely new value, because accent-coloured text on a dark surface has to get *lighter* and the palette had nothing above `#0079AD`.
 
 ### Neutral
 - **Porcelain Canvas** (`#FAFAFA`) and **Porcelain Surface** (`#FFFFFF`): light-mode workspace and foreground planes.
 - **Warm-Gray Subtle** (`#F5F5F4`) and **Stone Chip** (`#EEECE8`): toolbars, table headers, inactive controls, and grouping surfaces.
-- **Light Ink** (`#1A1A1F`), **Light Muted** (`#57575E`), and **Light Faint** (`#94949C`): primary, supporting, and tertiary light-mode text.
+- **Light Ink** (`#1A1A1F`), **Light Muted** (`#57575E`), and **Light Faint** (`#696971`): primary, supporting, and tertiary light-mode text.
 - **Graphite Canvas** (`#0E0E10`), **Graphite Surface** (`#131316`), and **Graphite Raised** (`#1A1A20`): dark-mode workspace, chrome, inputs, and overlays.
-- **Dark Ink** (`#E6E6E8`), **Dark Muted** (`#A0A0A8`), and **Dark Faint** (`#6B6B74`): primary, supporting, and tertiary dark-mode text.
+- **Dark Ink** (`#E6E6E8`), **Dark Muted** (`#A0A0A8`), and **Dark Faint** (`#8A8A93`): primary, supporting, and tertiary dark-mode text.
 - **Light Border** (`#E5E3DE`) and **Dark Border** (`#1F1F26`): structural separation without card-like decoration.
 
 ### Tertiary
@@ -141,26 +144,102 @@ The palette pairs ClickHouse Blue with Porcelain light surfaces and Graphite dar
 
 **The Evidence Rule.** Error, warning, log-level, and numeric colors encode meaning. Never use them as decoration, and never rely on color alone.
 
+**The Measured Contrast Rule.** Every foreground token must reach 4.5:1 against every
+background token it can land on, in both themes — asserted by
+`tests/unit/typography-contract.test.js`, not by eye. The tertiary tier is the one that
+gets this wrong by default: `--fg-faint` shipped for a long time at 2.55–3.66:1 while
+carrying most of the smallest text in the product (row counts, capped/cancelled badges,
+tile footers). It now clears AA on its worst background in both themes, at the cost of a
+smaller tonal step below `--fg-mute` — separation in that tier comes from size and
+placement as much as tone.
+
 ## 3. Typography
 
-**Display Font:** Inter with the system sans-serif fallback stack  
-**Body Font:** Inter with the system sans-serif fallback stack  
-**Label/Mono Font:** JetBrains Mono with SF Mono and system monospace fallbacks
+**Display Font:** Inter, self-hosted and inlined into the artifact  
+**Body Font:** Inter, self-hosted and inlined into the artifact  
+**Label/Mono Font:** JetBrains Mono, self-hosted and inlined into the artifact
 
-**Character:** One restrained sans-serif family keeps the product familiar and calm. Monospace marks SQL, values, shortcuts, identifiers, timings, and technical metadata as evidence rather than interface prose.
+**Delivery.** Both faces are **bundled into `dist/sql.html`** as `@font-face` rules with
+base64 `data:` sources (`build/fonts.mjs`), latin subset, upright only, variable weight
+axis — about 89 KB of woff2 for the pair. Before this they were named in the stacks but
+never delivered: with no `@font-face` and no CDN (hard rule 4 forbids third-party
+requests), they rendered only for users who happened to have them installed locally, and
+everyone else silently got the platform UI face and Menlo/Consolas. The design system
+described type most users never saw.
+
+The fallback stacks stay in `--ui` / `--mono` and still matter: the subsets carry latin
+only, and `unicode-range` deliberately lets any codepoint outside it — Cyrillic or CJK
+result cells, and the ⌘/↵/→ glyphs — fall through to the platform font rather than
+render tofu. Italics are not shipped; the browser synthesizes an oblique for the eight
+secondary uses (schema comments, stale-value hints, Markdown `<em>`), which is the right
+trade against doubling the font payload.
+
+**Character:** One restrained sans-serif family keeps the product familiar and calm.
+Monospace marks SQL, values, shortcuts, identifiers, timings, and technical metadata as
+evidence rather than interface prose.
 
 ### Hierarchy
-- **Title** (700, `16px`, 1.25): dashboard/library titles and the strongest persistent workspace headings.
-- **Headline** (600, `14–19px`, 1.25): dialogs, login headings, drawer titles, and local section identity.
-- **Body** (400, `12.5–13px`, 1.5): descriptions, Markdown panels, messages, and explanatory content; prose should stay within 65–75 characters when layout permits.
-- **Label** (500, `11–12px`, 1.3): buttons, tabs, field names, table headers, and compact navigation.
-- **Data** (400, `11.5–12.5px`, 1.45): SQL, result cells, schema types, timings, counts, parameters, and diagnostics.
+
+Sizes are **tokens, not literals** — `--text-*` in `src/styles.css`, enforced by
+`tests/unit/typography-contract.test.js`. Weight and line height are tokenized the same
+way (`--fw-*`, `--lh-*`). Nothing in the stylesheet may set a literal size.
+
+**Interface ramp** — six steps, used for everything the user operates:
+
+| Token | Size | Weight | Role |
+|---|---|---|---|
+| `--text-nano` | `9px` | — | SVG graph labels only (see the exception below) |
+| `--text-micro` | `10.5px` | 500–600 | micro-metadata, eyebrow labels, key caps, state badges |
+| `--text-label` | `11.5px` | 400–500, 1.3 | compact controls, tabs, table headers, **and** mono data — SQL, cell values, identifiers, timings, counts |
+| `--text-body` | `12.5px` | 400–500, 1.5 | primary labels, tree rows, button text, descriptions, Markdown body, messages; prose stays within 65–75 characters where layout permits |
+| `--text-headline` | `14px` | 600, 1.25 | dialog, drawer and tile titles |
+| `--text-title` | `16px` | 700, 1.25 | dashboard/library titles, the strongest persistent workspace headings, and every "this does not exist" state |
+
+**Document ramp** — `--text-doc-h3` `15px`, `--text-doc-h2` `17px`, `--text-doc-h1` `20px`.
+Read surfaces only (reference docs, Markdown panels, the login heading), where the content
+is prose the user reads rather than chrome they operate. Its adjacency to the interface
+ramp is not a hierarchy: the two never appear in the same block.
+
+**Display** — `--text-mark` `22px` (the login lockup glyph) and `--text-metric`
+`clamp(24px, 4vw, 38px)` / `--text-metric-tile` `clamp(16px, 14cqi, 38px)` (the KPI value,
+which also takes `tabular-nums` so a refreshing metric does not twitch).
 
 ### Named Rules
 
-**The Evidence Typeface Rule.** Use monospace only for content the user reads as code, data, identity, or measurement. Interface actions remain sans-serif.
+**The Evidence Typeface Rule.** Use monospace only for content the user reads as code,
+data, identity, or measurement. Interface actions remain sans-serif. Note that label and
+data share one step (`--text-label`): the difference between them is `--ui` versus
+`--mono`, never size.
 
-**The Compact Scale Rule.** Product hierarchy comes from weight, placement, and surface structure. Never introduce oversized display typography into the application shell.
+**The Compact Scale Rule.** Product hierarchy comes from weight, placement, and surface
+structure. Never introduce oversized display typography into the application shell —
+nothing outside the document and display sets may exceed `--text-title`.
+
+**The Zoomable-Surface Exception.** `--text-nano` (`9px`) is admissible only as SVG text
+inside the EXPLAIN pipeline graph and schema graph. Those surfaces pan and zoom, so their
+labels are not read at a fixed size the way DOM chrome is, and the layout that positions
+them (`core/dot-layout.js`) is measured against this size. It must never be used for DOM
+text; the floor for anything the user reads without zooming is `--text-micro`.
+
+**The One-Pixel Floor.** No two steps within a ramp may sit closer than 1px. At this
+product's sizes a 0.5px step buys about 0.26px of x-height — below one device pixel at 1×,
+and smaller than the variation between platform fallback faces. It cannot carry hierarchy;
+it only records that nobody decided. The ramp these tokens replaced had grown to 22 values
+with 9/9.5, 10/10.5 and 13.5/14/14.5 all coexisting, five of them under the documented
+floor, because there was no token to drift *from*.
+
+**The Authored-Surface Rule.** Every text-bearing element must be sized by this
+stylesheet. The user-agent sheet sizes `h1`–`h6` as `em` multiples of the inherited size
+and gives bare `<button>`s their own family, so a surface with no CSS does not fall back
+to something plain — it falls back to *browser chrome*. That is how a 32px `h1`, a 19.5px
+`h2`, and a 13.333px Arial confirmation dialog reached production. `body` therefore
+carries an explicit base size, `h1`–`h6` reset to `inherit`, and the contract test fails
+on any class group the stylesheet does not match.
+
+**The Text-Grade Accent Rule.** ClickHouse Blue as *text* is `--accent-text`, not
+`--accent`: `#0079AD` measures 4.10:1 on light chips and 3.83:1 on dark surfaces, both
+below AA. Fills, borders, focus rings, carets and icons keep `--accent`, where 1.4.11's
+3:1 applies and it passes.
 
 ## 4. Elevation
 
@@ -199,7 +278,7 @@ The system is flat and structurally layered. Background shifts and one-pixel bor
 - **Internal Padding:** compact and purpose-specific (`8–20px`); data regions usually extend to edges under a distinct header.
 
 ### Inputs / Fields
-- **Style:** surface background, one-pixel border, `5–8px` radius, `11–13px` text, and compact vertical sizing.
+- **Style:** surface background, one-pixel border, `5–8px` radius, `--text-label`/`--text-body` text, and compact vertical sizing.
 - **Focus:** ClickHouse Blue border plus a `3px` translucent focus ring on form fields; editor focus remains integrated with the workspace.
 - **Error / Disabled:** semantic text/background/border tokens for errors; opacity and cursor changes for disabled controls.
 
@@ -208,7 +287,7 @@ The system is flat and structurally layered. Background shifts and one-pixel bor
 
 ### Data Table
 - Sticky headers and row numbers preserve context during two-axis scrolling.
-- JetBrains Mono at `11.5px` makes values align and scan reliably.
+- JetBrains Mono at `--text-label` (`11.5px`) makes values align and scan reliably.
 - Rows are separated by faint borders; hover uses a neutral tint, not a card treatment.
 - Numeric values use Numeric Teal and right alignment. Long text truncates and opens in the detail drawer.
 - Column resizing and sorting expose direct manipulation without permanent configuration UI.
@@ -226,7 +305,7 @@ The system is flat and structurally layered. Background shifts and one-pixel bor
 ## 6. Do's and Don'ts
 
 ### Do:
-- **Do** keep ClickHouse Blue (`#0079AD`) scarce and meaningful: action, selection, focus, and links.
+- **Do** keep ClickHouse Blue scarce and meaningful: action, selection, focus, and links — `--accent` for fills, borders, rings and icons, `--accent-text` wherever it colors text.
 - **Do** use `1px` borders and tonal surface changes to organize persistent workspace regions.
 - **Do** keep controls compact, consistent, and close to the content they affect.
 - **Do** use progressive disclosure for configuration and advanced ClickHouse features.
