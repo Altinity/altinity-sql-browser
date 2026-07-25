@@ -126,6 +126,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   product's own body size instead of to user-agent typography.
 
 ### Fixed
+- The shared anchored-dialog focus trap (`openAnchoredDialog`, #439) now owns
+  **every** Tab/Shift+Tab transition instead of only wrapping at the first and
+  last declared focusable element. Native sequential-focus policy is not
+  portable: WebKit/Safari's default "Tab highlights every item on a webpage"
+  preference is off, so browser-delegated middle-of-list traversal could skip
+  checkboxes and buttons entirely — in the multi-select and time-range
+  popovers this meant keyboard focus could never reach Clear/Cancel/Apply, or
+  escape the modal trap altogether. The eligible set is still recomputed on
+  every press (disabled/hidden/removed controls drop out immediately, restored
+  ones rejoin without reopening the dialog), and a focused element no longer in
+  that set is treated as unfocused (Tab goes to the first eligible element,
+  Shift+Tab to the last). Verified in Chromium, Firefox, and WebKit.
 - The Dashboard surface (#425) is brought onto the token system it was written
   before. Its **title** was `13px/600` — half a pixel above `--text-body`, a step
   the One-Pixel Floor forbids because nobody can see it — and now steps up by

@@ -102,18 +102,25 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
     return [...dialog.querySelectorAll<HTMLElement>('input, button')]
       .filter((el) => !el.closest('[hidden]') && !(el as HTMLInputElement | HTMLButtonElement).disabled);
   }
+  // #439: the primitive owns EVERY Tab/Shift+Tab transition, not just
+  // boundary wrapping — native sequential-focus policy is not portable
+  // (WebKit/Safari's default "Tab highlights every item" preference is OFF,
+  // so browser-delegated middle-of-list traversal can skip buttons and
+  // checkboxes entirely, stranding keyboard users before Apply). Current
+  // index in the freshly-recomputed set decides the next stop; an
+  // out-of-set active element (focus outside the dialog, or on a node the
+  // last recompute dropped via disable/hide/removal) is treated as if
+  // nothing were focused, per the issue's boundary rule.
   const onTabTrap = (e: KeyboardEvent): void => {
     if (e.key !== 'Tab') return;
     const items = focusableEls();
     if (items.length === 0) return; // nothing to trap — let the browser handle it
-    const first = items[0];
-    const last = items[items.length - 1];
-    const activeEl = d.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (!activeEl || activeEl === first || !dialog.contains(activeEl)) { e.preventDefault(); last.focus(); }
-    } else if (!activeEl || activeEl === last || !dialog.contains(activeEl)) {
-      e.preventDefault(); first.focus();
-    }
+    const active = d.activeElement as HTMLElement | null;
+    const current = active ? items.indexOf(active) : -1;
+    const delta = e.shiftKey ? -1 : 1;
+    const next = current < 0 ? (e.shiftKey ? items.length - 1 : 0) : (current + delta + items.length) % items.length;
+    e.preventDefault();
+    items[next].focus();
   };
 
   // The single teardown funnel. Idempotent: the `open` guard means teardown +

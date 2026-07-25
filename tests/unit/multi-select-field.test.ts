@@ -616,15 +616,22 @@ describe('buildMultiSelectField — Tab focus trap inside the dialog (#189 F3)',
     expect(document.activeElement).toBe(applyBtn());
   });
 
-  it('Tab/Shift-Tab from an element in the middle of the dialog does not trap (default behavior)', () => {
+  it('Tab/Shift-Tab from an element in the middle of the dialog moves deterministically (#439)', () => {
+    // The primitive owns every transition now, not just the boundary wrap —
+    // native browser traversal is not portable (WebKit/Safari can skip
+    // buttons/checkboxes with the default "Tab highlights every item"
+    // preference off). Declared order: search, select-visible, option
+    // checkboxes (a/b/c), Clear, Cancel, Apply.
     const handle = buildMultiSelectField(baseOpts());
     document.body.appendChild(handle.el);
     click(triggerEl(handle.el));
     selectAllCb().focus();
     const forward = tab(popover()!);
+    expect(forward).toBe(false); // preventDefault-ed
+    expect(document.activeElement).toBe(optionCbs()[0]); // next: first option row
     const backward = tab(popover()!, true);
-    expect(forward).toBe(true); // not preventDefault-ed — the browser's own Tab order applies
-    expect(backward).toBe(true);
+    expect(backward).toBe(false); // preventDefault-ed
+    expect(document.activeElement).toBe(selectAllCb()); // back to select-visible
   });
 });
 
