@@ -3,7 +3,7 @@ import {
   assignDedicatedOwnership, deriveOwnedQueryId, migrateStoredWorkspaceV3ToV4,
   OWNED_QUERY_ID_PREFIX,
 } from '../../src/workspace/stored-workspace-ownership.js';
-import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
+import { buildQueryOwnershipIndex, ownersAreValid } from '../../src/dashboard/model/query-ownership.js';
 import { queryContentKey } from '../../src/core/saved-query.js';
 import type {
   DashboardDocumentV1, QuerySpecV1, SavedQueryV2, StoredWorkspaceV3,
@@ -135,6 +135,81 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     expect(panelCopy.spec.dashboard).toEqual({ role: 'panel' });
     expect(filterCopy.spec.dashboard).toEqual({ role: 'filter' });
     expect(panelCopy.id).not.toBe(filterCopy.id);
+  });
+
+  // The shape that broke `examples/clickhouse-operations.json`: ONE filter-role
+  // query whose row supplies six option columns, referenced by six curated
+  // filters. One copy per FILTER would re-create the #359 bug — six identical
+  // sources executed six times, every helper column then rejected as a duplicate
+  // provider, so every filter on the Dashboard errors — and would force the option
+  // list to be edited six times.
+  it('gives a Dashboard ONE copy of a filter source its filters share', () => {
+    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+      [query('gco', { dashboard: { role: 'filter' } })],
+      [dash('ops', {
+        filters: [
+          { id: 'f-user', parameter: 'user', sourceQueryId: 'gco' },
+          { id: 'f-kind', parameter: 'query_kind', sourceQueryId: 'gco' },
+          { id: 'f-code', parameter: 'exception_code', sourceQueryId: 'gco' },
+        ],
+      })],
+    ));
+    // One clone, not three — and every filter points at it.
+    expect(migrated.queries).toHaveLength(2);
+    const copyId = migrated.queries[1].id;
+    expect(migrated.dashboards[0].filters.map((f) => f.sourceQueryId))
+      .toEqual([copyId, copyId, copyId]);
+    // The original stays a Library query; the copy has three filter owners, which
+    // `ownersAreValid` accepts precisely because they are all in one Dashboard.
+    const index = buildQueryOwnershipIndex(migrated);
+    expect([...index.libraryQueryIds]).toEqual(['gco']);
+    expect(index.ownersByQueryId.get(copyId)).toHaveLength(3);
+    expect(ownersAreValid(index.ownersByQueryId.get(copyId)!)).toBe(true);
+  });
+
+  it('gives each Dashboard its OWN copy of a shared filter source', () => {
+    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+      [query('gco', { dashboard: { role: 'filter' } })],
+      [
+        dash('ops', { filters: [{ id: 'f1', parameter: 'user', sourceQueryId: 'gco' }] }),
+        dash('sales', { filters: [{ id: 'f2', parameter: 'user', sourceQueryId: 'gco' }] }),
+      ],
+    ));
+    expect(migrated.queries).toHaveLength(3);
+    const [ops, sales] = migrated.dashboards;
+    expect(ops.filters[0].sourceQueryId).not.toBe(sales.filters[0].sourceQueryId);
+    // Editing one Dashboard's option list cannot reach the other's.
+    expect(ownersAreValid(
+      buildQueryOwnershipIndex(migrated).ownersByQueryId.get(ops.filters[0].sourceQueryId!)!,
+    )).toBe(true);
+  });
+
+  it('a panel and a filter sharing one query still get SEPARATE copies', () => {
+    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+      [query('both')],
+      [dash('d1', {
+        tiles: [{ id: 't1', queryId: 'both' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'both' }],
+      })],
+    ));
+    expect(migrated.queries).toHaveLength(3);
+    const [d1] = migrated.dashboards;
+    expect(d1.tiles[0].queryId).not.toBe(d1.filters[0].sourceQueryId);
+  });
+
+  it('re-running the transform reuses the Dashboard copy rather than minting another', () => {
+    const once = migrateStoredWorkspaceV3ToV4(v3(
+      [query('gco', { dashboard: { role: 'filter' } })],
+      [dash('ops', {
+        filters: [
+          { id: 'f-user', parameter: 'user', sourceQueryId: 'gco' },
+          { id: 'f-kind', parameter: 'query_kind', sourceQueryId: 'gco' },
+        ],
+      })],
+    ));
+    const again = assignDedicatedOwnership({ queries: once.queries, dashboards: once.dashboards });
+    expect(again.clonedCount).toBe(0);
+    expect(again.dashboards).toEqual(once.dashboards);
   });
 
   it('preserves SQL, spec version, presentation, variants and unknown fields on the copy', () => {
@@ -300,52 +375,68 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     ))).toEqual(migrated);
   });
 
-  it('recognizes content-identical dedicated copies without cloning again', () => {
-    // A hand-authored V3 document that already follows the dedicated pattern: a
-    // Library source plus one copy per member, content-identical modulo id.
+  it('recognizes a copy IT minted, by id marker, without cloning again', () => {
+    // The marker (not content) is what makes recognition local and idempotent.
     const source = query('lib');
+    const ownedId = deriveOwnedQueryId(
+      { sourceQueryId: 'lib', dashboardId: 'd1', role: 'panel', memberId: 't1' }, new Set(),
+    );
     const existingCopy = {
-      ...source, id: 'already-owned', spec: { ...source.spec, dashboard: { role: 'panel' } },
+      ...source, id: ownedId, spec: { ...source.spec, dashboard: { role: 'panel' } },
     } as SavedQueryV2;
-    expect(queryContentKey(existingCopy)).not.toBe(queryContentKey(source));
     const migrated = migrateStoredWorkspaceV3ToV4(v3(
       [source, existingCopy],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'already-owned' }] })],
+      [dash('d1', { tiles: [{ id: 't1', queryId: ownedId }] })],
     ));
     expect(migrated.queries).toHaveLength(2);
-    expect(migrated.dashboards[0].tiles[0].queryId).toBe('already-owned');
+    expect(migrated.dashboards[0].tiles[0].queryId).toBe(ownedId);
+  });
+
+  it('does NOT adopt an unmarked duplicate of a Library query', () => {
+    // A user who saved the same query twice and tiled one copy must keep BOTH in
+    // the Library: content identity is not evidence that a query is a copy.
+    const source = query('dup-a');
+    const twin = { ...source, id: 'dup-b' } as SavedQueryV2;
+    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+      [source, twin], [dash('d1', { tiles: [{ id: 't1', queryId: 'dup-b' }] })],
+    ));
+    expect(migrated.queries).toHaveLength(3);
+    expect([...buildQueryOwnershipIndex(migrated).libraryQueryIds]).toEqual(['dup-a', 'dup-b']);
+    expect(migrated.dashboards[0].tiles[0].queryId).not.toBe('dup-b');
   });
 
   it('does NOT treat a copy as dedicated when it belongs to a different member', () => {
     const source = query('lib');
     const copy = {
-      ...source, id: 'copy', spec: { ...source.spec, dashboard: { role: 'panel' } },
+      ...source, id: `${OWNED_QUERY_ID_PREFIX}cafebabe`, spec: { ...source.spec, dashboard: { role: 'panel' } },
     } as SavedQueryV2;
-    // `copy` is referenced by TWO tiles, so it has two owners — not a dedicated
-    // copy of anything, and both references must be re-homed.
+    // Marked, but referenced by TWO tiles — two panel owners is never a dedicated
+    // copy, so both references must be re-homed.
     const migrated = migrateStoredWorkspaceV3ToV4(v3(
       [source, copy],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'copy' }, { id: 't2', queryId: 'copy' }] })],
+      [dash('d1', { tiles: [{ id: 't1', queryId: copy.id }, { id: 't2', queryId: copy.id }] })],
     ));
     expect(migrated.queries).toHaveLength(4);
     const [t1, t2] = migrated.dashboards[0].tiles;
     expect(t1.queryId).not.toBe(t2.queryId);
-    expect(t1.queryId).not.toBe('copy');
+    expect(t1.queryId).not.toBe(copy.id);
   });
 
-  it('does not treat a copy as dedicated when the member role differs', () => {
-    // The copy carries role `panel`, but the member referencing it is a FILTER,
-    // so it is not what a dedicated copy for that member would look like.
+  it('does not treat a marked copy as dedicated when the member role differs', () => {
+    // The copy carries role `panel`, but the member referencing it is a FILTER, so
+    // it is not what a dedicated copy for that member looks like — leaving it would
+    // strand a role-mismatched reference the workspace cannot open.
     const source = query('lib', { dashboard: { role: 'filter' } });
+    const marked = `${OWNED_QUERY_ID_PREFIX}deadbeef`;
     const copy = {
-      ...source, id: 'copy', spec: { ...source.spec, dashboard: { role: 'panel' } },
+      ...source, id: marked, spec: { ...source.spec, dashboard: { role: 'panel' } },
     } as SavedQueryV2;
     const migrated = migrateStoredWorkspaceV3ToV4(v3(
       [source, copy],
-      [dash('d1', { filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'copy' }] })],
+      [dash('d1', { filters: [{ id: 'f1', parameter: 'p', sourceQueryId: marked }] })],
     ));
     expect(migrated.queries).toHaveLength(3);
-    expect(migrated.dashboards[0].filters[0].sourceQueryId).not.toBe('copy');
+    expect(migrated.dashboards[0].filters[0].sourceQueryId).not.toBe(marked);
   });
 
   it('migrates an empty workspace to an empty V4 workspace', () => {

@@ -1092,7 +1092,11 @@ export async function renderDashboard(
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
-    'No tiles yet — star a query in the Queries panel to add it to the dashboard.');
+    // #427: the star no longer adds a panel, so this must not tell the user to
+    // use it. Nor may it point at the Library: dragging a query onto a Dashboard
+    // is #428 and does not exist yet. The only route that works TODAY is the
+    // Spec editor, so that is what it says.
+    'No panels yet — add one by editing this dashboard\u2019s Spec.');
   const searchEmpty = h('div', { class: 'dash-empty dash-search-empty', style: { display: 'none' } },
     h('h2', null, 'No tiles match'),
     h('p', null, 'Try a different title or description.'),

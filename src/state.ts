@@ -32,9 +32,6 @@ import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV4 
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
 import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
-import {
-  resolveCompatibilityDashboard, withCompatibilityDashboard,
-} from './workspace/workspace-dashboards.js';
 import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
 import { materializeQueryTimeRange } from './core/query-time-range.js';

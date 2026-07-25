@@ -27,17 +27,61 @@ describe('Dashboard Filter helper merge', () => {
     expect(out.fields.unused).toBeUndefined();
     expect(out.diagnostics.map((d) => d.code)).toEqual(['filter-helper-unused']);
   });
-  it('rejects duplicate providers per helper without affecting other names', () => {
+  it('rejects providers that DISAGREE on one helper, without affecting other names', () => {
     const out = mergeDashboardFilterHelpers({
       providers: [
-        provider('a', 'A', [helper('x', []), helper('aOnly', [])]),
-        provider('b', 'B', [helper('x', []), helper('bOnly', [])]),
+        provider('a', 'A', [helper('x', [{ value: '1', label: 'one' }]), helper('aOnly', [])]),
+        provider('b', 'B', [helper('x', [{ value: '2', label: 'two' }]), helper('bOnly', [])]),
       ],
       controls: ['x', 'aOnly', 'bOnly'].map((name) => ({ name, type: 'String', optional: false })),
     });
     expect(Object.keys(out.fields)).toEqual(['aOnly', 'bOnly']);
     expect(out.diagnostics[0]).toMatchObject({ code: 'filter-duplicate-provider', helperName: 'x' });
     expect(out.diagnostics[0].message).toContain('A, B');
+  });
+
+  // #427: one option source is COPIED per Dashboard, and a workspace can hold
+  // several copies of one authoring source, so identical providers must not take
+  // down every filter on the Dashboard. They are interchangeable — whichever won
+  // would produce the same options — so the first in document order is taken.
+  it('collapses content-identical providers instead of calling them a conflict', () => {
+    const options = [{ value: 'ATL', label: 'Atlanta' }, { value: 'JFK', label: 'New York' }];
+    const out = mergeDashboardFilterHelpers({
+      providers: [
+        provider('copy-1', 'Grafana port filters', [helper('origin', options)]),
+        provider('copy-2', 'Grafana port filters', [helper('origin', options)]),
+        provider('copy-3', 'Grafana port filters', [helper('origin', options)]),
+      ],
+      controls: [{ name: 'origin', type: 'String', optional: false }],
+    });
+    expect(out.diagnostics).toEqual([]);
+    expect(out.fields.origin).toMatchObject({ sourceId: 'copy-1', declaredType: 'String' });
+    expect(out.fields.origin.options).toEqual(options);
+  });
+
+  it('treats a differing OPTION ORDER as a real disagreement', () => {
+    // Option order is user-visible and comes from the source's own SQL, so two
+    // sources ordering the same values differently are not interchangeable.
+    const out = mergeDashboardFilterHelpers({
+      providers: [
+        provider('a', 'A', [helper('origin', [{ value: '1', label: 'one' }, { value: '2', label: 'two' }])]),
+        provider('b', 'B', [helper('origin', [{ value: '2', label: 'two' }, { value: '1', label: 'one' }])]),
+      ],
+      controls: [{ name: 'origin', type: 'String', optional: false }],
+    });
+    expect(out.diagnostics[0]).toMatchObject({ code: 'filter-duplicate-provider' });
+  });
+
+  it('treats a differing helper SHAPE as a real disagreement', () => {
+    const options = [{ value: '1', label: 'one' }];
+    const out = mergeDashboardFilterHelpers({
+      providers: [
+        provider('a', 'A', [{ ...helper('origin', options), shape: 'array' }]),
+        provider('b', 'B', [{ ...helper('origin', options), shape: 'map' }]),
+      ],
+      controls: [{ name: 'origin', type: 'String', optional: false }],
+    });
+    expect(out.diagnostics[0]).toMatchObject({ code: 'filter-duplicate-provider' });
   });
   it('falls back on consumer conflicts or invalid options', () => {
     const out = mergeDashboardFilterHelpers({

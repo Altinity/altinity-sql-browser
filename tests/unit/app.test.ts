@@ -17,6 +17,7 @@ import {
 } from '../../src/core/dashboard-tree-ui-state.js';
 import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
+import { libraryQueries } from '../../src/dashboard/model/query-ownership.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
@@ -5674,6 +5675,29 @@ describe('unified /sql routing', () => {
       expect(app.state.tabs.value.some((tab) => tab.savedId === 'q1')).toBe(true);
     });
 
+    // #427: an owned copy is hidden from the LIBRARY, so the #426 tree is the only
+    // route to it — and that route must not go through the projection.
+    it('opens a Dashboard-OWNED query that the Library projection hides', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      const owned = savedQuery({ id: 'owned', name: 'Panel query', sql: 'SELECT 1' });
+      app.state.savedQueries = [savedQuery({ id: 'lib', name: 'Standalone', sql: 'SELECT 2' }), owned];
+      app.currentWorkspace = {
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops',
+        queries: app.state.savedQueries,
+        dashboards: [{
+          documentVersion: 1, id: 'a', title: 'A', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+          filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+        }],
+      };
+      // It is genuinely not a Library query…
+      expect(libraryQueries(app.currentWorkspace).map((q) => q.id)).toEqual(['lib']);
+      // …and it still opens by id.
+      app.openSavedQuery('owned');
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.state.tabs.value.some((tab) => tab.savedId === 'owned')).toBe(true);
+    });
+
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
@@ -6388,6 +6412,39 @@ describe('unified /sql routing', () => {
 
     expect(app.state.savedQueries).toEqual([imported]);
     expect(qs(app.root, '.saved-row .name').textContent).toBe('Imported favorite');
+  });
+
+  // #427: Library membership is a function of `dashboards[]`, so a committed
+  // Dashboard change can move a query in or out of the list without
+  // `savedQueries` changing at all. The saved pane therefore subscribes to the
+  // same projection revision the #426 tree uses — without that, removing a panel
+  // leaves its query invisible in a stale Library until something else repaints.
+  it('repaints the Library when a committed Dashboard change alters ownership', async () => {
+    const owned = savedQuery({ id: 'owned', name: 'Panel copy', sql: 'SELECT 1' });
+    const lib = savedQuery({ id: 'lib', name: 'Standalone', sql: 'SELECT 2' });
+    const app = createApp(env());
+    const tiled: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'ws-own', key: 'ws_own', name: 'Owned',
+      queries: [lib, owned],
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    await seedActiveWorkspace(app, tiled);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: tiled.key };
+    app.renderApp();
+    // The owned copy is hidden; only the standalone query is a Library row.
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent)).toEqual(['Standalone']);
+
+    // Commit a Dashboard with no tiles: `savedQueries` is untouched, but the
+    // formerly owned copy now has no owner.
+    app.currentWorkspace = { ...tiled, dashboards: [{ ...tiled.dashboards[0], tiles: [], layout: { type: 'flow', version: 1, preset: 'report', items: {} } }] };
+    app.state.dashboardTreeRevision.value += 1;
+
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent).sort())
+      .toEqual(['Panel copy', 'Standalone']);
   });
 
   it('a Dashboard edit commit that settles after switching to View refreshes View only', async () => {

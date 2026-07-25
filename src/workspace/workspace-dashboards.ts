@@ -1,7 +1,7 @@
 // The ONE narrow Dashboard selection/access seam over a StoredWorkspaceV4
 // Dashboard collection (#424). Pure — no DOM, no persistence.
 //
-// V3 stores `dashboards: DashboardDocumentV1[]`, but the current UI still
+// V4 stores `dashboards: DashboardDocumentV1[]`, but the current UI still
 // exposes exactly one Dashboard surface with no selector. Rather than
 // scattering `workspace.dashboards[0]` across the application, every call site
 // resolves the visible document through `resolveCompatibilityDashboard` and
@@ -10,7 +10,7 @@
 // state without touching those call sites.
 //
 // The compatibility rule is deliberately TEMPORARY application behavior, not a
-// persisted field: V3 carries no `activeDashboardId`/`defaultDashboardId`.
+// persisted field: V4 carries no `activeDashboardId`/`defaultDashboardId`.
 
 import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
 

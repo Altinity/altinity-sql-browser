@@ -368,6 +368,19 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     ],
   } as StoredWorkspaceV4);
 
+  // #427: "deleting a Library query requires no Dashboard repair". The workspace
+  // HAS Dashboards here — the point is that a zero-owner query is not part of any
+  // of them, so no repair is needed and none of them changes.
+  it('deletes a zero-owner Library query with no repair and no Dashboard change', () => {
+    const before = dedicated();
+    const plan = planSavedQueryMutation(dedicated(), { type: 'delete-query', queryId: 'spare' });
+    expect(plan.ok).toBe(true);
+    expect(plan.repairs).toEqual([]);
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.candidate!.queries.map((q) => q.id)).not.toContain('spare');
+    expect(plan.candidate!.dashboards).toEqual(before.dashboards);
+  });
+
   it('rejects the pre-#427 shared shape outright, at every owner after the first', () => {
     const plan = planSavedQueryMutation(shared(), { type: 'delete-query', queryId: 'unused' });
     expect(plan.ok).toBe(false);

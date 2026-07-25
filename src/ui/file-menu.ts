@@ -140,7 +140,12 @@ export function openFileMenu(app: App): void {
   // trigger's `aria-expanded` — set to 'true' by `openMenu` on open and back
   // to 'false' on close — is the authoritative open-state flag to bail on.
   if (app.dom.fileBtn!.getAttribute('aria-expanded') === 'true') return;
-  const list = app.state.savedQueries;
+  // #427: the LIBRARY projection, matching the sidebar count, the workspace
+  // picker's count and the document exports below. Counting the raw collection
+  // would roughly double for every migrated workspace, and — worse — the `empty`
+  // gate would enable "Download Markdown/SQL" on a workspace whose every query is
+  // owned, which then toasts "Nothing to save".
+  const list = libraryEntries(app);
   const empty = list.length === 0;
 
   // #302: the Workbench File menu owns workspace + query-collection operations
@@ -717,14 +722,19 @@ async function exportWorkspaceAction(app: App): Promise<void> {
   downloadEncodedBundle(app, bundle, app.state.libraryName.value);
 }
 
+/** The LIBRARY projection: the queries no Dashboard member owns. Each member owns
+ *  a dedicated copy of its query, so the raw collection would count and export
+ *  every panel twice — once as the Library source and once as the owned copy, with
+ *  identical names and SQL. With no workspace aggregate yet, every saved query is
+ *  a Library query: there are no Dashboards to own one. */
+function libraryEntries(app: App): SavedQueryV2[] {
+  const workspace = app.currentWorkspace;
+  if (!workspace) return app.state.savedQueries;
+  return libraryQueries({ queries: app.state.savedQueries, dashboards: workspace.dashboards });
+}
+
 function downloadAction(app: App, fmt: 'md' | 'sql'): void {
-  // #427: the LIBRARY projection, not every stored query. Each Dashboard member
-  // owns a dedicated copy of its query, so exporting the raw collection would
-  // emit every panel twice — once as the Library source and once as the owned
-  // copy, with identical names and SQL. A document export is the Library.
-  const qs = app.currentWorkspace
-    ? libraryQueries({ queries: app.state.savedQueries, dashboards: app.currentWorkspace.dashboards })
-    : app.state.savedQueries;
+  const qs = libraryEntries(app);
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName.value) + '.md', 'text/markdown', buildMarkdownDoc(qs));
   else app.downloadFile(fileBase(app.state.libraryName.value) + '.sql', 'application/sql', buildSqlDoc(qs));

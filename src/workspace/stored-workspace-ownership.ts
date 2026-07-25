@@ -22,6 +22,14 @@
 // belongs to removes the whole class of problem: every decode, in every tab, of
 // the same bytes produces the same document.
 //
+// **A filter source is cloned per DASHBOARD, a panel query per TILE.** A
+// filter-role query returns one row whose columns each supply one parameter's
+// options, so one source legitimately serves many curated filters (six, in
+// `examples/clickhouse-operations.json`). Cloning it per filter re-created the
+// #359 bug — N copies executed N times, every helper column then rejected as a
+// duplicate provider, so every filter on the Dashboard errored — and would have
+// forced the option list to be edited N times. Panels stay strictly 1:1.
+//
 // **Every owner reference is cloned, and every original is preserved.** #427:
 // "preserve every original saved query as a standalone Library source and create
 // a dedicated clone for every Dashboard member." Skipping the clone when a query
@@ -35,7 +43,7 @@
 
 import { cloneJson, queryContentKey } from '../core/saved-query.js';
 import {
-  buildQueryOwnershipIndex, cloneQueryForDashboardOwner,
+  buildQueryOwnershipIndex, cloneQueryForDashboardOwner, ownersAreValid,
   type DashboardOwnerRole,
 } from '../dashboard/model/query-ownership.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
@@ -81,10 +89,13 @@ export function deriveOwnedQueryId(input: {
   sourceQueryId: string;
   dashboardId: string;
   role: DashboardOwnerRole;
-  memberId: string;
+  /** The tile id for a panel copy. OMITTED for a filter source, whose copy is
+   *  owned by the DASHBOARD and shared by its curated filters — so every filter
+   *  of one Dashboard using one source derives the SAME id. */
+  memberId?: string;
 }, taken: ReadonlySet<string>): string {
   const base = OWNED_QUERY_ID_PREFIX
-    + fnv1a32Hex(memberTuple(input.sourceQueryId, input.dashboardId, input.role, input.memberId));
+    + fnv1a32Hex(memberTuple(input.sourceQueryId, input.dashboardId, input.role, input.memberId ?? ''));
   if (!taken.has(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base}-${suffix}`;
@@ -141,58 +152,81 @@ export function assignDedicatedOwnership(input: DedicatedOwnershipInput): Dedica
   const taken = new Set(queries.map((query) => query.id));
   const index = buildQueryOwnershipIndex({ queries, dashboards });
 
-  // What a dedicated copy of each LIBRARY query would look like, keyed by ROLE
-  // plus content. A member query matching its own role's key is already that
-  // copy — the only deterministic way to recognize "this V3 content already uses
-  // one dedicated non-Library copy per member" (#427). It also makes the whole
-  // transform content-idempotent: re-running it on its own output clones
-  // nothing, because every copy it minted matches the key of its own preserved
-  // source.
-  //
-  // The ROLE is part of the key deliberately. A copy shaped like a panel-role
-  // clone, sitting behind a curated FILTER, is not that filter's dedicated copy:
-  // accepting it would leave a role-mismatched reference the workspace cannot
-  // even open (`filter-source-role`), when re-homing it repairs the document.
-  const dedicatedKey = (role: DashboardOwnerRole, query: SavedQueryV2): string =>
-    `${role}:${queryContentKey(query)}`;
-  const dedicatedKeys = new Set<string>();
-  for (const query of queries) {
-    if (!index.libraryQueryIds.has(query.id)) continue;
-    for (const role of ['panel', 'filter'] as const) {
-      dedicatedKeys.add(dedicatedKey(
-        role, cloneQueryForDashboardOwner({ source: query, newId: query.id, role }),
-      ));
-    }
-  }
-  /** True when `source` IS already the dedicated copy the calling member owns.
+  /** Is `query` already the dedicated copy a member of this role would get?
    *
-   *  The caller is itself one of `source`'s owners — the index is built from the
-   *  same documents being walked — so `!` is sound, and "exactly one owner"
-   *  already means "owned by this member and no one else". The only remaining
-   *  question is whether the query is shaped like the copy this member's ROLE
-   *  would get. */
-  const alreadyDedicated = (source: SavedQueryV2, role: DashboardOwnerRole): boolean =>
-    index.ownersByQueryId.get(source.id)!.length === 1
-    && dedicatedKeys.has(dedicatedKey(role, source));
+   *  Recognized by the migration's own id MARKER plus a fixed-point check — the
+   *  clone transform only sets `spec.dashboard.role` and drops `spec.favorite`, so
+   *  a copy already in that shape is unchanged by re-cloning. Two earlier designs
+   *  were wrong:
+   *
+   *   - matching on CONTENT alone adopted an unrelated query: a user who saved the
+   *     same query twice and tiled one copy would have that copy silently
+   *     reclassified as the tile's dedicated copy and DISAPPEAR from the Library,
+   *     with the outcome depending on whether a duplicate happened to exist;
+   *   - requiring a content-matching LIBRARY twin in the same document broke the
+   *     single-Dashboard export round trip: `buildDashboardExportBundle` ships only
+   *     the dependency closure (the copies, never their Library sources), so on
+   *     re-import every member was cloned again and the imported copies were left
+   *     behind as junk Library entries with identical names.
+   *
+   *  The marker is safe to trust: every other id comes from `crypto.randomUUID`
+   *  via the repository generator, which cannot produce this prefix. */
+  const alreadyDedicated = (source: SavedQueryV2, role: DashboardOwnerRole): boolean => {
+    if (!source.id.startsWith(OWNED_QUERY_ID_PREFIX)) return false;
+    // The caller is itself an owner, so the entry always exists (`!` is sound).
+    const owners = index.ownersByQueryId.get(source.id)!;
+    // A filter copy may back several curated filters of the SAME Dashboard — the
+    // one valid shared shape. `ownersAreValid` already covers the panel case: the
+    // caller is itself an owner, so a `panel` role means a panel owner is present,
+    // and any owner set with a panel plus anything else is invalid. There is
+    // therefore no separate exclusivity check to make here.
+    if (!ownersAreValid(owners)) return false;
+    return queryContentKey(source)
+      === queryContentKey(cloneQueryForDashboardOwner({ source, newId: source.id, role }));
+  };
 
   let clonedCount = 0;
-  /** Mint the copy for one member and return its id, or `null` to leave the
-   *  reference exactly as it is. */
+  // Filter copies already minted, per Dashboard, per source query: the SECOND
+  // curated filter of a Dashboard that uses one source reuses its Dashboard's copy
+  // instead of minting another. That keeps a multi-parameter option source running
+  // ONCE per Dashboard (#359) and editable in one place.
+  const filterCopies = new Map<string, Map<string, string>>();
+
+  /** Mint (or reuse) the copy for one member and return its id, or `null` to
+   *  leave the reference exactly as it is. */
   const dedicate = (
-    sourceQueryId: string, dashboardId: string, role: DashboardOwnerRole, memberId: string,
+    sourceQueryId: string, dashboardId: string, role: DashboardOwnerRole, memberId?: string,
   ): string | null => {
     const source = byId.get(sourceQueryId);
     if (source === undefined) return null;
     if (queryDashboardRole(source) === 'setup') return null;
     if (alreadyDedicated(source, role)) return null;
-    const newId = deriveOwnedQueryId({ sourceQueryId, dashboardId, role, memberId }, taken);
+    if (role === 'filter') {
+      const perSource = filterCopies.get(dashboardId) ?? new Map<string, string>();
+      filterCopies.set(dashboardId, perSource);
+      const existing = perSource.get(sourceQueryId);
+      if (existing !== undefined) return existing;
+      const minted = mint(source, sourceQueryId, dashboardId, role);
+      perSource.set(sourceQueryId, minted);
+      return minted;
+    }
+    return mint(source, sourceQueryId, dashboardId, role, memberId);
+  };
+
+  function mint(
+    source: SavedQueryV2, sourceQueryId: string, dashboardId: string,
+    role: DashboardOwnerRole, memberId?: string,
+  ): string {
+    const newId = deriveOwnedQueryId(
+      { sourceQueryId, dashboardId, role, ...(memberId === undefined ? {} : { memberId }) }, taken,
+    );
     taken.add(newId);
     const clone = cloneQueryForDashboardOwner({ source, newId, role });
     queries.push(clone);
     byId.set(newId, clone);
     clonedCount += 1;
     return newId;
-  };
+  }
 
   for (const dashboard of dashboards) {
     if (input.scope !== undefined && !input.scope.has(dashboard.id)) continue;
@@ -201,7 +235,7 @@ export function assignDedicatedOwnership(input: DedicatedOwnershipInput): Dedica
     // members happened to be walked first.
     for (const filter of dashboard.filters) {
       if (filter.sourceQueryId === undefined) continue;
-      const owned = dedicate(filter.sourceQueryId, dashboard.id, 'filter', filter.id);
+      const owned = dedicate(filter.sourceQueryId, dashboard.id, 'filter');
       if (owned !== null) filter.sourceQueryId = owned;
     }
     for (const tile of dashboard.tiles) {

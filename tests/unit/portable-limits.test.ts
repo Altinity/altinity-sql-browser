@@ -4,7 +4,7 @@ import { PORTABLE_LIMITS } from '../../src/dashboard/model/portable-limits.js';
 describe('PORTABLE_LIMITS', () => {
   it('pins every #280 v1 limit verbatim', () => {
     expect(PORTABLE_LIMITS).toEqual({
-      maxDecodedJsonBytes: 10485760,
+      maxDecodedJsonBytes: 20971520,
       maxJsonDepth: 64,
       maxQueries: 5224,
       maxDashboards: 32,
@@ -23,6 +23,6 @@ describe('PORTABLE_LIMITS', () => {
     });
     // Pinned decision (#283): the Phase-2 repository is IndexedDB-backed, so
     // the decoded-JSON cap stays at 10 MiB exactly as specced in #280.
-    expect(PORTABLE_LIMITS.maxDecodedJsonBytes).toBe(10 * 1024 * 1024);
+    expect(PORTABLE_LIMITS.maxDecodedJsonBytes).toBe(20 * 1024 * 1024);
   });
 });

@@ -415,6 +415,54 @@ describe('Export', () => {
     click(item(/Download SQL/)!);
     expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.sql');
   });
+
+  // #427: a document export is the LIBRARY. Each Dashboard member owns a dedicated
+  // copy of its query, so exporting the raw collection emitted every panel TWICE,
+  // with identical names and SQL. The footer count and the empty gate read the same
+  // projection — an all-owned workspace must not offer a download that then toasts
+  // "Nothing to save".
+  it('Download Markdown/SQL and the count follow the Library projection', () => {
+    const app = mount();
+    setSaved(app, [
+      { id: 'lib', name: 'Standalone', sql: 'SELECT 1', favorite: false },
+      { id: 'owned', name: 'Panel copy', sql: 'SELECT 2', favorite: false },
+    ]);
+    app.state.libraryName.value = 'Lib';
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'Lib',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    openFileMenu(app);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('1 query in workspace');
+    click(item(/Download Markdown/)!);
+    const [, , content] = app.downloadFile.mock.calls.at(-1)!;
+    expect(content).toContain('Standalone');
+    expect(content).not.toContain('Panel copy');
+  });
+
+  it('offers no document download when every query is Dashboard-owned', () => {
+    const app = mount();
+    setSaved(app, [{ id: 'owned', name: 'Panel copy', sql: 'SELECT 2', favorite: false }]);
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    openFileMenu(app);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('Workspace is empty');
+    click(item(/Download Markdown/)!);
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('Nothing to save');
+  });
 });
 
 describe('Import queries', () => {

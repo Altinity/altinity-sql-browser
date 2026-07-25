@@ -136,6 +136,30 @@ describe('workspace repository collection', () => {
     expect(result.corrupt[1].diagnostics[0].code).toBe('workspace-record-identity-mismatch');
   });
 
+  // #427: the summary count is the LIBRARY count — the same number the sidebar
+  // shows. Counting the raw collection would roughly double for every migrated
+  // workspace, because each Dashboard member owns a dedicated copy of its query.
+  it('counts only Library queries in a summary, not Dashboard-owned copies', async () => {
+    const query = (id: string) => ({
+      id, sql: 'SELECT 1', specVersion: 1 as const,
+      spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } } },
+    });
+    const owned = workspace({
+      id: 'w9', key: 'owned_key', name: 'Owned',
+      queries: [query('lib'), query('panel-copy')] as StoredWorkspaceV4['queries'],
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'panel-copy' }],
+      }] as StoredWorkspaceV4['dashboards'],
+    });
+    const store = memoryStore([record(owned)]);
+    const result = await createWorkspaceRepository({ store }).list();
+    expect(result.summaries[0]).toMatchObject({ id: 'w9', queryCount: 1, hasDashboard: true });
+    // Both queries are stored; only the standalone one is counted.
+    expect(JSON.parse(store.records.get('w9')!.text).queries).toHaveLength(2);
+  });
+
   it('preserves corrupt as a distinct keyed load state', async () => {
     const store = memoryStore([{ id: 'bad', key: 'bad', text: '{}', lastOpenedAt: null }]);
     const loaded = await createWorkspaceRepository({ store }).loadByKey('bad');

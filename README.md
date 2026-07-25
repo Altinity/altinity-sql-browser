@@ -98,11 +98,11 @@ rounding, colors, NULL text, visibility, and delta semantics. The card
 rendering itself — labels, values, deltas, colors — is identical on both
 surfaces; the surrounding composition differs by design (#240): the workbench
 Panel preview and an unconfigured Dashboard KPI tile show the cards inside the
-ordinary `.kpi-panel` grid, while a **favorited, explicitly-KPI-typed** Dashboard
-query instead joins a full-width **KPI band** — a flat, wrapping card stream
-with no per-favorite name, description, or statistics footer, spanning every
+ordinary `.kpi-panel` grid, while an **explicitly-KPI-typed** Dashboard panel
+instead joins a full-width **KPI band** — a flat, wrapping card stream
+with no per-panel name, description, or statistics footer, spanning every
 flow Dashboard layout (Report/2/3 columns). Consecutive explicit KPI
-favorites merge into one shared band. The On-time, Shop, and Operations
+panels merge into one shared band. The On-time, Shop, and Operations
 flagship dashboards all include a production
 KPI band alongside charts, tables, and logs.
 When constructing a named tuple from expressions, either enable alias-derived
@@ -499,8 +499,10 @@ New workspace.
 
 ### Dashboard Filter sources
 
-A favorited query whose Spec contains `"dashboard": { "role": "filter" }`
-provides curated options instead of a tile. Its SQL must be one parameter-free,
+A **Library** query whose Spec contains `"dashboard": { "role": "filter" }`
+provides curated options instead of a tile — matched to a panel parameter by
+NAME; the favorite star plays no part since #427, and a copy a Dashboard already
+owns is not a candidate. Its SQL must be one parameter-free,
 row-returning statement with no trailing `FORMAT`, and must return exactly one
 row. Each result column targets the Dashboard parameter with the same
 case-sensitive name and may contain an ordered `Array(T)`, an ordered

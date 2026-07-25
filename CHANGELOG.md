@@ -28,7 +28,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (1000 originals plus the 4224 members a valid workspace can hold), because at
   the old bound migrating a large workspace produced a record that would fail
   validation on every future open; portable bundles track the same bound, so an
-  older build will reject a very large new bundle.
+  older build will reject a very large new bundle. The encoded-document cap rose
+  with it, 10 MiB to 20 MiB, for the same reason and one step further along: that
+  bound is enforced only when WRITING, so a stored workspace between roughly 5 and
+  10 MiB used to decode and migrate fine and then fail every subsequent save —
+  permanently read-only, with no repair path.
+
+  One hand-off to #429 is worth stating plainly: removing a panel from a Dashboard
+  leaves the dedicated copy it owned with no owner, so that copy reappears in the
+  Library beside the original it was cloned from. Deleting a member and its owned
+  query as one atomic operation is #429's trash action; until then the copy is kept
+  rather than silently discarded.
 - **The lower pane is `Library | History`** and lists only standalone queries,
   with a matching count, `Search library queries…`, and Library-worded empty
   states; on phones the segment is relabelled the same way. A Dashboard-owned
@@ -36,6 +46,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   not a Library entry. Markdown/SQL document exports and the workspace picker's
   query count follow the same projection, so a migrated workspace no longer
   exports every panel twice.
+- **A curated filter's option source is copied per DASHBOARD, not per filter**
+  (#427). A filter-role query returns one row whose columns each supply the
+  options for the parameter of the same name, so a single source legitimately
+  serves many curated filters — the shipped ClickHouse Operations dashboard has
+  one that serves six. Giving each filter its own copy re-created the #359 bug:
+  six identical sources ran six times, every helper column then had six providers,
+  and every filter on the dashboard failed with *"Multiple Filter queries provide
+  …"*. So all curated filters of one Dashboard share their Dashboard's copy, while
+  a panel query is still owned by exactly one tile, and cross-Dashboard sharing
+  stays forbidden — editing one Dashboard's option list still cannot reach
+  another's. Relatedly, several option sources offering the SAME column now
+  conflict only when they actually **disagree**: content-identical providers
+  collapse to one instead of taking every filter out of service, while two
+  genuinely different queries claiming one column remain an error.
 - **The favourite star is a Library preference, with no Dashboard meaning
   whatsoever** (#427, closes #434). It used to BE membership: starring a query
   appended a tile — minting a whole Dashboard if the workspace had none — and

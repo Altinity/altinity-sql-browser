@@ -5,11 +5,19 @@
 // semantic validator re-checks the security-relevant limits after parsing.
 //
 // Pinned decision (#283): the Phase-2 WorkspaceRepository is IndexedDB-backed,
-// so `maxDecodedJsonBytes` stays at 10 MiB exactly as specced in #280 rather
-// than shrinking to a localStorage-sized quota.
+// so `maxDecodedJsonBytes` follows #280's sizing rather than shrinking to a
+// localStorage-sized quota.
 
 export const PORTABLE_LIMITS = {
-  maxDecodedJsonBytes: 10 * 1024 * 1024,
+  // #427 doubled this from #280's 10 MiB, in step with `maxQueries` below and for
+  // the same reason: the ownership migration adds one dedicated query copy per
+  // Dashboard member, so it roughly DOUBLES a document. The cap is enforced on
+  // ENCODE only, so at 10 MiB a stored workspace between ~5 and 10 MiB decoded and
+  // migrated fine and then failed every subsequent commit with `limit-json-bytes`
+  // — permanently read-only, with the migration re-running on each open and no
+  // repair path. 20 MiB keeps every document that was committable before #427
+  // committable after it.
+  maxDecodedJsonBytes: 20 * 1024 * 1024,
   maxJsonDepth: 64,
 
   // #427 raised this from #280's 1000. The V3->V4 ownership migration clones one

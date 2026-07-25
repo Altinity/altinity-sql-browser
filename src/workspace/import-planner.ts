@@ -325,9 +325,11 @@ function invalidPlan(
  * on one query, a filter source that is also a tile), and #427 forbids rejecting
  * a readable legacy bundle "solely for sharing" when lossless normalization is
  * possible. So each incoming member gets its own dedicated copy through the SAME
- * derivation the V3 -> V4 storage migration uses, which is also what makes a
- * V4 export round-trip cleanly: every owned copy in the bundle is recognized as
- * already dedicated and is not cloned again.
+ * derivation the V3 -> V4 storage migration uses, which is also what makes an
+ * export round-trip cleanly: a copy the migration minted carries its id marker, so
+ * it is recognized as already dedicated and is not cloned again — including in a
+ * single-Dashboard bundle, which ships only the copies and never their Library
+ * sources.
  *
  * `scope` is the point of it. Only the Dashboards the import actually brings in
  * are rewritten, so a stored Dashboard the import never named comes out

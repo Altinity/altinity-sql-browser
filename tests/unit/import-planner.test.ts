@@ -9,6 +9,9 @@ import type {
 import type {
   DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../../src/generated/json-schema.types.js';
+import { buildDashboardExportBundle } from '../../src/dashboard/model/dashboard-export.js';
+import { migrateStoredWorkspaceV3ToV4 } from '../../src/workspace/stored-workspace-ownership.js';
+import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -311,22 +314,6 @@ describe('planImportQueries', () => {
     expect(plan.candidateWorkspace!.queries[0].spec.name).toBe('new name');
   });
 
-  it('removes tile membership and increments revision when a tiled favorite is replaced as unfavorited', () => {
-    const current = panelQuery('p1');
-    current.spec.favorite = true;
-    const replacement = panelQuery('p1', 'Replacement');
-    replacement.spec.favorite = false;
-    const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
-    const plan = planImportQueries(
-      workspace({ queries: [current], dashboards: [dash] }), bundle({ queries: [replacement] }),
-      [{ sourceId: 'p1', action: 'replace' }], counter(),
-    );
-    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({
-      revision: 7, tiles: [{ id: 't1', queryId: 'p1' }],
-    });
-    expect(plan.candidateWorkspace?.queries[0].spec.favorite).toBe(false);
-  });
-
   it.each([
     ['filter', filterQuery('p1')],
     ['setup', setupQuery('p1')],
@@ -600,6 +587,64 @@ describe('imports preserve the non-compatibility Dashboards', () => {
 });
 
 // --- planReplaceWorkspace --------------------------------------------------------
+
+// #427 — the round trip the app's own Dashboard export/import performs. This is
+// the flow that regressed twice while implementing ownership, so it is pinned end
+// to end: a REAL exported bundle, re-imported, must clone nothing and leave no
+// junk behind. `buildDashboardExportBundle` ships only the dependency closure —
+// the owned copies, never their Library sources — so recognizing a copy cannot
+// depend on its Library twin travelling with it.
+describe('a Dashboard export round trip', () => {
+  const migrated = (): StoredWorkspaceV4 => migrateStoredWorkspaceV3ToV4({
+    storageVersion: 3, id: 'w', key: 'w', name: 'W',
+    queries: [
+      { ...panelQuery('p1'), sql: 'SELECT {p:String}' } as SavedQueryV2,
+      filterQuery('f1'),
+    ],
+    dashboards: [dashboardDoc({
+      id: 'd1', revision: 4,
+      tiles: [{ id: 't1', queryId: 'p1' }],
+      filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'f1' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+    })],
+  });
+
+  it('re-imports an exported Dashboard without cloning anything again', () => {
+    const source = migrated();
+    const exported = buildDashboardExportBundle(
+      source.dashboards[0], source.queries, '2026-07-25T00:00:00.000Z',
+    );
+    // The bundle carries ONLY the owned copies.
+    expect(exported.queries.map((query) => query.id))
+      .toEqual([source.dashboards[0].tiles[0].queryId, source.dashboards[0].filters[0].sourceQueryId]);
+
+    const plan = planReplaceWorkspace(workspace(), exported, [], counter());
+    const candidate = plan.candidateWorkspace!;
+    expect(plan.diagnostics).toEqual([]);
+    // Two queries in, two queries out — no second generation of copies, and no
+    // orphaned Library entries with duplicate names.
+    expect(candidate.queries.map((query) => query.id)).toEqual(exported.queries.map((query) => query.id));
+    expect(candidate.dashboards[0].tiles[0].queryId).toBe(source.dashboards[0].tiles[0].queryId);
+    expect(candidate.dashboards[0].filters[0].sourceQueryId).toBe(source.dashboards[0].filters[0].sourceQueryId);
+    // Every copy still has exactly its one owner, and nothing is in the Library.
+    const index = buildQueryOwnershipIndex(candidate);
+    expect(index.libraryQueryIds.size).toBe(0);
+    for (const owners of index.ownersByQueryId.values()) expect(owners).toHaveLength(1);
+  });
+
+  it('is stable across a second round trip', () => {
+    const source = migrated();
+    const once = planReplaceWorkspace(
+      workspace(), buildDashboardExportBundle(source.dashboards[0], source.queries, '2026-07-25T00:00:00.000Z'),
+      [], counter(),
+    ).candidateWorkspace!;
+    const twice = planReplaceWorkspace(
+      workspace(), buildDashboardExportBundle(once.dashboards[0], once.queries, '2026-07-25T00:00:00.000Z'),
+      [], counter(),
+    ).candidateWorkspace!;
+    expect(twice.queries.map((query) => query.id)).toEqual(once.queries.map((query) => query.id));
+  });
+});
 
 describe('planReplaceWorkspace', () => {
   it('preserves workspace identity and replaces the query catalog wholesale (dropping unreferenced existing queries)', () => {

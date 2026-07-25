@@ -83,6 +83,18 @@ export interface MergeDashboardFilterHelpersResult {
   changed: string[];
 }
 
+/** A helper's CONTENT identity, ignoring which query produced it: the column name
+ *  plus its options in order, and any other helper field (the shape is open). Two
+ *  helpers with the same key are interchangeable for the filter bar. */
+function helperKey(helper: FilterHelper): string {
+  const { name, options, ...rest } = helper;
+  return JSON.stringify([
+    name,
+    options.map((option) => [option.value, option.label]),
+    Object.keys(rest).sort().map((key) => [key, rest[key]]),
+  ]);
+}
+
 export function mergeDashboardFilterHelpers({
   providers = [], controls = [], values = {}, active = {},
 }: MergeDashboardFilterHelpersInput = {}): MergeDashboardFilterHelpersResult {
@@ -100,8 +112,19 @@ export function mergeDashboardFilterHelpers({
   }
   const fields: Record<string, MergedFilterField> = {};
   for (const [name, candidates] of byName) {
-    if (candidates.length > 1) {
-      const labels = candidates.map(({ provider }) => provider.sourceName || provider.sourceId).join(', ');
+    // Several providers offering ONE column are only ambiguous when they disagree.
+    // Content-identical helpers are not a conflict: they would produce the same
+    // option list whichever won, so the first (document order) is taken and no
+    // diagnostic is raised. That happens whenever one option source is COPIED —
+    // #427 gives each Dashboard its own copy of a shared filter source, and a
+    // workspace can hold several copies of one authoring source — and it keeps a
+    // redundant copy from taking down every filter on the Dashboard.
+    //
+    // Genuinely differing options stay an error, which is the case this rule was
+    // written for: two DIFFERENT queries both claiming to supply `user` have no
+    // defensible winner.
+    if (candidates.length > 1 && new Set(candidates.map(({ helper }) => helperKey(helper))).size > 1) {
+      const labels = [...new Set(candidates.map(({ provider }) => provider.sourceName || provider.sourceId))].join(', ');
       diagnostics.push(diagnostic('error', 'filter-duplicate-provider', `Multiple Filter queries provide "${name}": ${labels}.`, { helperName: name }));
       continue;
     }

@@ -418,9 +418,10 @@ describe('encodeStoredWorkspaceJson', () => {
 
   it('rejects an encoded workspace larger than the decoded-JSON byte cap', () => {
     // An arbitrary extension field (query-spec is open) inflates each spec to
-    // just under the 1 MiB per-spec cap; eleven sum past the 10 MiB document cap.
+    // just under the 1 MiB per-spec cap; twenty-one sum past the 20 MiB document
+    // cap (#427 doubled it, so the migration cannot lock a workspace read-only).
     const chunk = 'x'.repeat(1_000_000);
-    const queries = Array.from({ length: 11 }, (_, i) => ({
+    const queries = Array.from({ length: 21 }, (_, i) => ({
       id: `q${i}`, sql: 'SELECT 1', specVersion: 1, spec: { name: `q${i}`, ext: chunk },
     }));
     const result = encodeStoredWorkspaceJson(workspace({ queries }));

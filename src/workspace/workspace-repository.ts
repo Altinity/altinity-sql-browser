@@ -2,11 +2,12 @@
 // encoding, collection policy, and translation of store outcomes into
 // application-facing diagnostics. IndexedDB remains behind WorkspaceStore.
 //
-// #424: the canonical aggregate is StoredWorkspaceV4 (`dashboards[]`). A record
-// persisted as V2 is migrated to V3 by the codec on every read, so nothing
-// above this layer ever sees a V2 document; the RECORD itself upgrades on its
-// next ordinary commit (every write encodes V3), which keeps opening a
-// workspace a pure read. `dashboardRevision`/`hasDashboard` describe the
+// #424/#427: the canonical aggregate is StoredWorkspaceV4 (`dashboards[]` plus
+// the query-ownership invariant). A record persisted as V2 or V3 is migrated by
+// the codec on every read, so nothing above this layer ever sees a legacy
+// document; the RECORD itself upgrades on its next ordinary commit (every write
+// encodes V4), which keeps opening a workspace a pure read — and is why the
+// #427 migration derives its clone ids instead of generating them. `dashboardRevision`/`hasDashboard` describe the
 // compatibility Dashboard only — the summary shape is unchanged for callers.
 
 import {
