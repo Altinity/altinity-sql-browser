@@ -17,6 +17,20 @@
 // Every function is copy-on-write, so a caller can never observe a half-updated
 // value and each returned state is safe to compare by identity.
 
+/**
+ * Escape one component before it is joined into a key. Dashboard, tile and filter
+ * ids are only schema-constrained to `\S`, so a colon is LEGAL — and an imported
+ * bundle preserves whatever ids it carried. Unescaped, a Dashboard literally named
+ * `a:tile:b` produces the same row key as tile `b` of Dashboard `a`, which would
+ * give two rows `tabindex="0"`, point the view's `focusRow` at the wrong row, and
+ * let the click arbiter read clicks on two distinct resources as a double-click.
+ * `%` is escaped first, so the escape itself cannot be forged.
+ *
+ * Lives here rather than in `dashboard-tree-model.ts` so the dependency between the
+ * two modules stays one-way (the model already imports `groupStateKey`).
+ */
+export const encodeKeyPart = (part: string): string => part.replace(/%/g, '%25').replace(/:/g, '%3A');
+
 /** Which of a Dashboard's two groups a group key names. */
 export type DashboardTreeGroup = 'filters' | 'panels';
 
@@ -47,9 +61,11 @@ export const EMPTY_TREE_UI: DashboardTreeUiState = Object.freeze({
   keyboardRowKey: null,
 });
 
-/** Group keys are Dashboard-local: the map is already per-workspace. */
+/** Group keys are Dashboard-local: the map is already per-workspace. The id is
+ *  escaped for the same reason row keys escape theirs — ids may legally contain a
+ *  colon, and `pruneTreeUi` below has to split this back apart unambiguously. */
 export function groupStateKey(dashboardId: string, group: DashboardTreeGroup): string {
-  return dashboardId + ':' + group;
+  return encodeKeyPart(dashboardId) + ':' + group;
 }
 
 /** This workspace's state, or the empty state when it has none yet. Reading never
@@ -146,10 +162,11 @@ export function pruneTreeUi(
 ): DashboardTreeUiState {
   const alive = new Set(dashboardIds);
   const dashboards = new Set([...state.expandedDashboardIds].filter((id) => alive.has(id)));
-  // A group key is `<dashboardId>:<group>`; the Dashboard id is everything before
-  // the LAST separator, so an id that itself contains ':' still resolves.
+  // A group key is `<escaped dashboardId>:<group>`, so the id is everything before
+  // the last separator — unambiguous now that the id itself carries no bare colon.
+  const escaped = new Set([...alive].map(encodeKeyPart));
   const groups = new Set([...state.expandedGroups].filter(
-    (key) => alive.has(key.slice(0, key.lastIndexOf(':'))),
+    (key) => escaped.has(key.slice(0, key.lastIndexOf(':'))),
   ));
   if (dashboards.size === state.expandedDashboardIds.size
     && groups.size === state.expandedGroups.size) return state;

@@ -87,6 +87,31 @@ describe('deriveDashboardTree — collection and ordering', () => {
     ]);
   });
 
+  // Ids are schema-constrained only to `\S`, so a colon is LEGAL, and an imported
+  // bundle preserves whatever ids it carried. Unescaped, Dashboard `a:tile:b` and
+  // tile `b` of Dashboard `a` would produce the SAME row key — two rows claiming
+  // tabindex="0", focus landing on the wrong one, and the click arbiter reading two
+  // distinct resources as a double-click.
+  it('produces distinct keys for ids that contain the key separator', () => {
+    const tree = derive(ws({
+      dashboards: [
+        dashboard({ id: 'a', tiles: [{ id: 'b', queryId: 'q1' }] }),
+        dashboard({ id: 'a:tile:b' }),
+      ],
+      queries: [query('q1', 'Q1')],
+    }), allOpen(['a', 'a:tile:b']));
+    const allKeys = keys(tree.rows);
+    expect(new Set(allKeys).size).toBe(allKeys.length);
+    expect(allKeys).toContain('w1:a:tile:b');       // Dashboard 'a', tile 'b'
+    expect(allKeys).toContain('w1:a%3Atile%3Ab');   // Dashboard 'a:tile:b'
+  });
+
+  it('escapes the escape character itself, so a key cannot be forged', () => {
+    const tree = derive(ws({ dashboards: [dashboard({ id: 'a%3Atile%3Ab' }), dashboard({ id: 'a:tile:b' })] }));
+    const allKeys = keys(tree.rows);
+    expect(new Set(allKeys).size).toBe(allKeys.length);
+  });
+
   it('reports an empty collection, and a null workspace, as no-dashboards', () => {
     expect(derive(ws()).empty).toBe('no-dashboards');
     expect(derive(ws()).rows).toEqual([]);

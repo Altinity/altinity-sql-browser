@@ -37,7 +37,7 @@ import type { KeyboardOwner } from './app.types.js';
  *    focus target is the row's own first focusable descendant (an `<input>`/
  *    `<button>`/etc.), or the node itself when it can take focus directly. */
 export type MenuRow =
-  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; onClick: () => void; extraClass?: string }
+  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
   | { kind: 'section'; label: string }
   | { kind: 'sep' }
   | { kind: 'custom'; node: HTMLElement; focusable?: boolean };
@@ -103,17 +103,22 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       if (row.focusable) focusable.push(focusTargetOf(row.node));
       return row.node;
     }
+    // #426: a row can be present-but-unavailable (a broken member's query-open).
+    // `disabled` has to be SEMANTIC, not just a CSS class: assistive technology
+    // would otherwise announce an enabled action, and keyboard activation would
+    // silently do nothing. Such a row is also kept out of the roving-focus order.
     const btn = h('button', {
       class: row.extraClass ? `fm-item ${row.extraClass}` : 'fm-item',
       role: 'menuitem',
-      onclick: () => { close(); row.onClick(); },
+      ...(row.disabled ? { disabled: true, 'aria-disabled': 'true' } : {}),
+      onclick: row.disabled ? undefined : () => { close(); row.onClick(); },
     },
       row.leading ? h('span', { class: 'fm-leading' }, row.leading) : null,
       row.icon ? h('span', { class: 'fm-icon' }, row.icon) : null,
       h('span', { class: 'fm-label' }, row.label),
       row.trailing ? h('span', { class: 'fm-trailing' }, row.trailing) : null,
       row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null);
-    focusable.push(btn);
+    if (!row.disabled) focusable.push(btn);
     return btn;
   };
 

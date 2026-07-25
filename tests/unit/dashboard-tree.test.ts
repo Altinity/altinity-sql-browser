@@ -408,8 +408,13 @@ describe('renderDashboardTree — action menu', () => {
     renderDashboardTree(app);
     click(menuButton(list, 'w1:sales:filter:f-bare'));
     expect(menuLabels()[0]).toBe('Open source query');
-    const disabled = document.querySelector('.dash-tree-menu .is-disabled')!;
+    const disabled = document.querySelector<HTMLButtonElement>('.dash-tree-menu .is-disabled')!;
     expect(disabled.textContent).toContain('Open source query');
+    // Disabled SEMANTICALLY, not merely greyed out: assistive technology would
+    // otherwise announce an enabled action, and keyboard activation would silently
+    // do nothing.
+    expect(disabled.disabled).toBe(true);
+    expect(disabled.getAttribute('aria-disabled')).toBe('true');
     // Clicking it does nothing at all.
     click(disabled);
     expect(app.openSavedQuery).not.toHaveBeenCalled();
@@ -678,6 +683,44 @@ describe('renderDashboardTree — search', () => {
     // The caret survives because the input lives OUTSIDE the repainted row list.
     expect(app.dom.dashboardSearchInput).toBe(input);
     expect(input.isConnected).toBe(true);
+  });
+
+  // The input is built once, OUTSIDE the repainted list, so it does not follow a
+  // workspace switch on its own — the tree would filter by the new workspace's
+  // search text while the box still displayed the old one.
+  it('syncs the search box to the workspace whose tree is being rendered', () => {
+    const { app } = treeApp();
+    const input = app.dom.dashboardSearchInput!;
+    input.value = 'revenue';
+    input.dispatchEvent(new Event('input'));
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').searchText).toBe('revenue');
+
+    app.currentWorkspace = { ...workspace(), id: 'w2' } as never;
+    renderDashboardTree(app);
+    // A workspace with no search of its own shows an EMPTY box, matching its tree.
+    expect(input.value).toBe('');
+
+    app.currentWorkspace = workspace() as never;
+    renderDashboardTree(app);
+    // ...and coming back restores both together.
+    expect(input.value).toBe('revenue');
+    expect(labels(app.dom.dashboardTreeList!)).toContain('Revenue');
+  });
+
+  it('does not touch the search box when it already agrees, so the caret survives', () => {
+    const { app } = treeApp();
+    const input = app.dom.dashboardSearchInput!;
+    input.value = 'revenue';
+    input.dispatchEvent(new Event('input'));
+    let writes = 0;
+    const raw = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!;
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get: () => raw.get!.call(input),
+      set: (v) => { writes += 1; raw.set!.call(input, v); },
+    });
+    renderDashboardTree(app);
+    expect(writes).toBe(0);
   });
 
   it('typing cancels a pending single-click from before the search', () => {

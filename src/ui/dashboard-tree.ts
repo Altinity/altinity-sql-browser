@@ -36,7 +36,7 @@ import type { MainSurfaceState, OpenDashboardRequest } from '../application/main
  *  `App` contract. A real `App` satisfies it directly, and so does the unit
  *  fixture (same convention as `ui/schema.ts`'s `SchemaApp`). */
 export interface DashboardTreeApp {
-  dom: Pick<AppDom, 'dashboardTreeList'>;
+  dom: Pick<AppDom, 'dashboardTreeList' | 'dashboardSearchInput'>;
   state: AppState;
   /** Read-only: the tree is a projection of the COMMITTED aggregate. */
   currentWorkspace: TreeWorkspace | null;
@@ -113,6 +113,14 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
   const list = app.dom.dashboardTreeList;
   if (!list) return;
   const doc = app.document ?? list.ownerDocument;
+
+  // The search box is built ONCE and outside this list (so typing keeps the caret),
+  // which means it does not follow a workspace switch on its own: the tree would
+  // filter by the new workspace's search text while the input still displayed the
+  // old one — or show a stale filter with a blank box on the way back. Guarded on
+  // inequality so the ordinary repaint never touches the caret.
+  const search = app.dom.dashboardSearchInput;
+  if (search && search.value !== readUi(app).searchText) search.value = readUi(app).searchText;
 
   const tree = deriveDashboardTree({
     workspace: app.currentWorkspace, surface: app.mainSurface, ui: readUi(app),
@@ -251,8 +259,10 @@ function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTre
         rows: row.menu.map((item) => ({
           kind: 'item' as const,
           label: item.label,
+          // An unavailable operation still RENDERS, so the row's vocabulary stays
+          // discoverable — but disabled semantically, not merely greyed out.
           ...(item.command === null
-            ? { extraClass: 'is-disabled', onClick: () => {} }
+            ? { extraClass: 'is-disabled', disabled: true, onClick: () => {} }
             : { onClick: () => runCommand(app, row, item.command!) }),
         })),
       });

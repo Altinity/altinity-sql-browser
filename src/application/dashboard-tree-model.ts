@@ -20,7 +20,7 @@
 
 import type { DashboardFocusTarget, MainSurfaceState, OpenDashboardRequest } from './main-surface.js';
 import type { DashboardTreeGroup, DashboardTreeUiState } from './dashboard-tree-ui-state.js';
-import { groupStateKey } from './dashboard-tree-ui-state.js';
+import { encodeKeyPart, groupStateKey } from './dashboard-tree-ui-state.js';
 
 // ── Deliberately loosened input shapes ──────────────────────────────────────
 // The persisted-workspace validator normally rejects broken references, but the
@@ -242,7 +242,7 @@ export function deriveDashboardTree(
   const rows: DashboardTreeRow[] = [];
 
   for (const dashboard of dashboards) {
-    const dashboardKey = workspaceId + ':' + dashboard.id;
+    const dashboardKey = encodeKeyPart(workspaceId) + ':' + encodeKeyPart(dashboard.id);
     const title = trimmed(dashboard.title);
     const description = trimmed(dashboard.description);
     const dashboardMatched = search !== '' && hits([title, description]);
@@ -363,7 +363,7 @@ export function deriveDashboardTree(
         const focusView = openDashboardCommand(dashboard.id, 'view', member);
         const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
         rows.push({
-          key: dashboardKey + ':' + member.kind + ':' + member.id,
+          key: dashboardKey + ':' + member.kind + ':' + encodeKeyPart(member.id),
           kind,
           level: 3,
           parentKey: groupKey,

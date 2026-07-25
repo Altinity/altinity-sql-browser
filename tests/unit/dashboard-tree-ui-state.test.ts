@@ -61,6 +61,15 @@ describe('expansion', () => {
   });
 });
 
+describe('groupStateKey', () => {
+  it('escapes the Dashboard id so two ids cannot share a group key', () => {
+    // `a:panels` as a Dashboard id would otherwise collide with Dashboard `a`'s
+    // Panels group.
+    expect(groupStateKey('a:panels', 'filters')).not.toBe(groupStateKey('a', 'panels'));
+    expect(groupStateKey('a', 'panels')).toBe('a:panels');
+  });
+});
+
 describe('setTreeSearch', () => {
   it('captures the pre-search scroll position when a search STARTS', () => {
     const scrolled = setTreeScroll(EMPTY_TREE_UI, 420);
@@ -134,10 +143,10 @@ describe('pruneTreeUi', () => {
   });
 
   it('resolves a Dashboard id that itself contains the group separator', () => {
-    // Group keys are `<dashboardId>:<group>`, so the id is everything before the
-    // LAST separator — a naive split would prune a legitimately open group.
+    // The id is ESCAPED into the group key, so splitting on the last separator is
+    // unambiguous — and a Dashboard called `ops` must not keep `ops:eu`'s group.
     const state = toggleGroupExpanded(EMPTY_TREE_UI, 'ops:eu', 'panels');
-    expect(pruneTreeUi(state, ['ops:eu']).expandedGroups.has('ops:eu:panels')).toBe(true);
+    expect(pruneTreeUi(state, ['ops:eu']).expandedGroups.has(groupStateKey('ops:eu', 'panels'))).toBe(true);
     expect(pruneTreeUi(state, ['ops']).expandedGroups.size).toBe(0);
   });
 
