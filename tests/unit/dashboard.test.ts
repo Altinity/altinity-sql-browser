@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach, type Mock } from 'vitest';
 import {
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
@@ -4957,5 +4957,126 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     expect(tileNames(app)).toEqual(['q2', 'q1']); // reorder visible synchronously, before any commit
     await flush();
     expect(commit).toHaveBeenCalled();
+  });
+});
+
+// #425 — the explicit navigation focus contract: a caller can ask to land on one
+// tile or one curated filter of the Dashboard it opens.
+describe('renderDashboard — navigation focus (#425)', () => {
+  const focusWs = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+  // happy-dom's `scrollIntoView` is an empty method and `focus()` is a no-op on a
+  // DISCONNECTED element, so the fixture root must be in the document and the
+  // scroll call has to be observed on the prototype.
+  let scrollCalls: Element[];
+  beforeEach(() => {
+    scrollCalls = [];
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrollCalls.push(this);
+    });
+  });
+
+  const focusApp = (workspace = focusWs()) => {
+    const built = dashApp({ workspace });
+    document.body.appendChild(rootEl(built.app));
+    return built;
+  };
+
+  it('focuses, scrolls to, and temporarily highlights the tile named by TILE id', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't2' } });
+    const cards = qsa(app.root, '.dash-tile');
+    const second = cards[1];
+    expect(document.activeElement).toBe(second);
+    expect(scrollCalls).toContain(second);
+    expect(second.classList.contains('is-nav-target')).toBe(true);
+    // Programmatic focus only — the tile never joins the Tab order.
+    expect(second.getAttribute('tabindex')).toBe('-1');
+    // The other tile is untouched.
+    expect(cards[0].classList.contains('is-nav-target')).toBe(false);
+  });
+
+  it('never resolves a tile by its QUERY id', async () => {
+    const { app } = focusApp();
+    // 'q2' is the saved-query id of the second tile; its TILE id is 't2'.
+    await render(app, { focus: { kind: 'tile', id: 'q2' } });
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('no longer on this dashboard');
+  });
+
+  it('clears only the temporary highlight on the next user interaction, keeping focus', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    const card = qsa(app.root, '.dash-tile')[0];
+    expect(card.classList.contains('is-nav-target')).toBe(true);
+    document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(card.classList.contains('is-nav-target')).toBe(false);
+    // Normal keyboard focus styling is retained — only the extra highlight went.
+    expect(document.activeElement).toBe(card);
+    expect(card.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('clears the highlight after a bounded interval with no interaction', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app } = focusApp();
+      await render(app, { focus: { kind: 'tile', id: 't1' } });
+      const card = qsa(app.root, '.dash-tile')[0];
+      expect(card.classList.contains('is-nav-target')).toBe(true);
+      vi.advanceTimersByTime(2000);
+      expect(card.classList.contains('is-nav-target')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('focuses a curated filter by FILTER id, without scrolling the tile grid', async () => {
+    const { app } = focusApp(wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    }));
+    await render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    const field = qs(app.root, '[data-field-key="region"]');
+    expect(field).not.toBeNull();
+    expect(document.activeElement).toBe(field);
+    expect(field.classList.contains('is-nav-target')).toBe(true);
+    // Filters live at the top and have no layout placement, so no tile is
+    // scrolled for them.
+    expect(scrollCalls.some((node) => (node as HTMLElement).classList.contains('dash-tile'))).toBe(false);
+  });
+
+  it('opens the Dashboard anyway when the focus target is missing', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'filter', id: 'no-such-filter' } });
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('no longer on this dashboard');
+  });
+
+  it('suppresses a focus request from a SUPERSEDED render', async () => {
+    const { app } = focusApp();
+    // The fixture's `captureSurfaceGeneration` advances on each `renderDashboard`;
+    // a stale generation is exactly what a late request from a prior Dashboard
+    // (or from before a return to the Query surface) carries.
+    app.isSurfaceGenerationCurrent = () => false;
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    // Non-destructive: no diagnostic either — the target existed, the render did not.
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+  });
+
+  it('retires a prior render\'s highlight so it cannot fire against a detached node', async () => {
+    const { app } = focusApp();
+    await render(app, { focus: { kind: 'tile', id: 't1' } });
+    const first = qsa(app.root, '.dash-tile')[0];
+    await render(app, { focus: { kind: 'tile', id: 't2' } });
+    expect(first.classList.contains('is-nav-target')).toBe(false);
+    expect(qsa(app.root, '.is-nav-target')).toHaveLength(1);
   });
 });

@@ -234,6 +234,13 @@ let installedDashboardCleanup: (() => void) | null = null;
 // would linger behind the Query surface, still answering `.dash-page` queries
 // with a page whose viewer session is already destroyed.
 let installedDashboardHost: Element | null = null;
+// #425: the pending clear for a navigation highlight. Module-level for the same
+// reason the listeners above are: a later render (or surface teardown) must be
+// able to retire the PRIOR render's highlight — including its document listeners
+// — rather than leave it to fire against a detached node.
+let installedNavHighlightClear: (() => void) | null = null;
+/** How long a navigation highlight lasts absent any user interaction. */
+const NAV_HIGHLIGHT_MS = 2000;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
 function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
@@ -259,6 +266,8 @@ export function disposeDashboardSurface(): void {
   if (installedGestureCancel) installedGestureCancel();
   installedDashboardCleanup?.();
   installedDashboardCleanup = null;
+  installedNavHighlightClear?.();
+  installedNavHighlightClear = null;
   installedDashboardHost?.replaceChildren();
   installedDashboardHost = null;
 }
@@ -2398,5 +2407,86 @@ export async function renderDashboard(
     installedModifierListeners = { win: gridWin, onKeyDown, onKeyUp, onBlur };
   }
 
+  // #425 — deliver the navigation focus target at the deterministic point where
+  // the node it names actually exists and is stable. Both are straight-line
+  // sequencing off real completion signals, never a timeout.
+  //
+  // A TILE card exists already: the viewer session seeds its state with every
+  // tile at construction, so the render effect built each card synchronously
+  // above, and the host is now in the document (without which `focus()` is a
+  // silent no-op). The first publish only repaints tile BODIES, so focus on the
+  // card — never on an inner heading, which is replaced on every publish —
+  // survives it.
+  if (target.focus?.kind === 'tile') applyNavigationFocus(target.focus);
+
   await session.start();
+
+  // A FILTER field is not stable across that first publish: it changes the bar's
+  // signature (committed values, active flags, arriving options), and a rebuild
+  // replaces the whole control — so focus set before `start()` would be dropped
+  // onto the detached node. The resolved wave is this control's own
+  // render-complete signal.
+  if (target.focus?.kind === 'filter') applyNavigationFocus(target.focus);
+
+  // Called only from the two narrowed call sites above, so `focus` is never null
+  // here — no redundant guard.
+  function applyNavigationFocus(focus: DashboardFocusTarget): void {
+    // Opening another Dashboard, returning to the Query surface, a workspace
+    // switch, or sign-out all advance the renderer generation — a focus request
+    // that belonged to a superseded render must not steal focus from the one now
+    // on screen.
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
+    const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
+    if (!node) {
+      // Non-destructive: the Dashboard is already open and stays open.
+      flashToast(focus.kind === 'tile'
+        ? 'That panel is no longer on this dashboard.'
+        : 'That filter is no longer on this dashboard.', { document: doc });
+      return;
+    }
+    // A tile card and a filter field are both non-interactive containers, so
+    // they need a programmatic-focus target; `-1` keeps them out of the Tab
+    // order, leaving normal keyboard navigation untouched.
+    if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
+    node.scrollIntoView({ block: 'nearest' });
+    node.focus();
+    highlightNavigationTarget(node);
+  }
+
+  /** Resolve a tile by its Dashboard-local TILE id — never the saved-query id it
+   *  renders. A flow KPI band member has its own host element; every other tile
+   *  is its cached card. */
+  function tileFocusTarget(tileId: string): HTMLElement | null {
+    return flowKpiHosts.get(tileId) ?? tileEls.get(tileId)?.card ?? null;
+  }
+
+  /** Resolve a curated filter by its FILTER id, within the selected Dashboard
+   *  only: filter id → its declared parameter → the built control. */
+  function filterFocusTarget(filterId: string): HTMLElement | null {
+    const definition = (viewerDoc.filters || []).find((filter) => filter.id === filterId);
+    if (!definition) return null;
+    return currentFilterBar?.fieldElement(definition.parameter) ?? null;
+  }
+
+  /** A temporary navigation highlight, IN ADDITION to the normal focus ring.
+   *  Cleared after a bounded interval or on the next user interaction, whichever
+   *  comes first, so it never lingers as permanent chrome. */
+  function highlightNavigationTarget(node: HTMLElement): void {
+    node.classList.add('is-nav-target');
+    let done = false;
+    const clear = (): void => {
+      if (done) return;
+      done = true;
+      node.classList.remove('is-nav-target');
+      clearTimeout(timer);
+      doc.removeEventListener('pointerdown', clear, true);
+      doc.removeEventListener('keydown', clear, true);
+    };
+    const timer = setTimeout(clear, NAV_HIGHLIGHT_MS);
+    doc.addEventListener('pointerdown', clear, true);
+    doc.addEventListener('keydown', clear, true);
+    const previous = installedNavHighlightClear;
+    installedNavHighlightClear = clear;
+    previous?.();
+  }
 }

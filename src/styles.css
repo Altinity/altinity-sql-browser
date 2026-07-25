@@ -2580,6 +2580,14 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 .dash-back-to-query { flex-shrink: 0; }
+/* #425 — the temporary navigation highlight, IN ADDITION to the normal focus
+   ring (which is untouched): it marks the tile or filter a caller navigated to,
+   and is cleared after a bounded interval or on the next user interaction. */
+.is-nav-target {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
 /* The one-row application header and optional filter toolbar share one sticky
    top bar so Dashboard controls stay visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }
