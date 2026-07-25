@@ -18,7 +18,7 @@
 // This is a READ-ONLY projection. It never clones, repairs, rejects or rewrites a
 // reference, and it never throws — see "Defensive rendering" below.
 
-import type { DashboardFocusTarget, MainSurfaceState } from './main-surface.js';
+import type { DashboardFocusTarget, MainSurfaceState, OpenDashboardRequest } from './main-surface.js';
 import type { DashboardTreeGroup, DashboardTreeUiState } from './dashboard-tree-ui-state.js';
 import { groupStateKey } from './dashboard-tree-ui-state.js';
 
@@ -74,21 +74,27 @@ export type DashboardTreeRowKind = 'dashboard' | 'group' | 'filter' | 'panel';
  *  filter legitimately has no `sourceQueryId`. */
 export type DashboardTreeInvalid = 'unresolved-query' | 'unresolved-source' | null;
 
-/** Every operation any row can offer. The view owns ONE dispatcher over these
- *  ids, so the model stays pure (no injected `app`, no closures) and the view
- *  keeps a single covered code path. */
-export type DashboardTreeActionId =
-  | 'toggle'
-  | 'open-query'
-  | 'open-view'
-  | 'open-edit'
-  | 'focus-view'
-  | 'focus-edit';
+/**
+ * One fully-resolved operation a row can perform. The model emits the COMMAND,
+ * not an id the view has to re-derive arguments for — so the view's dispatcher is
+ * three exhaustive branches with no null guards, and every argument
+ * (`queryId`, `request.focus`) is non-optional by construction. That is what
+ * keeps `ui/dashboard-tree.ts` free of the unreachable defensive branches the
+ * coverage config forbids.
+ *
+ * `toggle` carries no target: the view always has the row in hand.
+ */
+export type DashboardTreeCommand =
+  | { kind: 'toggle' }
+  | { kind: 'open-query'; queryId: string }
+  | { kind: 'open-dashboard'; request: OpenDashboardRequest };
 
-export interface DashboardTreeAction {
-  id: DashboardTreeActionId;
+export interface DashboardTreeMenuItem {
   label: string;
-  enabled: boolean;
+  /** `null` when the operation is unavailable — a source-less or broken member's
+   *  query-open. The item still renders, disabled, so the row's full vocabulary
+   *  stays discoverable and keyboard-reachable. */
+  command: DashboardTreeCommand | null;
 }
 
 export interface DashboardTreeRow {
@@ -121,10 +127,13 @@ export interface DashboardTreeRow {
   /** The query a primary click would open, when one resolves. */
   queryId: string | null;
   group: DashboardTreeGroup | null;
-  single: DashboardTreeActionId | null;
-  double: DashboardTreeActionId | null;
-  shift: DashboardTreeActionId | null;
-  menu: readonly DashboardTreeAction[];
+  /** Primary click (deferred through the click arbiter for member and Dashboard
+   *  rows; run immediately for a group row, which has no competing gesture). */
+  single: DashboardTreeCommand | null;
+  double: DashboardTreeCommand | null;
+  shift: DashboardTreeCommand | null;
+  /** The keyboard-reachable equivalent of every gesture this row offers. */
+  menu: readonly DashboardTreeMenuItem[];
 }
 
 export interface DashboardTree {
@@ -146,6 +155,15 @@ export const UNTITLED_FILTER = 'Untitled filter';
 export const UNTITLED_PANEL = 'Untitled panel';
 const MISSING_QUERY_DIAGNOSTIC = 'This panel\'s query is not in this workspace, so it cannot be opened.';
 const MISSING_SOURCE_DIAGNOSTIC = 'This filter\'s option-source query is not in this workspace, so it cannot be opened.';
+
+/** A fully-resolved Dashboard-open command. A member target makes it a FOCUS
+ *  navigation; omitting one opens the Dashboard row itself. */
+const openDashboardCommand = (
+  dashboardId: string, mode: 'view' | 'edit', focus?: DashboardFocusTarget,
+): DashboardTreeCommand => ({
+  kind: 'open-dashboard',
+  request: { dashboardId, mode, ...(focus === undefined ? {} : { focus }) },
+});
 
 const trimmed = (value: string | undefined): string => (typeof value === 'string' ? value.trim() : '');
 const specName = (query: TreeQuery | null): string => trimmed(query?.spec?.name ?? undefined);
@@ -266,12 +284,12 @@ export function deriveDashboardTree(
       member: null,
       queryId: null,
       group: null,
-      single: 'toggle',
-      double: 'open-view',
-      shift: 'open-edit',
+      single: { kind: 'toggle' },
+      double: openDashboardCommand(dashboard.id, 'view'),
+      shift: openDashboardCommand(dashboard.id, 'edit'),
       menu: [
-        { id: 'open-view', label: 'Open in View', enabled: true },
-        { id: 'open-edit', label: 'Open in Edit', enabled: true },
+        { label: 'Open in View', command: openDashboardCommand(dashboard.id, 'view') },
+        { label: 'Open in Edit', command: openDashboardCommand(dashboard.id, 'edit') },
       ],
     });
 
@@ -321,7 +339,7 @@ export function deriveDashboardTree(
         group,
         // A group row has no double or Shift action, so its expansion needs no
         // arbitration and the view toggles it immediately.
-        single: 'toggle',
+        single: { kind: 'toggle' },
         double: null,
         shift: null,
         menu: [],
@@ -333,7 +351,11 @@ export function deriveDashboardTree(
         const labels = MEMBER_MENU_LABELS[kind];
         // Before #427 one query can back several members, so this is one row PER
         // MEMBER — never merged by query id or label.
-        const canOpenQuery = facts.queryId !== null;
+        const openQuery: DashboardTreeCommand | null = facts.queryId === null
+          ? null
+          : { kind: 'open-query', queryId: facts.queryId };
+        const focusView = openDashboardCommand(dashboard.id, 'view', member);
+        const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
         rows.push({
           key: dashboardKey + ':' + member.kind + ':' + member.id,
           kind,
@@ -358,13 +380,13 @@ export function deriveDashboardTree(
           // Only the query-open action is withheld: Dashboard View/Edit focus
           // navigation stays available so a broken member's diagnostics remain
           // reachable.
-          single: canOpenQuery ? 'open-query' : null,
-          double: 'focus-view',
-          shift: 'focus-edit',
+          single: openQuery,
+          double: focusView,
+          shift: focusEdit,
           menu: [
-            { id: 'open-query', label: labels.open, enabled: canOpenQuery },
-            { id: 'focus-view', label: labels.view, enabled: true },
-            { id: 'focus-edit', label: labels.edit, enabled: true },
+            { label: labels.open, command: openQuery },
+            { label: labels.view, command: focusView },
+            { label: labels.edit, command: focusEdit },
           ],
         });
       }

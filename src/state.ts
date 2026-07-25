@@ -19,6 +19,9 @@ import {
   queryMembershipFavorite, toggleTileMembership,
 } from './dashboard/application/tile-membership.js';
 import type { ResultSort } from './core/sort.js';
+// Type-only: `dashboard-tree-ui-state.ts` is a pure leaf with no imports of its
+// own, so naming its state shape here introduces no cycle.
+import type { DashboardTreeUiState } from './application/dashboard-tree-ui-state.js';
 import {
   defaultSpecValidationService as defaultSpecValidationServiceUntyped,
   evaluateSpecText as evaluateSpecTextUntyped,
@@ -350,6 +353,14 @@ export interface AppState {
    * navigation, an external refresh — bumps this instead.
    */
   dashboardTreeRevision: Signal<number>;
+  /**
+   * #426 — the Dashboard tree's expansion/search/scroll/keyboard state, per
+   * workspace id. A plain Map, NOT a signal: see
+   * `application/dashboard-tree-ui-state.ts` for why observing it would lose the
+   * search caret and repaint on every scroll frame. Session only; never
+   * persisted, never part of `StoredWorkspaceV3`.
+   */
+  dashboardTreeUi: Map<string, DashboardTreeUiState>;
   savedQueries: SavedQueryV2[];
   savedQueryLoadDiagnostics: SpecDiagnostic[];
   editingSavedId: Signal<string | null>;
@@ -612,6 +623,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
     upperRole: signal<'databases' | 'dashboards'>('databases'),
     dashboardTreeRevision: signal(0),
+    dashboardTreeUi: new Map(),
     // The localStorage startup ingress: v1 entries become canonical v2 in
     // memory without an eager write; future Spec versions fail closed here.
     savedQueries: storedQueries.ok ? storedQueries.value : [],

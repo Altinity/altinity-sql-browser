@@ -113,6 +113,13 @@ export interface AppDom {
   /** Workbench's post-workspace `Dashboard →` shortcut; Dashboard replaces
    *  this slot with the View/Edit segmented control. */
   dashboardNav?: HTMLElement;
+  /** #426 — the upper sidebar pane's `Databases | Dashboards` role tab row. */
+  upperRoleTabs?: HTMLElement;
+  /** #426 — the Dashboard hierarchy tree's `role="tree"` row container. */
+  dashboardTreeList?: HTMLElement;
+  /** #426 — the Dashboard tree's search box. Built once, OUTSIDE the repainted row
+   *  list, so typing keeps the caret. */
+  dashboardSearchInput?: HTMLInputElement;
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
   runElapsedEl?: HTMLElement;

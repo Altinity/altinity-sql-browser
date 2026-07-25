@@ -208,7 +208,7 @@ describe('deriveDashboardTree — transitional and invalid references', () => {
     expect(sourceless.diagnostic).toBeNull();
     expect(sourceless.queryId).toBeNull();
     expect(sourceless.single).toBeNull();
-    expect(sourceless.menu.find((a) => a.id === 'open-query')!.enabled).toBe(false);
+    expect(sourceless.menu[0].command).toBeNull();
   });
 
   it('renders a PRESENT-but-unresolved filter source as a diagnostic row', () => {
@@ -231,9 +231,10 @@ describe('deriveDashboardTree — transitional and invalid references', () => {
     // needs the missing query is withheld.
     for (const key of ['w1:d:filter:f-sourceless', 'w1:d:filter:f-broken', 'w1:d:tile:t-broken']) {
       const broken = row(derive(workspace(), allOpen(['d'])).rows, key);
-      expect(broken.double).toBe('focus-view');
-      expect(broken.shift).toBe('focus-edit');
-      expect(broken.menu.filter((a) => a.enabled).map((a) => a.id)).toEqual(['focus-view', 'focus-edit']);
+      expect(broken.double).toMatchObject({ kind: 'open-dashboard' });
+      expect(broken.shift).toMatchObject({ kind: 'open-dashboard' });
+      // Query-open is the ONLY thing withheld.
+      expect(broken.menu.map((item) => item.command === null)).toEqual([true, false, false]);
     }
   });
 
@@ -435,7 +436,7 @@ describe('deriveDashboardTree — current resource', () => {
   });
 });
 
-describe('deriveDashboardTree — action sets', () => {
+describe('deriveDashboardTree — command sets', () => {
   const tree = () => derive(ws({
     dashboards: [dashboard({
       id: 'd', title: 'D',
@@ -445,37 +446,54 @@ describe('deriveDashboardTree — action sets', () => {
     queries: [query('q1', 'Q1')],
   }), allOpen(['d']));
 
-  it('gives a Dashboard row toggle / View / Edit', () => {
+  it('gives a Dashboard row toggle / View / Edit, with NO focus target', () => {
     const dash = row(tree().rows, 'w1:d');
-    expect([dash.single, dash.double, dash.shift]).toEqual(['toggle', 'open-view', 'open-edit']);
-    expect(dash.menu.map((a) => a.label)).toEqual(['Open in View', 'Open in Edit']);
+    expect(dash.single).toEqual({ kind: 'toggle' });
+    expect(dash.double).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'view' } });
+    expect(dash.shift).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'edit' } });
+    expect(dash.menu.map((item) => item.label)).toEqual(['Open in View', 'Open in Edit']);
+    expect(dash.menu.every((item) => item.command !== null)).toBe(true);
   });
 
   it('gives a group row ONLY a toggle — no double, no Shift, no menu', () => {
     const group = row(tree().rows, 'w1:d:group:panels');
-    expect([group.single, group.double, group.shift]).toEqual(['toggle', null, null]);
+    expect(group.single).toEqual({ kind: 'toggle' });
+    expect(group.double).toBeNull();
+    expect(group.shift).toBeNull();
     expect(group.menu).toEqual([]);
   });
 
-  it('gives a panel row query-open / focus-View / focus-Edit with panel wording', () => {
+  it('gives a panel row query-open plus tile-focused View/Edit, addressed by TILE id', () => {
     const panel = row(tree().rows, 'w1:d:tile:t1');
-    expect([panel.single, panel.double, panel.shift]).toEqual(['open-query', 'focus-view', 'focus-edit']);
-    expect(panel.menu.map((a) => a.label)).toEqual([
+    expect(panel.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+    // Never focused by query id — the request carries the Dashboard-local tile id.
+    expect(panel.double).toEqual({
+      kind: 'open-dashboard',
+      request: { dashboardId: 'd', mode: 'view', focus: { kind: 'tile', id: 't1' } },
+    });
+    expect(panel.shift).toEqual({
+      kind: 'open-dashboard',
+      request: { dashboardId: 'd', mode: 'edit', focus: { kind: 'tile', id: 't1' } },
+    });
+    expect(panel.menu.map((item) => item.label)).toEqual([
       'Open query',
       'Open Dashboard in View and focus panel',
       'Open Dashboard in Edit and focus panel',
     ]);
-    expect(panel.member).toEqual({ kind: 'tile', id: 't1' });
   });
 
-  it('gives a filter row the SOURCE-query wording and its own member target', () => {
+  it('gives a filter row the SOURCE-query wording and a filter-focused request', () => {
     const filter = row(tree().rows, 'w1:d:filter:f1');
-    expect(filter.menu.map((a) => a.label)).toEqual([
+    expect(filter.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+    expect(filter.double).toEqual({
+      kind: 'open-dashboard',
+      request: { dashboardId: 'd', mode: 'view', focus: { kind: 'filter', id: 'f1' } },
+    });
+    expect(filter.menu.map((item) => item.label)).toEqual([
       'Open source query',
       'Open Dashboard in View and focus filter',
       'Open Dashboard in Edit and focus filter',
     ]);
-    expect(filter.member).toEqual({ kind: 'filter', id: 'f1' });
   });
 
   it('marks member rows as non-expandable leaves at level 3', () => {

@@ -34,6 +34,8 @@ import { MOBILE_BREAKPOINT_PX } from '../state.js';
 import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
+import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
+import { renderDashboardTree } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle, renderDashboardNav } from './file-menu.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
@@ -109,9 +111,16 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
   });
   app.dom.schemaList = h('div', { class: 'schema-list' });
-  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
+  // #426: the upper pane now hosts TWO roles. The Databases content is built here
+  // exactly as before and handed to the role host, which only ever toggles
+  // `hidden` — so schema search text/focus, expansion, lazily-loaded columns and
+  // scroll all survive a trip through the Dashboards role by construction.
+  const upper = buildSidebarUpper(app, [
     h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
-    app.dom.schemaList);
+    app.dom.schemaList,
+  ]);
+  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
+    app.dom.upperRoleTabs!, upper.databasesHost, upper.dashboardsHost);
 
   app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
   app.dom.savedSearch = h('div', { class: 'saved-search' });
@@ -191,6 +200,31 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // and hover title, so repaint the tree when isMobile flips.
     state.isMobile.value;
     renderSchema(app);
+  }));
+  // #426: the upper role tabs. Both counts are reactive — the Databases count
+  // tracks the schema load (and is omitted while it is pending or failed), and the
+  // Dashboards count tracks the committed collection through the tree's explicit
+  // invalidation signal, since `currentWorkspace` is not itself a signal.
+  disposers.push(effect(() => {
+    state.upperRole.value;
+    state.schema.value;
+    state.schemaError.value;
+    state.dashboardTreeRevision.value;
+    renderUpperRoleTabs(app);
+  }));
+  // #426: expose exactly one role host, and repaint the Dashboard tree. Kept
+  // separate from the tab effect so a schema load does not rebuild the tree.
+  disposers.push(effect(() => {
+    upper.showRole(state.upperRole.value);
+  }));
+  disposers.push(effect(() => {
+    // The ONE reactive input the tree has: every trigger #426 lists (workspace
+    // projection or switch, a committed mutation, selected Dashboard/mode/member
+    // navigation, an external refresh) bumps this. Expansion/search/scroll are
+    // deliberately NOT reactive — the tree repaints itself directly for those.
+    state.dashboardTreeRevision.value;
+    state.upperRole.value;
+    renderDashboardTree(app);
   }));
   // The schema/auth-failure banner reflects schemaError (a separate surface).
   disposers.push(effect(() => {

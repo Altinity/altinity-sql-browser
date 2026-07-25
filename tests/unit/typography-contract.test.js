@@ -300,6 +300,11 @@ describe('every text-bearing class the UI renders has a rule', () => {
       'src/ui/workbench/workbench-shell.ts', 'src/ui/dashboard.ts',
       'src/ui/doc-pane.ts', 'src/ui/shortcuts.ts', 'src/ui/kpi-panel.ts',
       'src/ui/explain-graph.ts', 'src/ui/tabs.ts',
+      // #426 moved the upper sidebar pane's markup into these two modules. They
+      // are listed for exactly the reason the comment above gives: app-shell.ts
+      // is gated, and carving its markup out into unlisted files would silently
+      // move the sidebar back out of this gate's view.
+      'src/ui/sidebar-upper.ts', 'src/ui/dashboard-tree.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
     const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
