@@ -254,6 +254,39 @@ describe('renderSavedHistory', () => {
     expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'a'))).toBe(true);
   });
 
+  // #425 GATE: the star still writes the COMPATIBILITY Dashboard (#424's
+  // temporary favourite↔membership coupling). With the Library pane now visible
+  // beside a Dashboard, starring while a NON-first Dashboard is selected would
+  // silently add a tile to a different Dashboard than the one on screen.
+  it('saved: refuses to star while a non-first Dashboard is selected', async () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 'a', name: 'A', sql: '1', favorite: false }]);
+    const dashboard = (id: string) => ({
+      documentVersion: 1 as const, id, title: id, revision: 1,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report' as const, items: {} },
+      filters: [], tiles: [],
+    });
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
+    };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('first dashboard');
+
+    // Selecting that first Dashboard makes the star honest again.
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null };
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
+  });
+
   it('saved: favorite merges into a linked dirty valid Spec draft', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

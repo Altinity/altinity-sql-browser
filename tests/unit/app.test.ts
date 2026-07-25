@@ -5650,6 +5650,73 @@ describe('unified /sql routing', () => {
     expect(app.renderDashboard).toHaveBeenCalledOnce();
   });
 
+  // #425: an in-tab import folds the projected document back into the SELECTED
+  // entry by id. Writing the compatibility slot here would overwrite the
+  // collection's FIRST Dashboard while a different one is on screen.
+  it('reloadDashboardRoute folds the projection into the selected Dashboard by id', () => {
+    const app = createApp(env());
+    const dash = (id: string, revision: number): DashboardDocumentV1 => ({
+      documentVersion: 1, id, title: id, revision,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    });
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [],
+      dashboards: [dash('first', 1), dash('second', 1)],
+    };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    app.state.dashboard = dash('second', 7);
+    app.renderDashboard = vi.fn();
+    app.reloadDashboardRoute();
+    expect(app.currentWorkspace!.dashboards.map((d) => [d.id, d.revision]))
+      .toEqual([['first', 1], ['second', 7]]);
+  });
+
+  it('reloadDashboardRoute writes the compatibility slot when nothing is selected', () => {
+    const app = createApp(env());
+    const dash = (id: string, revision: number): DashboardDocumentV1 => ({
+      documentVersion: 1, id, title: id, revision,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    });
+    const workspace: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [],
+      dashboards: [dash('first', 1), dash('second', 1)],
+    };
+    app.currentWorkspace = workspace;
+    app.renderDashboard = vi.fn();
+    // The legacy entry point: no selection, so the projection lands on slot 0 and
+    // every later entry is preserved.
+    app.state.dashboard = dash('imported', 4);
+    app.reloadDashboardRoute();
+    expect(app.currentWorkspace!.dashboards.map((d) => d.id)).toEqual(['imported', 'second']);
+
+    // No projection at all → the collection is untouched (never a reason to drop
+    // a stored Dashboard).
+    app.currentWorkspace = workspace;
+    app.state.dashboard = null;
+    app.reloadDashboardRoute();
+    expect(app.currentWorkspace!.dashboards.map((d) => d.id)).toEqual(['first', 'second']);
+  });
+
+  it('reloadDashboardRoute leaves the collection alone when the selection is gone', () => {
+    const app = createApp(env());
+    const only: DashboardDocumentV1 = {
+      documentVersion: 1, id: 'first', title: 'first', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [only],
+    };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', focus: null };
+    app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
+    app.renderDashboard = vi.fn();
+    app.reloadDashboardRoute();
+    // Never guessed into another entry.
+    expect(app.currentWorkspace!.dashboards).toEqual([only]);
+  });
+
   it('renderCurrentSurface dispatches a ready dashboard route to its renderer', () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'view' };

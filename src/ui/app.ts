@@ -14,7 +14,7 @@ import {
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
-  resolveCompatibilityDashboard, withCompatibilityDashboard,
+  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
@@ -80,7 +80,7 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard,
+  resolveOpenDashboard, selectedDashboardId,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -2229,17 +2229,23 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.reloadDashboardRoute = () => {
-    // #424: fold the projected compatibility Dashboard back into the COLLECTION,
-    // preserving every other entry. A null projection means "this workspace has
-    // no Dashboard", which can only happen when the collection is already empty
-    // — never a reason to drop a stored Dashboard, so the array is left alone.
+    // #424: fold the projected Dashboard back into the COLLECTION, preserving
+    // every other entry. A null projection means "this workspace has no
+    // Dashboard", which can only happen when the collection is already empty —
+    // never a reason to drop a stored Dashboard, so the array is left alone.
+    // #425: fold it back into the SELECTED entry, addressed by id. Writing the
+    // compatibility slot here would overwrite the collection's FIRST Dashboard
+    // while a different one is on screen. `replaceDashboard` returns null for a
+    // missing or ambiguous id, which leaves the collection untouched rather than
+    // guessing — the surface reconciles to Query mode on its next projection.
+    const selectedId = selectedDashboardId(app.mainSurface);
+    const foldProjection = (workspace: StoredWorkspaceV3): StoredWorkspaceV3 => {
+      if (!app.state.dashboard) return workspace;
+      if (selectedId === null) return withCompatibilityDashboard(workspace, app.state.dashboard);
+      return replaceDashboard(workspace, selectedId, app.state.dashboard) ?? workspace;
+    };
     app.currentWorkspace = app.currentWorkspace
-      ? {
-        ...(app.state.dashboard
-          ? withCompatibilityDashboard(app.currentWorkspace, app.state.dashboard)
-          : app.currentWorkspace),
-        queries: app.state.savedQueries,
-      }
+      ? { ...foldProjection(app.currentWorkspace), queries: app.state.savedQueries }
       : null;
     app.renderDashboard();
   };

@@ -17,6 +17,7 @@ import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryName, queryPanel, queryView } from '../core/saved-query.js';
 import { queryMembershipFavorite } from '../dashboard/application/tile-membership.js';
+import { selectedDashboardId } from '../application/main-surface.js';
 import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
 import { filterRoleBadge } from './tabs.js';
 import type { App } from './app.types.js';
@@ -34,6 +35,21 @@ const dragProps = (sql: string): { draggable: string; ondragstart: (e: DragEvent
   draggable: 'true',
   ondragstart: (e: DragEvent) => e.dataTransfer!.setData(SUBQUERY_MIME, sql),
 });
+
+/**
+ * #425 — whether the star's membership write would land on the Dashboard the
+ * user is actually looking at. `toggleFavorite` writes the COMPATIBILITY
+ * Dashboard (#424's temporary favourite↔membership coupling), so it is only
+ * honest while that is also the selected one. True in Query mode — no Dashboard
+ * is on screen, and the one this phase's UI exposes IS the first entry — and true
+ * when the selected Dashboard is that first entry. Retired with the coupling
+ * itself in #427.
+ */
+function starTargetsSelectedDashboard(app: App): boolean {
+  const selectedId = selectedDashboardId(app.mainSurface);
+  if (selectedId === null) return true;
+  return app.currentWorkspace?.dashboards[0]?.id === selectedId;
+}
 
 export function renderSavedHistory(app: App): void {
   const tabsRow = app.dom.savedTabsRow;
@@ -138,6 +154,21 @@ function renderSaved(app: App, list: HTMLElement): void {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
         e.stopPropagation();
+        // #425 GATE: the star still drives tile membership through #424's
+        // temporary favourite coupling, which writes the COMPATIBILITY Dashboard
+        // (the collection's first entry) — not whichever Dashboard is selected.
+        // With the Library pane now visible beside a Dashboard, an ungated star
+        // would silently add a tile to a different Dashboard than the one on
+        // screen. Refuse rather than write the wrong one; #427 separates
+        // Dashboard-owned query copies from Library queries and retires this
+        // coupling, at which point the gate goes with it.
+        if (!starTargetsSelectedDashboard(app)) {
+          flashToast(
+            'Favourites still add panels to this workspace’s first dashboard — open that one to change its panels.',
+            { document: app.document },
+          );
+          return;
+        }
         // #343: star = explicit desired membership over the LATEST workspace.
         // `toggleFavorite` runs its transform through `app.mutateWorkspace`
         // (serializes + reads latest at dequeue) — no `serializeWrite` wrapper.

@@ -42,8 +42,9 @@ import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-oper
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
-  resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
+import { selectedDashboardId } from '../application/main-surface.js';
 import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
@@ -707,7 +708,15 @@ export async function exportDashboardAction(app: App): Promise<void> {
   // #302: invoked from the Dashboard page's File menu (via
   // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
   // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
-  const dashboard = ws ? resolveCompatibilityDashboard(ws).dashboard : app.state.dashboard;
+  // #425: export the SELECTED Dashboard. Reading the compatibility slot here
+  // would export the collection's FIRST entry from a different Dashboard's own
+  // File menu — wrong the moment a non-first Dashboard can be open.
+  const selectedId = selectedDashboardId(app.mainSurface);
+  const dashboard = ws
+    ? (selectedId === null
+      ? resolveCompatibilityDashboard(ws).dashboard
+      : findDashboard(ws, selectedId))
+    : app.state.dashboard;
   if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
   const queryList = ws ? ws.queries : app.state.savedQueries;
   const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
