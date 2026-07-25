@@ -43,6 +43,7 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.openPopoverKey()).toBeNull(); // no multiselect fields at all — always null
     expect(bar.focusedFieldKey()).toBeNull();
     expect(() => bar.focusFieldTrigger('x')).not.toThrow(); // unknown param — a no-op
+    expect(bar.fieldElement('x')).toBeNull(); // #425: nothing built, nothing to navigate to
     expect(() => bar.refreshTimeRangeLabels(Date.now())).not.toThrow();
   });
 
@@ -623,6 +624,15 @@ describe('buildFilterBar (shared filter row)', () => {
       // The pair's own two individual fields are gone; only the non-group field remains.
       const names = [...bar.ordinaryEl.querySelectorAll('.var-field:not(.is-time-range) .var-name')].map((n) => n.textContent);
       expect(names).toEqual(['region']);
+      // #425: navigation resolves a field by its stamped key, searched from the
+      // two separately-mountable regions (a caller re-parents them, emptying
+      // `el`). A parameter the time-range group OWNS has no standalone field, so
+      // it resolves to that compound control — not to nothing.
+      expect(bar.fieldElement('region')!.querySelector('.var-name')!.textContent).toBe('region');
+      const compound = bar.fieldElement('from');
+      expect(compound!.classList.contains('is-time-range')).toBe(true);
+      expect(bar.fieldElement('to')).toBe(compound);
+      expect(bar.fieldElement('nope')).toBeNull();
       expect([...bar.el.children]).toEqual([bar.timeEl, bar.ordinaryEl]);
     });
 

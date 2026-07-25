@@ -1,6 +1,6 @@
 // Canonical empty Dashboard document. Shared by the Dashboard authoring
 // session and the Workbench favorite -> tile bridge: both paths must mint the
-// same valid document when a StoredWorkspaceV2 legitimately has dashboard:null.
+// same valid document when a workspace legitimately has no Dashboard yet.
 
 import { deriveFlowFallback } from '../layouts/grafana-grid-layout.js';
 import type { DashboardDocumentV1 } from '../../generated/json-schema.types.js';

@@ -88,15 +88,26 @@ describe('documented shapes', () => {
       revision: 1, title: 'D', id: 'd1', documentVersion: 1,
     };
     const query = { spec: { name: 'Q' }, specVersion: 1, sql: 'SELECT 1', id: 'q1' };
-    const workspaceA = { dashboard, queries: [query], name: 'W', key: 'operations', id: 'w1', storageVersion: 2 };
-    const workspaceB = { storageVersion: 2, id: 'w1', key: 'operations', name: 'W', queries: [query], dashboard };
+    const dashboards = [dashboard, { ...dashboard, id: 'd2' }];
+    const workspaceA = { dashboards, queries: [query], name: 'W', key: 'operations', id: 'w1', storageVersion: 3 };
+    const workspaceB = { storageVersion: 3, id: 'w1', key: 'operations', name: 'W', queries: [query], dashboards };
     expect(canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE))
       .toBe(canonicalJson(workspaceB, STORED_WORKSPACE_SHAPE));
     const ws = canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE);
     expect(ws.indexOf('"id"')).toBeLessThan(ws.indexOf('"key"'));
     expect(ws.indexOf('"key"')).toBeLessThan(ws.indexOf('"name"'));
     expect(ws.indexOf('"storageVersion"')).toBeLessThan(ws.indexOf('"queries"'));
+    expect(ws.indexOf('"queries"')).toBeLessThan(ws.indexOf('"dashboards"'));
     expect(ws.indexOf('"documentVersion"')).toBeLessThan(ws.indexOf('"revision"'));
+    // #424: every COLLECTION member gets the documented Dashboard field order,
+    // not just the first — a member must never fall back to plain key sorting.
+    expect(ws.indexOf('"d2"')).toBeGreaterThan(ws.indexOf('"d1"'));
+    expect(ws.split('"documentVersion"').length - 1).toBe(2);
+    // Array order is semantic and preserved even when it is not sorted.
+    const reversed = canonicalJson(
+      { ...workspaceA, dashboards: [dashboards[1], dashboards[0]] }, STORED_WORKSPACE_SHAPE,
+    );
+    expect(reversed.indexOf('"d2"')).toBeLessThan(reversed.indexOf('"d1"'));
 
     const bundle = {
       dashboards: [dashboard], queries: [query], exportedAt: 'x',

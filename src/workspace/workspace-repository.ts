@@ -1,6 +1,13 @@
 // Multi-workspace repository (#406). The repository owns validation, canonical
 // encoding, collection policy, and translation of store outcomes into
 // application-facing diagnostics. IndexedDB remains behind WorkspaceStore.
+//
+// #424: the canonical aggregate is StoredWorkspaceV3 (`dashboards[]`). A record
+// persisted as V2 is migrated to V3 by the codec on every read, so nothing
+// above this layer ever sees a V2 document; the RECORD itself upgrades on its
+// next ordinary commit (every write encodes V3), which keeps opening a
+// workspace a pure read. `dashboardRevision`/`hasDashboard` describe the
+// compatibility Dashboard only — the summary shape is unchanged for callers.
 
 import {
   decodeStoredWorkspaceJson, encodeStoredWorkspaceJson,
@@ -13,7 +20,8 @@ import { diagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { JsonSchemaValidationService } from '../core/json-schema-validation.js';
 import { normalizeWorkspaceKeyLookup } from '../core/workspace-key.js';
-import type { StoredWorkspaceV2 } from '../generated/json-schema.types.js';
+import { resolveCompatibilityDashboard } from './workspace-dashboards.js';
+import type { StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 
 export interface WorkspaceSummary {
   readonly id: string;
@@ -38,7 +46,7 @@ export interface WorkspaceListResult {
 /** Explicit keyed loads never silently select a different workspace. */
 export type WorkspaceLoadResult =
   | { readonly status: 'empty' }
-  | { readonly status: 'ok'; readonly workspace: StoredWorkspaceV2 }
+  | { readonly status: 'ok'; readonly workspace: StoredWorkspaceV3 }
   | {
     readonly status: 'corrupt';
     /** Record identity stays available for targeted reset/recovery. */
@@ -50,7 +58,7 @@ export type WorkspaceLoadResult =
 export type WorkspaceCommitResult =
   | {
     readonly ok: true;
-    readonly workspace: StoredWorkspaceV2;
+    readonly workspace: StoredWorkspaceV3;
     readonly dashboardRevision: number | null;
   }
   | { readonly ok: false; readonly diagnostics: WorkspaceDiagnostic[] };
@@ -67,8 +75,8 @@ export interface WorkspaceRepository {
   list(): Promise<WorkspaceListResult>;
   loadById(id: string): Promise<WorkspaceLoadResult>;
   loadByKey(key: string): Promise<WorkspaceLoadResult>;
-  create(workspace: StoredWorkspaceV2): Promise<WorkspaceCommitResult>;
-  commit(workspace: StoredWorkspaceV2): Promise<WorkspaceCommitResult>;
+  create(workspace: StoredWorkspaceV3): Promise<WorkspaceCommitResult>;
+  commit(workspace: StoredWorkspaceV3): Promise<WorkspaceCommitResult>;
   /** Idempotent: an unknown ID succeeds with `deleted: false`. */
   delete(id: string): Promise<WorkspaceDeleteResult>;
   /** Resolve startup's implicit workspace; explicit URL-key loads use loadByKey. */
@@ -99,22 +107,24 @@ const persistenceFailure = (verb: string, error: unknown): WorkspaceCommitResult
 });
 
 const published = (encoded: string): Extract<WorkspaceCommitResult, { ok: true }> => {
-  const workspace = JSON.parse(encoded) as StoredWorkspaceV2;
+  const workspace = JSON.parse(encoded) as StoredWorkspaceV3;
   return {
     ok: true,
     workspace,
-    dashboardRevision: workspace.dashboard === null ? null : workspace.dashboard.revision,
+    dashboardRevision: resolveCompatibilityDashboard(workspace).dashboard?.revision ?? null,
   };
 };
 
 const summary = (
-  workspace: StoredWorkspaceV2, lastOpenedAt: number | null,
+  workspace: StoredWorkspaceV3, lastOpenedAt: number | null,
 ): WorkspaceSummary => ({
   id: workspace.id,
   key: workspace.key,
   name: workspace.name,
   queryCount: workspace.queries.length,
-  hasDashboard: workspace.dashboard !== null,
+  // Compatibility-scoped like `dashboardRevision` above, so it resolves
+  // through the same seam rather than assuming the index-0 rule itself.
+  hasDashboard: resolveCompatibilityDashboard(workspace).dashboard !== null,
   lastOpenedAt,
 });
 
@@ -183,7 +193,7 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     return record === null ? { status: 'empty' } : decodeRecord(record);
   }
 
-  async function create(workspace: StoredWorkspaceV2): Promise<WorkspaceCommitResult> {
+  async function create(workspace: StoredWorkspaceV3): Promise<WorkspaceCommitResult> {
     const encoded = encodeStoredWorkspaceJson(workspace, codecOptions);
     if (!encoded.ok) return { ok: false, diagnostics: encoded.diagnostics };
     try {
@@ -198,7 +208,7 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     }
   }
 
-  async function commit(workspace: StoredWorkspaceV2): Promise<WorkspaceCommitResult> {
+  async function commit(workspace: StoredWorkspaceV3): Promise<WorkspaceCommitResult> {
     const encoded = encodeStoredWorkspaceJson(workspace, codecOptions);
     if (!encoded.ok) return { ok: false, diagnostics: encoded.diagnostics };
     try {

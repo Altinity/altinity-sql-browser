@@ -439,8 +439,9 @@ remembered result view and chart config. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the
 row and is included in Markdown/SQL exports.
 
-The queries plus the zero-or-one editable Dashboard form a workspace
-(`StoredWorkspaceV2`). A browser profile can keep multiple workspaces in
+The queries plus the workspace's Dashboard collection form a workspace
+(`StoredWorkspaceV3`; records written before that contract are read and
+migrated automatically). A browser profile can keep multiple workspaces in
 IndexedDB; each has an immutable opaque id, a stable human-readable URL key,
 and a mutable display name. Each record is persisted **atomically** — a reload
 restores its queries, Dashboard, layout, and name together; every saved-query
@@ -457,11 +458,11 @@ order (#342):
 - **New workspace…** — creates and activates a new empty, default-named
   workspace without deleting the previous one. Open editor tabs are unaffected.
 - **Import workspace…** — creates and activates a new local workspace from a
-  portable bundle; imported identity is reminted and made unique. A
-  multi-Dashboard file asks which Dashboard to adopt (or none).
+  portable bundle; imported identity is reminted and made unique. Every bundled
+  Dashboard is imported, in file order.
 - **Export workspace…** (`.json`) — write the one canonical
   **`altinity-sql-browser/portable-bundle`** interchange format: every saved
-  query (catalog order) plus the zero-or-one Dashboard. Uses the deterministic
+  query (catalog order) plus every stored Dashboard. Uses the deterministic
   canonical encoder and never mutates the workspace's identity or Dashboard
   revision.
 - **Import queries…** — merge a file's queries into the current collection. When

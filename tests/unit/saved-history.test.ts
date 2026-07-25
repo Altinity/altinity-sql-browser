@@ -254,6 +254,51 @@ describe('renderSavedHistory', () => {
     expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'a'))).toBe(true);
   });
 
+  // #425 GATE: the star still writes the COMPATIBILITY Dashboard (#424's
+  // temporary favourite↔membership coupling). With the Library pane now visible
+  // beside a Dashboard, starring while a NON-first Dashboard is selected would
+  // silently add a tile to a different Dashboard than the one on screen.
+  it('saved: refuses to star while a non-first Dashboard is selected', async () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 'a', name: 'A', sql: '1', favorite: false }]);
+    const dashboard = (id: string) => ({
+      documentVersion: 1 as const, id, title: id, revision: 1,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report' as const, items: {} },
+      filters: [], tiles: [],
+    });
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
+    };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toContain('first dashboard');
+
+    // No loaded workspace at all: nothing to compare the selection against, so
+    // the star stays refused rather than writing blind.
+    app.currentWorkspace = null;
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+
+    // Selecting that first Dashboard makes the star honest again.
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
+    };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null };
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
+  });
+
   it('saved: favorite merges into a linked dirty valid Spec draft', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
@@ -323,7 +368,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     // The latest committed workspace no longer contains s1 — the patch aborts.
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 2, id: 'w1', key: 'l', name: 'L', queries: [], dashboard: null });
+      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull(); // the planner found no target and aborted
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
@@ -342,7 +387,7 @@ describe('renderSavedHistory', () => {
   it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
     const app = makeApp();
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 2, id: 'w1', key: 'l', name: 'L', queries: [], dashboard: null });
+      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull();
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];

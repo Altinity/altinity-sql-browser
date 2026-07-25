@@ -52,11 +52,20 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateDashboardV1',
     typeExport: 'DashboardDocumentV1',
   },
+  // stored-workspace v2 stays registered read-only (#424): the codec still
+  // decodes persisted v2 records through this validator before migrating them
+  // to v3. Every WRITE uses v3.
   {
     path: 'schemas/stored-workspace-v2.schema.json',
     schemaExport: 'storedWorkspaceV2Schema',
     validatorExport: 'validateStoredWorkspaceV2',
     typeExport: 'StoredWorkspaceV2',
+  },
+  {
+    path: 'schemas/stored-workspace-v3.schema.json',
+    schemaExport: 'storedWorkspaceV3Schema',
+    validatorExport: 'validateStoredWorkspaceV3',
+    typeExport: 'StoredWorkspaceV3',
   },
   {
     path: 'schemas/portable-bundle-v1.schema.json',

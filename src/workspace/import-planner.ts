@@ -5,7 +5,7 @@
 // in tests and unguessable in production.
 //
 // A PortableBundle import always resolves to one COMPLETE candidate
-// StoredWorkspaceV2 built from the repository-level primitives in
+// StoredWorkspaceV3 built from the repository-level primitives in
 // workspace-operations.ts, then validated in one pass through
 // validateStoredWorkspaceDocument — exactly the same "build the whole
 // candidate, validate once, never commit an invalid one" discipline
@@ -28,11 +28,14 @@ import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
+import {
+  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from './workspace-dashboards.js';
 import type { WorkspaceIdGen } from './workspace-operations.js';
 import { validateStoredWorkspaceDocument } from './stored-workspace.js';
 import type { WorkspaceCodecOptions } from './stored-workspace.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3,
 } from '../generated/json-schema.types.js';
 
 // --- Dashboard listing -------------------------------------------------------
@@ -341,7 +344,7 @@ function addImportedFavoriteTiles(
 export interface PortableBundleImportPlan {
   sourceDashboardId?: string;
   queryMappings: IdMapping;
-  candidateWorkspace: StoredWorkspaceV2 | null;
+  candidateWorkspace: StoredWorkspaceV3 | null;
   diagnostics: WorkspaceDiagnostic[];
 }
 
@@ -355,7 +358,7 @@ function invalidPlan(
 }
 
 function validatedPlan(
-  candidate: StoredWorkspaceV2, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
+  candidate: StoredWorkspaceV3, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
 ): PortableBundleImportPlan {
   const diagnostics = validateStoredWorkspaceDocument(candidate, options);
   if (diagnostics.length) return invalidPlan(diagnostics, queryMappings, sourceDashboardId);
@@ -375,31 +378,52 @@ function dashboardNotFoundPlan(
   );
 }
 
+/** #424: the offending Dashboard is identified by its `dashboards[i]` path in
+ *  the multi-Dashboard import, so a caller can tell WHICH bundled Dashboard
+ *  broke the plan; the single-Dashboard import keeps the collection path. */
 function invalidatedDashboardPlan(
   sourceDashboardId: string, queryMappings: IdMapping, missingRequiredIds: readonly string[],
+  path: (string | number)[] = ['dashboards'],
 ): PortableBundleImportPlan {
   return invalidPlan(
-    [diagnostic(['dashboard'], 'dashboard-import-invalid',
+    [diagnostic(path, 'dashboard-import-invalid',
       `Dashboard import is missing required saved-query dependencies: ${missingRequiredIds.join(', ')}`,
       sourceDashboardId)],
     queryMappings, sourceDashboardId,
   );
 }
 
+/** #425: an EXPLICIT import target that no longer resolves to exactly one stored
+ *  Dashboard — deleted concurrently, or ambiguous under a duplicate id. The import
+ *  commits nothing rather than retargeting the compatibility slot: the caller
+ *  named a Dashboard, and writing a different one would destroy an entry the
+ *  import never mentioned. */
+function staleImportTargetPlan(
+  sourceDashboardId: string, targetDashboardId: string, queryMappings: IdMapping,
+): PortableBundleImportPlan {
+  return invalidPlan(
+    [diagnostic(['dashboards'], 'dashboard-import-target-stale',
+      'The dashboard this import targets was removed, or its id became ambiguous, before the import completed',
+      targetDashboardId)],
+    queryMappings, sourceDashboardId,
+  );
+}
+
 /** Queries-only import: merge the bundle's queries into the workspace's query
  * catalog per `decisions`. Imported favorited panels restore their Dashboard
- * tile membership. */
+ * tile membership — in the COMPATIBILITY Dashboard only (#424); every other
+ * stored Dashboard is carried through untouched. */
 export function planImportQueries(
-  workspace: StoredWorkspaceV2, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV3, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = mergeIncomingQueries(bundle.queries, workspace.queries, mapping);
   const dashboard = addImportedFavoriteTiles(
-    workspace.dashboard, bundle.queries, mapping, nextQueries, genId,
+    resolveCompatibilityDashboard(workspace).dashboard, bundle.queries, mapping, nextQueries, genId,
   );
-  const candidate = importQueries({ ...workspace, dashboard }, nextQueries);
+  const candidate = importQueries(withCompatibilityDashboard(workspace, dashboard), nextQueries);
   return validatedPlan(candidate, mapping, options);
 }
 
@@ -407,11 +431,23 @@ export function planImportQueries(
  *  `mode: 'copy'` mints a fresh Dashboard id (revision reset to 1); `mode:
  *  'replace'` keeps the imported Dashboard's own id and revision. A skipped
  *  or unmapped required dependency invalidates the plan (`candidateWorkspace:
- *  null`) rather than silently dropping the reference. */
+ *  null`) rather than silently dropping the reference.
+ *
+ *  #424/#425: the imported Dashboard REPLACES the Dashboard the import was
+ *  invoked from — `targetDashboardId` when the caller has an explicit selection,
+ *  otherwise the COMPATIBILITY slot — and every other stored Dashboard is
+ *  preserved in place. Addressing the target by id matters once a non-first
+ *  Dashboard can be open: writing the compatibility slot would import "into" a
+ *  Dashboard the user is not looking at. An unknown `targetDashboardId` (deleted
+ *  concurrently) falls back to the compatibility slot rather than dropping the
+ *  import. A `mode: 'replace'` id that collides with another stored Dashboard is
+ *  diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule rather
+ *  than silently overwriting an unrelated Dashboard. */
 export function planImportDashboard(
-  workspace: StoredWorkspaceV2, bundle: PortableBundleV1, sourceDashboardId: string,
+  workspace: StoredWorkspaceV3, bundle: PortableBundleV1, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
+  targetDashboardId: string | null = null,
 ): PortableBundleImportPlan {
   const source = bundle.dashboards.find((dashboard) => dashboard.id === sourceDashboardId);
   if (!source) return dashboardNotFoundPlan(sourceDashboardId, {});
@@ -429,39 +465,57 @@ export function planImportDashboard(
     ? { ...rewritten.dashboard, id: genId(), revision: 1 }
     : rewritten.dashboard;
 
-  const candidate = replaceWorkspaceContents(workspace, { queries: nextQueries, dashboard: finalDashboard });
+  const base = replaceWorkspaceContents(
+    workspace, { queries: nextQueries, dashboards: workspace.dashboards },
+  );
+  // No explicit target: the legacy entry point writes the compatibility slot.
+  if (targetDashboardId === null) {
+    return validatedPlan(
+      withCompatibilityDashboard(base, finalDashboard), mapping, options, sourceDashboardId,
+    );
+  }
+  // An EXPLICIT target fails closed. `replaceDashboard` returns null when the id
+  // names no entry (deleted concurrently) or names more than one (ambiguous), and
+  // falling back to the compatibility slot there would overwrite the collection's
+  // FIRST Dashboard — silently retargeting exactly the way #425 forbids, and
+  // destroying a Dashboard the import never named.
+  const candidate = replaceDashboard(base, targetDashboardId, finalDashboard);
+  if (!candidate) return staleImportTargetPlan(sourceDashboardId, targetDashboardId, mapping);
   return validatedPlan(candidate, mapping, options, sourceDashboardId);
 }
 
-/** Replace the workspace's queries AND Dashboard atomically (preserving
- *  workspace `id`/`name`): only queries reachable from the bundle survive,
- *  and the selected Dashboard (if any) becomes the workspace's sole
- *  Dashboard, keeping its own id/revision. Omit `sourceDashboardId` to
- *  replace with a query-only workspace (Dashboard cleared to `null`). */
+/** Replace the workspace's queries AND Dashboards atomically (preserving
+ *  workspace `id`/`key`/`name`): only queries reachable from the bundle
+ *  survive, and EVERY bundled Dashboard becomes a workspace Dashboard, in
+ *  portable bundle order, each keeping its own id and revision (#424 — a
+ *  multi-Dashboard bundle no longer collapses to one). A bundle with no
+ *  Dashboards yields a query-only workspace, in which imported favorited
+ *  panels still restore their tile membership by minting the compatibility
+ *  Dashboard, exactly as before. Duplicate incoming Dashboard ids are
+ *  diagnosed by the candidate's own validation, never silently deduplicated. */
 export function planReplaceWorkspace(
-  workspace: StoredWorkspaceV2, bundle: PortableBundleV1, sourceDashboardId: string | undefined,
+  workspace: StoredWorkspaceV3, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = replaceIncomingQueries(bundle.queries, workspace.queries, mapping);
 
-  let dashboard: DashboardDocumentV1 | null = null;
-  if (sourceDashboardId !== undefined) {
-    const source = bundle.dashboards.find((candidate) => candidate.id === sourceDashboardId);
-    if (!source) return dashboardNotFoundPlan(sourceDashboardId, mapping);
+  const dashboards: DashboardDocumentV1[] = [];
+  for (const [index, source] of bundle.dashboards.entries()) {
     const rewritten = rewriteDashboardReferences(source, mapping);
     if (rewritten.invalidated) {
-      return invalidatedDashboardPlan(sourceDashboardId, mapping, rewritten.missingRequiredIds);
+      return invalidatedDashboardPlan(
+        source.id, mapping, rewritten.missingRequiredIds, ['dashboards', index],
+      );
     }
-    dashboard = rewritten.dashboard;
+    dashboards.push(rewritten.dashboard);
   }
 
-  const candidate = replaceWorkspaceContents(workspace, {
-    queries: nextQueries,
-    dashboard: sourceDashboardId === undefined
-      ? addImportedFavoriteTiles(dashboard, bundle.queries, mapping, nextQueries, genId)
-      : dashboard,
-  });
-  return validatedPlan(candidate, mapping, options, sourceDashboardId);
+  if (!dashboards.length) {
+    const derived = addImportedFavoriteTiles(null, bundle.queries, mapping, nextQueries, genId);
+    if (derived) dashboards.push(derived);
+  }
+  const candidate = replaceWorkspaceContents(workspace, { queries: nextQueries, dashboards });
+  return validatedPlan(candidate, mapping, options);
 }

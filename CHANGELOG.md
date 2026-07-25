@@ -9,7 +9,44 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- A workspace now stores an ordered **collection** of Dashboard documents
+  (`StoredWorkspaceV3`, #424) instead of zero or one. Records written under the
+  previous contract are read and migrated deterministically on open — Dashboard
+  ids, revisions, layouts, filters, tiles, favorites, and unknown
+  forward-compatible fields are preserved exactly, no tile is derived from or
+  removed because of a favorite flag, and nothing is reordered; every new write
+  is `storageVersion: 3`. Dashboard ids are unique per workspace and each
+  Dashboard is validated independently against the shared query collection,
+  while tile, filter, and layout ids stay Dashboard-local. **No UI change:** the
+  Workbench and Dashboard still expose exactly one Dashboard, resolved through a
+  single compatibility selector, and the favorite star drives its membership
+  exactly as before. Additional Dashboards are preserved, validated, exported,
+  and never modified by an action that did not target them. Two import/export
+  consequences: a workspace export now carries every stored Dashboard rather
+  than only the visible one, and **Import workspace** imports every Dashboard in
+  the file (in file order) instead of asking which single one to keep.
+
 ### Added
+- **A Dashboard is now a full-size main work surface, selected by stable id**
+  (#425). Opening one replaces the complete SQL editor and result/data-drawer
+  area — the left sidebar stays visible — and a new toolbar carries
+  **Back to query**, the Dashboard title, and the View/Edit switch. Returning
+  finds the Query surface exactly as it was: the same editor contents,
+  selection, scroll, active tab, result view, and editor/results split, because
+  the surface is hidden rather than rebuilt. A surface change no longer cancels
+  the query running in the editor, and Back/Forward between surfaces of one
+  workspace no longer tears the editor down. Any Dashboard in the workspace can
+  be opened by its stable id in View or Edit mode, with an optional navigation
+  target that focuses, scrolls to, and briefly highlights one panel tile (by
+  tile id, never query id) or one curated filter (by filter id). Selection is
+  session state — never persisted, cleared on sign-out, and re-validated against
+  every committed workspace, so a deleted or ambiguous selection falls back to
+  Query mode instead of silently switching to another Dashboard; URLs are
+  unchanged. Export Dashboard and Import Dashboard now address the selected
+  Dashboard rather than the workspace's first one; the favourite star, which
+  still drives panel membership through the first Dashboard, declines with an
+  explanation while a different one is open (it is rewired in #427).
 - Inter and JetBrains Mono are now **shipped with the artifact** instead of only
   being named in the font stacks. DESIGN.md has always specified both, but with
   no `@font-face` and no CDN allowed, they rendered only for users who happened

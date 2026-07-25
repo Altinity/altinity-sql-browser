@@ -1,31 +1,32 @@
-// The signed-in workbench shell (#276 Phase 5) — `renderApp`'s ENTIRE former
-// body (header + sidebar + splitters + the workbench DOM + every reactive
-// effect + `workbench.attachShell` + the catalog bootstrap-load tail) moved
-// here byte-identically as `mountWorkbenchShell(deps)`. `src/ui/app.ts`'s own
-// exported `renderApp(app, helpers)` is now a thin composition call that
-// assembles `WorkbenchShellDeps` from the real `app` object and calls this.
+// The Workbench's query column (#276 Phase 5, narrowed by the #425 follow-up
+// prep split) — the tabs strip, editor toolbar, SQL/Spec editors, results
+// region, and every reactive effect/`attachShell`/mount call that's specific
+// to the query surface, mounted into a host `ui/app-shell.ts` owns (this
+// module no longer builds the header, sidebar, or mobile nav — see
+// `app-shell.ts`'s own header comment for those). `src/ui/app.ts`'s own
+// exported `renderApp(app, helpers)` composes both shells.
 //
 // `deps` is a narrow bag, NOT `App` — every value this shell's OWN logic
-// reads (root/document/state/actions/conn/catalog/sqlEditor/specEditor/
-// workbench session/queryDoc/prefs/matchMedia + the handful of app.ts-owned
-// DOM helper functions: updateSaveBtn/specBlocked/renderVarStrip/updateBanner/
-// setRunBtn/setExportBtn/activeTab) is its own field, read directly — never
-// through `app.*` — so this module is one step closer to not needing `app`
-// at all.
+// reads (document/state/actions/sqlEditor/specEditor/workbench session/
+// queryDoc/prefs/queryHost + the handful of app.ts-owned DOM helper
+// functions: updateSaveBtn/specBlocked/renderVarStrip/setRunBtn/setExportBtn/
+// activeTab) is its own field, read directly — never through `app.*` — so
+// this module is one step closer to not needing `app` at all.
 //
 // `deps.app` is the one deliberate exception (documented at its own field),
 // kept for three reasons that don't yet have a narrower home:
-//   1. The render-module pass-through: renderTabs/renderSchema/renderResults/
-//      renderSavedHistory/renderLibraryTitle all still take the full `App` —
-//      this shell receives `app` SOLELY to forward it to those calls (a
-//      documented crutch, not a license to read `app.*` for the shell's own
-//      logic — see CLAUDE.md rule 5 on speculative primitives: rewriting
-//      every render module to a narrow dep bag is out of scope here).
-//   2. `app.dom` itself: reset (`app.dom = {}`) and populated here, but every
-//      one of those render modules — and other files entirely (e.g.
+//   1. The render-module pass-through: renderTabs/renderResults still take
+//      the full `App` — this shell receives `app` SOLELY to forward it to
+//      those calls (a documented crutch, not a license to read `app.*` for
+//      the shell's own logic — see CLAUDE.md rule 5 on speculative
+//      primitives: rewriting every render module to a narrow dep bag is out
+//      of scope here).
+//   2. `app.dom` itself: populated here (not reset — `app-shell.ts` resets it
+//      exactly once, before either shell mounts), but every one of those
+//      render modules — and other files entirely (e.g.
 //      codemirror-adapter.ts's `app.dom.sqlEditorView = view`) — reach into
-//      `app.dom.*` directly, so the reset MUST land on the real object, not
-//      a decoupled copy this shell would own instead.
+//      `app.dom.*` directly, so the fields this shell owns must land on the
+//      real object, not a decoupled copy this shell would own instead.
 //   3. `app.updateEditorModeUi`/`app.syncSelection`: this shell DEFINES both
 //      closures and assigns them back onto `app` (not just calls them) —
 //      other app.ts closures (`setEditorMode`, `commitLinkedQuery`, …) and
@@ -44,29 +45,24 @@
 //
 // Every ordering comment, effect subscription set, and the `attachShell`
 // placement are preserved byte-identically — see the individual comments
-// below (ported verbatim from app.ts's history).
+// below (ported verbatim from app.ts's history, then from this module's own
+// pre-split history).
 
 import { h } from '../dom.js';
 import { Icon } from '../icons.js';
-import { MOBILE_BREAKPOINT_PX, savedForTab } from '../../state.js';
+import { savedForTab } from '../../state.js';
 import type { QueryTab as Tab, AppState as State } from '../../state.js';
 import { formatRows } from '../../core/format.js';
 import { effect } from '@preact/signals-core';
 import { renderTabs } from '../tabs.js';
-import { renderSchema } from '../schema.js';
 import { renderResults } from '../results.js';
 import type { QueryResult } from '../results.js';
-import { renderSavedHistory } from '../saved-history.js';
-import { renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
-import { buildAppHeader } from '../app-header.js';
 import { SCHEMA_GRAPH_MIME } from '../dnd-mime.js';
 import { startDrag } from '../splitters.js';
-import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from '../splitters.js';
+import type { DragCtx, DragRect, DragStartEvent } from '../splitters.js';
 import type { App, ActionsRegistry } from '../app.types.js';
 import type { EditorPort } from '../../editor/editor-port.types.js';
 import type { SpecEditorPort, SpecDiagnostic } from '../../editor/spec-editor.types.js';
-import type { ConnectionSession } from '../../application/connection-session.js';
-import type { SchemaCatalogService } from '../../application/schema-catalog-service.js';
 import type { QueryDocumentSession } from '../../application/query-document-session.js';
 import type { AppPreferences, PreferenceKey } from '../../application/app-preferences.js';
 import type { WorkbenchSession } from './workbench-session.js';
@@ -76,20 +72,16 @@ import type { WorkbenchSession } from './workbench-session.js';
  *  shell's own logic, never through `app.*`. */
 export interface WorkbenchShellDeps {
   /** The full controller, kept ONLY for: the render-module pass-through
-   *  (renderTabs/renderSchema/renderResults/renderSavedHistory/
-   *  renderLibraryTitle), the `app.dom` reset + population (other modules
-   *  read `app.dom.*` directly), and assigning `app.updateEditorModeUi`/
+   *  (renderTabs/renderResults), `app.dom` population (other modules read
+   *  `app.dom.*` directly), and assigning `app.updateEditorModeUi`/
    *  `app.syncSelection` back onto the real object (other app.ts closures and
    *  other modules read them off it). The shell's own logic below never reads
    *  `app.*` beyond these three uses — see the fields below for everything
    *  else. */
   app: App;
-  root: Element | null;
   document: Document;
   state: State;
   actions: ActionsRegistry;
-  conn: Pick<ConnectionSession, 'email' | 'host'>;
-  catalog: Pick<SchemaCatalogService, 'loadSchema' | 'loadReference'>;
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   /** The route-scoped run/runScript/runEntry/cancel session (#276 Phase 3a) —
@@ -98,75 +90,40 @@ export interface WorkbenchShellDeps {
   workbench: Pick<WorkbenchSession, 'attachShell'>;
   queryDoc: Pick<QueryDocumentSession, 'revalidateSpecDrafts'>;
   prefs: Pick<AppPreferences, 'save'>;
-  matchMedia: ((query: string) => MediaQueryList) | null;
+  /** The host `ui/app-shell.ts`'s `mountAppShell` owns — this shell appends
+   *  its own `workbenchEl` into it instead of building the surrounding
+   *  header/sidebar/mobile-nav frame. */
+  queryHost: HTMLElement;
   activeTab(): Tab;
   updateSaveBtn(): void;
   specBlocked(tab: Tab): boolean;
   renderVarStrip(): void;
-  updateBanner(): void;
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   setExportBtn(exporting: boolean): void;
-  /** The DOM half of the theme toggle's caller (app.ts's own `toggleTheme`,
-   *  composing `prefs.toggleTheme()` with the `data-theme`/icon swap) —
-   *  this shell only ever wires it as the theme button's `onclick`. */
-  toggleTheme(): void;
   startDrag: typeof startDrag;
 }
 
-/** Build the signed-in shell and mount all regions. Ported byte-identically
- *  from app.ts's former `renderApp` body (#276 Phase 5) — every ordering
- *  comment below is original. */
+/** Build the query column and mount it into `deps.queryHost`. Ported
+ *  byte-identically from this module's former body, which was itself ported
+ *  byte-identically from app.ts's former `renderApp` body (#276 Phase 5) —
+ *  every ordering comment below is original. */
 export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   const {
-    app, root, document: doc, state, actions, conn, catalog, sqlEditor, specEditor,
-    queryDoc, prefs, matchMedia, activeTab, updateSaveBtn, specBlocked, renderVarStrip,
-    updateBanner, setRunBtn, setExportBtn, toggleTheme, startDrag: doStartDrag,
+    app, document: doc, state, actions, sqlEditor, specEditor,
+    queryDoc, prefs, queryHost, activeTab, updateSaveBtn, specBlocked, renderVarStrip,
+    setRunBtn, setExportBtn, startDrag: doStartDrag,
   } = deps;
-  doc.documentElement.setAttribute('data-theme', state.theme);
-  doc.documentElement.setAttribute('data-density', state.density);
 
-  app.dom = {};
-  const header = buildAppHeader(app);
-
-  app.dom.schemaSearchInput = h('input', {
-    type: 'text', placeholder: 'Search tables, columns…',
-    oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
-  });
-  app.dom.schemaList = h('div', { class: 'schema-list' });
-  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
-    h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
-    app.dom.schemaList);
-
-  app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
-  app.dom.savedSearch = h('div', { class: 'saved-search' });
-  app.dom.savedList = h('div', { class: 'saved-list' });
-  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
-
-  const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  const rectFor = (axis: SplitterAxis): DragRect => {
-    if (axis === 'sideRow') return sidebar.getBoundingClientRect();
-    return { top: app.dom.editorRegion!.getBoundingClientRect().top, bottom: app.dom.resultsRegion!.getBoundingClientRect().bottom };
-  };
+  // Only 'row' (editor/results split) runs through this ctx — the sidebar's
+  // 'col'/'sideRow' splitters are app-shell's own, over elements this shell
+  // has no business touching.
+  const rectFor = (): DragRect => ({ top: app.dom.editorRegion!.getBoundingClientRect().top, bottom: app.dom.resultsRegion!.getBoundingClientRect().bottom });
   const dragCtx: DragCtx = {
     state,
     rectFor,
-    apply: (axis, value) => {
-      if (axis === 'col') sidebar.style.width = value + 'px';
-      else if (axis === 'sideRow') schemaPane.style.height = value + '%';
-      else app.dom.editorRegion!.style.height = value + '%';
-    },
+    apply: (axis, value) => { app.dom.editorRegion!.style.height = value + '%'; },
     save: (name, value) => prefs.save(name as PreferenceKey, value),
   };
-  app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'sideRow', dragCtx) });
-  // Mobile Tables view (#126): a Schema | Library segmented control at the top of
-  // the sidebar. CSS hides it above the breakpoint; below it, it swaps which pane
-  // shows (the sidebar's data-mobile-tab drives both the active-button style and
-  // the pane visibility — no JS effect needed for the active state).
-  app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
-    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Schema')),
-    h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
-  sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
-  const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
 
   app.dom.qtabsInner = h('div', { class: 'qtabs-inner' });
   const qtabsRow = h('div', { class: 'qtabs' }, app.dom.qtabsInner,
@@ -227,23 +184,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'row', dragCtx) });
 
   const workbenchEl = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.varStrip, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
-  app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
-  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, workbenchEl);
-
-  // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
-  // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the
-  // effect below) picks which of sidebar / editor / results fills the screen.
-  // The Results tab carries a live badge (row count, or ● while a query streams).
-  app.dom.mobileBadge = h('span', { class: 'mnav-badge' });
-  const navBtn = (view: string, icon: SVGElement, label: string, extra?: HTMLElement): HTMLButtonElement => h('button', {
-    class: 'mobile-nav-btn', 'data-view': view, onclick: () => { state.mobileView.value = view as 'tables' | 'editor' | 'results'; },
-  }, h('span', { class: 'mnav-ic' }, icon, extra || null), h('span', { class: 'mnav-label' }, label));
-  app.dom.mobileNav = h('div', { class: 'mobile-nav' },
-    navBtn('tables', Icon.database(), 'Tables'),
-    navBtn('editor', Icon.code(), 'Editor'),
-    navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
-
-  root!.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
+  queryHost.appendChild(workbenchEl);
 
   sqlEditor.mount(app.dom.sqlEditorHost!);
   specEditor.mount(app.dom.specEditorHost!);
@@ -311,6 +252,10 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   // directly from the session's own onChunk), the Run button (label + disabled,
   // reflecting the run state and the selection — Run ↔ Run selection), and the
   // mobile Results-nav badge (● while a query streams, else the row count).
+  // `setMobileBadge` writes into `app.dom.mobileBadge` — an app-shell-owned
+  // element (see app-shell.ts's own comment at its creation) — that crossing
+  // is deliberate: the badge summarizes THIS shell's run state, not the
+  // mobile nav's own concern.
   // Idempotent: re-registers (disposing the previous set) on every renderApp()
   // re-run.
   deps.workbench.attachShell({
@@ -341,65 +286,8 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
     state.hasSelection.value = sel.trim() !== '';
   };
   doc.addEventListener('selectionchange', app.syncSelection);
-  // Reactive repaint of the schema tree — replaces the scattered renderSchema()
-  // calls: re-runs on schema load, load error, filter text, or expand/collapse.
-  // Registered here (post-mount) so app.dom.schemaList already exists; the effect
-  // also runs once now for the initial paint.
-  disposers.push(effect(() => {
-    state.schema.value;
-    state.schemaError.value;
-    state.schemaFilter.value;
-    state.expanded.value;
-    // Crossing the mobile breakpoint (#126) adds/removes each row's drag source
-    // and hover title, so repaint the tree when isMobile flips.
-    state.isMobile.value;
-    renderSchema(app);
-  }));
-  // The schema/auth-failure banner reflects schemaError (a separate surface).
-  disposers.push(effect(() => {
-    state.schemaError.value;
-    updateBanner();
-  }));
-  // Reactive repaint of the side panel: re-runs when the active panel changes
-  // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
-  // still call renderSavedHistory directly until those slices are signals too.
-  disposers.push(effect(() => {
-    state.sidePanel.value;
-    renderSavedHistory(app);
-  }));
-  // Reactive repaint of the header library title (name + unsaved-changes dot):
-  // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
-  // separately (editingLibrary is not a signal — file-menu.js renders it directly).
-  disposers.push(effect(() => {
-    state.libraryName.value;
-    state.libraryDirty.value;
-    renderLibraryTitle(app);
-    // #302: the "Dashboard →" control's visibility tracks Dashboard presence,
-    // which changes alongside these signals (star toggle / import / replace all
-    // flip libraryDirty on their way through a commit).
-    renderDashboardNav(app);
-  }));
-  // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
-  // schema tree's drag/hover affordances, the results drop target, and the
-  // auto-navigation in the action wrappers) via the injected matchMedia seam.
-  // When the platform has no matchMedia the app stays in desktop JS mode — the
-  // mobile CSS still applies, just without JS branching.
-  const mq = matchMedia && matchMedia('(max-width: ' + MOBILE_BREAKPOINT_PX + 'px)');
-  const onMobileChange = (e: MediaQueryListEvent): void => { state.isMobile.value = e.matches; };
-  if (mq) {
-    state.isMobile.value = mq.matches;
-    mq.addEventListener('change', onMobileChange);
-  }
-  // Bottom-nav view switching: reflect the active mobile panel + Tables segmented
-  // choice onto data-attributes the mobile CSS keys off (a no-op above the
-  // breakpoint). Each runs once now for the initial paint.
-  disposers.push(effect(() => { mainRow.dataset.mobileView = state.mobileView.value; }));
-  disposers.push(effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; }));
-  catalog.loadSchema();
-  catalog.loadReference();
   return () => {
     for (const dispose of disposers) dispose();
     doc.removeEventListener('selectionchange', app.syncSelection!);
-    mq?.removeEventListener('change', onMobileChange);
   };
 }

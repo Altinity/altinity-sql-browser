@@ -37,16 +37,16 @@
     import { renderDashboard } from '/src/ui/dashboard.js';
 
     const seed = {
-      storageVersion: 2, id: 'workspace', key: 'workspace', name: 'Workspace',
+      storageVersion: 3, id: 'workspace', key: 'workspace', name: 'Workspace',
       queries: [
         { id: 'q1', sql: 'SELECT 111111', specVersion: 1, spec: { name: 'First metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
         { id: 'q2', sql: 'SELECT 222222', specVersion: 1, spec: { name: 'Second metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
       ],
-      dashboard: {
+      dashboards: [{
         documentVersion: 1, id: 'dashboard', title: 'KPI movement', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [],
         tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
-      },
+      }],
     };
     const root = document.querySelector('#surface');
     const app = createApp({ root, broadcastChannel: () => null });
@@ -73,7 +73,19 @@
       const loaded = await app.workspace.loadById(seed.id);
       return loaded.status === 'ok' ? loaded.workspace : null;
     };
-    await renderDashboard(app);
+    // #425: the application shell owns the surface hosts and the header slot and
+    // hands the Dashboard a render target. This harness plays that role with two
+    // plain divs, so the fixture keeps exercising the real `renderDashboard`.
+    const headerSlot = document.createElement('div');
+    const dashboardHost = document.createElement('div');
+    root.replaceChildren(headerSlot, dashboardHost);
+    await renderDashboard(app, {
+      host: dashboardHost,
+      dashboardId: seeded.workspace.dashboards[0].id,
+      mode: 'edit',
+      focus: null,
+      setHeader: (header) => headerSlot.replaceChildren(header),
+    });
     window.__ready = true;
   </script>
 </body>

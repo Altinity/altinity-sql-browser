@@ -7,6 +7,41 @@ async function openAt(page, width, height = 844) {
 }
 
 test.describe('Dashboard mobile layout', () => {
+  // #425: a Dashboard is full-bleed on mobile — the sidebar, its resize handle and
+  // the bottom Tables/Editor/Results nav all belong to the Query surface. Only a
+  // real browser can check this; happy-dom applies no CSS.
+  test('hides the sidebar and the bottom nav for a full-bleed Dashboard', async ({ page }) => {
+    await openAt(page, 390);
+    const hidden = await page.evaluate(() => ({
+      sidebar: getComputedStyle(document.querySelector('.sidebar')).display,
+      handle: getComputedStyle(document.querySelector('.col-resize')).display,
+      nav: getComputedStyle(document.querySelector('.mobile-nav')).display,
+      dashWidth: Math.round(document.querySelector('.dash-page').getBoundingClientRect().width),
+      viewport: document.documentElement.clientWidth,
+      pageOverflow: document.documentElement.scrollWidth - innerWidth,
+    }));
+    expect(hidden.sidebar).toBe('none');
+    expect(hidden.handle).toBe('none');
+    expect(hidden.nav).toBe('none');
+    // The Dashboard therefore gets the whole viewport width, with no page overflow.
+    expect(hidden.dashWidth).toBe(hidden.viewport);
+    expect(hidden.pageOverflow).toBeLessThanOrEqual(0);
+  });
+
+  // At desktop widths the sidebar STAYS beside the Dashboard — that is the point
+  // of #425's shell split, and the mobile rules must not leak upward.
+  test('keeps the sidebar beside the Dashboard at desktop widths', async ({ page }) => {
+    await openAt(page, 1280, 900);
+    const geometry = await page.evaluate(() => ({
+      sidebar: getComputedStyle(document.querySelector('.sidebar')).display,
+      sidebarWidth: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width),
+      dashLeft: Math.round(document.querySelector('.dashboard-host').getBoundingClientRect().left),
+    }));
+    expect(geometry.sidebar).not.toBe('none');
+    expect(geometry.sidebarWidth).toBeGreaterThan(200);
+    expect(geometry.dashLeft).toBeGreaterThanOrEqual(geometry.sidebarWidth);
+  });
+
   test('keeps the shared application header on one line at phone widths', async ({ page }) => {
     await openAt(page, 390);
     const header = page.locator('.app-header');

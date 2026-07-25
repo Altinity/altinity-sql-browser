@@ -998,6 +998,52 @@ export interface StoredWorkspaceV2 {
   dashboard: DashboardDocumentV1 | null;
 }
 
+// stored-workspace v3 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json
+
+/**
+ * Altinity SQL Browser stored workspace v3
+ *
+ * One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v2, whose singular zero-or-one `dashboard` field becomes the required `dashboards` array; v2 records remain readable and migrate deterministically on read. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.
+ */
+export interface StoredWorkspaceV3 {
+  /**
+   * Storage version
+   *
+   * Stored-workspace contract version; always 3 for this contract. Unknown future versions fail closed.
+   */
+  storageVersion: 3;
+  /**
+   * Workspace identifier
+   *
+   * Stable generated application identity. Two workspaces with the same display name still have distinct IDs.
+   */
+  id: string;
+  /**
+   * Workspace URL key
+   *
+   * Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.
+   */
+  key: string;
+  /**
+   * Workspace name
+   *
+   * Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.
+   */
+  name: string;
+  /**
+   * Saved queries
+   *
+   * The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Required even when empty.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboards
+   *
+   * This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile, filter, and layout placement IDs stay Dashboard-local. The bound matches the portable-bundle Dashboard capacity rather than introducing a second one. Required even when empty.
+   */
+  dashboards: DashboardDocumentV1[];
+}
+
 // portable-bundle v1 — https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json
 
 /**

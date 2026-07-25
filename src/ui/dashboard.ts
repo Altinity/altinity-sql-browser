@@ -1,6 +1,6 @@
 // The live Dashboard surface (#149 / #240 / #280 / #286 / #407). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
-// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV2`
+// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV3`
 // from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
 // document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
@@ -77,6 +77,12 @@ import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import {
+  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from '../workspace/workspace-dashboards.js';
+import type {
+  DashboardFocusTarget, DashboardSurfaceMode,
+} from '../application/main-surface.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -86,7 +92,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV2,
+  SavedQueryV2, StoredWorkspaceV3,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -107,6 +113,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
+  chevLeft(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -114,6 +121,25 @@ const Icon: {
 
 const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
 const formatBytes: (n: number | null | undefined) => string = formatBytesUntyped;
+
+/**
+ * Everything the application shell hands this surface for ONE render (#425).
+ * Nothing here is re-derived from the route or from collection position: the
+ * shell owns the hosts and the selection, this module owns the rendering.
+ */
+export interface DashboardRenderTarget {
+  /** The main-surface host to render into — NOT `app.root`. The Query surface
+   *  stays mounted in its own sibling host. */
+  host: Element;
+  /** The selected Dashboard's stable id, or `null` for the legacy entry point
+   *  against a workspace with no Dashboard yet (→ "Create dashboard"). */
+  dashboardId: string | null;
+  mode: DashboardSurfaceMode;
+  /** Where to land navigation focus once this Dashboard's DOM exists. */
+  focus: DashboardFocusTarget | null;
+  /** Install this surface's header into the shell's shared header slot. */
+  setHeader(header: Element): void;
+}
 
 /** The narrow `app` surface this render module reads (not the full App —
  *  matches the convention results.ts/filter-bar.ts established). */
@@ -130,8 +156,15 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  currentWorkspace: StoredWorkspaceV2 | null;
+  currentWorkspace: StoredWorkspaceV3 | null;
   sqlRoute: SqlRoute;
+  /** #425 — the selected-Dashboard session state this render projects, and the
+   *  navigation API its own chrome (View/Edit, Back to query) transitions
+   *  through. */
+  mainSurface: App['mainSurface'];
+  openDashboard: App['openDashboard'];
+  showDashboardSurface: App['showDashboardSurface'];
+  showQuerySurface: App['showQuerySurface'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
@@ -141,7 +174,7 @@ export interface DashboardApp {
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
-  applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV3): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
   // saved-query mutations use, so a rapid sequence of drag/resize/preset/
@@ -196,6 +229,19 @@ let installedModifierListeners:
 let installedGestureCancel: (() => void) | null = null;
 let installedDashboardChartInteraction: DashboardChartInteractionController | null = null;
 let installedDashboardCleanup: (() => void) | null = null;
+// #425: the shell-owned host this surface last rendered into. The host itself
+// OUTLIVES the surface (it is a permanent sibling of the query host), so
+// teardown has to empty it explicitly — otherwise a disposed Dashboard's DOM
+// would linger behind the Query surface, still answering `.dash-page` queries
+// with a page whose viewer session is already destroyed.
+let installedDashboardHost: Element | null = null;
+// #425: the pending clear for a navigation highlight. Module-level for the same
+// reason the listeners above are: a later render (or surface teardown) must be
+// able to retire the PRIOR render's highlight — including its document listeners
+// — rather than leave it to fire against a detached node.
+let installedNavHighlightClear: (() => void) | null = null;
+/** How long a navigation highlight lasts absent any user interaction. */
+const NAV_HIGHLIGHT_MS = 2000;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
 function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
@@ -221,6 +267,10 @@ export function disposeDashboardSurface(): void {
   if (installedGestureCancel) installedGestureCancel();
   installedDashboardCleanup?.();
   installedDashboardCleanup = null;
+  installedNavHighlightClear?.();
+  installedNavHighlightClear = null;
+  installedDashboardHost?.replaceChildren();
+  installedDashboardHost = null;
 }
 
 /** Build the Dashboard style picker with the same trigger and dropdown
@@ -343,16 +393,23 @@ function synthesizeImplicitFilters(
 }
 
 /** #407 — an explicit workspace route that no longer resolves. */
-function renderDashboardNotFound(app: DashboardApp): void {
-  // `!`: the dashboard renders only into a mounted page.
-  app.root!.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
+function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarget): void {
+  // #425: install this surface's own header too. Without it the PREVIOUS surface's
+  // header stays above a "Workspace not found" work area, reading as a
+  // Dashboard-scoped error rather than the page-level one it is.
+  target.setHeader(buildAppHeader(app as App, {
+    fileButton: buildDashboardFileMenu(app, true),
+    workspaceTitleEditable: false,
+  }));
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
     h('div', { class: 'dash-empty' },
       h('h2', { class: 'dash-notfound-title' }, 'Workspace not found'),
       h('p', null, 'This workspace no longer exists on this browser.'))));
 }
 
 function renderMissingDashboard(
-  app: DashboardApp, readOnly: boolean, surfaceGeneration: number,
+  app: DashboardApp, target: DashboardRenderTarget, readOnly: boolean, surfaceGeneration: number,
 ): void {
   const body = readOnly
     ? h('div', { class: 'dash-empty' },
@@ -362,33 +419,67 @@ function renderMissingDashboard(
       h('button', {
         class: 'dash-btn dash-create',
         onclick: async () => {
-          const outcome = await app.mutateWorkspace((latest) => {
-            if (!latest || latest.dashboard) return null;
-            return { candidate: { ...latest, dashboard: createEmptyDashboard(app.genId()) } };
+          const outcome = await app.mutateWorkspace<string>((latest) => {
+            // #424: "no Dashboard yet" is asked through the one compatibility
+            // seam, and the new document becomes the collection's first entry.
+            if (!latest || resolveCompatibilityDashboard(latest).dashboard) return null;
+            const created = createEmptyDashboard(app.genId());
+            // The new id rides back through the mutation's own `data` channel, so
+            // the open below cannot disagree with what was committed.
+            return { candidate: withCompatibilityDashboard(latest, created), data: created.id };
           });
           if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
-          if (outcome.ok) app.renderDashboard();
+          // #425: SELECT what we just created rather than re-rendering an
+          // unselected surface. Without this the session would keep reporting
+          // Query mode while a Dashboard is on screen — harmless today (every
+          // consumer falls back to the compatibility entry) but a lie that #426's
+          // tree would render as "nothing selected".
+          if (outcome.ok) app.openDashboard({ dashboardId: outcome.data!, mode: target.mode });
         },
       }, 'Create dashboard'));
-  app.root!.replaceChildren(h('div', { class: 'dash-page' },
+  target.setHeader(buildAppHeader(app as App, {
+    fileButton: buildDashboardFileMenu(app, readOnly),
+    workspaceTitleEditable: !readOnly,
+  }));
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      buildAppHeader(app as App, {
-        fileButton: buildDashboardFileMenu(app, readOnly),
-        workspaceTitleEditable: !readOnly,
-      }),
+      dashboardSurfaceToolbar(app, null, target.mode),
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-        h('span', { class: 'dash-toolbar-spacer' }),
-        buildDashboardModeSwitch(app))),
+        h('span', { class: 'dash-toolbar-spacer' }))),
     body));
 }
 
-function buildDashboardModeSwitch(app: DashboardApp): HTMLElement {
-  const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
-  const routeKey = app.currentWorkspace?.key ?? route.workspaceKey;
-  const button = (label: 'View' | 'Edit', mode: 'view' | 'edit'): HTMLButtonElement =>
-    routeButton(label, route.mode === mode, () => {
-      void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: routeKey, mode }, 'replace');
-    });
+/**
+ * The Dashboard surface's own compact toolbar (#425):
+ *   [Back to query]  <dashboard title>                       [View | Edit]
+ * `Back to query` returns to the PRESERVED Query surface; View/Edit retains the
+ * same Dashboard id (the main-surface API keeps it — writing a route here would
+ * re-resolve the collection's first entry). `title` is null only for the
+ * no-Dashboard placeholder, which has no document to name.
+ */
+function dashboardSurfaceToolbar(
+  app: DashboardApp, title: string | null, mode: DashboardSurfaceMode,
+): HTMLElement {
+  return h('div', { class: 'dash-toolbar dash-surface-toolbar' },
+    h('button', {
+      class: 'tb-btn dash-back-to-query', type: 'button',
+      title: 'Back to the SQL editor', 'aria-label': 'Back to query',
+      onclick: () => { app.showQuerySurface(); },
+    }, Icon.chevLeft(), h('span', null, 'Back to query')),
+    title === null ? null : h('h2', { class: 'dash-surface-title', title }, title),
+    h('span', { class: 'dash-toolbar-spacer' }),
+    buildDashboardModeSwitch(app, mode));
+}
+
+function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {
+  // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
+  // API keeps the id and re-opens the same document in the other mode, instead of
+  // writing a route that would re-resolve the collection's first entry. The active
+  // mode comes from the render target, not the route, so the control reflects what
+  // is actually on screen.
+  const button = (label: 'View' | 'Edit', value: DashboardSurfaceMode): HTMLButtonElement =>
+    routeButton(label, mode === value, () => { app.showDashboardSurface(value); });
   return h('div', {
     class: 'editor-mode-switch dashboard-mode-switch',
     role: 'group', 'aria-label': 'Dashboard mode',
@@ -449,13 +540,21 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButton
   return btn;
 }
 
-/** Render the dashboard into `app.root`. */
-export async function renderDashboard(app: DashboardApp): Promise<void> {
+/** Render the selected Dashboard into the main-surface host the application
+ *  shell owns (#425). Everything this surface needs to know about WHICH
+ *  Dashboard, in which mode, with which navigation focus, arrives here — it is
+ *  never re-derived from the route or from collection position. */
+export async function renderDashboard(
+  app: DashboardApp, target: DashboardRenderTarget,
+): Promise<void> {
   const { document: doc, state } = app;
   const surfaceGeneration = app.captureSurfaceGeneration();
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
-  app.dom = {};
+  // #425: NO `app.dom = {}` reset here. The Query surface stays mounted behind
+  // this one and its DOM refs live in that same shared bag — resetting it would
+  // strand every workbench reference (and the sidebar's) while the elements are
+  // still in the document. The shell owns the one reset, at its own mount.
 
   // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
   // call installed on this window before this call installs its own (see
@@ -464,15 +563,26 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.surfaceCommands = null;
 
   const workspace = app.currentWorkspace;
-  const readOnly = app.sqlRoute.surface === 'dashboard' && app.sqlRoute.mode === 'view';
-  if (!workspace) { renderDashboardNotFound(app); return; }
+  const readOnly = target.mode === 'view';
+  if (!workspace) { renderDashboardNotFound(app, target); return; }
   app.onWorkspaceExternallyChanged = () => {
     if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
   };
-  if (!workspace.dashboard) {
-    renderMissingDashboard(app, readOnly, surfaceGeneration);
+  // #424/#425: the ONE place this surface resolves the document it renders. The
+  // selected id arrives on `target`; only a legacy entry point that has not been
+  // converted yet (an empty collection, so nothing to select) falls back to the
+  // compatibility Dashboard. The id is pinned for the whole render so every
+  // commit below is addressed BY ID rather than by array position — a concurrent
+  // write that reorders or replaces the collection is then detected instead of
+  // silently retargeting.
+  const selected = target.dashboardId === null
+    ? resolveCompatibilityDashboard(workspace).dashboard
+    : findDashboard(workspace, target.dashboardId);
+  if (!selected) {
+    renderMissingDashboard(app, target, readOnly, surfaceGeneration);
     return;
   }
+  const selectedDashboardId = selected.id;
 
   const queries: SavedQueryV2[] = workspace.queries;
   const queryById = new Map<string, SavedQueryV2>();
@@ -480,7 +590,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // The live document — layout/order edits replace it; membership is read from
   // `dashboard.tiles[]` (NOT `savedQueries.filter(queryFavorite)`).
-  let currentDoc: DashboardDocumentV1 = workspace.dashboard;
+  let currentDoc: DashboardDocumentV1 = selected;
   let committedRevision = currentDoc.revision;
   // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
   // CACHE of the last commit this route observed — never the baseline a
@@ -491,7 +601,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rebuild its candidate from this stale snapshot and silently reverse that
   // other producer's mutation. `null` when no persisted aggregate exists yet
   // (legacy/empty) — commands then stay optimistic-only, same as before #341.
-  let committedWorkspace: StoredWorkspaceV2 | null = workspace;
+  let committedWorkspace: StoredWorkspaceV3 | null = workspace;
   // #344 review fix: queued command DESCRIPTORS (dispatch order), not
   // pre-built document snapshots. A snapshot-based queue (the pre-#344
   // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
@@ -646,13 +756,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
 
   // Dashboard keeps the shared header's File word and placement. View exposes
-  // the safe Export row only; edit additionally exposes Import.
-  const header = buildAppHeader(app as App, {
+  // the safe Export row only; edit additionally exposes Import. #425: the header
+  // goes into the SHELL's slot (the shell owns the frame now), not into this
+  // surface's own DOM.
+  target.setHeader(buildAppHeader(app as App, {
     fileButton: buildDashboardFileMenu(app, readOnly),
     workspaceTitleEditable: !readOnly,
-  });
+  }));
 
-  const dashboardModeSwitch = buildDashboardModeSwitch(app);
+  const surfaceToolbar = dashboardSurfaceToolbar(app, currentDoc.title, target.mode);
 
   let tileSearchTimer: ReturnType<typeof setTimeout> | null = null;
   const commitTileSearch = (input: HTMLInputElement): void => {
@@ -1046,20 +1158,31 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // moved past the route cache, so rebasing from the stale cache would
     // re-publish a document containing what the concurrent commit removed.
     // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV2 | null | undefined;
+    let observed: StoredWorkspaceV3 | null | undefined;
     void app.mutateWorkspace((latest) => {
       observed = latest;
-      if (!latest || !latest.dashboard) return null;
-      const base = latest.dashboard;
-      const reapplied = applyRouteCommand(base, command, latest.queries);
+      // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
+      // either nothing is committed, or (#424) THIS route's PINNED Dashboard is
+      // gone from committed truth — deleted, or replaced by an import while
+      // this command sat in the queue. Either way the command no longer
+      // applies: abort rather than retarget whichever Dashboard now happens to
+      // sit in the compatibility slot.
+      const base = latest && findDashboard(latest, selectedDashboardId);
+      if (!base) return null;
+      // `base` is truthy only when `latest` was, so the aggregate exists here.
+      const committed = latest as StoredWorkspaceV3;
+      const reapplied = applyRouteCommand(base, command, committed.queries);
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
-      return {
-        candidate: {
-          storageVersion: 2, id: latest.id, key: latest.key, name: latest.name, queries: reapplied.queries,
-          dashboard: { ...committedDoc, revision: base.revision + 1 },
-        },
-      };
+      // Replaces exactly this one entry, addressed by its stable id; every
+      // other stored Dashboard is carried through untouched, revisions
+      // included. `null` means the id became AMBIGUOUS (a duplicate reached
+      // committed truth) — never silently overwrite one of two matches.
+      const next = replaceDashboard(committed, selectedDashboardId, {
+        ...committedDoc, revision: base.revision + 1,
+      });
+      if (!next) return null;
+      return { candidate: { ...next, queries: reapplied.queries } };
     }).then((outcome) => {
       if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
       // #343: adapt the shared outcome back to this route's descriptor-based
@@ -1123,13 +1246,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
   // head descriptor, refresh committed truth, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV2 | null | undefined): void {
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV3 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();
     if (result && result.ok) {
       committedWorkspace = result.workspace;
-      committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
+      committedRevision = findDashboard(result.workspace, selectedDashboardId)?.revision ?? committedRevision + 1;
       // #343 §2: `app.mutateWorkspace` already projected committed truth onto
       // `app.state` (exactly once). The route only refreshes its own caches.
     } else {
@@ -1141,7 +1264,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // fresher was observed, keep the current cache.
       if (observed !== undefined) {
         committedWorkspace = observed;
-        committedRevision = observed?.dashboard ? observed.dashboard.revision : committedRevision;
+        committedRevision = (observed && findDashboard(observed, selectedDashboardId)?.revision)
+          ?? committedRevision;
         if (observed) app.applyCommittedWorkspace(observed);
       }
       if (result) {
@@ -1164,8 +1288,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // dispatch and dequeue (this command was re-applied to THAT base, e.g.
     // a saved-query delete whose resolver pruned a tile), and after every
     // resolution the rendered doc must equal committed truth exactly.
-    let rebased: DashboardDocumentV1 | null = committedWorkspace ? committedWorkspace.dashboard : null;
-    if (!rebased) return;
+    let rebased: DashboardDocumentV1 | null = committedWorkspace
+      ? findDashboard(committedWorkspace, selectedDashboardId) : null;
+    // #424: the pinned Dashboard vanished from committed truth (an Import
+    // Dashboard replaced the compatibility slot with a different document while
+    // this command was in flight). The rendered document no longer exists, so
+    // rebuild the whole route from the projection instead of leaving a phantom
+    // Dashboard on screen.
+    if (!rebased) {
+      needsRebuild = true;
+      rebuildRouteFromCommitted();
+      return;
+    }
     const rebaseQueries = committedWorkspace!.queries;
     for (const pending of pendingCommands) {
       const r = applyRouteCommand(rebased, pending, rebaseQueries);
@@ -2192,6 +2326,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
   });
 
+  // The style/refresh/search controls stay exactly where they were; #425's
+  // Back-to-query + title + View/Edit toolbar sits above them.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
     layoutWrap,
     tileCount,
@@ -2199,17 +2335,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     timeFilterHost,
     h('span', { class: 'dash-toolbar-spacer' }),
     updated,
-    refreshControl,
-    dashboardModeSwitch);
+    refreshControl);
   const hasOrdinaryFilters = ordinaryFilterIds.length > 0;
   const filterToolbar = h('div', {
     class: 'dash-toolbar dash-toolbar-filters',
     style: hasOrdinaryFilters ? undefined : { display: 'none' },
   }, ordinaryFilterHost, clearFiltersBtn);
 
-  // `!`: the dashboard renders only into a mounted page.
-  app.root!.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, primaryToolbar, filterToolbar, filterRefreshLiveEl),
+  installedDashboardHost = target.host;
+  target.host.replaceChildren(h('div', { class: 'dash-page' },
+    h('div', { class: 'dash-topbar' },
+      surfaceToolbar, primaryToolbar, filterToolbar, filterRefreshLiveEl),
     filterDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard
@@ -2287,5 +2423,111 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     installedModifierListeners = { win: gridWin, onKeyDown, onKeyUp, onBlur };
   }
 
+  // #425 — deliver the navigation focus target at the deterministic point where
+  // the node it names actually exists and is stable. Both are straight-line
+  // sequencing off real completion signals, never a timeout.
+  //
+  // Arm the "user got there first" signal for the deferred (filter) delivery
+  // below, before the wave starts. Capture phase, so a click that a control's own
+  // handler stops still counts.
+  let userInteracted = false;
+  if (target.focus) {
+    const noteInteraction = (): void => { userInteracted = true; };
+    doc.addEventListener('pointerdown', noteInteraction, true);
+    doc.addEventListener('keydown', noteInteraction, true);
+    const previousCleanup = installedDashboardCleanup;
+    installedDashboardCleanup = () => {
+      doc.removeEventListener('pointerdown', noteInteraction, true);
+      doc.removeEventListener('keydown', noteInteraction, true);
+      previousCleanup?.();
+    };
+  }
+
+  // A TILE card exists already: the viewer session seeds its state with every
+  // tile at construction, so the render effect built each card synchronously
+  // above, and the host is now in the document (without which `focus()` is a
+  // silent no-op). The first publish only repaints tile BODIES, so focus on the
+  // card — never on an inner heading, which is replaced on every publish —
+  // survives it.
+  if (target.focus?.kind === 'tile') applyNavigationFocus(target.focus);
+
   await session.start();
+
+  // A FILTER field is not stable across that first publish: it changes the bar's
+  // signature (committed values, active flags, arriving options), and a rebuild
+  // replaces the whole control — so focus set before `start()` would be dropped
+  // onto the detached node. The resolved wave is this control's own
+  // render-complete signal.
+  if (target.focus?.kind === 'filter') applyNavigationFocus(target.focus);
+
+  // Called only from the two narrowed call sites above, so `focus` is never null
+  // here — no redundant guard.
+  function applyNavigationFocus(focus: DashboardFocusTarget): void {
+    // Opening another Dashboard, returning to the Query surface, a workspace
+    // switch, or sign-out all advance the renderer generation — a focus request
+    // that belonged to a superseded render must not steal focus from the one now
+    // on screen.
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
+    // The user got there first. Filter focus is delivered after the opening wave
+    // resolves, which can take seconds — long enough to Tab into another filter
+    // and start typing, and the filter bar's own rebuild already restores focus to
+    // whatever field that was. Yanking it away mid-keystroke is worse than not
+    // navigating at all.
+    if (userInteracted) return;
+    const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
+    if (!node) {
+      // Non-destructive: the Dashboard is already open and stays open.
+      flashToast(focus.kind === 'tile'
+        ? 'That panel is no longer on this dashboard.'
+        : 'That filter is no longer on this dashboard.', { document: doc });
+      return;
+    }
+    // A tile card and a filter field are both non-interactive containers, so
+    // they need a programmatic-focus target; `-1` keeps them out of the Tab
+    // order, leaving normal keyboard navigation untouched.
+    if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
+    node.scrollIntoView({ block: 'nearest' });
+    node.focus();
+    highlightNavigationTarget(node);
+  }
+
+  /** Resolve a tile by its Dashboard-local TILE id — never the saved-query id it
+   *  renders. A flow KPI band member has its own host element; every other tile
+   *  is its cached card. */
+  function tileFocusTarget(tileId: string): HTMLElement | null {
+    return flowKpiHosts.get(tileId) ?? tileEls.get(tileId)?.card ?? null;
+  }
+
+  /** Resolve a curated filter by its FILTER id, within the selected Dashboard
+   *  only: filter id → its declared parameter → the built control. */
+  function filterFocusTarget(filterId: string): HTMLElement | null {
+    const definition = (viewerDoc.filters || []).find((filter) => filter.id === filterId);
+    if (!definition) return null;
+    return currentFilterBar?.fieldElement(definition.parameter) ?? null;
+  }
+
+  /** A temporary navigation highlight, IN ADDITION to the normal focus ring.
+   *  Cleared after a bounded interval or on the next user interaction, whichever
+   *  comes first, so it never lingers as permanent chrome. */
+  function highlightNavigationTarget(node: HTMLElement): void {
+    node.classList.add('is-nav-target');
+    // `clear` runs at most once: it removes the timer AND both listeners that
+    // could call it, and drops the module reference `disposeDashboardSurface`
+    // would call it through — so no re-entrance guard is reachable.
+    const clear = (): void => {
+      node.classList.remove('is-nav-target');
+      clearTimeout(timer);
+      doc.removeEventListener('pointerdown', clear, true);
+      doc.removeEventListener('keydown', clear, true);
+      // Drop the module's reference too, so a cleared highlight stops retaining
+      // this tile's whole subtree until the next render.
+      if (installedNavHighlightClear === clear) installedNavHighlightClear = null;
+    };
+    const timer = setTimeout(clear, NAV_HIGHLIGHT_MS);
+    doc.addEventListener('pointerdown', clear, true);
+    doc.addEventListener('keydown', clear, true);
+    // At most one highlight is live at a time: `disposeDashboardSurface` (which
+    // every render calls first) already retired any prior render's.
+    installedNavHighlightClear = clear;
+  }
 }
