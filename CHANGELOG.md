@@ -152,6 +152,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   product's own body size instead of to user-agent typography.
 
 ### Fixed
+- Three follow-ups on the Dashboard tree (#426). A row the **search** is holding
+  open no longer offers a toggle at all — its chevron gets no handler, and click,
+  ArrowLeft and ArrowRight leave expansion alone — because a search exposes paths
+  without mutating saved expansion state, so a toggle there wrote state that was
+  invisible until the search cleared and surprising afterwards. Opening a
+  Dashboard focused on a tile or filter it does not contain no longer marks that
+  phantom member as current, while the focus **request** still survives unchecked
+  so the delivery path keeps reporting the miss. And a deferred single-click is
+  now cancelled by every projection rather than only a workspace switch: deleting
+  a Dashboard inside the double-click window could otherwise let the delayed
+  toggle re-add a just-pruned id, or open a dead query id.
 - The shared anchored-dialog focus trap (`openAnchoredDialog`, #439) now owns
   **every** Tab/Shift+Tab transition instead of only wrapping at the first and
   last declared focusable element. Native sequential-focus policy is not
