@@ -5,7 +5,7 @@ import {
   withoutPendingFocus,
   type DashboardFocusTarget, type MainSurfaceState,
 } from '../../src/application/main-surface.js';
-import type { DashboardDocumentV1, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 
 const dash = (id: string): DashboardDocumentV1 => ({
   documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
@@ -18,11 +18,11 @@ const dashWith = (id: string, tileIds: string[], filterIds: string[]): Dashboard
   tiles: tileIds.map((tileId) => ({ id: tileId, queryId: 'q-' + tileId })),
   filters: filterIds.map((filterId) => ({ id: filterId, parameter: 'p_' + filterId })),
 });
-const ws = (ids: string[]): StoredWorkspaceV3 => ({
-  storageVersion: 3, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: ids.map(dash),
+const ws = (ids: string[]): StoredWorkspaceV4 => ({
+  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: ids.map(dash),
 });
-const wsOf = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV3 => ({
-  storageVersion: 3, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
+const wsOf = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV4 => ({
+  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
 });
 const onDashboard = (
   dashboardId: string, mode: 'view' | 'edit' = 'edit',

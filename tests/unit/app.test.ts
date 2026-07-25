@@ -17,6 +17,7 @@ import {
 } from '../../src/core/dashboard-tree-ui-state.js';
 import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
+import { libraryQueries } from '../../src/dashboard/model/query-ownership.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
@@ -31,7 +32,7 @@ import type { AppState, QueryTab } from '../../src/state.js';
 import { renameSaved, savedForTab } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
 import type {
@@ -398,13 +399,13 @@ function env(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
   };
 }
 
-async function seedActiveWorkspace(app: App, workspace: StoredWorkspaceV3): Promise<void> {
+async function seedActiveWorkspace(app: App, workspace: StoredWorkspaceV4): Promise<void> {
   const created = await app.workspace.create(workspace);
   if (!created.ok) throw new Error(`fixture failed: ${created.diagnostics[0]?.message}`);
   app.applyCommittedWorkspace(created.workspace);
 }
 
-async function loadActiveWorkspace(app: App): Promise<StoredWorkspaceV3 | null> {
+async function loadActiveWorkspace(app: App): Promise<StoredWorkspaceV4 | null> {
   const loaded = await app.workspace.loadById(app.state.workspaceId);
   return loaded.status === 'ok' ? loaded.workspace : null;
 }
@@ -422,7 +423,7 @@ describe('createApp basics', () => {
     const app = createApp(env({ specValidators: service }));
     expect(app.specValidators).toBe(service); // identity — the seam's own service passes straight through
   });
-  it('constructs the atomic StoredWorkspaceV3 repository (#284) behind the injected IndexedDB seam', () => {
+  it('constructs the atomic StoredWorkspaceV4 repository (#284) behind the injected IndexedDB seam', () => {
     // `indexedDB: undefined` overrides `env()`'s own #287 W4 default fake
     // factory → falls back to win.indexedDB (absent under happy-dom). The
     // repository still constructs (lazy — no DB opened yet) and exposes the
@@ -575,8 +576,8 @@ describe('createApp basics', () => {
 // "read latest at dequeue time" discipline shows up here, not only in
 // file-menu.ts's own higher-level tests.
 describe('app.mutateWorkspace (#341/#344)', () => {
-  const seedWorkspace = (over: Partial<import('../../src/generated/json-schema.types.js').StoredWorkspaceV3> = {}) => (
-    { storageVersion: 3 as const, id: 'w1', key: 'workspace_one', name: 'Seed', queries: [], dashboards: [], ...over }
+  const seedWorkspace = (over: Partial<import('../../src/generated/json-schema.types.js').StoredWorkspaceV4> = {}) => (
+    { storageVersion: 4 as const, id: 'w1', key: 'workspace_one', name: 'Seed', queries: [], dashboards: [], ...over }
   );
 
   it('the transform receives the latest COMMITTED aggregate at DEQUEUE time, not whatever was current when mutateWorkspace was called', async () => {
@@ -655,7 +656,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     await app.mutateWorkspace(() => null); // abort
     // Invalid candidate → commit fails (a query missing required fields).
     const failed = await app.mutateWorkspace(() => ({
-      candidate: { storageVersion: 3, id: 'x', key: 'x', name: 'n', queries: [{ bad: true } as never], dashboards: [] },
+      candidate: { storageVersion: 4, id: 'x', key: 'x', name: 'n', queries: [{ bad: true } as never], dashboards: [] },
     }));
     expect(failed.ok).toBe(false);
     expect(failed.ok === false && failed.aborted).toBeFalsy(); // a real failure, not an abort
@@ -689,8 +690,8 @@ describe('app.mutateWorkspace (#341/#344)', () => {
 // own poke on receipt; `documentVisible` is the injected visibility read the
 // focus/visibility fallback (step 4) consults.
 describe('app cross-tab invalidation (#343)', () => {
-  const seed = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => (
-    { storageVersion: 3, id: 'w1', key: 'workspace_one', name: 'Seed', queries: [], dashboards: [], ...over }
+  const seed = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => (
+    { storageVersion: 4, id: 'w1', key: 'workspace_one', name: 'Seed', queries: [], dashboards: [], ...over }
   );
 
   it('posts exactly one invalidation per successful commit, and none on abort or failure', async () => {
@@ -708,7 +709,7 @@ describe('app cross-tab invalidation (#343)', () => {
     expect(posted).toHaveLength(1);
     expect(posted[0]).toEqual({ type: 'workspace-changed', sourceTabId: app.sourceTabId, workspaceId: 'w1' });
     await app.mutateWorkspace(() => null); // abort
-    await app.mutateWorkspace(() => ({ candidate: { storageVersion: 3, id: 'x', key: 'x', name: 'n', queries: [{ bad: true } as never], dashboards: [] } })); // fail
+    await app.mutateWorkspace(() => ({ candidate: { storageVersion: 4, id: 'x', key: 'x', name: 'n', queries: [{ bad: true } as never], dashboards: [] } })); // fail
     expect(posted).toHaveLength(1); // still just the one success
   });
 
@@ -797,8 +798,8 @@ describe('app cross-tab invalidation (#343)', () => {
 // #343 steps 4/6/8 — workspace refresh through the write queue (focus/visibility
 // fallback), the linked-tab conflict resolution UI, and the Save-button state.
 describe('app workspace refresh + conflict UI (#343)', () => {
-  const q1ws = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV3 => ({
-    storageVersion: 3, id: 'w1', key: 'workspace_one', name: 'Team',
+  const q1ws = (sql = 'SELECT 1', name = 'q1'): StoredWorkspaceV4 => ({
+    storageVersion: 4, id: 'w1', key: 'workspace_one', name: 'Team',
     queries: [{ id: 'q1', sql, specVersion: 1, spec: { name, favorite: false } } as SavedQueryV2],
     dashboards: [],
   });
@@ -1002,7 +1003,7 @@ describe('renderApp shell', () => {
     // so the regression guard moves onto the API rather than disappearing with
     // the control.
     app.currentWorkspace = {
-      storageVersion: 3, id: 'new-workspace', key: 'sql_library_7',
+      storageVersion: 4, id: 'new-workspace', key: 'sql_library_7',
       name: 'SQL Library', queries: [], dashboards: [],
     };
     app.state.workspaceKey = 'sql_library_7';
@@ -3621,8 +3622,8 @@ describe('share + star + columns', () => {
   it('boot resolves a pre-existing last-used workspace and rewrites /sql', async () => {
     const store = fakeIndexedDbFactory();
     const seed = createApp(env({ indexedDB: store }));
-    const alpha: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'alpha-id', key: 'alpha', name: 'Alpha',
+    const alpha: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'alpha-id', key: 'alpha', name: 'Alpha',
       queries: [], dashboards: [],
     };
     expect((await seed.workspace.create(alpha)).ok).toBe(true);
@@ -3641,8 +3642,8 @@ describe('share + star + columns', () => {
       search: '?ws=alpha', hash: '', href: 'https://ch.example/sql?ws=alpha',
     } as Location;
     const app = createApp(env({ location }));
-    const alpha: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'alpha-id', key: 'alpha', name: 'Alpha',
+    const alpha: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'alpha-id', key: 'alpha', name: 'Alpha',
       queries: [savedQueryFixture({ id: 'q1', name: 'Q1' })], dashboards: [],
     };
     const created = await app.workspace.create(alpha);
@@ -3689,8 +3690,8 @@ describe('share + star + columns', () => {
     tab.sqlDraft = 'SELECT still_here';
     tab.savedId = 'removed';
     tab.editorMode = 'spec';
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'new-workspace', key: 'new_workspace',
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'new-workspace', key: 'new_workspace',
       name: 'New workspace', queries: [], dashboards: [],
     };
     app.applyCommittedWorkspace(workspace);
@@ -3701,14 +3702,14 @@ describe('share + star + columns', () => {
   it('detaches a linked tab when a different workspace reuses the same query id', () => {
     const app = createApp(env());
     const tab = app.activeTab();
-    const workspaceA: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'workspace-a', key: 'workspace_a',
+    const workspaceA: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'workspace-a', key: 'workspace_a',
       name: 'Workspace A',
       queries: [savedQueryFixture({ id: 'q1', name: 'A', sql: "SELECT 'A'" })],
       dashboards: [],
     };
-    const workspaceB: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'workspace-b', key: 'workspace_b',
+    const workspaceB: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'workspace-b', key: 'workspace_b',
       name: 'Workspace B',
       queries: [savedQueryFixture({ id: 'q1', name: 'B', sql: "SELECT 'B'" })],
       dashboards: [],
@@ -3740,8 +3741,8 @@ describe('share + star + columns', () => {
   it('keeps a valid query link when re-projecting the same workspace identity', () => {
     const app = createApp(env());
     const tab = app.activeTab();
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'workspace-a', key: 'workspace_a',
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'workspace-a', key: 'workspace_a',
       name: 'Workspace A',
       queries: [savedQueryFixture({ id: 'q1', name: 'A', sql: "SELECT 'A'" })],
       dashboards: [],
@@ -5205,8 +5206,8 @@ describe('mobile best-effort mode (#126)', () => {
 
 // ── #407: unified route coordinator ──────────────────────────────────────────
 describe('unified /sql routing', () => {
-  const dashboardWorkspace = (queries: SavedQueryV2[] = []): StoredWorkspaceV3 => ({
-    storageVersion: 3,
+  const dashboardWorkspace = (queries: SavedQueryV2[] = []): StoredWorkspaceV4 => ({
+    storageVersion: 4,
     id: 'w',
     key: 'w',
     name: 'Workspace',
@@ -5271,7 +5272,7 @@ describe('unified /sql routing', () => {
     const app = createApp(env());
     app.state.workspaceKey = 'workspace_nine';
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'workspace_nine', name: 'W', queries: [], dashboards: [],
+      storageVersion: 4, id: 'w', key: 'workspace_nine', name: 'W', queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
     app.renderCurrentSurface = vi.fn();
@@ -5295,7 +5296,7 @@ describe('unified /sql routing', () => {
       search: '?ws=w&surface=dashboard&mode=view', host: 'ch.example',
     } as Location }));
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
     app.renderCurrentSurface = vi.fn();
@@ -5331,7 +5332,7 @@ describe('unified /sql routing', () => {
       // the same workspace would read as a workspace SWITCH (which now clears the
       // Dashboard selection).
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: ids.map(dash),
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: ids.map(dash),
       });
       if (!live) app.renderCurrentSurface = vi.fn();
       return { app, location };
@@ -5526,7 +5527,7 @@ describe('unified /sql routing', () => {
       ui = toggleGroupExpanded(ui, 'gone', 'panels');
       app.state.dashboardTreeUi.set('w', ui);
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
       });
       const pruned = readTreeUi(app.state.dashboardTreeUi, 'w');
       expect([...pruned.expandedDashboardIds]).toEqual(['keep']);
@@ -5538,7 +5539,7 @@ describe('unified /sql routing', () => {
       const ui = toggleDashboardExpanded(EMPTY_TREE_UI, 'keep');
       app.state.dashboardTreeUi.set('w', ui);
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
       });
       // Same object: an ordinary mutation must never collapse the open tree.
       expect(app.state.dashboardTreeUi.get('w')).toBe(ui);
@@ -5561,7 +5562,7 @@ describe('unified /sql routing', () => {
         });
         treeHost._dashTreeArbiter.press('w:a', { single });
         app.applyCommittedWorkspace({
-          storageVersion: 3, id: 'other-workspace', key: 'other', name: 'Other',
+          storageVersion: 4, id: 'other-workspace', key: 'other', name: 'Other',
           queries: [], dashboards: [],
         });
         vi.advanceTimersByTime(400);
@@ -5623,7 +5624,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.openDashboard({ dashboardId: 'second', mode: 'view' });
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
       });
       expect(app.mainSurface).toEqual({ kind: 'query' });
       // The URL must not keep claiming a Dashboard surface this session has no
@@ -5639,7 +5640,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['only-here']);
       app.openDashboard({ dashboardId: 'only-here', mode: 'edit' });
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('shared')],
+        storageVersion: 4, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('shared')],
       });
       expect(app.mainSurface).toEqual({ kind: 'query' });
 
@@ -5647,7 +5648,7 @@ describe('unified /sql routing', () => {
       const { app: collided } = readyApp(['main']);
       collided.openDashboard({ dashboardId: 'main', mode: 'view' });
       collided.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('main')],
+        storageVersion: 4, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('main')],
       });
       expect(collided.mainSurface).toEqual({ kind: 'query' });
 
@@ -5656,7 +5657,7 @@ describe('unified /sql routing', () => {
       kept.openDashboard({ dashboardId: 'shared', mode: 'view' });
       // Same workspace id → a re-projection, not a switch.
       kept.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [],
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [],
         dashboards: [dash('shared'), dash('x')],
       });
       expect(kept.mainSurface).toEqual({
@@ -5672,6 +5673,29 @@ describe('unified /sql routing', () => {
       expect(app.mainSurface).toEqual({ kind: 'query' });
       expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
       expect(app.state.tabs.value.some((tab) => tab.savedId === 'q1')).toBe(true);
+    });
+
+    // #427: an owned copy is hidden from the LIBRARY, so the #426 tree is the only
+    // route to it — and that route must not go through the projection.
+    it('opens a Dashboard-OWNED query that the Library projection hides', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      const owned = savedQuery({ id: 'owned', name: 'Panel query', sql: 'SELECT 1' });
+      app.state.savedQueries = [savedQuery({ id: 'lib', name: 'Standalone', sql: 'SELECT 2' }), owned];
+      app.currentWorkspace = {
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops',
+        queries: app.state.savedQueries,
+        dashboards: [{
+          documentVersion: 1, id: 'a', title: 'A', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+          filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+        }],
+      };
+      // It is genuinely not a Library query…
+      expect(libraryQueries(app.currentWorkspace).map((q) => q.id)).toEqual(['lib']);
+      // …and it still opens by id.
+      app.openSavedQuery('owned');
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.state.tabs.value.some((tab) => tab.savedId === 'owned')).toBe(true);
     });
 
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {
@@ -5778,7 +5802,7 @@ describe('unified /sql routing', () => {
       // state: leaving the Dashboard host exposed wedges the app, because every
       // route back then early-returns on "state and route already agree".
       app.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
+        storageVersion: 4, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
       });
       expect(app.mainSurface).toEqual({ kind: 'query' });
       expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
@@ -5881,8 +5905,8 @@ describe('unified /sql routing', () => {
       hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=first',
     } as Location;
     const app = createApp(env({ location }));
-    const second: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'second-id', key: 'second', name: 'Second',
+    const second: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'second-id', key: 'second', name: 'Second',
       queries: [], dashboards: [],
     };
     app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace: second }));
@@ -5916,8 +5940,8 @@ describe('unified /sql routing', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       filters: [], tiles: [],
     });
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [],
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [],
       dashboards: [dash('first', 1), dash('second', 1)],
     };
     // Establish the workspace first (this is what sets `state.workspaceId`), then
@@ -5945,8 +5969,8 @@ describe('unified /sql routing', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       filters: [], tiles: [],
     });
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [],
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [],
       dashboards: [dash('first', 1), dash('second', 1)],
     };
     app.currentWorkspace = workspace;
@@ -5973,7 +5997,7 @@ describe('unified /sql routing', () => {
       filters: [], tiles: [],
     };
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [only],
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [only],
     };
     // A selection pinned before the entry was deleted elsewhere: the fold must
     // not guess into another slot. (`state.dashboard` still holds the document
@@ -5989,7 +6013,7 @@ describe('unified /sql routing', () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'view' };
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
     app.renderDashboard = vi.fn();
@@ -6001,7 +6025,7 @@ describe('unified /sql routing', () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
     app.renderApp = vi.fn();
@@ -6034,11 +6058,11 @@ describe('unified /sql routing', () => {
 
   it('synchronously replaces and inerts old Workbench controls during workspace navigation', async () => {
     const app = createApp(env());
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
-    const b: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
+    const b: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
     };
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.applyCommittedWorkspace(a);
@@ -6104,11 +6128,11 @@ describe('unified /sql routing', () => {
 
   it('synchronously inerts a stale Create dashboard control during workspace navigation', async () => {
     const app = createApp(env());
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
-    const b: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
+    const b: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
     };
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'a', mode: 'edit' };
     app.applyCommittedWorkspace(a);
@@ -6133,8 +6157,8 @@ describe('unified /sql routing', () => {
 
   it('an in-flight Create dashboard completion cannot repaint after switching to Workbench', async () => {
     const app = createApp(env());
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
     };
     await seedActiveWorkspace(app, workspace);
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
@@ -6155,7 +6179,7 @@ describe('unified /sql routing', () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.currentWorkspace = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
     const resolvers = new Map<string, (result: WorkspaceLoadResult) => void>();
@@ -6164,20 +6188,20 @@ describe('unified /sql routing', () => {
     app.workspace.markOpened = vi.fn(async (key) => ({
       ok: true as const,
       workspace: {
-        storageVersion: 3 as const, id: key, key, name: key.toUpperCase(),
+        storageVersion: 4 as const, id: key, key, name: key.toUpperCase(),
         queries: [], dashboards: [],
       },
     }));
     app.renderCurrentSurface = vi.fn();
     const toB = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
     const toC = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'c' }, 'push');
-    const c: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
+    const c: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
     };
     resolvers.get('c')!({ status: 'ok', workspace: c });
     await toC;
-    const b: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
+    const b: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
     };
     resolvers.get('b')!({ status: 'ok', workspace: b });
     await toB;
@@ -6190,10 +6214,10 @@ describe('unified /sql routing', () => {
     const app = createApp(env());
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.currentWorkspace = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
-    const workspace = (key: string): StoredWorkspaceV3 => ({
-      storageVersion: 3, id: key, key, name: key.toUpperCase(), queries: [], dashboards: [],
+    const workspace = (key: string): StoredWorkspaceV4 => ({
+      storageVersion: 4, id: key, key, name: key.toUpperCase(), queries: [], dashboards: [],
     });
     app.workspace.loadByKey = vi.fn(async (key) => ({ status: 'ok' as const, workspace: workspace(key) }));
     let releaseB!: () => void;
@@ -6216,8 +6240,8 @@ describe('unified /sql routing', () => {
 
   it('a refresh started for one workspace cannot overwrite a newer routed workspace', async () => {
     const app = createApp(env());
-    const workspace = (key: string): StoredWorkspaceV3 => ({
-      storageVersion: 3, id: key, key, name: key.toUpperCase(), queries: [], dashboards: [],
+    const workspace = (key: string): StoredWorkspaceV4 => ({
+      storageVersion: 4, id: key, key, name: key.toUpperCase(), queries: [], dashboards: [],
     });
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.applyCommittedWorkspace(workspace('a'));
@@ -6254,7 +6278,7 @@ describe('unified /sql routing', () => {
     app.workspace.markOpened = vi.fn(async (key) => ({
       ok: true as const,
       workspace: {
-        storageVersion: 3 as const, id: key, key, name: key.toUpperCase(),
+        storageVersion: 4 as const, id: key, key, name: key.toUpperCase(),
         queries: [], dashboards: [],
       },
     }));
@@ -6263,13 +6287,13 @@ describe('unified /sql routing', () => {
     const backToB = app.handleSqlPopState();
     location.search = '?ws=c';
     const forwardToC = app.handleSqlPopState();
-    const c: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
+    const c: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
     };
     resolvers.get('c')!({ status: 'ok', workspace: c });
     await forwardToC;
-    const b: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
+    const b: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'b', key: 'b', name: 'B', queries: [], dashboards: [],
     };
     resolvers.get('b')!({ status: 'ok', workspace: b });
     await backToB;
@@ -6283,8 +6307,8 @@ describe('unified /sql routing', () => {
       hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=a',
     } as Location;
     const app = createApp(env({ location }));
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
     app.applyCommittedWorkspace(a);
     app.renderApp();
@@ -6308,8 +6332,8 @@ describe('unified /sql routing', () => {
       href: 'https://ch.example/sql?ws=a&surface=dashboard&mode=view',
     } as Location;
     const app = createApp(env({ location }));
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
     app.applyCommittedWorkspace(workspace);
     await app.renderDashboard();
@@ -6325,8 +6349,8 @@ describe('unified /sql routing', () => {
 
   it('closes Workbench shortcut help before Dashboard navigation without restoring detached focus', async () => {
     const app = createApp(env());
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
     app.applyCommittedWorkspace(workspace);
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
@@ -6371,8 +6395,8 @@ describe('unified /sql routing', () => {
       id: 'imported-favorite', name: 'Imported favorite', sql: 'SELECT 1', favorite: true,
     });
     const app = createApp(env());
-    const workspace: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'imported-workspace', key: 'imported_workspace',
+    const workspace: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'imported-workspace', key: 'imported_workspace',
       name: 'Imported workspace', queries: [imported], dashboards: [],
     };
     await seedActiveWorkspace(app, workspace);
@@ -6388,6 +6412,39 @@ describe('unified /sql routing', () => {
 
     expect(app.state.savedQueries).toEqual([imported]);
     expect(qs(app.root, '.saved-row .name').textContent).toBe('Imported favorite');
+  });
+
+  // #427: Library membership is a function of `dashboards[]`, so a committed
+  // Dashboard change can move a query in or out of the list without
+  // `savedQueries` changing at all. The saved pane therefore subscribes to the
+  // same projection revision the #426 tree uses — without that, removing a panel
+  // leaves its query invisible in a stale Library until something else repaints.
+  it('repaints the Library when a committed Dashboard change alters ownership', async () => {
+    const owned = savedQuery({ id: 'owned', name: 'Panel copy', sql: 'SELECT 1' });
+    const lib = savedQuery({ id: 'lib', name: 'Standalone', sql: 'SELECT 2' });
+    const app = createApp(env());
+    const tiled: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'ws-own', key: 'ws_own', name: 'Owned',
+      queries: [lib, owned],
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    await seedActiveWorkspace(app, tiled);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: tiled.key };
+    app.renderApp();
+    // The owned copy is hidden; only the standalone query is a Library row.
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent)).toEqual(['Standalone']);
+
+    // Commit a Dashboard with no tiles: `savedQueries` is untouched, but the
+    // formerly owned copy now has no owner.
+    app.currentWorkspace = { ...tiled, dashboards: [{ ...tiled.dashboards[0], tiles: [], layout: { type: 'flow', version: 1, preset: 'report', items: {} } }] };
+    app.state.dashboardTreeRevision.value += 1;
+
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent).sort())
+      .toEqual(['Panel copy', 'Standalone']);
   });
 
   it('a Dashboard edit commit that settles after switching to View refreshes View only', async () => {
@@ -6520,7 +6577,7 @@ describe('unified /sql routing', () => {
   it('a mutation that observes external deletion transitions to not-found', async () => {
     const app = createApp(env());
     app.currentWorkspace = {
-      storageVersion: 3, id: app.state.workspaceId, key: 'w', name: 'W',
+      storageVersion: 4, id: app.state.workspaceId, key: 'w', name: 'W',
       queries: [], dashboards: [],
     };
     app.workspaceRouteStatus = 'ready';
@@ -6538,17 +6595,17 @@ describe('unified /sql routing', () => {
 
   it('a mutation whose transform settles after route loading begins aborts before commit', async () => {
     const app = createApp(env());
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: app.state.workspaceId, key: 'a', name: 'A',
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: app.state.workspaceId, key: 'a', name: 'A',
       queries: [], dashboards: [],
     };
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.applyCommittedWorkspace(a);
     app.workspace.loadById = vi.fn(async () => ({ status: 'ok' as const, workspace: a }));
     app.workspace.commit = vi.fn();
-    let finishTransform!: (value: { candidate: StoredWorkspaceV3 }) => void;
+    let finishTransform!: (value: { candidate: StoredWorkspaceV4 }) => void;
     const mutation = app.mutateWorkspace(() =>
-      new Promise<{ candidate: StoredWorkspaceV3 }>((resolve) => { finishTransform = resolve; }));
+      new Promise<{ candidate: StoredWorkspaceV4 }>((resolve) => { finishTransform = resolve; }));
     await Promise.resolve();
     await Promise.resolve();
     app.workspaceRouteStatus = 'loading';
@@ -6566,8 +6623,8 @@ describe('unified /sql routing', () => {
 
   it('a queued mutation aborts if route loading begins before it dequeues', async () => {
     const app = createApp(env());
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: app.state.workspaceId, key: 'a', name: 'A',
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: app.state.workspaceId, key: 'a', name: 'A',
       queries: [], dashboards: [],
     };
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
@@ -6588,8 +6645,8 @@ describe('unified /sql routing', () => {
 
   it('a commit that finishes after navigation stays durable but cannot repaint the new route', async () => {
     const app = createApp(env());
-    const a: StoredWorkspaceV3 = {
-      storageVersion: 3, id: app.state.workspaceId, key: 'a', name: 'A',
+    const a: StoredWorkspaceV4 = {
+      storageVersion: 4, id: app.state.workspaceId, key: 'a', name: 'A',
       queries: [], dashboards: [],
     };
     const changed = { ...a, name: 'Changed A' };

@@ -52,6 +52,12 @@
       "path": "../stored-workspace-v3.schema.json"
     },
     {
+      "kind": "stored-workspace",
+      "version": 4,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json",
+      "path": "../stored-workspace-v4.schema.json"
+    },
+    {
       "kind": "portable-bundle",
       "version": 1,
       "id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",

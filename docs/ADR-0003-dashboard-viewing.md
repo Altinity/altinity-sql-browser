@@ -175,6 +175,47 @@ Tree UI state (expansion, search, scroll, keyboard row) is session state keyed b
 immutable workspace id, never persisted and never part of `StoredWorkspaceV3`, and
 is pruned against committed truth on every projection.
 
+## Addendum (#427, 2026-07-25): ownership is a reference, not a flag
+
+#424 through #426 left one query reachable from several places at once, because
+the Workbench star WAS Dashboard membership. #427 replaces that with an ownership
+invariant: every panel tile and every curated filter references a dedicated
+saved-query copy that exactly one member owns, and a query no member references
+is a Library query. Four decisions are worth recording.
+
+- **Ownership is derived, never stored.** The only inputs are
+  `dashboards[].tiles[].queryId` and `dashboards[].filters[].sourceQueryId`
+  (`dashboard/model/query-ownership.ts`). A reverse pointer on the query would be
+  a second source of truth that can disagree with the references execution
+  actually reads, so there is none — and the Library is a projection of committed
+  Dashboard content, repainted from the same revision signal the tree uses.
+- **The versioned boundary carries the invariant, not the document shape.**
+  `stored-workspace-v4` is structurally v3 with a new `storageVersion` and a
+  larger query bound; a two-owner document still SATISFIES the schema and is
+  rejected by whole-workspace semantic validation
+  (`dashboard-query-multiple-owners`). The version exists so an older build fails
+  closed on a record it would otherwise misread as shareable, and so the one-time
+  cloning migration has a boundary to run at. That rule deliberately does not
+  guard portable bundles: #427 requires a readable legacy bundle with shared
+  references to be NORMALIZED on import, not refused.
+- **Migration ids are derived, because the migration runs inside a pure read.**
+  It executes in `decodeStoredWorkspaceJson`, which `WorkspaceRepository.list()`
+  performs on every record without writing. A generated id there would make two
+  decodes of identical bytes disagree, so `workspaceToken`/`queryToken` would
+  differ on every refresh: the "nothing changed" fast path would never fire, and
+  every window focus would detach the open owned-query tab and re-run every tile
+  query. Ids are therefore a pure function of the member the copy belongs to,
+  with deterministic escalation on collision.
+- **A curated filter has a source query; a plain filter is a different kind.**
+  #427's text asks for `sourceQueryId` to become required, but a From/To pair and
+  a free-text search box have no option list and therefore no lossless source to
+  derive — and `core/time-range.ts` only pairs filters that have NO source, so
+  requiring one would make an authored time range impossible to persist and would
+  invalidate 11 filters across five shipped example bundles. The invariant
+  implemented is therefore "curated ⇒ dedicated single-owner source"; plain
+  filters remain valid and own nothing. Making them a distinct persisted control
+  kind is deferred to its own issue.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

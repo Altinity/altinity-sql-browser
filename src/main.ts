@@ -48,7 +48,7 @@ export interface BootstrapApp {
    *  main.ts's own `string | null` sentinel (`null` means "no callback
    *  error"), so this contract states what's actually passed here. */
   showLogin(msg?: string | null): void;
-  /** Resolve the explicit or last-used StoredWorkspaceV3 and project it onto
+  /** Resolve the explicit or last-used StoredWorkspaceV4 and project it onto
    *  `app.state` before the first `renderApp()` — see
    *  `App.loadWorkspaceOnBoot`'s own doc comment (app.types.ts). The real
    *  return value is never read here (`Promise<unknown>` is enough for

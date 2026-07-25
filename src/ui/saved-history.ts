@@ -15,10 +15,8 @@ import type { AppState, HistoryEntry } from '../state.js';
 import { flashToast } from './toast.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
-import { queryDescription, queryName, queryPanel, queryView } from '../core/saved-query.js';
-import { queryMembershipFavorite } from '../dashboard/application/tile-membership.js';
-import { selectedDashboardId } from '../application/main-surface.js';
-import { resolveCompatibilityDashboard } from '../workspace/workspace-dashboards.js';
+import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
+import { libraryQueries } from '../dashboard/model/query-ownership.js';
 import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
 import { filterRoleBadge } from './tabs.js';
 import type { App } from './app.types.js';
@@ -38,19 +36,27 @@ const dragProps = (sql: string): { draggable: string; ondragstart: (e: DragEvent
 });
 
 /**
- * #425 — whether the star's membership write would land on the Dashboard the
- * user is actually looking at. `toggleFavorite` writes the COMPATIBILITY
- * Dashboard (#424's temporary favourite↔membership coupling), so it is only
- * honest while that is also the selected one. True in Query mode — no Dashboard
- * is on screen, and the one this phase's UI exposes IS the first entry — and true
- * when the selected Dashboard is that first entry. Retired with the coupling
- * itself in #427.
+ * The LIBRARY projection (#427): the saved queries no Dashboard member
+ * references, in `workspace.queries[]` order.
+ *
+ * Read from `app.currentWorkspace`, which carries the WHOLE Dashboard
+ * collection — `state.dashboard` is only the single compatibility document, and
+ * a query owned by any other Dashboard must not show up here either. With no
+ * workspace aggregate yet (a fresh boot, or a degraded route), every saved query
+ * is a Library query: there are no Dashboards to own one.
+ *
+ * Owned copies stay serialized and stay openable by id from #426's Dashboard
+ * tree — `app.openSavedQuery` resolves against the full `state.savedQueries`,
+ * never this projection.
  */
-function starTargetsSelectedDashboard(app: App): boolean {
-  const selectedId = selectedDashboardId(app.mainSurface);
-  if (selectedId === null) return true;
-  if (!app.currentWorkspace) return false;
-  return resolveCompatibilityDashboard(app.currentWorkspace).selectedId === selectedId;
+function libraryEntries(app: App): SavedQueryV2[] {
+  const workspace = app.currentWorkspace;
+  if (!workspace) return app.state.savedQueries;
+  const libraryIds = new Set(
+    libraryQueries({ queries: app.state.savedQueries, dashboards: workspace.dashboards })
+      .map((query) => query.id),
+  );
+  return app.state.savedQueries.filter((query) => libraryIds.has(query.id));
 }
 
 export function renderSavedHistory(app: App): void {
@@ -58,7 +64,9 @@ export function renderSavedHistory(app: App): void {
   const list = app.dom.savedList;
   if (!tabsRow || !list) return;
   const state = app.state;
-  const count = state.savedQueries.length;
+  // #427: the count is the LIBRARY count, not every stored query — the owned
+  // copies are reachable through the Dashboard tree, not through this list.
+  const count = libraryEntries(app).length;
 
   // Switching panes clears the search so each tab starts unfiltered. Clear the
   // (plain) filter first, then set the sidePanel signal — its render effect runs
@@ -74,7 +82,7 @@ export function renderSavedHistory(app: App): void {
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'saved' ? ' active' : ''),
       onclick: () => switchTo('saved'),
-    }, Icon.layers(), h('span', null, 'Queries'),
+    }, Icon.layers(), h('span', null, 'Library'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'history' ? ' active' : ''),
@@ -106,13 +114,17 @@ function renderSearch(app: App): void {
   const box = app.dom.savedSearch;
   if (!box) return;
   const state = app.state;
-  const hasItems = state.sidePanel.value === 'saved' ? state.savedQueries.length > 0 : state.history.length > 0;
+  // Gated on the LIBRARY count (#427): a workspace whose every query is owned
+  // has an empty list, so a search box over it would filter nothing.
+  const hasItems = state.sidePanel.value === 'saved'
+    ? libraryEntries(app).length > 0
+    : state.history.length > 0;
   box.replaceChildren();
   if (!hasItems) return;
 
   const input = h('input', {
     class: 'sv-search-input', type: 'text',
-    placeholder: state.sidePanel.value === 'saved' ? 'Search saved queries…' : 'Search history…',
+    placeholder: state.sidePanel.value === 'saved' ? 'Search library queries…' : 'Search history…',
     value: state.libraryFilter,
   });
   const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
@@ -130,19 +142,24 @@ function renderSearch(app: App): void {
 function renderSaved(app: App, list: HTMLElement): void {
   const state = app.state;
   const surfaceGeneration = app.captureSurfaceGeneration();
-  if (state.savedQueries.length === 0) {
+  const library = libraryEntries(app);
+  // Gated on the LIBRARY count too, so the empty state is reachable in a
+  // workspace that HAS queries but has given every one of them to a Dashboard.
+  if (library.length === 0) {
     list.appendChild(h('div', { class: 'saved-empty' },
-      'No saved queries yet.', h('br'), 'Click ', Icon.bookmark(), ' Save next to Run.'));
+      'No library queries yet.', h('br'), 'Click ', Icon.bookmark(), ' Save next to Run.'));
     return;
   }
-  const items = filterSaved(sortedSaved(state), state.libraryFilter);
+  // Favourites first, then `workspace.queries[]` order — the projection filters,
+  // it never reorders (#427).
+  const items = filterSaved(sortedSaved({ ...state, savedQueries: library }), state.libraryFilter);
   if (items.length === 0) {
-    list.appendChild(h('div', { class: 'saved-empty' }, 'No queries match “' + state.libraryFilter.trim() + '”.'));
+    list.appendChild(h('div', { class: 'saved-empty' }, 'No library queries match “' + state.libraryFilter.trim() + '”.'));
     return;
   }
   for (const q of items) {
     if (app.state.editingSavedId.value === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
-    const favorite = queryMembershipFavorite(state.dashboard, q);
+    const favorite = queryFavorite(q);
     const name = queryName(q);
     const description = queryDescription(q);
     const panel = queryPanel(q);
@@ -156,25 +173,12 @@ function renderSaved(app: App, list: HTMLElement): void {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
         e.stopPropagation();
-        // #425 GATE: the star still drives tile membership through #424's
-        // temporary favourite coupling, which writes the COMPATIBILITY Dashboard
-        // (the collection's first entry) — not whichever Dashboard is selected.
-        // With the Library pane now visible beside a Dashboard, an ungated star
-        // would silently add a tile to a different Dashboard than the one on
-        // screen. Refuse rather than write the wrong one; #427 separates
-        // Dashboard-owned query copies from Library queries and retires this
-        // coupling, at which point the gate goes with it.
-        if (!starTargetsSelectedDashboard(app)) {
-          flashToast(
-            'Favourites still add panels to this workspace’s first dashboard — open that one to change its panels.',
-            { document: app.document },
-          );
-          return;
-        }
-        // #343: star = explicit desired membership over the LATEST workspace.
-        // `toggleFavorite` runs its transform through `app.mutateWorkspace`
+        // #427/#434: no gate any more. The star writes `spec.favorite` and
+        // nothing else — it cannot create a Dashboard, add or remove a tile, or
+        // touch an owned copy — so there is no longer a wrong Dashboard for it
+        // to land on. `toggleFavorite` still runs through `app.mutateWorkspace`
         // (serializes + reads latest at dequeue) — no `serializeWrite` wrapper.
-        const result = await toggleFavorite(state, q.id, app.mutateWorkspace, app.genId, app.specValidators);
+        const result = await toggleFavorite(state, q.id, app.mutateWorkspace, app.specValidators);
         if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result?.ok === true)) return;
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {

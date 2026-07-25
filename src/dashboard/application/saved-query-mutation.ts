@@ -25,7 +25,7 @@ import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../../generated/json-schema.types.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -52,7 +52,7 @@ export type SavedQueryRepair =
  *  can offer. */
 export interface SavedQueryMutationPlan {
   ok: boolean;
-  candidate: StoredWorkspaceV3 | null;
+  candidate: StoredWorkspaceV4 | null;
   diagnostics: WorkspaceDiagnostic[];
   repairs: SavedQueryRepairKind[];
 }
@@ -146,7 +146,7 @@ export function suggestRepairs(diagnostics: readonly WorkspaceDiagnostic[]): Sav
 }
 
 function validateWorkspace(
-  candidate: StoredWorkspaceV3, options: SavedQueryMutationOptions,
+  candidate: StoredWorkspaceV4, options: SavedQueryMutationOptions,
 ): WorkspaceDiagnostic[] {
   const codecOptions = options.validationService ? { validationService: options.validationService } : {};
   const structural = validateStoredWorkspaceDocument(candidate, codecOptions);
@@ -200,15 +200,15 @@ function repairedDashboard(
  *  rewrite an unrelated Dashboard's tile. A per-Dashboard repair map is the
  *  natural extension once a UI can actually address more than one Dashboard. */
 export function planSavedQueryMutation(
-  workspace: StoredWorkspaceV3, mutation: SavedQueryMutation,
+  workspace: StoredWorkspaceV4, mutation: SavedQueryMutation,
   repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},
 ): SavedQueryMutationPlan {
   const queries = applyQueryMutation(workspace.queries, mutation);
   const dashboards = workspace.dashboards.map(
     (dashboard) => repairedDashboard(dashboard, mutation.queryId, repair),
   );
-  const candidate: StoredWorkspaceV3 = {
-    storageVersion: 3, id: workspace.id, key: workspace.key, name: workspace.name,
+  const candidate: StoredWorkspaceV4 = {
+    storageVersion: 4, id: workspace.id, key: workspace.key, name: workspace.name,
     queries: cloneJson(queries), dashboards,
   };
   const diagnostics = validateWorkspace(candidate, options);

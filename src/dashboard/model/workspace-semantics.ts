@@ -20,6 +20,9 @@ import { resolveFilterSelection } from '../../core/filter-selection.js';
 import type { FilterSelectionFilterDef, FilterSelectionDiagnostic } from '../../core/filter-selection.js';
 import { hasSameTimeRangeParameter } from '../../core/query-time-range.js';
 import { resolvePresentation } from './presentation-resolver.js';
+import { buildQueryOwnershipIndex, ownersAreValid } from './query-ownership.js';
+import type { DashboardQueryOwner } from './query-ownership.js';
+import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
 export const FLOW_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json';
@@ -571,6 +574,71 @@ export function validateDashboardSemantics(dashboard: unknown, {
     }
   }
 
+  return sortDiagnostics(out);
+}
+
+/**
+ * #427 — the Dashboard query OWNERSHIP invariant: no saved query is shared by two
+ * panel tiles, by a panel and a filter, or by members of different Dashboards.
+ * Reported at EVERY owner after the first, so the diagnostics name the references
+ * that would have to change rather than the one that got there first.
+ *
+ * ONE shared shape is valid, and deliberately so: a filter-role query returns a
+ * single row whose columns each supply the options for the parameter of the same
+ * name, so one source serves many curated filters of the SAME Dashboard (six, in
+ * `examples/clickhouse-operations.json`). Splitting those into a copy per filter
+ * re-creates the #359 bug — N copies executed N times, every helper column then
+ * rejected as a duplicate provider, so every filter on the Dashboard errors. See
+ * `ownersAreValid`.
+ *
+ * Deliberately NOT part of `validateDashboardCollectionSemantics`: that validator
+ * also guards portable bundles, and #427 requires a readable legacy bundle with
+ * shared references to be NORMALIZED on import rather than rejected. This rule is
+ * therefore whole-workspace only, invoked by the V4 stored-workspace validator —
+ * the boundary the migration has already made single-owner.
+ *
+ * The document has passed structural schema validation before this runs, which is
+ * what lets it take a typed workspace instead of narrowing defensively.
+ */
+export function validateDashboardQueryOwnership(
+  workspace: { queries: readonly SavedQueryV2[]; dashboards: readonly DashboardDocumentV1[] },
+  path: Path = ['dashboards'],
+): WorkspaceDiagnostic[] {
+  const out: WorkspaceDiagnostic[] = [];
+  const { ownersByQueryId } = buildQueryOwnershipIndex(workspace);
+  const share = (
+    queryId: string, memberPath: Path, dashboardId: string, memberLabel: string, owners: number,
+  ): void => {
+    out.push(diagnostic(memberPath, 'dashboard-query-multiple-owners',
+      `Query ${JSON.stringify(queryId)} is owned by ${owners} Dashboard members; ${memberLabel} must reference its own dedicated copy`,
+      dashboardId));
+  };
+  /** Skip a member whose query's ownership is legitimate: unshared, or the shared
+   *  filter source of this one Dashboard. */
+  const shared = (owners: readonly DashboardQueryOwner[]): boolean =>
+    owners.length > 1 && !ownersAreValid(owners);
+  for (const [dashboardIndex, dashboard] of workspace.dashboards.entries()) {
+    const at = (...rest: Path): Path => [...path, dashboardIndex, ...rest];
+    for (const [filterIndex, filter] of dashboard.filters.entries()) {
+      if (filter.sourceQueryId === undefined) continue;
+      const owners = ownersByQueryId.get(filter.sourceQueryId) ?? [];
+      if (!shared(owners)) continue;
+      const first = owners[0];
+      if (first.kind === 'filter' && first.filterId === filter.id
+        && first.dashboardId === dashboard.id) continue;
+      share(filter.sourceQueryId, at('filters', filterIndex, 'sourceQueryId'), dashboard.id,
+        `filter ${JSON.stringify(filter.id)}`, owners.length);
+    }
+    for (const [tileIndex, tile] of dashboard.tiles.entries()) {
+      const owners = ownersByQueryId.get(tile.queryId) ?? [];
+      if (!shared(owners)) continue;
+      const first = owners[0];
+      if (first.kind === 'panel' && first.tileId === tile.id
+        && first.dashboardId === dashboard.id) continue;
+      share(tile.queryId, at('tiles', tileIndex, 'queryId'), dashboard.id,
+        `tile ${JSON.stringify(tile.id)}`, owners.length);
+    }
+  }
   return sortDiagnostics(out);
 }
 

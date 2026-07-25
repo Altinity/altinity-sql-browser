@@ -16,7 +16,7 @@ import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import type { SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
@@ -233,7 +233,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  // Atomic StoredWorkspaceV3 persistence: the injected IndexedDB factory seam
+  // Atomic StoredWorkspaceV4 persistence: the injected IndexedDB factory seam
   // (mirrors crypto/sessionStorage) backs the workspace collection, behind
   // which the pure WorkspaceRepository validates create/replace commits.
   // Constructed lazily — no database is opened until
@@ -1718,7 +1718,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   };
 
-  // Project the active StoredWorkspaceV3 onto the current application surface.
+  // Project the active StoredWorkspaceV4 onto the current application surface.
   // Persistence is now a collection; this projection identifies which record
   // this tab is editing, while the repository remains independently addressable
   // by immutable id and stable URL key. #424: `state.dashboard` is the
@@ -1732,7 +1732,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
   app.invalidateDashboardTree = invalidateDashboardTree;
 
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV3): void => {
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV4): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
     // #425: re-validate the selected Dashboard against committed truth. A
@@ -1972,7 +1972,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const runWorkspaceRefresh = async (): Promise<void> => {
     const requestedWorkspaceId = app.state.workspaceId;
     const requestedRouteGeneration = routeLoadGeneration;
-    let loaded: StoredWorkspaceV3 | null;
+    let loaded: StoredWorkspaceV4 | null;
     try {
       const result = await app.workspace.loadById(requestedWorkspaceId);
       if (result.status === 'corrupt') { warnRefreshFailed(); return; }
@@ -2062,7 +2062,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
   };
 
-  const recordOpened = async (workspace: StoredWorkspaceV3): Promise<void> => {
+  const recordOpened = async (workspace: StoredWorkspaceV4): Promise<void> => {
     const result = await app.workspace.markOpened(workspace.key);
     if (!result.ok) {
       flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
@@ -2376,7 +2376,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // missing or ambiguous id, which leaves the collection untouched rather than
     // guessing — the surface reconciles to Query mode on its next projection.
     const selectedId = selectedDashboardId(app.mainSurface);
-    const foldProjection = (workspace: StoredWorkspaceV3): StoredWorkspaceV3 => {
+    const foldProjection = (workspace: StoredWorkspaceV4): StoredWorkspaceV4 => {
       if (!app.state.dashboard) return workspace;
       if (selectedId === null) return withCompatibilityDashboard(workspace, app.state.dashboard);
       return replaceDashboard(workspace, selectedId, app.state.dashboard) ?? workspace;

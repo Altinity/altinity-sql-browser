@@ -25,7 +25,7 @@ import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
-import type { StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
 
@@ -163,7 +163,7 @@ function memSession(initial: Record<string, string> = {}): MemSession {
 
 // ── ui/dashboard.js (viewer-driven render, #286 — reads dashboard.tiles[]) ────
 // The favorites-derived render was replaced by a DashboardViewerSession bound
-// to the persisted StoredWorkspaceV3; these tests drive renderDashboard through
+// to the persisted StoredWorkspaceV4; these tests drive renderDashboard through
 // a controlled current workspace + a fake streaming `executeRead`, exactly as
 // the app wires the real repository projection + exec seam.
 
@@ -203,14 +203,14 @@ const q = (id: string, sql: string, extra: Partial<SavedQueryFixture> = {}): Sav
 interface WsOver {
   id?: string;
   key?: string;
-  tiles?: StoredWorkspaceV3['dashboards'][number]['tiles'];
+  tiles?: StoredWorkspaceV4['dashboards'][number]['tiles'];
   filters?: Record<string, unknown>[];
   layout?: Record<string, unknown>;
   queries?: ReturnType<typeof savedQuery>[];
   title?: string;
 }
 const wsWith = (over: WsOver = {}) => ({
-  storageVersion: 3 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
+  storageVersion: 4 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
   queries: over.queries ?? [],
   dashboards: [{
     documentVersion: 1 as const, id: over.id ?? 'd', title: over.title ?? 'My Dash', revision: 1,
@@ -236,7 +236,7 @@ function dashApp(opts: {
   // then a success, or a slow-to-resolve first call — still keeps
   // `loadById` in sync: only a genuinely OK result advances `current`,
   // exactly like the real `WorkspaceRepository`).
-  let current: StoredWorkspaceV3 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV3 | null;
+  let current: StoredWorkspaceV4 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV4 | null;
   // #341: default commit ECHOES the candidate it was given (mirrors
   // `appDefaults.workspace.commit` in fake-app.ts) — `runCommand`'s post-commit
   // projection (`applyCommittedWorkspace(result.workspace)`, `currentDoc =
@@ -292,7 +292,7 @@ function dashApp(opts: {
   };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
-  const loadActive = async (): Promise<StoredWorkspaceV3> => {
+  const loadActive = async (): Promise<StoredWorkspaceV4> => {
     const loaded = await app.workspace.loadById(app.state.workspaceId);
     if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
     return loaded.workspace;
@@ -3079,7 +3079,7 @@ describe('renderDashboard — auto-bind favorited filter source by column name (
     expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
   });
 
-  it('does NOT bind when two favorited filter sources output the same column (ambiguous)', async () => {
+  it('does NOT bind when two Library filter sources output the same column (ambiguous)', async () => {
     const { app } = dashApp({
       responder: optionsResponder,
       workspace: wsWith({
@@ -3096,7 +3096,10 @@ describe('renderDashboard — auto-bind favorited filter source by column name (
     expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
   });
 
-  it('ignores a NON-favorited filter-role query that outputs the column', async () => {
+  // #427: matching is on the variable NAME alone. A favourite is a Library
+  // preference now and has no business deciding whether a query can supply a
+  // parameter's options, so an UNfavourited Library filter source binds.
+  it('binds a NON-favorited Library filter-role query that outputs the column', async () => {
     const { app } = dashApp({
       responder: optionsResponder,
       workspace: wsWith({
@@ -3109,7 +3112,27 @@ describe('renderDashboard — auto-bind favorited filter source by column name (
     });
     await render(app);
     expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
-    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
+    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).not.toBeNull();
+  });
+
+  // …and what DOES exclude a candidate is ownership: a dedicated copy owned by a
+  // Dashboard member must not be borrowed as another Dashboard's implicit source.
+  it('ignores a filter-role query a Dashboard member already OWNS', async () => {
+    const { app } = dashApp({
+      responder: optionsResponder,
+      workspace: wsWith({
+        queries: [
+          q('q1', CONSUMER),
+          q('owned', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'explicit', parameter: 'other', sourceQueryId: 'owned' }],
+      }),
+    });
+    await render(app);
+    const fields = qsa(app.root, '.dash-filter-host .var-field');
+    const implicit = fields.find((field) => qs(field, '.var-name').textContent === 'user1')!;
+    expect(implicit.classList.contains('is-curated')).toBe(false);
   });
 });
 
@@ -4074,11 +4097,11 @@ describe('app.renderDashboard', () => {
       ]),
     })]]);
     const app = realApp(appEnv({ fetch: asFetch(fetch) }));
-    // Drive the read-flip deterministically: a StoredWorkspaceV3 whose one tile
+    // Drive the read-flip deterministically: a StoredWorkspaceV4 whose one tile
     // references the query (bypassing IndexedDB), then the real exec seam runs it.
     const query = savedQuery({ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart' });
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'workspace', name: 'W', queries: [query],
+      storageVersion: 4, id: 'w', key: 'workspace', name: 'W', queries: [query],
       dashboards: [{ documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] }],
     };
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' };
@@ -4185,7 +4208,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
       const rerender = vi.fn();
       app.renderDashboard = rerender;
       await render(app);
-      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV3;
+      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV4;
       app.currentWorkspace = created;
       app.onWorkspaceExternallyChanged({ workspace: created, queriesChanged: false });
       expect(rerender).toHaveBeenCalledOnce();
@@ -4196,7 +4219,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
     await render(app);
-    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV3;
+    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV4;
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const, workspace: concurrentlyUpdated,
     }));
@@ -4509,7 +4532,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const,
       workspace: {
-        storageVersion: 3 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
+        storageVersion: 4 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
       },
     }));
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
@@ -4558,7 +4581,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
-  it('remove-tile atomically clears the final query favorite and every explicit filter target', async () => {
+  it('remove-tile clears every explicit filter target and leaves the query alone', async () => {
     const workspace = wsWith({
       queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
@@ -4573,7 +4596,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
     await flush();
     const candidate = commit.mock.calls[0][0];
-    expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(false);
+    // #427: no favourite write-back. Removing a tile is a Dashboard-document
+    // change; the query's Library preference is not part of it.
+    expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(true);
     expect(candidate.dashboards[0]?.filters.map((filter) => filter.targets)).toEqual([['t2'], []]);
     expect(candidate.dashboards[0]?.revision).toBe(2);
   });
@@ -4607,7 +4632,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('rapid commands commit in STRICT invocation order — a slow-to-resolve first commit is never skipped or reordered by a second', async () => {
     const seen: string[] = [];
     let resolveFirst!: (v: unknown) => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV3) => {
+    const commit = vi.fn((candidate: StoredWorkspaceV4) => {
       const layout = candidate.dashboards[0]!.layout;
       seen.push(layout.type === 'flow' ? String(layout.preset) : layout.type);
       const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision };
@@ -4645,7 +4670,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
@@ -4679,7 +4704,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     let resolveA!: (v: unknown) => void;
     const commit = vi.fn()
       .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
-      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
         { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTilesGrid(), commit });
@@ -4931,7 +4956,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const workspace = wsWith({
@@ -4970,7 +4995,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('a REJECTED commit (storage threw) rolls back, toasts, and does not wedge the queue or the pending-command bookkeeping', async () => {
     const commit = vi.fn()
       .mockRejectedValueOnce(new Error('storage blocked'))
-      .mockImplementation(async (candidate: StoredWorkspaceV3) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
@@ -5052,7 +5077,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app, calls } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV3;
+    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV4;
     app.currentWorkspace = changed;
     const before = calls.length;
     app.onWorkspaceExternallyChanged({ workspace: changed as never, queriesChanged: true });
@@ -5062,7 +5087,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
 
   it('a stale rebuild waits until pending Dashboard command descriptors settle', async () => {
     let resolveCommit!: () => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV3) => new Promise((resolve) => {
+    const commit = vi.fn((candidate: StoredWorkspaceV4) => new Promise((resolve) => {
       resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision });
     }));
     const { app, calls, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });

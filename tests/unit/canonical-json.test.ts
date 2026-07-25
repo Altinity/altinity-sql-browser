@@ -89,8 +89,8 @@ describe('documented shapes', () => {
     };
     const query = { spec: { name: 'Q' }, specVersion: 1, sql: 'SELECT 1', id: 'q1' };
     const dashboards = [dashboard, { ...dashboard, id: 'd2' }];
-    const workspaceA = { dashboards, queries: [query], name: 'W', key: 'operations', id: 'w1', storageVersion: 3 };
-    const workspaceB = { storageVersion: 3, id: 'w1', key: 'operations', name: 'W', queries: [query], dashboards };
+    const workspaceA = { dashboards, queries: [query], name: 'W', key: 'operations', id: 'w1', storageVersion: 4 };
+    const workspaceB = { storageVersion: 4, id: 'w1', key: 'operations', name: 'W', queries: [query], dashboards };
     expect(canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE))
       .toBe(canonicalJson(workspaceB, STORED_WORKSPACE_SHAPE));
     const ws = canonicalJson(workspaceA, STORED_WORKSPACE_SHAPE);

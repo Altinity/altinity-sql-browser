@@ -5,7 +5,7 @@
 // in tests and unguessable in production.
 //
 // A PortableBundle import always resolves to one COMPLETE candidate
-// StoredWorkspaceV3 built from the repository-level primitives in
+// StoredWorkspaceV4 built from the repository-level primitives in
 // workspace-operations.ts, then validated in one pass through
 // validateStoredWorkspaceDocument — exactly the same "build the whole
 // candidate, validate once, never commit an invalid one" discipline
@@ -23,19 +23,18 @@ import { dashboardDependencyQueryIds } from '../dashboard/model/bundle-order.js'
 import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
-import { toggleTileMembership } from '../dashboard/application/tile-membership.js';
-import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
 import {
-  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  replaceDashboard, withCompatibilityDashboard,
 } from './workspace-dashboards.js';
 import type { WorkspaceIdGen } from './workspace-operations.js';
 import { validateStoredWorkspaceDocument } from './stored-workspace.js';
+import { assignDedicatedOwnership } from './stored-workspace-ownership.js';
 import type { WorkspaceCodecOptions } from './stored-workspace.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../generated/json-schema.types.js';
 
 // --- Dashboard listing -------------------------------------------------------
@@ -301,50 +300,12 @@ function replaceIncomingQueries(
   return out;
 }
 
-/** Restore the Workbench star's Dashboard-membership contract for imported
- * entries. A portable query-only import carries the compatibility
- * `spec.favorite` flag, while the live application represents a favorited
- * panel query as a Dashboard tile. A replacement also removes obsolete tiles
- * when the replacement is no longer a favorited panel.
- *
- * Only copied/replaced incoming entries participate: an entry skipped by the
- * import or resolved to an existing local query must not change the current
- * Dashboard merely because the bundle happened to mark it as a favorite. */
-function addImportedFavoriteTiles(
-  dashboard: DashboardDocumentV1 | null,
-  incoming: readonly SavedQueryV2[], mapping: IdMapping,
-  queries: readonly SavedQueryV2[], genId: WorkspaceIdGen,
-): DashboardDocumentV1 | null {
-  const queriesById = new Map(queries.map((query) => [query.id, query] as const));
-  const original = dashboard;
-  let next = dashboard;
-  for (const source of incoming) {
-    const resolution = mapping[source.id];
-    if (!resolution || resolution.action === 'skip' || resolution.action === 'use-existing') continue;
-    // Every copy/replace resolution contributes its target to `queries` above.
-    const imported = queriesById.get(resolution.targetId as string) as SavedQueryV2;
-    const shouldBeMember = imported.spec.favorite === true && queryDashboardRole(imported) === 'panel';
-    const isMember = next?.tiles.some((tile) => tile.queryId === imported.id) === true;
-    // A newly copied, unfavorited query cannot have a tile. A replacement must
-    // also reconcile removal, so stale tile/filter references do not survive.
-    if ((resolution.action === 'replace' || shouldBeMember) && isMember !== shouldBeMember) {
-      next = toggleTileMembership(next, imported, shouldBeMember, genId);
-    }
-  }
-  // Tile changes are one Dashboard document mutation regardless of how many
-  // imported queries participate. A newly minted Dashboard starts at revision
-  // 1; only an existing document advances its revision.
-  return original && next !== original
-    ? { ...(next as DashboardDocumentV1), revision: original.revision + 1 }
-    : next;
-}
-
 // --- Plans --------------------------------------------------------------------
 
 export interface PortableBundleImportPlan {
   sourceDashboardId?: string;
   queryMappings: IdMapping;
-  candidateWorkspace: StoredWorkspaceV3 | null;
+  candidateWorkspace: StoredWorkspaceV4 | null;
   diagnostics: WorkspaceDiagnostic[];
 }
 
@@ -357,8 +318,38 @@ function invalidPlan(
   };
 }
 
+/**
+ * #427 — normalize INCOMING Dashboards to dedicated ownership before validating.
+ *
+ * A portable bundle may legitimately carry pre-#427 shared references (two tiles
+ * on one query, a filter source that is also a tile), and #427 forbids rejecting
+ * a readable legacy bundle "solely for sharing" when lossless normalization is
+ * possible. So each incoming member gets its own dedicated copy through the SAME
+ * derivation the V3 -> V4 storage migration uses, which is also what makes an
+ * export round-trip cleanly: a copy the migration minted carries its id marker, so
+ * it is recognized as already dedicated and is not cloned again — including in a
+ * single-Dashboard bundle, which ships only the copies and never their Library
+ * sources.
+ *
+ * `scope` is the point of it. Only the Dashboards the import actually brings in
+ * are rewritten, so a stored Dashboard the import never named comes out
+ * canonically identical — the guarantee #430 states as "all non-target
+ * Dashboards remain canonical-value unchanged". Ownership is still READ across
+ * the whole candidate, so an incoming member cannot quietly adopt a query an
+ * untouched Dashboard already owns.
+ */
+function normalizedForOwnership(
+  candidate: StoredWorkspaceV4, scope: ReadonlySet<string>,
+): StoredWorkspaceV4 {
+  const normalized = assignDedicatedOwnership({
+    queries: candidate.queries, dashboards: candidate.dashboards, scope,
+  });
+  if (normalized.clonedCount === 0) return candidate;
+  return { ...candidate, queries: normalized.queries, dashboards: normalized.dashboards };
+}
+
 function validatedPlan(
-  candidate: StoredWorkspaceV3, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
+  candidate: StoredWorkspaceV4, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
 ): PortableBundleImportPlan {
   const diagnostics = validateStoredWorkspaceDocument(candidate, options);
   if (diagnostics.length) return invalidPlan(diagnostics, queryMappings, sourceDashboardId);
@@ -410,20 +401,18 @@ function staleImportTargetPlan(
 }
 
 /** Queries-only import: merge the bundle's queries into the workspace's query
- * catalog per `decisions`. Imported favorited panels restore their Dashboard
- * tile membership — in the COMPATIBILITY Dashboard only (#424); every other
- * stored Dashboard is carried through untouched. */
+ * catalog per `decisions`. Every imported query lands in the LIBRARY — #427
+ * decoupled the favourite flag from Dashboard membership, so an imported
+ * `spec.favorite` is a Library preference and no longer mints a tile (or a whole
+ * Dashboard). Every stored Dashboard is carried through untouched. */
 export function planImportQueries(
-  workspace: StoredWorkspaceV3, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV4, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = mergeIncomingQueries(bundle.queries, workspace.queries, mapping);
-  const dashboard = addImportedFavoriteTiles(
-    resolveCompatibilityDashboard(workspace).dashboard, bundle.queries, mapping, nextQueries, genId,
-  );
-  const candidate = importQueries(withCompatibilityDashboard(workspace, dashboard), nextQueries);
+  const candidate = importQueries(workspace, nextQueries);
   return validatedPlan(candidate, mapping, options);
 }
 
@@ -444,7 +433,7 @@ export function planImportQueries(
  *  diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule rather
  *  than silently overwriting an unrelated Dashboard. */
 export function planImportDashboard(
-  workspace: StoredWorkspaceV3, bundle: PortableBundleV1, sourceDashboardId: string,
+  workspace: StoredWorkspaceV4, bundle: PortableBundleV1, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
   targetDashboardId: string | null = null,
@@ -469,9 +458,11 @@ export function planImportDashboard(
     workspace, { queries: nextQueries, dashboards: workspace.dashboards },
   );
   // No explicit target: the legacy entry point writes the compatibility slot.
+  const scope = new Set([finalDashboard.id]);
   if (targetDashboardId === null) {
     return validatedPlan(
-      withCompatibilityDashboard(base, finalDashboard), mapping, options, sourceDashboardId,
+      normalizedForOwnership(withCompatibilityDashboard(base, finalDashboard), scope),
+      mapping, options, sourceDashboardId,
     );
   }
   // An EXPLICIT target fails closed. `replaceDashboard` returns null when the id
@@ -481,7 +472,7 @@ export function planImportDashboard(
   // destroying a Dashboard the import never named.
   const candidate = replaceDashboard(base, targetDashboardId, finalDashboard);
   if (!candidate) return staleImportTargetPlan(sourceDashboardId, targetDashboardId, mapping);
-  return validatedPlan(candidate, mapping, options, sourceDashboardId);
+  return validatedPlan(normalizedForOwnership(candidate, scope), mapping, options, sourceDashboardId);
 }
 
 /** Replace the workspace's queries AND Dashboards atomically (preserving
@@ -494,7 +485,7 @@ export function planImportDashboard(
  *  Dashboard, exactly as before. Duplicate incoming Dashboard ids are
  *  diagnosed by the candidate's own validation, never silently deduplicated. */
 export function planReplaceWorkspace(
-  workspace: StoredWorkspaceV3, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV4, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
@@ -512,10 +503,9 @@ export function planReplaceWorkspace(
     dashboards.push(rewritten.dashboard);
   }
 
-  if (!dashboards.length) {
-    const derived = addImportedFavoriteTiles(null, bundle.queries, mapping, nextQueries, genId);
-    if (derived) dashboards.push(derived);
-  }
   const candidate = replaceWorkspaceContents(workspace, { queries: nextQueries, dashboards });
-  return validatedPlan(candidate, mapping, options);
+  return validatedPlan(
+    normalizedForOwnership(candidate, new Set(dashboards.map((dashboard) => dashboard.id))),
+    mapping, options,
+  );
 }

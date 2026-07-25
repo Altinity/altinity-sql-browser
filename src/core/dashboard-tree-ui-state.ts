@@ -10,8 +10,8 @@
 // forced: that one reads `MainSurfaceState`, and `src/core/` may never import
 // `src/workspace/` (build/check-boundaries.mjs).
 //
-// Never exported and never persisted: `StoredWorkspaceV3` carries none of this.
-// Keyed by `StoredWorkspaceV3.id` — the immutable opaque application identity
+// Never exported and never persisted: `StoredWorkspaceV4` carries none of this.
+// Keyed by `StoredWorkspaceV4.id` — the immutable opaque application identity
 // (#406) — never by the mutable `name` or the rewritable URL `key`.
 //
 // Deliberately NOT a signal, matching `state.libraryFilter`'s precedent

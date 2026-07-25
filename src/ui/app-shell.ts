@@ -156,7 +156,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // restructuring of the mobile CSS (touch behaviour stays out of scope per #426).
   app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
     h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Explore')),
-    h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
+    h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Library')));
   sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
   const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
 
@@ -240,8 +240,15 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // Reactive repaint of the side panel: re-runs when the active panel changes
   // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
   // still call renderSavedHistory directly until those slices are signals too.
+  //
+  // #427 added the projection revision. Library membership is now a function of
+  // `dashboards[]` — a query is in the Library exactly while no Dashboard member
+  // references it — so a committed Dashboard change can move a query in or out of
+  // this list without `savedQueries` changing at all. It is the same one signal
+  // the Dashboard tree subscribes to, bumped from the single projection funnel.
   disposers.push(effect(() => {
     state.sidePanel.value;
+    state.dashboardTreeRevision.value;
     renderSavedHistory(app);
   }));
   // Reactive repaint of the header library title (name + unsaved-changes dot):

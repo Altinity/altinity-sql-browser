@@ -11,7 +11,7 @@ import {
 import { ANNOTATION_KEYWORDS, SCHEMA_MANIFEST } from '../../build/schema-manifest.mjs';
 import { buildSchemaTypes } from '../../build/emit-schema-types.mjs';
 import {
-  validateStoredWorkspaceV2, validateStoredWorkspaceV3,
+  validateStoredWorkspaceV2, validateStoredWorkspaceV3, validateStoredWorkspaceV4,
 } from '../../src/generated/json-schema-validators.js';
 
 const root = resolve(process.cwd());
@@ -27,13 +27,14 @@ describe('multi-schema build', () => {
       'schemas/dashboard-v1.schema.json',
       'schemas/stored-workspace-v2.schema.json',
       'schemas/stored-workspace-v3.schema.json',
+      'schemas/stored-workspace-v4.schema.json',
       'schemas/portable-bundle-v1.schema.json',
     ]);
     const KINDS = [
       ['query-spec', 1], ['saved-query', 2], ['library', 2],
       ['dashboard-layout-flow', 1], ['dashboard-layout-grafana-grid', 1],
       ['dashboard', 1], ['stored-workspace', 2], ['stored-workspace', 3],
-      ['portable-bundle', 1],
+      ['stored-workspace', 4], ['portable-bundle', 1],
     ];
     const records = await loadRecords();
     expect(records.map(({ schema }) => [schema['x-altinity-kind'], schema['x-altinity-version']]))
@@ -55,6 +56,7 @@ describe('multi-schema build', () => {
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json',
     ]);
     const ajv = new Ajv2020({ strict: true, allErrors: true });
@@ -118,6 +120,29 @@ describe('multi-schema build', () => {
     for (const storageVersion of [2, 4]) {
       expect(validateStoredWorkspaceV3({ ...workspace, storageVersion })).toBe(false);
     }
+    // #427 — the v4 contract. Structurally v3 with a new const and a query bound
+    // raised for the cloning migration; the OWNERSHIP invariant is deliberately
+    // NOT expressible here (see the stored-workspace codec test, where semantic
+    // validation is what rejects a shared query).
+    const v4 = { ...workspace, storageVersion: 4 };
+    expect(validateStoredWorkspaceV4(v4)).toBe(true);
+    expect(validateStoredWorkspaceV4(workspace)).toBe(false);
+    expect(validateStoredWorkspaceV3(v4)).toBe(false);
+    const shared = {
+      ...v4,
+      queries: [{ id: 'p1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'P' } }],
+      dashboards: [{
+        ...dashboard,
+        tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p1' }],
+      }],
+    };
+    expect(validateStoredWorkspaceV4(shared)).toBe(true);
+    // v4 raised the query bound to 1000 originals + 32 x (100 + 32) clones.
+    expect(validateStoredWorkspaceV4({
+      ...v4, queries: Array.from({ length: 5225 }, (_, i) => (
+        { id: `q${i}`, sql: 'SELECT 1', specVersion: 1, spec: { name: `q${i}` } }
+      )),
+    })).toBe(false);
     for (const key of ['', '_private', 'Upper', 'with space']) {
       expect(validateStoredWorkspaceV3({ ...workspace, key })).toBe(false);
     }
@@ -162,7 +187,7 @@ describe('multi-schema build', () => {
     expect(SCHEMA_MANIFEST.map((entry) => entry.typeExport)).toEqual([
       'QuerySpecV1', 'SavedQueryV2', 'LibraryV2',
       'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1',
-      'StoredWorkspaceV2', 'StoredWorkspaceV3', 'PortableBundleV1',
+      'StoredWorkspaceV2', 'StoredWorkspaceV3', 'StoredWorkspaceV4', 'PortableBundleV1',
     ]);
     const sources = await generatedSources();
     const types = Object.entries(sources).find(([path]) => path.endsWith('json-schema.types.ts'))[1];

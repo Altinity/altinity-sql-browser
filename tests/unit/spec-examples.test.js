@@ -9,6 +9,10 @@ import { querySpecSchemaService } from '../../src/core/spec-schema.js';
 import { filterExecution } from '../../src/core/filter-execution.js';
 import { effectiveDashboardRole } from '../../src/core/result-choice.js';
 import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
+import { migrateStoredWorkspaceV3ToV4 } from '../../src/workspace/stored-workspace-ownership.js';
+import { validateStoredWorkspaceDocument } from '../../src/workspace/stored-workspace.js';
+import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
+import { mergeDashboardFilterHelpers } from '../../src/core/dashboard-filters.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -20,6 +24,68 @@ function decodeExample(text, name) {
 }
 
 describe('schema artifacts and examples', () => {
+  // #427 — the shipped bundles ARE the migration's acceptance test. Each becomes a
+  // V3 workspace, is migrated, and must come out with no diagnostics at all.
+  //
+  // `clickhouse-operations.json` is the case that matters: one filter-role query
+  // ("Grafana port filters") supplies SIX option columns and SIX curated filters
+  // reference it. Cloning it per filter produced six identical sources, so every
+  // helper column had six providers and `mergeDashboardFilterHelpers` rejected all
+  // of them (`filter-duplicate-provider`) — every filter on the dashboard errored,
+  // and the query ran six times per load. One copy per DASHBOARD is why it works.
+  it('migrates every shipped example bundle to a valid V4 workspace', () => {
+    const examples = resolve(root, 'examples');
+    const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
+    for (const name of names) {
+      const bundle = decodeExample(readFileSync(resolve(examples, name), 'utf8'), name);
+      const migrated = migrateStoredWorkspaceV3ToV4({
+        storageVersion: 3, id: 'w', key: 'w', name: 'W',
+        queries: bundle.queries, dashboards: bundle.dashboards,
+      });
+      expect(validateStoredWorkspaceDocument(migrated), name).toEqual([]);
+      const index = buildQueryOwnershipIndex(migrated);
+      // Every original survives as a Library query…
+      for (const query of bundle.queries) {
+        expect(index.libraryQueryIds.has(query.id), name + ': ' + query.id).toBe(true);
+      }
+      // …and no curated filter shares a copy across Dashboards.
+      for (const dashboard of migrated.dashboards) {
+        for (const filter of dashboard.filters) {
+          if (!filter.sourceQueryId) continue;
+          const owners = index.ownersByQueryId.get(filter.sourceQueryId);
+          expect(owners.every((owner) => owner.dashboardId === dashboard.id), name).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('gives clickhouse-operations ONE filter-source copy, with no duplicate providers', () => {
+    const bundle = decodeExample(
+      readFileSync(resolve(root, 'examples/clickhouse-operations.json'), 'utf8'), 'operations',
+    );
+    const migrated = migrateStoredWorkspaceV3ToV4({
+      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      queries: bundle.queries, dashboards: bundle.dashboards,
+    });
+    const [dashboard] = migrated.dashboards;
+    const sources = dashboard.filters.map((filter) => filter.sourceQueryId).filter(Boolean);
+    expect(sources.length).toBe(6);
+    expect(new Set(sources).size).toBe(1);
+    // The runtime consequence: ONE provider for that source, so each of its helper
+    // columns has exactly one provider and the merge reports no duplicate.
+    const source = migrated.queries.find((query) => query.id === sources[0]);
+    const helpers = ['user', 'query_kind', 'exception_code', 'query_hash', 'metric', 'is_initial_query']
+      .map((columnName) => ({ name: columnName, options: [{ value: 'x', label: 'x' }] }));
+    const merged = mergeDashboardFilterHelpers({
+      providers: [{ sourceId: source.id, sourceName: 'Grafana port filters', helpers }],
+      controls: helpers.map((helper) => ({ name: helper.name, type: 'String', optional: false })),
+    });
+    expect(merged.diagnostics.filter((d) => d.code === 'filter-duplicate-provider')).toEqual([]);
+    expect(Object.keys(merged.fields).sort()).toEqual(
+      ['exception_code', 'is_initial_query', 'metric', 'query_hash', 'query_kind', 'user'],
+    );
+  });
+
   it('keeps generated schema artifacts deterministic and current', () => {
     expect(() => execFileSync(process.execPath, ['build/compile-json-schemas.mjs', '--check'], {
       cwd: root, stdio: 'pipe',

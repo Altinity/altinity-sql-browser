@@ -1886,6 +1886,79 @@ export const storedWorkspaceV3Schema = {
   ]
 };
 
+export const storedWorkspaceV4Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json",
+  "title": "Altinity SQL Browser stored workspace v4",
+  "description": "One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v3 with the Dashboard query OWNERSHIP contract: every panel tile and every curated filter references a dedicated saved-query copy owned by exactly one member, and a query no member references is a Library query. That invariant is cross-resource, so it is enforced by whole-workspace semantic validation rather than by this document shape — the version exists so an older build fails closed on a record it would silently misread as shareable, and so the one-time V3 cloning migration has a boundary to run at. v3 and v2 records remain readable and migrate deterministically on read. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
+  "x-altinity-kind": "stored-workspace",
+  "x-altinity-version": 4,
+  "type": "object",
+  "required": [
+    "storageVersion",
+    "id",
+    "key",
+    "name",
+    "queries",
+    "dashboards"
+  ],
+  "properties": {
+    "storageVersion": {
+      "title": "Storage version",
+      "description": "Stored-workspace contract version; always 4 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 4
+    },
+    "id": {
+      "title": "Workspace identifier",
+      "description": "Stable generated application identity. Two workspaces with the same display name still have distinct IDs.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "key": {
+      "title": "Workspace URL key",
+      "description": "Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "name": {
+      "title": "Workspace name",
+      "description": "Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Holds both Library queries (referenced by no Dashboard member) and the dedicated copies Dashboard members own. The bound is 5224 rather than v3's 1000 because the V3 ownership migration clones one query per member, and a valid v3 record can hold 1000 queries plus 32 Dashboards x (100 tiles + 32 filters) = 4224 member references: at the old bound, migrating a legitimate large workspace would have produced a record that fails validation on every future open, with no repair path. Required even when empty.",
+      "type": "array",
+      "maxItems": 5224,
+      "items": {
+        "$ref": "saved-query-v2.schema.json"
+      }
+    },
+    "dashboards": {
+      "title": "Dashboards",
+      "description": "This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile, filter, and layout placement IDs stay Dashboard-local. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "dashboard-v1.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "storageVersion",
+    "id",
+    "key",
+    "name",
+    "queries",
+    "dashboards"
+  ]
+};
+
 export const portableBundleV1Schema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
@@ -1947,9 +2020,9 @@ export const portableBundleV1Schema = {
     },
     "queries": {
       "title": "Saved queries",
-      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.",
+      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty. The bound tracks the stored-workspace capacity (raised from 1000 by #427, whose ownership migration clones one dedicated query per Dashboard member) so a migrated workspace stays exportable; an older build rejects a bundle above its own bound.",
       "type": "array",
-      "maxItems": 1000,
+      "maxItems": 5224,
       "items": {
         "$ref": "saved-query-v2.schema.json"
       }
@@ -1985,5 +2058,6 @@ export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": dashboardV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json": storedWorkspaceV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json": storedWorkspaceV3Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json": storedWorkspaceV4Schema,
   "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": portableBundleV1Schema,
 };

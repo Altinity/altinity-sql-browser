@@ -1,7 +1,7 @@
-// The ONE narrow Dashboard selection/access seam over a StoredWorkspaceV3
+// The ONE narrow Dashboard selection/access seam over a StoredWorkspaceV4
 // Dashboard collection (#424). Pure — no DOM, no persistence.
 //
-// V3 stores `dashboards: DashboardDocumentV1[]`, but the current UI still
+// V4 stores `dashboards: DashboardDocumentV1[]`, but the current UI still
 // exposes exactly one Dashboard surface with no selector. Rather than
 // scattering `workspace.dashboards[0]` across the application, every call site
 // resolves the visible document through `resolveCompatibilityDashboard` and
@@ -10,13 +10,13 @@
 // state without touching those call sites.
 //
 // The compatibility rule is deliberately TEMPORARY application behavior, not a
-// persisted field: V3 carries no `activeDashboardId`/`defaultDashboardId`.
+// persisted field: V4 carries no `activeDashboardId`/`defaultDashboardId`.
 
-import type { DashboardDocumentV1, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
+import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
 
 /** Enough of a workspace to resolve a Dashboard from — the readers below never
  *  need the identity envelope, so an in-flight candidate satisfies them too. */
-export type WorkspaceDashboards = Pick<StoredWorkspaceV3, 'dashboards'>;
+export type WorkspaceDashboards = Pick<StoredWorkspaceV4, 'dashboards'>;
 
 /** Which Dashboard the current single-surface UI renders and edits, with its
  *  stable identity so downstream commands can address their write BY ID rather
@@ -77,8 +77,8 @@ export function findDashboardStrict(
  * write). Never mutates `workspace`.
  */
 export function replaceDashboard(
-  workspace: StoredWorkspaceV3, dashboardId: string, next: DashboardDocumentV1,
-): StoredWorkspaceV3 | null {
+  workspace: StoredWorkspaceV4, dashboardId: string, next: DashboardDocumentV1,
+): StoredWorkspaceV4 | null {
   if (findDashboardStrict(workspace, dashboardId).status !== 'ok') return null;
   return {
     ...workspace,
@@ -96,8 +96,8 @@ export function replaceDashboard(
  * Never mutates `workspace`.
  */
 export function withCompatibilityDashboard(
-  workspace: StoredWorkspaceV3, next: DashboardDocumentV1 | null,
-): StoredWorkspaceV3 {
+  workspace: StoredWorkspaceV4, next: DashboardDocumentV1 | null,
+): StoredWorkspaceV4 {
   const rest = workspace.dashboards.slice(1);
   return { ...workspace, dashboards: next === null ? rest : [next, ...rest] };
 }

@@ -130,12 +130,12 @@ describe('encodePortableBundleJson', () => {
   });
 
   it('rejects an encoded document larger than the decoded-JSON byte cap', () => {
-    // Each spec stays just under the 1 MiB per-spec limit but eleven of them
-    // sum past the 10 MiB whole-document cap.
-    // An arbitrary extension field (query-spec is open) inflates each spec to
-    // just under the 1 MiB per-spec cap; eleven sum past the 10 MiB document cap.
+    // An arbitrary extension field (query-spec is open) inflates each spec to just
+    // under the 1 MiB per-spec cap; twenty-one sum past the 20 MiB whole-document
+    // cap (#427 doubled it so the ownership migration, which adds a copy per
+    // Dashboard member, cannot leave a workspace permanently un-committable).
     const chunk = 'x'.repeat(1_000_000);
-    const queries = Array.from({ length: 11 }, (_, i) => ({
+    const queries = Array.from({ length: 21 }, (_, i) => ({
       id: `q${i}`, sql: 'SELECT 1', specVersion: 1, spec: { name: `q${i}`, ext: chunk },
     }));
     const result = encodePortableBundleJson({ queries, dashboards: [], nowISO: '2026-07-17T00:00:00.000Z' });

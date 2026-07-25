@@ -61,11 +61,21 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateStoredWorkspaceV2',
     typeExport: 'StoredWorkspaceV2',
   },
+  // stored-workspace v3 stays registered read-only for the same reason (#427):
+  // the codec decodes persisted v3 records through this validator before the
+  // one-time ownership migration clones a dedicated query per Dashboard member.
+  // Every WRITE uses v4.
   {
     path: 'schemas/stored-workspace-v3.schema.json',
     schemaExport: 'storedWorkspaceV3Schema',
     validatorExport: 'validateStoredWorkspaceV3',
     typeExport: 'StoredWorkspaceV3',
+  },
+  {
+    path: 'schemas/stored-workspace-v4.schema.json',
+    schemaExport: 'storedWorkspaceV4Schema',
+    validatorExport: 'validateStoredWorkspaceV4',
+    typeExport: 'StoredWorkspaceV4',
   },
   {
     path: 'schemas/portable-bundle-v1.schema.json',

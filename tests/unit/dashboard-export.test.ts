@@ -4,7 +4,7 @@ import {
 } from '../../src/dashboard/model/dashboard-export.js';
 import { canonicalEqual } from '../../src/dashboard/model/canonical-json.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string): SavedQueryV2 => ({
@@ -85,12 +85,12 @@ describe('buildDashboardExportBundle', () => {
 });
 
 describe('buildWorkspaceExportBundle', () => {
-  const workspaceFixture = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => ({
-    storageVersion: 3, id: 'ws', key: 'ws', name: 'WS',
+  const workspaceFixture = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
+    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q2'), query('q1'), query('q3')],
     dashboards: [dashboard('d1', ['q1'])],
     ...over,
-  } as StoredWorkspaceV3);
+  } as StoredWorkspaceV4);
 
   it('emits every query in catalog order, not reordered by Dashboard tile usage', () => {
     const ws = workspaceFixture();
@@ -162,8 +162,8 @@ describe('canonical consistency between the two export bundles (#341)', () => {
   const nowISO = '2020-01-01T00:00:00Z';
   // A workspace whose Dashboard depends on q1 (tile) + q2 (filter source), plus
   // an unrelated q3 that only the Workbench export carries.
-  const ws: StoredWorkspaceV3 = {
-    storageVersion: 3, id: 'ws', key: 'ws', name: 'WS',
+  const ws: StoredWorkspaceV4 = {
+    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q3'), query('q1'), query('q2')], // deliberately not tile order
     dashboards: [dashboard('d1', ['q1'], ['q2'])],
   };

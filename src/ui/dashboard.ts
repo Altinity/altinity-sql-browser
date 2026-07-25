@@ -1,6 +1,6 @@
 // The live Dashboard surface (#149 / #240 / #280 / #286 / #407). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
-// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV3`
+// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV4`
 // from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
 // document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
@@ -76,6 +76,7 @@ import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layout
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
+import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
 import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
@@ -93,7 +94,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV3,
+  SavedQueryV2, StoredWorkspaceV4,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -157,7 +158,7 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  currentWorkspace: StoredWorkspaceV3 | null;
+  currentWorkspace: StoredWorkspaceV4 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
    *  navigation API its own chrome (View/Edit, Back to query) transitions
@@ -175,7 +176,7 @@ export interface DashboardApp {
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
-  applyCommittedWorkspace(workspace: StoredWorkspaceV3): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV4): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
   // saved-query mutations use, so a rapid sequence of drag/resize/preset/
@@ -355,16 +356,30 @@ interface TileEl {
  *  that no explicit filter already targets — so a migrated Dashboard (whose
  *  persisted `filters` is empty) still surfaces its implicit param filters.
  *
- *  #189/#364 (Bug 3): when a favorited `filter`-role saved query outputs a
- *  column whose name equals the parameter, the synthesized filter also gets
- *  that query's `sourceQueryId`, so its option list attaches automatically (the
- *  field becomes a curated combobox instead of a plain text box). A parameter
- *  produced by EXACTLY ONE favorited filter source binds; zero or more than one
- *  (ambiguous) leaves the filter plain — ambiguity degrades gracefully, never
- *  guesses.
+ *  #189/#364 (Bug 3): when a `filter`-role saved query outputs a column whose
+ *  name equals the parameter, the synthesized filter also gets that query's
+ *  `sourceQueryId`, so its option list attaches automatically (the field becomes
+ *  a curated combobox instead of a plain text box). A parameter produced by
+ *  EXACTLY ONE candidate source binds; zero or more than one (ambiguous) leaves
+ *  the filter plain — ambiguity degrades gracefully, never guesses.
+ *
+ *  #427 changed WHICH queries are candidates, in two ways:
+ *
+ *   - the FAVOURITE requirement is gone. A favourite is a Library preference now
+ *     and carries no membership meaning, so it has no business deciding whether a
+ *     query can supply a parameter's options. Matching is on the variable name
+ *     alone. This widens the candidate set, so a workspace that previously had
+ *     exactly one favourited match can now be ambiguous and degrade to a plain
+ *     field — visible, and preferable to a hidden flag choosing for the user.
+ *   - only LIBRARY (zero-owner) queries are candidates. A dedicated copy owned by
+ *     some Dashboard's curated filter must not also be borrowed as this
+ *     Dashboard's implicit source: that is exactly the sharing #427 removed, and
+ *     after migration every owned copy has a Library original to match anyway.
+ *
  *  Runtime-only; never persisted. */
 function synthesizeImplicitFilters(
   doc: DashboardDocumentV1, queryById: Map<string, SavedQueryV2>,
+  ownedQueryIds: ReadonlySet<string>,
 ): DashboardFilterDefinitionV1[] {
   const declared = new Set((doc.filters || []).map((f) => f.parameter));
   const panelSources = (doc.tiles || [])
@@ -372,10 +387,10 @@ function synthesizeImplicitFilters(
     .filter((query): query is SavedQueryV2 => !!query && queryDashboardRole(query) === 'panel')
     .map((query, index) => ({ id: 't' + index, kind: 'tile', sql: query.sql, bindPolicy: 'row-returning' }));
   const analysis = analyzeParameterizedSources(panelSources);
-  // column name -> the favorited filter-role source ids that output it.
+  // column name -> the Library filter-role source ids that output it.
   const columnSources = new Map<string, Set<string>>();
   for (const source of queryById.values()) {
-    if (queryDashboardRole(source) !== 'filter' || !queryFavorite(source)) continue;
+    if (queryDashboardRole(source) !== 'filter' || ownedQueryIds.has(source.id)) continue;
     for (const column of selectOutputColumns(source.sql)) {
       let ids = columnSources.get(column);
       if (!ids) { ids = new Set(); columnSources.set(column, ids); }
@@ -605,7 +620,7 @@ export async function renderDashboard(
   // rebuild its candidate from this stale snapshot and silently reverse that
   // other producer's mutation. `null` when no persisted aggregate exists yet
   // (legacy/empty) — commands then stay optimistic-only, same as before #341.
-  let committedWorkspace: StoredWorkspaceV3 | null = workspace;
+  let committedWorkspace: StoredWorkspaceV4 | null = workspace;
   // #344 review fix: queued command DESCRIPTORS (dispatch order), not
   // pre-built document snapshots. A snapshot-based queue (the pre-#344
   // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
@@ -622,8 +637,13 @@ export async function renderDashboard(
   let needsRebuild = false;
 
   // Merge explicit + synthesized implicit filters for the viewer.
+  // #427: computed from the WHOLE collection, so a copy owned by any Dashboard
+  // (not just this one) is excluded from implicit-source candidacy.
+  const ownedQueryIds = buildQueryOwnershipIndex({
+    queries: workspace.queries, dashboards: workspace.dashboards,
+  }).dashboardOwnedQueryIds;
   const withImplicitFilters = (d: DashboardDocumentV1): DashboardDocumentV1 => (
-    { ...d, filters: [...(d.filters || []), ...synthesizeImplicitFilters(d, queryById)] }
+    { ...d, filters: [...(d.filters || []), ...synthesizeImplicitFilters(d, queryById, ownedQueryIds)] }
   );
   const viewerDoc: DashboardDocumentV1 = withImplicitFilters(currentDoc);
 
@@ -1072,7 +1092,11 @@ export async function renderDashboard(
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
-    'No tiles yet — star a query in the Queries panel to add it to the dashboard.');
+    // #427: the star no longer adds a panel, so this must not tell the user to
+    // use it. Nor may it point at the Library: dragging a query onto a Dashboard
+    // is #428 and does not exist yet. The only route that works TODAY is the
+    // Spec editor, so that is what it says.
+    'No panels yet — add one by editing this dashboard\u2019s Spec.');
   const searchEmpty = h('div', { class: 'dash-empty dash-search-empty', style: { display: 'none' } },
     h('h2', null, 'No tiles match'),
     h('p', null, 'Try a different title or description.'),
@@ -1185,7 +1209,7 @@ export async function renderDashboard(
     // moved past the route cache, so rebasing from the stale cache would
     // re-publish a document containing what the concurrent commit removed.
     // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV3 | null | undefined;
+    let observed: StoredWorkspaceV4 | null | undefined;
     void app.mutateWorkspace((latest) => {
       observed = latest;
       // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
@@ -1197,7 +1221,7 @@ export async function renderDashboard(
       const base = latest && findDashboard(latest, selectedDashboardId);
       if (!base) return null;
       // `base` is truthy only when `latest` was, so the aggregate exists here.
-      const committed = latest as StoredWorkspaceV3;
+      const committed = latest as StoredWorkspaceV4;
       const reapplied = applyRouteCommand(base, command, committed.queries);
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
@@ -1273,7 +1297,7 @@ export async function renderDashboard(
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
   // head descriptor, refresh committed truth, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV3 | null | undefined): void {
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV4 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();

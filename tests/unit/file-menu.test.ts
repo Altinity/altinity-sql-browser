@@ -10,7 +10,7 @@ import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
@@ -26,7 +26,7 @@ const setSaved = (app: App, queries: SavedQueryFixture[]): void => {
 // .commit` always returns a Promise), so an assertion made right after firing
 // a UI event needs one tick before the projection lands.
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
-const loadActiveWorkspace = async (app: App): Promise<StoredWorkspaceV3> => {
+const loadActiveWorkspace = async (app: App): Promise<StoredWorkspaceV4> => {
   const loaded = await app.workspace.loadById(app.state.workspaceId);
   if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
   return loaded.workspace;
@@ -277,8 +277,8 @@ describe('Export', () => {
   // (`loadCurrent`), not stale `app.state` — the whole reason the actions
   // became async (flush pending writes → read back the aggregate).
   it('exportWorkspaceAction builds the bundle from the committed workspace (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'committed_lib', name: 'Committed Lib',
+    const committed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'committed_lib', name: 'Committed Lib',
       queries: [panelQuery('c1', 'Committed')], dashboards: [],
     };
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
@@ -295,8 +295,8 @@ describe('Export', () => {
   });
 
   it('exportDashboardAction builds from the committed dashboard (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib',
+    const committed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'Lib',
       queries: [panelQuery('c1', 'Committed')],
       dashboards: [dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] })],
     };
@@ -334,8 +334,8 @@ describe('Export', () => {
   // envelope must come from `app.currentWorkspace` (the full collection)
   // rather than from `app.state.dashboard` (the compatibility projection).
   it('exportWorkspaceAction exports every stored Dashboard, in workspace order', async () => {
-    const committed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib',
+    const committed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'Lib',
       queries: [panelQuery('c1', 'Committed')],
       dashboards: [
         dashboardDoc({ id: 'visible', title: 'Visible', tiles: [{ id: 't1', queryId: 'c1' }] }),
@@ -364,7 +364,7 @@ describe('Export', () => {
     // The full collection lives on `app.currentWorkspace`; `state.dashboard`
     // only ever projects the compatibility entry.
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'My Lib',
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'My Lib',
       queries: app.state.savedQueries, dashboards: [visible, hidden],
     };
     app.state.dashboard = visible;
@@ -414,6 +414,54 @@ describe('Export', () => {
     openFileMenu(app);
     click(item(/Download SQL/)!);
     expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.sql');
+  });
+
+  // #427: a document export is the LIBRARY. Each Dashboard member owns a dedicated
+  // copy of its query, so exporting the raw collection emitted every panel TWICE,
+  // with identical names and SQL. The footer count and the empty gate read the same
+  // projection — an all-owned workspace must not offer a download that then toasts
+  // "Nothing to save".
+  it('Download Markdown/SQL and the count follow the Library projection', () => {
+    const app = mount();
+    setSaved(app, [
+      { id: 'lib', name: 'Standalone', sql: 'SELECT 1', favorite: false },
+      { id: 'owned', name: 'Panel copy', sql: 'SELECT 2', favorite: false },
+    ]);
+    app.state.libraryName.value = 'Lib';
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'Lib',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    openFileMenu(app);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('1 query in workspace');
+    click(item(/Download Markdown/)!);
+    const [, , content] = app.downloadFile.mock.calls.at(-1)!;
+    expect(content).toContain('Standalone');
+    expect(content).not.toContain('Panel copy');
+  });
+
+  it('offers no document download when every query is Dashboard-owned', () => {
+    const app = mount();
+    setSaved(app, [{ id: 'owned', name: 'Panel copy', sql: 'SELECT 2', favorite: false }]);
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    openFileMenu(app);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('Workspace is empty');
+    click(item(/Download Markdown/)!);
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('Nothing to save');
   });
 });
 
@@ -707,7 +755,7 @@ describe('Import workspace (#406 additive collection)', () => {
   it('the menu item closes the menu, opens the picker, and creates a fresh active workspace', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'd1', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
-    const create = vi.fn(async (workspace: StoredWorkspaceV3) => ({
+    const create = vi.fn(async (workspace: StoredWorkspaceV4) => ({
       ok: true as const, workspace, dashboardRevision: workspace.dashboards[0]?.revision ?? null,
     }));
     const app = mount({
@@ -739,11 +787,15 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0][0]).toMatchObject({
-      storageVersion: 3, key: 'imported_ops_3', name: 'Imported Ops',
+      storageVersion: 4, key: 'imported_ops_3', name: 'Imported Ops',
     });
     expect(create.mock.calls[0][0].id).not.toBe(oldId);
-    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
+    // #427: the bundle's query lands as the Library source and the imported
+    // tile gets its own dedicated copy, so the collection holds both.
+    expect(app.state.savedQueries.map((q) => q.id)[0]).toBe('p1');
+    expect(app.state.savedQueries).toHaveLength(2);
     expect(app.state.dashboard!.id).toBe('d1');
+    expect(app.state.dashboard!.tiles[0].queryId).not.toBe('p1');
     expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
     expect(toast()).toBe('Imported workspace');
   });
@@ -755,7 +807,7 @@ describe('Import workspace (#406 additive collection)', () => {
   it('imports every bundled Dashboard directly, in bundle order, with no picker', async () => {
     const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
     const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
-    const create = vi.fn(async (workspace: StoredWorkspaceV3) => ({
+    const create = vi.fn(async (workspace: StoredWorkspaceV4) => ({
       ok: true as const, workspace, dashboardRevision: workspace.dashboards[0]?.revision ?? null,
     }));
     const app = mount({
@@ -947,8 +999,8 @@ describe('decode failures', () => {
 // queue while a SECOND op (here, a rename / an import) is fired behind it.
 describe('mixed-producer serialization (#341/#344 review fix)', () => {
   it('a pending saved-query-style mutation commits before a queued rename builds its candidate — the rename lands on top, nothing reverts', async () => {
-    const seed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'orig', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboards: [],
+    const seed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'orig', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({ workspace: statefulWorkspaceRepo(seed) });
     app.state.savedQueries = seed.queries;
@@ -984,8 +1036,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   });
 
   it('a pending saved-query-style mutation commits before a queued Import queries builds its candidate — the import lands on top of the post-mutation catalog', async () => {
-    const seed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
+    const seed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -1024,8 +1076,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   // without dequeue-time revalidation the import would silently drop the
   // incoming query and still toast success.
   it('a conflict minted while the import waits in the queue ABORTS the import (content differs) instead of silently skipping', async () => {
-    const seed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
+    const seed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -1061,8 +1113,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   });
 
   it('a conflict minted while the import waits in the queue auto-resolves when canonically IDENTICAL — no duplicate, honest count', async () => {
-    const seed: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
+    const seed: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),

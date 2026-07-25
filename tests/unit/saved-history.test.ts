@@ -53,7 +53,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
-    expect(savedList(app).textContent).toContain('No saved queries yet.');
+    expect(savedList(app).textContent).toContain('No library queries yet.');
   });
 
   it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', async () => {
@@ -230,35 +230,85 @@ describe('renderSavedHistory', () => {
     expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
   });
 
-  it('saved: panel stars and sorting use canonical tile membership, then repair a stale flag in one click', async () => {
+  // #427: the star is a Library preference. It reads `spec.favorite` directly,
+  // sorts favourites first, and adds no tile to anything.
+  it('saved: stars read spec.favorite, sort favourites first, and touch no Dashboard', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
-      { id: 'a', name: 'Stale flag', sql: '1', favorite: true },
-      { id: 'b', name: 'Real member', sql: '2', favorite: false },
+      { id: 'a', name: 'Starred', sql: '1', favorite: true },
+      { id: 'b', name: 'Plain', sql: '2', favorite: false },
     ]);
     app.state.dashboard = {
       documentVersion: 1, id: 'd', title: 'D', revision: 1,
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      filters: [], tiles: [{ id: 'tb', queryId: 'b' }],
+      filters: [], tiles: [],
     };
     renderSavedHistory(app);
     const rows = qsa(savedList(app), '.saved-row');
-    expect(rows.map((row) => qs(row, '.name').textContent)).toEqual(['Real member', 'Stale flag']);
+    expect(rows.map((row) => qs(row, '.name').textContent)).toEqual(['Starred', 'Plain']);
     expect(qs(rows[0], '.sv-star').classList.contains('on')).toBe(true);
     expect(qs(rows[1], '.sv-star').classList.contains('on')).toBe(false);
 
     click(qs(rows[1], '.sv-star'));
     await flush();
-    expect(app.state.dashboard.tiles.some((tile) => tile.queryId === 'a')).toBe(true);
-    expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'a'))).toBe(true);
+    expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'b'))).toBe(true);
+    // No tile was minted for it — a star cannot change Dashboard membership.
+    expect(app.state.dashboard.tiles).toEqual([]);
   });
 
-  // #425 GATE: the star still writes the COMPATIBILITY Dashboard (#424's
-  // temporary favourite↔membership coupling). With the Library pane now visible
-  // beside a Dashboard, starring while a NON-first Dashboard is selected would
-  // silently add a tile to a different Dashboard than the one on screen.
-  it('saved: refuses to star while a non-first Dashboard is selected', async () => {
+  // #427: the LIBRARY projection. A query some Dashboard member owns is not a
+  // Library entry — it stays serialized, and #426's tree is how it is reached.
+  it('saved: hides Dashboard-owned queries and counts only the Library', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [
+      { id: 'lib', name: 'Library one', sql: '1' },
+      { id: 'owned-panel', name: 'Owned panel', sql: '2' },
+      { id: 'owned-filter', name: 'Owned filter', sql: '3' },
+    ]);
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'owned-filter' }],
+        tiles: [{ id: 't1', queryId: 'owned-panel' }],
+      }],
+    };
+    renderSavedHistory(app);
+    expect(qsa(savedList(app), '.saved-row').map((row) => qs(row, '.name').textContent))
+      .toEqual(['Library one']);
+    expect(qs(savedTabsRow(app), '.side-count').textContent).toBe('· 1');
+    // Every stored query is still there — the list is a projection, not a filter
+    // on the workspace.
+    expect(app.state.savedQueries).toHaveLength(3);
+  });
+
+  it('saved: shows the empty state when every query is owned, not a search box', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 'owned', name: 'Owned', sql: '1' }]);
+    app.currentWorkspace = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      queries: app.state.savedQueries,
+      dashboards: [{
+        documentVersion: 1, id: 'd', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+      }],
+    };
+    renderSavedHistory(app);
+    expect(savedList(app).textContent).toContain('No library queries yet.');
+    expect(savedSearch(app).querySelector('.sv-search-input')).toBeNull();
+  });
+
+  // #427/#434: the #425 star gate is RETIRED. It existed only because the star
+  // wrote the compatibility Dashboard's tiles, so starring while another
+  // Dashboard was on screen edited the wrong one. A star writes `spec.favorite`
+  // and nothing else now, so there is no wrong Dashboard to protect.
+  it('saved: stars while a non-first Dashboard is selected, with no refusal', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 'a', name: 'A', sql: '1', favorite: false }]);
@@ -268,35 +318,17 @@ describe('renderSavedHistory', () => {
       filters: [], tiles: [],
     });
     app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W',
+      storageVersion: 4, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
     };
     app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
     await flush();
-    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
-    expect(document.querySelector('.share-toast')!.textContent)
-      .toContain('first dashboard');
-
-    // No loaded workspace at all: nothing to compare the selection against, so
-    // the star stays refused rather than writing blind.
-    app.currentWorkspace = null;
-    renderSavedHistory(app);
-    click(qs(savedList(app), '.sv-star'));
-    await flush();
-    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
-
-    // Selecting that first Dashboard makes the star honest again.
-    app.currentWorkspace = {
-      storageVersion: 3, id: 'w', key: 'w', name: 'W',
-      queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
-    };
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null };
-    renderSavedHistory(app);
-    click(qs(savedList(app), '.sv-star'));
-    await flush();
     expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
+    expect(document.querySelector('.share-toast')).toBeNull();
+    // Neither Dashboard gained a tile.
+    expect(app.currentWorkspace.dashboards.flatMap((d) => d.tiles)).toEqual([]);
   });
 
   it('saved: favorite merges into a linked dirty valid Spec draft', async () => {
@@ -368,7 +400,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     // The latest committed workspace no longer contains s1 — the patch aborts.
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
+      const input = await transform({ storageVersion: 4, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull(); // the planner found no target and aborted
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
@@ -387,7 +419,7 @@ describe('renderSavedHistory', () => {
   it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
     const app = makeApp();
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
+      const input = await transform({ storageVersion: 4, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull();
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
@@ -541,13 +573,14 @@ describe('renderSavedHistory', () => {
     expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
-  it('saved: the tab is labelled "Queries" with a live count and no Export/Import row', () => {
+  it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
     const savedTab = qsa(savedTabsRow(app), '.side-tab')[0];
-    expect(savedTab.textContent).toContain('Queries');
+    expect(savedTab.textContent).toContain('Library');
+    expect(savedTab.textContent).not.toContain('Queries');
     expect(savedTab.textContent).not.toContain('Saved');
     expect(qs(savedTab, '.side-count').textContent).toContain('1');
     // the old bottom Export/Import row is gone (moved to the header File menu)
@@ -649,7 +682,7 @@ describe('renderSavedHistory — search/filter', () => {
 
   it('shows the box with a per-tab placeholder when items exist', () => {
     const app = savedApp();
-    expect(input(app).placeholder).toBe('Search saved queries…');
+    expect(input(app).placeholder).toBe('Search library queries…');
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
@@ -671,7 +704,7 @@ describe('renderSavedHistory — search/filter', () => {
   it('shows a no-match message and clears via the × button and Escape', () => {
     const app = savedApp();
     type(app, 'zzzz');
-    expect(savedList(app).textContent).toContain('No queries match');
+    expect(savedList(app).textContent).toContain('No library queries match');
     expect(savedList(app).textContent).toContain('zzzz');
     click(qs(savedSearch(app), '.sv-search-clear'));
     expect(app.state.libraryFilter).toBe('');
@@ -742,7 +775,7 @@ describe('concurrent saved-query writes (#287 review fix)', () => {
     // both run their candidate-building transform through app.mutateWorkspace,
     // which serializes on one queue and reads the latest committed workspace at
     // dequeue — so the delete can't resurrect q2 from a stale [q1,q2] snapshot.
-    const pToggle = toggleFavorite(app.state, 'q1', app.mutateWorkspace, app.genId, app.specValidators);
+    const pToggle = toggleFavorite(app.state, 'q1', app.mutateWorkspace, app.specValidators);
     const pDelete = deleteSaved(app.state, 'q2', app.mutateWorkspace);
     await Promise.all([pToggle, pDelete]);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']); // q2 stays deleted

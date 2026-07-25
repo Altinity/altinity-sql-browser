@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  queryMembershipFavorite, removeTileMembership, toggleTileMembership,
-} from '../../src/dashboard/application/tile-membership.js';
+import { removeTileMembership } from '../../src/dashboard/application/tile-membership.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
 const panelQuery = (id: string): SavedQueryV2 => ({
@@ -25,138 +23,12 @@ const genTileId = (): (() => string) => {
   return () => 'tile-' + (++n);
 };
 
-describe('toggleTileMembership', () => {
-  it('star ON from a null Dashboard mints the canonical Dashboard and first tile', () => {
-    const next = toggleTileMembership(null, panelQuery('p1'), true, genTileId())!;
-    expect(next).toMatchObject({
-      id: 'tile-1', title: 'Dashboard', revision: 1,
-      tiles: [{ id: 'tile-2', queryId: 'p1' }],
-      layout: { type: 'grafana-grid', version: 1, items: {} },
-    });
-    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'columns-2', items: { 'tile-2': { span: 2, height: 'medium' } },
-    });
-  });
-
-  it('star OFF or a non-panel role against a null Dashboard leaves it null', () => {
-    expect(toggleTileMembership(null, panelQuery('p1'), false, genTileId())).toBeNull();
-    expect(toggleTileMembership(null, filterQuery('f1'), true, genTileId())).toBeNull();
-  });
-
-  it('star ON on a panel-role query with no existing tile appends one', () => {
-    const next = toggleTileMembership(dashboard(), panelQuery('p1'), true, genTileId())!;
-    expect(next.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
-  });
-
-  it('a query with no declared role defaults to panel (mirrors queryDashboardRole)', () => {
-    const next = toggleTileMembership(dashboard(), noRoleQuery('p1'), true, genTileId())!;
-    expect(next.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
-  });
-
-  it('star ON is idempotent when a tile already references the query', () => {
-    const d = dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] });
-    const next = toggleTileMembership(d, panelQuery('p1'), true, genTileId())!;
-    expect(next.tiles).toEqual([{ id: 't1', queryId: 'p1' }]);
-  });
-
-  it('star ON on a filter-role query creates no tile (favorite flip only)', () => {
-    const next = toggleTileMembership(dashboard(), filterQuery('f1'), true, genTileId())!;
-    expect(next.tiles).toEqual([]);
-  });
-
-  it('star ON on a setup-role query creates no tile', () => {
-    const setupQuery: SavedQueryV2 = {
-      id: 's1', sql: 'CREATE TABLE t (x Int32) ENGINE=Memory', specVersion: 1,
-      spec: { name: 's1', dashboard: { role: 'setup' } },
-    } as SavedQueryV2;
-    const next = toggleTileMembership(dashboard(), setupQuery, true, genTileId())!;
-    expect(next.tiles).toEqual([]);
-  });
-
-  it('star OFF removes every tile referencing the query and scrubs filter targets', () => {
-    const d = dashboard({
-      tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p1' }, { id: 't3', queryId: 'p2' }],
-      filters: [
-        { id: 'flt1', parameter: 'x', targets: ['t1', 't3'] },
-        { id: 'flt2', parameter: 'y', targets: ['t2'] },
-        { id: 'flt3', parameter: 'z' }, // no targets — untouched
-      ],
-    });
-    const next = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
-    expect(next.tiles).toEqual([{ id: 't3', queryId: 'p2' }]);
-    expect(next.filters).toEqual([
-      { id: 'flt1', parameter: 'x', targets: ['t3'] },
-      { id: 'flt2', parameter: 'y', targets: [] },
-      { id: 'flt3', parameter: 'z' },
-    ]);
-  });
-
-  it('star OFF on a query with no tile is a no-op', () => {
-    const d = dashboard({ tiles: [{ id: 't1', queryId: 'other' }] });
-    const next = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
-    expect(next.tiles).toEqual([{ id: 't1', queryId: 'other' }]);
-  });
-
-  it('never mutates the input dashboard', () => {
-    const d = dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] });
-    const snapshot = JSON.parse(JSON.stringify(d));
-    toggleTileMembership(d, panelQuery('p1'), false, genTileId());
-    expect(d).toEqual(snapshot);
-  });
-
-  it('normalizes the result — a removed tile drops its layout placement, a new tile gets none stored', () => {
-    const d = dashboard({
-      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'large' } } },
-      tiles: [{ id: 't1', queryId: 'p1' }],
-    });
-    const removed = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
-    expect((removed.layout as { items: Record<string, unknown> }).items).toEqual({});
-
-    const added = toggleTileMembership(dashboard(), panelQuery('p2'), true, genTileId())!;
-    expect((added.layout as { items: Record<string, unknown> }).items).toEqual({});
-  });
-});
-
-describe('toggleTileMembership — grafana-grid@1 engine awareness (#291)', () => {
-  it('normalizes through the ACTIVE grid plugin (not a hardcoded flow one) and regenerates the flow@1 fallback on star ON', () => {
-    const d = dashboard({ layout: { type: 'grafana-grid', version: 1, items: {} } });
-    const next = toggleTileMembership(d, panelQuery('p1'), true, genTileId())!;
-    expect(next.layout.type).toBe('grafana-grid');
-    expect(next.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
-    // No explicit grid placement is seeded here either (parity with flow's own
-    // pre-#291 behavior) — the new tile resolves to the grid default (span 6)
-    // at render time, which the regenerated fallback reflects (flow span 2).
-    expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
-    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'columns-2', items: { 'tile-1': { span: 2, height: 'medium' } },
-    });
-  });
-
-  it('regenerates the flow@1 fallback (dropping the removed tile) on star OFF', () => {
-    const d = dashboard({
-      layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 12 } } },
-      tiles: [{ id: 't1', queryId: 'p1' }],
-    });
-    const next = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
-    expect(next.tiles).toEqual([]);
-    expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
-    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'columns-2', items: {},
-    });
-  });
-});
-
-describe('canonical membership and one-tile removal (#370)', () => {
-  it('reads panel favorites from tiles while preserving non-panel favorite flags', () => {
-    const panel = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
-    const filter = { ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true } };
-    expect(queryMembershipFavorite(dashboard(), panel)).toBe(false);
-    expect(queryMembershipFavorite(dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] }), panel)).toBe(true);
-    expect(queryMembershipFavorite(null, panel)).toBe(false);
-    expect(queryMembershipFavorite(null, filter)).toBe(true);
-  });
-
-  it('removes the final instance, cleans every explicit target, and clears the compatibility flag', () => {
+// #427 retired the favourite<->membership coupling this module used to own:
+// `toggleTileMembership` (star -> tile) and `queryMembershipFavorite`
+// (tile -> star) are gone, and one-tile removal no longer writes `spec.favorite`
+// back onto the query. What remains is the Dashboard's own removal transform.
+describe('one-tile removal (#370, #427)', () => {
+  it('removes the tile and cleans every explicit target, leaving the query alone', () => {
     const query = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
     const input = dashboard({
       tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
@@ -173,22 +45,21 @@ describe('canonical membership and one-tile removal (#370)', () => {
       { id: 'f2', parameter: 'y', targets: [] },
       { id: 'f3', parameter: 'z' },
     ]);
-    expect(result.queries[0].spec.favorite).toBe(false);
+    // The query collection comes through UNCHANGED: a favourite is a Library
+    // preference from #427 on, so taking a tile off a Dashboard has nothing to
+    // synchronize. Deleting the owned query too is #429's atomic trash action.
+    expect(result.queries[0]).toBe(query);
+    expect(result.queries[0].spec.favorite).toBe(true);
+    expect(result.queryId).toBe('p1');
     expect(input.tiles).toHaveLength(2);
   });
 
-  it('removes only the selected instance and keeps favorite true while another remains', () => {
-    const query = { ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true } };
-    const result = removeTileMembership(dashboard({
-      tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p1' }],
-    }), [query], 't1')!;
-    expect(result.dashboard.tiles).toEqual([{ id: 't2', queryId: 'p1' }]);
-    expect(result.queries[0].spec.favorite).toBe(true);
+  it('returns null for a missing tile', () => {
+    expect(removeTileMembership(dashboard(), [panelQuery('p1')], 'missing')).toBeNull();
   });
 
-  it('returns null for a missing tile and does not rewrite non-panel favorites', () => {
+  it('leaves a filter-role query untouched as well', () => {
     const filter = { ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true } };
-    expect(removeTileMembership(dashboard(), [filter], 'missing')).toBeNull();
     const result = removeTileMembership(
       dashboard({ tiles: [{ id: 't1', queryId: 'f1' }] }), [filter], 't1',
     )!;

@@ -8,7 +8,7 @@ import {
   type DashboardTreeUiState,
 } from '../../src/core/dashboard-tree-ui-state.js';
 import { QUERY_SURFACE, type MainSurfaceState } from '../../src/application/main-surface.js';
-import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string, name?: string, description?: string): SavedQueryV2 => ({
   id, sql: 'SELECT 1', specVersion: 1,
@@ -120,9 +120,9 @@ describe('deriveDashboardTree — collection and ordering', () => {
     expect(none.dashboardCount).toBe(0);
   });
 
-  it('accepts a real StoredWorkspaceV3 with no cast', () => {
-    const real: StoredWorkspaceV3 = {
-      storageVersion: 3, id: 'w1', key: 'ops', name: 'Ops',
+  it('accepts a real StoredWorkspaceV4 with no cast', () => {
+    const real: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w1', key: 'ops', name: 'Ops',
       queries: [query('q1', 'Sales')],
       dashboards: [{
         documentVersion: 1, id: 'd', title: 'D', revision: 1,
