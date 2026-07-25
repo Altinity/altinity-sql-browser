@@ -4219,9 +4219,12 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
     await render(app);
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
-    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
     const primary = qs(app.root, '.dash-toolbar-primary');
+    // #426: Back to query lives IN this one row now (see the regression test
+    // below for why it had to come back at all).
+    expect(qs(primary, '.dash-back-to-query')).not.toBeNull();
+    expect(qsa(app.root, '.dash-toolbar')).toHaveLength(2); // primary + filters
     // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
     expect(qsa<HTMLButtonElement>(primary, '.dashboard-mode-switch .editor-mode-btn')
       .map((button) => [button.textContent, button.disabled]))
@@ -4233,12 +4236,34 @@ describe('renderDashboard — unified live modes (#407)', () => {
     await render(app, { dashboardId: 'not-in-this-workspace' });
     expect(qs(app.root, '.dash-create')).not.toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
-    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
     // Acceptance: "The empty-Dashboard state uses the same one-row toolbar
-    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch.
+    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch. #426:
+    // and Back to query, so the placeholder is never a dead end either.
     expect(qsa(app.root, '.dash-toolbar')).toHaveLength(1);
     expect(qs(app.root, '.dash-toolbar-primary .dashboard-mode-switch')).not.toBeNull();
+    expect(qs(app.root, '.dash-toolbar-primary .dash-back-to-query')).not.toBeNull();
+  });
+
+  // REGRESSION GUARD. #437 removed the Back-to-query control because the header
+  // still carried `SQL Browser | Dashboard`; #426 removed that pair. Together they
+  // would have left `g w` and "click a saved query" as the only ways out of a
+  // Dashboard — and on a phone the mobile rules drop the sidebar and the bottom
+  // nav, so there would have been NO reachable route back at all.
+  it('always offers a VISIBLE route back to the Query surface', async () => {
+    for (const mode of ['view', 'edit'] as const) {
+      const { app } = modeApp({ workspace: wsWith(), mode });
+      const showQuerySurface = vi.fn();
+      app.showQuerySurface = showQuerySurface;
+      await render(app);
+      const back = qs<HTMLButtonElement>(app.root, '.dash-toolbar-primary .dash-back-to-query');
+      expect(back.getAttribute('aria-label')).toBe('Back to query');
+      // Discoverable: the shortcut is named in the tooltip rather than being the
+      // only way to find the action.
+      expect(back.getAttribute('title')).toContain('G then W');
+      back.click();
+      expect(showQuerySurface).toHaveBeenCalledOnce();
+    }
   });
 
   it('renders the SELECTED Dashboard only, by stable id, whatever its position', async () => {

@@ -114,6 +114,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
+  chevLeft(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -445,16 +446,36 @@ function renderMissingDashboard(
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+        buildBackToQuery(app),
         h('span', { class: 'dash-toolbar-spacer' }),
         buildDashboardModeSwitch(app, target.mode))),
     body));
 }
 
-/** #425/#437: View/Edit — the one Dashboard-owned control the compact primary
- *  toolbar carries (navigation back to Query lives in the application header's
- *  the header's own brand zone, now non-interactive). Switching retains the same Dashboard id (the
- *  main-surface API keeps it — writing a route here would re-resolve the
- *  collection's first entry). */
+/**
+ * #426 — the visible way back to the Query surface.
+ *
+ * #437 removed the separate Back-to-query row on the grounds that the
+ * application header's `SQL Browser | Dashboard` pair already did this. #426 then
+ * removed THAT pair (Dashboard selection moved to the sidebar tree), which
+ * together would have left `g w` and "click a saved query" as the only routes back
+ * — and neither is reachable on a phone, where the mobile rules drop the sidebar
+ * and the bottom nav for a full-bleed Dashboard. #426's own Header-cleanup section
+ * requires this control to be retained, so it returns here: icon-first and inside
+ * the ONE compact toolbar, per #437's design rather than as a second row.
+ */
+function buildBackToQuery(app: DashboardApp): HTMLElement {
+  return h('button', {
+    class: 'editor-mode-btn dash-back-to-query', type: 'button',
+    'aria-label': 'Back to query', title: 'Back to query (G then W)',
+    onclick: () => { app.showQuerySurface(); },
+  }, Icon.chevLeft(), h('span', { class: 'dash-back-label' }, 'Query'));
+}
+
+/** #425/#437: View/Edit — the other Dashboard-owned control the compact primary
+ *  toolbar carries. Switching retains the same Dashboard id (the main-surface API
+ *  keeps it — writing a route here would re-resolve the collection's first
+ *  entry). */
 function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {
   // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
   // API keeps the id and re-opens the same document in the other mode, instead of
@@ -2357,10 +2378,16 @@ export async function renderDashboard(
   });
 
   // #437: one compact toolbar row — style/count/search/time-filters, then the
-  // freshness control, then View/Edit last. The separate #425 surface row
-  // (Back to query + title) is gone; the header's own surface switch is the
-  // navigation path back to Query.
+  // freshness control, then View/Edit last. The separate #425 surface row (a
+  // Back-to-query button plus a title) is gone.
+  // #426: Back to query returns as the row's FIRST control — icon-first, inside
+  // this same one row rather than as a second band. #437 could drop it because the
+  // application header still carried `SQL Browser | Dashboard`; #426 removed that
+  // pair, and without this the only routes back would be `g w` and clicking a
+  // saved query — neither reachable on a phone, where the mobile rules drop the
+  // sidebar and bottom nav for a full-bleed Dashboard.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+    buildBackToQuery(app),
     layoutWrap,
     tileCount,
     tileSearch,

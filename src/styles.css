@@ -3045,6 +3045,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-toolbar::-webkit-scrollbar { display: none; }
 .dash-toolbar > * { flex-shrink: 0; }
 .dash-toolbar-spacer { flex: 1 1 auto; min-width: 8px; }
+/* #426: the visible route back to the Query surface, restored into the ONE compact
+   toolbar (#437 removed the separate row it used to live in, and #426 removed the
+   header pair that was covering for it). Icon-first, so the label can drop below
+   the breakpoint via the existing `.dash-back-label` rule. */
+.dash-back-to-query { display: inline-flex; align-items: center; gap: 5px; }
+.dash-back-to-query svg { width: 12px; height: 12px; }
 /* The File-style layout menu in the header's top row, replacing the old
    `.dash-seg` segmented button group that lived in the filter toolbar. */
 .dash-layout-wrap { display: inline-flex; align-items: center; flex: 0 0 auto; }
@@ -3380,7 +3386,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    their fixed-position popovers. These are CSS-only overrides, so widening
    restores the persisted desktop layout without writing preferences. */
 @media (max-width: 768px) {
-  .dash-back {
+  .dash-back,
+  /* #426: icon-only at phone widths, like every other primary-toolbar control. */
+  .dash-back-to-query {
     width: 30px; height: 30px; padding: 0; justify-content: center; flex-shrink: 0;
   }
   .dash-back-label,
