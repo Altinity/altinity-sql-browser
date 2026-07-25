@@ -57,6 +57,7 @@
     import { wireComboInput } from '/src/ui/combobox.js';
     import { buildAppHeader } from '/src/ui/app-header.js';
     import { openMenu } from '/src/ui/menu.js';
+    import { Icon } from '/src/ui/icons.js';
 
     const dashboardFileButton = document.createElement('button');
     dashboardFileButton.className = 'hd-file-btn dash-file-btn';
@@ -102,20 +103,23 @@
       });
     };
     styleWrap.append(styleButton);
-    const dashboardTitle = document.createElement('div');
-    dashboardTitle.className = 'dash-title';
-    dashboardTitle.textContent = 'A deliberately long production operations Dashboard name';
+    // #437: one compact freshness control — the bare last-updated time plus an
+    // icon-only refresh button; its tooltip/aria-label carry the same time.
     const updated = document.createElement('span');
     updated.className = 'dash-updated';
-    updated.textContent = 'Updated 12:34';
+    updated.textContent = '12:34';
     const refresh = document.createElement('button');
     refresh.className = 'editor-mode-btn dash-refresh';
-    refresh.title = 'Re-run all tiles';
-    refresh.setAttribute('aria-label', 'Refresh dashboard');
-    refresh.textContent = 'Refresh';
+    refresh.type = 'button';
+    refresh.title = 'Refresh dashboard. Last updated at 12:34';
+    refresh.setAttribute('aria-label', 'Refresh dashboard. Last updated at 12:34');
+    refresh.append(Icon.refresh());
     const refreshControl = document.createElement('div');
     refreshControl.className = 'editor-mode-switch dash-refresh-wrap';
     refreshControl.append(refresh);
+    const freshness = document.createElement('div');
+    freshness.className = 'dash-freshness';
+    freshness.append(updated, refreshControl);
     const headerApp = {
       document,
       dom: {},
@@ -170,7 +174,8 @@
     }
     const tileSearch = document.createElement('input');
     tileSearch.className = 'dash-tile-search';
-    tileSearch.placeholder = 'Search tiles';
+    tileSearch.placeholder = 'Search';
+    tileSearch.setAttribute('aria-label', 'Search dashboard tiles');
     const timeHost = document.createElement('div');
     timeHost.className = 'dash-time-filter-host dash-filters';
     timeHost.setAttribute('role', 'group');
@@ -178,7 +183,7 @@
     document.querySelector('#primary-toolbar').append(
       styleWrap, tileCount, tileSearch, timeHost,
       Object.assign(document.createElement('span'), { className: 'dash-toolbar-spacer' }),
-      updated, refreshControl, modeSwitch,
+      freshness, modeSwitch,
     );
 
     const filters = document.querySelector('.dash-filter-ordinary');

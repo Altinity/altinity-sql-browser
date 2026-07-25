@@ -2958,30 +2958,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    sidebar stays visible. The host is itself a `min-height:0` flex column, so
    `height:100%` here still resolves and the page still scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
-/* #425 — the Dashboard surface's own toolbar row: Back to query, the Dashboard
-   title, then the View/Edit switch pushed right by the shared spacer. It takes
-   `.dash-toolbar`'s gap, height and padding unchanged — it is the same toolbar
-   vocabulary as the filter row stacked beneath it, not a second one. (It briefly
-   carried `gap: 8px`, which never applied: `.dash-toolbar` has equal specificity
-   and comes later in this file, so the declaration was dead the day it landed.)
-
-   The title is the ONE piece of content in a row of controls, so it steps up by
-   WEIGHT at the shared body size rather than by size — DESIGN.md's Compact Scale
-   Rule. It arrived at `13px/600`: half a pixel off `--text-body`, which is below
-   the ramp's One-Pixel Floor and therefore a step nobody could see, in a row whose
-   controls sit at `--text-label`. */
-.dash-surface-title {
-  margin: 0;
-  font-size: var(--text-body); font-weight: var(--fw-semibold);
-  line-height: var(--lh-tight); color: var(--fg);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-/* The title is the ONLY control in this row allowed to shrink, so a long
-   Dashboard name ellipsizes instead of pushing View/Edit off a narrow screen.
-   Two-class specificity is required to beat `.dash-toolbar > * { flex-shrink: 0 }`
-   below, which correctly pins every other toolbar child. */
-.dash-surface-toolbar .dash-surface-title { flex: 0 1 auto; min-width: 0; }
-.dash-back-to-query { flex-shrink: 0; }
 /* #425 — the temporary navigation highlight marking the tile or filter a caller
    navigated to, cleared after a bounded interval or on the next user interaction.
    A `box-shadow` ring, NOT an outline: an element has exactly one outline, so an
@@ -3053,14 +3029,17 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-time-filter-host .trf-sep { display: none; }
 .dash-time-filter-host:empty { display: none; }
 .dash-time-filter-host { min-width: 0; }
+/* #437: a compact 120–145px range rather than a fixed 170px — the label search
+   scope doesn't need a wide field, and the freed width keeps the whole toolbar
+   on one row longer before it needs to scroll. */
 .dash-tile-search-wrap {
-  position: relative; display: inline-flex; align-items: center; min-width: 150px;
+  position: relative; display: inline-flex; align-items: center; min-width: 120px;
 }
 .dash-tile-search-wrap > svg {
   position: absolute; left: 8px; color: var(--fg-faint); pointer-events: none;
 }
 .dash-tile-search {
-  width: 170px; height: 28px; padding: 0 9px 0 26px;
+  width: 145px; height: 28px; padding: 0 9px 0 26px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-input); color: var(--fg); font-family: var(--ui); font-size: var(--text-body); outline: none;
 }
@@ -3101,12 +3080,21 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-tile-count { white-space: nowrap; border-radius: var(--r-sm); }
 .dash-src { font-family: var(--mono); }
 .dash-dot { width: 6px; height: 6px; border-radius: var(--r-sm); background: var(--success-fg); }
+/* #437: the compact freshness control — visible last-updated time + an
+   icon-only refresh action, replacing the separate "Updated HH:MM" label and
+   text "Refresh" button. */
+.dash-freshness { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .dash-updated {
   flex-shrink: 0; white-space: nowrap;
   font-size: var(--text-label); color: var(--fg-faint); font-family: var(--mono);
 }
 .dash-refresh-wrap { flex-shrink: 0; }
-.dash-refresh { width: 42px; padding: 0; white-space: nowrap; }
+.dash-refresh {
+  /* `.editor-mode-btn`'s `min-width: 42px` (sized for label text) would
+     otherwise win over this narrower `width` — override both. */
+  width: 26px; min-width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+}
+.dash-refresh .spin { color: var(--accent); }
 .dash-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
   background: var(--bg-chip); color: var(--fg); border: 1px solid var(--border);
@@ -3354,7 +3342,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-icobtn { width: 30px; height: 30px; flex-shrink: 0; }
 
   .dash-toolbar { padding: 5px 10px; }
-  .dash-tile-search { width: 145px; }
+  .dash-tile-search-wrap { min-width: 120px; }
+  .dash-tile-search { width: 120px; }
 
   .dash-grid,
   .dash-grid.is-report {
