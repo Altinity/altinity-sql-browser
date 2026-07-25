@@ -137,7 +137,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   every press (disabled/hidden/removed controls drop out immediately, restored
   ones rejoin without reopening the dialog), and a focused element no longer in
   that set is treated as unfocused (Tab goes to the first eligible element,
-  Shift+Tab to the last). Verified in Chromium, Firefox, and WebKit.
+  Shift+Tab to the last). Verified in Chromium, Firefox, and WebKit. The
+  primitive also gained `handle.reclaimFocus()`: disabling the
+  currently-focused control (the multi-select's busy state disables every row
+  but Cancel while a Filter source is loading) natively blurs it out of the
+  dialog entirely, past the trap's dialog-scoped reach — a plain Tab press
+  right after would never re-enter the modal. Multi-select now calls it the
+  moment busy state lands, recovering focus onto Cancel instead of leaving it
+  stranded on the page behind the modal.
 - The Dashboard surface (#425) is brought onto the token system it was written
   before. Its **title** was `13px/600` — half a pixel above `--text-body`, a step
   the One-Pixel Floor forbids because nobody can see it — and now steps up by

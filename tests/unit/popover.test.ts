@@ -380,6 +380,54 @@ describe('openAnchoredDialog — Tab focus trap (#439: primitive owns every tran
   });
 });
 
+describe('openAnchoredDialog — reclaimFocus (#439)', () => {
+  // A caller that disables the currently-focused control (e.g. a busy-state
+  // toggle) natively evicts focus past the dialog-scoped Tab trap's reach —
+  // the trap only runs on an event whose target is inside `dialog`, and a
+  // disabled element can no longer be that target. `reclaimFocus()` is the
+  // escape hatch: called right after the mutation, it recovers focus onto
+  // the first still-eligible element.
+
+  it('is a no-op when the active element is still eligible', () => {
+    const { open, input, button } = setup();
+    const handle = open();
+    button.focus();
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('moves focus to the first eligible element when the active element was just disabled', () => {
+    const trigger = h('button', {}) as HTMLButtonElement;
+    document.body.appendChild(trigger);
+    const a = h('input', { class: 'r-a' }) as HTMLInputElement;
+    const b = h('button', { class: 'r-b' }) as HTMLButtonElement;
+    const c = h('button', { class: 'r-c' }) as HTMLButtonElement;
+    const content = h('div', { style: { display: 'contents' } }, a, b, c);
+    const handle = openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+    b.focus();
+    b.disabled = true; // the mutation a busy-state toggle performs
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(a); // first still-eligible row
+  });
+
+  it('recovers focus that a caller mutation already moved outside the dialog entirely', () => {
+    const { trigger, open, input } = setup();
+    const handle = open();
+    trigger.focus(); // simulates the native evict-to-outside-the-dialog case
+    handle.reclaimFocus();
+    expect(document.activeElement).toBe(input); // first eligible row inside the dialog
+  });
+
+  it('is a no-op (safe) when nothing in the dialog is eligible', () => {
+    const trigger = h('button', {}) as HTMLButtonElement;
+    document.body.appendChild(trigger);
+    const only = h('button', { class: 'only', disabled: true }) as HTMLButtonElement;
+    const content = h('div', { style: { display: 'contents' } }, only);
+    const handle = openAnchoredDialog({ document, trigger, ariaLabel: 'x', content, dialogClassName: 'pv-popover' });
+    expect(() => handle.reclaimFocus()).not.toThrow();
+  });
+});
+
 describe('openAnchoredDialog — initialFocus', () => {
   it('focuses the element the callback returns', () => {
     const { open, input } = setup({ initialFocus: (dialog) => dialog.querySelector('.pv-input') });

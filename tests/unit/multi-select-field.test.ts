@@ -654,6 +654,21 @@ describe('buildMultiSelectField — loading affordance while the popover is open
     expect(handle.isOpen()).toBe(true);
   });
 
+  it('reclaims focus onto Cancel when entering busy state evicts the focused control (#439)', () => {
+    // Disabling the currently-focused control natively blurs it OUT of the
+    // dialog, past the shared Tab trap's dialog-scoped reach — verified for
+    // each row the busy toggle disables (every row except Cancel itself).
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    for (const focusTarget of [searchInput, selectAllCb, () => optionCbs()[0], clearBtn, applyBtn]) {
+      handle.updateStatus({ status: 'ready' }); // reset to interactive before each focus
+      focusTarget().focus();
+      handle.updateStatus({ status: 'loading' });
+      expect(document.activeElement).toBe(cancelBtn());
+    }
+  });
+
   it('restores the checklist body and the normal live-region count once status returns to ready', () => {
     const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true }));
     document.body.appendChild(handle.el);

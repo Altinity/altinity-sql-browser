@@ -77,6 +77,16 @@ export interface AnchoredDialogHandle {
    *  `skipFocus`. Idempotent — every dismissal path funnels here, and a second
    *  call is a harmless no-op that never re-fires `onClose`. */
   close(opts?: { skipFocus?: boolean }): void;
+  /** #439: call this immediately after mutating disabled/hidden state on the
+   *  dialog's own content (e.g. a busy-state toggle) — the dialog-scoped Tab
+   *  trap only runs on an event whose target is inside `dialog`, but DISABLING
+   *  the currently-focused control natively blurs it out to `<body>` (outside
+   *  the trap's reach) rather than to another element, so an ordinary Tab
+   *  press right after can leave the modal entirely undetected. Recomputes the
+   *  eligible set and, if the active element is no longer in it (evicted, or
+   *  never was — outside the dialog), moves focus to the first eligible
+   *  element; a no-op when the active element is still eligible. */
+  reclaimFocus(): void;
 }
 
 export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogHandle {
@@ -123,6 +133,19 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
     items[next].focus();
   };
 
+  // #439: the consumer-facing escape hatch — see the handle's own doc comment
+  // for why disabling the focused control natively evicts it past the
+  // dialog-scoped trap's reach. `items.includes(active)` (not an
+  // `dialog.contains` check alone) is what catches this: a just-disabled
+  // element stays `dialog.contains`-true but drops out of `focusableEls()`.
+  function reclaimFocus(): void {
+    const items = focusableEls();
+    if (items.length === 0) return;
+    const active = d.activeElement as HTMLElement | null;
+    if (active && items.includes(active)) return; // still eligible — no-op
+    items[0].focus();
+  }
+
   // The single teardown funnel. Idempotent: the `open` guard means teardown +
   // `onClose` run exactly once no matter how many dismissal paths reach it.
   function close(closeOpts: { skipFocus?: boolean } = {}): void {
@@ -167,5 +190,5 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
   const focusTarget = opts.initialFocus?.(dialog);
   if (focusTarget) focusTarget.focus();
 
-  return { dialog, isOpen: () => open, close };
+  return { dialog, isOpen: () => open, close, reclaimFocus };
 }
