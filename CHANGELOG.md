@@ -28,6 +28,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the file (in file order) instead of asking which single one to keep.
 
 ### Added
+- **A Dashboard is now a full-size main work surface, selected by stable id**
+  (#425). Opening one replaces the complete SQL editor and result/data-drawer
+  area — the left sidebar stays visible — and a new toolbar carries
+  **Back to query**, the Dashboard title, and the View/Edit switch. Returning
+  finds the Query surface exactly as it was: the same editor contents,
+  selection, scroll, active tab, result view, and editor/results split, because
+  the surface is hidden rather than rebuilt. A surface change no longer cancels
+  the query running in the editor, and Back/Forward between surfaces of one
+  workspace no longer tears the editor down. Any Dashboard in the workspace can
+  be opened by its stable id in View or Edit mode, with an optional navigation
+  target that focuses, scrolls to, and briefly highlights one panel tile (by
+  tile id, never query id) or one curated filter (by filter id). Selection is
+  session state — never persisted, cleared on sign-out, and re-validated against
+  every committed workspace, so a deleted or ambiguous selection falls back to
+  Query mode instead of silently switching to another Dashboard; URLs are
+  unchanged. Export Dashboard and Import Dashboard now address the selected
+  Dashboard rather than the workspace's first one; the favourite star, which
+  still drives panel membership through the first Dashboard, declines with an
+  explanation while a different one is open (it is rewired in #427).
 - Surface-aware keyboard shortcuts for SQL Browser and Dashboard (#417). The
   shared, platform-aware shortcut catalog now drives both help and dispatch;
   Dashboard gains refresh, View/Edit, and `G` navigation commands while stale
