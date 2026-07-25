@@ -1,12 +1,20 @@
 import { test, expect } from '@playwright/test';
 
+// The indicator is a 1px `::before` that SCALES to its 3px hover state, so the
+// only figure that means anything is the PAINTED extent: layout size times the
+// transform's own scale. Reading `getComputedStyle(…).width` alone reports the
+// untransformed box and would have reported a steady `1px` through every state.
 const indicator = (page, selector) => page.locator(selector).evaluate((el) => {
   const box = el.getBoundingClientRect();
   const line = getComputedStyle(el, '::before');
+  // `matrix(a, b, c, d, e, f)` — `a` is scaleX, `d` is scaleY. 'none' is identity.
+  const [sx, sy] = line.transform === 'none'
+    ? [1, 1]
+    : (([a, , , d]) => [a, d])(line.transform.match(/-?[\d.]+/g).map(Number));
   return {
     box: { x: box.x, y: box.y, width: box.width, height: box.height },
-    lineWidth: parseFloat(line.width),
-    lineHeight: parseFloat(line.height),
+    lineWidth: parseFloat(line.width) * sx,
+    lineHeight: parseFloat(line.height) * sy,
     lineColor: line.backgroundColor,
     parentBorderLeft: parseFloat(getComputedStyle(el.parentElement).borderLeftWidth),
     cursor: getComputedStyle(el).cursor,

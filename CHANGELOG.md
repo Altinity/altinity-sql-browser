@@ -109,6 +109,35 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   product's own body size instead of to user-agent typography.
 
 ### Fixed
+- The Dashboard surface (#425) is brought onto the token system it was written
+  before. Its **title** was `13px/600` — half a pixel above `--text-body`, a step
+  the One-Pixel Floor forbids because nobody can see it — and now steps up by
+  weight instead, at `--text-body`/`--fw-semibold`, one weight above the
+  `--text-label` controls beside it. Its **navigation highlight** mixed its own
+  translucent accent (`in srgb … 25%`) beside the ring family's `in oklab … 22%`:
+  one halo in two spellings, already drifting. It is `--ring-nav` now, a fourth
+  member of that family. That highlight also forced `border-radius: 6px` onto
+  whatever it marked, so a `--r-md` dashboard tile visibly **changed shape** while
+  highlighted and the ring mitred against the corner it was pointing at; it now
+  sets no radius and follows the target's own. A dead `gap: 8px` — overridden by
+  `.dash-toolbar`'s later, equally specific `gap: 10px` since the day it landed —
+  is removed, so the surface toolbar and the filter row beneath it are visibly one
+  sticky bar.
+- The pane-splitter indicator is a real `1px` line again. Moving it off the
+  layout path (see below) had left it a `3px` bar held down by `scaleX(.34)`,
+  which painted `1.02px` and, worse, reported `3px` to anything reading the
+  computed box — so `splitters.spec.js` had been failing on this branch, unrun,
+  since that change. It now scales **up** from an honest `1px`, and the spec
+  measures the painted extent (layout size × the transform's own scale) rather
+  than the untransformed box, which is what it always meant to assert.
+- Three gaps in the design-system gate, each of which is why the above shipped.
+  The shadow check tested for `rgba(` only, so a hand-mixed
+  `color-mix(…, transparent)` passed; it now rejects any box-shadow that builds
+  its own translucent colour, and a companion test pins every ring halo to one
+  colour space at one alpha. The unstyled-class check reads a curated file list,
+  and #425 split `app.ts` into `app-shell.ts` and `workbench/workbench-shell.ts` —
+  moving the application frame, the sidebar and both surface hosts out of its
+  view; the list follows the markup now.
 - Two DOM state badges (`.qtab-external`, `.mnav-badge`) were sitting on
   `--text-nano`, the 9px tier DESIGN.md reserves for SVG text inside the zoomable
   graphs — one because the mechanical 9px→token mapping put it there, one because it

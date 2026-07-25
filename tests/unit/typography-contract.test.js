@@ -291,8 +291,13 @@ describe('every text-bearing class the UI renders has a rule', () => {
     // chooser as 13.333px Arial buttons with outset borders — on the dialog that
     // decides whether to overwrite another tab's saved work — and what left the
     // query tab's external-change marker as an unstyled stray '!' character.
+    // app-shell.ts and workbench/workbench-shell.ts hold markup #425 carved OUT of
+    // app.ts, which is on this list — so the split silently moved the application
+    // frame, the sidebar, and the two surface hosts out of this gate's view. A
+    // curated list has that failure mode; the fix is to follow the markup.
     const sources = [
-      'src/ui/conflict-resolution.ts', 'src/ui/app.ts', 'src/ui/dashboard.ts',
+      'src/ui/conflict-resolution.ts', 'src/ui/app.ts', 'src/ui/app-shell.ts',
+      'src/ui/workbench/workbench-shell.ts', 'src/ui/dashboard.ts',
       'src/ui/doc-pane.ts', 'src/ui/shortcuts.ts', 'src/ui/kpi-panel.ts',
       'src/ui/explain-graph.ts', 'src/ui/tabs.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
@@ -360,14 +365,37 @@ describe('elevation', () => {
     expect(Object.keys(tokenValues('shadow')).sort()).toEqual([
       '--shadow-dialog', '--shadow-drawer', '--shadow-float', '--shadow-lift', '--shadow-popover',
     ]);
-    expect(Object.keys(tokenValues('ring')).sort()).toEqual(['--ring-error', '--ring-warn']);
+    expect(Object.keys(tokenValues('ring')).sort()).toEqual(['--ring-error', '--ring-nav', '--ring-warn']);
     expect(rootBlock).toMatch(/--ring:\s*0 0 0 3px color-mix/);
   });
 
+  it('mixes every ring halo in one colour space at one alpha', () => {
+    // The ring family's whole claim is that a ring's HUE says which kind of state
+    // has focus, which only holds if nothing else about the halo varies. Asserted
+    // on the definitions rather than left to review: #425's navigation highlight
+    // was written as `color-mix(in srgb, var(--accent) 25%, transparent)` beside
+    // this family's `in oklab … 22%` — the same halo in two spellings, already a
+    // 3% step apart before anyone had a reason.
+    // Read from the comment-stripped source, so the `in srgb, … 25%` quoted in
+    // this family's own explanatory comment cannot be mistaken for a declaration.
+    const bare = declarations.slice(declarations.indexOf(':root {'), declarations.indexOf('\n}', declarations.indexOf(':root {')));
+    const halos = [...bare.matchAll(/--ring[\w-]*:[^;]+/g)]
+      .flatMap((m) => [...m[0].matchAll(/color-mix\((?:[^()]|\([^()]*\))*\)/g)].map((c) => c[0]))
+      .map((mix) => mix.replace(/var\(--[\w-]+\)/, 'HUE'));
+    expect(halos.length).toBeGreaterThanOrEqual(4);
+    expect([...new Set(halos)]).toEqual(['color-mix(in oklab, HUE 22%, transparent)']);
+  });
+
   it('sets no raw shadow colour outside the tokens', () => {
+    // A rule may name a token colour directly for a flat structural edge (the
+    // 1px inset hairlines, the knockout ring in the surface colour), but it may
+    // not MIX ITS OWN translucent colour: an alpha over a surface is exactly what
+    // the --shadow-* and --ring-* tokens encode, and a hand-rolled one drifts from
+    // them silently. Checking only for `rgba(` — as this did — could not see
+    // `color-mix(…, transparent)`, which is how #425's navigation ring passed.
     const raw = [...rules.matchAll(/box-shadow:([^;}]+)/g)]
       .map((m) => m[1].trim())
-      .filter((v) => /rgba?\(/.test(v));
+      .filter((v) => /rgba?\(|color-mix\(/.test(v));
     expect(raw).toEqual([]);
   });
 });

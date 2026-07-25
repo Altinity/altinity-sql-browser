@@ -104,6 +104,13 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   --ring: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
   --ring-warn: 0 0 0 3px color-mix(in oklab, var(--warn-fg) 22%, transparent);
   --ring-error: 0 0 0 3px color-mix(in oklab, var(--error-fg) 22%, transparent);
+  /* The fourth member says something focus does not: "this is the thing you were
+     sent to" (#425's tile/filter navigation target). It has to be found without
+     the user having pointed at anything, so it adds a solid accent edge UNDER the
+     same halo — same hue, same oklab mix, same 22% — rather than inventing a
+     second translucent accent. It arrived as `color-mix(in srgb, … 25%, …)`
+     alongside this family's 22% oklab: one halo, two spellings, drifting apart. */
+  --ring-nav: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in oklab, var(--accent) 22%, transparent);
 
 
   /* ---- Object-kind palette (EXPLAIN pipeline graph + schema graph) ----
@@ -801,25 +808,30 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--border);
   /* The rest/hover states differ by 1px vs 3px. Animating width/height relayouts
      on every pointer cross of a resize handle — which is a high-frequency
-     surface, since these sit on every column edge. The bar is its full 3px and
-     scales down at rest, so only `transform` animates. */
+     surface, since these sit on every column edge — so the bar keeps a 1px layout
+     box and only `transform` animates. Scaling UP from the real 1px, rather than
+     down from a 3px box, keeps the resting line exactly one pixel: the earlier
+     `3px × scaleX(.34)` painted 1.02px and, more to the point, reported `3px` to
+     anything reading the computed box, which is how it silently broke
+     `splitters.spec.js`. `transform-origin` stays the default centre, so both
+     states share one centre line. */
   transition: transform 100ms ease, background-color 100ms ease;
 }
 .col-resize::before, .cd-resize-h::before {
   top: 0; bottom: 0; left: 50%;
-  width: 3px; transform: translateX(-50%) scaleX(.34);
+  width: 1px; transform: translateX(-50%) scaleX(1);
 }
 .row-resize::before, .schema-detail-handle::before {
   left: 0; right: 0; top: 50%;
-  height: 3px; transform: translateY(-50%) scaleY(.34);
+  height: 1px; transform: translateY(-50%) scaleY(1);
 }
 .col-resize:hover::before, .col-resize.dragging::before,
 .cd-resize-h:hover::before, .cd-resize-h.dragging::before {
-  transform: translateX(-50%) scaleX(1); background: var(--accent);
+  transform: translateX(-50%) scaleX(3); background: var(--accent);
 }
 .row-resize:hover::before, .row-resize.dragging::before,
 .schema-detail-handle:hover::before, .schema-detail-handle.dragging::before {
-  transform: translateY(-50%) scaleY(1); background: var(--accent);
+  transform: translateY(-50%) scaleY(3); background: var(--accent);
 }
 
 .workbench { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -2947,10 +2959,21 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    `height:100%` here still resolves and the page still scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
 /* #425 — the Dashboard surface's own toolbar row: Back to query, the Dashboard
-   title, then the View/Edit switch pushed right by the shared spacer. */
-.dash-surface-toolbar { gap: 8px; }
+   title, then the View/Edit switch pushed right by the shared spacer. It takes
+   `.dash-toolbar`'s gap, height and padding unchanged — it is the same toolbar
+   vocabulary as the filter row stacked beneath it, not a second one. (It briefly
+   carried `gap: 8px`, which never applied: `.dash-toolbar` has equal specificity
+   and comes later in this file, so the declaration was dead the day it landed.)
+
+   The title is the ONE piece of content in a row of controls, so it steps up by
+   WEIGHT at the shared body size rather than by size — DESIGN.md's Compact Scale
+   Rule. It arrived at `13px/600`: half a pixel off `--text-body`, which is below
+   the ramp's One-Pixel Floor and therefore a step nobody could see, in a row whose
+   controls sit at `--text-label`. */
 .dash-surface-title {
-  margin: 0; font-size: 13px; font-weight: 600; color: var(--fg);
+  margin: 0;
+  font-size: var(--text-body); font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight); color: var(--fg);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* The title is the ONLY control in this row allowed to shrink, so a long
@@ -2963,11 +2986,22 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    navigated to, cleared after a bounded interval or on the next user interaction.
    A `box-shadow` ring, NOT an outline: an element has exactly one outline, so an
    outline here would replace the focus ring rather than sit alongside it, and
-   #425 asks for a highlight in ADDITION to the normal focus indicator. */
-.is-nav-target {
-  box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 25%, transparent);
-  border-radius: 6px;
-}
+   #425 asks for a highlight in ADDITION to the normal focus indicator.
+
+   Deliberately sets no radius. A `box-shadow` already follows whatever radius the
+   element it marks has, so the ring is correct on a `--r-md` tile and on a filter
+   field alike. The hard 6px radius this shipped with instead RE-ROUNDED the target
+   — a tile visibly changed shape for as long as it was highlighted, and the ring
+   mitred against the very corner it was drawing attention to. A highlight must not
+   restyle the thing it highlights. */
+.is-nav-target { box-shadow: var(--ring-nav); }
+/* A KPI in a flow band is addressed through `.dash-kpi-member`, which is
+   `display: contents` — it generates NO BOX, so a shadow on the host itself paints
+   nothing whatsoever and navigating to such a tile marked it invisibly. Reach
+   through to the card, exactly as the `.dash-drop-target` rule below already has
+   to for the same reason; the card carries `--r-md`, so the ring lands on the real
+   geometry rather than on a zero-sized rectangle. */
+.dash-kpi-member.is-nav-target > * { box-shadow: var(--ring-nav); }
 /* The one-row application header and optional filter toolbar share one sticky
    top bar so Dashboard controls stay visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }

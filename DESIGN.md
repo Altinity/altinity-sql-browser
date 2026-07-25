@@ -255,9 +255,9 @@ way (`--fw-*`, `--lh-*`). Nothing in the stylesheet may set a literal size.
 | `--text-nano` | `9px` | — | SVG graph labels only (see the exception below) |
 | `--text-micro` | `10.5px` | 500–600 | micro-metadata, eyebrow labels, key caps, state badges |
 | `--text-label` | `11.5px` | 400–500, 1.3 | compact controls, tabs, table headers, **and** mono data — SQL, cell values, identifiers, timings, counts |
-| `--text-body` | `12.5px` | 400–500, 1.5 | primary labels, tree rows, button text, descriptions, Markdown body, messages; prose stays within 65–75 characters where layout permits |
+| `--text-body` | `12.5px` | 400–600, 1.25–1.5 | primary labels, tree rows, button text, descriptions, Markdown body, messages, **and the Dashboard surface title at 600**; prose stays within 65–75 characters where layout permits |
 | `--text-headline` | `14px` | 600, 1.25 | dialog, drawer and tile titles |
-| `--text-title` | `16px` | 700, 1.25 | dashboard/library titles, the strongest persistent workspace headings, and every "this does not exist" state |
+| `--text-title` | `16px` | 700, 1.25 | full-plane headings that own their own vertical space — every "this does not exist" state, and the empty-workspace and empty-Dashboard prompts |
 
 **Document ramp** — `--text-doc-h3` `15px`, `--text-doc-h2` `17px`, `--text-doc-h1` `20px`.
 Read surfaces only (reference docs, Markdown panels, the login heading), where the content
@@ -278,6 +278,13 @@ data share one step (`--text-label`): the difference between them is `--ui` vers
 **The Compact Scale Rule.** Product hierarchy comes from weight, placement, and surface
 structure. Never introduce oversized display typography into the application shell —
 nothing outside the document and display sets may exceed `--text-title`.
+
+A title *inside a row of controls* steps up by weight, not by size: the Dashboard surface
+toolbar names the open document at `--text-body`/`--fw-semibold`, one weight above the
+`--text-label` controls flanking it, in a 40px row. It reached for a size step instead and
+landed on `13px` — half a pixel above `--text-body`, a step nobody could see and one the
+One-Pixel Floor forbids. A toolbar is not a heading's own space; `--text-headline` and
+`--text-title` belong to surfaces that give a title a line of its own.
 
 **The Zoomable-Surface Exception.** `--text-nano` (`9px`) is admissible only as SVG text
 inside the EXPLAIN pipeline graph and schema graph. Those surfaces pan and zoom, so their
@@ -331,9 +338,18 @@ stopped communicating placement, which is its only job.
 - **`--shadow-drawer`** (`-8px 0 28px rgba(0,0,0,.35)`): the side drawers.
 - **`--scrim`**: the modal/drawer backdrop.
 
-Focus rings are their own family — `--ring`, `--ring-warn`, `--ring-error` — a 3px
-translucent ring in the state's own hue, so the ring says which *kind* of state has
-focus rather than only that something does.
+Rings are their own family — `--ring`, `--ring-warn`, `--ring-error` — a 3px translucent
+halo in the state's own hue, so the ring says which *kind* of state has focus rather than
+only that something does. That claim only holds while the **hue is the only thing that
+varies**, so the halo is one `color-mix(in oklab, … 22%, transparent)` across the family,
+asserted rather than reviewed.
+
+- **`--ring-nav`**: the fourth member, and the one that is not about focus. It marks the
+  tile or filter a navigation request *sent you to* — something you must find without
+  having pointed at anything — so it adds a solid `--accent` edge under the same halo at
+  a wider spread. It sets **no radius of its own**: a `box-shadow` already follows the
+  radius of whatever it marks, and a highlight that re-rounds its target makes the element
+  change shape at the moment it asks to be looked at.
 
 ### Named Rules
 
@@ -372,6 +388,7 @@ focus rather than only that something does.
 
 ### Navigation
 - Table, JSON, panel types, query tabs, schema/library modes, and dashboard layout choices share one quiet tab/segmented-control vocabulary. Inactive items use muted text on transparent or subtle surfaces; active items gain ink, a tonal surface, a structural border, or the accent. Mobile replaces the split workspace with a bottom navigation for Tables, Editor, and Results at `768px` and below.
+- The Dashboard surface toolbar (`[Back to query] · title · [View | Edit]`) is the **same** toolbar as the filter row stacked beneath it — one gap, one height, one padding — so the two read as one sticky top bar rather than two competing bands. Only the title differs, and only by weight.
 
 ### Data Table
 - Sticky headers and row numbers preserve context during two-axis scrolling.
