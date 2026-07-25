@@ -1719,7 +1719,7 @@ body.detached-tab .graph-overlay-panel {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 14px; height: 14px; padding: 0 3px;
   border-radius: var(--r-xs);
-  font-family: var(--mono); font-size: var(--text-nano); font-weight: var(--fw-bold);
+  font-family: var(--mono); font-size: var(--text-micro); font-weight: var(--fw-bold);
   line-height: var(--lh-flush);
   cursor: help;
 }
@@ -2840,7 +2840,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .mnav-badge {
     position: absolute; top: -6px; left: 100%; margin-left: -8px;
     min-width: 15px; height: 15px; padding: 0 4px; border-radius: var(--r-md);
-    background: var(--accent); color: #fff; font-size: var(--text-nano); font-weight: var(--fw-bold);
+    background: var(--accent); color: #fff; font-size: var(--text-micro); font-weight: var(--fw-bold);
     font-family: var(--mono); display: flex; align-items: center; justify-content: center;
   }
   .mnav-badge:empty { display: none; }

@@ -199,6 +199,53 @@ describe('stylesheet uses the tokens', () => {
     expect(sizes.filter((v) => v === 'inherit')).toHaveLength(1);
   });
 
+  // Three tiers carry an explicit restriction in DESIGN.md, and until now nothing
+  // enforced any of them: the checks above verify a declaration uses *some* --text-*
+  // token, which is syntax, not semantics. Both DOM state badges were sitting on
+  // --text-nano — one because the mechanical 9px->token mapping put it there, one
+  // because it was authored in the same change that wrote the rule forbidding it.
+  // A tier whose whole point is "only here" needs the "only here" asserted.
+  const sizedBy = (token) => {
+    const out = [];
+    // Walk selector/body pairs so each declaration can be attributed to its rule.
+    for (const m of rules.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (m[2].includes(`font-size: var(${token})`)) out.push(m[1].trim().split('\n').pop().trim());
+    }
+    return out;
+  };
+
+  it('confines --text-nano to SVG text inside the zoomable graphs', () => {
+    // DESIGN.md's Zoomable-Surface Exception: 9px is admissible only as SVG text in
+    // the EXPLAIN pipeline graph and schema graph, which pan and zoom and whose
+    // layout (core/dot-layout.js) is measured against that size. The floor for
+    // anything read WITHOUT zooming is --text-micro.
+    const users = sizedBy('--text-nano');
+    expect(users.length).toBeGreaterThan(0);
+    const offSurface = users.filter((sel) => !/^\.(explain-graph|schema-graph)\b/.test(sel));
+    expect(offSurface).toEqual([]);
+  });
+
+  it('confines the display tier to the login mark and the KPI metric', () => {
+    // "The Compact Scale Rule": nothing in the application shell may exceed
+    // --text-title. --text-mark and the two metric clamps are the only sanctioned
+    // exceptions, and each has exactly one home.
+    expect(sizedBy('--text-mark').every((sel) => /login-logo/.test(sel))).toBe(true);
+    for (const token of ['--text-metric', '--text-metric-tile']) {
+      expect(sizedBy(token).every((sel) => /kpi-value/.test(sel))).toBe(true);
+    }
+  });
+
+  it('confines the document ramp to Read surfaces', () => {
+    // The document ramp exists because reference docs and Markdown panels are prose
+    // the user reads. Letting it leak into operable chrome would reintroduce exactly
+    // the oversized-shell-typography problem the Compact Scale Rule forbids.
+    const READ = /^\.(md-view|docs-|login-h1)/;
+    for (const token of ['--text-doc-h1', '--text-doc-h2', '--text-doc-h3']) {
+      const strayed = sizedBy(token).filter((sel) => !READ.test(sel));
+      expect(strayed).toEqual([]);
+    }
+  });
+
   it('sets no font-weight or line-height outside the token set', () => {
     expect(values('font-weight').filter((v) => !v.startsWith('var(--fw-'))).toEqual([]);
     // The status bar's 15px line box is a layout strut that fixes the bar height,

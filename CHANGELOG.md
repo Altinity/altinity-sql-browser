@@ -72,6 +72,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   product's own body size instead of to user-agent typography.
 
 ### Fixed
+- Two DOM state badges (`.qtab-external`, `.mnav-badge`) were sitting on
+  `--text-nano`, the 9px tier DESIGN.md reserves for SVG text inside the zoomable
+  graphs — one because the mechanical 9px→token mapping put it there, one because it
+  was authored in the same change that wrote the restriction. Both now use
+  `--text-micro`, the documented tier for state badges. The contract test now
+  enforces the restrictions themselves rather than only that *some* token is used:
+  `--text-nano` is confined to the graph surfaces, the display tier to the login
+  mark and the KPI metric, and the document ramp to Read surfaces.
 - `font-src 'self'` blocked both inlined typefaces in every real deployment. CSP
   `'self'` is an origin match and does not cover the `data:` scheme — it has to be
   listed explicitly, exactly as the neighbouring `img-src data:` already did. Fixed
