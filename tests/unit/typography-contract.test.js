@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FONTS, FONT_BYTE_BUDGET, buildFontFaces } from '../../build/fonts.mjs';
+import { buildArtifact } from '../../build/build.mjs';
 
 const root = resolve(process.cwd());
 const css = readFileSync(resolve(root, 'src/styles.css'), 'utf8');
@@ -516,6 +517,42 @@ describe('the artifact carries its own typefaces', () => {
     // would render tofu instead of deferring to the platform font.
     const { css: faces } = await buildFontFaces();
     expect([...faces.matchAll(/unicode-range:/g)]).toHaveLength(FONTS.length);
+  });
+
+  it('carries the OFL notice for both faces inside the distributed file', async () => {
+    // `dist/sql.html` is its own unit of distribution — it gets copied into a
+    // ClickHouse `user_files` directory and served from there, detached from this
+    // repo and from THIRD-PARTY-NOTICES.md. So the license has to travel *in the
+    // artifact*, not only alongside it.
+    //
+    // It does, via the leading notices comment build.mjs embeds. Worth asserting
+    // because the in-binary metadata is only partial: the fontsource subsetting
+    // pipeline keeps nameID 0 (Copyright) and nameID 14 (License Info URL) but drops
+    // nameID 13 (License Description), so the embedded woff2 alone would carry a
+    // copyright line and a URL but not the license text. The notices comment closes
+    // that, and this test keeps it closed if the embedding mechanism ever changes.
+    const { html, thirdParty } = await buildArtifact();
+    for (const needle of [
+      'Copyright 2016 The Inter Project Authors',
+      'Copyright 2020 The JetBrains Mono Project Authors',
+      'SIL Open Font License 1.1',
+      'Permission is hereby granted, free of charge, to any person obtaining',
+      'Reserved Font Name',
+    ]) {
+      expect(thirdParty).toContain(needle);
+      expect(html).toContain(needle);
+    }
+    // And it must precede the styles, i.e. actually be the leading comment.
+    expect(html.indexOf('SIL Open Font License 1.1')).toBeLessThan(html.indexOf('<style'));
+  });
+
+  it('declares no font-display, because a data: source has no load timeline', async () => {
+    // `font-display` describes the display timeline for a *network* fetch. There is
+    // none here — the face is present as soon as the inline <style> parses — so
+    // declaring `swap` would assert a load phase that does not exist and request a
+    // flash of fallback text that cannot occur.
+    const { css: faces } = await buildFontFaces();
+    expect(faces).not.toContain('font-display');
   });
 
   it('stays inside the font byte budget', async () => {

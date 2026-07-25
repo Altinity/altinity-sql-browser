@@ -24,6 +24,17 @@
 // covers 400/500/600/700, which is cheaper than four subsets and keeps a single
 // decode.
 //
+// No `font-display`: that property describes the font display timeline for a
+// NETWORK fetch, and a `data:` source has none — the face is present the moment the
+// inline <style> parses. Declaring `swap` here would assert a load phase that does
+// not exist (and would ask for a flash of fallback text that cannot happen). The
+// default (`auto`) is both the honest statement and the better behaviour.
+//
+// The CSP must permit the `data:` scheme under `font-src` — `'self'` does NOT cover
+// it. Both deploy configs list it and tests/unit/csp-contract.test.js asserts they
+// do, because a blocked @font-face fails invisibly: the stack falls through to the
+// platform face and renders perfectly acceptable text.
+//
 // Both faces are SIL OFL 1.1; their notices ship in THIRD-PARTY-NOTICES.md.
 // Source packages are **dev** dependencies (@fontsource-variable/*) — the same
 // arrangement as Ajv, which is dev-only and contributes generated output to the
@@ -57,7 +68,7 @@ export const FONTS = [
 ];
 
 /** Total woff2 bytes the artifact is allowed to carry, before base64 expansion.
- *  Asserted by tests/unit/typography-contract.test.ts so a future subset change
+ *  Asserted by tests/unit/typography-contract.test.js so a future subset change
  *  (adding latin-ext, or an italic cut) has to be a deliberate, reviewed edit
  *  rather than a silent 40 KB of artifact growth. */
 export const FONT_BYTE_BUDGET = 96 * 1024;
@@ -75,7 +86,6 @@ export async function buildFontFaces() {
       + `font-family:'${family}';`
       + `font-style:normal;`
       + `font-weight:100 900;`
-      + `font-display:swap;`
       + `src:url(data:font/woff2;base64,${buf.toString('base64')}) format('woff2');`
       + `unicode-range:${LATIN}`
       + `}`);

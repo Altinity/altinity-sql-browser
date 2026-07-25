@@ -72,6 +72,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   product's own body size instead of to user-agent typography.
 
 ### Fixed
+- `font-src 'self'` blocked both inlined typefaces in every real deployment. CSP
+  `'self'` is an origin match and does not cover the `data:` scheme — it has to be
+  listed explicitly, exactly as the neighbouring `img-src data:` already did. Fixed
+  in both configs that ship a policy (`deploy/http_handlers.xml` and
+  `deploy/nginx/default.conf.template`). The failure was invisible by construction:
+  a blocked `@font-face` renders no tofu, it falls through to the platform face and
+  looks correct, so the deployed app would have kept using system fonts with only a
+  console violation as evidence — while every local check passed, because the CSP
+  exists only in the deploy configs. `tests/unit/csp-contract.test.js` now asserts
+  every URL scheme the built artifact references is permitted by the corresponding
+  directive, in every config that ships a CSP, and that those configs agree.
 - `--fg-faint` met no accessibility bar in either theme (2.55:1 light, 3.10:1
   dark at worst) while carrying most of the smallest text in the product — row
   counts, capped/cancelled badges, tile footers, the "Press ⌘↵ to run query"
