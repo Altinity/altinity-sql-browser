@@ -121,9 +121,9 @@ describe('header Dashboard nav (#302)', () => {
     expect(nav.getAttribute('aria-label')).toBe('Open Dashboard');
     expect(nav.querySelector('.hd-dash-nav-label')!.textContent).toBe('Dashboard →');
     expect(nav.hidden).toBe(false); // #407: the dashboard creation route is always reachable
-    app.actions.openDashboard = vi.fn();
+    app.actions.showDashboard = vi.fn();
     click(nav);
-    expect(app.actions.openDashboard).toHaveBeenCalled();
+    expect(app.actions.showDashboard).toHaveBeenCalled();
   });
 
   it('renderDashboardNav keeps the dashboard creation route visible without a document', () => {

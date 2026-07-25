@@ -4055,33 +4055,37 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
-  it('route controls use push for surface and replace for mode', async () => {
+  // #425: this surface's own chrome no longer writes routes. It delegates to the
+  // main-surface navigation API, which is what keeps the SELECTED Dashboard's id
+  // across a View/Edit switch — a control that wrote `{surface:'dashboard',mode}`
+  // itself would re-resolve the collection's first entry instead. The
+  // push-for-surface / replace-for-mode history semantics live with that API and
+  // are asserted against the real controller in app.test.ts.
+  it('surface and mode controls delegate to the main-surface navigation API', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
-    app.navigateSqlRoute = vi.fn(async () => {});
+    const showQuerySurface = vi.fn();
+    const showDashboardSurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    app.showDashboardSurface = showDashboardSurface;
     await render(app);
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((b) => b.textContent === 'SQL Browser')!.click();
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // Already on the Dashboard surface: its own button is inert.
     const dashboardButton = qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Dashboard')!;
     expect(dashboardButton.disabled).toBe(true);
     dashboardButton.click();
+    expect(showDashboardSurface).not.toHaveBeenCalled();
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'View')!.click();
-    qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'Edit')!.click();
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('view');
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' };
     await render(app);
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Edit')!.click();
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      1, { surface: 'workspace', workspaceKey: 'workspace' }, 'push',
-    );
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      2, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'view' }, 'replace',
-    );
-    expect(app.navigateSqlRoute).toHaveBeenNthCalledWith(
-      3, { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' }, 'replace',
-    );
+    expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
+    expect(showQuerySurface).toHaveBeenCalledTimes(1);
   });
 
   it('puts all Dashboard chrome in the shared compact application header', async () => {

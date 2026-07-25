@@ -72,7 +72,7 @@ export function libraryControls(app: App): HTMLElement[] {
   // shortcut directly; the visible surface switch now owns this navigation.
   app.dom.dashboardNav = h('button', {
     class: 'hd-dash-nav', title: 'Open Dashboard', 'aria-label': 'Open Dashboard',
-    onclick: () => app.actions.openDashboard(),
+    onclick: () => app.actions.showDashboard(),
   }, Icon.layers(), h('span', { class: 'hd-dash-nav-label' }, 'Dashboard →'));
   renderDashboardNav(app);
   return [app.dom.fileBtn, buildWorkspaceTitle(app, true)];

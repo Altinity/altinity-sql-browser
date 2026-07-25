@@ -80,6 +80,7 @@ import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.j
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
+import { selectedDashboardId as sessionDashboardId } from '../application/main-surface.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -135,6 +136,12 @@ export interface DashboardApp {
   workspace: Pick<WorkspaceRepository, 'commit'>;
   currentWorkspace: StoredWorkspaceV3 | null;
   sqlRoute: SqlRoute;
+  /** #425 — the selected-Dashboard session state this render projects, and the
+   *  navigation API its own chrome (View/Edit, Back to query) transitions
+   *  through. */
+  mainSurface: App['mainSurface'];
+  showDashboardSurface: App['showDashboardSurface'];
+  showQuerySurface: App['showQuerySurface'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
@@ -389,11 +396,11 @@ function renderMissingDashboard(
 
 function buildDashboardModeSwitch(app: DashboardApp): HTMLElement {
   const route = app.sqlRoute as Extract<SqlRoute, { surface: 'dashboard' }>;
-  const routeKey = app.currentWorkspace?.key ?? route.workspaceKey;
+  // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
+  // API keeps the id and re-opens the same document in the other mode, instead of
+  // writing a route that would re-resolve the collection's first entry.
   const button = (label: 'View' | 'Edit', mode: 'view' | 'edit'): HTMLButtonElement =>
-    routeButton(label, route.mode === mode, () => {
-      void app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: routeKey, mode }, 'replace');
-    });
+    routeButton(label, route.mode === mode, () => { app.showDashboardSurface(mode); });
   return h('div', {
     class: 'editor-mode-switch dashboard-mode-switch',
     role: 'group', 'aria-label': 'Dashboard mode',
@@ -474,16 +481,23 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.onWorkspaceExternallyChanged = () => {
     if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
   };
-  // #424: the ONE place this route decides which Dashboard it edits. The id is
-  // pinned for the whole render so every commit below is addressed BY ID rather
-  // than by array position — a concurrent write that reorders or replaces the
-  // collection can then be detected instead of silently retargeting.
-  const selection = resolveCompatibilityDashboard(workspace);
-  if (!selection.dashboard) {
+  // #424/#425: the ONE place this surface decides which Dashboard it renders.
+  // An explicit session selection wins and is resolved BY ID under the
+  // exactly-one-match rule; only a legacy entry point that has not been
+  // converted yet (no selection at all) falls back to the compatibility
+  // Dashboard. The id is pinned for the whole render so every commit below is
+  // addressed BY ID rather than by array position — a concurrent write that
+  // reorders or replaces the collection is then detected instead of silently
+  // retargeting.
+  const sessionSelectedId = sessionDashboardId(app.mainSurface);
+  const selected = sessionSelectedId === null
+    ? resolveCompatibilityDashboard(workspace).dashboard
+    : findDashboard(workspace, sessionSelectedId);
+  if (!selected) {
     renderMissingDashboard(app, readOnly, surfaceGeneration);
     return;
   }
-  const selectedDashboardId = selection.selectedId as string;
+  const selectedDashboardId = selected.id;
 
   const queries: SavedQueryV2[] = workspace.queries;
   const queryById = new Map<string, SavedQueryV2>();
@@ -491,7 +505,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // The live document — layout/order edits replace it; membership is read from
   // `dashboard.tiles[]` (NOT `savedQueries.filter(queryFavorite)`).
-  let currentDoc: DashboardDocumentV1 = selection.dashboard;
+  let currentDoc: DashboardDocumentV1 = selected;
   let committedRevision = currentDoc.revision;
   // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
   // CACHE of the last commit this route observed — never the baseline a

@@ -19,6 +19,9 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
+import type {
+  DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
+} from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV3 } from '../generated/json-schema.types.js';
@@ -215,7 +218,11 @@ export interface ActionsRegistry {
   insertCreate(target: string): Promise<void>;
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
-  openDashboard(): void;
+  /** #425 — a legacy Dashboard entry point with no chooser yet (the header
+   *  surface switch, the Workbench "Dashboard →" nav): resolves the ONE
+   *  compatibility Dashboard and opens it by id. Callers that already know which
+   *  Dashboard they want use `App.openDashboard(request)` instead. */
+  showDashboard(): void;
   /** #302 — export the current dashboard's dependency closure as a bundle. */
   exportDashboard(): void;
   /** #302 — import a Dashboard bundle through the transactional planner. */
@@ -444,7 +451,28 @@ export interface App {
   renderApp(): void;
   renderDashboard(): void;
   renderCurrentSurface(): void;
-  openDashboard(): void;
+  /** #425 — which main work surface owns the right-hand work area, and, for a
+   *  Dashboard, WHICH stored Dashboard is selected in which presentation mode
+   *  with an optional navigation focus target. SESSION state: never persisted,
+   *  cleared on sign-out, re-validated against every committed workspace, and
+   *  identified only by `DashboardDocumentV1.id` — never by collection position.
+   *  It is also the ONE writer of the `/sql` route's surface/mode, so the URL is
+   *  always derived from this and the two can never disagree. */
+  mainSurface: MainSurfaceState;
+  /** #425 — the one application-level Dashboard navigation entry point. Resolves
+   *  the Dashboard by exact id in the active workspace; a missing or duplicate id
+   *  is reported through the shared diagnostic path and changes no state. Never
+   *  mutates the Dashboard merely by opening it. A repeated open of the same
+   *  id+mode keeps the live viewer session and only re-applies the focus target. */
+  openDashboard(request: OpenDashboardRequest): void;
+  /** #425 — return to the preserved Query surface (editor + result drawer). */
+  showQuerySurface(): void;
+  /** #425 — the legacy no-chooser Dashboard entry point: resolves the
+   *  compatibility Dashboard and opens it by id, falling back to the Dashboard
+   *  surface's own "Create dashboard" state for an empty collection. */
+  showDashboardSurface(mode: DashboardSurfaceMode): void;
+  /** #425 — open a saved query into a tab, switching back to Query mode first. */
+  openSavedQuery(queryId: string): void;
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV3 | null;

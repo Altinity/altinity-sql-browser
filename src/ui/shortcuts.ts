@@ -29,8 +29,8 @@ export interface ShortcutDefinition {
 /** The single shortcut catalogue. Help never documents a command unavailable to
  * the dispatcher because both paths resolve this list against the same app. */
 export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
-  { id: 'open-dashboard', label: 'Open Dashboard', section: 'application', surface: 'workspace', key: 'g-d', dispatch: 'application', sequence: ['g', 'd'], run: (e, a) => { e.preventDefault(); void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'edit' }, 'push'); return 'openDashboard'; } },
-  { id: 'open-workbench', label: 'Open SQL Browser', section: 'application', surface: 'dashboard', key: 'g-w', dispatch: 'application', sequence: ['g', 'w'], run: (e, a) => { e.preventDefault(); void a.navigateSqlRoute?.({ surface: 'workspace', workspaceKey: a.state.workspaceKey }, 'push'); return 'openWorkbench'; } },
+  { id: 'open-dashboard', label: 'Open Dashboard', section: 'application', surface: 'workspace', key: 'g-d', dispatch: 'application', sequence: ['g', 'd'], run: (e, a) => { e.preventDefault(); a.showDashboardSurface?.('edit'); return 'openDashboard'; } },
+  { id: 'open-workbench', label: 'Open SQL Browser', section: 'application', surface: 'dashboard', key: 'g-w', dispatch: 'application', sequence: ['g', 'w'], run: (e, a) => { e.preventDefault(); a.showQuerySurface?.(); return 'openWorkbench'; } },
   { id: 'run-query', label: 'Run query', section: 'workspace', surface: 'workspace', key: 'mod-enter', dispatch: 'application', available: (a) => a.activeTab().editorMode !== 'spec', matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.actions.run(); return 'run'; } },
   { id: 'format-document', label: 'Format active document', section: 'workspace', surface: 'workspace', key: 'mod-shift-enter', dispatch: 'application', matches: (e) => modKey(e) && e.key === 'Enter' && !!e.shiftKey, run: (e, a) => { e.preventDefault(); if (a.activeTab().editorMode === 'spec') { a.actions.formatSpec(); return 'formatSpec'; } a.actions.formatQuery(); return 'formatQuery'; } },
   { id: 'save-query', label: 'Save query', section: 'workspace', surface: 'workspace', key: 'mod-s', dispatch: 'application', matches: (e) => modKey(e) && !e.shiftKey && e.key.toLowerCase() === 's', run: (e, a) => { e.preventDefault(); a.actions.save(); return 'save'; } },
@@ -41,8 +41,8 @@ export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
   { id: 'redo', label: 'Redo', section: 'workspace', surface: 'workspace', key: 'mod-shift-z', dispatch: 'editor' },
   { id: 'open-reference', label: 'Open reference for symbol', section: 'workspace', surface: 'workspace', key: 'f1', dispatch: 'editor' },
   { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', dispatch: 'application', available: (a) => validDashboardPort(a), matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.surfaceCommands!.refresh(); return 'dashboardRefresh'; } },
-  { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v', dispatch: 'application', sequence: ['g', 'v'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'view') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'view' }, 'replace'); return 'dashboardView'; } },
-  { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e', dispatch: 'application', sequence: ['g', 'e'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'edit') return null; void a.navigateSqlRoute?.({ surface: 'dashboard', workspaceKey: a.state.workspaceKey, mode: 'edit' }, 'replace'); return 'dashboardEdit'; } },
+  { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v', dispatch: 'application', sequence: ['g', 'v'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'view') return null; a.showDashboardSurface?.('view'); return 'dashboardView'; } },
+  { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e', dispatch: 'application', sequence: ['g', 'e'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'edit') return null; a.showDashboardSurface?.('edit'); return 'dashboardEdit'; } },
   { id: 'dashboard-grid-tiles', label: 'Grid Tiles', section: 'dashboard', surface: 'dashboard', key: 'g-g', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'g'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('grafana-grid'); return 'dashboardGridTiles'; } },
   { id: 'dashboard-full-view', label: 'Full view', section: 'dashboard', surface: 'dashboard', key: 'g-f', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'f'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('full'); return 'dashboardFullView'; } },
   { id: 'dashboard-report', label: 'Report', section: 'dashboard', surface: 'dashboard', key: 'g-r', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'r'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('report'); return 'dashboardReport'; } },
@@ -74,6 +74,10 @@ export interface ShortcutsApp {
   keyboardOwner?: KeyboardOwner | null;
   acquireKeyboardOwner(kind: KeyboardOwner['kind']): () => void;
   captureSurfaceGeneration?: () => number;
+  /** #425 — surface navigation goes through the main-surface API so the session
+   *  surface stays the one writer of the route. */
+  showQuerySurface?: () => void;
+  showDashboardSurface?: (mode: 'view' | 'edit') => void;
   navigateSqlRoute?: (route: SqlRoute, method: 'push' | 'replace') => Promise<void>;
   closeDocPane?: () => boolean;
   activeTab(): Pick<Tab, 'editorMode'>;

@@ -47,6 +47,7 @@ import type { ExportService } from '../../src/application/export-service.js';
 import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
 import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import { resolveCompatibilityDashboard } from '../../src/workspace/workspace-dashboards.js';
+import { QUERY_SURFACE } from '../../src/application/main-surface.js';
 import type { StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
@@ -431,6 +432,9 @@ const appDefaults: App = {
     markOpened: async () => ({ ok: true }),
   },
   sqlRoute: { surface: 'workspace', workspaceKey: null },
+  // #425: the Query surface is the inert default; a Dashboard fixture overrides
+  // `mainSurface` with its own selection.
+  mainSurface: QUERY_SURFACE,
   currentWorkspace: null,
   workspaceRouteStatus: 'ready',
   keyboardOwner: null,
@@ -572,6 +576,9 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
+  showQuerySurface: () => {},
+  showDashboardSurface: () => {},
+  openSavedQuery: () => {},
   actions: {} as ActionsRegistry,
 };
 
@@ -849,7 +856,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       insertCreate: vi.fn(),
       openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
-      openDashboard: vi.fn(),
+      showDashboard: vi.fn(),
       exportDashboard: vi.fn(),
       importDashboard: vi.fn(),
       openUserMenu: vi.fn(),

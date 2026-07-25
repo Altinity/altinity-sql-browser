@@ -77,6 +77,11 @@ import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
+import {
+  QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
+  resolveOpenDashboard,
+} from '../application/main-surface.js';
+import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
@@ -264,6 +269,19 @@ export function createApp(env: CreateAppEnv = {}): App {
     dialog?.close();
   };
   app.surfaceCommands = null;
+  // #425: the main work surface's SESSION state — Query, or one Dashboard
+  // selected by stable id. Never persisted (see application/main-surface.ts).
+  app.mainSurface = QUERY_SURFACE;
+  // Every surface transition — mount, teardown, or sign-out — advances the
+  // renderer generation so an obsolete async callback (a late Dashboard wave,
+  // a pending focus target) can finish its durable work without settling
+  // against a replacement renderer. Bumped on the TRANSITION, not as a side
+  // effect of a mount, because a mount can be skipped when the host is already
+  // live (#425's preserved Query surface).
+  const advanceSurfaceGeneration = (): void => {
+    surfaceGeneration += 1;
+    app.surfaceCommands = null;
+  };
   app.captureSurfaceGeneration = () => surfaceGeneration;
   app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
   app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
@@ -457,6 +475,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #313: pane content must never survive a connection change — closed
     // alongside the catalog reset, before the login screen renders.
     closeDocPane(app);
+    // #425: a mounted Dashboard is a real end-of-session resource too — its
+    // viewer session, listeners, and any pending focus/render callback must be
+    // torn down and logically cancelled here, not left alive behind the login
+    // screen where a late callback would still read as the current generation.
+    disposeDashboardSurface();
+    advanceSurfaceGeneration();
+    app.mainSurface = QUERY_SURFACE;
     conn.signOut();
     renderLoginApp();
   };
@@ -1575,8 +1600,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.renderDashboard = () => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    surfaceGeneration += 1;
-    app.surfaceCommands = null;
+    advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeWorkbenchMount?.();
@@ -1587,8 +1611,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const disposeCurrentSurface = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    surfaceGeneration += 1;
-    app.surfaceCommands = null;
+    advanceSurfaceGeneration();
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
       'button, input, select, textarea',
     ) ?? []) control.disabled = true;
@@ -1612,6 +1635,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV3): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
+    // #425: re-validate the selected Dashboard against committed truth. A
+    // selection that was deleted — or whose id became ambiguous — falls back to
+    // QUERY mode rather than silently retargeting another Dashboard, and the
+    // route follows so the URL never claims a Dashboard surface this session no
+    // longer has a document for. A workspace switch reaches the same code, which
+    // is what clears a stale selection unless the new workspace carries the same
+    // explicitly selected id.
+    const previousSurface = app.mainSurface;
+    app.mainSurface = reconcileMainSurface(previousSurface, workspace);
+    if (previousSurface.kind === 'dashboard' && app.mainSurface.kind === 'query'
+      && app.sqlRoute.surface === 'dashboard') {
+      writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
+    }
     const workspaceChanged = app.state.workspaceId !== workspace.id;
     if (workspaceChanged) detachWorkspaceBoundTabs(app.state);
     app.state.savedQueries = workspace.queries;
@@ -1944,6 +1980,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       routeSearch = canonicalSearch;
       win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
     }
+    // #425: this is a URL-driven open (boot, a deep link, or a workspace
+    // switch), so the ROUTE decides the surface — including which Dashboard,
+    // resolved through the compatibility selector because the URL carries no id.
+    adoptRouteMainSurface();
     return workspace;
   };
 
@@ -1987,7 +2027,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       const expectedGeneration = routeLoadGeneration + 1;
       await app.loadWorkspaceOnBoot();
       if (routeLoadGeneration !== expectedGeneration) return;
-    }
+    } else adoptRouteMainSurface();
     app.renderCurrentSurface();
   };
 
@@ -1999,6 +2039,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.sqlRoute = parseSqlRoute(routeSearch);
     if (app.sqlRoute.workspaceKey === previousKey) {
       disposeCurrentSurface();
+      adoptRouteMainSurface();
       app.renderCurrentSurface();
       return;
     }
@@ -2018,14 +2059,101 @@ export function createApp(env: CreateAppEnv = {}): App {
     writeRoute(routeForWorkspace(app.sqlRoute, workspaceKey), 'replace');
   };
 
-  // Workbench -> Dashboard stays in this tab and creates one useful history
-  // entry. Dashboard edit is canonical, so `mode=edit` is omitted.
-  function openDashboard(): void {
-    void app.navigateSqlRoute({
-      surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit',
-    }, 'push');
-  }
-  app.openDashboard = openDashboard;
+  // #425 — the main-surface navigation API. Every surface transition goes
+  // through these three functions, so `app.mainSurface` is the ONE writer of the
+  // route: the URL is always derived from the session surface, never the other
+  // way round, and the two can never disagree.
+  const surfaceRouteKey = (): string | null =>
+    app.currentWorkspace?.key ?? app.state.workspaceKey;
+  // Surface changes stay in this tab and create one useful history entry;
+  // a View/Edit mode change replaces so presentation toggles do not pollute
+  // Back (ADR-0003).
+  const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
+    app.mainSurface = surface;
+    writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
+    app.renderCurrentSurface();
+  };
+
+  app.openDashboard = (request) => {
+    const resolution = resolveOpenDashboard(app.currentWorkspace, request);
+    if (resolution.status !== 'ok') {
+      // Reported, never repaired: an ambiguous id must not be resolved by a
+      // guess, and a deleted one must not silently retarget another Dashboard.
+      flashToast(resolution.status === 'duplicate'
+        ? 'This workspace has more than one dashboard with that id — resolve the duplicate before opening it.'
+        : 'That dashboard is no longer part of this workspace.', { document: doc });
+      return;
+    }
+    // A repeated open of the SAME id in the SAME mode keeps the live viewer
+    // session rather than building a duplicate one; only the (possibly new)
+    // focus target is re-applied.
+    const sameSelection = isSameDashboardSelection(app.mainSurface, request)
+      && app.sqlRoute.surface === 'dashboard';
+    if (sameSelection && resolution.surface.kind === 'dashboard'
+      && resolution.surface.focus === null) {
+      app.mainSurface = resolution.surface;
+      return;
+    }
+    applyMainSurface(resolution.surface, sameSelection || app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
+  };
+
+  app.showQuerySurface = () => {
+    if (app.mainSurface.kind === 'query' && app.sqlRoute.surface === 'workspace') return;
+    applyMainSurface(QUERY_SURFACE, app.sqlRoute.surface === 'dashboard' ? 'push' : 'replace');
+  };
+
+  // The Dashboard entry points that name no Dashboard themselves: the header
+  // surface switch, the Workbench "Dashboard →" nav, the `g d`/`g v`/`g e`
+  // shortcuts, and the View/Edit switch. An ALREADY-selected Dashboard wins — so
+  // a mode change retains the same document rather than retargeting the
+  // collection's first entry — and only an unselected surface falls back to the
+  // ONE compatibility Dashboard (there is no chooser until #426's tree). Either
+  // way the open is addressed BY ID. An empty collection still reaches the
+  // Dashboard surface so its "Create dashboard" state remains available.
+  app.showDashboardSurface = (mode) => {
+    const selectedId = app.mainSurface.kind === 'dashboard'
+      ? app.mainSurface.dashboardId
+      : app.currentWorkspace ? resolveCompatibilityDashboard(app.currentWorkspace).selectedId : null;
+    if (selectedId !== null) {
+      app.openDashboard({ dashboardId: selectedId, mode });
+      return;
+    }
+    const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
+    app.mainSurface = QUERY_SURFACE;
+    writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
+    app.renderCurrentSurface();
+  };
+
+  // Opening a saved query is a Query-mode act: it returns to the preserved
+  // Query surface first, so the tab it opens is the one the user then sees.
+  app.openSavedQuery = (queryId) => {
+    const query = app.state.savedQueries.find((saved) => saved.id === queryId);
+    app.showQuerySurface();
+    // Spread, like saved-history.ts's own two call sites: `loadIntoNewTab`
+    // accepts the looser `string | Json` shape a `SavedQueryV2` satisfies
+    // structurally but not nominally (no index signature).
+    if (query) { loadIntoNewTab(app, { ...query }); toEditorOnMobile(); }
+  };
+
+  // Adopt the surface the ROUTE describes. Used at boot, on Back/Forward, and
+  // after a workspace switch — the three moments the URL, not a click, decides
+  // the surface. Back/Forward INSIDE the Dashboard surface keeps whatever is
+  // explicitly selected: the URL carries no Dashboard id (#425 leaves URLs
+  // unchanged), so re-deriving one here would silently retarget the surface to
+  // the collection's first entry.
+  const adoptRouteMainSurface = (): void => {
+    const workspace = app.currentWorkspace;
+    if (app.sqlRoute.surface !== 'dashboard') { app.mainSurface = QUERY_SURFACE; return; }
+    const mode: DashboardSurfaceMode = app.sqlRoute.mode;
+    if (app.mainSurface.kind === 'dashboard') {
+      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, focus: null }, workspace);
+      return;
+    }
+    const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
+    app.mainSurface = selectedId === null
+      ? QUERY_SURFACE
+      : { kind: 'dashboard', dashboardId: selectedId, mode, focus: null };
+  };
 
   app.reloadDashboardRoute = () => {
     // #424: fold the projected compatibility Dashboard back into the COLLECTION,
@@ -2050,7 +2178,15 @@ export function createApp(env: CreateAppEnv = {}): App {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (queryOrName, sql) => { loadIntoNewTab(app, queryOrName, sql); toEditorOnMobile(); },
+    // #425: opening a query is a Query-mode act, so every EXISTING opening path
+    // (the Library list, History, the schema tree's double-click) switches the
+    // main surface back before loading — otherwise the new tab would land behind
+    // a visible Dashboard. A no-op when the Query surface is already active.
+    loadIntoNewTab: (queryOrName, sql) => {
+      app.showQuerySurface();
+      loadIntoNewTab(app, queryOrName, sql);
+      toEditorOnMobile();
+    },
     login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
     // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
     // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
@@ -2095,7 +2231,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
       if (dialog) app.shortcutDialog = dialog;
     },
-    openDashboard,
+    // #425: the no-argument legacy entry point (a header/nav control with no
+    // Dashboard chooser yet) — it resolves the compatibility Dashboard and opens
+    // it by id. `app.openDashboard(request)` is the ID-addressed API.
+    showDashboard: () => app.showDashboardSurface('edit'),
     // #302: Dashboard import/export invoked from the Dashboard page's own File
     // menu (and still from the Workbench during the transition). Export is a
     // read-only bundle download; import runs the transactional planner and, on
@@ -2115,8 +2254,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.renderApp = () => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    surfaceGeneration += 1;
-    app.surfaceCommands = null;
+    advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     disposeDashboardSurface();

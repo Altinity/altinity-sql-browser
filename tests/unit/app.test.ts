@@ -24,7 +24,9 @@ import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
 import { renameSaved, savedForTab } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
-import type { SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type {
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
+} from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry, ResultSchemaGraph,
@@ -970,7 +972,6 @@ describe('renderApp shell', () => {
     expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.getAttribute('aria-label')))
       .toEqual(['SQL Browser', 'Dashboard']);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
-    app.navigateSqlRoute = vi.fn(async () => {});
     // File → New workspace replaces the active aggregate without rebuilding
     // this header. Its surface controls must route to the replacement, not
     // the key captured when the header first mounted.
@@ -979,11 +980,16 @@ describe('renderApp shell', () => {
       name: 'SQL Library', queries: [], dashboards: [],
     };
     app.state.workspaceKey = 'sql_library_7';
+    app.renderCurrentSurface = vi.fn();
     qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
       .find((button) => button.textContent === 'Dashboard')!.click();
-    expect(app.navigateSqlRoute).toHaveBeenCalledWith({
+    // #425: the control goes through the main-surface API, which writes the
+    // route from the session surface — asserted on the resulting route itself,
+    // so a control that captured the stale key still fails here.
+    expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'sql_library_7', mode: 'edit',
-    }, 'push');
+    });
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
     expect(qs(app.root, '.sidebar')).not.toBeNull();
     expect(qs(app.root, '.cm-editor')).not.toBeNull();
     // user control shows the short name (local-part) + full email on hover
@@ -5244,7 +5250,9 @@ describe('unified /sql routing', () => {
     };
     app.workspaceRouteStatus = 'ready';
     app.renderCurrentSurface = vi.fn();
-    app.openDashboard();
+    // The empty-collection legacy path: no Dashboard to address by id, so the
+    // surface itself is opened and shows "Create dashboard".
+    app.showDashboardSurface('edit');
     await Promise.resolve();
     expect(pushState).toHaveBeenCalledWith(
       null, '', '/sql?ws=workspace_nine&surface=dashboard',
@@ -5271,6 +5279,207 @@ describe('unified /sql routing', () => {
       null, '', '/sql?ws=w&surface=dashboard',
     );
     replaceState.mockRestore();
+  });
+
+  // #425 — the main-surface navigation API. Selection is session state keyed by
+  // the stable Dashboard id; the route is always DERIVED from it.
+  describe('main surface selection (#425)', () => {
+    const dash = (id: string): DashboardDocumentV1 => ({
+      documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    });
+    const readyApp = (ids: string[], search = '?ws=ops') => {
+      const location = {
+        origin: 'https://ch.example', pathname: '/sql', search, hash: '', host: 'ch.example',
+      } as Location;
+      const app = createApp(env({ location }));
+      app.state.workspaceKey = 'ops';
+      app.currentWorkspace = {
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: ids.map(dash),
+      };
+      app.workspaceRouteStatus = 'ready';
+      app.renderCurrentSurface = vi.fn();
+      return { app, location };
+    };
+
+    it('opens any Dashboard by stable id, in either mode, independent of position', () => {
+      const { app } = readyApp(['first', 'second']);
+      app.openDashboard({ dashboardId: 'second', mode: 'view' });
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+      });
+      expect(app.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'ops', mode: 'view' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
+    });
+
+    it('carries an optional focus target into the selection', () => {
+      const { app } = readyApp(['a']);
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' },
+      });
+    });
+
+    it('pushes one history entry entering the Dashboard and REPLACES on a mode change', () => {
+      const pushState = vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
+      const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+      const { app } = readyApp(['a']);
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expect(pushState).toHaveBeenCalledWith(null, '', '/sql?ws=ops&surface=dashboard');
+      expect(replaceState).not.toHaveBeenCalled();
+      app.openDashboard({ dashboardId: 'a', mode: 'view' });
+      expect(replaceState).toHaveBeenCalledWith(null, '', '/sql?ws=ops&surface=dashboard&mode=view');
+      expect(pushState).toHaveBeenCalledTimes(1);
+      // Leaving for the Query surface is a real navigation again.
+      app.showQuerySurface();
+      expect(pushState).toHaveBeenLastCalledWith(null, '', '/sql?ws=ops');
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      pushState.mockRestore();
+      replaceState.mockRestore();
+    });
+
+    it('reports a missing id without mutating the workspace or the surface', () => {
+      const { app } = readyApp(['a']);
+      const before = app.currentWorkspace;
+      app.openDashboard({ dashboardId: 'gone', mode: 'edit' });
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+      expect(app.currentWorkspace).toBe(before);
+      expect(app.renderCurrentSurface).not.toHaveBeenCalled();
+      expect(document.querySelector('.share-toast')!.textContent)
+        .toContain('no longer part of this workspace');
+    });
+
+    it('fails a DUPLICATE id through diagnostics rather than guessing an entry', () => {
+      const { app } = readyApp(['dup', 'dup']);
+      app.openDashboard({ dashboardId: 'dup', mode: 'edit' });
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.renderCurrentSurface).not.toHaveBeenCalled();
+      expect(document.querySelector('.share-toast')!.textContent).toContain('more than one dashboard');
+    });
+
+    it('re-opening the same id and mode keeps the live session and only re-applies focus', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
+      // Same id + mode, no focus: nothing to re-render.
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
+      // A focus target does need the surface to deliver it.
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' } });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(2);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' },
+      });
+    });
+
+    it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
+      const { app } = readyApp(['first', 'second']);
+      app.showDashboardSurface('edit');
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
+      });
+    });
+
+    it('the "Dashboard →" nav action opens the compatibility Dashboard by id', () => {
+      const { app } = readyApp(['first', 'second']);
+      app.actions.showDashboard();
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
+      });
+    });
+
+    it('every existing query-opening path switches back to the Query surface', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.actions.loadIntoNewTab('From history', 'SELECT 1');
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+    });
+
+    it('a legacy mode switch RETAINS the selected Dashboard instead of re-resolving the first', () => {
+      const { app } = readyApp(['first', 'second']);
+      app.openDashboard({ dashboardId: 'second', mode: 'edit' });
+      app.showDashboardSurface('view');
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+      });
+    });
+
+    it('an empty collection still reaches the Dashboard surface for "Create dashboard"', () => {
+      const { app } = readyApp([]);
+      app.showDashboardSurface('edit');
+      expect(app.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'ops', mode: 'edit' });
+      // No document exists, so nothing is selected.
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns to Query mode — never another Dashboard — when the selection is deleted', () => {
+      const { app } = readyApp(['first', 'second']);
+      app.openDashboard({ dashboardId: 'second', mode: 'view' });
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('first')],
+      });
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      // The URL must not keep claiming a Dashboard surface this session has no
+      // document for.
+      expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+    });
+
+    it('clears a stale selection on a workspace switch, and keeps one the new workspace still has', () => {
+      const { app } = readyApp(['shared', 'only-here']);
+      app.openDashboard({ dashboardId: 'only-here', mode: 'edit' });
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('shared')],
+      });
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+
+      const { app: kept } = readyApp(['shared']);
+      kept.openDashboard({ dashboardId: 'shared', mode: 'view' });
+      kept.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [],
+        dashboards: [dash('x'), dash('shared')],
+      });
+      expect(kept.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'shared', mode: 'view', focus: null,
+      });
+    });
+
+    it('opening a saved query returns to the Query surface', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.state.savedQueries = [savedQuery({ id: 'q1', name: 'Sales', sql: 'SELECT 1' })];
+      app.openSavedQuery('q1');
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+      expect(app.state.tabs.value.some((tab) => tab.savedId === 'q1')).toBe(true);
+    });
+
+    it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const staleGeneration = app.captureSurfaceGeneration();
+      app.signOut();
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.isSurfaceGenerationCurrent(staleGeneration)).toBe(false);
+    });
+
+    it('Back/Forward inside the Dashboard surface keeps the explicit selection', async () => {
+      const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'second', mode: 'edit' });
+      location.search = '?ws=ops&surface=dashboard&mode=view';
+      await app.handleSqlPopState();
+      // The URL carries no Dashboard id, so re-deriving one here would silently
+      // retarget the surface to the collection's first entry.
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+      });
+      location.search = '?ws=ops';
+      await app.handleSqlPopState();
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+    });
   });
 
   it('rewrites a newly created workspace key without changing the active surface', () => {
