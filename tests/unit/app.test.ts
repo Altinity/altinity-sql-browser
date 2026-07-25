@@ -5304,7 +5304,10 @@ describe('unified /sql routing', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       filters: [], tiles: [],
     });
-    const readyApp = (ids: string[], search = '?ws=ops') => {
+    /** `live: true` renders for real — for the surface-HOST contract (what stays
+     *  mounted, what is exposed). Otherwise rendering is stubbed, so a test can
+     *  assert the state transition without building any DOM. */
+    const readyApp = (ids: string[], search = '?ws=ops', live = false) => {
       const location = {
         origin: 'https://ch.example', pathname: '/sql', search, hash: '', host: 'ch.example',
       } as Location;
@@ -5314,9 +5317,10 @@ describe('unified /sql routing', () => {
         storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: ids.map(dash),
       };
       app.workspaceRouteStatus = 'ready';
-      app.renderCurrentSurface = vi.fn();
+      if (!live) app.renderCurrentSurface = vi.fn();
       return { app, location };
     };
+    const liveApp = (ids: string[], search = '?ws=ops') => readyApp(ids, search, true);
 
     it('opens any Dashboard by stable id, in either mode, independent of position', () => {
       const { app } = readyApp(['first', 'second']);
@@ -5479,6 +5483,93 @@ describe('unified /sql routing', () => {
       app.signOut();
       expect(app.mainSurface).toEqual({ kind: 'query' });
       expect(app.isSurfaceGenerationCurrent(staleGeneration)).toBe(false);
+    });
+
+    // The surface-HOST contract: what a switch keeps mounted, and what it exposes.
+    it('a Dashboard owns the whole work area while the sidebar stays visible', () => {
+      const { app } = liveApp(['a']);
+      app.renderCurrentSurface();
+      expectSurface(app, 'query');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expectSurface(app, 'dashboard');
+      // The complete editor-plus-results surface is hidden, not merely covered —
+      // so no invisible result drawer consumes layout space.
+      expect(qs<HTMLElement>(app.root, '.query-host').hidden).toBe(true);
+      expect(qs(app.root, '.editor-region')).not.toBeNull();
+      expect(qs(app.root, '.results-region')).not.toBeNull();
+      // ...and the left sidebar is untouched by the switch.
+      expect(qs<HTMLElement>(app.root, '.sidebar').hidden).toBe(false);
+      expect(qs(app.root, '.schema-list')).not.toBeNull();
+      expect(app.dom.schemaList!.isConnected).toBe(true);
+    });
+
+    it('preserves the Query surface across a Dashboard round trip', () => {
+      const { app } = liveApp(['a']);
+      app.renderCurrentSurface();
+      app.actions.newTab();
+      const activeTabId = app.state.activeTabId.value;
+      app.sqlEditor.replaceDocument('SELECT 42');
+      // Identity, not just presence: the pre-#425 swap rebuilt these nodes, so a
+      // reconstructed surface would fail here even though it looked the same.
+      const editorHost = app.dom.sqlEditorHost;
+      const resultsRegion = app.dom.resultsRegion;
+      app.dom.editorRegion!.style.height = '40%';
+
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.showQuerySurface();
+
+      expectSurface(app, 'query');
+      expect(app.dom.sqlEditorHost).toBe(editorHost);
+      expect(app.dom.resultsRegion).toBe(resultsRegion);
+      expect(app.dom.editorRegion!.style.height).toBe('40%');
+      expect(app.state.activeTabId.value).toBe(activeTabId);
+      expect(app.sqlEditor.getValue()).toBe('SELECT 42');
+      // One editor model in that host, not a second one built by the return trip.
+      // (The root holds two CM6 views in total — the SQL editor and the Spec
+      // editor — so the count is scoped to the SQL host.)
+      expect(qsa(app.dom.sqlEditorHost!, '.cm-editor')).toHaveLength(1);
+    });
+
+    it('does not cancel the open editor query merely because the surface changed', () => {
+      const { app } = liveApp(['a']);
+      app.renderCurrentSurface();
+      const destroy = vi.spyOn(app.workbench, 'destroy');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.showQuerySurface();
+      // `workbench.destroy()` aborts the in-flight request and issues KILL QUERY.
+      expect(destroy).not.toHaveBeenCalled();
+      // A real end-of-session event still tears it down.
+      app.signOut();
+      expect(destroy).toHaveBeenCalled();
+    });
+
+    it('leaks no second surface, editor, or sidebar across repeated switching', () => {
+      const { app } = liveApp(['a']);
+      app.renderCurrentSurface();
+      const editorHost = app.dom.sqlEditorHost;
+      for (let i = 0; i < 3; i += 1) {
+        app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+        app.showQuerySurface();
+      }
+      expect(qsa(app.root, '.workbench')).toHaveLength(1);
+      expect(qsa(app.root, '.sidebar')).toHaveLength(1);
+      expect(qsa(app.root, '.app-header')).toHaveLength(1);
+      expect(qsa(app.root, '.dash-page')).toHaveLength(0);
+      expect(qsa(app.dom.sqlEditorHost!, '.cm-editor')).toHaveLength(1);
+      expect(app.dom.sqlEditorHost).toBe(editorHost);
+    });
+
+    it('re-enables nothing and disables nothing on a same-workspace Back navigation', async () => {
+      const { app, location } = liveApp(['a'], '?ws=ops&surface=dashboard');
+      app.renderCurrentSurface();
+      expectSurface(app, 'dashboard');
+      location.search = '?ws=ops';
+      await app.handleSqlPopState();
+      // The still-mounted Query controls must stay live: the pre-#425 teardown on
+      // this path disabled every control under the root, permanently.
+      expectSurface(app, 'query');
+      expect(qs<HTMLButtonElement>(app.root, '.run-btn').disabled).toBe(false);
+      expect(qs<HTMLInputElement>(app.root, '.schema-search input').disabled).toBe(false);
     });
 
     it('Back/Forward inside the Dashboard surface keeps the explicit selection', async () => {
