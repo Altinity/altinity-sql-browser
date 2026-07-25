@@ -7,17 +7,21 @@ description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, im
 
 You were invoked as `/ship <issue-number>`. The **issue number is the argument you were given** — call it `<ISSUE>` below. This runs the per-issue cycle for the **altinity-sql-browser** repo; if the current working directory isn't that repo, stop and say so.
 
+Be coordinator.  Run subagents with model suitable for the particular subtask: advanced
+model/reasoning for compicated tasks such as planning and cheap model for
+simple operations like searching/editing files or github operations.
+
 Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section). Proceed autonomously on the routine path; **stop and ask only at the points marked 🛑**.
 
 > Sandbox note: `grep` in Bash is intercepted here — use `rg PATTERN > "$TMPDIR/out" && Read`, never pipe to `grep`. Capture long command output to a file and Read it (e.g. `npm test > "$TMPDIR/test.log" 2>&1`).
 
-> Parallel / worktree note: this skill assumes it **owns its working directory**. To run several `/ship`s at once, launch each session with `claude --worktree <name>` so they don't collide on git state or files — **never run two `/ship`s in the same dir**. Only parallelize dependency-independent issues (see #68's Parallelization section); never run an issue against an unmerged dependency.
+> Parallel / worktree note: this skill assumes it **owns its working directory**. To run several `/ship`s at once, launch each session with `claude --worktree <name>` so they don't collide on git state or files — **never run two `/ship`s in the same dir**. Only parallelize dependency-independent issues; never run an issue against an unmerged dependency.
 
 > Subagent note: any `Agent` call this skill makes — for planning, review, or analysis — is **read-only** by default, and inherits this entire file plus CLAUDE.md just by being spawned mid-run. Inheriting these steps is not the same as being told to execute them. State the boundary explicitly in the subagent's prompt (no Edit/Write, no git/gh mutating commands, no TaskCreate/TaskUpdate, no memory writes — return only the requested output), and prefer a fresh non-fork agent over `fork` for this kind of fan-out. **Steps 5–7 — reconcile, PR, and the merge gate — are performed by this session only, never delegated to a subagent.** After any batch of subagents returns, verify with `git diff`, `git log`, and `gh pr list` before trusting a self-reported summary.
 
 ## 1 — Orient & set up the workspace
 - `gh issue view <ISSUE>` — read Goal / scope / Key implementation / **Acceptance criteria** (and any "Reconciled" banner).
-- Read its place in the roadmap **#68** (which phase; what it depends on; the Parallelization section). 🛑 If a hard dependency is unfinished (e.g. this needs CM6 #21 first), stop and tell me — don't build out of order.
+- 🛑 If a hard dependency is unfinished, stop and tell me — don't build out of order.
 - **Pick the right base.** If `<ISSUE>` is independent or builds only on *merged* work → branch off `main`: `git fetch && git checkout main && git pull`. If it builds on **unmerged** work (e.g. the signals foundation in PR #89), branch off **that** branch instead (`git checkout <dep-branch>`) or wait for it to merge — branching off `main` would build against stale code and conflict.
 - `git checkout -b <type>/<slug>-<ISSUE>` (e.g. `feat/webkit-e2e-69`, `refactor/editor-port-21`).
 - **Deps:** if `node_modules` is missing (fresh worktree), run `npm ci` before any `npm test` / `npm run build`.
@@ -36,11 +40,14 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 ## 4 — Review (the cycle, before the PR)
 - `/code-review` on the working diff → apply real findings → re-run `npm test`.
 - `/security-review` as well if it touches auth / OAuth / `config.json`.
-- For the high-risk phases (CM6 #21, schema graph #66): `claude ultrareview` on the branch for an independent multi-agent pass; address what it surfaces.
-- **UI-visible change → run `npm run test:e2e`** (Playwright, all three engines). If browsers aren't installed yet: `npx playwright install chromium firefox webkit`. Fix any failures before opening the PR. Then also verify behaviour with the `verify` / `run` skill or agent Chrome.
+- For the high-risk phases: `claude ultrareview` on the branch for an independent multi-agent pass; address what it surfaces.
+- **UI-visible change → run `npm run test:e2e`** (Playwright, all three engines). 
+- If browsers aren't installed yet: `npx playwright install chromium firefox webkit`. 
+- Then also verify behaviour with the `verify` / `run` skill or agent Chrome.
+- Fix any failures before opening the PR. 
 
 ## 5 — Reconcile (Working-discipline, same change)
-- If this reshaped tracked work, reconcile it now: the **#68** checklist, the issue body's Goal/Acceptance, the relevant **ADR** addendum, and **CHANGELOG.md `[Unreleased]`**.
+- If this reshaped tracked work, reconcile it now: checklist, the issue body's Goal/Acceptance, the relevant **ADR** addendum, and **CHANGELOG.md `[Unreleased]`**.
 - An out-of-scope bug / footgun you spotted → open a **separate** issue labelled **`inbox`** (file:line + why deferred) and mention it; don't fold it into this PR.
 
 ## 6 — PR
@@ -51,9 +58,7 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 - Report the **PR URL**.
 
 ## 7 — 🛑 Merge gate — STOP
-Do **not** merge. Summarise what shipped and the PR link, run `npm run local`
-to serve the just-built app for manual testing, and wait. If there is another
-serving process on the same machine, kill the process to retake the port.
+Do **not** merge. Summarise what shipped and the PR link, run `npm run local` to serve the just-built app for manual testing, and wait. If there is another serving process on the same machine, kill the process to retake the port.
 Merging to `main` is a human call.
 
 ## After — friction → memory
