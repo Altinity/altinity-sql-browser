@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   libraryControls, renderLibraryTitle, openFileMenu,
-  triggerImportDashboard, exportDashboardAction, renderDashboardNav, disposeFileMenuOverlays,
+  triggerImportDashboard, exportDashboardAction, disposeFileMenuOverlays,
 } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
@@ -106,40 +106,11 @@ const pickDashboardImport = (app: App, name = 'file.json'): void => {
 
 afterEach(() => document.body.replaceChildren());
 
-describe('header Dashboard nav (#302)', () => {
+describe('header File control', () => {
   it('the File header button opens the menu through its click handler', () => {
     const app = mount();
     click(app.dom.fileBtn!);
     expect(document.querySelector('.file-menu')).not.toBeNull();
-  });
-
-  it('libraryControls builds a "Dashboard →" nav that opens the Dashboard on click', () => {
-    const app = mount();
-    const nav = app.dom.dashboardNav!;
-    expect(nav).toBeTruthy();
-    expect(nav.classList.contains('hd-dash-nav')).toBe(true);
-    expect(nav.getAttribute('aria-label')).toBe('Open Dashboard');
-    expect(nav.querySelector('.hd-dash-nav-label')!.textContent).toBe('Dashboard →');
-    expect(nav.hidden).toBe(false); // #407: the dashboard creation route is always reachable
-    app.actions.showDashboard = vi.fn();
-    click(nav);
-    expect(app.actions.showDashboard).toHaveBeenCalled();
-  });
-
-  it('renderDashboardNav keeps the dashboard creation route visible without a document', () => {
-    const app = mount();
-    app.state.dashboard = null;
-    renderDashboardNav(app);
-    expect(app.dom.dashboardNav!.hidden).toBe(false);
-    app.state.dashboard = dashboardDoc();
-    renderDashboardNav(app);
-    expect(app.dom.dashboardNav!.hidden).toBe(false);
-  });
-
-  it('renderDashboardNav no-ops before libraryControls has built the slot', () => {
-    const app = makeApp();
-    expect(app.dom.dashboardNav).toBeUndefined();
-    expect(() => renderDashboardNav(app)).not.toThrow();
   });
 });
 
@@ -502,9 +473,14 @@ describe('Import queries', () => {
     expect(app.actions.save).not.toHaveBeenCalled();
     expect(app.actions.setEditorMode).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'view' };
-    app.surfaceCommands = { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle: vi.fn() };
+    const refresh = vi.fn();
+    app.surfaceCommands = {
+      surface: 'dashboard', generation: 0, refresh, setDashboardStyle: vi.fn(),
+      // #426: this spec drives the keyboard command, never member navigation.
+      focusMember: () => 'ok',
+    };
     expect(handleKeydown(shortcut('Enter', { metaKey: true }), app)).toBeNull();
-    expect(app.surfaceCommands.refresh).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'workspace', workspaceKey: app.state.workspaceKey };
     click(document.querySelector('.fm-dialog-confirm')!); // Apply with the default (use-existing)
     expect(app.keyboardOwner?.kind).toBe('menu'); // the still-mounted File menu remains underneath
@@ -718,16 +694,12 @@ describe('afterLibraryChange — dashboard route (#302)', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
     app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit' };
     app.reloadDashboardRoute = vi.fn();
-    // The nav was built by `mount()`'s own `libraryControls` call; the
-    // dashboard-route branch must never re-run `renderDashboardNav`.
-    expect(app.dom.dashboardNav!.hidden).toBe(false);
     pickDashboardImport(app);
     await flush();
     expect(app.reloadDashboardRoute).toHaveBeenCalled();
     expect(app.state.dashboard).not.toBeNull(); // the commit itself still landed
     expect(app.updateSaveBtn).not.toHaveBeenCalled();
     expect(app.updateEditorModeUi).not.toHaveBeenCalled();
-    expect(app.dom.dashboardNav!.hidden).toBe(false); // renderDashboardNav was skipped
   });
 });
 

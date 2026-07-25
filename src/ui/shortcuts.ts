@@ -4,6 +4,7 @@ import { h, attachBackdropClose } from './dom.js';
 import type { ActionsRegistry, KeyboardOwner, State, Tab } from './app.types.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { SqlRoute } from '../core/sql-route.js';
+import type { DashboardFocusTarget } from '../application/main-surface.js';
 
 type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
 type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
@@ -56,11 +57,30 @@ const GESTURES = [
   ['Expand / collapse', 'Click'], ['Insert into editor', 'Double-click'], ['Insert DDL / col::type', 'Shift-click'],
 ] as const;
 
+/**
+ * What an IN-PLACE member navigation could do (#426). Three outcomes, because
+ * two of them are not failures:
+ *   - `ok`      — delivered against the live surface; no rebuild happened.
+ *   - `pending` — not deliverable in place *right now* (the opening wave has not
+ *                 settled, so a curated filter's control is about to be replaced;
+ *                 or this port has been superseded). The caller falls back to the
+ *                 normal render transition, which delivers focus at the
+ *                 deterministic point the node exists. NOT a diagnostic.
+ *   - `missing` — the member is genuinely not on this Dashboard any more. The
+ *                 caller reports it non-destructively and changes nothing.
+ */
+export type DashboardFocusOutcome = 'ok' | 'pending' | 'missing';
+
 export interface SurfaceCommandPort {
   surface: 'dashboard';
   generation: number;
   refresh(): void;
   setDashboardStyle(style: DashboardStyle): void;
+  /** #426 — scroll/focus/highlight one already-rendered tile or curated filter
+   *  WITHOUT rebuilding or re-running the Dashboard. Repeated same-Dashboard
+   *  member navigation is a normal tree operation, so it must not cost a render
+   *  or a history entry. */
+  focusMember(member: DashboardFocusTarget): DashboardFocusOutcome;
 }
 
 /** Narrow controller contract; it deliberately avoids importing the full App. */

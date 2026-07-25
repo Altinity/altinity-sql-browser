@@ -28,6 +28,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the file (in file order) instead of asking which single one to keep.
 
 ### Added
+- **A Databases / Dashboards switcher and a read-only Dashboard hierarchy tree**
+  (#426). The upper-left pane gains an equal-role tab row over two persistent
+  hosts, so every stored Dashboard is finally reachable: `Dashboard → Filters →
+  Panels`, in collection order, with panel counts, per-role search, expansion,
+  scroll and full keyboard navigation. Switching roles only hides a host, so the
+  schema search text and focus, expansion, lazily-loaded columns and scroll
+  survive by construction — as do the sidebar width and the upper/lower splitter.
+  A panel row opens its query; double-click and Shift-click open the Dashboard in
+  View or Edit focused on that exact tile or curated filter, addressed by
+  Dashboard-local id and never by query id. Those gestures are mutually
+  exclusive: the primary action is deferred for the double-click window and
+  cancelled outright by the second click, so a query never flashes on the way to
+  a Dashboard, and the disclosure chevron stays the instant path for expansion.
+  Repeated member navigation inside an already-open Dashboard is delivered
+  **in place** through the existing surface command port — no rebuild, no re-run,
+  no extra history entry. The tree is a strictly read-only projection of the
+  committed workspace: it never clones, repairs or rewrites a reference, and it
+  renders a diagnostic row (keeping Dashboard navigation available) for a broken
+  one, while a curated filter that simply has no option source yet is treated as
+  the transitional state it is, not an error. The obsolete header
+  `SQL Browser | Dashboard` switch is gone — the brand zone is now
+  non-interactive `Altinity® SQL Browser` — along with a vestigial hidden
+  Dashboard-nav seam that was built but never attached to the page. On phones the
+  sidebar's upper segment is relabelled **Explore**, since that pane now holds
+  both roles.
 - **A Dashboard is now a full-size main work surface, selected by stable id**
   (#425). Opening one replaces the complete SQL editor and result/data-drawer
   area — the left sidebar stays visible — and the View/Edit switch lives in the
@@ -76,9 +101,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ### Changed
 - The Dashboard toolbar is one compact row instead of two (#437). The #425
-  surface row (Back to query, the Dashboard title) is gone — the application
-  header's existing SQL Browser / Dashboard switch is the navigation path back
-  to Query, and View/Edit now sits at the end of the primary toolbar, after a
+  surface row (Back to query, the Dashboard title) is gone — Back to query
+  returns as an icon-first control at the START of that single row (#426, once
+  the header's SQL Browser / Dashboard switch it had delegated to was itself
+  retired), and View/Edit now sits at the end of the primary toolbar, after a
   combined freshness control. That control replaces the separate "Updated
   HH:MM" label and text "Refresh" button with the bare time plus an icon-only
   refresh action (a spinner while running, a tooltip/`aria-label` naming the

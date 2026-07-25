@@ -4213,15 +4213,18 @@ describe('renderDashboard — unified live modes (#407)', () => {
   // are asserted against the real controller in app.test.ts.
   // #437: the separate Back-to-query + title surface row is gone — View/Edit is
   // the only Dashboard-owned control left, and it lives directly in the one
-  // compact primary toolbar (navigation back to Query is the application
-  // header's own `.app-surface-switch`, asserted separately below).
+  // compact primary toolbar. #426 then removed the header's surface pair too, so
+  // navigating between surfaces is the sidebar tree's job now.
   it('renders one compact toolbar row with no separate surface row, and View/Edit', async () => {
     const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
     await render(app);
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
-    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
     const primary = qs(app.root, '.dash-toolbar-primary');
+    // #426: Back to query lives IN this one row now (see the regression test
+    // below for why it had to come back at all).
+    expect(qs(primary, '.dash-back-to-query')).not.toBeNull();
+    expect(qsa(app.root, '.dash-toolbar')).toHaveLength(2); // primary + filters
     // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
     expect(qsa<HTMLButtonElement>(primary, '.dashboard-mode-switch .editor-mode-btn')
       .map((button) => [button.textContent, button.disabled]))
@@ -4233,12 +4236,34 @@ describe('renderDashboard — unified live modes (#407)', () => {
     await render(app, { dashboardId: 'not-in-this-workspace' });
     expect(qs(app.root, '.dash-create')).not.toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
-    expect(qs(app.root, '.dash-back-to-query')).toBeNull();
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
     // Acceptance: "The empty-Dashboard state uses the same one-row toolbar
-    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch.
+    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch. #426:
+    // and Back to query, so the placeholder is never a dead end either.
     expect(qsa(app.root, '.dash-toolbar')).toHaveLength(1);
     expect(qs(app.root, '.dash-toolbar-primary .dashboard-mode-switch')).not.toBeNull();
+    expect(qs(app.root, '.dash-toolbar-primary .dash-back-to-query')).not.toBeNull();
+  });
+
+  // REGRESSION GUARD. #437 removed the Back-to-query control because the header
+  // still carried `SQL Browser | Dashboard`; #426 removed that pair. Together they
+  // would have left `g w` and "click a saved query" as the only ways out of a
+  // Dashboard — and on a phone the mobile rules drop the sidebar and the bottom
+  // nav, so there would have been NO reachable route back at all.
+  it('always offers a VISIBLE route back to the Query surface', async () => {
+    for (const mode of ['view', 'edit'] as const) {
+      const { app } = modeApp({ workspace: wsWith(), mode });
+      const showQuerySurface = vi.fn();
+      app.showQuerySurface = showQuerySurface;
+      await render(app);
+      const back = qs<HTMLButtonElement>(app.root, '.dash-toolbar-primary .dash-back-to-query');
+      expect(back.getAttribute('aria-label')).toBe('Back to query');
+      // Discoverable: the shortcut is named in the tooltip rather than being the
+      // only way to find the action.
+      expect(back.getAttribute('title')).toContain('G then W');
+      back.click();
+      expect(showQuerySurface).toHaveBeenCalledOnce();
+    }
   });
 
   it('renders the SELECTED Dashboard only, by stable id, whatever its position', async () => {
@@ -4258,22 +4283,16 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qsa(app.root, '.dash-page')).toHaveLength(1);
   });
 
-  it('surface and mode controls delegate to the main-surface navigation API', async () => {
+  // #426: the header's SQL Browser | Dashboard pair is gone (Dashboard selection
+  // moved to the upper-left tree), so the only surface control this toolbar still
+  // owns is View/Edit — which must still delegate rather than write a route.
+  it('the mode control delegates to the main-surface navigation API', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     const showQuerySurface = vi.fn();
     const showDashboardSurface = vi.fn();
     app.showQuerySurface = showQuerySurface;
     app.showDashboardSurface = showDashboardSurface;
     await render(app);
-    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'SQL Browser')!.click();
-    expect(showQuerySurface).toHaveBeenCalledTimes(1);
-    // Already on the Dashboard surface: its own button is inert.
-    const dashboardButton = qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'Dashboard')!;
-    expect(dashboardButton.disabled).toBe(true);
-    dashboardButton.click();
-    expect(showDashboardSurface).not.toHaveBeenCalled();
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'View')!.click();
     expect(showDashboardSurface).toHaveBeenLastCalledWith('view');
@@ -4282,7 +4301,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Edit')!.click();
     expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
-    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // Nothing in the Dashboard toolbar navigates back to Query any more.
+    expect(showQuerySurface).not.toHaveBeenCalled();
   });
 
   it('puts all Dashboard chrome in the shared compact application header', async () => {
@@ -4290,9 +4310,9 @@ describe('renderDashboard — unified live modes (#407)', () => {
     app.state.serverVersion = '26.3.10.4';
     await render(app);
     const header = qs(app.root, '.app-header');
-    expect(qs(header, '.logo-name').textContent).toBe('Altinity®');
-    expect(qsa(header, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
-      .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qs(header, '.logo-name').textContent).toBe('Altinity® SQL Browser');
+    // #426: non-interactive branding — no surface buttons in the header at all.
+    expect(qsa(header, '.header-brand-zone button')).toHaveLength(0);
     expect(qsa(app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
     expect(qs(header, '.lib-name-text').textContent).toBe('W');
@@ -5248,5 +5268,100 @@ describe('renderDashboard — navigation focus (#425)', () => {
     await render(app, { focus: { kind: 'tile', id: 't2' } });
     expect(first.classList.contains('is-nav-target')).toBe(false);
     expect(qsa(app.root, '.is-nav-target')).toHaveLength(1);
+  });
+
+  // ── #426: the same delivery, driven IN PLACE through the surface command port ──
+  // The tree navigates within an already-open Dashboard, so this path must reuse
+  // the render-time delivery body without re-rendering anything.
+  describe('focusMember (in-place navigation)', () => {
+    const filterWs = () => wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    });
+
+    it('focuses, scrolls to and highlights a tile without a re-render', async () => {
+      const { app } = focusApp();
+      await render(app);
+      const cards = qsa(app.root, '.dash-tile');
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('ok');
+      expect(document.activeElement).toBe(cards[1]);
+      expect(scrollCalls).toContain(cards[1]);
+      expect(cards[1].classList.contains('is-nav-target')).toBe(true);
+      expect(cards[1].getAttribute('tabindex')).toBe('-1');
+      // The very same nodes are still on screen — nothing was rebuilt.
+      expect(qsa(app.root, '.dash-tile')[1]).toBe(cards[1]);
+    });
+
+    it('focuses a curated filter once the opening wave has settled', async () => {
+      const { app } = focusApp(filterWs());
+      await render(app);
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+      expect(document.activeElement).toBe(qs(app.root, '[data-field-key="region"]'));
+    });
+
+    // The port is installed SYNCHRONOUSLY, before the opening wave's await, so a
+    // tree click that lands mid-load still reaches a live port. A tile card
+    // already exists at that point; a curated filter's control does not (the
+    // first publish replaces the whole bar), so only the filter defers.
+    it('delivers a TILE mid-wave but reports a mid-wave FILTER as pending', async () => {
+      const { app } = focusApp(filterWs());
+      const opening = render(app);
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('pending');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('ok');
+      await opening;
+      // ...and the same filter request succeeds once the wave has settled.
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+    });
+
+    it('reports a member that is not on this Dashboard as missing, and touches nothing', async () => {
+      const { app } = focusApp();
+      await render(app);
+      // The port never toasts: the diagnostic belongs to the caller, which knows
+      // whether this was a tree click or an API call.
+      const toasts = document.querySelectorAll('.share-toast').length;
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 'nope' })).toBe('missing');
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'nope' })).toBe('missing');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+      expect(document.querySelectorAll('.share-toast')).toHaveLength(toasts);
+    });
+
+    // REGRESSION GUARD. `tileEls` is a write-only cache and the layout reconcilers
+    // rebuild the grid from the SEARCH-FILTERED tile set, so a panel excluded by the
+    // Dashboard's own tile search leaves a DETACHED card behind. Reporting `ok` for
+    // that would mark the tree row current while nothing moved, scrolled or
+    // highlighted — a completely dead click with no diagnostic.
+    it('reports a member whose node is DETACHED as pending, not ok', async () => {
+      const { app } = focusApp();
+      await render(app);
+      const card = qsa(app.root, '.dash-tile')[1];
+      card.remove(); // stands in for the tile-search filter having excluded it
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('pending');
+      expect(card.classList.contains('is-nav-target')).toBe(false);
+      // The still-attached sibling is unaffected.
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('ok');
+    });
+
+    it('reports a SUPERSEDED render as pending, not missing — the member is not gone', async () => {
+      const { app } = focusApp();
+      await render(app);
+      app.isSurfaceGenerationCurrent = () => false;
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('pending');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    });
+
+    // REGRESSION GUARD. The render-time delivery yields to a user who got there
+    // first, via a capture-phase listener armed whenever the render carried a
+    // focus target. An in-place request IS the user's own click, so sharing that
+    // guard would make every tree click after the first silently do nothing.
+    it('is NOT suppressed by the render-time "user got there first" guard', async () => {
+      const { app } = focusApp();
+      // Opening WITH a focus target is what arms the interaction listeners.
+      await render(app, { focus: { kind: 'tile', id: 't1' } });
+      document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('ok');
+      expect(document.activeElement).toBe(qsa(app.root, '.dash-tile')[1]);
+    });
   });
 });

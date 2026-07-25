@@ -10,6 +10,12 @@ import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls } from '../../src/ui/file-menu.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
+import { createClickArbiter } from '../../src/core/tree-click-arbiter.js';
+import type { ClickArbiter } from '../../src/core/tree-click-arbiter.js';
+import {
+  EMPTY_TREE_UI, readTreeUi, toggleDashboardExpanded, toggleGroupExpanded,
+} from '../../src/application/dashboard-tree-ui-state.js';
+import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
@@ -980,27 +986,31 @@ describe('renderApp shell', () => {
   it('builds header + sidebar + workbench and mounts the editor', async () => {
     const { app } = rendered();
     expect(qs(app.root, '.app-header')).not.toBeNull();
-    expect(qs(app.root, '.logo-name').textContent).toBe('Altinity®');
-    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
-      .toEqual(['SQL Browser', 'Dashboard']);
-    expect(qsa(app.root, '.app-surface-switch svg')).toHaveLength(0);
-    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.getAttribute('aria-label')))
-      .toEqual(['SQL Browser', 'Dashboard']);
+    // #426: the brand zone is non-interactive now — Dashboard selection lives in
+    // the upper-left tree, so the old `SQL Browser | Dashboard` pair is gone (it
+    // could only ever reach ONE Dashboard anyway).
+    expect(qs(app.root, '.logo-name').textContent).toBe('Altinity® SQL Browser');
+    expect(qsa(app.root, '.header-brand-zone button')).toHaveLength(0);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
-    // File → New workspace replaces the active aggregate without rebuilding
-    // this header. Its surface controls must route to the replacement, not
-    // the key captured when the header first mounted.
+    // #426: the upper sidebar pane carries the role switcher instead.
+    expect(qsa(app.root, '.upper-role-tabs .side-tab').map((tab) => tab.textContent))
+      .toEqual(['Databases', 'Dashboards· 0']);
+    // File → New workspace replaces the active aggregate without rebuilding the
+    // header. Surface navigation must route to the REPLACEMENT, not the key
+    // captured when the header first mounted. The removed button went through
+    // `showDashboardSurface`, which is where that click-time resolution lives —
+    // so the regression guard moves onto the API rather than disappearing with
+    // the control.
     app.currentWorkspace = {
       storageVersion: 3, id: 'new-workspace', key: 'sql_library_7',
       name: 'SQL Library', queries: [], dashboards: [],
     };
     app.state.workspaceKey = 'sql_library_7';
     app.renderCurrentSurface = vi.fn();
-    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((button) => button.textContent === 'Dashboard')!.click();
-    // #425: the control goes through the main-surface API, which writes the
-    // route from the session surface — asserted on the resulting route itself,
-    // so a control that captured the stale key still fails here.
+    app.showDashboardSurface('edit');
+    // #425: this goes through the main-surface API, which writes the route from
+    // the session surface — asserted on the resulting route itself, so a caller
+    // that captured the stale key still fails here.
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'sql_library_7', mode: 'edit',
     });
@@ -5328,7 +5338,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.openDashboard({ dashboardId: 'second', mode: 'view' });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
       expect(app.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'ops', mode: 'view' });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
@@ -5338,7 +5348,8 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['a']);
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' },
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: { kind: 'tile', id: 't7' },
       });
     });
 
@@ -5380,34 +5391,201 @@ describe('unified /sql routing', () => {
       expect(document.querySelector('.share-toast')!.textContent).toContain('more than one dashboard');
     });
 
-    it('re-opening the same id and mode keeps the live session and only re-applies focus', () => {
+    /** A port that reports whatever a test wants, standing in for a live
+     *  Dashboard render's own `focusMember`. */
+    const fakePort = (outcome: DashboardFocusOutcome) => {
+      const focusMember = vi.fn(() => outcome);
+      return {
+        focusMember,
+        port: {
+          surface: 'dashboard' as const, generation: 0,
+          refresh: vi.fn(), setDashboardStyle: vi.fn(), focusMember,
+        },
+      };
+    };
+
+    it('re-opening the same id and mode with NO member changes nothing but the marked member', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const revision = app.state.dashboardTreeRevision.value;
+      // Opening the Dashboard ROW deselects the member — nothing re-renders, but
+      // the tree has to repaint or it keeps the old row marked current.
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+    });
+
+    // #426's headline requirement: the tree makes repeated same-Dashboard member
+    // navigation a NORMAL operation, so it must not rebuild the viewer, re-run the
+    // Dashboard, or push another history entry. `renderCurrentSurface` staying
+    // un-called is what proves all three: the route write and the re-render live in
+    // the same `applyMainSurface` body, so neither ran.
+    it('navigates to a member of the OPEN Dashboard IN PLACE — no rebuild, no route write', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
-      // Same id + mode, no focus: nothing to re-render.
-      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
-      // A focus target does need the surface to deliver it.
-      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' } });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(2);
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const route = app.sqlRoute;
+      const { focusMember, port } = fakePort('ok');
+      app.surfaceCommands = port;
+      const revision = app.state.dashboardTreeRevision.value;
+
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+
+      expect(focusMember).toHaveBeenCalledWith({ kind: 'tile', id: 't7' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.sqlRoute).toEqual(route);
+      // The member is now CURRENT (tree styling) and owes NO render-time delivery —
+      // the port already delivered it.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' },
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
       });
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+    });
+
+    it('a `pending` in-place report falls back to the normal render transition', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const { port } = fakePort('pending');
+      app.surfaceCommands = port;
+      // A curated filter whose control the opening wave is about to replace: the
+      // render path owns the deferred delivery, so it must still be taken.
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' } });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders + 1);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'filter', id: 'f1' }, pendingFocus: { kind: 'filter', id: 'f1' },
+      });
+    });
+
+    it('a `missing` in-place report is non-destructive: no rebuild, no member marked', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const { port } = fakePort('missing');
+      app.surfaceCommands = port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 'gone' } });
+      // The Dashboard stays open and unchanged; nothing is marked current.
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
+        .toContain('That panel is no longer on this dashboard.');
+    });
+
+    it('reports a missing FILTER member with the filter wording', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.surfaceCommands = fakePort('missing').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'gone' } });
+      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
+        .toContain('That filter is no longer on this dashboard.');
+    });
+
+    // #426 — "switching View/Edit through Dashboard chrome preserves the current
+    // member where possible". The mode differs, so this takes the RENDER path,
+    // which rebuilds the surface from the request and would otherwise drop it.
+    it('a View/Edit switch PRESERVES the current member', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = fakePort('ok').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+      app.showDashboardSurface('view');
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'view',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+      });
+    });
+
+    it('opening a DIFFERENT Dashboard does not carry the member across', () => {
+      const { app } = readyApp(['a', 'b'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = fakePort('ok').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+      app.openDashboard({ dashboardId: 'b', mode: 'edit' });
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'b', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+    });
+
+    // #426 — the tree's session UI state is pruned against committed truth, so a
+    // deleted Dashboard's expansion cannot linger (or make a RECREATED id render
+    // pre-expanded), while survivors are preserved.
+    it('prunes tree UI state for Dashboards the committed workspace no longer has', () => {
+      const { app } = readyApp(['keep', 'gone']);
+      let ui = toggleDashboardExpanded(EMPTY_TREE_UI, 'keep');
+      ui = toggleDashboardExpanded(ui, 'gone');
+      ui = toggleGroupExpanded(ui, 'gone', 'panels');
+      app.state.dashboardTreeUi.set('w', ui);
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+      });
+      const pruned = readTreeUi(app.state.dashboardTreeUi, 'w');
+      expect([...pruned.expandedDashboardIds]).toEqual(['keep']);
+      expect([...pruned.expandedGroups]).toEqual([]);
+    });
+
+    it('leaves tree UI state alone when nothing needed pruning', () => {
+      const { app } = readyApp(['keep']);
+      const ui = toggleDashboardExpanded(EMPTY_TREE_UI, 'keep');
+      app.state.dashboardTreeUi.set('w', ui);
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+      });
+      // Same object: an ordinary mutation must never collapse the open tree.
+      expect(app.state.dashboardTreeUi.get('w')).toBe(ui);
+    });
+
+    // #426 — a deferred single-click belongs to the workspace it was pressed in.
+    it('cancels a pending tree click when the WORKSPACE changes', () => {
+      vi.useFakeTimers();
+      try {
+        const { app } = readyApp(['a']);
+        const single = vi.fn();
+        // Stand in for the tree's arbiter, which app.ts reaches through the
+        // per-instance handle exactly as the view does. Not on the `App` contract —
+        // it is module-private view state stashed per instance, the same convention
+        // as `ui/schema.ts`'s `_schemaClick`.
+        const treeHost = app as unknown as { _dashTreeArbiter?: ClickArbiter };
+        treeHost._dashTreeArbiter = createClickArbiter({
+          setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown as number,
+          clearTimeout: (handle) => clearTimeout(handle),
+        });
+        treeHost._dashTreeArbiter.press('w:a', { single });
+        app.applyCommittedWorkspace({
+          storageVersion: 3, id: 'other-workspace', key: 'other', name: 'Other',
+          queries: [], dashboards: [],
+        });
+        vi.advanceTimersByTime(400);
+        expect(single).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('invalidates the tree even on the empty-collection Dashboard entry point', () => {
+      const { app } = readyApp([]);
+      const revision = app.state.dashboardTreeRevision.value;
+      app.showDashboardSurface('edit');
+      // The one surface transition that bypasses `applyMainSurface`.
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+    });
+
+    it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = null;
+      expect(app.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
     });
 
     it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
       const { app } = readyApp(['first', 'second']);
       app.showDashboardSurface('edit');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
-      });
-    });
-
-    it('the "Dashboard →" nav action opens the compatibility Dashboard by id', () => {
-      const { app } = readyApp(['first', 'second']);
-      app.actions.showDashboard();
-      expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5424,7 +5602,7 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
       app.showDashboardSurface('view');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5478,7 +5656,7 @@ describe('unified /sql routing', () => {
         dashboards: [dash('shared'), dash('x')],
       });
       expect(kept.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'shared', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'shared', mode: 'view', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5629,13 +5807,20 @@ describe('unified /sql routing', () => {
       expect(qs(app.root, '.login-screen')).not.toBeNull();
     });
 
+    // Deliberately opens the SECOND Dashboard while the first is selected, so the
+    // request genuinely takes the RENDER path. Targeting the already-open one
+    // would take #426's in-place path instead and never exercise the one-shot
+    // consumption this test exists to pin.
     it('delivers a focus target once, not on every later repaint', () => {
-      const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
-      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
-      // Consumed by the render that received it, so an external commit or a style
-      // switch cannot yank focus back to that tile minutes later.
+      const { app } = liveApp(['a', 'b'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'b', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
+      // The DELIVERY is consumed by the render that received it, so an external
+      // commit or a style switch cannot yank focus back to that tile minutes
+      // later. #426: the member stays CURRENT — the tree keeps marking it long
+      // after the focus ring has moved on.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: null,
+        kind: 'dashboard', dashboardId: 'b', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null,
       });
     });
 
@@ -5647,7 +5832,7 @@ describe('unified /sql routing', () => {
       // The URL carries no Dashboard id, so re-deriving one here would silently
       // retarget the surface to the collection's first entry.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
       location.search = '?ws=ops';
       await app.handleSqlPopState();
@@ -5735,7 +5920,7 @@ describe('unified /sql routing', () => {
     // select, then re-project — a SAME-workspace projection, which is the only
     // kind that keeps a selection.
     app.applyCommittedWorkspace(workspace);
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
     // Project through the real path: `state.dashboard` is whatever
     // `applyCommittedWorkspace` put there — the SELECTED document — never a
     // hand-made one production could not produce.
@@ -5789,7 +5974,7 @@ describe('unified /sql routing', () => {
     // A selection pinned before the entry was deleted elsewhere: the fold must
     // not guess into another slot. (`state.dashboard` still holds the document
     // that surface was editing.)
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', currentMember: null, pendingFocus: null };
     app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
     app.renderDashboard = vi.fn();
     app.reloadDashboardRoute();

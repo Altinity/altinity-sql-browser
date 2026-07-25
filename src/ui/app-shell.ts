@@ -15,16 +15,16 @@
 // `app.dom = {}` reset below still happens exactly once, before any header
 // exists (satisfying every other module that reaches into `app.dom.*`
 // directly) — but it also means the `libraryName`/`libraryDirty` effect
-// below can observe a null `app.dom.libraryTitle`/`dashboardNav` on its
+// below can observe a null `app.dom.libraryTitle` on its
 // first, registration-time run, well before `setHeader` ever populates them.
-// `renderLibraryTitle`/`renderDashboardNav` (file-menu.ts) are already
+// `renderLibraryTitle` (file-menu.ts) is already
 // null-safe for exactly this reason; the effect re-runs (and paints for
 // real) on the next `libraryName`/`libraryDirty` change, by which point
 // `setHeader` has long since run.
 //
 // `deps.app` is kept for the same reasons `mountWorkbenchShell` keeps it
 // (see that module's own header comment): the render-module pass-through
-// (renderSchema/renderSavedHistory/renderLibraryTitle/renderDashboardNav all
+// (renderSchema/renderSavedHistory/renderLibraryTitle all
 // still take the full `App`), and the `app.dom` reset + population other
 // modules read `app.dom.*` off of directly.
 
@@ -34,8 +34,10 @@ import { MOBILE_BREAKPOINT_PX } from '../state.js';
 import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
+import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
+import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
-import { renderLibraryTitle, renderDashboardNav } from './file-menu.js';
+import { renderLibraryTitle } from './file-menu.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { startDrag } from './splitters.js';
 import type { App } from './app.types.js';
@@ -47,7 +49,7 @@ import type { AppPreferences, PreferenceKey } from '../application/app-preferenc
  *  shell's own logic, never through `app.*`. */
 export interface AppShellDeps {
   /** Kept ONLY for: the render-module pass-through (renderSchema/
-   *  renderSavedHistory/renderLibraryTitle/renderDashboardNav), and the
+   *  renderSavedHistory/renderLibraryTitle), and the
    *  `app.dom` reset + population (other modules read `app.dom.*`
    *  directly — see the header comment). */
   app: App;
@@ -109,9 +111,16 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
   });
   app.dom.schemaList = h('div', { class: 'schema-list' });
-  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
+  // #426: the upper pane now hosts TWO roles. The Databases content is built here
+  // exactly as before and handed to the role host, which only ever toggles
+  // `hidden` — so schema search text/focus, expansion, lazily-loaded columns and
+  // scroll all survive a trip through the Dashboards role by construction.
+  const upper = buildSidebarUpper(app, [
     h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
-    app.dom.schemaList);
+    app.dom.schemaList,
+  ]);
+  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
+    app.dom.upperRoleTabs!, upper.databasesHost, upper.dashboardsHost);
 
   app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
   app.dom.savedSearch = h('div', { class: 'saved-search' });
@@ -135,12 +144,18 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     save: (name, value) => prefs.save(name as PreferenceKey, value),
   };
   app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'sideRow', dragCtx) });
-  // Mobile Tables view (#126): a Schema | Library segmented control at the top of
-  // the sidebar. CSS hides it above the breakpoint; below it, it swaps which pane
-  // shows (the sidebar's data-mobile-tab drives both the active-button style and
-  // the pane visibility — no JS effect needed for the active state).
+  // Mobile Tables view (#126): a segmented control at the top of the sidebar. CSS
+  // hides it above the breakpoint; below it, it swaps which pane shows (the
+  // sidebar's data-mobile-tab drives both the active-button style and the pane
+  // visibility — no JS effect needed for the active state).
+  //
+  // #426 relabels the upper segment "Explore": that pane now hosts BOTH the
+  // Databases and Dashboards roles, so "Schema" would name only half of what it
+  // shows. The internal `data-seg`/`data-mobile-tab` values and the `.schema-pane`
+  // selectors they key are deliberately unchanged — this is a label change, not a
+  // restructuring of the mobile CSS (touch behaviour stays out of scope per #426).
   app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
-    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Schema')),
+    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Explore')),
     h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
   sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
   const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
@@ -192,6 +207,31 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.isMobile.value;
     renderSchema(app);
   }));
+  // #426: the upper role tabs. Both counts are reactive — the Databases count
+  // tracks the schema load (and is omitted while it is pending or failed), and the
+  // Dashboards count tracks the committed collection through the tree's explicit
+  // invalidation signal, since `currentWorkspace` is not itself a signal.
+  disposers.push(effect(() => {
+    state.upperRole.value;
+    state.schema.value;
+    state.schemaError.value;
+    state.dashboardTreeRevision.value;
+    renderUpperRoleTabs(app);
+  }));
+  // #426: expose exactly one role host, and repaint the Dashboard tree. Kept
+  // separate from the tab effect so a schema load does not rebuild the tree.
+  disposers.push(effect(() => {
+    upper.showRole(state.upperRole.value);
+  }));
+  disposers.push(effect(() => {
+    // The ONE reactive input the tree has: every trigger #426 lists (workspace
+    // projection or switch, a committed mutation, selected Dashboard/mode/member
+    // navigation, an external refresh) bumps this. Expansion/search/scroll are
+    // deliberately NOT reactive — the tree repaints itself directly for those.
+    state.dashboardTreeRevision.value;
+    state.upperRole.value;
+    renderDashboardTree(app);
+  }));
   // The schema/auth-failure banner reflects schemaError (a separate surface).
   disposers.push(effect(() => {
     state.schemaError.value;
@@ -211,10 +251,6 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.libraryName.value;
     state.libraryDirty.value;
     renderLibraryTitle(app);
-    // #302: the "Dashboard →" control's visibility tracks Dashboard presence,
-    // which changes alongside these signals (star toggle / import / replace all
-    // flip libraryDirty on their way through a commit).
-    renderDashboardNav(app);
   }));
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the
@@ -245,6 +281,10 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       mainRow.dataset.surface = kind;
     },
     dispose: () => {
+      // #426: a deferred single-click must not fire against a tree that is being
+      // torn down (sign-out, a surface teardown) — the arbiter's timer outlives
+      // this DOM otherwise.
+      cancelDashboardTreeClicks(app);
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);
     },

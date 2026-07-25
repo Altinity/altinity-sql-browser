@@ -1,7 +1,8 @@
 # ADR-0003: Dashboard viewing and unified `/sql` routes
 
 - **Status:** Accepted; detached-snapshot decision superseded by #407 on
-  2026-07-23; surface lifecycle amended by #425 on 2026-07-25 (see the addendum)
+  2026-07-23; surface lifecycle amended by #425 and surface NAVIGATION amended by
+  #426, both 2026-07-25 (see the addenda)
 - **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25
 - **Context tracking:** roadmap #68; #288, #302, #406, #407, #425
 
@@ -138,6 +139,41 @@ Two consequences worth recording:
 - The schema tree is no longer refetched on a Dashboard→Workbench round trip
   (`catalog.loadSchema()` moved to the shell's one-time mount). The #343
   external-change refresh path still covers staleness.
+
+## Addendum (#426, 2026-07-25): navigation between surfaces moved to the sidebar
+
+#425 left the header's `SQL Browser | Dashboard` pair as the way between surfaces.
+That pair could only ever reach ONE Dashboard, so #426 replaces it with the
+upper-left `Databases | Dashboards` tree and makes the brand zone
+non-interactive. Three lifecycle consequences follow from that move.
+
+- **Surface navigation is no longer header-owned.** The tree is the entry point to
+  a Dashboard (by stable id), and a single icon-first **Back to query** control at
+  the start of the Dashboard's one compact toolbar is the way out. #437 had removed
+  that control precisely because the header pair covered it; with the pair gone it
+  has to exist, or a phone — where the mobile rules drop the sidebar and the bottom
+  nav for a full-bleed Dashboard — would offer no route back at all.
+- **Repeated member navigation does not restart the surface.** #425 treated a
+  focus target as a one-shot render request, so delivering one rebuilt the viewer
+  session and re-ran the Dashboard. The tree makes that a normal operation, so the
+  existing generation-stamped `SurfaceCommandPort` gains
+  `focusMember(): 'ok' | 'pending' | 'missing'` and `openDashboard` uses it as a
+  same-id/same-mode fast path. `pending` is not a failure — it means "not
+  deliverable in place right now" (a curated filter before the opening wave
+  settles, a superseded port, or a node the Dashboard's own tile search has
+  detached) and the caller falls back to the normal render transition, which
+  delivers focus at the deterministic point the node is stable.
+- **Selection state distinguishes styling from delivery.** `MainSurfaceState`'s
+  Dashboard branch splits #425's single `focus` field into `currentMember` (which
+  member the tree marks, retained until another member/Dashboard/query is opened,
+  preserved across a View/Edit switch) and `pendingFocus` (a DOM delivery still
+  owed, consumed exactly once). Both are re-validated against every committed
+  workspace, per member collection, so a removed tile or filter clears its own
+  marking without disturbing the other.
+
+Tree UI state (expansion, search, scroll, keyboard row) is session state keyed by
+immutable workspace id, never persisted and never part of `StoredWorkspaceV3`, and
+is pruned against committed truth on every projection.
 
 ## Alternatives considered
 

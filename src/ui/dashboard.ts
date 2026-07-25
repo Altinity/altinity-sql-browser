@@ -83,6 +83,7 @@ import {
 import type {
   DashboardFocusTarget, DashboardSurfaceMode,
 } from '../application/main-surface.js';
+import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -113,6 +114,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
+  chevLeft(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -444,16 +446,36 @@ function renderMissingDashboard(
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+        buildBackToQuery(app),
         h('span', { class: 'dash-toolbar-spacer' }),
         buildDashboardModeSwitch(app, target.mode))),
     body));
 }
 
-/** #425/#437: View/Edit — the one Dashboard-owned control the compact primary
- *  toolbar carries (navigation back to Query lives in the application header's
- *  `.app-surface-switch` instead). Switching retains the same Dashboard id (the
- *  main-surface API keeps it — writing a route here would re-resolve the
- *  collection's first entry). */
+/**
+ * #426 — the visible way back to the Query surface.
+ *
+ * #437 removed the separate Back-to-query row on the grounds that the
+ * application header's `SQL Browser | Dashboard` pair already did this. #426 then
+ * removed THAT pair (Dashboard selection moved to the sidebar tree), which
+ * together would have left `g w` and "click a saved query" as the only routes back
+ * — and neither is reachable on a phone, where the mobile rules drop the sidebar
+ * and the bottom nav for a full-bleed Dashboard. #426's own Header-cleanup section
+ * requires this control to be retained, so it returns here: icon-first and inside
+ * the ONE compact toolbar, per #437's design rather than as a second row.
+ */
+function buildBackToQuery(app: DashboardApp): HTMLElement {
+  return h('button', {
+    class: 'editor-mode-btn dash-back-to-query', type: 'button',
+    'aria-label': 'Back to query', title: 'Back to query (G then W)',
+    onclick: () => { app.showQuerySurface(); },
+  }, Icon.chevLeft(), h('span', { class: 'dash-back-label' }, 'Query'));
+}
+
+/** #425/#437: View/Edit — the other Dashboard-owned control the compact primary
+ *  toolbar carries. Switching retains the same Dashboard id (the main-surface API
+ *  keeps it — writing a route here would re-resolve the collection's first
+ *  entry). */
 function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {
   // #425: switching View/Edit retains the SELECTED Dashboard — the main-surface
   // API keeps the id and re-opens the same document in the other mode, instead of
@@ -734,13 +756,32 @@ export async function renderDashboard(
   // The global shortcut reaches this route-local port only while its renderer
   // generation is current. It is cleared by both Dashboard cleanup and every
   // application surface transition.
+  //
+  // #426: installed HERE, synchronously, rather than after the `await
+  // session.start()` below — the tree makes member navigation a normal operation,
+  // and a click that lands while the opening wave is still running must still
+  // reach a live port. Tile cards already exist at this point (the viewer session
+  // seeds its state with every tile at construction), so tile focus works
+  // immediately; only a curated filter has to wait, which `waveSettled` below
+  // reports as `pending`.
   const commandPort = {
     surface: 'dashboard' as const,
     generation: surfaceGeneration,
     refresh: () => session.refresh(),
     setDashboardStyle: selectLayout,
+    focusMember: (member: DashboardFocusTarget): DashboardFocusOutcome => {
+      // A curated filter's control is REPLACED by the opening wave's first
+      // publish (see the deferred delivery at the end of this render), so a node
+      // focused now would be detached moments later. Report `pending` and let the
+      // caller take the normal render transition, which delivers filter focus at
+      // the deterministic point the node is stable.
+      if (member.kind === 'filter' && !waveSettled) return 'pending';
+      return deliverFocus(member, { respectUserInteraction: false });
+    },
   };
   app.surfaceCommands = commandPort;
+  // Flipped once the opening wave resolves — see `focusMember` above.
+  let waveSettled = false;
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
 
   // Dashboard keeps the shared header's File word and placement. View exposes
@@ -2337,10 +2378,16 @@ export async function renderDashboard(
   });
 
   // #437: one compact toolbar row — style/count/search/time-filters, then the
-  // freshness control, then View/Edit last. The separate #425 surface row
-  // (Back to query + title) is gone; the header's own surface switch is the
-  // navigation path back to Query.
+  // freshness control, then View/Edit last. The separate #425 surface row (a
+  // Back-to-query button plus a title) is gone.
+  // #426: Back to query returns as the row's FIRST control — icon-first, inside
+  // this same one row rather than as a second band. #437 could drop it because the
+  // application header still carried `SQL Browser | Dashboard`; #426 removed that
+  // pair, and without this the only routes back would be `g w` and clicking a
+  // saved query — neither reachable on a phone, where the mobile rules drop the
+  // sidebar and bottom nav for a full-bleed Dashboard.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
+    buildBackToQuery(app),
     layoutWrap,
     tileCount,
     tileSearch,
@@ -2464,6 +2511,9 @@ export async function renderDashboard(
   if (target.focus?.kind === 'tile') applyNavigationFocus(target.focus);
 
   await session.start();
+  // #426: from here on a curated filter's control is stable, so the command port
+  // can deliver filter focus in place instead of reporting `pending`.
+  waveSettled = true;
 
   // A FILTER field is not stable across that first publish: it changes the bar's
   // signature (committed values, active flags, arriving options), and a rebuild
@@ -2472,28 +2522,49 @@ export async function renderDashboard(
   // render-complete signal.
   if (target.focus?.kind === 'filter') applyNavigationFocus(target.focus);
 
-  // Called only from the two narrowed call sites above, so `focus` is never null
-  // here — no redundant guard.
+  // The RENDER-TIME delivery: one shot, and it defers to the user (see
+  // `respectUserInteraction` below). Called only from the two narrowed call sites
+  // above, so `focus` is never null here — no redundant guard.
   function applyNavigationFocus(focus: DashboardFocusTarget): void {
+    // Non-destructive: the Dashboard is already open and stays open.
+    if (deliverFocus(focus, { respectUserInteraction: true }) !== 'missing') return;
+    flashToast(focus.kind === 'tile'
+      ? 'That panel is no longer on this dashboard.'
+      : 'That filter is no longer on this dashboard.', { document: doc });
+  }
+
+  /**
+   * The ONE focus-delivery body, shared by the render-time one-shot above and the
+   * command port's in-place navigation (#426) — so the tabindex/scroll/focus/
+   * highlight sequence cannot drift into two copies that disagree.
+   *
+   * `respectUserInteraction` is the difference between them. The render-time
+   * delivery must yield to a user who got there first: filter focus lands after
+   * the opening wave resolves, which can take seconds — long enough to Tab into
+   * another filter and start typing, and the filter bar's own rebuild already
+   * restores focus to whatever field that was. Yanking it away mid-keystroke is
+   * worse than not navigating at all. An in-place request IS the user's own click,
+   * so it must NOT be suppressed by that flag — which the click itself just set.
+   */
+  function deliverFocus(
+    focus: DashboardFocusTarget, { respectUserInteraction }: { respectUserInteraction: boolean },
+  ): DashboardFocusOutcome {
     // Opening another Dashboard, returning to the Query surface, a workspace
     // switch, or sign-out all advance the renderer generation — a focus request
     // that belonged to a superseded render must not steal focus from the one now
     // on screen.
-    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
-    // The user got there first. Filter focus is delivered after the opening wave
-    // resolves, which can take seconds — long enough to Tab into another filter
-    // and start typing, and the filter bar's own rebuild already restores focus to
-    // whatever field that was. Yanking it away mid-keystroke is worse than not
-    // navigating at all.
-    if (userInteracted) return;
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return 'pending';
+    if (respectUserInteraction && userInteracted) return 'ok';
     const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
-    if (!node) {
-      // Non-destructive: the Dashboard is already open and stays open.
-      flashToast(focus.kind === 'tile'
-        ? 'That panel is no longer on this dashboard.'
-        : 'That filter is no longer on this dashboard.', { document: doc });
-      return;
-    }
+    if (!node) return 'missing';
+    // #426: the member IS on this Dashboard, but its node is not in the document —
+    // `tileEls` is a write-only cache, and the layout reconcilers rebuild the grid
+    // from the SEARCH-FILTERED tile set, so a panel excluded by the Dashboard's own
+    // tile search leaves a detached card behind. Focusing it would silently do
+    // nothing at all while still reporting success. `pending` instead: the caller's
+    // render transition rebuilds the surface (which resets that per-session search)
+    // and delivers the focus for real.
+    if (!node.isConnected) return 'pending';
     // A tile card and a filter field are both non-interactive containers, so
     // they need a programmatic-focus target; `-1` keeps them out of the Tab
     // order, leaving normal keyboard navigation untouched.
@@ -2501,6 +2572,7 @@ export async function renderDashboard(
     node.scrollIntoView({ block: 'nearest' });
     node.focus();
     highlightNavigationTarget(node);
+    return 'ok';
   }
 
   /** Resolve a tile by its Dashboard-local TILE id — never the saved-query id it

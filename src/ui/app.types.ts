@@ -20,14 +20,14 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type {
-  DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
+  DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { SurfaceCommandPort } from './shortcuts.js';
+import type { DashboardFocusOutcome, SurfaceCommandPort } from './shortcuts.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -110,9 +110,13 @@ export interface AppDom {
   fileBtn?: HTMLElement;
   fileDialog?: HTMLElement;
   libraryTitle?: HTMLElement;
-  /** Workbench's post-workspace `Dashboard →` shortcut; Dashboard replaces
-   *  this slot with the View/Edit segmented control. */
-  dashboardNav?: HTMLElement;
+  /** #426 — the upper sidebar pane's `Databases | Dashboards` role tab row. */
+  upperRoleTabs?: HTMLElement;
+  /** #426 — the Dashboard hierarchy tree's `role="tree"` row container. */
+  dashboardTreeList?: HTMLElement;
+  /** #426 — the Dashboard tree's search box. Built once, OUTSIDE the repainted row
+   *  list, so typing keeps the caret. */
+  dashboardSearchInput?: HTMLInputElement;
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
   runElapsedEl?: HTMLElement;
@@ -218,11 +222,6 @@ export interface ActionsRegistry {
   insertCreate(target: string): Promise<void>;
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
-  /** #425 — a legacy Dashboard entry point with no chooser yet (the header
-   *  surface switch, the Workbench "Dashboard →" nav): resolves the ONE
-   *  compatibility Dashboard and opens it by id. Callers that already know which
-   *  Dashboard they want use `App.openDashboard(request)` instead. */
-  showDashboard(): void;
   /** #302 — export the current dashboard's dependency closure as a bundle. */
   exportDashboard(): void;
   /** #302 — import a Dashboard bundle through the transactional planner. */
@@ -452,8 +451,9 @@ export interface App {
   renderDashboard(): void;
   renderCurrentSurface(): void;
   /** #425 — which main work surface owns the right-hand work area, and, for a
-   *  Dashboard, WHICH stored Dashboard is selected in which presentation mode
-   *  with an optional navigation focus target. SESSION state: never persisted,
+   *  Dashboard, WHICH stored Dashboard is selected in which presentation mode,
+   *  plus (#426) the member currently navigated to inside it and any focus
+   *  delivery still owed to the surface. SESSION state: never persisted,
    *  cleared on sign-out, re-validated against every committed workspace, and
    *  identified only by `DashboardDocumentV1.id` — never by collection position.
    *  It is also the ONE writer of the `/sql` route's surface/mode, so the URL is
@@ -464,8 +464,20 @@ export interface App {
    *  is reported through the shared diagnostic path and changes no state. Never
    *  mutates the Dashboard merely by opening it. A repeated open of the same
    *  id+mode with no focus target is a no-op that leaves the live viewer session
-   *  alone; one WITH a focus target re-renders in order to deliver it. */
+   *  alone; #426 makes one WITH a focus target an IN-PLACE navigation through the
+   *  surface command port — no rebuild, no rerun, no extra history entry — rather
+   *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
+  /** #426 — deliver focus to ONE member of the already-rendered Dashboard through
+   *  the route-local surface command port, without rebuilding or re-running it.
+   *  `pending` means "not deliverable in place right now" (mid-wave curated
+   *  filter, or a superseded/absent port) and is the caller's cue to take the
+   *  normal render transition — never a diagnostic. */
+  focusDashboardMember(member: DashboardFocusTarget): DashboardFocusOutcome;
+  /** #426 — bump the Dashboard tree's explicit repaint invalidation. The tree
+   *  projects the committed workspace aggregate plus main-surface navigation
+   *  state, neither of which is a signal. */
+  invalidateDashboardTree(): void;
   /** #425 — return to the preserved Query surface (editor + result drawer). */
   showQuerySurface(): void;
   /** #425 — the legacy no-chooser Dashboard entry point: resolves the

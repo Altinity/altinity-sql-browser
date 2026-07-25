@@ -576,6 +576,12 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
+  // #426: the default fixture has no rendered Dashboard surface, so an in-place
+  // focus request is never deliverable — `pending` is the honest stub, and it is
+  // also what makes a spec that cares about in-place delivery override it
+  // explicitly rather than accidentally passing against a fake `ok`.
+  focusDashboardMember: () => 'pending',
+  invalidateDashboardTree: () => {},
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
   openSavedQuery: () => {},
@@ -856,7 +862,6 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       insertCreate: vi.fn(),
       openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
-      showDashboard: vi.fn(),
       exportDashboard: vi.fn(),
       importDashboard: vi.fn(),
       openUserMenu: vi.fn(),

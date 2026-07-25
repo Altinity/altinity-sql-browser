@@ -666,16 +666,6 @@ h1, h2, h3, h4, h5, h6 {
   cursor: pointer; font-family: inherit; font-size: var(--text-body); font-weight: var(--fw-medium); flex-shrink: 0;
 }
 .hd-file-btn:hover { background: var(--bg-hover); color: var(--fg); }
-/* #302: header Dashboard nav control, placed right after the workspace name.
-   A plain navigation button (not a dropdown); collapses to icon-only below the
-   mobile breakpoint via .hd-hide-mobile-label. */
-.hd-dash-nav {
-  display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
-  border: none; border-radius: var(--r-sm); background: transparent; color: var(--fg-mute);
-  cursor: pointer; font-family: inherit; font-size: var(--text-body); font-weight: var(--fw-medium); flex-shrink: 0;
-}
-.hd-dash-nav:hover { background: var(--bg-hover); color: var(--fg); }
-.hd-dash-nav svg { width: 14px; height: 14px; }
 .lib-title { display: flex; align-items: center; min-width: 0; }
 .lib-name {
   display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px;
@@ -1652,6 +1642,67 @@ body.detached-tab .graph-overlay-panel {
 .schema-empty {
   padding: 24px 14px; color: var(--fg-faint); font-size: var(--text-body); text-align: center;
 }
+/* ------------ upper sidebar roles (#426) ------------
+   Databases | Dashboards over two persistent hosts, exactly one exposed. The tab
+   row reuses .side-tabs/.side-tab/.side-count from the lower switcher verbatim —
+   DESIGN.md asks for one tab vocabulary across the app. */
+.upper-role-host {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+/* A hidden host contributes no layout, so the exposed one owns the whole pane —
+   but it keeps its DOM, which is what preserves search text, expansion, lazily
+   loaded columns and scroll across a role switch. */
+.upper-role-host[hidden] { display: none; }
+
+/* ------------ Dashboard hierarchy tree (#426) ------------ */
+.dash-tree-row { position: relative; }
+/* The group rows (Filters / Panels) are structure, not content. */
+.dash-tree-group { color: var(--fg-faint); font-weight: var(--fw-medium); }
+.dash-tree-count { margin-left: 2px; font-size: var(--text-label); }
+/* CURRENT RESOURCE vs KEYBOARD FOCUS must read differently (#426): the current
+   Dashboard/member is a persistent tonal surface with an accent edge, while
+   keyboard focus is the transient ring. A row can legitimately be both. */
+.dash-tree-row.is-current {
+  background: var(--bg-highlight);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.dash-tree-row:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-nav);
+}
+.dash-tree-row.is-current:focus-visible {
+  box-shadow: inset 2px 0 0 var(--accent), var(--ring-nav);
+}
+/* A broken reference: the row stays, its label stays readable, and only the
+   operation needing the missing query is withheld. */
+.dash-tree-row.is-invalid .label { color: var(--warn-fg); font-style: italic; }
+.dash-tree-warn {
+  display: flex; flex-shrink: 0;
+  color: var(--warn-fg);
+}
+.dash-tree-menu-btn {
+  width: 18px; height: 18px; padding: 0;
+  border: none; background: transparent;
+  color: var(--fg-faint); cursor: pointer;
+  border-radius: var(--r-xs); flex-shrink: 0;
+  display: none; align-items: center; justify-content: center;
+}
+/* Revealed on hover like the Library row actions, but ALWAYS present for the
+   keyboard: focus-within keeps it visible while it or the row owns focus, so the
+   double-click-only operations are never keyboard-unreachable. */
+.dash-tree-row:hover .dash-tree-menu-btn,
+.dash-tree-row:focus-within .dash-tree-menu-btn,
+.dash-tree-menu-btn[aria-expanded="true"] { display: inline-flex; }
+.dash-tree-menu-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.dash-tree-menu { min-width: 220px; }
+/* An unavailable operation still renders, so the row's vocabulary stays
+   discoverable — it just cannot be invoked. */
+.dash-tree-menu .is-disabled {
+  opacity: .45; cursor: default; pointer-events: none;
+}
+
 .tree-row {
   display: flex; align-items: center; gap: 6px;
   height: 24px;
@@ -2175,10 +2226,6 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: var(--shadow-lift);
 }
 .editor-mode-btn.is-disabled { opacity: .42; cursor: not-allowed; }
-.app-surface-switch .editor-mode-btn {
-  min-width: 0; white-space: nowrap;
-  font-size: var(--text-body); font-weight: var(--fw-medium);
-}
 .dashboard-mode-switch { flex-shrink: 0; }
 .editor-mode-btn:focus-visible,
 .tb-btn:focus-visible,
@@ -2998,6 +3045,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-toolbar::-webkit-scrollbar { display: none; }
 .dash-toolbar > * { flex-shrink: 0; }
 .dash-toolbar-spacer { flex: 1 1 auto; min-width: 8px; }
+/* #426: the visible route back to the Query surface, restored into the ONE compact
+   toolbar (#437 removed the separate row it used to live in, and #426 removed the
+   header pair that was covering for it). Icon-first, so the label can drop below
+   the breakpoint via the existing `.dash-back-label` rule. */
+.dash-back-to-query { display: inline-flex; align-items: center; gap: 5px; }
+.dash-back-to-query svg { width: 12px; height: 12px; }
 /* The File-style layout menu in the header's top row, replacing the old
    `.dash-seg` segmented button group that lived in the filter toolbar. */
 .dash-layout-wrap { display: inline-flex; align-items: center; flex: 0 0 auto; }
@@ -3333,7 +3386,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    their fixed-position popovers. These are CSS-only overrides, so widening
    restores the persisted desktop layout without writing preferences. */
 @media (max-width: 768px) {
-  .dash-back {
+  .dash-back,
+  /* #426: icon-only at phone widths, like every other primary-toolbar control. */
+  .dash-back-to-query {
     width: 30px; height: 30px; padding: 0; justify-content: center; flex-shrink: 0;
   }
   .dash-back-label,

@@ -80,7 +80,8 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withoutFocus,
+  carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
+  withoutPendingFocus,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -95,13 +96,15 @@ import {
 } from '../core/sql-route.js';
 import type { SqlRoute } from '../core/sql-route.js';
 import {
-  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard, renderDashboardNav,
+  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard,
 } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 import { mountAppShell } from './app-shell.js';
+import { cancelDashboardTreeClicks } from './dashboard-tree.js';
+import { pruneTreeUi } from '../application/dashboard-tree-ui-state.js';
 import type { AppShellHandle } from './app-shell.js';
 import { buildAppHeader } from './app-header.js';
 
@@ -1660,15 +1663,17 @@ export function createApp(env: CreateAppEnv = {}): App {
       host: mounted.dashboardHost,
       dashboardId: surface.kind === 'dashboard' ? surface.dashboardId : null,
       mode: surface.kind === 'dashboard' ? surface.mode : routeMode,
-      focus: surface.kind === 'dashboard' ? surface.focus : null,
+      focus: surface.kind === 'dashboard' ? surface.pendingFocus : null,
       setHeader: (header) => mounted.setHeader(header),
     };
     // #425: a focus target is delivered ONCE. Every later repaint of the same
     // selection — an external commit, a style switch, a stale-write refresh —
     // re-reads this target, so leaving the request on the selection would yank
     // focus back to that tile (and re-flash its highlight) long after the user
-    // navigated elsewhere.
-    app.mainSurface = withoutFocus(surface);
+    // navigated elsewhere. #426: only the DELIVERY is consumed — `currentMember`
+    // survives, because the tree paints its current-resource styling from it
+    // long after the focus ring has moved on.
+    app.mainSurface = withoutPendingFocus(surface);
     return target;
   };
   // Everything a transition BETWEEN the two surfaces must clear, and nothing
@@ -1721,6 +1726,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // resolved through the one selection seam. Every other stored Dashboard
   // stays on `app.currentWorkspace` and is never projected, executed, or
   // rewritten by a Workbench action.
+  // #426 — the ONE writer of the Dashboard tree's explicit repaint invalidation.
+  // Declared here, above its first caller, so no path can reach it before
+  // `createApp` has finished wiring the controller.
+  const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
+  app.invalidateDashboardTree = invalidateDashboardTree;
+
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV3): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
@@ -1778,6 +1789,25 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Every projection funnels through here (boot, mutateWorkspace, reset), so
     // the token stays consistent with what's on screen.
     lastCommittedToken = workspaceToken(workspace);
+    // #426: EVERY projection funnels through here — boot, a committed mutation,
+    // an external refresh, and a workspace switch — which makes this the one place
+    // the Dashboard tree's invalidation has to fire. It is the whole reason the
+    // tree has an explicit signal rather than depending on an unrelated one
+    // happening to change.
+    // #426: prune the tree's session UI state against committed truth, so a
+    // deleted Dashboard's expansion (and its group entries) cannot linger for the
+    // rest of the session — or, worse, make a RECREATED id render pre-expanded.
+    // Survivors are preserved, so an ordinary mutation never collapses the tree.
+    const treeUi = app.state.dashboardTreeUi.get(workspace.id);
+    if (treeUi) {
+      const pruned = pruneTreeUi(treeUi, workspace.dashboards.map((dashboard) => dashboard.id));
+      if (pruned !== treeUi) app.state.dashboardTreeUi.set(workspace.id, pruned);
+    }
+    // #426: a deferred single-click belongs to the rows of the workspace it was
+    // pressed in. Switching workspaces replaces the whole tree, so an "open this
+    // query" scheduled a moment ago must not fire against the new one.
+    if (workspaceChanged) cancelDashboardTreeClicks(app);
+    invalidateDashboardTree();
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
     // leaving the Dashboard host exposed wedges the app: every path back —
     // `showQuerySurface`, the header switch, `g w`, a Library click — early-returns
@@ -1974,7 +2004,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.updateSaveBtn();
       app.updateEditorModeUi?.();
       renderSavedHistory(app);
-      renderDashboardNav(app);
     }
     app.onWorkspaceExternallyChanged({ workspace: loaded, queriesChanged: queriesDidChange });
   };
@@ -2194,7 +2223,21 @@ export function createApp(env: CreateAppEnv = {}): App {
   const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
     app.mainSurface = surface;
     writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
+    // #426: the tree lives in the PERSISTENT shell, so a surface transition does
+    // not repaint it as a side effect of re-rendering the work area — it needs
+    // telling. Current Dashboard/member styling is derived from this state.
+    app.invalidateDashboardTree();
     app.renderCurrentSurface();
+  };
+
+  // #426 — deliver focus to one member of the ALREADY-RENDERED Dashboard through
+  // the route-local surface command port. `null`/wrong-surface/superseded ports
+  // all report `pending`, which means "not deliverable in place" rather than
+  // "gone" — the caller then takes the normal render transition.
+  app.focusDashboardMember = (member) => {
+    const port = app.surfaceCommands;
+    if (!port || port.surface !== 'dashboard') return 'pending';
+    return port.focusMember(member);
   };
 
   app.openDashboard = (request) => {
@@ -2207,20 +2250,48 @@ export function createApp(env: CreateAppEnv = {}): App {
         : 'That dashboard is no longer part of this workspace.', { document: doc });
       return;
     }
-    // A repeated open of the SAME id in the SAME mode with NO focus target is a
-    // no-op: nothing to change, so the live viewer session is left alone rather
-    // than rebuilt. A focus target does re-render (the surface has to deliver it),
-    // which rebuilds the session — acceptable while the only caller is a direct
-    // API call; #426's tree, which navigates within an already-open Dashboard,
-    // will want an in-place focus path instead.
     const sameSelection = isSameDashboardSelection(app.mainSurface, request)
       && app.sqlRoute.surface === 'dashboard';
-    if (sameSelection && resolution.surface.kind === 'dashboard'
-      && resolution.surface.focus === null) {
-      app.mainSurface = resolution.surface;
-      return;
+    if (sameSelection && resolution.surface.kind === 'dashboard') {
+      // A repeated open of the SAME id in the SAME mode with NO member is a no-op
+      // on the surface itself — but it still CLEARS the current member (opening a
+      // Dashboard row deselects whatever member was marked), so the tree repaints.
+      if (resolution.surface.pendingFocus === null) {
+        app.mainSurface = resolution.surface;
+        app.invalidateDashboardTree();
+        return;
+      }
+      // #426 — IN-PLACE member navigation. The tree makes repeated
+      // same-Dashboard focusing a normal operation, so it must not rebuild the
+      // viewer, re-run the Dashboard, or push another history entry (#425
+      // re-rendered here, which did all three).
+      const member = resolution.surface.pendingFocus;
+      const outcome = app.focusDashboardMember(member);
+      if (outcome === 'ok') {
+        app.mainSurface = withCurrentMember(app.mainSurface, member);
+        app.invalidateDashboardTree();
+        return;
+      }
+      if (outcome === 'missing') {
+        // Non-destructive: the Dashboard stays open and unchanged, and the member
+        // is deliberately NOT marked current — nothing there to mark.
+        flashToast(member.kind === 'tile'
+          ? 'That panel is no longer on this dashboard.'
+          : 'That filter is no longer on this dashboard.', { document: doc });
+        return;
+      }
+      // `pending` — a curated filter whose control the opening wave is about to
+      // replace, or a superseded port. Fall through to the normal transition,
+      // which delivers focus at the deterministic point the node is stable.
     }
-    applyMainSurface(resolution.surface, app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
+    // #426: reaching here with the SAME Dashboard id means the MODE changed (the
+    // same-id/same-mode cases all returned above), and a View/Edit switch must
+    // preserve the member the user navigated to — `resolveOpenDashboard` builds
+    // the surface from the request alone and cannot know one was current.
+    applyMainSurface(
+      carryCurrentMember(app.mainSurface, resolution.surface),
+      app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push',
+    );
   };
 
   app.showQuerySurface = () => {
@@ -2247,6 +2318,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
     app.mainSurface = QUERY_SURFACE;
     writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
+    // The one surface transition that does not go through `applyMainSurface`, so it
+    // has to tell the tree itself — otherwise "every transition invalidates" has a
+    // hole in it.
+    invalidateDashboardTree();
     app.renderCurrentSurface();
   };
 
@@ -2272,13 +2347,18 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (app.sqlRoute.surface !== 'dashboard') { app.mainSurface = QUERY_SURFACE; return; }
     const mode: DashboardSurfaceMode = app.sqlRoute.mode;
     if (app.mainSurface.kind === 'dashboard') {
-      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, focus: null }, workspace);
+      // #426: the mode change owes no new delivery, but the member the user
+      // navigated to survives a View/Edit switch — "switching View/Edit through
+      // Dashboard chrome preserves the current member where possible". The
+      // spread carries `currentMember`; `reconcileMainSurface` then drops it if
+      // committed truth no longer contains it.
+      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, pendingFocus: null }, workspace);
       return;
     }
     const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
     app.mainSurface = selectedId === null
       ? QUERY_SURFACE
-      : { kind: 'dashboard', dashboardId: selectedId, mode, focus: null };
+      : { kind: 'dashboard', dashboardId: selectedId, mode, currentMember: null, pendingFocus: null };
   };
 
   app.reloadDashboardRoute = () => {
@@ -2366,7 +2446,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #425: the no-argument legacy entry point (a header/nav control with no
     // Dashboard chooser yet) — it resolves the compatibility Dashboard and opens
     // it by id. `app.openDashboard(request)` is the ID-addressed API.
-    showDashboard: () => app.showDashboardSurface('edit'),
     // #302: Dashboard import/export invoked from the Dashboard page's own File
     // menu (and still from the Workbench during the transition). Export is a
     // read-only bundle download; import runs the transactional planner and, on

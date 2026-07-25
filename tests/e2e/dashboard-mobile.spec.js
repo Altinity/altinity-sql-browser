@@ -46,7 +46,9 @@ test.describe('Dashboard mobile layout', () => {
     await openAt(page, 390);
     const header = page.locator('.app-header');
 
-    await expect(page.getByRole('group', { name: 'Application surface' })).toBeVisible();
+    // #426 removed the header's Application-surface group — Dashboard selection
+    // moved to the upper-left tree, so the brand zone is non-interactive now.
+    await expect(page.locator('.header-brand-zone button')).toHaveCount(0);
     await expect(page.getByRole('group', { name: 'Dashboard mode' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();

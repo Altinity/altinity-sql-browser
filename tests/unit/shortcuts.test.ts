@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SHORTCUT_CATALOG, openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
-import type { ShortcutKeydownEvent } from '../../src/ui/shortcuts.js';
+import type { ShortcutKeydownEvent, SurfaceCommandPort } from '../../src/ui/shortcuts.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 beforeEach(() => { document.body.innerHTML = ''; });
+
+// #426 added `focusMember` to the port. These specs drive the KEYBOARD commands,
+// never member navigation, so they stub it — typed explicitly rather than inline,
+// because an inline `vi.fn()` inside a `makeApp` override collapses its inferred
+// return type and drags the whole overrides object to `never`.
+const stubFocusMember: SurfaceCommandPort['focusMember'] = () => 'ok';
 
 describe('openShortcuts', () => {
   it('opens a modal and is idempotent while open', () => {
@@ -73,7 +79,7 @@ describe('openShortcuts', () => {
   it('renders Dashboard-only help from the shared catalog and supplies dialog accessibility', () => {
     const refresh = vi.fn(); const setDashboardStyle = vi.fn();
     const app = makeApp({ document, sqlRoute: { surface: 'dashboard', workspaceKey: 'w', mode: 'view' },
-      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle } });
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle, focusMember: stubFocusMember } });
     const invoke = document.createElement('button'); document.body.appendChild(invoke); invoke.focus();
     const opened = openShortcuts(app)!;
     const card = document.querySelector<HTMLElement>('.modal-card')!;
@@ -131,7 +137,7 @@ describe('handleKeydown', () => {
     const showDashboardSurface = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' },
       captureSurfaceGeneration: () => 7,
-      surfaceCommands: { surface: 'dashboard', generation: 7, refresh, setDashboardStyle },
+      surfaceCommands: { surface: 'dashboard', generation: 7, refresh, setDashboardStyle, focusMember: stubFocusMember },
       showDashboardSurface });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('dashboardRefresh');
     expect(refresh).toHaveBeenCalledOnce();
@@ -157,7 +163,7 @@ describe('handleKeydown', () => {
     const editing = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'edit' } });
     expect(handleKeydown(ev({ key: 'g' }), editing)).toBe('chord');
     expect(handleKeydown(ev({ key: 'e' }), editing)).toBeNull();
-    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh, setDashboardStyle };
+    app.surfaceCommands = { surface: 'dashboard', generation: 6, refresh, setDashboardStyle, focusMember: stubFocusMember };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
   });
 
@@ -165,7 +171,7 @@ describe('handleKeydown', () => {
     const setDashboardStyle = vi.fn();
     const app = makeApp({
       sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
-      surfaceCommands: { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle },
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle, focusMember: stubFocusMember },
     });
     for (const [key, style, result] of [
       ['g', 'grafana-grid', 'dashboardGridTiles'], ['f', 'full', 'dashboardFullView'],
@@ -210,7 +216,7 @@ describe('handleKeydown', () => {
   it('keeps surface actions behind keyboard-owning overlays and ignores plain keys while typing', () => {
     const refresh = vi.fn(); const setDashboardStyle = vi.fn();
     const app = makeApp({ sqlRoute: { surface: 'dashboard', workspaceKey: 'sql_library', mode: 'view' },
-      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle } });
+      surfaceCommands: { surface: 'dashboard', generation: 0, refresh, setDashboardStyle, focusMember: stubFocusMember } });
     app.keyboardOwner = { kind: 'popover' };
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBeNull();
     app.keyboardOwner = null;
