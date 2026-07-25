@@ -80,7 +80,7 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withoutFocus,
+  resolveOpenDashboard, selectedDashboardId, withoutPendingFocus,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -1660,15 +1660,17 @@ export function createApp(env: CreateAppEnv = {}): App {
       host: mounted.dashboardHost,
       dashboardId: surface.kind === 'dashboard' ? surface.dashboardId : null,
       mode: surface.kind === 'dashboard' ? surface.mode : routeMode,
-      focus: surface.kind === 'dashboard' ? surface.focus : null,
+      focus: surface.kind === 'dashboard' ? surface.pendingFocus : null,
       setHeader: (header) => mounted.setHeader(header),
     };
     // #425: a focus target is delivered ONCE. Every later repaint of the same
     // selection — an external commit, a style switch, a stale-write refresh —
     // re-reads this target, so leaving the request on the selection would yank
     // focus back to that tile (and re-flash its highlight) long after the user
-    // navigated elsewhere.
-    app.mainSurface = withoutFocus(surface);
+    // navigated elsewhere. #426: only the DELIVERY is consumed — `currentMember`
+    // survives, because the tree paints its current-resource styling from it
+    // long after the focus ring has moved on.
+    app.mainSurface = withoutPendingFocus(surface);
     return target;
   };
   // Everything a transition BETWEEN the two surfaces must clear, and nothing
@@ -2216,7 +2218,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     const sameSelection = isSameDashboardSelection(app.mainSurface, request)
       && app.sqlRoute.surface === 'dashboard';
     if (sameSelection && resolution.surface.kind === 'dashboard'
-      && resolution.surface.focus === null) {
+      && resolution.surface.pendingFocus === null) {
       app.mainSurface = resolution.surface;
       return;
     }
@@ -2272,13 +2274,18 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (app.sqlRoute.surface !== 'dashboard') { app.mainSurface = QUERY_SURFACE; return; }
     const mode: DashboardSurfaceMode = app.sqlRoute.mode;
     if (app.mainSurface.kind === 'dashboard') {
-      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, focus: null }, workspace);
+      // #426: the mode change owes no new delivery, but the member the user
+      // navigated to survives a View/Edit switch — "switching View/Edit through
+      // Dashboard chrome preserves the current member where possible". The
+      // spread carries `currentMember`; `reconcileMainSurface` then drops it if
+      // committed truth no longer contains it.
+      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, pendingFocus: null }, workspace);
       return;
     }
     const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
     app.mainSurface = selectedId === null
       ? QUERY_SURFACE
-      : { kind: 'dashboard', dashboardId: selectedId, mode, focus: null };
+      : { kind: 'dashboard', dashboardId: selectedId, mode, currentMember: null, pendingFocus: null };
   };
 
   app.reloadDashboardRoute = () => {

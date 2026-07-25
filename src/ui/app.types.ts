@@ -452,8 +452,9 @@ export interface App {
   renderDashboard(): void;
   renderCurrentSurface(): void;
   /** #425 — which main work surface owns the right-hand work area, and, for a
-   *  Dashboard, WHICH stored Dashboard is selected in which presentation mode
-   *  with an optional navigation focus target. SESSION state: never persisted,
+   *  Dashboard, WHICH stored Dashboard is selected in which presentation mode,
+   *  plus (#426) the member currently navigated to inside it and any focus
+   *  delivery still owed to the surface. SESSION state: never persisted,
    *  cleared on sign-out, re-validated against every committed workspace, and
    *  identified only by `DashboardDocumentV1.id` — never by collection position.
    *  It is also the ONE writer of the `/sql` route's surface/mode, so the URL is
@@ -464,7 +465,9 @@ export interface App {
    *  is reported through the shared diagnostic path and changes no state. Never
    *  mutates the Dashboard merely by opening it. A repeated open of the same
    *  id+mode with no focus target is a no-op that leaves the live viewer session
-   *  alone; one WITH a focus target re-renders in order to deliver it. */
+   *  alone; #426 makes one WITH a focus target an IN-PLACE navigation through the
+   *  surface command port — no rebuild, no rerun, no extra history entry — rather
+   *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
   /** #425 — return to the preserved Query surface (editor + result drawer). */
   showQuerySurface(): void;

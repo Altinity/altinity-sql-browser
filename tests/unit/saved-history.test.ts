@@ -271,7 +271,7 @@ describe('renderSavedHistory', () => {
       storageVersion: 3, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
     };
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
     await flush();
@@ -292,7 +292,7 @@ describe('renderSavedHistory', () => {
       storageVersion: 3, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
     };
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null };
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
     await flush();

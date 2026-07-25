@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withoutFocus,
+  resolveOpenDashboard, selectedDashboardId, withCurrentMember, withoutPendingFocus,
   type DashboardFocusTarget, type MainSurfaceState,
 } from '../../src/application/main-surface.js';
 import type { DashboardDocumentV1, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
@@ -11,28 +11,56 @@ const dash = (id: string): DashboardDocumentV1 => ({
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [],
 });
+/** A Dashboard that actually CONTAINS members, for the #426 retention rules. */
+const dashWith = (id: string, tileIds: string[], filterIds: string[]): DashboardDocumentV1 => ({
+  ...dash(id),
+  tiles: tileIds.map((tileId) => ({ id: tileId, queryId: 'q-' + tileId })),
+  filters: filterIds.map((filterId) => ({ id: filterId, parameter: 'p_' + filterId })),
+});
 const ws = (ids: string[]): StoredWorkspaceV3 => ({
   storageVersion: 3, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: ids.map(dash),
 });
+const wsOf = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV3 => ({
+  storageVersion: 3, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
+});
 const onDashboard = (
-  dashboardId: string, mode: 'view' | 'edit' = 'edit', focus: DashboardFocusTarget | null = null,
-): MainSurfaceState => ({ kind: 'dashboard', dashboardId, mode, focus });
+  dashboardId: string, mode: 'view' | 'edit' = 'edit',
+  currentMember: DashboardFocusTarget | null = null,
+  pendingFocus: DashboardFocusTarget | null = null,
+): MainSurfaceState => ({ kind: 'dashboard', dashboardId, mode, currentMember, pendingFocus });
 
 describe('resolveOpenDashboard', () => {
   it('resolves an exact id into Dashboard surface state, independent of position', () => {
     const resolved = resolveOpenDashboard(ws(['a', 'b', 'c']), { dashboardId: 'c', mode: 'view' });
     expect(resolved).toEqual({
       status: 'ok',
-      surface: { kind: 'dashboard', dashboardId: 'c', mode: 'view', focus: null },
+      surface: {
+        kind: 'dashboard', dashboardId: 'c', mode: 'view', currentMember: null, pendingFocus: null,
+      },
     });
   });
 
-  it('carries an optional focus target through, defaulting to none', () => {
+  // #426: a member request is TWO facts — which member is now current (styling,
+  // retained) and that a delivery is owed (consumed once). One request sets both.
+  it('sets BOTH the current member and the owed delivery from one focus request', () => {
     const focus = { kind: 'tile', id: 't1' } as const;
-    expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit', focus }))
-      .toEqual({ status: 'ok', surface: { kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus } });
-    expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit' }))
-      .toEqual({ status: 'ok', surface: { kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: null } });
+    expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
+      status: 'ok',
+      surface: {
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: focus, pendingFocus: focus,
+      },
+    });
+  });
+
+  // The tree opens a Dashboard ROW with no member; that must CLEAR any previous
+  // member rather than leave the old row marked current.
+  it('clears the current member when the request names none', () => {
+    expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit' })).toEqual({
+      status: 'ok',
+      surface: {
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+      },
+    });
   });
 
   it('reports a missing id — including against a workspace that has none loaded', () => {
@@ -70,6 +98,55 @@ describe('reconcileMainSurface', () => {
   it('falls back to Query mode when the id became ambiguous', () => {
     expect(reconcileMainSurface(onDashboard('b'), ws(['b', 'b']))).toBe(QUERY_SURFACE);
   });
+
+  // #426 — the Dashboard surviving is not enough: the member it points at may
+  // have been removed, and the tree paints current-resource styling from it.
+  it('retains a current member the committed document still contains', () => {
+    const surface = onDashboard('d', 'edit', { kind: 'tile', id: 't1' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t0', 't1'], [])))).toBe(surface);
+  });
+
+  it('retains a current FILTER member by filter id', () => {
+    const surface = onDashboard('d', 'edit', { kind: 'filter', id: 'f1' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', [], ['f1'])))).toBe(surface);
+  });
+
+  it('clears a current member whose tile was removed, keeping the Dashboard open', () => {
+    const surface = onDashboard('d', 'edit', { kind: 'tile', id: 'gone' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'], [])))).toEqual({
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
+    });
+  });
+
+  it('clears a current member whose FILTER was removed', () => {
+    const surface = onDashboard('d', 'view', { kind: 'filter', id: 'gone' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', [], ['f1'])))).toEqual({
+      kind: 'dashboard', dashboardId: 'd', mode: 'view', currentMember: null, pendingFocus: null,
+    });
+  });
+
+  // A tile id and a filter id could collide; a member is resolved against its
+  // OWN collection, never "either list contains this id".
+  it('does not resolve a tile member against the filter list, or vice versa', () => {
+    const tileSurface = onDashboard('d', 'edit', { kind: 'tile', id: 'x' });
+    expect(reconcileMainSurface(tileSurface, wsOf(dashWith('d', [], ['x'])))).toEqual({
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
+    });
+    const filterSurface = onDashboard('d', 'edit', { kind: 'filter', id: 'x' });
+    expect(reconcileMainSurface(filterSurface, wsOf(dashWith('d', ['x'], [])))).toEqual({
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
+    });
+  });
+
+  // The two fields are independent: a still-valid current member must survive
+  // even when the owed delivery has to be dropped.
+  it('clears the two member fields INDEPENDENTLY', () => {
+    const current = { kind: 'tile', id: 't1' } as const;
+    const surface = onDashboard('d', 'edit', current, { kind: 'filter', id: 'gone' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'], [])))).toEqual({
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: current, pendingFocus: null,
+    });
+  });
 });
 
 describe('mainSurfaceRoute', () => {
@@ -101,15 +178,45 @@ describe('isSameDashboardSelection', () => {
   });
 });
 
-describe('withoutFocus', () => {
-  it('drops a consumed focus target and keeps the selection', () => {
-    const surface = onDashboard('a', 'edit', { kind: 'filter', id: 'f1' });
-    expect(withoutFocus(surface)).toEqual({ kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: null });
+describe('withoutPendingFocus', () => {
+  // THE #426 CONTRACT: consuming a delivery must not erase the styling. If this
+  // also cleared `currentMember`, the tree would stop marking the member the
+  // instant its focus ring was delivered.
+  it('drops the consumed delivery and RETAINS the current member', () => {
+    const member = { kind: 'filter', id: 'f1' } as const;
+    const surface = onDashboard('a', 'edit', member, member);
+    expect(withoutPendingFocus(surface)).toEqual({
+      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null,
+    });
   });
 
   it('returns the same value when there is nothing to clear', () => {
     const already = onDashboard('a');
-    expect(withoutFocus(already)).toBe(already);
-    expect(withoutFocus(QUERY_SURFACE)).toBe(QUERY_SURFACE);
+    expect(withoutPendingFocus(already)).toBe(already);
+    expect(withoutPendingFocus(QUERY_SURFACE)).toBe(QUERY_SURFACE);
+  });
+});
+
+describe('withCurrentMember', () => {
+  // The in-place path delivers focus through the surface command port, so it
+  // selects the member WITHOUT owing a render-time delivery.
+  it('selects a member without owing a delivery', () => {
+    const surface = onDashboard('a', 'view');
+    expect(withCurrentMember(surface, { kind: 'tile', id: 't7' })).toEqual({
+      kind: 'dashboard', dashboardId: 'a', mode: 'view',
+      currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+    });
+  });
+
+  it('replaces a previously current member', () => {
+    const surface = onDashboard('a', 'view', { kind: 'tile', id: 'old' });
+    expect(withCurrentMember(surface, { kind: 'filter', id: 'new' })).toEqual({
+      kind: 'dashboard', dashboardId: 'a', mode: 'view',
+      currentMember: { kind: 'filter', id: 'new' }, pendingFocus: null,
+    });
+  });
+
+  it('is a no-op in Query mode — there is no Dashboard to select a member in', () => {
+    expect(withCurrentMember(QUERY_SURFACE, { kind: 'tile', id: 't1' })).toBe(QUERY_SURFACE);
   });
 });

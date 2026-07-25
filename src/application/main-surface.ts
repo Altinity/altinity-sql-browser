@@ -17,6 +17,7 @@
 
 import { findDashboardStrict, type WorkspaceDashboards } from '../workspace/workspace-dashboards.js';
 import type { SqlRoute } from '../core/sql-route.js';
+import type { DashboardDocumentV1 } from '../generated/json-schema.types.js';
 
 /** Where a caller wants navigation to land INSIDE the opened Dashboard. A tile
  *  is addressed by its Dashboard-local TILE id (never the saved-query id it
@@ -29,13 +30,29 @@ export type DashboardFocusTarget =
  *  authorization boundary (ADR-0003). */
 export type DashboardSurfaceMode = 'view' | 'edit';
 
+/**
+ * #426 splits what #425 carried as one `focus` field into two independent facts,
+ * because the Dashboard tree needs to distinguish them:
+ *
+ *   - `currentMember` — WHICH member the user most recently navigated to inside
+ *     this Dashboard. Retained until another member, another Dashboard, or a
+ *     query is opened, because it is what the tree paints its current-resource
+ *     styling from.
+ *   - `pendingFocus` — a DOM focus delivery still owed to the surface. Consumed
+ *     exactly once, then dropped, so a later repaint cannot re-focus and
+ *     re-highlight a node the user has since navigated away from.
+ *
+ * They move independently: consuming a delivery must not erase the styling, and
+ * a View/Edit switch preserves the current member while owing no new delivery.
+ */
 export type MainSurfaceState =
   | { kind: 'query' }
   | {
     kind: 'dashboard';
     dashboardId: string;
     mode: DashboardSurfaceMode;
-    focus: DashboardFocusTarget | null;
+    currentMember: DashboardFocusTarget | null;
+    pendingFocus: DashboardFocusTarget | null;
   };
 
 /** The one application-level Dashboard navigation request (#425). */
@@ -70,13 +87,18 @@ export function resolveOpenDashboard(
   if (!workspace) return { status: 'missing' };
   const lookup = findDashboardStrict(workspace, request.dashboardId);
   if (lookup.status !== 'ok') return { status: lookup.status };
+  // A request that names a member both SELECTS it (styling) and OWES a delivery;
+  // one that names none clears the selection, per #426's "opening a Dashboard row
+  // without a member clears currentMember".
+  const member = request.focus ?? null;
   return {
     status: 'ok',
     surface: {
       kind: 'dashboard',
       dashboardId: request.dashboardId,
       mode: request.mode,
-      focus: request.focus ?? null,
+      currentMember: member,
+      pendingFocus: member,
     },
   };
 }
@@ -93,8 +115,31 @@ export function reconcileMainSurface(
   surface: MainSurfaceState, workspace: WorkspaceDashboards | null,
 ): MainSurfaceState {
   if (surface.kind === 'query') return surface;
-  if (workspace && findDashboardStrict(workspace, surface.dashboardId).status === 'ok') return surface;
-  return QUERY_SURFACE;
+  const lookup = workspace
+    ? findDashboardStrict(workspace, surface.dashboardId)
+    : { status: 'missing' as const };
+  if (lookup.status !== 'ok') return QUERY_SURFACE;
+  // #426: the Dashboard survived, but the member it was pointing at may not
+  // have. Stale current-member styling has to clear on its own — the tree paints
+  // from this field, and a removed tile/filter would otherwise stay highlighted.
+  // A pending delivery for a gone member is dropped for the same reason; the
+  // surface's own delivery path reports the miss non-destructively.
+  return retainMember(surface, lookup.dashboard);
+}
+
+/** Keep only the member references the committed document still contains. */
+function retainMember(
+  surface: Extract<MainSurfaceState, { kind: 'dashboard' }>, dashboard: DashboardDocumentV1,
+): MainSurfaceState {
+  const present = (member: DashboardFocusTarget | null): DashboardFocusTarget | null => {
+    if (member === null) return null;
+    const members = member.kind === 'tile' ? dashboard.tiles : dashboard.filters;
+    return members.some((entry) => entry.id === member.id) ? member : null;
+  };
+  const currentMember = present(surface.currentMember);
+  const pendingFocus = present(surface.pendingFocus);
+  if (currentMember === surface.currentMember && pendingFocus === surface.pendingFocus) return surface;
+  return { ...surface, currentMember, pendingFocus };
 }
 
 /** The canonical `/sql` route for a surface. #425 leaves URLs unchanged: the
@@ -116,9 +161,9 @@ export function selectedDashboardId(surface: MainSurfaceState): string | null {
 }
 
 /** True when an open request targets the ALREADY-selected Dashboard in the
- *  already-active mode — the caller then keeps the live viewer session and only
- *  applies the new focus target, so a repeated open never builds a duplicate
- *  Dashboard session. */
+ *  already-active mode — the caller then keeps the live viewer session and
+ *  delivers the new focus target in place (#426), so a repeated open never
+ *  builds a duplicate Dashboard session. */
 export function isSameDashboardSelection(
   surface: MainSurfaceState, request: OpenDashboardRequest,
 ): boolean {
@@ -127,11 +172,24 @@ export function isSameDashboardSelection(
     && surface.mode === request.mode;
 }
 
-/** Drop a consumed focus target, keeping the selection. Applied once the focus
- *  has been delivered (or reported missing) so a later repaint — an external
- *  workspace change, a style switch — cannot re-focus and re-highlight a tile
- *  the user has since navigated away from. */
-export function withoutFocus(surface: MainSurfaceState): MainSurfaceState {
-  if (surface.kind !== 'dashboard' || surface.focus === null) return surface;
-  return { ...surface, focus: null };
+/** Drop a consumed focus DELIVERY, keeping both the Dashboard selection and the
+ *  current member. Applied once the focus has been delivered (or reported
+ *  missing) so a later repaint — an external workspace change, a style switch —
+ *  cannot re-focus and re-highlight a tile the user has since navigated away
+ *  from. #426: it deliberately leaves `currentMember` alone, so the tree keeps
+ *  marking the member the user navigated to after its one-shot delivery is
+ *  spent. */
+export function withoutPendingFocus(surface: MainSurfaceState): MainSurfaceState {
+  if (surface.kind !== 'dashboard' || surface.pendingFocus === null) return surface;
+  return { ...surface, pendingFocus: null };
+}
+
+/** Select a member INSIDE the already-open Dashboard without owing a render-time
+ *  delivery: #426's in-place focus path delivers through the surface command
+ *  port directly, so only the styling fact changes here. */
+export function withCurrentMember(
+  surface: MainSurfaceState, member: DashboardFocusTarget,
+): MainSurfaceState {
+  if (surface.kind !== 'dashboard') return surface;
+  return { ...surface, currentMember: member };
 }

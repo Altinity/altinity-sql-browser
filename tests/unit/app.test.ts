@@ -5328,7 +5328,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.openDashboard({ dashboardId: 'second', mode: 'view' });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
       expect(app.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'ops', mode: 'view' });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
@@ -5338,7 +5338,8 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['a']);
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' },
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: { kind: 'tile', id: 't7' },
       });
     });
 
@@ -5391,7 +5392,8 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' } });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(2);
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' },
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'filter', id: 'f1' }, pendingFocus: { kind: 'filter', id: 'f1' },
       });
     });
 
@@ -5399,7 +5401,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.showDashboardSurface('edit');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5407,7 +5409,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.actions.showDashboard();
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', focus: null,
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5424,7 +5426,7 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
       app.showDashboardSurface('view');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5478,7 +5480,7 @@ describe('unified /sql routing', () => {
         dashboards: [dash('shared'), dash('x')],
       });
       expect(kept.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'shared', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'shared', mode: 'view', currentMember: null, pendingFocus: null,
       });
     });
 
@@ -5632,10 +5634,13 @@ describe('unified /sql routing', () => {
     it('delivers a focus target once, not on every later repaint', () => {
       const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
-      // Consumed by the render that received it, so an external commit or a style
-      // switch cannot yank focus back to that tile minutes later.
+      // The DELIVERY is consumed by the render that received it, so an external
+      // commit or a style switch cannot yank focus back to that tile minutes
+      // later. #426: the member stays CURRENT — the tree keeps marking it long
+      // after the focus ring has moved on.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', focus: null,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null,
       });
     });
 
@@ -5647,7 +5652,7 @@ describe('unified /sql routing', () => {
       // The URL carries no Dashboard id, so re-deriving one here would silently
       // retarget the surface to the collection's first entry.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', focus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
       });
       location.search = '?ws=ops';
       await app.handleSqlPopState();
@@ -5735,7 +5740,7 @@ describe('unified /sql routing', () => {
     // select, then re-project — a SAME-workspace projection, which is the only
     // kind that keeps a selection.
     app.applyCommittedWorkspace(workspace);
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
     // Project through the real path: `state.dashboard` is whatever
     // `applyCommittedWorkspace` put there — the SELECTED document — never a
     // hand-made one production could not produce.
@@ -5789,7 +5794,7 @@ describe('unified /sql routing', () => {
     // A selection pinned before the entry was deleted elsewhere: the fold must
     // not guess into another slot. (`state.dashboard` still holds the document
     // that surface was editing.)
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', focus: null };
+    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', currentMember: null, pendingFocus: null };
     app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
     app.renderDashboard = vi.fn();
     app.reloadDashboardRoute();
