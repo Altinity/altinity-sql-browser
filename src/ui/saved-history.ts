@@ -52,11 +52,11 @@ const dragProps = (sql: string): { draggable: string; ondragstart: (e: DragEvent
 function libraryEntries(app: App): SavedQueryV2[] {
   const workspace = app.currentWorkspace;
   if (!workspace) return app.state.savedQueries;
-  const owned = new Set(
+  const libraryIds = new Set(
     libraryQueries({ queries: app.state.savedQueries, dashboards: workspace.dashboards })
       .map((query) => query.id),
   );
-  return app.state.savedQueries.filter((query) => owned.has(query.id));
+  return app.state.savedQueries.filter((query) => libraryIds.has(query.id));
 }
 
 export function renderSavedHistory(app: App): void {
