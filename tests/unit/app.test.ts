@@ -5312,11 +5312,13 @@ describe('unified /sql routing', () => {
         origin: 'https://ch.example', pathname: '/sql', search, hash: '', host: 'ch.example',
       } as Location;
       const app = createApp(env({ location }));
-      app.state.workspaceKey = 'ops';
-      app.currentWorkspace = {
+      // PROJECT the workspace, don't just assign it: `applyCommittedWorkspace` is
+      // what sets `state.workspaceId`, and without it every later projection of
+      // the same workspace would read as a workspace SWITCH (which now clears the
+      // Dashboard selection).
+      app.applyCommittedWorkspace({
         storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: ids.map(dash),
-      };
-      app.workspaceRouteStatus = 'ready';
+      });
       if (!live) app.renderCurrentSurface = vi.fn();
       return { app, location };
     };
@@ -5447,19 +5449,33 @@ describe('unified /sql routing', () => {
       expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
     });
 
-    it('clears a stale selection on a workspace switch, and keeps one the new workspace still has', () => {
-      const { app } = readyApp(['shared', 'only-here']);
+    // A Dashboard id is unique WITHIN a workspace, not globally, so a workspace
+    // switch ALWAYS clears the selection — including when the incoming workspace
+    // happens to carry the same id. Preserving it there would silently open an
+    // unrelated Dashboard, and the next edit would commit to the wrong resource.
+    it('clears the selection on a workspace switch, even for a colliding Dashboard id', () => {
+      const { app } = readyApp(['only-here']);
       app.openDashboard({ dashboardId: 'only-here', mode: 'edit' });
       app.applyCommittedWorkspace({
         storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('shared')],
       });
       expect(app.mainSurface).toEqual({ kind: 'query' });
 
-      const { app: kept } = readyApp(['shared']);
+      // The dangerous case: BOTH workspaces have a Dashboard called `main`.
+      const { app: collided } = readyApp(['main']);
+      collided.openDashboard({ dashboardId: 'main', mode: 'view' });
+      collided.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [], dashboards: [dash('main')],
+      });
+      expect(collided.mainSurface).toEqual({ kind: 'query' });
+
+      // …while a SAME-workspace projection still re-validates and keeps it.
+      const { app: kept } = readyApp(['x', 'shared']);
       kept.openDashboard({ dashboardId: 'shared', mode: 'view' });
+      // Same workspace id → a re-projection, not a switch.
       kept.applyCommittedWorkspace({
-        storageVersion: 3, id: 'w2', key: 'other', name: 'Other', queries: [],
-        dashboards: [dash('x'), dash('shared')],
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [],
+        dashboards: [dash('shared'), dash('x')],
       });
       expect(kept.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'shared', mode: 'view', focus: null,
@@ -5711,15 +5727,19 @@ describe('unified /sql routing', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       filters: [], tiles: [],
     });
-    app.currentWorkspace = {
+    const workspace: StoredWorkspaceV3 = {
       storageVersion: 3, id: 'w', key: 'w', name: 'W', queries: [],
       dashboards: [dash('first', 1), dash('second', 1)],
     };
+    // Establish the workspace first (this is what sets `state.workspaceId`), then
+    // select, then re-project — a SAME-workspace projection, which is the only
+    // kind that keeps a selection.
+    app.applyCommittedWorkspace(workspace);
     app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', focus: null };
     // Project through the real path: `state.dashboard` is whatever
     // `applyCommittedWorkspace` put there — the SELECTED document — never a
     // hand-made one production could not produce.
-    app.applyCommittedWorkspace(app.currentWorkspace);
+    app.applyCommittedWorkspace(workspace);
     expect(app.state.dashboard!.id).toBe('second');
     // The Dashboard surface edits that projection in place before folding it back.
     app.state.dashboard = { ...app.state.dashboard!, revision: 7 };

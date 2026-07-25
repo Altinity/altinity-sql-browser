@@ -1728,13 +1728,25 @@ export function createApp(env: CreateAppEnv = {}): App {
     // selection that was deleted — or whose id became ambiguous — falls back to
     // QUERY mode rather than silently retargeting another Dashboard, and the
     // route follows so the URL never claims a Dashboard surface this session no
-    // longer has a document for. A workspace switch reaches the same code, which
-    // is what clears a stale selection unless the new workspace carries the same
-    // explicitly selected id.
-    const previousSurface = app.mainSurface;
-    app.mainSurface = reconcileMainSurface(previousSurface, workspace);
-    const lostSelection = previousSurface.kind === 'dashboard' && app.mainSurface.kind === 'query';
+    // longer has a document for.
+    //
+    // A Dashboard id is unique WITHIN a workspace, not globally — two workspaces
+    // can each hold a Dashboard called `main`. So a workspace change always CLEARS
+    // the selection: keeping it because the incoming workspace happens to carry the
+    // same id would silently open an unrelated Dashboard, and the next edit would
+    // commit to the wrong resource. Only a same-workspace projection re-validates
+    // an existing selection.
     const workspaceChanged = app.state.workspaceId !== workspace.id;
+    const previousSurface = app.mainSurface;
+    app.mainSurface = workspaceChanged
+      ? QUERY_SURFACE
+      : reconcileMainSurface(previousSurface, workspace);
+    // Only a selection lost WITHIN one workspace completes the fallback here. A
+    // workspace switch leaves the surface to its own URL-driven path
+    // (`loadWorkspaceOnBoot` → `adoptRouteMainSurface` → `renderCurrentSurface`),
+    // which resolves the NEW workspace's own Dashboard when the route asks for one.
+    const lostSelection = !workspaceChanged
+      && previousSurface.kind === 'dashboard' && app.mainSurface.kind === 'query';
     if (workspaceChanged) detachWorkspaceBoundTabs(app.state);
     app.state.savedQueries = workspace.queries;
     reconcileTabsWithSavedQueries(app.state);

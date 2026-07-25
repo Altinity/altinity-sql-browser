@@ -393,6 +393,22 @@ function invalidatedDashboardPlan(
   );
 }
 
+/** #425: an EXPLICIT import target that no longer resolves to exactly one stored
+ *  Dashboard — deleted concurrently, or ambiguous under a duplicate id. The import
+ *  commits nothing rather than retargeting the compatibility slot: the caller
+ *  named a Dashboard, and writing a different one would destroy an entry the
+ *  import never mentioned. */
+function staleImportTargetPlan(
+  sourceDashboardId: string, targetDashboardId: string, queryMappings: IdMapping,
+): PortableBundleImportPlan {
+  return invalidPlan(
+    [diagnostic(['dashboards'], 'dashboard-import-target-stale',
+      'The dashboard this import targets was removed, or its id became ambiguous, before the import completed',
+      targetDashboardId)],
+    queryMappings, sourceDashboardId,
+  );
+}
+
 /** Queries-only import: merge the bundle's queries into the workspace's query
  * catalog per `decisions`. Imported favorited panels restore their Dashboard
  * tile membership — in the COMPATIBILITY Dashboard only (#424); every other
@@ -452,10 +468,19 @@ export function planImportDashboard(
   const base = replaceWorkspaceContents(
     workspace, { queries: nextQueries, dashboards: workspace.dashboards },
   );
-  const candidate = (targetDashboardId === null
-    ? null
-    : replaceDashboard(base, targetDashboardId, finalDashboard))
-    ?? withCompatibilityDashboard(base, finalDashboard);
+  // No explicit target: the legacy entry point writes the compatibility slot.
+  if (targetDashboardId === null) {
+    return validatedPlan(
+      withCompatibilityDashboard(base, finalDashboard), mapping, options, sourceDashboardId,
+    );
+  }
+  // An EXPLICIT target fails closed. `replaceDashboard` returns null when the id
+  // names no entry (deleted concurrently) or names more than one (ambiguous), and
+  // falling back to the compatibility slot there would overwrite the collection's
+  // FIRST Dashboard — silently retargeting exactly the way #425 forbids, and
+  // destroying a Dashboard the import never named.
+  const candidate = replaceDashboard(base, targetDashboardId, finalDashboard);
+  if (!candidate) return staleImportTargetPlan(sourceDashboardId, targetDashboardId, mapping);
   return validatedPlan(candidate, mapping, options, sourceDashboardId);
 }
 
