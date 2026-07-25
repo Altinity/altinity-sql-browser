@@ -12,7 +12,16 @@ export const PORTABLE_LIMITS = {
   maxDecodedJsonBytes: 10 * 1024 * 1024,
   maxJsonDepth: 64,
 
-  maxQueries: 1000,
+  // #427 raised this from #280's 1000. The V3->V4 ownership migration clones one
+  // dedicated query per Dashboard member, and a VALID v3 record can hold
+  // maxQueries originals plus maxDashboards x (maxTilesPerDashboard +
+  // maxFiltersPerDashboard) = 4224 member references. At 1000, migrating a
+  // legitimate large workspace produced a record that fails validation on every
+  // future open with no repair path, so the bound is the post-migration
+  // worst case: 1000 + 4224. Applies to portable bundles too, so a migrated
+  // workspace stays exportable (an older build will reject a very large new
+  // bundle — a deliberate, documented consequence).
+  maxQueries: 5224,
   maxDashboards: 32,
   maxTilesPerDashboard: 100,
   maxFiltersPerDashboard: 32,

@@ -7,7 +7,7 @@ import type {
   IdMapping, QueryConflict, QueryDecision,
 } from '../../src/workspace/import-planner.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
 } from '../../src/generated/json-schema.types.js';
 
 // --- fixtures ----------------------------------------------------------------
@@ -33,8 +33,8 @@ const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumen
   filters: [], tiles: [], ...over,
 });
 
-const workspace = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => ({
-  storageVersion: 3, id: 'w1', key: 'workspace', name: 'Workspace', queries: [], dashboards: [], ...over,
+const workspace = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
+  storageVersion: 4, id: 'w1', key: 'workspace', name: 'Workspace', queries: [], dashboards: [], ...over,
 });
 
 const bundle = (over: Partial<PortableBundleV1> = {}): PortableBundleV1 => ({
@@ -253,41 +253,47 @@ describe('planImportQueries', () => {
     expect(plan.sourceDashboardId).toBeUndefined();
   });
 
-  it('imports a favorite panel query as a Dashboard tile', () => {
+  // #427: an imported `spec.favorite` is a LIBRARY preference. It used to mint a
+  // tile — and a whole compatibility Dashboard when the workspace had none — so
+  // importing a queries-only bundle silently created Dashboard content. Now the
+  // flag is preserved and nothing else moves.
+  it('imports a favorite panel query into the Library, minting no tile and no Dashboard', () => {
     const ws = workspace({ queries: [panelQuery('a')], dashboards: [] });
     const favorite = panelQuery('b');
     favorite.spec.favorite = true;
     const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
     expect(plan.candidateWorkspace?.queries.find((query) => query.id === 'b')?.spec.favorite).toBe(true);
-    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({
-      title: 'Dashboard', tiles: [{ queryId: 'b' }],
-    });
+    expect(plan.candidateWorkspace?.dashboards).toEqual([]);
   });
 
-  it('adds one favorite panel query to an existing Dashboard and increments its revision once', () => {
+  it('leaves an existing Dashboard byte-identical, revision included', () => {
     const dash = dashboardDoc({ revision: 7, tiles: [] });
     const ws = workspace({ queries: [panelQuery('a')], dashboards: [dash] });
     const favorite = panelQuery('b');
     favorite.spec.favorite = true;
     const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
-    expect(plan.candidateWorkspace?.dashboards[0]?.tiles).toEqual([{ id: 'id-1', queryId: 'b' }]);
-    expect(plan.candidateWorkspace?.dashboards[0]?.revision).toBe(8);
+    expect(plan.candidateWorkspace?.dashboards[0]?.tiles).toEqual([]);
+    expect(plan.candidateWorkspace?.dashboards[0]?.revision).toBe(7);
   });
 
-  it('adds several favorite panel queries but increments an existing Dashboard revision only once', () => {
-    const dash = dashboardDoc({ revision: 7, tiles: [] });
-    const one = panelQuery('one');
-    const two = panelQuery('two');
-    one.spec.favorite = true;
-    two.spec.favorite = true;
-    const plan = planImportQueries(workspace({ dashboards: [dash] }), bundle({ queries: [one, two] }), [], counter());
-    expect(plan.candidateWorkspace?.dashboards[0]?.tiles).toEqual([
-      { id: 'id-1', queryId: 'one' }, { id: 'id-2', queryId: 'two' },
-    ]);
-    expect(plan.candidateWorkspace?.dashboards[0]?.revision).toBe(8);
+  it('does not remove a tile when a tiled query is replaced as unfavorited', () => {
+    // The reverse direction is decoupled too: an import can no longer take a
+    // panel off a Dashboard by clearing a flag. Removing a member is #429's
+    // explicit action.
+    const current = panelQuery('p1');
+    current.spec.favorite = true;
+    const replacement = panelQuery('p1', 'Replacement');
+    replacement.spec.favorite = false;
+    const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
+    const plan = planImportQueries(
+      workspace({ queries: [current], dashboards: [dash] }), bundle({ queries: [replacement] }),
+      [{ sourceId: 'p1', action: 'replace' }], counter(),
+    );
+    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
+    expect(plan.candidateWorkspace?.queries[0].spec.favorite).toBe(false);
   });
 
-  it('does not advance revision when an imported favorite already has Dashboard membership', () => {
+  it('never advances a Dashboard revision on a queries-only import', () => {
     const favorite = panelQuery('p1');
     favorite.spec.favorite = true;
     const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
@@ -315,14 +321,19 @@ describe('planImportQueries', () => {
       workspace({ queries: [current], dashboards: [dash] }), bundle({ queries: [replacement] }),
       [{ sourceId: 'p1', action: 'replace' }], counter(),
     );
-    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({ revision: 8, tiles: [] });
+    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({
+      revision: 7, tiles: [{ id: 't1', queryId: 'p1' }],
+    });
     expect(plan.candidateWorkspace?.queries[0].spec.favorite).toBe(false);
   });
 
   it.each([
     ['filter', filterQuery('p1')],
     ['setup', setupQuery('p1')],
-  ])('removes tile membership when a tiled panel is replaced with a %s query', (_role, replacement) => {
+  ])('keeps the tile when a tiled panel is replaced with a %s query, and diagnoses the role', (_role, replacement) => {
+    // #427: the import no longer silently removes the tile to make the role
+    // change fit. The candidate is REJECTED with the role diagnostic instead, so
+    // the reference and the Dashboard survive for an explicit repair.
     const current = panelQuery('p1');
     current.spec.favorite = true;
     replacement.spec.favorite = true;
@@ -331,7 +342,8 @@ describe('planImportQueries', () => {
       workspace({ queries: [current], dashboards: [dash] }), bundle({ queries: [replacement] }),
       [{ sourceId: 'p1', action: 'replace' }], counter(),
     );
-    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({ revision: 8, tiles: [] });
+    expect(plan.candidateWorkspace).toBeNull();
+    expect(plan.diagnostics.some((d) => d.path.includes('tiles'))).toBe(true);
   });
 
   it('allows skip on a conflicting query with no Dashboard dependency (queries-only skip is fine)', () => {
@@ -391,10 +403,17 @@ describe('planImportDashboard', () => {
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('new-dash-1');
     expect(candidate.dashboards[0]!.revision).toBe(1);
-    expect(candidate.dashboards[0]!.tiles[0].queryId).toBe('p1-copy');
-    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).toBe('f1-copy');
-    // existing catalog entries keep their position; new copies are appended.
-    expect(ids(candidate.queries)).toEqual(['p1', 'f1', 'p1-copy', 'f1-copy']);
+    // The decisions resolve the references to `p1-copy`/`f1-copy`; #427 then
+    // gives the tile and the filter their OWN dedicated copies of those, which
+    // remain in the catalog as Library sources.
+    expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1-copy');
+    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1-copy');
+    expect(candidate.dashboards[0]!.tiles[0].queryId)
+      .not.toBe(candidate.dashboards[0]!.filters[0].sourceQueryId);
+    // existing catalog entries keep their position; copies and the owned copies
+    // are appended, in filter-before-tile walk order.
+    expect(ids(candidate.queries).slice(0, 4)).toEqual(['p1', 'f1', 'p1-copy', 'f1-copy']);
+    expect(candidate.queries).toHaveLength(6);
     expect(plan.sourceDashboardId).toBe('d1');
   });
 
@@ -404,8 +423,13 @@ describe('planImportDashboard', () => {
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('d1');
     expect(candidate.dashboards[0]!.revision).toBe(5);
-    expect(candidate.dashboards[0]!.tiles[0].queryId).toBe('p1');
-    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).toBe('f1');
+    // The bundle's own queries land as Library sources; the members own copies.
+    expect(ids(candidate.queries).slice(0, 2)).toEqual(['p1', 'f1']);
+    expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1');
+    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1');
+    // Member ids are untouched, so #426's tree state survives an import.
+    expect(candidate.dashboards[0]!.tiles[0].id).toBe('t1');
+    expect(candidate.dashboards[0]!.filters[0].id).toBe('flt1');
   });
 
   it('invalidates when skipping a required Dashboard dependency (candidate null, missingRequiredIds populated)', () => {
@@ -465,16 +489,18 @@ describe('imports preserve the non-compatibility Dashboards', () => {
     expect(plan.candidateWorkspace!.dashboards).toEqual(ws.dashboards);
   });
 
-  it('planImportQueries adds an imported favorite to the compatibility Dashboard only', () => {
+  it('planImportQueries leaves EVERY Dashboard untouched, compatibility slot included', () => {
+    // #427: the imported favourite is a Library preference, so a queries-only
+    // import is exactly that — a query-collection change and nothing else.
     const ws = twoDashboards(dashboardDoc({ revision: 4 }));
     const favorite = panelQuery('b');
     favorite.spec.favorite = true;
     const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
     const dashboards = plan.candidateWorkspace!.dashboards;
     expect(dashboards).toHaveLength(2);
-    expect(dashboards[0].tiles).toEqual([{ id: 'id-1', queryId: 'b' }]);
-    expect(dashboards[0].revision).toBe(5);
+    expect(dashboards[0]).toEqual(dashboardDoc({ revision: 4 }));
     expect(dashboards[1]).toEqual(hidden());
+    expect(plan.candidateWorkspace!.queries.find((q) => q.id === 'b')?.spec.favorite).toBe(true);
   });
 
   it('planImportDashboard replaces the compatibility slot and preserves the rest', () => {
@@ -593,13 +619,15 @@ describe('planReplaceWorkspace', () => {
     expect(plan.sourceDashboardId).toBeUndefined();
   });
 
-  it('creates Dashboard membership for favorite panel queries in a query-only workspace import', () => {
+  it('creates NO Dashboard for favorite panel queries in a query-only workspace import', () => {
+    // #427: a queries-only bundle used to mint a whole compatibility Dashboard
+    // out of favourite flags. A favourite is a Library preference now, so a
+    // bundle with no dashboards produces a workspace with no dashboards.
     const favorite = panelQuery('p1');
     favorite.spec.favorite = true;
     const plan = planReplaceWorkspace(workspace(), bundle({ queries: [favorite] }), [], counter());
-    expect(plan.candidateWorkspace?.dashboards[0]).toMatchObject({
-      title: 'Dashboard', tiles: [{ queryId: 'p1' }],
-    });
+    expect(plan.candidateWorkspace?.dashboards).toEqual([]);
+    expect(plan.candidateWorkspace?.queries[0].spec.favorite).toBe(true);
   });
 
   it('replaces queries AND every bundled Dashboard atomically, including standalone queries', () => {
@@ -619,7 +647,14 @@ describe('planReplaceWorkspace', () => {
     });
     const plan = planReplaceWorkspace(ws, bundleWithDashboard, [], counter());
     const candidate = plan.candidateWorkspace!;
-    expect(ids(candidate.queries)).toEqual(['p1', 'f1', 'standalone']);
+    // #427: the bundle's own queries survive as Library sources, and the tile and
+    // the curated filter each gain a DEDICATED copy with a derived id. The
+    // Dashboard keeps its id, revision and member ids.
+    expect(ids(candidate.queries).slice(0, 3)).toEqual(['p1', 'f1', 'standalone']);
+    expect(candidate.queries).toHaveLength(5);
+    expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1');
+    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1');
+    expect(candidate.dashboards[0]!.tiles[0].id).toBe('t1');
     expect(candidate.dashboards[0]!.id).toBe('d1');
     expect(candidate.dashboards[0]!.revision).toBe(2);
     // A workspace import no longer selects ONE Dashboard, so it reports none.
@@ -648,8 +683,15 @@ describe('planReplaceWorkspace', () => {
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards.map((d) => d.id)).toEqual(['exec', 'sales']);
     expect(candidate.dashboards.map((d) => d.revision)).toEqual([3, 9]);
-    // One shared query referenced by both Dashboards is still stored ONCE.
-    expect(ids(candidate.queries)).toEqual(['p1']);
+    // #427: a legacy bundle sharing ONE query between two Dashboards is
+    // NORMALIZED rather than rejected — the bundle query stays as the Library
+    // source and each tile gets its own dedicated copy.
+    expect(ids(candidate.queries)[0]).toBe('p1');
+    expect(candidate.queries).toHaveLength(3);
+    const [exec, sales] = candidate.dashboards;
+    expect(exec.tiles[0].queryId).not.toBe(sales.tiles[0].queryId);
+    expect(exec.tiles[0].queryId).not.toBe('p1');
+    expect(exec.tiles[0].id).toBe('exec-p1');
     expect(plan.sourceDashboardId).toBeUndefined();
   });
 
@@ -664,7 +706,13 @@ describe('planReplaceWorkspace', () => {
     });
     const decisions: QueryDecision[] = [{ sourceId: 'p1', action: 'copy', targetId: 'p1-copy' }];
     const candidate = planReplaceWorkspace(ws, bundleWithTwo, decisions, counter()).candidateWorkspace!;
-    expect(candidate.dashboards.map((d) => d.tiles[0].queryId)).toEqual(['p1-copy', 'p1-copy']);
+    // The remap resolves both references to `p1-copy` first; #427's normalization
+    // then gives each tile its own dedicated copy OF that remapped query, which
+    // survives as the Library source. Two members, two distinct owned ids.
+    const owned = candidate.dashboards.map((d) => d.tiles[0].queryId);
+    expect(new Set(owned).size).toBe(2);
+    expect(owned).not.toContain('p1-copy');
+    expect(ids(candidate.queries)).toContain('p1-copy');
   });
 
   it('diagnoses duplicate incoming Dashboard ids rather than silently deduplicating', () => {

@@ -1,4 +1,5 @@
-// StoredWorkspaceV3 contract codec, V2→V3 migration, and whole-workspace
+// StoredWorkspaceV4 contract codec, the V2→V3→V4 migration chain, and
+// whole-workspace
 // validation (#280 "Internal persistence", phase 1 of #283; the Dashboard
 // COLLECTION lands in #424). The atomic WorkspaceRepository itself is Phase 2;
 // this module owns the persistence aggregate's validation pipeline (codec
@@ -7,14 +8,19 @@
 // and the canonical encoding used for persistence snapshots, hashing, and
 // equality. Pure.
 //
-// #424 — two stored contract versions, one in-memory model:
-//   * V3 (`dashboards: DashboardDocumentV1[]`) is THE application/repository
-//     model. Everything downstream of `decodeStoredWorkspaceJson` sees V3 only;
-//     there is deliberately no long-lived `StoredWorkspaceV2 | StoredWorkspaceV3`
-//     union in application code.
+// #424/#427 — three stored contract versions, one in-memory model:
+//   * V4 (Dashboard query OWNERSHIP: one dedicated query copy per member) is THE
+//     application/repository model. Everything downstream of
+//     `decodeStoredWorkspaceJson` sees V4 only; there is deliberately no
+//     long-lived union of stored versions in application code.
+//   * V3 (`dashboards: DashboardDocumentV1[]`, members may share a Library
+//     query) stays READABLE for records persisted before #427.
 //   * V2 (`dashboard: DashboardDocumentV1 | null`) stays READABLE for records
-//     persisted before #424. It is validated against its own schema and then
-//     migrated here, at the decoding boundary. Every WRITE emits V3.
+//     persisted before #424.
+// A legacy record is validated against ITS OWN schema and then migrated forward
+// one step at a time at the decoding boundary; only the final V4 form is fully
+// validated, because an intermediate V3 form legitimately still shares queries —
+// the very thing the next step fixes. Every WRITE emits V4.
 // Unknown future versions fail closed with one precise version diagnostic
 // rather than falling through to schema-union noise.
 
@@ -28,20 +34,26 @@ import {
   unsupportedDashboardVersionDiagnostics,
   unsupportedSpecVersionDiagnostics,
   validateDashboardCollectionSemantics,
+  validateDashboardQueryOwnership,
   validateQueryCollectionSemantics,
 } from '../dashboard/model/workspace-semantics.js';
 import { cloneJson } from '../core/saved-query.js';
 import { jsonSchemaValidationService } from '../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../core/json-schema-validation.js';
-import type { StoredWorkspaceV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
+import { migrateStoredWorkspaceV3ToV4 } from './stored-workspace-ownership.js';
+import type {
+  StoredWorkspaceV2, StoredWorkspaceV3, StoredWorkspaceV4,
+} from '../generated/json-schema.types.js';
 
-export const CURRENT_STORED_WORKSPACE_VERSION = 3;
-/** Still compiled and registered: the codec decodes legacy records with it. */
-export const LEGACY_STORED_WORKSPACE_VERSION = 2;
+export const CURRENT_STORED_WORKSPACE_VERSION = 4;
+/** Still compiled and registered: the codec decodes legacy records with them. */
+export const LEGACY_STORED_WORKSPACE_VERSIONS = [2, 3] as const;
 export const STORED_WORKSPACE_V2_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json';
 export const STORED_WORKSPACE_V3_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json';
+export const STORED_WORKSPACE_V4_SCHEMA_ID =
+  'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json';
 
 export type WorkspaceFailResult = { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
@@ -74,14 +86,16 @@ export function migrateStoredWorkspaceV2ToV3(workspace: StoredWorkspaceV2): Stor
   };
 }
 
+type StoredVersion = 2 | 3 | 4;
+
 type VersionScan =
-  | { ok: true; version: 2 | 3 }
+  | { ok: true; version: StoredVersion }
   | { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
 /** Identify the stored contract version BEFORE any branch validation, so an
  *  unknown future version produces one precise diagnostic instead of the union
  *  of every branch's structural complaints. */
-function scanStoredWorkspaceVersion(document: unknown, accepted: readonly (2 | 3)[]): VersionScan {
+function scanStoredWorkspaceVersion(document: unknown, accepted: readonly StoredVersion[]): VersionScan {
   const fail = (path: (string | number)[], code: string, message: string): VersionScan =>
     ({ ok: false, diagnostics: [diagnostic(path, code, message)] });
   if (!isObject(document)) return fail([], 'workspace-invalid-root', 'Stored workspace must be an object');
@@ -91,7 +105,7 @@ function scanStoredWorkspaceVersion(document: unknown, accepted: readonly (2 | 3
   if (!Number.isInteger(document.storageVersion)) {
     return fail(['storageVersion'], 'workspace-version-invalid', 'Invalid stored-workspace version');
   }
-  const version = document.storageVersion as 2 | 3;
+  const version = document.storageVersion as StoredVersion;
   if (!accepted.includes(version)) {
     return fail(['storageVersion'], 'workspace-version-unsupported',
       `Unsupported stored-workspace version ${version}`);
@@ -132,17 +146,17 @@ function structuralDiagnostics(
   ];
 }
 
-/** Complete deterministic validation of one V3 stored-workspace aggregate —
+/** Complete deterministic validation of one V4 stored-workspace aggregate —
  *  the same pipeline `WorkspaceRepository.commit` runs before any write, and
  *  the pipeline every candidate builder (import planner, saved-query mutation
  *  planner) validates its candidate through. */
 export function validateStoredWorkspaceDocument(
   document: unknown, { validationService = jsonSchemaValidationService }: WorkspaceCodecOptions = {},
 ): WorkspaceDiagnostic[] {
-  const scan = scanStoredWorkspaceVersion(document, [3]);
+  const scan = scanStoredWorkspaceVersion(document, [4]);
   if (!scan.ok) return sortDiagnostics(scan.diagnostics);
   const doc = document as Record<string, unknown>;
-  const structural = structuralDiagnostics(doc, STORED_WORKSPACE_V3_SCHEMA_ID, 'dashboards', validationService);
+  const structural = structuralDiagnostics(doc, STORED_WORKSPACE_V4_SCHEMA_ID, 'dashboards', validationService);
   if (structural.length) return sortDiagnostics(structural);
   const queries = doc.queries as unknown[];
   return sortDiagnostics([
@@ -154,42 +168,56 @@ export function validateStoredWorkspaceDocument(
     ...validateDashboardCollectionSemantics(doc.dashboards as unknown[], {
       queries, path: ['dashboards'], validationService,
     }),
+    // #427 — the ownership invariant, workspace-wide. It lives here rather than
+    // in the shared collection validator because a portable bundle may still
+    // carry legacy shared references, which import NORMALIZES instead of
+    // rejecting; a stored V4 record has already been through the migration.
+    // Safe to read typed: structural validation above returned clean.
+    ...validateDashboardQueryOwnership(document as StoredWorkspaceV4),
   ]);
 }
 
-export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV3 } | WorkspaceFailResult;
+export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV4 } | WorkspaceFailResult;
 
 /** Parse and fully validate stored-workspace JSON text, returning the canonical
- *  in-memory V3 shape. A persisted V2 record is validated against the V2 schema,
- *  migrated, and then re-validated as V3 — so a migration can never commit a
- *  document the V3 contract rejects. */
+ *  in-memory V4 shape. A legacy record is validated against its own schema,
+ *  migrated forward, and then validated as V4 — so a migration can never
+ *  produce a document the V4 contract rejects. The migration is PURE: owned-copy
+ *  ids are derived from the member each copy belongs to, never generated, so this
+ *  read (which `WorkspaceRepository.list()` performs on every record without
+ *  writing) returns the same document every time, in every tab. */
 export function decodeStoredWorkspaceJson(
   text: unknown, options: WorkspaceCodecOptions & JsonLimitOptions = {},
 ): DecodeStoredWorkspaceResult {
   const parsed = parseJsonWithLimits(text, options);
   if (!parsed.ok) return parsed;
   const { validationService = jsonSchemaValidationService } = options;
-  const scan = scanStoredWorkspaceVersion(parsed.value, [2, 3]);
+  const scan = scanStoredWorkspaceVersion(parsed.value, [2, 3, 4]);
   if (!scan.ok) return { ok: false, diagnostics: sortDiagnostics(scan.diagnostics) };
-  if (scan.version === 3) {
+  if (scan.version === 4) {
     const diagnostics = validateStoredWorkspaceDocument(parsed.value, options);
-    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: parsed.value as StoredWorkspaceV3 };
+    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: parsed.value as StoredWorkspaceV4 };
   }
   const legacy = parsed.value as Record<string, unknown>;
-  const structural = structuralDiagnostics(
-    legacy, STORED_WORKSPACE_V2_SCHEMA_ID, 'dashboard', validationService,
-  );
+  // Each legacy branch is validated against its OWN schema at its own paths, so
+  // a broken v2 record complains about `dashboard`, not `dashboards[0]`.
+  const structural = scan.version === 3
+    ? structuralDiagnostics(legacy, STORED_WORKSPACE_V3_SCHEMA_ID, 'dashboards', validationService)
+    : structuralDiagnostics(legacy, STORED_WORKSPACE_V2_SCHEMA_ID, 'dashboard', validationService);
   if (structural.length) return { ok: false, diagnostics: sortDiagnostics(structural) };
-  const migrated = migrateStoredWorkspaceV2ToV3(legacy as unknown as StoredWorkspaceV2);
+  const asV3 = scan.version === 3
+    ? (legacy as unknown as StoredWorkspaceV3)
+    : migrateStoredWorkspaceV2ToV3(legacy as unknown as StoredWorkspaceV2);
+  const migrated = migrateStoredWorkspaceV3ToV4(asV3);
   const diagnostics = validateStoredWorkspaceDocument(migrated, options);
   return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: migrated };
 }
 
 export type EncodeStoredWorkspaceResult = { ok: true; value: string } | WorkspaceFailResult;
 
-/** Validate and canonically encode one V3 stored-workspace aggregate — the one
+/** Validate and canonically encode one V4 stored-workspace aggregate — the one
  *  encoder output persistence snapshots, hashing, equality checks, and
- *  snapshot tests all share. V2 is never written. */
+ *  snapshot tests all share. No legacy version is ever written. */
 export function encodeStoredWorkspaceJson(
   workspace: unknown, options: WorkspaceCodecOptions = {},
 ): EncodeStoredWorkspaceResult {

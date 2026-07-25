@@ -1044,6 +1044,52 @@ export interface StoredWorkspaceV3 {
   dashboards: DashboardDocumentV1[];
 }
 
+// stored-workspace v4 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json
+
+/**
+ * Altinity SQL Browser stored workspace v4
+ *
+ * One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v3 with the Dashboard query OWNERSHIP contract: every panel tile and every curated filter references a dedicated saved-query copy owned by exactly one member, and a query no member references is a Library query. That invariant is cross-resource, so it is enforced by whole-workspace semantic validation rather than by this document shape — the version exists so an older build fails closed on a record it would silently misread as shareable, and so the one-time V3 cloning migration has a boundary to run at. v3 and v2 records remain readable and migrate deterministically on read. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.
+ */
+export interface StoredWorkspaceV4 {
+  /**
+   * Storage version
+   *
+   * Stored-workspace contract version; always 4 for this contract. Unknown future versions fail closed.
+   */
+  storageVersion: 4;
+  /**
+   * Workspace identifier
+   *
+   * Stable generated application identity. Two workspaces with the same display name still have distinct IDs.
+   */
+  id: string;
+  /**
+   * Workspace URL key
+   *
+   * Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.
+   */
+  key: string;
+  /**
+   * Workspace name
+   *
+   * Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.
+   */
+  name: string;
+  /**
+   * Saved queries
+   *
+   * The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Holds both Library queries (referenced by no Dashboard member) and the dedicated copies Dashboard members own. The bound is 5224 rather than v3's 1000 because the V3 ownership migration clones one query per member, and a valid v3 record can hold 1000 queries plus 32 Dashboards x (100 tiles + 32 filters) = 4224 member references: at the old bound, migrating a legitimate large workspace would have produced a record that fails validation on every future open, with no repair path. Required even when empty.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboards
+   *
+   * This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile, filter, and layout placement IDs stay Dashboard-local. Required even when empty.
+   */
+  dashboards: DashboardDocumentV1[];
+}
+
 // portable-bundle v1 — https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json
 
 /**
@@ -1081,7 +1127,7 @@ export interface PortableBundleV1 {
   /**
    * Saved queries
    *
-   * Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.
+   * Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty. The bound tracks the stored-workspace capacity (raised from 1000 by #427, whose ownership migration clones one dedicated query per Dashboard member) so a migrated workspace stays exportable; an older build rejects a bundle above its own bound.
    */
   queries: SavedQueryV2[];
   /**

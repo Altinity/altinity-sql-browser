@@ -6,7 +6,7 @@ describe('PORTABLE_LIMITS', () => {
     expect(PORTABLE_LIMITS).toEqual({
       maxDecodedJsonBytes: 10485760,
       maxJsonDepth: 64,
-      maxQueries: 1000,
+      maxQueries: 5224,
       maxDashboards: 32,
       maxTilesPerDashboard: 100,
       maxFiltersPerDashboard: 32,

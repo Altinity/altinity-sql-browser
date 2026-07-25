@@ -5,7 +5,7 @@
 // target.
 //
 // Deliberately session state, never persisted workspace content:
-// `StoredWorkspaceV3` carries no `activeDashboardId`/`defaultDashboardId`, and
+// `StoredWorkspaceV4` carries no `activeDashboardId`/`defaultDashboardId`, and
 // a Dashboard is identified ONLY by its stable `DashboardDocumentV1.id` —
 // never by its position in `dashboards[]`. Sign-out and a workspace switch
 // therefore clear or re-validate the selection rather than migrating it.

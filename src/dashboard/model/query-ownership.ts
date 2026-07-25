@@ -47,7 +47,7 @@ export interface QueryOwnershipIndex {
 }
 
 // ── Input shapes ────────────────────────────────────────────────────────────
-// Structural, so both `StoredWorkspaceV3` and any later stored-workspace
+// Structural, so both `StoredWorkspaceV4` and any later stored-workspace
 // version satisfy them without this module tracking the storage version. The
 // codec validates structure before any semantic layer runs, so these are the
 // narrowest shapes ownership actually reads — not a loosened re-declaration of

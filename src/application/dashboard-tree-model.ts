@@ -28,7 +28,7 @@ import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js
 // so the collections the generated schema types mark REQUIRED are optional here.
 // Every guard this buys has a malformed fixture in the spec that reaches it; none
 // is unreachable defensive padding (which the coverage config forbids).
-// A real `StoredWorkspaceV3` / `DashboardDocumentV1` / `SavedQueryV2` satisfies
+// A real `StoredWorkspaceV4` / `DashboardDocumentV1` / `SavedQueryV2` satisfies
 // these structurally, with no cast at the call site.
 
 export interface TreeQuery {
@@ -59,7 +59,7 @@ export interface TreeDashboard {
 }
 
 export interface TreeWorkspace {
-  /** `StoredWorkspaceV3.id` — the immutable opaque identity, never the URL key. */
+  /** `StoredWorkspaceV4.id` — the immutable opaque identity, never the URL key. */
   id: string;
   dashboards?: readonly TreeDashboard[] | null;
   queries?: readonly TreeQuery[] | null;

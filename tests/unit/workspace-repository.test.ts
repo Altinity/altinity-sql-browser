@@ -5,10 +5,10 @@ import type {
   WorkspaceStore, WorkspaceStoreCreateResult, WorkspaceStoreRecord,
   WorkspaceStoreReplaceResult,
 } from '../../src/workspace/workspace-store.types.js';
-import type { StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 
-const workspace = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => ({
-  storageVersion: 3,
+const workspace = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
+  storageVersion: 4,
   id: 'w1',
   key: 'workspace_one',
   name: 'Workspace One',
@@ -17,7 +17,7 @@ const workspace = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => 
   ...over,
 });
 
-const encode = (value: StoredWorkspaceV3): string => {
+const encode = (value: StoredWorkspaceV4): string => {
   const result = encodeStoredWorkspaceJson(value);
   if (!result.ok) throw new Error('invalid test fixture');
   return result.value;
@@ -94,7 +94,7 @@ function memoryStore(initial: WorkspaceStoreRecord[] = []) {
 }
 
 const record = (
-  value: StoredWorkspaceV3, lastOpenedAt: number | null = null,
+  value: StoredWorkspaceV4, lastOpenedAt: number | null = null,
 ): WorkspaceStoreRecord => ({
   id: value.id, key: value.key, text: encode(value), lastOpenedAt,
 });
@@ -325,7 +325,7 @@ describe('implicit workspace resolution and opened metadata', () => {
 // #424: the repository's canonical aggregate is V3. A record persisted as V2
 // is migrated by the codec on read; the RECORD upgrades on its next ordinary
 // commit, so opening a workspace stays a pure read.
-describe('workspace repository — StoredWorkspaceV3 (#424)', () => {
+describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
   const dashboard = (id: string, revision = 1) => ({
     documentVersion: 1 as const, id, title: id.toUpperCase(), revision,
     layout: { type: 'flow', version: 1, preset: 'report', items: {} },
@@ -342,13 +342,13 @@ describe('workspace repository — StoredWorkspaceV3 (#424)', () => {
     lastOpenedAt,
   });
 
-  it('reads a persisted V2 record as V3, preserving the Dashboard and its revision', async () => {
+  it('reads a persisted V2 record as V4, preserving the Dashboard and its revision', async () => {
     const store = memoryStore([legacyRecord()]);
     const repository = createWorkspaceRepository({ store });
     const loaded = await repository.loadById('w1');
     expect(loaded.status).toBe('ok');
     if (loaded.status !== 'ok') return;
-    expect(loaded.workspace.storageVersion).toBe(3);
+    expect(loaded.workspace.storageVersion).toBe(4);
     expect(loaded.workspace.dashboards).toEqual([dashboard('legacy', 6)]);
     // A read is a pure read: the stored TEXT is untouched until a real write.
     expect(JSON.parse(store.records.get('w1')!.text).storageVersion).toBe(2);
@@ -361,7 +361,7 @@ describe('workspace repository — StoredWorkspaceV3 (#424)', () => {
     expect(implicit.status === 'ok' && implicit.workspace.dashboards).toHaveLength(1);
   });
 
-  it('rewrites a migrated record canonically as V3 on its next commit, keeping lastOpenedAt', async () => {
+  it('rewrites a migrated record canonically as V4 on its next commit, keeping lastOpenedAt', async () => {
     const store = memoryStore([legacyRecord(1234)]);
     const repository = createWorkspaceRepository({ store });
     const loaded = await repository.loadById('w1');
@@ -370,7 +370,7 @@ describe('workspace repository — StoredWorkspaceV3 (#424)', () => {
     const committed = await repository.commit(loaded.workspace);
     expect(committed.ok).toBe(true);
     const text = store.records.get('w1')!.text;
-    expect(text).toContain('"storageVersion": 3');
+    expect(text).toContain('"storageVersion": 4');
     expect(text).toContain('"dashboards"');
     expect(text).not.toContain('"dashboard":');
     expect(text).toBe(encode(loaded.workspace));

@@ -50,9 +50,9 @@
     },
     "queries": {
       "title": "Saved queries",
-      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.",
+      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty. The bound tracks the stored-workspace capacity (raised from 1000 by #427, whose ownership migration clones one dedicated query per Dashboard member) so a migrated workspace stays exportable; an older build rejects a bundle above its own bound.",
       "type": "array",
-      "maxItems": 1000,
+      "maxItems": 5224,
       "items": { "$ref": "saved-query-v2.schema.json" }
     },
     "dashboards": {
