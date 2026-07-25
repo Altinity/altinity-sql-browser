@@ -48,6 +48,13 @@ export interface ClickArbiter {
    * "open this query" must not fire against a tree that is no longer on screen.
    */
   cancel(): void;
+  /**
+   * Drop a pending single ONLY if it belongs to `key`. #426 requires a row's
+   * action-menu button to "cancel no unrelated row operation": it must kill its own
+   * row's pending click without disturbing one already scheduled on a different
+   * row.
+   */
+  cancelFor(key: string): void;
 }
 
 export function createClickArbiter(
@@ -90,5 +97,8 @@ export function createClickArbiter(
       };
     },
     cancel,
+    cancelFor(key) {
+      if (pending !== null && pending.key === key) cancel();
+    },
   };
 }

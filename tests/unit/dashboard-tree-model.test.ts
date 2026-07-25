@@ -355,6 +355,26 @@ describe('deriveDashboardTree — search', () => {
     expect(keys(search('LaTeNcY').rows)).toContain('w1:ops:tile:t-lat');
   });
 
+  // A group with NO matches must keep obeying the user's own expansion: with an
+  // unconditional search override its chevron could neither open (nothing to show)
+  // nor stay closed once it matched, and clicking it silently wrote expansion that
+  // only surfaced after the search cleared. `ui/schema.ts`'s second level makes its
+  // forcing term conditional for exactly this reason.
+  it('forces a group open only when it has a match to reveal', () => {
+    const searching = setTreeSearch(EMPTY_TREE_UI, 'latency');
+    const tree = derive(workspace(), searching);
+    // Panels has the match → forced open. Filters has none → still closed.
+    expect(row(tree.rows, 'w1:ops:group:panels').expanded).toBe(true);
+    expect(row(tree.rows, 'w1:ops:group:filters').expanded).toBe(false);
+  });
+
+  it('still honours persisted expansion for a group with no matches', () => {
+    let ui = toggleGroupExpanded(EMPTY_TREE_UI, 'ops', 'filters');
+    ui = setTreeSearch(ui, 'latency');
+    // The user had Filters open; a search that does not match it must not close it.
+    expect(row(derive(workspace(), ui).rows, 'w1:ops:group:filters').expanded).toBe(true);
+  });
+
   it('shows ONLY matching descendants when the Dashboard itself did not match', () => {
     const tree = search('latency');
     // Both group rows stay (the Dashboard is exposed), but only the match shows.

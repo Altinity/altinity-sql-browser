@@ -80,7 +80,8 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withCurrentMember, withoutPendingFocus,
+  carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
+  withoutPendingFocus,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -102,6 +103,8 @@ import { createQueryDocumentSession } from '../application/query-document-sessio
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 import { mountAppShell } from './app-shell.js';
+import { cancelDashboardTreeClicks } from './dashboard-tree.js';
+import { pruneTreeUi } from '../application/dashboard-tree-ui-state.js';
 import type { AppShellHandle } from './app-shell.js';
 import { buildAppHeader } from './app-header.js';
 
@@ -1791,6 +1794,19 @@ export function createApp(env: CreateAppEnv = {}): App {
     // the Dashboard tree's invalidation has to fire. It is the whole reason the
     // tree has an explicit signal rather than depending on an unrelated one
     // happening to change.
+    // #426: prune the tree's session UI state against committed truth, so a
+    // deleted Dashboard's expansion (and its group entries) cannot linger for the
+    // rest of the session — or, worse, make a RECREATED id render pre-expanded.
+    // Survivors are preserved, so an ordinary mutation never collapses the tree.
+    const treeUi = app.state.dashboardTreeUi.get(workspace.id);
+    if (treeUi) {
+      const pruned = pruneTreeUi(treeUi, workspace.dashboards.map((dashboard) => dashboard.id));
+      if (pruned !== treeUi) app.state.dashboardTreeUi.set(workspace.id, pruned);
+    }
+    // #426: a deferred single-click belongs to the rows of the workspace it was
+    // pressed in. Switching workspaces replaces the whole tree, so an "open this
+    // query" scheduled a moment ago must not fire against the new one.
+    if (workspaceChanged) cancelDashboardTreeClicks(app);
     invalidateDashboardTree();
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
     // leaving the Dashboard host exposed wedges the app: every path back —
@@ -2268,7 +2284,14 @@ export function createApp(env: CreateAppEnv = {}): App {
       // replace, or a superseded port. Fall through to the normal transition,
       // which delivers focus at the deterministic point the node is stable.
     }
-    applyMainSurface(resolution.surface, app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
+    // #426: reaching here with the SAME Dashboard id means the MODE changed (the
+    // same-id/same-mode cases all returned above), and a View/Edit switch must
+    // preserve the member the user navigated to — `resolveOpenDashboard` builds
+    // the surface from the request alone and cannot know one was current.
+    applyMainSurface(
+      carryCurrentMember(app.mainSurface, resolution.surface),
+      app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push',
+    );
   };
 
   app.showQuerySurface = () => {
@@ -2295,6 +2318,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
     app.mainSurface = QUERY_SURFACE;
     writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
+    // The one surface transition that does not go through `applyMainSurface`, so it
+    // has to tell the tree itself — otherwise "every transition invalidates" has a
+    // hole in it.
+    invalidateDashboardTree();
     app.renderCurrentSurface();
   };
 

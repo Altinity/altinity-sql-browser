@@ -320,6 +320,43 @@ describe('renderDashboardTree — mouse gestures', () => {
     expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
+  it('an action-menu click cancels its OWN row\'s pending single but no other row\'s', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    // Pending single belongs to the PANEL row...
+    click(rowFor(list, 'w1:sales:tile:t1'));
+    // ...and the menu button clicked here belongs to a DIFFERENT row.
+    click(rowFor(list, 'w1:sales:tile:t-broken').querySelector('.dash-tree-menu-btn')!);
+    settle();
+    // #426: "action-menu/button clicks … cancel no unrelated row operation".
+    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+  });
+
+  it('uses a menu glyph distinct from the row\'s disclosure chevron', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const row = rowFor(list, 'w1:sales');
+    // #426 requires the two not be confusable; an expanded row would otherwise
+    // carry two identical chevrons at opposite ends.
+    const chevronPaths = row.querySelector('.chev')!.innerHTML;
+    const menuPaths = row.querySelector('.dash-tree-menu-btn')!.innerHTML;
+    expect(menuPaths).not.toBe(chevronPaths);
+    expect(menuPaths).toContain('circle');
+  });
+
+  it('moves the roving tabindex in the DOM immediately on click, not 300ms later', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    click(rowFor(list, 'w1:ops'));
+    // Before the deferred single repaints, the visible Tab owner and the state must
+    // already agree — otherwise Shift-Tab lands on one row while the arrow keys
+    // move relative to another.
+    expect(rowFor(list, 'w1:ops').getAttribute('tabindex')).toBe('0');
+    expect(rowFor(list, 'w1:sales').getAttribute('tabindex')).toBe('-1');
+    settle();
+  });
+
   it('cancelDashboardTreeClicks is safe before any click has been arbitrated', () => {
     const { app } = treeApp();
     expect(() => cancelDashboardTreeClicks(app)).not.toThrow();
@@ -579,6 +616,35 @@ describe('renderDashboardTree — focus and scroll across repaints', () => {
     renderDashboardTree(app);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales');
     expect(rows(list).filter((row) => row.getAttribute('tabindex') === '0')).toHaveLength(1);
+  });
+});
+
+describe('renderDashboardTree — read-only guarantees', () => {
+  it('executes NO query and creates no viewer session when rendering or searching', () => {
+    const { app, list } = treeApp();
+    // #426: "no SQL is executed by rendering or searching the Dashboard tree" and
+    // "no hidden Dashboard viewer/session is created by rendering the tree".
+    const executeRead = vi.fn();
+    app.exec = { ...app.exec, executeRead } as typeof app.exec;
+    const renderDashboard = vi.fn();
+    app.renderDashboard = renderDashboard;
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    setUi(app, (ui) => setTreeSearch(ui, 'revenue'));
+    renderDashboardTree(app);
+    expect(labels(list)).toContain('Revenue');
+    expect(executeRead).not.toHaveBeenCalled();
+    expect(renderDashboard).not.toHaveBeenCalled();
+  });
+
+  it('never mutates the workspace aggregate', () => {
+    const { app } = treeApp();
+    const before = JSON.stringify(app.currentWorkspace);
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    setUi(app, (ui) => setTreeSearch(ui, 'zone'));
+    renderDashboardTree(app);
+    expect(JSON.stringify(app.currentWorkspace)).toBe(before);
   });
 });
 

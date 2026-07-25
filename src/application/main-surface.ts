@@ -184,6 +184,26 @@ export function withoutPendingFocus(surface: MainSurfaceState): MainSurfaceState
   return { ...surface, pendingFocus: null };
 }
 
+/**
+ * Carry the current member across a transition that REBUILDS the surface from an
+ * open request (#426).
+ *
+ * `resolveOpenDashboard` builds a fresh surface from the request alone, so it
+ * cannot know a member was already current. A View/Edit switch through Dashboard
+ * chrome goes down exactly that path — same Dashboard, different mode — and the
+ * spec requires it to preserve the current member. Carried ONLY when the request
+ * names the same Dashboard and no member of its own, so opening a Dashboard row
+ * still clears the selection.
+ */
+export function carryCurrentMember(
+  previous: MainSurfaceState, next: MainSurfaceState,
+): MainSurfaceState {
+  if (previous.kind !== 'dashboard' || next.kind !== 'dashboard') return next;
+  if (previous.dashboardId !== next.dashboardId) return next;
+  if (next.currentMember !== null || previous.currentMember === null) return next;
+  return { ...next, currentMember: previous.currentMember };
+}
+
 /** Select a member INSIDE the already-open Dashboard without owing a render-time
  *  delivery: #426's in-place focus path delivers through the surface command
  *  port directly, so only the styling fact changes here. */

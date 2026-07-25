@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withCurrentMember, withoutPendingFocus,
+  QUERY_SURFACE, carryCurrentMember, isSameDashboardSelection, mainSurfaceRoute,
+  reconcileMainSurface, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
+  withoutPendingFocus,
   type DashboardFocusTarget, type MainSurfaceState,
 } from '../../src/application/main-surface.js';
 import type { DashboardDocumentV1, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
@@ -218,5 +219,40 @@ describe('withCurrentMember', () => {
 
   it('is a no-op in Query mode — there is no Dashboard to select a member in', () => {
     expect(withCurrentMember(QUERY_SURFACE, { kind: 'tile', id: 't1' })).toBe(QUERY_SURFACE);
+  });
+});
+
+describe('carryCurrentMember', () => {
+  // #426: "switching View/Edit through Dashboard chrome preserves the current
+  // member where possible". `resolveOpenDashboard` builds the next surface from the
+  // request alone, so without this the mode switch silently drops the highlight.
+  it('carries the member across a mode change of the SAME Dashboard', () => {
+    const member = { kind: 'tile', id: 't1' } as const;
+    const previous = onDashboard('a', 'view', member);
+    const next = onDashboard('a', 'edit');
+    expect(carryCurrentMember(previous, next)).toEqual({
+      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null,
+    });
+  });
+
+  it('does NOT carry across a different Dashboard', () => {
+    const previous = onDashboard('a', 'view', { kind: 'tile', id: 't1' });
+    const next = onDashboard('b', 'view');
+    expect(carryCurrentMember(previous, next)).toBe(next);
+  });
+
+  it('does NOT override a member the request named itself', () => {
+    const previous = onDashboard('a', 'view', { kind: 'tile', id: 'old' });
+    const next = onDashboard('a', 'edit', { kind: 'tile', id: 'new' });
+    expect(carryCurrentMember(previous, next)).toBe(next);
+  });
+
+  it('is a no-op when there was no member, or either side is Query mode', () => {
+    expect(carryCurrentMember(onDashboard('a'), onDashboard('a', 'edit')))
+      .toEqual(onDashboard('a', 'edit'));
+    const next = onDashboard('a', 'edit');
+    expect(carryCurrentMember(QUERY_SURFACE, next)).toBe(next);
+    expect(carryCurrentMember(onDashboard('a', 'view', { kind: 'tile', id: 't1' }), QUERY_SURFACE))
+      .toBe(QUERY_SURFACE);
   });
 });

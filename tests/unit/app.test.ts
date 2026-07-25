@@ -10,6 +10,11 @@ import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls } from '../../src/ui/file-menu.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
+import { createClickArbiter } from '../../src/core/tree-click-arbiter.js';
+import type { ClickArbiter } from '../../src/core/tree-click-arbiter.js';
+import {
+  EMPTY_TREE_UI, readTreeUi, toggleDashboardExpanded, toggleGroupExpanded,
+} from '../../src/application/dashboard-tree-ui-state.js';
 import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
@@ -5481,6 +5486,93 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'gone' } });
       expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
         .toContain('That filter is no longer on this dashboard.');
+    });
+
+    // #426 — "switching View/Edit through Dashboard chrome preserves the current
+    // member where possible". The mode differs, so this takes the RENDER path,
+    // which rebuilds the surface from the request and would otherwise drop it.
+    it('a View/Edit switch PRESERVES the current member', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = fakePort('ok').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+      app.showDashboardSurface('view');
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'view',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+      });
+    });
+
+    it('opening a DIFFERENT Dashboard does not carry the member across', () => {
+      const { app } = readyApp(['a', 'b'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = fakePort('ok').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+      app.openDashboard({ dashboardId: 'b', mode: 'edit' });
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'b', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+    });
+
+    // #426 — the tree's session UI state is pruned against committed truth, so a
+    // deleted Dashboard's expansion cannot linger (or make a RECREATED id render
+    // pre-expanded), while survivors are preserved.
+    it('prunes tree UI state for Dashboards the committed workspace no longer has', () => {
+      const { app } = readyApp(['keep', 'gone']);
+      let ui = toggleDashboardExpanded(EMPTY_TREE_UI, 'keep');
+      ui = toggleDashboardExpanded(ui, 'gone');
+      ui = toggleGroupExpanded(ui, 'gone', 'panels');
+      app.state.dashboardTreeUi.set('w', ui);
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+      });
+      const pruned = readTreeUi(app.state.dashboardTreeUi, 'w');
+      expect([...pruned.expandedDashboardIds]).toEqual(['keep']);
+      expect([...pruned.expandedGroups]).toEqual([]);
+    });
+
+    it('leaves tree UI state alone when nothing needed pruning', () => {
+      const { app } = readyApp(['keep']);
+      const ui = toggleDashboardExpanded(EMPTY_TREE_UI, 'keep');
+      app.state.dashboardTreeUi.set('w', ui);
+      app.applyCommittedWorkspace({
+        storageVersion: 3, id: 'w', key: 'ops', name: 'Ops', queries: [], dashboards: [dash('keep')],
+      });
+      // Same object: an ordinary mutation must never collapse the open tree.
+      expect(app.state.dashboardTreeUi.get('w')).toBe(ui);
+    });
+
+    // #426 — a deferred single-click belongs to the workspace it was pressed in.
+    it('cancels a pending tree click when the WORKSPACE changes', () => {
+      vi.useFakeTimers();
+      try {
+        const { app } = readyApp(['a']);
+        const single = vi.fn();
+        // Stand in for the tree's arbiter, which app.ts reaches through the
+        // per-instance handle exactly as the view does. Not on the `App` contract —
+        // it is module-private view state stashed per instance, the same convention
+        // as `ui/schema.ts`'s `_schemaClick`.
+        const treeHost = app as unknown as { _dashTreeArbiter?: ClickArbiter };
+        treeHost._dashTreeArbiter = createClickArbiter({
+          setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown as number,
+          clearTimeout: (handle) => clearTimeout(handle),
+        });
+        treeHost._dashTreeArbiter.press('w:a', { single });
+        app.applyCommittedWorkspace({
+          storageVersion: 3, id: 'other-workspace', key: 'other', name: 'Other',
+          queries: [], dashboards: [],
+        });
+        vi.advanceTimersByTime(400);
+        expect(single).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('invalidates the tree even on the empty-collection Dashboard entry point', () => {
+      const { app } = readyApp([]);
+      const revision = app.state.dashboardTreeRevision.value;
+      app.showDashboardSurface('edit');
+      // The one surface transition that bypasses `applyMainSurface`.
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
     });
 
     it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {

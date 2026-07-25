@@ -106,6 +106,33 @@ describe('createClickArbiter', () => {
     expect(pending()).toBe(0);
   });
 
+  it('cancelFor drops ONLY the named row\'s pending single', () => {
+    const single = vi.fn();
+    const { arbiter, tick } = clock();
+    arbiter.press('a', { single });
+    // #426: a row's action-menu button must cancel its own row's pending click and
+    // "cancel no unrelated row operation".
+    arbiter.cancelFor('b');
+    tick();
+    expect(single).toHaveBeenCalledOnce();
+  });
+
+  it('cancelFor drops the pending single when it IS the named row', () => {
+    const single = vi.fn();
+    const { arbiter, tick, pending } = clock();
+    arbiter.press('a', { single });
+    arbiter.cancelFor('a');
+    expect(pending()).toBe(0);
+    tick();
+    expect(single).not.toHaveBeenCalled();
+  });
+
+  it('cancelFor with nothing pending is a no-op', () => {
+    const { arbiter, pending } = clock();
+    arbiter.cancelFor('a');
+    expect(pending()).toBe(0);
+  });
+
   it('a press after the window has closed is a fresh press, not a repeat', () => {
     const single = vi.fn(); const double = vi.fn();
     const { arbiter, tick } = clock();

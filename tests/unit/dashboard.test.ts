@@ -5327,6 +5327,22 @@ describe('renderDashboard — navigation focus (#425)', () => {
       expect(document.querySelectorAll('.share-toast')).toHaveLength(toasts);
     });
 
+    // REGRESSION GUARD. `tileEls` is a write-only cache and the layout reconcilers
+    // rebuild the grid from the SEARCH-FILTERED tile set, so a panel excluded by the
+    // Dashboard's own tile search leaves a DETACHED card behind. Reporting `ok` for
+    // that would mark the tree row current while nothing moved, scrolled or
+    // highlighted — a completely dead click with no diagnostic.
+    it('reports a member whose node is DETACHED as pending, not ok', async () => {
+      const { app } = focusApp();
+      await render(app);
+      const card = qsa(app.root, '.dash-tile')[1];
+      card.remove(); // stands in for the tile-search filter having excluded it
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('pending');
+      expect(card.classList.contains('is-nav-target')).toBe(false);
+      // The still-attached sibling is unaffected.
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('ok');
+    });
+
     it('reports a SUPERSEDED render as pending, not missing — the member is not gone', async () => {
       const { app } = focusApp();
       await render(app);

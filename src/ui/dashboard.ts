@@ -2557,6 +2557,14 @@ export async function renderDashboard(
     if (respectUserInteraction && userInteracted) return 'ok';
     const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
     if (!node) return 'missing';
+    // #426: the member IS on this Dashboard, but its node is not in the document —
+    // `tileEls` is a write-only cache, and the layout reconcilers rebuild the grid
+    // from the SEARCH-FILTERED tile set, so a panel excluded by the Dashboard's own
+    // tile search leaves a detached card behind. Focusing it would silently do
+    // nothing at all while still reporting success. `pending` instead: the caller's
+    // render transition rebuilds the surface (which resets that per-session search)
+    // and delivers the focus for real.
+    if (!node.isConnected) return 'pending';
     // A tile card and a filter field are both non-interactive containers, so
     // they need a programmatic-focus target; `-1` keeps them out of the Tab
     // order, leaving normal keyboard navigation untouched.

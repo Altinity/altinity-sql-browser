@@ -35,7 +35,7 @@ import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
-import { renderDashboardTree } from './dashboard-tree.js';
+import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
@@ -281,6 +281,10 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       mainRow.dataset.surface = kind;
     },
     dispose: () => {
+      // #426: a deferred single-click must not fire against a tree that is being
+      // torn down (sign-out, a surface teardown) — the arbiter's timer outlives
+      // this DOM otherwise.
+      cancelDashboardTreeClicks(app);
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);
     },

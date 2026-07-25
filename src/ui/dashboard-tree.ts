@@ -164,7 +164,9 @@ function buildRow(
     ...(row.expandable ? {
       onclick: (event: MouseEvent) => {
         event.stopPropagation();
-        app._dashTreeArbiter?.cancel();
+        // Only this row's own pending single — a click here must not disturb one
+        // already scheduled on a different row.
+        app._dashTreeArbiter?.cancelFor(row.key);
         toggleRow(app, row);
       },
     } : {}),
@@ -197,10 +199,13 @@ function buildRow(
     ...(row.current ? { 'aria-current': 'true' } : {}),
     onclick: (event: MouseEvent) => {
       // The keyboard owner follows the pointer, so Tab lands where the user last
-      // clicked rather than back at the top of the tree.
+      // clicked rather than back at the top of the tree. The DOM is synced in the
+      // same breath: a member row's repaint is a deferred ~300ms away, and until it
+      // lands the visible focus ring and the arrow-key origin would disagree.
       app.state.dashboardTreeUi.set(
         app.currentWorkspace?.id ?? '', setKeyboardRow(readUi(app), row.key),
       );
+      syncRovingTabindex(rowEl.parentElement, row.key);
       pressRow(app, row, event.shiftKey);
     },
   }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count,
@@ -215,7 +220,7 @@ function buildRow(
  *  would only make the tree feel slow. */
 function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean): void {
   if (row.kind === 'group') {
-    app._dashTreeArbiter?.cancel();
+    app._dashTreeArbiter?.cancelFor(row.key);
     toggleRow(app, row);
     return;
   }
@@ -235,9 +240,10 @@ function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTre
     'aria-label': 'Actions for ' + row.label,
     title: 'Actions',
     onclick: (event: MouseEvent) => {
-      // Never the row's own gesture, and never a pending single of its own.
+      // Never the row's own gesture, and never a pending single of its own — but
+      // #426 is explicit that this must cancel no UNRELATED row operation.
       event.stopPropagation();
-      app._dashTreeArbiter?.cancel();
+      app._dashTreeArbiter?.cancelFor(row.key);
       openMenu({
         document: doc,
         trigger,
@@ -251,7 +257,7 @@ function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTre
         })),
       });
     },
-  }, Icon.chevDown());
+  }, Icon.more());
   return trigger;
 }
 
@@ -262,6 +268,13 @@ function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTre
 const focusRow = (list: HTMLElement, key: string | null): void => {
   if (key !== null) list.querySelector<HTMLElement>('[data-key="' + CSS.escape(key) + '"]')?.focus();
 };
+
+/** Put `tabindex="0"` on exactly one row, without rebuilding anything. */
+function syncRovingTabindex(list: HTMLElement | null, key: string): void {
+  for (const node of list?.querySelectorAll<HTMLElement>('.dash-tree-row') ?? []) {
+    node.setAttribute('tabindex', node.dataset.key === key ? '0' : '-1');
+  }
+}
 
 /** Move the roving tabindex to `key` and give it DOM focus. */
 function moveTo(app: DashboardTreeApp, key: string): void {

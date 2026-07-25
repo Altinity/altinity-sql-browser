@@ -315,10 +315,16 @@ export function deriveDashboardTree(
 
     for (const { group, label, total, shown } of groups) {
       const groupKey = dashboardKey + ':group:' + group;
-      // While searching, a group opens when it actually has something to show.
-      const groupExpanded = search !== ''
-        ? shown.length > 0
-        : ui.expandedGroups.has(groupStateKey(dashboard.id, group));
+      // A search FORCES a group open only when it actually has a match to reveal;
+      // otherwise the user's own expansion still decides. Mirrors `ui/schema.ts`'s
+      // second level, whose forcing term is likewise conditional
+      // (`tableCascadeForced`) rather than "any search at all" — with an
+      // unconditional override, a group with no matches renders a chevron that
+      // cannot open (nothing to show) and cannot stay closed once it does match,
+      // and clicking it silently writes expansion that only surfaces later, after
+      // the search is cleared.
+      const groupExpanded = ui.expandedGroups.has(groupStateKey(dashboard.id, group))
+        || (search !== '' && shown.length > 0);
       rows.push({
         key: groupKey,
         kind: 'group',
