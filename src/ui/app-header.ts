@@ -24,21 +24,6 @@ export function routeButton(
   }, h('span', { class: 'surface-label' }, label));
 }
 
-function surfaceSwitch(app: App): HTMLElement {
-  const dashboard = app.sqlRoute.surface === 'dashboard';
-  // #425: both controls go through the main-surface navigation API rather than
-  // writing a route themselves, so the session surface stays the ONE writer of
-  // the URL. The Dashboard side has no chooser yet (#426 adds the tree), so it
-  // opens the compatibility Dashboard by id. Resolved at click time — the header
-  // stays mounted when File → New workspace swaps the active aggregate.
-  return h('div', {
-    class: 'editor-mode-switch app-surface-switch',
-    role: 'group', 'aria-label': 'Application surface',
-  },
-  routeButton('SQL Browser', !dashboard, () => { app.showQuerySurface(); }),
-  routeButton('Dashboard', dashboard, () => { app.showDashboardSurface('edit'); }));
-}
-
 /** The one application header used by both Workbench and Dashboard. */
 export function buildAppHeader(app: App, options: AppHeaderOptions = {}): HTMLElement {
   app.dom.themeBtn = h('button', {
@@ -62,10 +47,14 @@ export function buildAppHeader(app: App, options: AppHeaderOptions = {}): HTMLEl
   return h('div', {
     class: `app-header${app.sqlRoute.surface === 'dashboard' ? ' dashboard-app-header' : ''}`,
   },
+    // #426: the brand zone is now non-interactive. Dashboard selection lives in
+    // the upper-left tree, which made the old `SQL Browser | Dashboard` pair
+    // redundant — and misleading, since it could only ever reach ONE Dashboard.
+    // `routeButton` above survives: the Dashboard surface toolbar's View/Edit
+    // control is its remaining consumer.
     h('div', { class: 'header-brand-zone' },
       h('div', { class: 'logo-mark' }, Icon.brand()),
-      h('div', { class: 'logo-name' }, 'Altinity®'),
-      surfaceSwitch(app)),
+      h('div', { class: 'logo-name' }, 'Altinity® SQL Browser')),
     h('div', { class: 'header-context-zone' }, ...workspaceControls),
     h('div', { class: 'header-utility-zone' },
     app.dom.connStatus,

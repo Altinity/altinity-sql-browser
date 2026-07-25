@@ -452,7 +452,7 @@ function renderMissingDashboard(
 
 /** #425/#437: View/Edit — the one Dashboard-owned control the compact primary
  *  toolbar carries (navigation back to Query lives in the application header's
- *  `.app-surface-switch` instead). Switching retains the same Dashboard id (the
+ *  the header's own brand zone, now non-interactive). Switching retains the same Dashboard id (the
  *  main-surface API keeps it — writing a route here would re-resolve the
  *  collection's first entry). */
 function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode): HTMLElement {

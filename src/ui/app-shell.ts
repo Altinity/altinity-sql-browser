@@ -15,16 +15,16 @@
 // `app.dom = {}` reset below still happens exactly once, before any header
 // exists (satisfying every other module that reaches into `app.dom.*`
 // directly) — but it also means the `libraryName`/`libraryDirty` effect
-// below can observe a null `app.dom.libraryTitle`/`dashboardNav` on its
+// below can observe a null `app.dom.libraryTitle` on its
 // first, registration-time run, well before `setHeader` ever populates them.
-// `renderLibraryTitle`/`renderDashboardNav` (file-menu.ts) are already
+// `renderLibraryTitle` (file-menu.ts) is already
 // null-safe for exactly this reason; the effect re-runs (and paints for
 // real) on the next `libraryName`/`libraryDirty` change, by which point
 // `setHeader` has long since run.
 //
 // `deps.app` is kept for the same reasons `mountWorkbenchShell` keeps it
 // (see that module's own header comment): the render-module pass-through
-// (renderSchema/renderSavedHistory/renderLibraryTitle/renderDashboardNav all
+// (renderSchema/renderSavedHistory/renderLibraryTitle all
 // still take the full `App`), and the `app.dom` reset + population other
 // modules read `app.dom.*` off of directly.
 
@@ -37,7 +37,7 @@ import { renderSchema } from './schema.js';
 import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
 import { renderDashboardTree } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
-import { renderLibraryTitle, renderDashboardNav } from './file-menu.js';
+import { renderLibraryTitle } from './file-menu.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { startDrag } from './splitters.js';
 import type { App } from './app.types.js';
@@ -49,7 +49,7 @@ import type { AppPreferences, PreferenceKey } from '../application/app-preferenc
  *  shell's own logic, never through `app.*`. */
 export interface AppShellDeps {
   /** Kept ONLY for: the render-module pass-through (renderSchema/
-   *  renderSavedHistory/renderLibraryTitle/renderDashboardNav), and the
+   *  renderSavedHistory/renderLibraryTitle), and the
    *  `app.dom` reset + population (other modules read `app.dom.*`
    *  directly — see the header comment). */
   app: App;
@@ -144,12 +144,18 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     save: (name, value) => prefs.save(name as PreferenceKey, value),
   };
   app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'sideRow', dragCtx) });
-  // Mobile Tables view (#126): a Schema | Library segmented control at the top of
-  // the sidebar. CSS hides it above the breakpoint; below it, it swaps which pane
-  // shows (the sidebar's data-mobile-tab drives both the active-button style and
-  // the pane visibility — no JS effect needed for the active state).
+  // Mobile Tables view (#126): a segmented control at the top of the sidebar. CSS
+  // hides it above the breakpoint; below it, it swaps which pane shows (the
+  // sidebar's data-mobile-tab drives both the active-button style and the pane
+  // visibility — no JS effect needed for the active state).
+  //
+  // #426 relabels the upper segment "Explore": that pane now hosts BOTH the
+  // Databases and Dashboards roles, so "Schema" would name only half of what it
+  // shows. The internal `data-seg`/`data-mobile-tab` values and the `.schema-pane`
+  // selectors they key are deliberately unchanged — this is a label change, not a
+  // restructuring of the mobile CSS (touch behaviour stays out of scope per #426).
   app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
-    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Schema')),
+    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Explore')),
     h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
   sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
   const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
@@ -245,10 +251,6 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.libraryName.value;
     state.libraryDirty.value;
     renderLibraryTitle(app);
-    // #302: the "Dashboard →" control's visibility tracks Dashboard presence,
-    // which changes alongside these signals (star toggle / import / replace all
-    // flip libraryDirty on their way through a commit).
-    renderDashboardNav(app);
   }));
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the

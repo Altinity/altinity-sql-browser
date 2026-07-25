@@ -95,7 +95,7 @@ import {
 } from '../core/sql-route.js';
 import type { SqlRoute } from '../core/sql-route.js';
 import {
-  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard, renderDashboardNav,
+  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard,
 } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
@@ -1723,6 +1723,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // resolved through the one selection seam. Every other stored Dashboard
   // stays on `app.currentWorkspace` and is never projected, executed, or
   // rewritten by a Workbench action.
+  // #426 — the ONE writer of the Dashboard tree's explicit repaint invalidation.
+  // Declared here, above its first caller, so no path can reach it before
+  // `createApp` has finished wiring the controller.
+  const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
+  app.invalidateDashboardTree = invalidateDashboardTree;
+
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV3): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
@@ -1780,6 +1786,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Every projection funnels through here (boot, mutateWorkspace, reset), so
     // the token stays consistent with what's on screen.
     lastCommittedToken = workspaceToken(workspace);
+    // #426: EVERY projection funnels through here — boot, a committed mutation,
+    // an external refresh, and a workspace switch — which makes this the one place
+    // the Dashboard tree's invalidation has to fire. It is the whole reason the
+    // tree has an explicit signal rather than depending on an unrelated one
+    // happening to change.
+    invalidateDashboardTree();
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
     // leaving the Dashboard host exposed wedges the app: every path back —
     // `showQuerySurface`, the header switch, `g w`, a Library click — early-returns
@@ -1976,7 +1988,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.updateSaveBtn();
       app.updateEditorModeUi?.();
       renderSavedHistory(app);
-      renderDashboardNav(app);
     }
     app.onWorkspaceExternallyChanged({ workspace: loaded, queriesChanged: queriesDidChange });
   };
@@ -2203,13 +2214,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.renderCurrentSurface();
   };
 
-  // #426 — bump the tree's explicit invalidation signal. One writer, so every
-  // trigger the issue lists routes through here rather than each caller poking a
-  // signal (and no caller depends on an unrelated signal happening to change).
-  app.invalidateDashboardTree = () => {
-    app.state.dashboardTreeRevision.value += 1;
-  };
-
   // #426 — deliver focus to one member of the ALREADY-RENDERED Dashboard through
   // the route-local surface command port. `null`/wrong-surface/superseded ports
   // all report `pending`, which means "not deliverable in place" rather than
@@ -2415,7 +2419,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #425: the no-argument legacy entry point (a header/nav control with no
     // Dashboard chooser yet) — it resolves the compatibility Dashboard and opens
     // it by id. `app.openDashboard(request)` is the ID-addressed API.
-    showDashboard: () => app.showDashboardSurface('edit'),
     // #302: Dashboard import/export invoked from the Dashboard page's own File
     // menu (and still from the Workbench during the transition). Export is a
     // read-only bundle download; import runs the transactional planner and, on

@@ -981,27 +981,31 @@ describe('renderApp shell', () => {
   it('builds header + sidebar + workbench and mounts the editor', async () => {
     const { app } = rendered();
     expect(qs(app.root, '.app-header')).not.toBeNull();
-    expect(qs(app.root, '.logo-name').textContent).toBe('Altinity®');
-    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
-      .toEqual(['SQL Browser', 'Dashboard']);
-    expect(qsa(app.root, '.app-surface-switch svg')).toHaveLength(0);
-    expect(qsa(app.root, '.app-surface-switch .editor-mode-btn').map((button) => button.getAttribute('aria-label')))
-      .toEqual(['SQL Browser', 'Dashboard']);
+    // #426: the brand zone is non-interactive now — Dashboard selection lives in
+    // the upper-left tree, so the old `SQL Browser | Dashboard` pair is gone (it
+    // could only ever reach ONE Dashboard anyway).
+    expect(qs(app.root, '.logo-name').textContent).toBe('Altinity® SQL Browser');
+    expect(qsa(app.root, '.header-brand-zone button')).toHaveLength(0);
     expect(qs(app.root, '.dashboard-mode-switch')).toBeNull();
-    // File → New workspace replaces the active aggregate without rebuilding
-    // this header. Its surface controls must route to the replacement, not
-    // the key captured when the header first mounted.
+    // #426: the upper sidebar pane carries the role switcher instead.
+    expect(qsa(app.root, '.upper-role-tabs .side-tab').map((tab) => tab.textContent))
+      .toEqual(['Databases', 'Dashboards· 0']);
+    // File → New workspace replaces the active aggregate without rebuilding the
+    // header. Surface navigation must route to the REPLACEMENT, not the key
+    // captured when the header first mounted. The removed button went through
+    // `showDashboardSurface`, which is where that click-time resolution lives —
+    // so the regression guard moves onto the API rather than disappearing with
+    // the control.
     app.currentWorkspace = {
       storageVersion: 3, id: 'new-workspace', key: 'sql_library_7',
       name: 'SQL Library', queries: [], dashboards: [],
     };
     app.state.workspaceKey = 'sql_library_7';
     app.renderCurrentSurface = vi.fn();
-    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((button) => button.textContent === 'Dashboard')!.click();
-    // #425: the control goes through the main-surface API, which writes the
-    // route from the session surface — asserted on the resulting route itself,
-    // so a control that captured the stale key still fails here.
+    app.showDashboardSurface('edit');
+    // #425: this goes through the main-surface API, which writes the route from
+    // the session surface — asserted on the resulting route itself, so a caller
+    // that captured the stale key still fails here.
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'sql_library_7', mode: 'edit',
     });
@@ -5488,14 +5492,6 @@ describe('unified /sql routing', () => {
     it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
       const { app } = readyApp(['first', 'second']);
       app.showDashboardSurface('edit');
-      expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
-      });
-    });
-
-    it('the "Dashboard →" nav action opens the compatibility Dashboard by id', () => {
-      const { app } = readyApp(['first', 'second']);
-      app.actions.showDashboard();
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
       });

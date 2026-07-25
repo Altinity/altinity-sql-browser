@@ -69,13 +69,6 @@ export function libraryControls(app: App): HTMLElement[] {
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: () => openFileMenu(app),
   }, h('span', null, 'File'), Icon.chevDown());
-  // Retain the controller seam for callers/tests that invoke the historical
-  // shortcut directly; the visible surface switch now owns this navigation.
-  app.dom.dashboardNav = h('button', {
-    class: 'hd-dash-nav', title: 'Open Dashboard', 'aria-label': 'Open Dashboard',
-    onclick: () => app.actions.showDashboard(),
-  }, Icon.layers(), h('span', { class: 'hd-dash-nav-label' }, 'Dashboard →'));
-  renderDashboardNav(app);
   return [app.dom.fileBtn, buildWorkspaceTitle(app, true)];
 }
 
@@ -86,14 +79,6 @@ export function buildWorkspaceTitle(app: App, editable: boolean): HTMLElement {
   });
   renderLibraryTitle(app);
   return app.dom.libraryTitle;
-}
-
-/** Keep the unified Dashboard surface reachable even when `dashboard === null`;
- * that route owns the explicit Create dashboard action. */
-export function renderDashboardNav(app: App): void {
-  const nav = app.dom.dashboardNav;
-  if (!nav) return;
-  nav.hidden = false;
 }
 
 /** (Re)render the workspace title into its slot: a click-to-rename name button
@@ -291,9 +276,6 @@ function afterLibraryChange(app: App): void {
   // absent before that first render.
   app.updateEditorModeUi!();
   renderSavedHistory(app);
-  // Keep the header "Dashboard →" control in sync when a commit adds/removes
-  // the workspace's Dashboard (e.g. Import workspace / Import queries).
-  renderDashboardNav(app);
 }
 
 /** Commit ONE workspace mutation through `app.mutateWorkspace`, then project +

@@ -4213,8 +4213,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
   // are asserted against the real controller in app.test.ts.
   // #437: the separate Back-to-query + title surface row is gone — View/Edit is
   // the only Dashboard-owned control left, and it lives directly in the one
-  // compact primary toolbar (navigation back to Query is the application
-  // header's own `.app-surface-switch`, asserted separately below).
+  // compact primary toolbar. #426 then removed the header's surface pair too, so
+  // navigating between surfaces is the sidebar tree's job now.
   it('renders one compact toolbar row with no separate surface row, and View/Edit', async () => {
     const { app } = modeApp({ workspace: wsWith({ title: 'Ops overview' }), mode: 'edit' });
     await render(app);
@@ -4258,22 +4258,16 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qsa(app.root, '.dash-page')).toHaveLength(1);
   });
 
-  it('surface and mode controls delegate to the main-surface navigation API', async () => {
+  // #426: the header's SQL Browser | Dashboard pair is gone (Dashboard selection
+  // moved to the upper-left tree), so the only surface control this toolbar still
+  // owns is View/Edit — which must still delegate rather than write a route.
+  it('the mode control delegates to the main-surface navigation API', async () => {
     const { app } = modeApp({ workspace: wsWith(), mode: 'edit' });
     const showQuerySurface = vi.fn();
     const showDashboardSurface = vi.fn();
     app.showQuerySurface = showQuerySurface;
     app.showDashboardSurface = showDashboardSurface;
     await render(app);
-    qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'SQL Browser')!.click();
-    expect(showQuerySurface).toHaveBeenCalledTimes(1);
-    // Already on the Dashboard surface: its own button is inert.
-    const dashboardButton = qsa<HTMLButtonElement>(app.root, '.app-surface-switch .editor-mode-btn')
-      .find((b) => b.textContent === 'Dashboard')!;
-    expect(dashboardButton.disabled).toBe(true);
-    dashboardButton.click();
-    expect(showDashboardSurface).not.toHaveBeenCalled();
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'View')!.click();
     expect(showDashboardSurface).toHaveBeenLastCalledWith('view');
@@ -4282,7 +4276,8 @@ describe('renderDashboard — unified live modes (#407)', () => {
     qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((b) => b.textContent === 'Edit')!.click();
     expect(showDashboardSurface).toHaveBeenLastCalledWith('edit');
-    expect(showQuerySurface).toHaveBeenCalledTimes(1);
+    // Nothing in the Dashboard toolbar navigates back to Query any more.
+    expect(showQuerySurface).not.toHaveBeenCalled();
   });
 
   it('puts all Dashboard chrome in the shared compact application header', async () => {
@@ -4290,9 +4285,9 @@ describe('renderDashboard — unified live modes (#407)', () => {
     app.state.serverVersion = '26.3.10.4';
     await render(app);
     const header = qs(app.root, '.app-header');
-    expect(qs(header, '.logo-name').textContent).toBe('Altinity®');
-    expect(qsa(header, '.app-surface-switch .editor-mode-btn').map((button) => button.textContent))
-      .toEqual(['SQL Browser', 'Dashboard']);
+    expect(qs(header, '.logo-name').textContent).toBe('Altinity® SQL Browser');
+    // #426: non-interactive branding — no surface buttons in the header at all.
+    expect(qsa(header, '.header-brand-zone button')).toHaveLength(0);
     expect(qsa(app.root, '.dashboard-mode-switch .editor-mode-btn').map((button) => button.textContent))
       .toEqual(['View', 'Edit']);
     expect(qs(header, '.lib-name-text').textContent).toBe('W');

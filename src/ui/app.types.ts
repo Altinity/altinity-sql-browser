@@ -110,9 +110,6 @@ export interface AppDom {
   fileBtn?: HTMLElement;
   fileDialog?: HTMLElement;
   libraryTitle?: HTMLElement;
-  /** Workbench's post-workspace `Dashboard →` shortcut; Dashboard replaces
-   *  this slot with the View/Edit segmented control. */
-  dashboardNav?: HTMLElement;
   /** #426 — the upper sidebar pane's `Databases | Dashboards` role tab row. */
   upperRoleTabs?: HTMLElement;
   /** #426 — the Dashboard hierarchy tree's `role="tree"` row container. */
@@ -225,11 +222,6 @@ export interface ActionsRegistry {
   insertCreate(target: string): Promise<void>;
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
-  /** #425 — a legacy Dashboard entry point with no chooser yet (the header
-   *  surface switch, the Workbench "Dashboard →" nav): resolves the ONE
-   *  compatibility Dashboard and opens it by id. Callers that already know which
-   *  Dashboard they want use `App.openDashboard(request)` instead. */
-  showDashboard(): void;
   /** #302 — export the current dashboard's dependency closure as a bundle. */
   exportDashboard(): void;
   /** #302 — import a Dashboard bundle through the transactional planner. */

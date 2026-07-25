@@ -666,16 +666,6 @@ h1, h2, h3, h4, h5, h6 {
   cursor: pointer; font-family: inherit; font-size: var(--text-body); font-weight: var(--fw-medium); flex-shrink: 0;
 }
 .hd-file-btn:hover { background: var(--bg-hover); color: var(--fg); }
-/* #302: header Dashboard nav control, placed right after the workspace name.
-   A plain navigation button (not a dropdown); collapses to icon-only below the
-   mobile breakpoint via .hd-hide-mobile-label. */
-.hd-dash-nav {
-  display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
-  border: none; border-radius: var(--r-sm); background: transparent; color: var(--fg-mute);
-  cursor: pointer; font-family: inherit; font-size: var(--text-body); font-weight: var(--fw-medium); flex-shrink: 0;
-}
-.hd-dash-nav:hover { background: var(--bg-hover); color: var(--fg); }
-.hd-dash-nav svg { width: 14px; height: 14px; }
 .lib-title { display: flex; align-items: center; min-width: 0; }
 .lib-name {
   display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px;
@@ -2236,10 +2226,6 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: var(--shadow-lift);
 }
 .editor-mode-btn.is-disabled { opacity: .42; cursor: not-allowed; }
-.app-surface-switch .editor-mode-btn {
-  min-width: 0; white-space: nowrap;
-  font-size: var(--text-body); font-weight: var(--fw-medium);
-}
 .dashboard-mode-switch { flex-shrink: 0; }
 .editor-mode-btn:focus-visible,
 .tb-btn:focus-visible,
