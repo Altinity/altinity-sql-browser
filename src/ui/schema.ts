@@ -7,6 +7,7 @@ import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
 import { compactType, outerTypeName, INLINE_TYPE_MAX } from '../core/type-display.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from './dnd-mime.js';
+import { DBLCLICK_MS } from '../core/tree-click-arbiter.js';
 import type { AppState } from '../state.js';
 import type { AppDom, ActionsRegistry } from './app.types.js';
 import type { DocTarget, DocKind } from '../core/doc-types.js';
@@ -181,7 +182,11 @@ function flipChevron(list: HTMLElement, key: string, wasOpen: boolean): void {
 // click on `app` (per instance → tests stay isolated) and treat a quick repeat
 // on the same row as the double. Single click stays instant; the double runs in
 // addition to that first click's expand.
-const DBLCLICK_MS = 300;
+// #426 moved the window itself into `core/tree-click-arbiter.ts`, which the
+// Dashboard tree arbitrates with. This tree deliberately keeps its own post-hoc
+// DETECTOR (its first click's action is harmless expansion — see that module's
+// header for why a member tree cannot do the same), but the two must agree on
+// what "a quick repeat" means, so the constant is shared rather than duplicated.
 function isDoubleClick(app: SchemaApp, key: string): boolean {
   const now = Date.now();
   const last = app._schemaClick;
