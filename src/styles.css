@@ -500,6 +500,22 @@ body {
    instead of a brittle hard-coded viewport `top`. No effect on the desktop
    flex layout. */
 .main-row { flex: 1; display: flex; min-height: 0; overflow: hidden; position: relative; }
+/* #425: the persistent shell mounts the surface-specific header into a stable
+   slot so it can be replaced without rebuilding the sidebar around it.
+   `display: contents` keeps `.app-header` ITSELF the direct child of `#root`'s
+   flex column — an ordinary block wrapper would become the flex item instead and
+   lose the header's own `flex-shrink: 0`, letting it squash. */
+.app-header-slot { display: contents; }
+/* #425: the two mutually exclusive main work-surface hosts — the Query surface
+   (SQL editor + result/data drawer) and the Dashboard — as siblings of the
+   sidebar, so a Dashboard owns the whole right-hand work area while the sidebar
+   stays visible. Exactly one is exposed at a time; `[hidden]` needs the explicit
+   override because a class rule's `display: flex` beats the UA stylesheet's bare
+   `[hidden]` (the same reason `.document-editor[hidden]` carries one). */
+.query-host, .dashboard-host {
+  flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+}
+.query-host[hidden], .dashboard-host[hidden] { display: none !important; }
 .sidebar {
   display: flex; flex-direction: column;
   background: var(--bg-side);
@@ -2474,7 +2490,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   /* ---- Full-screen view switching (main-row[data-mobile-view]) ---- */
   /* Tables → sidebar fills; workbench hidden. Sidebar is a normal flow child
      here (not the desktop resizable column), full width. */
-  .main-row[data-mobile-view="tables"] .workbench { display: none; }
+  /* #425: hide the HOST, not just `.workbench` inside it — the host is the
+     flex:1 sibling of the sidebar now, so leaving it laid out would fight the
+     full-width sidebar below. */
+  .main-row[data-mobile-view="tables"] .query-host { display: none; }
   .main-row[data-mobile-view="tables"] .sidebar { display: flex; width: 100% !important; }
   /* Editor / Results → sidebar hidden, workbench fills. */
   .main-row[data-mobile-view="editor"] .sidebar,

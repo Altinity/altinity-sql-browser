@@ -100,6 +100,8 @@ import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
+import { mountAppShell } from './app-shell.js';
+import { buildAppHeader } from './app-header.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -2260,7 +2262,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     disposeDashboardSurface();
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
     disposeWorkbenchMount?.();
-    disposeWorkbenchMount = renderApp(app, { toggleTheme, startDrag });
+    disposeWorkbenchMount = renderApp(app, { startDrag });
   };
   if (typeof win.addEventListener === 'function') {
     win.addEventListener('popstate', () => { void app.handleSqlPopState(); });
@@ -2268,44 +2270,67 @@ export function createApp(env: CreateAppEnv = {}): App {
   return app;
 }
 
-/** `renderApp`'s second argument — the two closures it can't rebuild itself
- *  (both defined inside `createApp`, over that same `app`). */
+/** `renderApp`'s second argument — the one closure it can't rebuild itself
+ *  (defined inside `createApp`, over that same `app`). The former `toggleTheme`
+ *  member went with the header: `buildAppHeader` wires the theme button to
+ *  `app.toggleTheme` off the live object, so threading it through here was
+ *  already dead by the time the shell split moved the header build out. */
 export interface RenderAppHelpers {
-  toggleTheme: () => void;
   startDrag: typeof startDrag;
 }
 
 
 /** Build the signed-in shell and mount all regions — a thin composition call
- *  onto `ui/workbench/workbench-shell.ts`'s `mountWorkbenchShell` (#276 Phase
- *  5): the entire former body (header/sidebar/splitters/workbench DOM/every
- *  effect/`attachShell`/the catalog bootstrap tail) now lives there,
- *  byte-identically, driven by a narrow `WorkbenchShellDeps` bag instead of
- *  the full `App` — see that module's header comment for what stays coupled
- *  to `app` and why. */
+ *  onto `ui/app-shell.ts`'s `mountAppShell` (the persistent frame: header
+ *  slot/sidebar/mobile-nav) and `ui/workbench/workbench-shell.ts`'s
+ *  `mountWorkbenchShell` (the query column), mounted into the frame's
+ *  `queryHost` (#425 follow-up prep split of #276 Phase 5's former single
+ *  `mountWorkbenchShell`). Every line either shell runs is still the same
+ *  byte-identical code, now driven by two narrow dep bags instead of the
+ *  full `App` — see each module's header comment for what stays coupled to
+ *  `app` and why.
+ *
+ *  Always mounts BOTH fresh (no conditional/idempotent mounting yet — that's
+ *  for a later commit once a Dashboard host actually shares this frame): the
+ *  app shell resets `app.dom` and builds the sidebar/mobile-nav first, then
+ *  the workbench shell mounts the query column into its `queryHost`, then
+ *  the header is built and spliced in last via `setHeader` — see
+ *  app-shell.ts's own header comment for why that order still satisfies
+ *  every module that reaches into `app.dom.*` directly. */
 export function renderApp(app: App, helpers: RenderAppHelpers): () => void {
-  return mountWorkbenchShell({
+  const shell = mountAppShell({
     app,
     root: app.root,
     document: app.document,
     state: app.state,
-    actions: app.actions,
-    conn: app.conn,
     catalog: app.catalog,
+    prefs: app.prefs,
+    matchMedia: app.matchMedia,
+    updateBanner: app.updateBanner,
+    startDrag: helpers.startDrag,
+  });
+  const disposeWorkbench = mountWorkbenchShell({
+    app,
+    document: app.document,
+    state: app.state,
+    actions: app.actions,
     sqlEditor: app.sqlEditor,
     specEditor: app.specEditor,
     workbench: app.workbench,
     queryDoc: app.queryDoc,
     prefs: app.prefs,
-    matchMedia: app.matchMedia,
+    queryHost: shell.queryHost,
     activeTab: app.activeTab,
     updateSaveBtn: app.updateSaveBtn,
     specBlocked: app.specBlocked,
     renderVarStrip: app.renderVarStrip,
-    updateBanner: app.updateBanner,
     setRunBtn: app.setRunBtn,
     setExportBtn: app.setExportBtn,
-    toggleTheme: helpers.toggleTheme,
     startDrag: helpers.startDrag,
   });
+  shell.setHeader(buildAppHeader(app));
+  return () => {
+    disposeWorkbench();
+    shell.dispose();
+  };
 }
