@@ -190,7 +190,15 @@ function repairedDashboard(
  *  References are inspected and validated across the whole collection — the
  *  current UI may only offer repairs for what it can show, but the planner
  *  still detects a break in a Dashboard the UI never renders, so a mutation
- *  can never silently corrupt hidden data. */
+ *  can never silently corrupt hidden data.
+ *
+ *  Note for the caller that eventually wires this up (it has no production
+ *  caller yet): ONE `repair` is applied to EVERY Dashboard. That is right for
+ *  `remap-query` (a query id is workspace-global) but blunt for the
+ *  tile-scoped repairs — `switch-variant` keys off `tileVariants[tile.id]`,
+ *  and tile ids are Dashboard-LOCAL, so a coincidental id collision would
+ *  rewrite an unrelated Dashboard's tile. A per-Dashboard repair map is the
+ *  natural extension once a UI can actually address more than one Dashboard. */
 export function planSavedQueryMutation(
   workspace: StoredWorkspaceV3, mutation: SavedQueryMutation,
   repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},

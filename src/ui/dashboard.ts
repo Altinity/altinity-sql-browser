@@ -1163,7 +1163,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // fresher was observed, keep the current cache.
       if (observed !== undefined) {
         committedWorkspace = observed;
-        committedRevision = (observed && findDashboard(observed, selectedDashboardId)?.revision) || committedRevision;
+        committedRevision = (observed && findDashboard(observed, selectedDashboardId)?.revision)
+          ?? committedRevision;
         if (observed) app.applyCommittedWorkspace(observed);
       }
       if (result) {

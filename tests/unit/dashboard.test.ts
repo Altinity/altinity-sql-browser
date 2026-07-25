@@ -4564,6 +4564,38 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect((await loadActive()).dashboards[0]?.tiles).toEqual([]);
   });
 
+  // #424: an ORDINARY edit on the visible Dashboard must leave every other
+  // stored Dashboard byte-identical, revision included. Without this the
+  // ID-addressed commit could be swapped for a plain one-element write and
+  // nothing else in the suite would notice.
+  it('an ordinary tile edit preserves every other stored Dashboard, revisions included', async () => {
+    const hidden = {
+      documentVersion: 1 as const, id: 'hidden', title: 'Hidden', revision: 12,
+      layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    const base = twoTilesGrid();
+    const workspace = { ...base, dashboards: [base.dashboards[0], hidden] };
+    const { app, loadActive } = dashApp({ workspace });
+    await render(app);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+
+    const committed = await loadActive();
+    expect(committed.dashboards).toHaveLength(2);
+    // The visible Dashboard advanced…
+    expect(committed.dashboards[0].id).toBe(base.dashboards[0].id);
+    expect(committed.dashboards[0].revision).toBe(2);
+    expect(committed.dashboards[0].tiles.map((t) => t.id)).toEqual(['t2']);
+    // …and the hidden one did not move at all.
+    expect(committed.dashboards[1]).toEqual(hidden);
+    // The visible surface still shows exactly one Dashboard and no selector.
+    expect(app.state.dashboard?.id).toBe(base.dashboards[0].id);
+    expect(qsa(app.root, '[class*="dashboard-select"], [class*="dash-tabstrip"]')).toHaveLength(0);
+  });
+
   // #424: the route pins the compatibility Dashboard's ID at render and
   // commits BY ID. If that document disappears from committed truth while a
   // command is queued (an Import Dashboard replaced the compatibility slot),

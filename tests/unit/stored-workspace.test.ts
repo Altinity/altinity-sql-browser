@@ -61,7 +61,8 @@ describe('validateStoredWorkspaceDocument', () => {
     });
     expect(has(d, 'schema-required')).toBe(true);
     // The retired singular field is rejected outright, never silently ignored.
-    expect(validateStoredWorkspaceDocument(workspace({ dashboard: null })).length).toBeGreaterThan(0);
+    expect(codes(validateStoredWorkspaceDocument(workspace({ dashboard: null }))))
+      .toContain('schema-unknown-property');
   });
 
   it('fails closed on unknown query and dashboard versions, suppressing schema noise', () => {
@@ -71,9 +72,13 @@ describe('validateStoredWorkspaceDocument', () => {
     }));
     expect(has(d, 'spec-version-unsupported')).toBe(true);
     expect(find(d, 'dashboard-version-unsupported').path).toEqual(['dashboards', 1, 'documentVersion']);
-    // Only the offending member's schema noise is suppressed — the valid
-    // sibling is still fully validated.
-    expect(has(d, 'schema-const')).toBe(false);
+    // Only the OFFENDING member's schema noise is suppressed: give the valid
+    // sibling a structural error of its own and it must still be reported.
+    const sibling = validateStoredWorkspaceDocument(workspace({
+      dashboards: [dashboardDoc({ title: 42 }), dashboardDoc({ id: 'd2', documentVersion: 4 })],
+    }));
+    expect(find(sibling, 'dashboard-version-unsupported').path).toEqual(['dashboards', 1, 'documentVersion']);
+    expect(sibling.some((x) => x.path[0] === 'dashboards' && x.path[1] === 0)).toBe(true);
   });
 
   it('runs whole-workspace cross-resource semantics over every Dashboard', () => {
@@ -104,6 +109,48 @@ describe('validateStoredWorkspaceDocument', () => {
       queries: [panelQuery('p1')],
       dashboards: [dashboardDoc({ tiles: [{ id: 't1', queryId: 'p1' }, { id: 't1', queryId: 'p1' }] })],
     })), 'dashboard-duplicate-tile-id')).toBe(true);
+  });
+
+  it('scopes filter targets and layout placements to their OWN Dashboard', () => {
+    // `t1` exists only in the first Dashboard; the second may not reach it,
+    // through a filter target or through a layout placement key.
+    const crossFilter = validateStoredWorkspaceDocument(workspace({
+      queries: [panelQuery('p1')],
+      dashboards: [
+        tiled('d1', 't1', 'p1'),
+        dashboardDoc({
+          id: 'd2', tiles: [{ id: 't2', queryId: 'p1' }],
+          layout: { type: 'flow', version: 1, preset: 'report', items: { t2: {} } },
+          filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
+        }),
+      ],
+    }));
+    expect(find(crossFilter, 'filter-target-missing').path)
+      .toEqual(['dashboards', 1, 'filters', 0, 'targets', 0]);
+
+    const crossLayout = validateStoredWorkspaceDocument(workspace({
+      queries: [panelQuery('p1')],
+      dashboards: [
+        tiled('d1', 't1', 'p1'),
+        dashboardDoc({
+          id: 'd2', tiles: [{ id: 't2', queryId: 'p1' }],
+          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+        }),
+      ],
+    }));
+    expect(find(crossLayout, 'layout-orphan-placement').path)
+      .toEqual(['dashboards', 1, 'layout', 'items', 't1']);
+  });
+
+  it('enforces the per-Dashboard limits independently, at each Dashboard\'s own index', () => {
+    const permissive = { validate: () => [], getSchema: () => undefined };
+    const tooManyFilters = Array.from({ length: 33 }, (_, i) => ({ id: `f${i}`, parameter: 'p' }));
+    const d = validateStoredWorkspaceDocument(workspace({
+      dashboards: [dashboardDoc(), dashboardDoc({ id: 'd2', filters: tooManyFilters })],
+    }), { validationService: permissive });
+    expect(find(d, 'limit-filter-count').path).toEqual(['dashboards', 1, 'filters']);
+    // The query-collection limit stays workspace-scoped, applied once.
+    expect(has(d, 'limit-query-count')).toBe(false);
   });
 
   it('bounds the Dashboard collection at the shared portable capacity', () => {
@@ -147,12 +194,25 @@ describe('migrateStoredWorkspaceV2ToV3', () => {
     expect(migrated.dashboards[0].revision).toBe(4);
     expect(migrated.queries).toEqual([query]);
     expect(migrated.queries[0].spec.favorite).toBe(true);
-    // A deep clone: mutating the result never reaches the caller's document.
+    // A deep clone on BOTH collections: mutating the result never reaches the
+    // caller's document.
     migrated.dashboards[0].title = 'changed';
+    migrated.queries[0].spec.name = 'changed';
     expect(dashboard.title).toBe('Analytics');
+    expect(query.spec.name).toBe('Revenue');
     // Deterministic: migrating the same input again yields the same value.
     expect(migrateStoredWorkspaceV2ToV3(source as unknown as StoredWorkspaceV2).dashboards)
       .toEqual([dashboard]);
+  });
+
+  it('preserves query order and never reorders the catalog', () => {
+    const order = ['zeta', 'alpha', 'mid'].map((id) => (
+      { id, sql: 'SELECT 1', specVersion: 1, spec: { name: id } }
+    ));
+    const migrated = migrateStoredWorkspaceV2ToV3(
+      legacy({ queries: order }) as unknown as StoredWorkspaceV2,
+    );
+    expect(migrated.queries.map((q) => q.id)).toEqual(['zeta', 'alpha', 'mid']);
   });
 
   it('never derives tiles from favorite flags in either direction', () => {

@@ -122,7 +122,9 @@ const summary = (
   key: workspace.key,
   name: workspace.name,
   queryCount: workspace.queries.length,
-  hasDashboard: workspace.dashboards.length > 0,
+  // Compatibility-scoped like `dashboardRevision` above, so it resolves
+  // through the same seam rather than assuming the index-0 rule itself.
+  hasDashboard: resolveCompatibilityDashboard(workspace).dashboard !== null,
   lastOpenedAt,
 });
 

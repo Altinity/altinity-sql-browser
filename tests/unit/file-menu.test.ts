@@ -358,6 +358,54 @@ describe('Export', () => {
     if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['p1', 'p2']);
   });
 
+  // #424: a workspace export carries EVERY stored Dashboard, not just the one
+  // the UI exposes — including on the degraded fallback path, where the
+  // envelope must come from `app.currentWorkspace` (the full collection)
+  // rather than from `app.state.dashboard` (the compatibility projection).
+  it('exportWorkspaceAction exports every stored Dashboard, in workspace order', async () => {
+    const committed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib',
+      queries: [panelQuery('c1', 'Committed')],
+      dashboards: [
+        dashboardDoc({ id: 'visible', title: 'Visible', tiles: [{ id: 't1', queryId: 'c1' }] }),
+        dashboardDoc({ id: 'hidden', title: 'Hidden', revision: 12 }),
+      ],
+    };
+    const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    const [, , content] = app.downloadFile.mock.calls[0];
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.dashboards.map((d) => d.id)).toEqual(['visible', 'hidden']);
+      expect(decoded.value.dashboards[1].revision).toBe(12);
+    }
+  });
+
+  it('exportWorkspaceAction keeps every Dashboard on the degraded state fallback', async () => {
+    const app = mount({ workspace: { loadById: async () => { throw new Error('idb blocked'); } } });
+    app.state.libraryName.value = 'My Lib';
+    app.state.savedQueries = [panelQuery('p1')];
+    const visible = dashboardDoc({ id: 'visible', title: 'Visible' });
+    const hidden = dashboardDoc({ id: 'hidden', title: 'Hidden', revision: 12 });
+    // The full collection lives on `app.currentWorkspace`; `state.dashboard`
+    // only ever projects the compatibility entry.
+    app.currentWorkspace = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'My Lib',
+      queries: app.state.savedQueries, dashboards: [visible, hidden],
+    };
+    app.state.dashboard = visible;
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    const [, , content] = app.downloadFile.mock.calls[0];
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.dashboards.map((d) => d.id)).toEqual(['visible', 'hidden']);
+  });
+
   it('Export workspace downloads a valid bundle containing the whole catalog', async () => {
     const app = mount();
     app.state.libraryName.value = 'My Lib';

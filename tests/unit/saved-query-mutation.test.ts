@@ -320,15 +320,53 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
   });
 
   it('rejects a repair that fixes one Dashboard while another stays invalid', () => {
-    // `switch-variant` names a tile id that exists only in the FIRST Dashboard,
-    // so the second keeps its dangling reference and the whole candidate dies.
-    const plan = planSavedQueryMutation(
-      shared(), { type: 'delete-query', queryId: 'p1' },
-      { type: 'switch-variant', tileVariants: { 'exec-p1': 'other' } },
+    // Both Dashboards select the variant `alt`; the replacement drops it. The
+    // repair names only the FIRST Dashboard's tile, so that one is genuinely
+    // fixed while the second keeps a selection the query no longer declares —
+    // a partially repaired candidate, which must not commit.
+    const withVariants = (): StoredWorkspaceV3 => {
+      const workspace = shared();
+      workspace.queries[0] = {
+        ...workspace.queries[0],
+        spec: {
+          ...workspace.queries[0].spec,
+          dashboard: { variants: { alt: {}, other: {} } },
+        },
+      } as SavedQueryV2;
+      workspace.dashboards[0].tiles[0].presentation = { variant: 'alt' };
+      workspace.dashboards[1].tiles[0].presentation = { variant: 'alt' };
+      return workspace;
+    };
+    const dropsAlt = {
+      type: 'replace-query' as const, queryId: 'p1',
+      query: {
+        ...withVariants().queries[0],
+        spec: {
+          ...withVariants().queries[0].spec,
+          dashboard: { variants: { other: {} } },
+        },
+      } as SavedQueryV2,
+    };
+    // Without a repair BOTH Dashboards are diagnosed.
+    const unrepaired = planSavedQueryMutation(withVariants(), dropsAlt);
+    expect(unrepaired.ok).toBe(false);
+    expect(unrepaired.diagnostics.filter((d) => d.code === 'dashboard-variant-missing').map((d) => d.path[1]))
+      .toEqual([0, 1]);
+    // Repairing only the first leaves the second broken — still no candidate,
+    // and the surviving diagnostic points at the Dashboard the UI never shows.
+    const partial = planSavedQueryMutation(
+      withVariants(), dropsAlt, { type: 'switch-variant', tileVariants: { 'exec-p1': 'other' } },
     );
-    expect(plan.ok).toBe(false);
-    expect(plan.candidate).toBeNull();
-    expect(plan.diagnostics.some((d) => d.path[1] === 1)).toBe(true);
+    expect(partial.ok).toBe(false);
+    expect(partial.candidate).toBeNull();
+    expect(partial.diagnostics.filter((d) => d.code === 'dashboard-variant-missing').map((d) => d.path[1]))
+      .toEqual([1]);
+    // Repairing BOTH commits one atomic candidate.
+    const full = planSavedQueryMutation(
+      withVariants(), dropsAlt,
+      { type: 'switch-variant', tileVariants: { 'exec-p1': 'other', 'sales-p1': 'other' } },
+    );
+    expect(full.ok).toBe(true);
   });
 
   it('applies a remap across tiles AND filter sources in every Dashboard', () => {
@@ -340,12 +378,19 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     expect(exec.tiles.map((t) => t.queryId)).toEqual(['p2']);
     expect(sales.tiles.map((t) => t.queryId)).toEqual(['p2', 'p2']);
 
-    // A filter SOURCE remap reaches every Dashboard too.
+    // A filter SOURCE remap reaches every Dashboard too: give the second
+    // Dashboard its own filter over the same source query, then remap it.
+    const bothFiltered = shared();
+    bothFiltered.queries.push(filterQuery('f2'));
+    bothFiltered.dashboards[1].filters = [
+      { id: 'flt2', parameter: 'country', sourceQueryId: 'f1', targets: ['sales-p1'] },
+    ];
     const sourceRemap = planSavedQueryMutation(
-      shared(), { type: 'delete-query', queryId: 'f1' }, { type: 'remove-affected-filters' },
+      bothFiltered, { type: 'delete-query', queryId: 'f1' }, { type: 'remap-query', to: 'f2' },
     );
     expect(sourceRemap.ok).toBe(true);
-    expect(sourceRemap.candidate!.dashboards[0].filters).toEqual([]);
+    expect(sourceRemap.candidate!.dashboards.map((d) => d.filters[0]?.sourceQueryId))
+      .toEqual(['f2', 'f2']);
   });
 
   it('leaves an untouched Dashboard canonically identical, with its revision', () => {

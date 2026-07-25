@@ -10,6 +10,7 @@ import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
 } from '../../src/state.js';
 import { queryToken } from '../../src/workspace/workspace-sync.js';
+import { queryMembershipFavorite } from '../../src/dashboard/application/tile-membership.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
 import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
@@ -572,6 +573,93 @@ describe('saved queries', () => {
       expect(s.dashboard!.tiles).toEqual([]);
       expect(s.dashboard!.filters[0].targets).toEqual([]);
       expect(mutate.commit).toHaveBeenCalledTimes(1);
+    });
+
+    // #424: the star drives membership of the COMPATIBILITY Dashboard only.
+    // Every other stored Dashboard is invisible to it — it neither reads their
+    // membership nor writes to them — and must survive every saved-query
+    // commit byte-for-byte, revision included.
+    describe('the Dashboard collection (#424)', () => {
+      const hidden = (): DashboardDocumentV1 => ({
+        documentVersion: 1, id: 'hidden', title: 'Hidden', revision: 12,
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: { h1: {} } },
+        filters: [],
+        // The SAME query is already a member here — hidden membership must not
+        // leak into the star, and must not be disturbed by toggling it.
+        tiles: [{ id: 'h1', queryId: 'p1' }],
+      });
+      /** Seed a COMMITTED two-Dashboard workspace so `baselineWorkspace` reads
+       *  the real collection instead of synthesizing one from `state`. */
+      const twoDashboardState = () => {
+        const s = savedTestState();
+        const compat = blankDashboard();
+        s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
+        s.dashboard = compat;
+        s.workspaceId = 'w1';
+        s.workspaceKey = 'workspace';
+        const committed: StoredWorkspaceV3 = {
+          storageVersion: 3, id: 'w1', key: 'workspace', name: s.libraryName.value,
+          queries: s.savedQueries, dashboards: [compat, hidden()],
+        };
+        const mutate = fakeMutateWorkspace(s, { loadById: async () => committed });
+        return { s, mutate, committed };
+      };
+
+      it('reads the star from the compatibility Dashboard only, ignoring hidden membership', () => {
+        const { s } = twoDashboardState();
+        // `p1` IS a tile in the hidden Dashboard but not in the compatibility
+        // one, so the star reads false — hidden membership never sets it.
+        expect(queryMembershipFavorite(s.dashboard, s.savedQueries[0])).toBe(false);
+        expect(queryMembershipFavorite(hidden(), s.savedQueries[0])).toBe(true);
+      });
+
+      it('starring adds a tile to the compatibility Dashboard and leaves every other untouched', async () => {
+        const { s, mutate } = twoDashboardState();
+        await toggleFavorite(s, 'p1', mutate, genTileId());
+        const candidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV3;
+        expect(candidate.dashboards).toHaveLength(2);
+        expect(candidate.dashboards[0].tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
+        // Byte-for-byte, revision included.
+        expect(candidate.dashboards[1]).toEqual(hidden());
+      });
+
+      it('unstarring removes only from the compatibility Dashboard', async () => {
+        const { s, mutate } = twoDashboardState();
+        // Star ON first, so the compatibility Dashboard has the tile to remove.
+        await toggleFavorite(s, 'p1', mutate, genTileId());
+        await toggleFavorite(s, 'p1', mutate, genTileId());
+        const candidate = mutate.commit.mock.calls[1][0] as StoredWorkspaceV3;
+        expect(candidate.dashboards[0].tiles).toEqual([]);
+        // The hidden Dashboard still has its own tile for the same query.
+        expect(candidate.dashboards[1]).toEqual(hidden());
+      });
+
+      it('preserves every Dashboard through a rename and through a delete', async () => {
+        const { s, mutate } = twoDashboardState();
+        await renameSaved(s, 'p1', 'Renamed', undefined, mutate);
+        const renamed = mutate.commit.mock.calls[0][0] as StoredWorkspaceV3;
+        expect(renamed.dashboards.map((d) => d.id)).toEqual(['dash', 'hidden']);
+        expect(renamed.dashboards[1]).toEqual(hidden());
+
+        const { s: s2, mutate: mutate2 } = twoDashboardState();
+        await deleteSaved(s2, 'nonexistent', mutate2);
+        const deleted = mutate2.commit.mock.calls[0][0] as StoredWorkspaceV3;
+        expect(deleted.dashboards).toEqual([blankDashboard(), hidden()]);
+      });
+
+      it('mints the first Dashboard into an EMPTY collection, not over a hidden one', async () => {
+        const s = savedTestState();
+        s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
+        const committed: StoredWorkspaceV3 = {
+          storageVersion: 3, id: s.workspaceId, key: s.workspaceKey, name: s.libraryName.value,
+          queries: s.savedQueries, dashboards: [],
+        };
+        const mutate = fakeMutateWorkspace(s, { loadById: async () => committed });
+        await toggleFavorite(s, 'p1', mutate, genTileId());
+        const candidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV3;
+        expect(candidate.dashboards).toHaveLength(1);
+        expect(candidate.dashboards[0].tiles).toEqual([{ id: 'tile-2', queryId: 'p1' }]);
+      });
     });
 
     it('a null state.dashboard mints the Dashboard and first tile atomically', async () => {

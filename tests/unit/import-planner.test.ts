@@ -447,6 +447,72 @@ describe('planImportDashboard', () => {
   });
 });
 
+// #424: an import that targets the workspace's VISIBLE Dashboard must not
+// touch any other stored Dashboard. Every fixture above holds at most one, so
+// these cover the collection explicitly.
+describe('imports preserve the non-compatibility Dashboards', () => {
+  const hidden = (): DashboardDocumentV1 => dashboardDoc({
+    id: 'hidden', title: 'Hidden', revision: 12,
+    tiles: [{ id: 'h1', queryId: 'a' }],
+    layout: { type: 'flow', version: 1, preset: 'columns-2', items: { h1: {} } },
+  });
+  const twoDashboards = (compat: DashboardDocumentV1) =>
+    workspace({ queries: [panelQuery('a')], dashboards: [compat, hidden()] });
+
+  it('planImportQueries leaves every Dashboard alone when nothing is favorited', () => {
+    const ws = twoDashboards(dashboardDoc({ revision: 4 }));
+    const plan = planImportQueries(ws, bundle({ queries: [panelQuery('b')] }), [], counter());
+    expect(plan.candidateWorkspace!.dashboards).toEqual(ws.dashboards);
+  });
+
+  it('planImportQueries adds an imported favorite to the compatibility Dashboard only', () => {
+    const ws = twoDashboards(dashboardDoc({ revision: 4 }));
+    const favorite = panelQuery('b');
+    favorite.spec.favorite = true;
+    const plan = planImportQueries(ws, bundle({ queries: [favorite] }), [], counter());
+    const dashboards = plan.candidateWorkspace!.dashboards;
+    expect(dashboards).toHaveLength(2);
+    expect(dashboards[0].tiles).toEqual([{ id: 'id-1', queryId: 'b' }]);
+    expect(dashboards[0].revision).toBe(5);
+    expect(dashboards[1]).toEqual(hidden());
+  });
+
+  it('planImportDashboard replaces the compatibility slot and preserves the rest', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      dashboards: [dashboardDoc({
+        id: 'incoming', revision: 3, tiles: [{ id: 't1', queryId: 'a' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+    );
+    const dashboards = plan.candidateWorkspace!.dashboards;
+    // The imported document took slot 0 under a freshly minted id…
+    expect(dashboards.map((d) => d.id)).toEqual(['new-1', 'hidden']);
+    expect(dashboards[0].revision).toBe(1);
+    // …and the workspace's other Dashboard is untouched.
+    expect(dashboards[1]).toEqual(hidden());
+  });
+
+  it('planImportDashboard diagnoses a replace-mode id that collides with a hidden Dashboard', () => {
+    const ws = twoDashboards(dashboardDoc({ id: 'visible' }));
+    const incoming = bundle({
+      queries: [panelQuery('a')],
+      // Same id as the workspace's HIDDEN Dashboard — taking the compatibility
+      // slot under it would leave two entries sharing one id.
+      dashboards: [dashboardDoc({ id: 'hidden', title: 'Colliding' })],
+    });
+    const plan = planImportDashboard(
+      ws, incoming, 'hidden', [{ sourceId: 'a', action: 'use-existing' }], 'replace', counter(),
+    );
+    expect(plan.candidateWorkspace).toBeNull();
+    expect(plan.diagnostics.some((d) => d.code === 'workspace-duplicate-dashboard-id')).toBe(true);
+  });
+});
+
 // --- planReplaceWorkspace --------------------------------------------------------
 
 describe('planReplaceWorkspace', () => {
