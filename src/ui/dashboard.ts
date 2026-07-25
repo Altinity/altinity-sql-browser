@@ -1,6 +1,6 @@
 // The live Dashboard surface (#149 / #240 / #280 / #286 / #407). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
-// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV2`
+// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV3`
 // from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
 // document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
@@ -77,6 +77,9 @@ import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import {
+  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from '../workspace/workspace-dashboards.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -86,7 +89,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV2,
+  SavedQueryV2, StoredWorkspaceV3,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -130,7 +133,7 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  currentWorkspace: StoredWorkspaceV2 | null;
+  currentWorkspace: StoredWorkspaceV3 | null;
   sqlRoute: SqlRoute;
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
@@ -141,7 +144,7 @@ export interface DashboardApp {
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
-  applyCommittedWorkspace(workspace: StoredWorkspaceV2): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV3): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
   // saved-query mutations use, so a rapid sequence of drag/resize/preset/
@@ -363,8 +366,10 @@ function renderMissingDashboard(
         class: 'dash-btn dash-create',
         onclick: async () => {
           const outcome = await app.mutateWorkspace((latest) => {
-            if (!latest || latest.dashboard) return null;
-            return { candidate: { ...latest, dashboard: createEmptyDashboard(app.genId()) } };
+            // #424: "no Dashboard yet" is asked through the one compatibility
+            // seam, and the new document becomes the collection's first entry.
+            if (!latest || resolveCompatibilityDashboard(latest).dashboard) return null;
+            return { candidate: withCompatibilityDashboard(latest, createEmptyDashboard(app.genId())) };
           });
           if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
           if (outcome.ok) app.renderDashboard();
@@ -469,10 +474,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.onWorkspaceExternallyChanged = () => {
     if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
   };
-  if (!workspace.dashboard) {
+  // #424: the ONE place this route decides which Dashboard it edits. The id is
+  // pinned for the whole render so every commit below is addressed BY ID rather
+  // than by array position — a concurrent write that reorders or replaces the
+  // collection can then be detected instead of silently retargeting.
+  const selection = resolveCompatibilityDashboard(workspace);
+  if (!selection.dashboard) {
     renderMissingDashboard(app, readOnly, surfaceGeneration);
     return;
   }
+  const selectedDashboardId = selection.selectedId as string;
 
   const queries: SavedQueryV2[] = workspace.queries;
   const queryById = new Map<string, SavedQueryV2>();
@@ -480,7 +491,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // The live document — layout/order edits replace it; membership is read from
   // `dashboard.tiles[]` (NOT `savedQueries.filter(queryFavorite)`).
-  let currentDoc: DashboardDocumentV1 = workspace.dashboard;
+  let currentDoc: DashboardDocumentV1 = selection.dashboard;
   let committedRevision = currentDoc.revision;
   // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
   // CACHE of the last commit this route observed — never the baseline a
@@ -491,7 +502,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rebuild its candidate from this stale snapshot and silently reverse that
   // other producer's mutation. `null` when no persisted aggregate exists yet
   // (legacy/empty) — commands then stay optimistic-only, same as before #341.
-  let committedWorkspace: StoredWorkspaceV2 | null = workspace;
+  let committedWorkspace: StoredWorkspaceV3 | null = workspace;
   // #344 review fix: queued command DESCRIPTORS (dispatch order), not
   // pre-built document snapshots. A snapshot-based queue (the pre-#344
   // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
@@ -1046,20 +1057,31 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // moved past the route cache, so rebasing from the stale cache would
     // re-publish a document containing what the concurrent commit removed.
     // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV2 | null | undefined;
+    let observed: StoredWorkspaceV3 | null | undefined;
     void app.mutateWorkspace((latest) => {
       observed = latest;
-      if (!latest || !latest.dashboard) return null;
-      const base = latest.dashboard;
-      const reapplied = applyRouteCommand(base, command, latest.queries);
+      // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
+      // either nothing is committed, or (#424) THIS route's PINNED Dashboard is
+      // gone from committed truth — deleted, or replaced by an import while
+      // this command sat in the queue. Either way the command no longer
+      // applies: abort rather than retarget whichever Dashboard now happens to
+      // sit in the compatibility slot.
+      const base = latest && findDashboard(latest, selectedDashboardId);
+      if (!base) return null;
+      // `base` is truthy only when `latest` was, so the aggregate exists here.
+      const committed = latest as StoredWorkspaceV3;
+      const reapplied = applyRouteCommand(base, command, committed.queries);
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
-      return {
-        candidate: {
-          storageVersion: 2, id: latest.id, key: latest.key, name: latest.name, queries: reapplied.queries,
-          dashboard: { ...committedDoc, revision: base.revision + 1 },
-        },
-      };
+      // Replaces exactly this one entry, addressed by its stable id; every
+      // other stored Dashboard is carried through untouched, revisions
+      // included. `null` means the id became AMBIGUOUS (a duplicate reached
+      // committed truth) — never silently overwrite one of two matches.
+      const next = replaceDashboard(committed, selectedDashboardId, {
+        ...committedDoc, revision: base.revision + 1,
+      });
+      if (!next) return null;
+      return { candidate: { ...next, queries: reapplied.queries } };
     }).then((outcome) => {
       if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
       // #343: adapt the shared outcome back to this route's descriptor-based
@@ -1123,13 +1145,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
   // head descriptor, refresh committed truth, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV2 | null | undefined): void {
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV3 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();
     if (result && result.ok) {
       committedWorkspace = result.workspace;
-      committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
+      committedRevision = findDashboard(result.workspace, selectedDashboardId)?.revision ?? committedRevision + 1;
       // #343 §2: `app.mutateWorkspace` already projected committed truth onto
       // `app.state` (exactly once). The route only refreshes its own caches.
     } else {
@@ -1141,7 +1163,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // fresher was observed, keep the current cache.
       if (observed !== undefined) {
         committedWorkspace = observed;
-        committedRevision = observed?.dashboard ? observed.dashboard.revision : committedRevision;
+        committedRevision = (observed && findDashboard(observed, selectedDashboardId)?.revision) || committedRevision;
         if (observed) app.applyCommittedWorkspace(observed);
       }
       if (result) {
@@ -1164,8 +1186,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // dispatch and dequeue (this command was re-applied to THAT base, e.g.
     // a saved-query delete whose resolver pruned a tile), and after every
     // resolution the rendered doc must equal committed truth exactly.
-    let rebased: DashboardDocumentV1 | null = committedWorkspace ? committedWorkspace.dashboard : null;
-    if (!rebased) return;
+    let rebased: DashboardDocumentV1 | null = committedWorkspace
+      ? findDashboard(committedWorkspace, selectedDashboardId) : null;
+    // #424: the pinned Dashboard vanished from committed truth (an Import
+    // Dashboard replaced the compatibility slot with a different document while
+    // this command was in flight). The rendered document no longer exists, so
+    // rebuild the whole route from the projection instead of leaving a phantom
+    // Dashboard on screen.
+    if (!rebased) {
+      needsRebuild = true;
+      rebuildRouteFromCommitted();
+      return;
+    }
     const rebaseQueries = committedWorkspace!.queries;
     for (const pending of pendingCommands) {
       const r = applyRouteCommand(rebased, pending, rebaseQueries);

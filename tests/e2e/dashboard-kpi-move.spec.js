@@ -18,7 +18,7 @@ test.describe('Dashboard flow KPI movement (#340)', () => {
     await page.mouse.up();
     expect(await page.evaluate(() => String(getSelection()).length)).toBeGreaterThan(0);
     expect(await page.evaluate(() => window.__commitCount)).toBe(0);
-    expect(await page.evaluate(async () => (await window.__workspace()).dashboard.tiles.map((tile) => tile.id))).toEqual(['t1', 't2']);
+    expect(await page.evaluate(async () => (await window.__workspace()).dashboards[0].tiles.map((tile) => tile.id))).toEqual(['t1', 't2']);
   });
 
   test('modified drag floats the complete KPI member and commits one move', async ({ page }) => {
@@ -61,6 +61,6 @@ test.describe('Dashboard flow KPI movement (#340)', () => {
     await page.mouse.up();
     await page.keyboard.up('Meta');
     await expect.poll(() => page.evaluate(() => window.__commitCount)).toBe(1);
-    expect(await page.evaluate(async () => (await window.__workspace()).dashboard.tiles.map((tile) => tile.id))).toEqual(['t2', 't1']);
+    expect(await page.evaluate(async () => (await window.__workspace()).dashboards[0].tiles.map((tile) => tile.id))).toEqual(['t2', 't1']);
   });
 });

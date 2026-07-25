@@ -13,7 +13,10 @@ import {
   adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
-import type { SavedQueryV2, StoredWorkspaceV2 } from '../generated/json-schema.types.js';
+import {
+  resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from '../workspace/workspace-dashboards.js';
+import type { SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
@@ -218,7 +221,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  // Atomic StoredWorkspaceV2 persistence: the injected IndexedDB factory seam
+  // Atomic StoredWorkspaceV3 persistence: the injected IndexedDB factory seam
   // (mirrors crypto/sessionStorage) backs the workspace collection, behind
   // which the pure WorkspaceRepository validates create/replace commits.
   // Constructed lazily — no database is opened until
@@ -1598,11 +1601,15 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   };
 
-  // Project the active StoredWorkspaceV2 onto the current application surface.
+  // Project the active StoredWorkspaceV3 onto the current application surface.
   // Persistence is now a collection; this projection identifies which record
   // this tab is editing, while the repository remains independently addressable
-  // by immutable id and stable URL key.
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV2): void => {
+  // by immutable id and stable URL key. #424: `state.dashboard` is the
+  // COMPATIBILITY Dashboard — the single document this phase's UI exposes —
+  // resolved through the one selection seam. Every other stored Dashboard
+  // stays on `app.currentWorkspace` and is never projected, executed, or
+  // rewritten by a Workbench action.
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV3): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
     const workspaceChanged = app.state.workspaceId !== workspace.id;
@@ -1620,7 +1627,7 @@ export function createApp(env: CreateAppEnv = {}): App {
         if (q) tab.lastCommittedQueryToken = queryToken(q);
       }
     }
-    app.state.dashboard = workspace.dashboard;
+    app.state.dashboard = resolveCompatibilityDashboard(workspace).dashboard;
     app.state.workspaceId = workspace.id;
     app.state.workspaceKey = workspace.key;
     app.state.libraryName.value = workspace.name;
@@ -1776,7 +1783,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const runWorkspaceRefresh = async (): Promise<void> => {
     const requestedWorkspaceId = app.state.workspaceId;
     const requestedRouteGeneration = routeLoadGeneration;
-    let loaded: StoredWorkspaceV2 | null;
+    let loaded: StoredWorkspaceV3 | null;
     try {
       const result = await app.workspace.loadById(requestedWorkspaceId);
       if (result.status === 'corrupt') { warnRefreshFailed(); return; }
@@ -1867,7 +1874,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
   };
 
-  const recordOpened = async (workspace: StoredWorkspaceV2): Promise<void> => {
+  const recordOpened = async (workspace: StoredWorkspaceV3): Promise<void> => {
     const result = await app.workspace.markOpened(workspace.key);
     if (!result.ok) {
       flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
@@ -2021,8 +2028,17 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.openDashboard = openDashboard;
 
   app.reloadDashboardRoute = () => {
+    // #424: fold the projected compatibility Dashboard back into the COLLECTION,
+    // preserving every other entry. A null projection means "this workspace has
+    // no Dashboard", which can only happen when the collection is already empty
+    // — never a reason to drop a stored Dashboard, so the array is left alone.
     app.currentWorkspace = app.currentWorkspace
-      ? { ...app.currentWorkspace, queries: app.state.savedQueries, dashboard: app.state.dashboard }
+      ? {
+        ...(app.state.dashboard
+          ? withCompatibilityDashboard(app.currentWorkspace, app.state.dashboard)
+          : app.currentWorkspace),
+        queries: app.state.savedQueries,
+      }
       : null;
     app.renderDashboard();
   };

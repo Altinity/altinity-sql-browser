@@ -5,19 +5,19 @@ import type {
   WorkspaceStore, WorkspaceStoreCreateResult, WorkspaceStoreRecord,
   WorkspaceStoreReplaceResult,
 } from '../../src/workspace/workspace-store.types.js';
-import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 
-const workspace = (over: Partial<StoredWorkspaceV2> = {}): StoredWorkspaceV2 => ({
-  storageVersion: 2,
+const workspace = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => ({
+  storageVersion: 3,
   id: 'w1',
   key: 'workspace_one',
   name: 'Workspace One',
   queries: [],
-  dashboard: null,
+  dashboards: [],
   ...over,
 });
 
-const encode = (value: StoredWorkspaceV2): string => {
+const encode = (value: StoredWorkspaceV3): string => {
   const result = encodeStoredWorkspaceJson(value);
   if (!result.ok) throw new Error('invalid test fixture');
   return result.value;
@@ -94,7 +94,7 @@ function memoryStore(initial: WorkspaceStoreRecord[] = []) {
 }
 
 const record = (
-  value: StoredWorkspaceV2, lastOpenedAt: number | null = null,
+  value: StoredWorkspaceV3, lastOpenedAt: number | null = null,
 ): WorkspaceStoreRecord => ({
   id: value.id, key: value.key, text: encode(value), lastOpenedAt,
 });
@@ -179,7 +179,7 @@ describe('workspace repository collection', () => {
         id: 'q1', sql: 'SELECT 1', specVersion: 1,
         spec: { name: 'q1', favorite: true },
       }],
-      dashboard: {
+      dashboards: [{
         documentVersion: 1,
         id: 'd1',
         title: 'Dashboard',
@@ -187,7 +187,7 @@ describe('workspace repository collection', () => {
         layout: { type: 'flow', version: 1, preset: 'report', items: {} },
         filters: [],
         tiles: [],
-      },
+      }],
     });
     const repository = createWorkspaceRepository({ store: memoryStore([record(value)]) });
     const result = await repository.commit(value);
@@ -319,5 +319,141 @@ describe('implicit workspace resolution and opened metadata', () => {
     const store = memoryStore();
     store.setFail('list');
     await expect(createWorkspaceRepository({ store }).list()).rejects.toBe('list unavailable');
+  });
+});
+
+// #424: the repository's canonical aggregate is V3. A record persisted as V2
+// is migrated by the codec on read; the RECORD upgrades on its next ordinary
+// commit, so opening a workspace stays a pure read.
+describe('workspace repository — StoredWorkspaceV3 (#424)', () => {
+  const dashboard = (id: string, revision = 1) => ({
+    documentVersion: 1 as const, id, title: id.toUpperCase(), revision,
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    filters: [], tiles: [],
+  });
+  /** A record written before #424 — its raw text is still the V2 shape. */
+  const legacyRecord = (lastOpenedAt: number | null = null): WorkspaceStoreRecord => ({
+    id: 'w1',
+    key: 'workspace_one',
+    text: JSON.stringify({
+      storageVersion: 2, id: 'w1', key: 'workspace_one', name: 'Workspace One',
+      queries: [], dashboard: dashboard('legacy', 6),
+    }),
+    lastOpenedAt,
+  });
+
+  it('reads a persisted V2 record as V3, preserving the Dashboard and its revision', async () => {
+    const store = memoryStore([legacyRecord()]);
+    const repository = createWorkspaceRepository({ store });
+    const loaded = await repository.loadById('w1');
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') return;
+    expect(loaded.workspace.storageVersion).toBe(3);
+    expect(loaded.workspace.dashboards).toEqual([dashboard('legacy', 6)]);
+    // A read is a pure read: the stored TEXT is untouched until a real write.
+    expect(JSON.parse(store.records.get('w1')!.text).storageVersion).toBe(2);
+
+    // …and the same record summarizes and resolves implicitly as V3 too.
+    expect((await repository.list()).summaries).toEqual([
+      { id: 'w1', key: 'workspace_one', name: 'Workspace One', queryCount: 0, hasDashboard: true, lastOpenedAt: null },
+    ]);
+    const implicit = await repository.resolveImplicit();
+    expect(implicit.status === 'ok' && implicit.workspace.dashboards).toHaveLength(1);
+  });
+
+  it('rewrites a migrated record canonically as V3 on its next commit, keeping lastOpenedAt', async () => {
+    const store = memoryStore([legacyRecord(1234)]);
+    const repository = createWorkspaceRepository({ store });
+    const loaded = await repository.loadById('w1');
+    if (loaded.status !== 'ok') throw new Error('expected a readable record');
+
+    const committed = await repository.commit(loaded.workspace);
+    expect(committed.ok).toBe(true);
+    const text = store.records.get('w1')!.text;
+    expect(text).toContain('"storageVersion": 3');
+    expect(text).toContain('"dashboards"');
+    expect(text).not.toContain('"dashboard":');
+    expect(text).toBe(encode(loaded.workspace));
+    // Store-owned metadata survives the upgrade.
+    expect(store.records.get('w1')!.lastOpenedAt).toBe(1234);
+    // Re-reading the upgraded record performs no further transformation.
+    const reread = await repository.loadById('w1');
+    expect(reread.status === 'ok' && reread.workspace).toEqual(loaded.workspace);
+  });
+
+  it('round-trips several Dashboards and reports the compatibility revision', async () => {
+    const store = memoryStore();
+    const repository = createWorkspaceRepository({ store });
+    const value = workspace({ dashboards: [dashboard('exec', 4), dashboard('sales', 9)] });
+
+    const created = await repository.create(value);
+    expect(created).toMatchObject({ ok: true, dashboardRevision: 4 });
+    const loaded = await repository.loadById('w1');
+    expect(loaded.status === 'ok' && loaded.workspace.dashboards.map((d) => d.id))
+      .toEqual(['exec', 'sales']);
+    expect((await repository.list()).summaries[0].hasDashboard).toBe(true);
+
+    // Replacing ONE Dashboard by id leaves the other byte-identical…
+    const edited = {
+      ...value,
+      dashboards: [{ ...dashboard('exec', 5), title: 'Edited' }, dashboard('sales', 9)],
+    };
+    const committed = await repository.commit(edited);
+    expect(committed).toMatchObject({ ok: true, dashboardRevision: 5 });
+    const after = await repository.loadById('w1');
+    if (after.status !== 'ok') throw new Error('expected a readable record');
+    expect(after.workspace.dashboards[0].title).toBe('Edited');
+    expect(after.workspace.dashboards[1]).toEqual(dashboard('sales', 9));
+  });
+
+  it('preserves every Dashboard through a rename and a query-only mutation', async () => {
+    const store = memoryStore();
+    const repository = createWorkspaceRepository({ store });
+    const dashboards = [dashboard('exec'), dashboard('sales')];
+    await repository.create(workspace({ dashboards }));
+
+    await repository.commit(workspace({ name: 'Renamed', dashboards }));
+    await repository.commit(workspace({
+      name: 'Renamed', dashboards,
+      queries: [{ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Q1' } }],
+    }));
+    const loaded = await repository.loadById('w1');
+    if (loaded.status !== 'ok') throw new Error('expected a readable record');
+    expect(loaded.workspace.name).toBe('Renamed');
+    expect(loaded.workspace.queries).toHaveLength(1);
+    expect(loaded.workspace.dashboards).toEqual(dashboards);
+  });
+
+  it('commits nothing when a candidate\'s Dashboard collection is invalid', async () => {
+    const store = memoryStore();
+    const repository = createWorkspaceRepository({ store });
+    const valid = workspace({ dashboards: [dashboard('exec')] });
+    await repository.create(valid);
+
+    const duplicate = await repository.commit(
+      workspace({ dashboards: [dashboard('exec'), dashboard('exec', 2)] }),
+    );
+    expect(duplicate.ok).toBe(false);
+    expect(duplicate).toMatchObject({ diagnostics: [{ code: 'workspace-duplicate-dashboard-id' }] });
+    // The previously committed record is untouched.
+    expect(store.records.get('w1')!.text).toBe(encode(valid));
+  });
+
+  it('reports a legacy record that cannot be migrated as corrupt, not as empty', async () => {
+    const store = memoryStore([{
+      id: 'w1',
+      key: 'workspace_one',
+      text: JSON.stringify({
+        storageVersion: 2, id: 'w1', key: 'workspace_one', name: 'Workspace One',
+        queries: [],
+        dashboard: { ...dashboard('legacy'), tiles: [{ id: 't1', queryId: 'gone' }] },
+      }),
+      lastOpenedAt: null,
+    }]);
+    const loaded = await createWorkspaceRepository({ store }).loadById('w1');
+    expect(loaded).toMatchObject({
+      status: 'corrupt', id: 'w1', key: 'workspace_one',
+      diagnostics: [{ code: 'dashboard-tile-query-missing' }],
+    });
   });
 });

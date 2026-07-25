@@ -41,7 +41,10 @@ import type {
 import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-operations.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
-import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV2 } from '../generated/json-schema.types.js';
+import {
+  resolveCompatibilityDashboard, withCompatibilityDashboard,
+} from '../workspace/workspace-dashboards.js';
+import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
@@ -254,16 +257,23 @@ function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV
 
 /** The current committed aggregate, reconstructed from `state` — W4 keeps
  *  `state.savedQueries`/`dashboard`/`workspaceId`/`libraryName` as a live
- *  projection of it, so this never needs its own read of `app.workspace`. */
-function currentWorkspace(app: App): StoredWorkspaceV2 {
-  return {
-    storageVersion: 2,
+ *  projection of it, so this never needs its own read of `app.workspace`.
+ *
+ *  #424: `state.dashboard` projects only the COMPATIBILITY Dashboard, so the
+ *  collection is taken from `app.currentWorkspace` (which carries every stored
+ *  Dashboard) with the live projection folded back into its compatibility slot.
+ *  Falling back to `state.dashboard` alone would silently truncate a
+ *  multi-Dashboard workspace on the degraded Export path. */
+function currentWorkspace(app: App): StoredWorkspaceV3 {
+  const envelope: StoredWorkspaceV3 = {
+    storageVersion: 3,
     id: app.state.workspaceId,
     key: app.state.workspaceKey,
     name: app.state.libraryName.value,
     queries: app.state.savedQueries,
-    dashboard: app.state.dashboard,
+    dashboards: app.currentWorkspace ? app.currentWorkspace.dashboards : [],
   };
+  return app.state.dashboard ? withCompatibilityDashboard(envelope, app.state.dashboard) : envelope;
 }
 
 /** Re-sync the surfaces a workspace change touches: Save button (tab links
@@ -296,7 +306,7 @@ function afterLibraryChange(app: App): void {
  *  (schema/persistence failure) toasts the first diagnostic. Never a partial
  *  write either way. */
 async function commitWorkspace(
-  app: App, build: (latest: StoredWorkspaceV2 | null) => StoredWorkspaceV2 | null,
+  app: App, build: (latest: StoredWorkspaceV3 | null) => StoredWorkspaceV3 | null,
   successMsg?: string | (() => string),
 ): Promise<boolean> {
   const result = await app.mutateWorkspace((latest) => {
@@ -328,7 +338,7 @@ async function commitWorkspace(
  *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
  *  import and decide against the workspace as it now is. */
 function revalidateDecisions(
-  base: StoredWorkspaceV2, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  base: StoredWorkspaceV3, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
 ): QueryDecision[] | null {
   const conflicts = detectQueryConflicts(base.queries, incoming);
   const decided = new Set(decisions.map((decision) => decision.sourceId));
@@ -347,8 +357,8 @@ function revalidateDecisions(
  *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
 function planBuild(
   app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
-  run: (base: StoredWorkspaceV2, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
-): (latest: StoredWorkspaceV2 | null) => StoredWorkspaceV2 | null {
+  run: (base: StoredWorkspaceV3, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV3 | null) => StoredWorkspaceV3 | null {
   return (latest) => {
     const base = latest ?? currentWorkspace(app);
     const revalidated = revalidateDecisions(base, incoming, decisions);
@@ -454,23 +464,21 @@ function openConflictDialog(
 // ── multi-dashboard picker ───────────────────────────────────────────────────
 
 /** Show a picker over `dashboards` (bundle array order — presentation order,
- *  not re-sorted); `allowNone` adds a "No dashboard" row (workspace import's
- *  own owner decision — Import Dashboard never offers it, since it must
- *  import exactly one). Cancelling calls neither branch of `onPick`. */
+ *  not re-sorted). Import Dashboard is the only caller and must import exactly
+ *  one, so there is no "No dashboard" row (#424 retired its one user, the
+ *  workspace import, which now takes every bundled Dashboard). Cancelling
+ *  never calls `onPick`. */
 function openDashboardPicker(
-  app: App, title: string, dashboards: readonly DashboardSummary[], allowNone: boolean,
-  onPick: (id: string | null) => void,
+  app: App, title: string, dashboards: readonly DashboardSummary[],
+  onPick: (id: string) => void,
 ): void {
   const rows = dashboards.map((d) => h('button', {
     class: 'fm-item', onclick: () => { handle.close(); onPick(d.id); },
   },
     h('span', { class: 'fm-label' }, d.title),
     h('span', { class: 'fm-meta' }, `${d.tileCount} ${d.tileCount === 1 ? 'tile' : 'tiles'} · ${d.filterCount} ${d.filterCount === 1 ? 'filter' : 'filters'}`)));
-  const noneRow = allowNone ? h('button', {
-    class: 'fm-item', onclick: () => { handle.close(); onPick(null); },
-  }, h('span', { class: 'fm-label' }, 'No dashboard')) : null;
   const handle = openDialogShell(app, title, [
-    h('div', { class: 'fm-dialog-body fm-picker-list' }, rows, noneRow),
+    h('div', { class: 'fm-dialog-body fm-picker-list' }, rows),
     h('div', { class: 'fm-dialog-actions' },
       h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel')),
   ], 'fm-dialog-card--wide');
@@ -571,16 +579,18 @@ function startImportDashboard(app: App, bundle: PortableBundleV1): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
   if (dashboards.length === 1) { runImportDashboard(app, bundle, dashboards[0].id); return; }
-  openDashboardPicker(app, 'Import which dashboard?', dashboards, false, (id) => {
-    if (id) runImportDashboard(app, bundle, id);
+  openDashboardPicker(app, 'Import which dashboard?', dashboards, (id) => {
+    runImportDashboard(app, bundle, id);
   });
 }
 
 function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
-  // v1 holds at most one Dashboard, so importing one REPLACES the current
-  // Dashboard (its tiles/layout/filters). Confirm first when that would discard
-  // an existing Dashboard — unlike additive New/Import workspace, this gates
-  // a destructive commit (#287; flagged in review — silent, unrecoverable loss).
+  // The UI exposes one Dashboard, so importing one REPLACES the Dashboard on
+  // screen (its tiles/layout/filters) — #424: the COMPATIBILITY entry only;
+  // any other stored Dashboard is preserved. Confirm first when that would
+  // discard an existing Dashboard — unlike additive New/Import workspace, this
+  // gates a destructive commit (#287; flagged in review — silent, unrecoverable
+  // loss).
   if (app.state.dashboard) {
     openConfirm(app, {
       title: 'Import and replace current Dashboard?',
@@ -604,9 +614,10 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
   const closureQueries = bundle.queries.filter((q) => closureIds.has(q.id));
   withQueryDecisions(app, workspace.queries, closureQueries, (decisions) => {
     // 'copy' mints a fresh Dashboard id/revision for the imported Dashboard,
-    // which then REPLACES the workspace's zero-or-one current Dashboard
-    // (v1 single-Dashboard model, #280 "Import Dashboard replaces the current
-    // Dashboard"). The confirm above gates the destructive case.
+    // which then REPLACES the workspace's compatibility Dashboard — the one the
+    // UI shows (#280 "Import Dashboard replaces the current Dashboard", scoped
+    // to the compatibility slot by #424). The confirm above gates the
+    // destructive case.
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
         (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, 'copy', app.genId)),
@@ -621,19 +632,18 @@ function onOpenWorkspaceFile(app: App, file: File): void {
   readBundleFile(app, file, (bundle) => startOpenWorkspace(app, bundle));
 }
 
+/** #424: a workspace import now takes the bundle WHOLE — every bundled
+ *  Dashboard lands in the new workspace, in bundle order. The old "which
+ *  dashboard?" picker existed only because a workspace could hold at most one;
+ *  keeping it would mean silently discarding the rest of a multi-Dashboard
+ *  bundle. Import Dashboard (which imports exactly one into the CURRENT
+ *  workspace) keeps its own picker. */
 function startOpenWorkspace(app: App, bundle: PortableBundleV1): void {
-  const dashboards = listBundleDashboards(bundle);
-  if (dashboards.length > 1) {
-    openDashboardPicker(app, 'Import workspace — which dashboard?', dashboards, true, (id) => {
-      void importWorkspace(app, bundle, id === null ? undefined : id);
-    });
-    return;
-  }
-  void importWorkspace(app, bundle, dashboards[0]?.id);
+  void importWorkspace(app, bundle);
 }
 
 async function importWorkspace(
-  app: App, bundle: PortableBundleV1, sourceDashboardId: string | undefined,
+  app: App, bundle: PortableBundleV1,
 ): Promise<void> {
   await app.serializeWrite(async () => {
     const listed = await app.workspace.list();
@@ -643,7 +653,7 @@ async function importWorkspace(
       ...listed.corrupt.map((item) => item.key),
     ]);
     const base = createNewWorkspace(app.genId, key, name);
-    const plan = planReplaceWorkspace(base, bundle, sourceDashboardId, [], app.genId);
+    const plan = planReplaceWorkspace(base, bundle, [], app.genId);
     if (!plan.candidateWorkspace) {
       flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
       return;
@@ -682,7 +692,7 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
  *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
  *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
  *  export never becomes a silent no-op on an unhandled rejection. */
-async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV2 | null> {
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV3 | null> {
   try {
     await app.flushWorkspaceWrites();
     const result = await app.workspace.loadById(app.state.workspaceId);
@@ -697,7 +707,7 @@ export async function exportDashboardAction(app: App): Promise<void> {
   // #302: invoked from the Dashboard page's File menu (via
   // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
   // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
-  const dashboard = ws ? ws.dashboard : app.state.dashboard;
+  const dashboard = ws ? resolveCompatibilityDashboard(ws).dashboard : app.state.dashboard;
   if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
   const queryList = ws ? ws.queries : app.state.savedQueries;
   const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());

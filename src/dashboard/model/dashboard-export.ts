@@ -10,7 +10,9 @@
 //     order, so a single-Dashboard export never drags in unrelated queries.
 //   - `buildWorkspaceExportBundle` — the full workspace catalog: every saved
 //     query in its existing catalog/authoring order (never reordered by
-//     Dashboard usage), plus the zero-or-one current Dashboard as-is.
+//     Dashboard usage), plus EVERY stored Dashboard in workspace order — a
+//     workspace export never truncates to the one Dashboard the current UI
+//     happens to expose (#424).
 //
 // Both deep-clone every resource they emit — an export must never let the
 // caller's in-memory workspace/session state (including Dashboard `revision`)
@@ -22,7 +24,7 @@ import {
   CURRENT_PORTABLE_BUNDLE_VERSION, PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V1_SCHEMA_ID,
 } from './portable-bundle-codec.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2,
+  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3,
 } from '../../generated/json-schema.types.js';
 
 function bundleEnvelope(
@@ -61,13 +63,14 @@ export function buildDashboardExportBundle(
 
 /** Build a portable bundle for exporting the WHOLE workspace: every saved
  *  query in its existing catalog order (never reordered by Dashboard tile
- *  usage) plus the zero-or-one current Dashboard as-is. Deep-clones every
- *  emitted resource — the input `workspace` (including its Dashboard
- *  `revision`) is left byte-for-byte unchanged. */
+ *  usage) plus EVERY stored Dashboard in workspace order — including ones the
+ *  current single-surface UI does not expose (#424). Deep-clones every emitted
+ *  resource — the input `workspace` (including each Dashboard `revision`) is
+ *  left byte-for-byte unchanged. */
 export function buildWorkspaceExportBundle(
-  workspace: StoredWorkspaceV2, nowISO: string,
+  workspace: StoredWorkspaceV3, nowISO: string,
 ): PortableBundleV1 {
   const queries = cloneJson(workspace.queries);
-  const dashboards = workspace.dashboard ? [cloneJson(workspace.dashboard)] : [];
+  const dashboards = cloneJson(workspace.dashboards);
   return bundleEnvelope(nowISO, queries, dashboards);
 }

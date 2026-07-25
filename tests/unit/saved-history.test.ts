@@ -323,7 +323,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     // The latest committed workspace no longer contains s1 — the patch aborts.
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 2, id: 'w1', key: 'l', name: 'L', queries: [], dashboard: null });
+      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull(); // the planner found no target and aborted
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
@@ -342,7 +342,7 @@ describe('renderSavedHistory', () => {
   it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
     const app = makeApp();
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 2, id: 'w1', key: 'l', name: 'L', queries: [], dashboard: null });
+      const input = await transform({ storageVersion: 3, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull();
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];

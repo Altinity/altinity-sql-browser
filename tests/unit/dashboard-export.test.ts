@@ -4,7 +4,7 @@ import {
 } from '../../src/dashboard/model/dashboard-export.js';
 import { canonicalEqual } from '../../src/dashboard/model/canonical-json.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV2,
+  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3,
 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string): SavedQueryV2 => ({
@@ -85,12 +85,12 @@ describe('buildDashboardExportBundle', () => {
 });
 
 describe('buildWorkspaceExportBundle', () => {
-  const workspaceFixture = (over: Partial<StoredWorkspaceV2> = {}): StoredWorkspaceV2 => ({
-    storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
+  const workspaceFixture = (over: Partial<StoredWorkspaceV3> = {}): StoredWorkspaceV3 => ({
+    storageVersion: 3, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q2'), query('q1'), query('q3')],
-    dashboard: dashboard('d1', ['q1']),
+    dashboards: [dashboard('d1', ['q1'])],
     ...over,
-  } as StoredWorkspaceV2);
+  } as StoredWorkspaceV3);
 
   it('emits every query in catalog order, not reordered by Dashboard tile usage', () => {
     const ws = workspaceFixture();
@@ -101,7 +101,7 @@ describe('buildWorkspaceExportBundle', () => {
   });
 
   it('emits zero dashboards when the workspace has none', () => {
-    const ws = workspaceFixture({ dashboard: null });
+    const ws = workspaceFixture({ dashboards: [] });
     const bundle = buildWorkspaceExportBundle(ws, '2020-01-01T00:00:00Z');
     expect(bundle.dashboards).toEqual([]);
     expect(bundle.queries.map((q) => q.id)).toEqual(['q2', 'q1', 'q3']);
@@ -114,29 +114,42 @@ describe('buildWorkspaceExportBundle', () => {
     expect(bundle.exportedAt).toBe('2021-06-15T12:00:00Z');
   });
 
-  it('deep-clones queries and the dashboard — mutating the result never touches the input workspace', () => {
-    const ws = workspaceFixture();
+  // #424: a workspace export carries the WHOLE collection, including the
+  // Dashboards the current single-surface UI does not expose.
+  it('emits every stored Dashboard, in workspace order', () => {
+    const ws = workspaceFixture({
+      dashboards: [dashboard('d1', ['q1']), dashboard('hidden', ['q3']), dashboard('d3', ['q2'])],
+    });
+    const bundle = buildWorkspaceExportBundle(ws, '2020-01-01T00:00:00Z');
+    expect(bundle.dashboards.map((d) => d.id)).toEqual(['d1', 'hidden', 'd3']);
+  });
+
+  it('deep-clones queries and every dashboard — mutating the result never touches the input workspace', () => {
+    const ws = workspaceFixture({ dashboards: [dashboard('d1', ['q1']), dashboard('d2', ['q2'])] });
     const bundle = buildWorkspaceExportBundle(ws, '2020-01-01T00:00:00Z');
 
     expect(bundle.queries[0]).not.toBe(ws.queries[0]);
-    expect(bundle.dashboards[0]).not.toBe(ws.dashboard);
+    expect(bundle.dashboards[0]).not.toBe(ws.dashboards[0]);
+    expect(bundle.dashboards[1]).not.toBe(ws.dashboards[1]);
 
     (bundle.queries[0] as SavedQueryV2).sql = 'DROP TABLE x';
     (bundle.dashboards[0] as DashboardDocumentV1).revision = 999;
+    (bundle.dashboards[1] as DashboardDocumentV1).revision = 999;
 
     expect(ws.queries[0]?.sql).toBe("SELECT 'q2'");
-    expect(ws.dashboard?.revision).toBe(3);
+    expect(ws.dashboards[0]?.revision).toBe(3);
+    expect(ws.dashboards[1]?.revision).toBe(3);
   });
 
   // REGRESSION: a full-workspace export must never mutate the caller's
   // Dashboard identity or persisted revision (#280/#287 deep-clone proof).
-  it('REGRESSION: leaves the input workspace.dashboard revision and identity unchanged', () => {
+  it('REGRESSION: leaves the input workspace Dashboard revisions and identity unchanged', () => {
     const ws = workspaceFixture();
-    const originalDashboardRef = ws.dashboard;
-    const originalRevision = ws.dashboard?.revision;
+    const originalDashboardRef = ws.dashboards[0];
+    const originalRevision = ws.dashboards[0]?.revision;
     buildWorkspaceExportBundle(ws, '2020-01-01T00:00:00Z');
-    expect(ws.dashboard).toBe(originalDashboardRef);
-    expect(ws.dashboard?.revision).toBe(originalRevision);
+    expect(ws.dashboards[0]).toBe(originalDashboardRef);
+    expect(ws.dashboards[0]?.revision).toBe(originalRevision);
   });
 });
 
@@ -149,20 +162,20 @@ describe('canonical consistency between the two export bundles (#341)', () => {
   const nowISO = '2020-01-01T00:00:00Z';
   // A workspace whose Dashboard depends on q1 (tile) + q2 (filter source), plus
   // an unrelated q3 that only the Workbench export carries.
-  const ws: StoredWorkspaceV2 = {
-    storageVersion: 2, id: 'ws', key: 'ws', name: 'WS',
+  const ws: StoredWorkspaceV3 = {
+    storageVersion: 3, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q3'), query('q1'), query('q2')], // deliberately not tile order
-    dashboard: dashboard('d1', ['q1'], ['q2']),
+    dashboards: [dashboard('d1', ['q1'], ['q2'])],
   };
 
   it('the Dashboard document is canonically identical in both bundles', () => {
-    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboards[0], ws.queries, nowISO);
     const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
     expect(canonicalEqual(dashboardBundle.dashboards[0], workspaceBundle.dashboards[0])).toBe(true);
   });
 
   it('every query in the Dashboard dependency closure is canonically identical in both bundles', () => {
-    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboards[0], ws.queries, nowISO);
     const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
     for (const dashboardQuery of dashboardBundle.queries) {
       const workspaceQuery = workspaceBundle.queries.find((q) => q.id === dashboardQuery.id);
@@ -172,7 +185,7 @@ describe('canonical consistency between the two export bundles (#341)', () => {
   });
 
   it('only unrelated Workbench-only queries differ — the extra query is absent from the Dashboard closure', () => {
-    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboards[0], ws.queries, nowISO);
     const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
     const dashIds = dashboardBundle.queries.map((q) => q.id).sort();
     const wsIds = workspaceBundle.queries.map((q) => q.id).sort();

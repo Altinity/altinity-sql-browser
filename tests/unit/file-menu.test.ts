@@ -10,7 +10,7 @@ import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
@@ -26,7 +26,7 @@ const setSaved = (app: App, queries: SavedQueryFixture[]): void => {
 // .commit` always returns a Promise), so an assertion made right after firing
 // a UI event needs one tick before the projection lands.
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
-const loadActiveWorkspace = async (app: App): Promise<StoredWorkspaceV2> => {
+const loadActiveWorkspace = async (app: App): Promise<StoredWorkspaceV3> => {
   const loaded = await app.workspace.loadById(app.state.workspaceId);
   if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
   return loaded.workspace;
@@ -306,9 +306,9 @@ describe('Export', () => {
   // (`loadCurrent`), not stale `app.state` — the whole reason the actions
   // became async (flush pending writes → read back the aggregate).
   it('exportWorkspaceAction builds the bundle from the committed workspace (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'committed_lib', name: 'Committed Lib',
-      queries: [panelQuery('c1', 'Committed')], dashboard: null,
+    const committed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'committed_lib', name: 'Committed Lib',
+      queries: [panelQuery('c1', 'Committed')], dashboards: [],
     };
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     // app.state is deliberately DIFFERENT — a regression reading state instead
@@ -324,10 +324,10 @@ describe('Export', () => {
   });
 
   it('exportDashboardAction builds from the committed dashboard (loadCurrent), not stale app.state (#341)', async () => {
-    const committed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib',
+    const committed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib',
       queries: [panelQuery('c1', 'Committed')],
-      dashboard: dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] }),
+      dashboards: [dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] })],
     };
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
@@ -626,6 +626,21 @@ describe('Import Dashboard', () => {
     expect(app.state.dashboard).toBeNull();
   });
 
+  it('dismisses the multi-dashboard picker on Escape', () => {
+    const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
+    const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
+    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })) });
+    pickDashboardImport(app);
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.dashboard).toBeNull();
+  });
+
   it('aborts (no commit) when a skipped conflict breaks a required tile dependency', async () => {
     const dash = dashboardDoc({ id: 'src', title: 'D', tiles: [{ id: 't1', queryId: 'p1' }] });
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1', 'Incoming')], dashboards: [dash] })) });
@@ -672,8 +687,8 @@ describe('Import workspace (#406 additive collection)', () => {
   it('the menu item closes the menu, opens the picker, and creates a fresh active workspace', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'd1', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
-    const create = vi.fn(async (workspace: StoredWorkspaceV2) => ({
-      ok: true as const, workspace, dashboardRevision: workspace.dashboard?.revision ?? null,
+    const create = vi.fn(async (workspace: StoredWorkspaceV3) => ({
+      ok: true as const, workspace, dashboardRevision: workspace.dashboards[0]?.revision ?? null,
     }));
     const app = mount({
       FileReader: fakeReader(bundleText({
@@ -704,7 +719,7 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0][0]).toMatchObject({
-      storageVersion: 2, key: 'imported_ops_3', name: 'Imported Ops',
+      storageVersion: 3, key: 'imported_ops_3', name: 'Imported Ops',
     });
     expect(create.mock.calls[0][0].id).not.toBe(oldId);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
@@ -713,39 +728,28 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(toast()).toBe('Imported workspace');
   });
 
-  it('shows a picker with a "No dashboard" option for a multi-dashboard bundle', async () => {
+  // #424: a workspace import now takes the bundle WHOLE — there is no "which
+  // dashboard?" picker any more, and EVERY bundled Dashboard lands in the new
+  // workspace's collection, in bundle order (the first becomes the
+  // compatibility Dashboard the current single-surface UI shows/edits).
+  it('imports every bundled Dashboard directly, in bundle order, with no picker', async () => {
     const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
     const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
-    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })) });
+    const create = vi.fn(async (workspace: StoredWorkspaceV3) => ({
+      ok: true as const, workspace, dashboardRevision: workspace.dashboards[0]?.revision ?? null,
+    }));
+    const app = mount({
+      FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })),
+      workspace: { create },
+    });
     app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
     openFileMenu(app);
     pickFile(picker(1));
-    const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Import workspace — which dashboard?');
-    const noneRow = [...dialog.querySelectorAll<HTMLButtonElement>('.fm-item')].find((b) => (b.textContent || '').includes('No dashboard'))!;
-    click(noneRow);
     await flush();
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
-    expect(app.state.dashboard).toBeNull();
-  });
-
-  it('dismisses the multi-dashboard picker on Escape', () => {
-    const app = mount({
-      FileReader: fakeReader(bundleText({
-        dashboards: [
-          dashboardDoc({ id: 'a', title: 'Alpha' }),
-          dashboardDoc({ id: 'b', title: 'Beta' }),
-        ],
-      })),
-    });
-    openFileMenu(app);
-    pickFile(picker(1));
-    const event = new KeyboardEvent('keydown', {
-      key: 'Escape', bubbles: true, cancelable: true,
-    });
-    document.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0].dashboards.map((d: DashboardDocumentV1) => d.title)).toEqual(['Alpha', 'Beta']);
+    expect(app.state.dashboard?.title).toBe('Alpha'); // compatibility slot = dashboards[0]
   });
 
   it('auto-picks the sole Dashboard in a single-dashboard bundle (no picker)', async () => {
@@ -854,15 +858,17 @@ describe('New workspace', () => {
 });
 
 describe('surface overlay disposal', () => {
-  it('closes both the dropdown and a body-mounted File dialog', async () => {
+  // #424: the Import workspace picker(1) file input no longer opens a
+  // "which dashboard?" dialog (every bundled Dashboard imports directly) —
+  // drive the body-mounted dialog through Import Dashboard's own
+  // multi-dashboard picker instead, alongside a still-open dropdown menu.
+  it('closes both the dropdown and a body-mounted File dialog', () => {
     const app = mount({ FileReader: fakeReader(bundleText({
       dashboards: [dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' })],
     })) });
     openFileMenu(app);
-    pickFile(picker(1));
-    await flush();
+    pickDashboardImport(app);
     expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
-    openFileMenu(app);
     disposeFileMenuOverlays(app);
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
@@ -921,8 +927,8 @@ describe('decode failures', () => {
 // queue while a SECOND op (here, a rename / an import) is fired behind it.
 describe('mixed-producer serialization (#341/#344 review fix)', () => {
   it('a pending saved-query-style mutation commits before a queued rename builds its candidate — the rename lands on top, nothing reverts', async () => {
-    const seed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'orig', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'orig', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({ workspace: statefulWorkspaceRepo(seed) });
     app.state.savedQueries = seed.queries;
@@ -958,8 +964,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   });
 
   it('a pending saved-query-style mutation commits before a queued Import queries builds its candidate — the import lands on top of the post-mutation catalog', async () => {
-    const seed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -998,8 +1004,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   // without dequeue-time revalidation the import would silently drop the
   // incoming query and still toast success.
   it('a conflict minted while the import waits in the queue ABORTS the import (content differs) instead of silently skipping', async () => {
-    const seed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),
@@ -1035,8 +1041,8 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
   });
 
   it('a conflict minted while the import waits in the queue auto-resolves when canonically IDENTICAL — no duplicate, honest count', async () => {
-    const seed: StoredWorkspaceV2 = {
-      storageVersion: 2, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    const seed: StoredWorkspaceV3 = {
+      storageVersion: 3, id: 'w1', key: 'lib', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboards: [],
     };
     const app = mount({
       workspace: statefulWorkspaceRepo(seed),

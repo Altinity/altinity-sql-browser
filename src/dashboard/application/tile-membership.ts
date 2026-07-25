@@ -1,5 +1,5 @@
 // Wire the Workbench favorite star to Dashboard tile membership (#299).
-// `StoredWorkspaceV2.dashboard.tiles[]` is canonical Dashboard membership
+// A Dashboard's `tiles[]` is canonical Dashboard membership
 // (#287); toggling `spec.favorite` on a saved query must add/remove the
 // matching tile IN THE SAME atomic commit as the favorite flip, or the star
 // and the Dashboard silently disagree about what's on it.

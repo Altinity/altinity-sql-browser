@@ -10,7 +10,9 @@ import {
 } from '../../build/compile-json-schemas.mjs';
 import { ANNOTATION_KEYWORDS, SCHEMA_MANIFEST } from '../../build/schema-manifest.mjs';
 import { buildSchemaTypes } from '../../build/emit-schema-types.mjs';
-import { validateStoredWorkspaceV2 } from '../../src/generated/json-schema-validators.js';
+import {
+  validateStoredWorkspaceV2, validateStoredWorkspaceV3,
+} from '../../src/generated/json-schema-validators.js';
 
 const root = resolve(process.cwd());
 
@@ -24,12 +26,14 @@ describe('multi-schema build', () => {
       'schemas/dashboard-layout-grafana-grid-v1.schema.json',
       'schemas/dashboard-v1.schema.json',
       'schemas/stored-workspace-v2.schema.json',
+      'schemas/stored-workspace-v3.schema.json',
       'schemas/portable-bundle-v1.schema.json',
     ]);
     const KINDS = [
       ['query-spec', 1], ['saved-query', 2], ['library', 2],
       ['dashboard-layout-flow', 1], ['dashboard-layout-grafana-grid', 1],
-      ['dashboard', 1], ['stored-workspace', 2], ['portable-bundle', 1],
+      ['dashboard', 1], ['stored-workspace', 2], ['stored-workspace', 3],
+      ['portable-bundle', 1],
     ];
     const records = await loadRecords();
     expect(records.map(({ schema }) => [schema['x-altinity-kind'], schema['x-altinity-version']]))
@@ -50,6 +54,7 @@ describe('multi-schema build', () => {
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json',
     ]);
     const ajv = new Ajv2020({ strict: true, allErrors: true });
@@ -78,6 +83,44 @@ describe('multi-schema build', () => {
     }
     expect(validateStoredWorkspaceV2({ ...workspace, storageVersion: 1 })).toBe(false);
     expect(validateStoredWorkspaceV2({ ...workspace, extra: true })).toBe(false);
+  });
+
+  it('validates the stored-workspace v3 dashboard collection contract (#424)', () => {
+    const dashboard = {
+      documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      filters: [], tiles: [],
+    };
+    const workspace = {
+      storageVersion: 3,
+      id: 'opaque-id',
+      key: 'clickhouse_operations',
+      name: 'ClickHouse Operations',
+      queries: [],
+      dashboards: [],
+    };
+    expect(validateStoredWorkspaceV3(workspace)).toBe(true);
+    expect(validateStoredWorkspaceV3({ ...workspace, dashboards: [dashboard] })).toBe(true);
+    expect(validateStoredWorkspaceV3({
+      ...workspace, dashboards: [dashboard, { ...dashboard, id: 'd2' }],
+    })).toBe(true);
+    // `dashboards` is required, must be an array, and is bounded; the singular
+    // v2 field is rejected outright rather than silently ignored.
+    const { dashboards: _omitted, ...withoutDashboards } = workspace;
+    expect(validateStoredWorkspaceV3(withoutDashboards)).toBe(false);
+    expect(validateStoredWorkspaceV3({ ...workspace, dashboards: null })).toBe(false);
+    expect(validateStoredWorkspaceV3({ ...withoutDashboards, dashboard: null })).toBe(false);
+    expect(validateStoredWorkspaceV3({ ...workspace, dashboard: null })).toBe(false);
+    expect(validateStoredWorkspaceV3({
+      ...workspace,
+      dashboards: Array.from({ length: 33 }, (_, i) => ({ ...dashboard, id: `d${i}` })),
+    })).toBe(false);
+    for (const storageVersion of [2, 4]) {
+      expect(validateStoredWorkspaceV3({ ...workspace, storageVersion })).toBe(false);
+    }
+    for (const key of ['', '_private', 'Upper', 'with space']) {
+      expect(validateStoredWorkspaceV3({ ...workspace, key })).toBe(false);
+    }
   });
 
   it('generates deterministic artifacts and standalone code without Ajv runtime imports', async () => {
@@ -118,7 +161,8 @@ describe('multi-schema build', () => {
   it('emits the committed TypeScript artifact with pinned names, openness, and closedness', async () => {
     expect(SCHEMA_MANIFEST.map((entry) => entry.typeExport)).toEqual([
       'QuerySpecV1', 'SavedQueryV2', 'LibraryV2',
-      'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1', 'StoredWorkspaceV2', 'PortableBundleV1',
+      'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1',
+      'StoredWorkspaceV2', 'StoredWorkspaceV3', 'PortableBundleV1',
     ]);
     const sources = await generatedSources();
     const types = Object.entries(sources).find(([path]) => path.endsWith('json-schema.types.ts'))[1];
@@ -158,6 +202,14 @@ describe('multi-schema build', () => {
     expect(block('StoredWorkspaceV2')).toContain('storageVersion: 2;');
     expect(block('StoredWorkspaceV2')).toContain('key: string;');
     expect(block('StoredWorkspaceV2')).toContain('dashboard: DashboardDocumentV1 | null;');
+    // #424: v3 supersedes v2's singular field with a required collection; v2
+    // stays emitted because the codec still decodes legacy records with it.
+    expect(types).toContain('export interface StoredWorkspaceV3');
+    expect(block('StoredWorkspaceV3')).toContain('storageVersion: 3;');
+    expect(block('StoredWorkspaceV3')).toContain('key: string;');
+    expect(block('StoredWorkspaceV3')).toContain('dashboards: DashboardDocumentV1[];');
+    expect(block('StoredWorkspaceV3')).not.toContain('dashboard: DashboardDocumentV1 | null;');
+    expect(block('StoredWorkspaceV3')).not.toContain('[k: string]');
     expect(block('QueryDashboardPresentationV1')).toContain('variants?: Record<string, QueryPresentationPatchV1>;');
   });
 
