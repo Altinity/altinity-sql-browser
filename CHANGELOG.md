@@ -82,6 +82,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse Blue in light theme, a lifted `#2596CC` in dark. Fills, borders,
   focus rings, carets and icons keep `--accent`, where the 3:1 non-text
   threshold applies.
+- The destructive Overwrite button in the linked-tab conflict chooser uses a new
+  `--error-fill` rather than `--error-fg`. A foreground token is tuned to be legible
+  AS text on its plane, so dark theme's `#f87171` carried white at only 2.77:1 as a
+  fill. `--error-fill` is dark enough for white text in both themes (4.98:1 dark,
+  6.47:1 light) and keeps a visible edge against the dialog behind it.
 - Six surfaces shipped with no CSS rule at all and therefore rendered in browser
   chrome. The linked-tab conflict chooser (#343) — the dialog that decides
   whether to overwrite work saved in another tab — had 13.333px Arial buttons

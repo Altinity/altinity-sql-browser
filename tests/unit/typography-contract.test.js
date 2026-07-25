@@ -335,6 +335,46 @@ describe('no token is referenced with a literal fallback', () => {
     expect(withHexFallback).toEqual([]);
   });
 
+  it('never lets a custom property reference itself, directly or through a chain', () => {
+    // `--sql-keyword: var(--sql-keyword)` shipped in the light theme for one commit.
+    // A self-referential custom property forms a cycle: per spec it does NOT fall back
+    // to an earlier definition of the same name — the computed value becomes invalid
+    // at computed-value time, and a `.sql-*` rule consuming it without a fallback
+    // loses its colour entirely. So light-mode SQL keywords, functions, strings,
+    // numbers and comments were simply uncoloured. Nothing caught it: the token WAS
+    // defined and every reference DID resolve, so the two checks either side of this
+    // one both passed. A cycle needs its own detector.
+    //
+    // Built per declaring block, because the same name is legitimately redefined in
+    // :root and in each theme — a cycle is a token referencing itself (or a loop of
+    // tokens) WITHIN one block, which is where the cascade cannot save it.
+    const blocks = [...declarations.matchAll(/(:root|\[data-theme='[a-z]+'\])\s*\{([^}]*)\}/g)];
+    expect(blocks.length).toBeGreaterThanOrEqual(3); // :root + both themes
+
+    const cycles = [];
+    for (const [, selector, body] of blocks) {
+      const graph = new Map();
+      for (const m of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+        graph.set(m[1], [...m[2].matchAll(/var\(\s*(--[\w-]+)/g)].map((r) => r[1]));
+      }
+      const state = new Map(); // 1 = visiting, 2 = done
+      const walk = (token, trail) => {
+        if (state.get(token) === 2) return;
+        if (state.get(token) === 1) {
+          cycles.push(`${selector}: ${[...trail, token].join(' -> ')}`);
+          return;
+        }
+        state.set(token, 1);
+        for (const next of graph.get(token) || []) {
+          if (graph.has(next)) walk(next, [...trail, token]);
+        }
+        state.set(token, 2);
+      };
+      for (const token of graph.keys()) walk(token, []);
+    }
+    expect(cycles).toEqual([]);
+  });
+
   it('resolves every var(--token) reference to a defined token', () => {
     // Catches the inverse too: a reference to a token nobody declares.
     const defined = new Set([...css.matchAll(/^\s*(--[\w-]+):/gm)].map((m) => m[1]));
@@ -384,10 +424,45 @@ describe('the colours the type sits on meet WCAG 2.2 AA', () => {
     }
   });
 
-  it('keeps white legible on the accent and error fills', () => {
-    expect(contrast('#FFFFFF', '#0079AD')).toBeGreaterThanOrEqual(4.5);
-    expect(contrast('#FFFFFF', themeToken('light', '--error-fg'))).toBeGreaterThanOrEqual(4.5);
+  // Derived from the stylesheet, not a hand-kept list: find every rule that puts
+  // white text on a tokenized background and check it in BOTH themes. The previous
+  // version of this test asserted white-on-accent and white-on-error-fg for the
+  // LIGHT theme only, which is precisely why `.cf-overwrite` shipped at 2.77:1 in
+  // dark — --error-fg is tuned to be legible as TEXT on a dark plane (#f87171), so
+  // it is far too light to carry white as a FILL. Enumerating pairs by hand is what
+  // failed; deriving them is what catches the next one.
+  const whiteOnFillRules = [...rules.matchAll(/\{([^}]*)\}/g)]
+    .map((m) => m[1])
+    .filter((body) => /color:\s*(#fff\b|#ffffff\b|white\b)/i.test(body))
+    .flatMap((body) => [...body.matchAll(/background(?:-color)?:\s*var\(\s*(--[\w-]+)\s*\)/g)].map((m) => m[1]));
+
+  it('finds the white-on-fill rules it is supposed to be checking', () => {
+    // Guards the regex above: if a refactor stops matching, the contrast test below
+    // would silently pass on an empty set.
+    expect(new Set(whiteOnFillRules).size).toBeGreaterThanOrEqual(2);
+    expect(whiteOnFillRules).toContain('--error-fill');
+    expect(whiteOnFillRules).toContain('--accent');
   });
+
+  for (const theme of ['dark', 'light']) {
+    it(`keeps white legible on every fill token it sits on in the ${theme} theme`, () => {
+      const failures = [];
+      for (const fill of new Set(whiteOnFillRules)) {
+        const ratio = contrast('#FFFFFF', themeToken(theme, fill));
+        if (ratio < 4.5) failures.push(`white on ${fill}: ${ratio.toFixed(2)}:1`);
+      }
+      expect(failures).toEqual([]);
+    });
+
+    it(`keeps a filled destructive control distinguishable from its surface in the ${theme} theme`, () => {
+      // WCAG 1.4.11: 3:1 for the visual boundary of a UI component. A destructive
+      // button whose fill melts into the dialog behind it is not identifiable.
+      const fill = themeToken(theme, '--error-fill');
+      for (const surface of ['--bg', '--bg-modal', '--bg-editor']) {
+        expect(contrast(fill, themeToken(theme, surface))).toBeGreaterThanOrEqual(3);
+      }
+    });
+  }
 
   // Semantic and log-level tokens are checked against the surfaces they can
   // ACTUALLY land on, not the full cross-product. Testing every token against

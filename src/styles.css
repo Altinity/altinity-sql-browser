@@ -264,6 +264,12 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
      for KPI deltas and export status but never actually defined, so those colors
      silently ignored the theme. Defined properly here and used by name. */
   --success-fg: #4ADE80;
+  /* Destructive FILL, not destructive text. --error-fg is tuned to be legible AS
+     TEXT on a dark plane (#f87171), so white on it is 2.77:1 — nowhere near AA.
+     A filled destructive button needs a red dark enough to carry white: 4.98:1
+     here, and 3.48:1 against --bg-modal so the button's own edge stays visible
+     (WCAG 1.4.11). */
+  --error-fill: #D32F2F;
   /* Modal/drawer scrim. Was three different rgba blacks (.4/.5) on the three
      backdrops. */
   --scrim: rgba(0, 0, 0, .5);
@@ -308,12 +314,20 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   /* 4.60:1 on --bg-chip, 5.43:1 on the surfaces it actually lands on. #238636
      (the old hard-coded fallback) was 3.92:1 and failed AA. */
   --success-fg: #137A38;
-  /* Conventional light-theme syntax colours for the light editor plane. */
-  --sql-keyword: var(--sql-keyword);
-  --sql-func: var(--sql-func);
-  --sql-string: var(--sql-string);
-  --sql-number: var(--sql-number);
-  --sql-comment: var(--sql-comment);
+  /* Light theme reuses the existing error text colour as the fill — 6.47:1 with
+     white, so no new hue is needed here. See the dark note above. */
+  --error-fill: #B91C1C;
+  /* Conventional light-theme syntax colours for the light editor plane. These MUST
+     be literals: a custom property that references itself forms a cycle, which does
+     not fall back to the :root value — the computed value becomes invalid, and the
+     .sql-* rules that consume it without a fallback lose their colour entirely.
+     (That is exactly what shipped here for one commit; the contract test now
+     rejects direct and indirect cycles.) */
+  --sql-keyword: #AF00DB;
+  --sql-func: #795E26;
+  --sql-string: #A31515;
+  --sql-number: #098658;
+  --sql-comment: #008000;
   --scrim: rgba(0, 0, 0, .35);
   --log-fatal: #B91C1C;
   --log-error: #DC2626;
@@ -992,7 +1006,7 @@ h1, h2, h3, h4, h5, h6 {
 /* The only irreversible action in the chooser: it discards another tab's saved
    work. Error tokens, plus the explicit word "Overwrite". */
 .cf-overwrite {
-  background: var(--error-fg); border-color: var(--error-fg); color: #fff;
+  background: var(--error-fill); border-color: var(--error-fill); color: #fff;
 }
 .cf-overwrite:hover { filter: brightness(1.08); }
 .cf-reload:focus-visible, .cf-keep:focus-visible,
