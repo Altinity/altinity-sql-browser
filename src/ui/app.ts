@@ -80,7 +80,7 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  resolveOpenDashboard, selectedDashboardId, withoutPendingFocus,
+  resolveOpenDashboard, selectedDashboardId, withCurrentMember, withoutPendingFocus,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -2196,7 +2196,28 @@ export function createApp(env: CreateAppEnv = {}): App {
   const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
     app.mainSurface = surface;
     writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
+    // #426: the tree lives in the PERSISTENT shell, so a surface transition does
+    // not repaint it as a side effect of re-rendering the work area — it needs
+    // telling. Current Dashboard/member styling is derived from this state.
+    app.invalidateDashboardTree();
     app.renderCurrentSurface();
+  };
+
+  // #426 — bump the tree's explicit invalidation signal. One writer, so every
+  // trigger the issue lists routes through here rather than each caller poking a
+  // signal (and no caller depends on an unrelated signal happening to change).
+  app.invalidateDashboardTree = () => {
+    app.state.dashboardTreeRevision.value += 1;
+  };
+
+  // #426 — deliver focus to one member of the ALREADY-RENDERED Dashboard through
+  // the route-local surface command port. `null`/wrong-surface/superseded ports
+  // all report `pending`, which means "not deliverable in place" rather than
+  // "gone" — the caller then takes the normal render transition.
+  app.focusDashboardMember = (member) => {
+    const port = app.surfaceCommands;
+    if (!port || port.surface !== 'dashboard') return 'pending';
+    return port.focusMember(member);
   };
 
   app.openDashboard = (request) => {
@@ -2209,18 +2230,39 @@ export function createApp(env: CreateAppEnv = {}): App {
         : 'That dashboard is no longer part of this workspace.', { document: doc });
       return;
     }
-    // A repeated open of the SAME id in the SAME mode with NO focus target is a
-    // no-op: nothing to change, so the live viewer session is left alone rather
-    // than rebuilt. A focus target does re-render (the surface has to deliver it),
-    // which rebuilds the session — acceptable while the only caller is a direct
-    // API call; #426's tree, which navigates within an already-open Dashboard,
-    // will want an in-place focus path instead.
     const sameSelection = isSameDashboardSelection(app.mainSurface, request)
       && app.sqlRoute.surface === 'dashboard';
-    if (sameSelection && resolution.surface.kind === 'dashboard'
-      && resolution.surface.pendingFocus === null) {
-      app.mainSurface = resolution.surface;
-      return;
+    if (sameSelection && resolution.surface.kind === 'dashboard') {
+      // A repeated open of the SAME id in the SAME mode with NO member is a no-op
+      // on the surface itself — but it still CLEARS the current member (opening a
+      // Dashboard row deselects whatever member was marked), so the tree repaints.
+      if (resolution.surface.pendingFocus === null) {
+        app.mainSurface = resolution.surface;
+        app.invalidateDashboardTree();
+        return;
+      }
+      // #426 — IN-PLACE member navigation. The tree makes repeated
+      // same-Dashboard focusing a normal operation, so it must not rebuild the
+      // viewer, re-run the Dashboard, or push another history entry (#425
+      // re-rendered here, which did all three).
+      const member = resolution.surface.pendingFocus;
+      const outcome = app.focusDashboardMember(member);
+      if (outcome === 'ok') {
+        app.mainSurface = withCurrentMember(app.mainSurface, member);
+        app.invalidateDashboardTree();
+        return;
+      }
+      if (outcome === 'missing') {
+        // Non-destructive: the Dashboard stays open and unchanged, and the member
+        // is deliberately NOT marked current — nothing there to mark.
+        flashToast(member.kind === 'tile'
+          ? 'That panel is no longer on this dashboard.'
+          : 'That filter is no longer on this dashboard.', { document: doc });
+        return;
+      }
+      // `pending` — a curated filter whose control the opening wave is about to
+      // replace, or a superseded port. Fall through to the normal transition,
+      // which delivers focus at the deterministic point the node is stable.
     }
     applyMainSurface(resolution.surface, app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push');
   };

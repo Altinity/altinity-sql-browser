@@ -20,14 +20,14 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type {
-  DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
+  DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV3 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { SurfaceCommandPort } from './shortcuts.js';
+import type { DashboardFocusOutcome, SurfaceCommandPort } from './shortcuts.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -469,6 +469,16 @@ export interface App {
    *  surface command port — no rebuild, no rerun, no extra history entry — rather
    *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
+  /** #426 — deliver focus to ONE member of the already-rendered Dashboard through
+   *  the route-local surface command port, without rebuilding or re-running it.
+   *  `pending` means "not deliverable in place right now" (mid-wave curated
+   *  filter, or a superseded/absent port) and is the caller's cue to take the
+   *  normal render transition — never a diagnostic. */
+  focusDashboardMember(member: DashboardFocusTarget): DashboardFocusOutcome;
+  /** #426 — bump the Dashboard tree's explicit repaint invalidation. The tree
+   *  projects the committed workspace aggregate plus main-surface navigation
+   *  state, neither of which is a signal. */
+  invalidateDashboardTree(): void;
   /** #425 — return to the preserved Query surface (editor + result drawer). */
   showQuerySurface(): void;
   /** #425 — the legacy no-chooser Dashboard entry point: resolves the

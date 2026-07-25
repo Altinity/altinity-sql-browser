@@ -502,9 +502,14 @@ describe('Import queries', () => {
     expect(app.actions.save).not.toHaveBeenCalled();
     expect(app.actions.setEditorMode).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'view' };
-    app.surfaceCommands = { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle: vi.fn() };
+    const refresh = vi.fn();
+    app.surfaceCommands = {
+      surface: 'dashboard', generation: 0, refresh, setDashboardStyle: vi.fn(),
+      // #426: this spec drives the keyboard command, never member navigation.
+      focusMember: () => 'ok',
+    };
     expect(handleKeydown(shortcut('Enter', { metaKey: true }), app)).toBeNull();
-    expect(app.surfaceCommands.refresh).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
     app.sqlRoute = { surface: 'workspace', workspaceKey: app.state.workspaceKey };
     click(document.querySelector('.fm-dialog-confirm')!); // Apply with the default (use-existing)
     expect(app.keyboardOwner?.kind).toBe('menu'); // the still-mounted File menu remains underneath

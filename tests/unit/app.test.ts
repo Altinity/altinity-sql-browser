@@ -10,6 +10,7 @@ import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls } from '../../src/ui/file-menu.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
+import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
@@ -5381,20 +5382,107 @@ describe('unified /sql routing', () => {
       expect(document.querySelector('.share-toast')!.textContent).toContain('more than one dashboard');
     });
 
-    it('re-opening the same id and mode keeps the live session and only re-applies focus', () => {
+    /** A port that reports whatever a test wants, standing in for a live
+     *  Dashboard render's own `focusMember`. */
+    const fakePort = (outcome: DashboardFocusOutcome) => {
+      const focusMember = vi.fn(() => outcome);
+      return {
+        focusMember,
+        port: {
+          surface: 'dashboard' as const, generation: 0,
+          refresh: vi.fn(), setDashboardStyle: vi.fn(), focusMember,
+        },
+      };
+    };
+
+    it('re-opening the same id and mode with NO member changes nothing but the marked member', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const revision = app.state.dashboardTreeRevision.value;
+      // Opening the Dashboard ROW deselects the member — nothing re-renders, but
+      // the tree has to repaint or it keeps the old row marked current.
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+    });
+
+    // #426's headline requirement: the tree makes repeated same-Dashboard member
+    // navigation a NORMAL operation, so it must not rebuild the viewer, re-run the
+    // Dashboard, or push another history entry. `renderCurrentSurface` staying
+    // un-called is what proves all three: the route write and the re-render live in
+    // the same `applyMainSurface` body, so neither ran.
+    it('navigates to a member of the OPEN Dashboard IN PLACE — no rebuild, no route write', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
-      // Same id + mode, no focus: nothing to re-render.
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const route = app.sqlRoute;
+      const { focusMember, port } = fakePort('ok');
+      app.surfaceCommands = port;
+      const revision = app.state.dashboardTreeRevision.value;
+
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
+
+      expect(focusMember).toHaveBeenCalledWith({ kind: 'tile', id: 't7' });
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.sqlRoute).toEqual(route);
+      // The member is now CURRENT (tree styling) and owes NO render-time delivery —
+      // the port already delivered it.
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+      });
+      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+    });
+
+    it('a `pending` in-place report falls back to the normal render transition', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
-      // A focus target does need the surface to deliver it.
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const { port } = fakePort('pending');
+      app.surfaceCommands = port;
+      // A curated filter whose control the opening wave is about to replace: the
+      // render path owns the deferred delivery, so it must still be taken.
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'f1' } });
-      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(2);
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders + 1);
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'edit',
         currentMember: { kind: 'filter', id: 'f1' }, pendingFocus: { kind: 'filter', id: 'f1' },
       });
+    });
+
+    it('a `missing` in-place report is non-destructive: no rebuild, no member marked', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+      const { port } = fakePort('missing');
+      app.surfaceCommands = port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 'gone' } });
+      // The Dashboard stays open and unchanged; nothing is marked current.
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.mainSurface).toEqual({
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+      });
+      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
+        .toContain('That panel is no longer on this dashboard.');
+    });
+
+    it('reports a missing FILTER member with the filter wording', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      app.surfaceCommands = fakePort('missing').port;
+      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'filter', id: 'gone' } });
+      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
+        .toContain('That filter is no longer on this dashboard.');
+    });
+
+    it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.surfaceCommands = null;
+      expect(app.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
     });
 
     it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
@@ -5631,15 +5719,19 @@ describe('unified /sql routing', () => {
       expect(qs(app.root, '.login-screen')).not.toBeNull();
     });
 
+    // Deliberately opens the SECOND Dashboard while the first is selected, so the
+    // request genuinely takes the RENDER path. Targeting the already-open one
+    // would take #426's in-place path instead and never exercise the one-shot
+    // consumption this test exists to pin.
     it('delivers a focus target once, not on every later repaint', () => {
-      const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
-      app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
+      const { app } = liveApp(['a', 'b'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'b', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
       // The DELIVERY is consumed by the render that received it, so an external
       // commit or a style switch cannot yank focus back to that tile minutes
       // later. #426: the member stays CURRENT — the tree keeps marking it long
       // after the focus ring has moved on.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+        kind: 'dashboard', dashboardId: 'b', mode: 'edit',
         currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null,
       });
     });

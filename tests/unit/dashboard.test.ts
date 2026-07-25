@@ -5249,4 +5249,83 @@ describe('renderDashboard — navigation focus (#425)', () => {
     expect(first.classList.contains('is-nav-target')).toBe(false);
     expect(qsa(app.root, '.is-nav-target')).toHaveLength(1);
   });
+
+  // ── #426: the same delivery, driven IN PLACE through the surface command port ──
+  // The tree navigates within an already-open Dashboard, so this path must reuse
+  // the render-time delivery body without re-rendering anything.
+  describe('focusMember (in-place navigation)', () => {
+    const filterWs = () => wsWith({
+      queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      filters: [{ id: 'f-region', parameter: 'region' }],
+    });
+
+    it('focuses, scrolls to and highlights a tile without a re-render', async () => {
+      const { app } = focusApp();
+      await render(app);
+      const cards = qsa(app.root, '.dash-tile');
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('ok');
+      expect(document.activeElement).toBe(cards[1]);
+      expect(scrollCalls).toContain(cards[1]);
+      expect(cards[1].classList.contains('is-nav-target')).toBe(true);
+      expect(cards[1].getAttribute('tabindex')).toBe('-1');
+      // The very same nodes are still on screen — nothing was rebuilt.
+      expect(qsa(app.root, '.dash-tile')[1]).toBe(cards[1]);
+    });
+
+    it('focuses a curated filter once the opening wave has settled', async () => {
+      const { app } = focusApp(filterWs());
+      await render(app);
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+      expect(document.activeElement).toBe(qs(app.root, '[data-field-key="region"]'));
+    });
+
+    // The port is installed SYNCHRONOUSLY, before the opening wave's await, so a
+    // tree click that lands mid-load still reaches a live port. A tile card
+    // already exists at that point; a curated filter's control does not (the
+    // first publish replaces the whole bar), so only the filter defers.
+    it('delivers a TILE mid-wave but reports a mid-wave FILTER as pending', async () => {
+      const { app } = focusApp(filterWs());
+      const opening = render(app);
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('pending');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('ok');
+      await opening;
+      // ...and the same filter request succeeds once the wave has settled.
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+    });
+
+    it('reports a member that is not on this Dashboard as missing, and touches nothing', async () => {
+      const { app } = focusApp();
+      await render(app);
+      // The port never toasts: the diagnostic belongs to the caller, which knows
+      // whether this was a tree click or an API call.
+      const toasts = document.querySelectorAll('.share-toast').length;
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 'nope' })).toBe('missing');
+      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'nope' })).toBe('missing');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+      expect(document.querySelectorAll('.share-toast')).toHaveLength(toasts);
+    });
+
+    it('reports a SUPERSEDED render as pending, not missing — the member is not gone', async () => {
+      const { app } = focusApp();
+      await render(app);
+      app.isSurfaceGenerationCurrent = () => false;
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('pending');
+      expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
+    });
+
+    // REGRESSION GUARD. The render-time delivery yields to a user who got there
+    // first, via a capture-phase listener armed whenever the render carried a
+    // focus target. An in-place request IS the user's own click, so sharing that
+    // guard would make every tree click after the first silently do nothing.
+    it('is NOT suppressed by the render-time "user got there first" guard', async () => {
+      const { app } = focusApp();
+      // Opening WITH a focus target is what arms the interaction listeners.
+      await render(app, { focus: { kind: 'tile', id: 't1' } });
+      document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('ok');
+      expect(document.activeElement).toBe(qsa(app.root, '.dash-tile')[1]);
+    });
+  });
 });

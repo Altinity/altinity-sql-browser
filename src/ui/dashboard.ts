@@ -83,6 +83,7 @@ import {
 import type {
   DashboardFocusTarget, DashboardSurfaceMode,
 } from '../application/main-surface.js';
+import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
@@ -734,13 +735,32 @@ export async function renderDashboard(
   // The global shortcut reaches this route-local port only while its renderer
   // generation is current. It is cleared by both Dashboard cleanup and every
   // application surface transition.
+  //
+  // #426: installed HERE, synchronously, rather than after the `await
+  // session.start()` below — the tree makes member navigation a normal operation,
+  // and a click that lands while the opening wave is still running must still
+  // reach a live port. Tile cards already exist at this point (the viewer session
+  // seeds its state with every tile at construction), so tile focus works
+  // immediately; only a curated filter has to wait, which `waveSettled` below
+  // reports as `pending`.
   const commandPort = {
     surface: 'dashboard' as const,
     generation: surfaceGeneration,
     refresh: () => session.refresh(),
     setDashboardStyle: selectLayout,
+    focusMember: (member: DashboardFocusTarget): DashboardFocusOutcome => {
+      // A curated filter's control is REPLACED by the opening wave's first
+      // publish (see the deferred delivery at the end of this render), so a node
+      // focused now would be detached moments later. Report `pending` and let the
+      // caller take the normal render transition, which delivers filter focus at
+      // the deterministic point the node is stable.
+      if (member.kind === 'filter' && !waveSettled) return 'pending';
+      return deliverFocus(member, { respectUserInteraction: false });
+    },
   };
   app.surfaceCommands = commandPort;
+  // Flipped once the opening wave resolves — see `focusMember` above.
+  let waveSettled = false;
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
 
   // Dashboard keeps the shared header's File word and placement. View exposes
@@ -2464,6 +2484,9 @@ export async function renderDashboard(
   if (target.focus?.kind === 'tile') applyNavigationFocus(target.focus);
 
   await session.start();
+  // #426: from here on a curated filter's control is stable, so the command port
+  // can deliver filter focus in place instead of reporting `pending`.
+  waveSettled = true;
 
   // A FILTER field is not stable across that first publish: it changes the bar's
   // signature (committed values, active flags, arriving options), and a rebuild
@@ -2472,28 +2495,41 @@ export async function renderDashboard(
   // render-complete signal.
   if (target.focus?.kind === 'filter') applyNavigationFocus(target.focus);
 
-  // Called only from the two narrowed call sites above, so `focus` is never null
-  // here — no redundant guard.
+  // The RENDER-TIME delivery: one shot, and it defers to the user (see
+  // `respectUserInteraction` below). Called only from the two narrowed call sites
+  // above, so `focus` is never null here — no redundant guard.
   function applyNavigationFocus(focus: DashboardFocusTarget): void {
+    // Non-destructive: the Dashboard is already open and stays open.
+    if (deliverFocus(focus, { respectUserInteraction: true }) !== 'missing') return;
+    flashToast(focus.kind === 'tile'
+      ? 'That panel is no longer on this dashboard.'
+      : 'That filter is no longer on this dashboard.', { document: doc });
+  }
+
+  /**
+   * The ONE focus-delivery body, shared by the render-time one-shot above and the
+   * command port's in-place navigation (#426) — so the tabindex/scroll/focus/
+   * highlight sequence cannot drift into two copies that disagree.
+   *
+   * `respectUserInteraction` is the difference between them. The render-time
+   * delivery must yield to a user who got there first: filter focus lands after
+   * the opening wave resolves, which can take seconds — long enough to Tab into
+   * another filter and start typing, and the filter bar's own rebuild already
+   * restores focus to whatever field that was. Yanking it away mid-keystroke is
+   * worse than not navigating at all. An in-place request IS the user's own click,
+   * so it must NOT be suppressed by that flag — which the click itself just set.
+   */
+  function deliverFocus(
+    focus: DashboardFocusTarget, { respectUserInteraction }: { respectUserInteraction: boolean },
+  ): DashboardFocusOutcome {
     // Opening another Dashboard, returning to the Query surface, a workspace
     // switch, or sign-out all advance the renderer generation — a focus request
     // that belonged to a superseded render must not steal focus from the one now
     // on screen.
-    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
-    // The user got there first. Filter focus is delivered after the opening wave
-    // resolves, which can take seconds — long enough to Tab into another filter
-    // and start typing, and the filter bar's own rebuild already restores focus to
-    // whatever field that was. Yanking it away mid-keystroke is worse than not
-    // navigating at all.
-    if (userInteracted) return;
+    if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return 'pending';
+    if (respectUserInteraction && userInteracted) return 'ok';
     const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
-    if (!node) {
-      // Non-destructive: the Dashboard is already open and stays open.
-      flashToast(focus.kind === 'tile'
-        ? 'That panel is no longer on this dashboard.'
-        : 'That filter is no longer on this dashboard.', { document: doc });
-      return;
-    }
+    if (!node) return 'missing';
     // A tile card and a filter field are both non-interactive containers, so
     // they need a programmatic-focus target; `-1` keeps them out of the Tab
     // order, leaving normal keyboard navigation untouched.
@@ -2501,6 +2537,7 @@ export async function renderDashboard(
     node.scrollIntoView({ block: 'nearest' });
     node.focus();
     highlightNavigationTarget(node);
+    return 'ok';
   }
 
   /** Resolve a tile by its Dashboard-local TILE id — never the saved-query id it
