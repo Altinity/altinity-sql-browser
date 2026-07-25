@@ -6,7 +6,7 @@ import {
 import {
   EMPTY_TREE_UI, setTreeSearch, toggleDashboardExpanded, toggleGroupExpanded,
   type DashboardTreeUiState,
-} from '../../src/application/dashboard-tree-ui-state.js';
+} from '../../src/core/dashboard-tree-ui-state.js';
 import { QUERY_SURFACE, type MainSurfaceState } from '../../src/application/main-surface.js';
 import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 
@@ -419,6 +419,34 @@ describe('deriveDashboardTree — search', () => {
     expect(searching.expandedDashboardIds).toBe(collapsed.expandedDashboardIds);
     expect(searching.expandedGroups).toBe(collapsed.expandedGroups);
     expect(keys(derive(workspace(), setTreeSearch(searching, '')).rows)).toEqual(['w1:sales', 'w1:ops']);
+  });
+
+  // #426: a search must expose paths "without mutating saved expansion state", and
+  // clearing it must restore the pre-search state. A row the search is HOLDING open
+  // therefore offers no toggle at all — otherwise a click on it would be invisible
+  // now and surprising later, leaving a Dashboard expanded the user never expanded.
+  it('offers no toggle on a row the search is forcing open', () => {
+    const tree = search('latency');
+    expect(row(tree.rows, 'w1:ops').toggleable).toBe(false);
+    expect(row(tree.rows, 'w1:ops').single).toBeNull();
+    // It is genuinely open, so aria-expanded still reports that.
+    expect(row(tree.rows, 'w1:ops').expanded).toBe(true);
+    // The forced group likewise; the unforced one stays toggleable.
+    expect(row(tree.rows, 'w1:ops:group:panels').toggleable).toBe(false);
+    expect(row(tree.rows, 'w1:ops:group:filters').toggleable).toBe(true);
+  });
+
+  it('keeps View/Edit navigation on a forced-open Dashboard row', () => {
+    const dash = row(search('latency').rows, 'w1:ops');
+    // Only the toggle is withheld — the row is still a navigation target.
+    expect(dash.double).toMatchObject({ kind: 'open-dashboard' });
+    expect(dash.shift).toMatchObject({ kind: 'open-dashboard' });
+    expect(dash.menu).toHaveLength(2);
+  });
+
+  it('every row is toggleable again once the search clears', () => {
+    const tree = derive(workspace());
+    expect(tree.rows.every((r) => r.toggleable)).toBe(true);
   });
 
   it('reports no-matches distinctly from an empty collection', () => {

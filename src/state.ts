@@ -21,7 +21,7 @@ import {
 import type { ResultSort } from './core/sort.js';
 // Type-only: `dashboard-tree-ui-state.ts` is a pure leaf with no imports of its
 // own, so naming its state shape here introduces no cycle.
-import type { DashboardTreeUiState } from './application/dashboard-tree-ui-state.js';
+import type { DashboardTreeUiState } from './core/dashboard-tree-ui-state.js';
 import {
   defaultSpecValidationService as defaultSpecValidationServiceUntyped,
   evaluateSpecText as evaluateSpecTextUntyped,

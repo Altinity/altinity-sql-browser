@@ -16,7 +16,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderDashboardTree, cancelDashboardTreeClicks, type DashboardTreeApp } from './dashboard-tree.js';
-import { readTreeUi, setTreeSearch } from '../application/dashboard-tree-ui-state.js';
+import { readTreeUi, setTreeSearch } from '../core/dashboard-tree-ui-state.js';
 import type { AppState } from '../state.js';
 import type { AppDom } from './app.types.js';
 

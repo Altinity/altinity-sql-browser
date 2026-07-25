@@ -104,7 +104,7 @@ import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 import { mountAppShell } from './app-shell.js';
 import { cancelDashboardTreeClicks } from './dashboard-tree.js';
-import { pruneTreeUi } from '../application/dashboard-tree-ui-state.js';
+import { pruneTreeUi } from '../core/dashboard-tree-ui-state.js';
 import type { AppShellHandle } from './app-shell.js';
 import { buildAppHeader } from './app-header.js';
 
@@ -1803,10 +1803,14 @@ export function createApp(env: CreateAppEnv = {}): App {
       const pruned = pruneTreeUi(treeUi, workspace.dashboards.map((dashboard) => dashboard.id));
       if (pruned !== treeUi) app.state.dashboardTreeUi.set(workspace.id, pruned);
     }
-    // #426: a deferred single-click belongs to the rows of the workspace it was
-    // pressed in. Switching workspaces replaces the whole tree, so an "open this
-    // query" scheduled a moment ago must not fire against the new one.
-    if (workspaceChanged) cancelDashboardTreeClicks(app);
+    // #426: a deferred single-click was scheduled against the rows of a PROJECTION,
+    // and every projection replaces them — not just a workspace switch. Deleting a
+    // Dashboard inside the 300ms window would otherwise let the delayed toggle
+    // re-add the id that was just pruned, and a deleted panel's deferred open would
+    // reach `openSavedQuery` with a dead id. Cancelling unconditionally can drop a
+    // click when a background commit lands mid-gesture, which is the cheaper error:
+    // the rows that click referred to are gone either way.
+    cancelDashboardTreeClicks(app);
     invalidateDashboardTree();
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
     // leaving the Dashboard host exposed wedges the app: every path back —

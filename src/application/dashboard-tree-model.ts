@@ -19,8 +19,8 @@
 // reference, and it never throws — see "Defensive rendering" below.
 
 import type { DashboardFocusTarget, MainSurfaceState, OpenDashboardRequest } from './main-surface.js';
-import type { DashboardTreeGroup, DashboardTreeUiState } from './dashboard-tree-ui-state.js';
-import { encodeKeyPart, groupStateKey } from './dashboard-tree-ui-state.js';
+import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard-tree-ui-state.js';
+import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
 
 // ── Deliberately loosened input shapes ──────────────────────────────────────
 // The persisted-workspace validator normally rejects broken references, but the
@@ -114,6 +114,15 @@ export interface DashboardTreeRow {
   meta: string;
   expandable: boolean;
   expanded: boolean;
+  /**
+   * Whether this row's expansion can be CHANGED right now. False for a row a search
+   * is holding open: #426 requires a search to expose paths "without mutating saved
+   * expansion state" and to restore the pre-search state when cleared, so a click
+   * that silently wrote expansion — invisible until the search cleared, then
+   * surprising — would violate both. Such a row keeps `aria-expanded` (it genuinely
+   * is open) but offers no toggle.
+   */
+  toggleable: boolean;
   /** This row itself matched the active search (for match styling). */
   matched: boolean;
   /** The open Dashboard, or the member most recently navigated to inside it. */
@@ -261,8 +270,10 @@ export function deriveDashboardTree(
     if (search !== '' && !dashboardMatched && shownFilters.length === 0 && shownTiles.length === 0) continue;
 
     // A search EXPOSES matching paths at presentation time; it never writes the
-    // user's expansion sets, so clearing it restores exactly what was open.
-    const dashboardExpanded = search !== '' || ui.expandedDashboardIds.has(dashboard.id);
+    // user's expansion sets, so clearing it restores exactly what was open — which
+    // also means a row the search is FORCING open cannot be toggled at all.
+    const dashboardForced = search !== '';
+    const dashboardExpanded = dashboardForced || ui.expandedDashboardIds.has(dashboard.id);
     const isCurrentDashboard = selectedId === dashboard.id;
 
     rows.push({
@@ -276,6 +287,7 @@ export function deriveDashboardTree(
       meta: String(tiles.length),
       expandable: true,
       expanded: dashboardExpanded,
+      toggleable: !dashboardForced,
       matched: dashboardMatched,
       current: isCurrentDashboard,
       invalid: null,
@@ -284,7 +296,7 @@ export function deriveDashboardTree(
       member: null,
       queryId: null,
       group: null,
-      single: { kind: 'toggle' },
+      single: dashboardForced ? null : { kind: 'toggle' },
       double: openDashboardCommand(dashboard.id, 'view'),
       shift: openDashboardCommand(dashboard.id, 'edit'),
       menu: [
@@ -323,8 +335,8 @@ export function deriveDashboardTree(
       // cannot open (nothing to show) and cannot stay closed once it does match,
       // and clicking it silently writes expansion that only surfaces later, after
       // the search is cleared.
-      const groupExpanded = ui.expandedGroups.has(groupStateKey(dashboard.id, group))
-        || (search !== '' && shown.length > 0);
+      const groupForced = search !== '' && shown.length > 0;
+      const groupExpanded = ui.expandedGroups.has(groupStateKey(dashboard.id, group)) || groupForced;
       rows.push({
         key: groupKey,
         kind: 'group',
@@ -335,6 +347,7 @@ export function deriveDashboardTree(
         meta: '',
         expandable: true,
         expanded: groupExpanded,
+        toggleable: !groupForced,
         matched: false,
         current: false,
         invalid: null,
@@ -345,7 +358,7 @@ export function deriveDashboardTree(
         group,
         // A group row has no double or Shift action, so its expansion needs no
         // arbitration and the view toggles it immediately.
-        single: { kind: 'toggle' },
+        single: groupForced ? null : { kind: 'toggle' },
         double: null,
         shift: null,
         menu: [],
@@ -372,6 +385,7 @@ export function deriveDashboardTree(
           meta: '',
           expandable: false,
           expanded: false,
+          toggleable: false,
           matched: search !== '' && hits(facts.haystack),
           current: isCurrentDashboard && currentMember !== null
             && currentMember.kind === member.kind && currentMember.id === member.id,

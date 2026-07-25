@@ -6,7 +6,7 @@ import { makeApp } from '../helpers/fake-app.js';
 import {
   EMPTY_TREE_UI, groupStateKey, readTreeUi, setTreeSearch, toggleDashboardExpanded,
   toggleGroupExpanded,
-} from '../../src/application/dashboard-tree-ui-state.js';
+} from '../../src/core/dashboard-tree-ui-state.js';
 import type { MainSurfaceState } from '../../src/application/main-surface.js';
 import type { TreeWorkspace } from '../../src/application/dashboard-tree-model.js';
 import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
@@ -671,6 +671,35 @@ describe('renderDashboardTree — search', () => {
     renderDashboardTree(app);
     expect(rowFor(list, 'w1:sales:tile:t1').classList.contains('match')).toBe(true);
     expect(rowFor(list, 'w1:sales').classList.contains('match')).toBe(false);
+  });
+
+  it('a search-forced row cannot be toggled, by chevron or by click', () => {
+    vi.useFakeTimers();
+    const { app, list } = treeApp();
+    setUi(app, (ui) => setTreeSearch(ui, 'revenue'));
+    renderDashboardTree(app);
+    const dashboardRow = rowFor(list, 'w1:sales');
+    // No chevron handler at all, rather than an affordance that lies.
+    expect(dashboardRow.querySelector('.chev')!.getAttribute('onclick')).toBeNull();
+    click(dashboardRow.querySelector('.chev')!);
+    click(dashboardRow);
+    vi.advanceTimersByTime(400);
+    // Nothing was written, so clearing the search restores the untouched state.
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    setUi(app, (ui) => setTreeSearch(ui, ''));
+    renderDashboardTree(app);
+    expect(labels(list)).toEqual(['Sales', 'Ops']);
+  });
+
+  it('Left/Right cannot collapse a search-forced row either', () => {
+    const { app, list } = treeApp();
+    setUi(app, (ui) => setTreeSearch(ui, 'revenue'));
+    renderDashboardTree(app);
+    key(list, 'ArrowLeft');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    // Right on a forced-open row steps INTO it instead of expanding it.
+    key(list, 'ArrowRight');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:filters');
   });
 
   it('typing in the search box repaints the rows but keeps the input mounted', () => {

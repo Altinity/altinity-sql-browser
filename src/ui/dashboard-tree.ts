@@ -27,7 +27,7 @@ import {
   clampKeyboardRow, readTreeUi, setDashboardExpanded, setGroupExpanded, setKeyboardRow,
   setTreeScroll, toggleDashboardExpanded, toggleGroupExpanded,
   type DashboardTreeUiState,
-} from '../application/dashboard-tree-ui-state.js';
+} from '../core/dashboard-tree-ui-state.js';
 import type { AppState } from '../state.js';
 import type { AppDom } from './app.types.js';
 import type { MainSurfaceState, OpenDashboardRequest } from '../application/main-surface.js';
@@ -168,8 +168,9 @@ function buildRow(
     style: row.expandable ? { transform: row.expanded ? OPEN_ROTATE : CLOSED_ROTATE } : null,
     // The chevron is the deliberate INSTANT path for expansion: a Dashboard row's
     // own click has to wait out the double-click window, so this gives the user a
-    // way to expand with no delay at all.
-    ...(row.expandable ? {
+    // way to expand with no delay at all. A row a search is holding open is NOT
+    // toggleable, so it gets no handler rather than an affordance that lies.
+    ...(row.toggleable ? {
       onclick: (event: MouseEvent) => {
         event.stopPropagation();
         // Only this row's own pending single — a click here must not disturb one
@@ -229,7 +230,7 @@ function buildRow(
 function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean): void {
   if (row.kind === 'group') {
     app._dashTreeArbiter?.cancelFor(row.key);
-    toggleRow(app, row);
+    if (row.toggleable) toggleRow(app, row);
     return;
   }
   arbiterFor(app).press(row.key, {
@@ -323,8 +324,9 @@ function handleTreeKeydown(
       return;
     case 'ArrowRight': {
       event.preventDefault();
-      // Expand a closed row; on an already-open one, step into its first child.
-      if (row.expandable && !row.expanded) { expand(app, row, true); return; }
+      // Expand a closed row; on an already-open one (or one a search is holding
+      // open, which cannot be collapsed), step into its first child.
+      if (row.toggleable && !row.expanded) { expand(app, row, true); return; }
       const child = rows[index + 1];
       if (child !== undefined && child.parentKey === row.key) moveTo(app, child.key);
       return;
@@ -332,7 +334,7 @@ function handleTreeKeydown(
     case 'ArrowLeft': {
       event.preventDefault();
       // Collapse an open row; otherwise step out to its parent.
-      if (row.expandable && row.expanded) { expand(app, row, false); return; }
+      if (row.toggleable && row.expanded) { expand(app, row, false); return; }
       if (row.parentKey !== null) moveTo(app, row.parentKey);
       return;
     }

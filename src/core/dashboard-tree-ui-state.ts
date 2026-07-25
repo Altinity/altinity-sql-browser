@@ -1,6 +1,14 @@
 // The Dashboard tree's SESSION UI state (#426): expansion, search text, scroll
 // position and keyboard row, scoped by workspace identity. Pure — no DOM, no
-// persistence, no signals.
+// persistence, no signals, and no imports at all.
+//
+// Lives in `src/core/` per CLAUDE.md hard rule 2, alongside the other pure
+// domain modules (`core/dashboard.ts`, `core/tile-reorder.ts`,
+// `core/dashboard-autoscroll.ts`). It resolves nothing against the workspace
+// aggregate — it transforms sets and strings — which is exactly what separates it
+// from `application/dashboard-tree-model.ts`, whose placement outside `core/` is
+// forced: that one reads `MainSurfaceState`, and `src/core/` may never import
+// `src/workspace/` (build/check-boundaries.mjs).
 //
 // Never exported and never persisted: `StoredWorkspaceV3` carries none of this.
 // Keyed by `StoredWorkspaceV3.id` — the immutable opaque application identity

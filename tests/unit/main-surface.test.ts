@@ -45,10 +45,22 @@ describe('resolveOpenDashboard', () => {
   // retained) and that a delivery is owed (consumed once). One request sets both.
   it('sets BOTH the current member and the owed delivery from one focus request', () => {
     const focus = { kind: 'tile', id: 't1' } as const;
-    expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
+    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'], [])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
       status: 'ok',
       surface: {
         kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: focus, pendingFocus: focus,
+      },
+    });
+  });
+
+  // The two fields validate differently: styling must not mark a phantom, but the
+  // REQUEST has to survive so the delivery path can report the miss.
+  it('does not mark a member the Dashboard lacks, but still owes the delivery', () => {
+    const focus = { kind: 'tile', id: 'gone' } as const;
+    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'], [])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
+      status: 'ok',
+      surface: {
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: focus,
       },
     });
   });

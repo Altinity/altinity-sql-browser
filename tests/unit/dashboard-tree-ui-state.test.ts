@@ -4,7 +4,7 @@ import {
   setDashboardExpanded, setGroupExpanded, setKeyboardRow, setTreeScroll, setTreeSearch,
   toggleDashboardExpanded, toggleGroupExpanded,
   type DashboardTreeUiState,
-} from '../../src/application/dashboard-tree-ui-state.js';
+} from '../../src/core/dashboard-tree-ui-state.js';
 
 describe('readTreeUi', () => {
   it('is the empty state for a workspace with none yet, WITHOUT creating an entry', () => {
