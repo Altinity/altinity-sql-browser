@@ -63,16 +63,28 @@ const contrast = (a, b) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
-/** Pull a token's literal value out of a theme block ([data-theme='dark'] or
- *  ['light']), falling back to the :root definition. */
+/** Composite a translucent colour over an opaque one, so a token defined as
+ *  rgba() can still be measured against the plane it actually sits on. */
+const over = (rgba, base) => {
+  const [r, g, b, a = 1] = rgba.match(/[\d.]+/g).map(Number);
+  const bs = base.replace('#', '');
+  const mix = (i, ch) => Math.round(ch * a + parseInt(bs.slice(i, i + 2), 16) * (1 - a));
+  return `#${[mix(0, r), mix(2, g), mix(4, b)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+};
+
+/** Pull a token's value out of a theme block ([data-theme='dark'] or ['light']),
+ *  falling back to the :root definition. rgba() values (the warn/error tints) are
+ *  composited over that theme's canvas so they can be compared as real colours. */
 const themeToken = (theme, name) => {
   const start = declarations.indexOf(`[data-theme='${theme}'] {`);
   const block = declarations.slice(start, declarations.indexOf('\n}', start));
-  const own = new RegExp(`${name}:\\s*(#[0-9A-Fa-f]{6});`).exec(block);
-  if (own) return own[1];
-  const base = new RegExp(`${name}:\\s*(#[0-9A-Fa-f]{6});`).exec(rootBlock);
-  if (!base) throw new Error(`no value for ${name} in ${theme} or :root`);
-  return base[1];
+  const find = (text) => new RegExp(`${name}:\\s*(#[0-9A-Fa-f]{6}|rgba?\\([^)]+\\));`).exec(text);
+  const hit = find(block) || find(rootBlock);
+  if (!hit) throw new Error(`no value for ${name} in ${theme} or :root`);
+  if (!hit[1].startsWith('rgb')) return hit[1];
+  // Canvas for this theme, which every translucent tint is layered on.
+  const canvas = find.call(null, block) && /--bg:\s*(#[0-9A-Fa-f]{6})/.exec(block);
+  return over(hit[1], canvas ? canvas[1] : '#FFFFFF');
 };
 
 // Applied WITHIN each ramp: the interface and document ramps never meet in one
@@ -260,6 +272,86 @@ describe('every text-bearing class the UI renders has a rule', () => {
   });
 });
 
+describe('corner radii', () => {
+  it('defines four steps plus a pill, and nothing else', () => {
+    expect(tokenValues('r')).toEqual({
+      '--r-xs': '3px',
+      '--r-sm': '5px',
+      '--r-md': '8px',
+      '--r-lg': '12px',
+      '--r-pill': '999px',
+    });
+  });
+
+  it('sets no literal radius outside the token set', () => {
+    // The stylesheet had drifted to fourteen radius values against a documented
+    // four-step scale — 4/5/6/7px all in play for the same kind of control, and
+    // `.dash-tile` at 10px while DESIGN.md said tiles are 8px. A radius states what
+    // KIND of surface a box is; fourteen values state nothing.
+    const bad = [...rules.matchAll(/border(?:-[a-z]+)?-radius:([^;}]+)/g)]
+      .map((m) => m[1].trim())
+      // `0` is a deliberate square-corner reset; a multi-corner value is allowed
+      // as long as each corner it names is a token (the flush-topped combo footer).
+      .filter((v) => v !== '0' && !/^(var\(--r-[\w-]+\)|0)( (var\(--r-[\w-]+\)|0))*$/.test(v));
+    expect(bad).toEqual([]);
+  });
+
+  it('uses a pill token rather than a px radius where the radius is the shape', () => {
+    // A capsule written as `border-radius: 18px` silently stops being a capsule the
+    // moment the box grows past 36px tall. --r-pill cannot.
+    expect(tokenValues('r')['--r-pill']).toBe('999px');
+    expect([...rules.matchAll(/border-radius:\s*var\(--r-pill\)/g)].length).toBeGreaterThan(0);
+  });
+});
+
+describe('elevation', () => {
+  it('defines one token per documented shadow entry', () => {
+    // DESIGN.md §4 documents Micro Lift / Popover / Dialog / Drawer, plus a float
+    // for transient surfaces. The stylesheet had fourteen distinct shadows across
+    // eleven black alphas, so two popovers could differ for no reason at all.
+    expect(Object.keys(tokenValues('shadow')).sort()).toEqual([
+      '--shadow-dialog', '--shadow-drawer', '--shadow-float', '--shadow-lift', '--shadow-popover',
+    ]);
+    expect(Object.keys(tokenValues('ring')).sort()).toEqual(['--ring-error', '--ring-warn']);
+    expect(rootBlock).toMatch(/--ring:\s*0 0 0 3px color-mix/);
+  });
+
+  it('sets no raw shadow colour outside the tokens', () => {
+    const raw = [...rules.matchAll(/box-shadow:([^;}]+)/g)]
+      .map((m) => m[1].trim())
+      .filter((v) => /rgba?\(/.test(v));
+    expect(raw).toEqual([]);
+  });
+});
+
+describe('no token is referenced with a literal fallback', () => {
+  it('never writes var(--token, #hex)', () => {
+    // `var(--success, #238636)` and `var(--danger, #cf222e)` shipped for a long
+    // time against tokens that were NEVER DEFINED, so those colours silently
+    // ignored the theme and quietly failed AA. A hex fallback turns a missing
+    // token from a visible bug into an invisible one.
+    const withHexFallback = [...declarations.matchAll(/var\(\s*--[\w-]+\s*,\s*(#[0-9A-Fa-f]{3,8}|rgba?\()/g)]
+      .map((m) => m[0]);
+    expect(withHexFallback).toEqual([]);
+  });
+
+  it('resolves every var(--token) reference to a defined token', () => {
+    // Catches the inverse too: a reference to a token nobody declares.
+    const defined = new Set([...css.matchAll(/^\s*(--[\w-]+):/gm)].map((m) => m[1]));
+    // Set from JS at runtime, so they are legitimately absent from :root.
+    //   --var-input-ch          : src/ui/var-field.ts (type-aware input width, #345)
+    //   --dash-time-crosshair-x     : src/ui/dashboard-chart-interaction.ts
+    //   --dash-time-crosshair-color : ditto (per-series crosshair colour)
+    // Both carry their own fallback, so they degrade rather than resolve to nothing.
+    const EXTERNAL = new Set([
+      '--var-input-ch', '--dash-time-crosshair-x', '--dash-time-crosshair-color',
+    ]);
+    const referenced = new Set([...rules.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]));
+    const dangling = [...referenced].filter((t) => !defined.has(t) && !EXTERNAL.has(t));
+    expect(dangling).toEqual([]);
+  });
+});
+
 describe('the colours the type sits on meet WCAG 2.2 AA', () => {
   // 1.4.3 Contrast (Minimum): 4.5:1 for normal text. Nothing in this product's
   // ramp reaches the 18.66px-bold or 24px "large text" exemption except the KPI
@@ -296,6 +388,36 @@ describe('the colours the type sits on meet WCAG 2.2 AA', () => {
     expect(contrast('#FFFFFF', '#0079AD')).toBeGreaterThanOrEqual(4.5);
     expect(contrast('#FFFFFF', themeToken('light', '--error-fg'))).toBeGreaterThanOrEqual(4.5);
   });
+
+  // Semantic and log-level tokens are checked against the surfaces they can
+  // ACTUALLY land on, not the full cross-product. Testing every token against
+  // every background reports failures that no user can reach (a log level never
+  // renders on a chip) and pressures a correct palette into changing for nothing.
+  const SEMANTIC_EXPOSURE = {
+    '--error-fg': ['--bg', '--bg-table', '--bg-modal', '--bg-chip'],
+    '--warn-fg': ['--bg', '--bg-table', '--bg-modal', '--warn-bg'],
+    '--success-fg': ['--bg', '--bg-table', '--bg-modal', '--bg-chip'],
+    '--num': ['--bg-table', '--bg'],
+    '--log-fatal': ['--bg', '--bg-table'],
+    '--log-error': ['--bg', '--bg-table'],
+    '--log-warn': ['--bg', '--bg-table'],
+    '--log-info': ['--bg', '--bg-table'],
+    '--log-debug': ['--bg', '--bg-table'],
+    '--log-trace': ['--bg', '--bg-table'],
+  };
+
+  for (const theme of ['dark', 'light']) {
+    it(`holds every semantic colour at 4.5:1 where it renders in the ${theme} theme`, () => {
+      const failures = [];
+      for (const [fg, backgrounds] of Object.entries(SEMANTIC_EXPOSURE)) {
+        for (const bg of backgrounds) {
+          const ratio = contrast(themeToken(theme, fg), themeToken(theme, bg));
+          if (ratio < 4.5) failures.push(`${fg} on ${bg}: ${ratio.toFixed(2)}:1`);
+        }
+      }
+      expect(failures).toEqual([]);
+    });
+  }
 });
 
 describe('the artifact carries its own typefaces', () => {

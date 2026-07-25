@@ -6,6 +6,41 @@ colors:
   clickhouse-blue-deep: "#005F8A"
   accent-text-light: "#005F8A"
   accent-text-dark: "#2596CC"
+  success-light: "#137A38"
+  success-dark: "#4ADE80"
+  log-fatal-light: "#B91C1C"
+  log-fatal-dark: "#EF4444"
+  log-error-light: "#DC2626"
+  log-error-dark: "#F87171"
+  log-warn-light: "#B45309"
+  log-warn-dark: "#FBBF24"
+  log-info-light: "#15803D"
+  log-info-dark: "#4ADE80"
+  log-debug-light: "#1D4ED8"
+  log-debug-dark: "#60A5FA"
+  log-trace-light: "#64748B"
+  log-trace-dark: "#94A3B8"
+  kind-view: "#14b8a6"
+  kind-mv: "#8b5cf6"
+  kind-dictionary: "#3b82f6"
+  kind-distributed: "#f97316"
+  kind-buffer: "#eab308"
+  kind-merge: "#64748b"
+  role-pk: "#ff8f6b"
+  role-sk: "#6bb6ff"
+  role-partition: "#c297ff"
+  sql-keyword-dark: "#C586C0"
+  sql-keyword-light: "#AF00DB"
+  sql-func-dark: "#DCDCAA"
+  sql-func-light: "#795E26"
+  sql-string-dark: "#CE9178"
+  sql-string-light: "#A31515"
+  sql-number-dark: "#B5CEA8"
+  sql-number-light: "#098658"
+  sql-comment-dark: "#6A9955"
+  sql-comment-light: "#008000"
+  sql-agg: "#E0B341"
+  sql-cast: "#4FC1FF"
   light-canvas: "#FAFAFA"
   light-surface: "#FFFFFF"
   light-subtle: "#F5F5F4"
@@ -58,6 +93,7 @@ rounded:
   sm: "5px"
   md: "8px"
   lg: "12px"
+  pill: "999px"
 spacing:
   xs: "4px"
   sm: "8px"
@@ -143,6 +179,34 @@ The palette pairs ClickHouse Blue with Porcelain light surfaces and Graphite dar
 **The One Accent Rule.** ClickHouse Blue is the only general-purpose accent and occupies no more surface than the active task requires.
 
 **The Evidence Rule.** Error, warning, log-level, and numeric colors encode meaning. Never use them as decoration, and never rely on color alone.
+
+### Sub-palettes
+
+Three palettes sit alongside the UI system. Each is separate because it encodes
+something the UI palette cannot, and each is a **token family**, not scattered hex.
+
+**Semantic state** — `--error-fg`, `--warn-fg`, `--success-fg`, with matching `-bg`/`-bd`
+tints. `--success-fg` and the danger colour used to be referenced as
+`var(--success, #238636)` / `var(--danger, #cf222e)` against tokens that were **never
+defined**, so KPI deltas and export status silently ignored the theme and failed AA
+(`#238636` is 3.92:1). They are real tokens now.
+
+**Log levels** — `--log-fatal` / `-error` / `-warn` / `-info` / `-debug` / `-trace`.
+A six-step severity ramp for the logs panel, always paired with the level's own text.
+
+**Object kinds** (`--kind-*`) and **key roles** (`--role-*`) — the categorical palette
+naming ClickHouse object kinds in the EXPLAIN pipeline graph and schema graph: view,
+materialized view, dictionary, distributed, buffer, merge. The same hue must mean the
+same kind in the node fill, the edge, and the legend swatch, which is exactly why they
+are tokens: they were previously three separate copies of a hex that could drift apart.
+Held identical across themes — what kind a node is does not depend on the theme.
+
+**SQL syntax** (`--sql-*`) — the code-editor theme, deliberately following editor
+convention rather than the ClickHouse-blue system, because a developer reads a keyword
+colour faster than they read a brand. Light and dark values differ; the five
+`[data-theme='light'] .sql-*` override rules that used to duplicate them are gone.
+
+### Named Rules
 
 **The Measured Contrast Rule.** Every foreground token must reach 4.5:1 against every
 background token it can land on, in both themes — asserted by
@@ -241,15 +305,35 @@ on any class group the stylesheet does not match.
 below AA. Fills, borders, focus rings, carets and icons keep `--accent`, where 1.4.11's
 3:1 applies and it passes.
 
+### Corner Radii
+
+Four steps plus a pill, chosen by what **kind** of surface a box is rather than by its
+size — `--r-xs` marks and glyph slots, `--r-sm` controls, `--r-md` containers, `--r-lg`
+large overlays, `--r-pill` capsules. The stylesheet had drifted to fourteen values
+(2/3/4/5/6/7/8/9/10/11/12/16/18/20px) against a documented four-step scale, with 4/5/6/7
+all in play for the same kind of control. Fourteen radii state nothing.
+
 ## 4. Elevation
 
 The system is flat and structurally layered. Background shifts and one-pixel borders define the persistent shell, panels, tables, and dashboard tiles. Shadows are reserved for temporary surfaces that physically overlap the workspace: menus, popovers, dialogs, detached overlays, and side drawers.
 
 ### Shadow Vocabulary
-- **Micro Lift** (`0 1px 2px rgba(0,0,0,.12–.15)`): selected segmented controls only.
-- **Popover** (`0 8px 28px rgba(0,0,0,.4)`): menus and compact floating choices.
-- **Dialog** (`0 20px 60px rgba(0,0,0,.45–.5)`): blocking overlays.
-- **Drawer** (`-8px 0 28px rgba(0,0,0,.35)`): the cell-detail side drawer.
+
+One token per entry. The stylesheet had drifted to fourteen distinct shadows across
+eleven black alphas, so two popovers could differ for no reason — the vocabulary had
+stopped communicating placement, which is its only job.
+
+- **`--shadow-lift`** (`0 1px 2px rgba(0,0,0,.15)`): selected segmented controls only.
+- **`--shadow-float`** (`0 6px 18px rgba(0,0,0,.3)`): toasts, export progress, a tile
+  being dragged — transient, close to the surface.
+- **`--shadow-popover`** (`0 8px 28px rgba(0,0,0,.4)`): menus and compact floating choices.
+- **`--shadow-dialog`** (`0 20px 60px rgba(0,0,0,.45)`): blocking overlays.
+- **`--shadow-drawer`** (`-8px 0 28px rgba(0,0,0,.35)`): the side drawers.
+- **`--scrim`**: the modal/drawer backdrop.
+
+Focus rings are their own family — `--ring`, `--ring-warn`, `--ring-error` — a 3px
+translucent ring in the state's own hue, so the ring says which *kind* of state has
+focus rather than only that something does.
 
 ### Named Rules
 
@@ -260,25 +344,29 @@ The system is flat and structurally layered. Background shifts and one-pixel bor
 ## 5. Components
 
 ### Buttons
-- **Shape:** compact, gently curved edges (`5–9px` radius), sized to their context rather than forced into pills.
+- **Shape:** compact, gently curved edges — `--r-sm` (`5px`) for controls, `--r-md`
+  (`8px`) for the login primary. Sized to their context rather than forced into pills.
 - **Primary:** ClickHouse Blue with white text; the login primary is `42px` high with `16px` horizontal padding.
 - **Hover / Focus:** slight brightness or neutral hover fill; keyboard focus uses the accent border and a three-pixel low-opacity accent ring.
 - **Quiet / Ghost:** transparent at rest, muted text, optional one-pixel border; hover reveals a neutral background and stronger text.
 - **Disabled:** reduced opacity with the action cursor removed; loading communicates ongoing work without changing the button vocabulary.
 
 ### Chips
-- **Style:** compact tonal grouping using the chip surface, muted text, `5–8px` radius, and minimal padding.
+- **Style:** compact tonal grouping using the chip surface, muted text, `--r-sm`, and
+  minimal padding. A *capsule* uses `--r-pill`, never a px radius: `border-radius: 18px`
+  silently stops being a capsule the moment the box grows past 36px tall.
 - **State:** selection uses the content surface, stronger text, or ClickHouse Blue; semantic chips use their assigned state color and accompanying text/icon.
 
 ### Cards / Containers
-- **Corner Style:** `8px` for dashboard tiles and grouped controls; up to `12px` for dialogs and login containers.
+- **Corner Style:** `--r-md` (`8px`) for dashboard tiles, popovers and grouped controls;
+  `--r-lg` (`12px`) for dialogs and the login card.
 - **Background:** foreground surface token for the active theme.
 - **Shadow Strategy:** none for persistent tiles; follow the elevation vocabulary for overlays.
 - **Border:** one-pixel structural border using the theme border token.
 - **Internal Padding:** compact and purpose-specific (`8–20px`); data regions usually extend to edges under a distinct header.
 
 ### Inputs / Fields
-- **Style:** surface background, one-pixel border, `5–8px` radius, `--text-label`/`--text-body` text, and compact vertical sizing.
+- **Style:** surface background, one-pixel border, `--r-sm`, `--text-label`/`--text-body` text, and compact vertical sizing.
 - **Focus:** ClickHouse Blue border plus a `3px` translucent focus ring on form fields; editor focus remains integrated with the workspace.
 - **Error / Disabled:** semantic text/background/border tokens for errors; opacity and cursor changes for disabled controls.
 
@@ -298,7 +386,8 @@ The system is flat and structurally layered. Background shifts and one-pixel bor
 - Completion and hover surfaces use the same overlay elevation, neutral palette, and compact density as the rest of the application.
 
 ### Dashboard Tiles
-- Tiles use an `8px` radius, one-pixel border, and no shadow.
+- Tiles use `--r-md`, a one-pixel border, and no shadow. (They shipped at 10px for a
+  while, against this very line.)
 - Header, body, and footer are structurally distinct; the visualization receives the largest uninterrupted area.
 - Arrange and Report layouts change topology without changing component styling.
 
