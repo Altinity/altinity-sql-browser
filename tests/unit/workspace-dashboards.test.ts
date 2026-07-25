@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, findDashboardStrict, replaceDashboard, resolveCompatibilityDashboard,
+  withCompatibilityDashboard,
 } from '../../src/workspace/workspace-dashboards.js';
 import type { DashboardDocumentV1, StoredWorkspaceV3 } from '../../src/generated/json-schema.types.js';
 
@@ -40,6 +41,24 @@ describe('findDashboard', () => {
     expect(findDashboard(workspace, 'b')!.id).toBe('b');
     expect(findDashboard(workspace, 'gone')).toBeNull();
     expect(findDashboard(ws([]), 'a')).toBeNull();
+  });
+});
+
+describe('findDashboardStrict', () => {
+  it('resolves a unique id, independent of position', () => {
+    const workspace = ws([dash('a'), dash('b')]);
+    expect(findDashboardStrict(workspace, 'b'))
+      .toEqual({ status: 'ok', dashboard: workspace.dashboards[1] });
+  });
+
+  it('separates a deleted entry from an ambiguous one', () => {
+    expect(findDashboardStrict(ws([dash('a')]), 'gone')).toEqual({ status: 'missing' });
+    expect(findDashboardStrict(ws([]), 'a')).toEqual({ status: 'missing' });
+    expect(findDashboardStrict(ws([dash('a'), dash('a')]), 'a')).toEqual({ status: 'duplicate' });
+  });
+
+  it('accepts any workspace-shaped value carrying a Dashboard collection', () => {
+    expect(findDashboardStrict({ dashboards: [dash('d1')] }, 'd1').status).toBe('ok');
   });
 });
 

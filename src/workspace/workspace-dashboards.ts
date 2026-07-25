@@ -45,6 +45,30 @@ export function findDashboard(
   return workspace.dashboards.find((dashboard) => dashboard.id === dashboardId) ?? null;
 }
 
+/** Why an id-addressed resolution failed, kept distinct because the two
+ *  outcomes mean different things to a caller: `missing` is an entry that was
+ *  deleted (fall back), `duplicate` is a workspace whose ids are ambiguous and
+ *  which therefore must never be written through a guess. */
+export type DashboardLookup =
+  | { status: 'ok'; dashboard: DashboardDocumentV1 }
+  | { status: 'missing' }
+  | { status: 'duplicate' };
+
+/**
+ * The Dashboard with this id under the exactly-one-match rule — the single
+ * definition of that data-integrity invariant, shared by every id-addressed
+ * reader and writer (`replaceDashboard` below, and the selected-surface
+ * resolution in `application/main-surface.ts`) so it can never drift into two
+ * copies that disagree.
+ */
+export function findDashboardStrict(
+  workspace: WorkspaceDashboards, dashboardId: string,
+): DashboardLookup {
+  const matches = workspace.dashboards.filter((dashboard) => dashboard.id === dashboardId);
+  if (matches.length === 1) return { status: 'ok', dashboard: matches[0] };
+  return { status: matches.length === 0 ? 'missing' : 'duplicate' };
+}
+
 /**
  * Replace EXACTLY ONE Dashboard, addressed by its stable id, preserving every
  * other entry and the collection's order. Returns `null` — committing nothing —
@@ -55,8 +79,7 @@ export function findDashboard(
 export function replaceDashboard(
   workspace: StoredWorkspaceV3, dashboardId: string, next: DashboardDocumentV1,
 ): StoredWorkspaceV3 | null {
-  const matches = workspace.dashboards.filter((dashboard) => dashboard.id === dashboardId);
-  if (matches.length !== 1) return null;
+  if (findDashboardStrict(workspace, dashboardId).status !== 'ok') return null;
   return {
     ...workspace,
     dashboards: workspace.dashboards.map((dashboard) => (dashboard.id === dashboardId ? next : dashboard)),
