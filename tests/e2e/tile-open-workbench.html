@@ -64,21 +64,30 @@
         query('q-ops', 'Live KPIs', 'SELECT 2 AS v'),
         // A KPI tile. In the grid engine it is a frameless CARD whose head is a
         // pointer-transparent overlay — the hardest case for this action. (In FLOW
-        // layout a KPI tile renders into a chrome-less `.dash-kpi-member` band host
-        // instead and deliberately carries no action at all — #475.)
+        // layout the same tile renders into a `.dash-kpi-member` band host that has no
+        // chrome and no box, where the action is anchored inside the card instead;
+        // `dashboard.test.ts` covers that shape.)
         query('q-kpi', 'Revenue KPI', 'SELECT 42 AS value', { type: 'kpi' }),
         // A genuinely queryless tile — it must expose NO action rather than opening
         // an unrelated document.
         query('q-text', 'Runbook', '', { type: 'text', content: '# Runbook' }),
       ],
       dashboards: [
+        // `ops` is deliberately the collection's FIRST entry: the fallback this
+        // feature replaces resolved the first Dashboard, so a test that LEAVES `sales`
+        // can only tell the two apart when `sales` is not also the fallback's answer.
+        {
+          documentVersion: 2, id: 'ops', title: 'Ops', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+          tiles: [{ id: 't-ops', queryId: 'q-ops' }],
+        },
         {
           documentVersion: 2, id: 'sales', title: 'Sales', revision: 1,
           // grafana-grid, the DEFAULT engine (#321): every tile — KPI included —
           // renders as a card with a real head, which is where the action lives. A
           // KPI card's head is a pointer-transparent overlay that View mode used to
           // keep permanently hidden, and that is the case worth driving in a real
-          // browser. (`ops` below stays on flow, so the same-name test covers that
+          // browser. (`ops` above stays on flow, so the same-name test covers that
           // engine too.)
           layout: {
             type: 'grafana-grid', version: 1,
@@ -95,11 +104,6 @@
             { id: 't-sales', queryId: 'q-sales' },
             { id: 't-text', queryId: 'q-text' },
           ],
-        },
-        {
-          documentVersion: 2, id: 'ops', title: 'Ops', revision: 1,
-          layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-          tiles: [{ id: 't-ops', queryId: 'q-ops' }],
         },
       ],
     };

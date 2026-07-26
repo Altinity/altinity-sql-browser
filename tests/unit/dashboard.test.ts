@@ -7,7 +7,7 @@ import { KEYS } from '../../src/state.js';
 import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
 import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
-import { renderDashboard } from '../../src/ui/dashboard.js';
+import { dashboardScrollTop, disposeDashboardSurface, renderDashboard } from '../../src/ui/dashboard.js';
 import type { DashboardRenderTarget } from '../../src/ui/dashboard.js';
 import { applyCommand } from '../../src/dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
@@ -290,6 +290,9 @@ function dashApp(opts: {
     dashboardId: current?.dashboards[0]?.id ?? null,
     mode: 'edit',
     focus: null,
+    // #471: no owed scroll offset — only a history restoration supplies one, and a
+    // test that wants it passes `scrollTop` to `render`.
+    scrollTop: null,
     setHeader: (header) => { headerSlot.replaceChildren(header); },
   });
   let surfaceGeneration = 0;
@@ -5363,6 +5366,36 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
   });
 
+  // The keyboard half of the same defect, and the sharper one: Enter/Space on a
+  // focused button dispatches a `click` with NO pointer event before it, so nothing
+  // clears a stale suppression on the way in. Clearing it on the next pointerdown —
+  // the first fix attempted here — left exactly this sequence broken, and the
+  // pointer-driven test below would have gone on passing.
+  it('still opens on the first KEYBOARD activation after a drag released away from its card', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    });
+    const { app, commit } = dashApp({ workspace: ws });
+    const openSavedQuery = vi.fn();
+    app.openSavedQuery = openSavedQuery;
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    pointerDragTo(cards, 0, OUTSIDE_ALL_TILES, { metaKey: true });
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+
+    // `.click()` IS what Enter on a focused button produces: a trusted click with no
+    // preceding pointerdown. Its timestamp is well past the release, so the guard
+    // must let it through.
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    button.focus();
+    button.click();
+    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+  });
+
   it('still opens on the first press after a drag that released away from its card', async () => {
     // `onUp` arms the post-drag click suppression on EVERY completed move, but only a
     // release back over the ORIGIN card fires the synthesized click that consumes it
@@ -5390,10 +5423,15 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     await flush();
     expect(commit).not.toHaveBeenCalled();
 
+    // Pressed BEFORE the disarming timer runs, so this exercises the pointerdown
+    // reset rather than the timer — both paths have to work, because a real press
+    // races them.
     const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
     button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
     button.click();
     expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    await flush(); // the timer then finds the flag already cleared
+    expect(openSavedQuery).toHaveBeenCalledOnce();
   });
 
   const kpiWs = (layout: Record<string, unknown>): WsOver => ({
@@ -5424,24 +5462,97 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     }
   });
 
-  // BOUNDARY — deliberate, and filed as its own issue rather than left implicit. A
-  // FLOW KPI tile renders into a `.dash-kpi-member` band host that carries no tile
+  // A FLOW KPI tile renders into a `.dash-kpi-member` band host that carries no tile
   // chrome at all (no head, no delete, no grip, no resize) and is `display:
-  // contents`, so it has no box to anchor an action to — which is also why the drag
-  // code derives its rect from its children. Absolutely positioning the action there
-  // put it in the Dashboard TOOLBAR in a real browser; happy-dom could not see that,
-  // so this test pins the boundary the e2e caught.
-  it('adds no action to a flow KPI band member, which has no tile chrome to carry one', async () => {
+  // contents`, so it generates no box: an absolutely-positioned child of it resolves
+  // against the PAGE, which put the button in the Dashboard toolbar in a real
+  // browser. The action is therefore anchored inside the first card — the same
+  // reach-through `.is-nav-target` and `.dash-drop-target` already use.
+  it('anchors a flow KPI tile\'s action inside its card, not on the boxless member host', async () => {
+    const { app } = modeApp({
+      workspace: wsWith(kpiWs({ type: 'flow', version: 1, preset: 'columns-2', items: {} })),
+      mode: 'view',
+    });
+    const openSavedQuery = vi.fn();
+    app.openSavedQuery = openSavedQuery;
+    await render(app);
+    const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
+    const card = qs<HTMLElement>(member, '.kpi-card, .dash-kpi-state-card');
+    // Exactly one action, and it is a child of the CARD — never of the member.
+    expect(qsa(member, '.dash-tile-open')).toHaveLength(1);
+    expect(qsa(member, ':scope > .dash-tile-open')).toHaveLength(0);
+    const button = qs<HTMLButtonElement>(card, ':scope > .dash-tile-open');
+    expect(button.getAttribute('aria-label')).toBe('Open k1 in Workbench');
+    button.click();
+    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('k1');
+    // Nothing leaked into the toolbar, and the drag surface still reports the CARDS
+    // as the member's children (the button is inside one, not beside them).
+    expect(qsa(app.root, '.dash-topbar .dash-tile-open')).toHaveLength(0);
+    expect([...member.children].every((child) => child === card || !child.classList.contains('dash-tile-open')))
+      .toBe(true);
+  });
+
+  it('re-attaches the flow KPI action when a wave republishes the member content', async () => {
+    // `renderKpiInto` replaces the very card the action is anchored inside on every
+    // publish, so the attachment has to happen with each repaint — not once.
     const { app } = modeApp({
       workspace: wsWith(kpiWs({ type: 'flow', version: 1, preset: 'columns-2', items: {} })),
       mode: 'view',
     });
     await render(app);
-    const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
-    expect(member).not.toBeNull();
-    expect(qsa(member, '.dash-tile-open')).toHaveLength(0);
-    // The band still renders its content, and nothing leaked into the toolbar.
-    expect(qs(member, '.kpi-card, .dash-kpi-state-card')).not.toBeNull();
-    expect(qsa(app.root, '.dash-topbar .dash-tile-open')).toHaveLength(0);
+    expect(qsa(app.root, '.dash-kpi-member .dash-tile-open')).toHaveLength(1);
+    await render(app);
+    // Still exactly one — re-attached, not duplicated and not lost.
+    expect(qsa(app.root, '.dash-kpi-member .dash-tile-open')).toHaveLength(1);
+  });
+
+  it('gives a grafana-grid KPI tile exactly ONE action, in its head', async () => {
+    // Regression guard for the flow/grid split: the grid engine paints KPI content
+    // through the same `renderKpiInto`, so attaching the card-anchored action there
+    // too would give one tile two buttons.
+    const { app } = modeApp({
+      workspace: wsWith(kpiWs({ type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } })),
+      mode: 'view',
+    });
+    await render(app);
+    expect(qsa(app.root, '.dash-tile-open')).toHaveLength(1);
+    expect(qsa(app.root, '.dash-tile-head > .dash-tile-open')).toHaveLength(1);
+    expect(qsa(app.root, '.dash-tile-body .dash-tile-open')).toHaveLength(0);
+  });
+});
+
+// ── #471: the Dashboard scroll offset across a history round trip ────────────
+// Opening a tile's query disposes this surface, so Back rebuilds it from scratch and
+// the offset has to be carried on the history entry. This is the DOM half of that:
+// reading the live offset before the teardown, and applying an owed one after mount.
+describe('renderDashboard — scroll offset (#471)', () => {
+  const twoTileWs = (): WsOver => ({
+    queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 2')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+  });
+
+  it('reports the mounted page\'s live offset, and nothing once disposed', async () => {
+    const { app } = modeApp({ workspace: wsWith(twoTileWs()), mode: 'view' });
+    await render(app);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    // `.dash-page` is the scroll host — the grid scrolls under a sticky topbar, so
+    // `window.scrollY` would read 0 however far down the user is.
+    page.scrollTop = 480;
+    expect(dashboardScrollTop()).toBe(480);
+    disposeDashboardSurface();
+    expect(dashboardScrollTop()).toBeNull();
+  });
+
+  it('applies an owed offset after mount, and starts at the top without one', async () => {
+    const { app } = modeApp({ workspace: wsWith(twoTileWs()), mode: 'view' });
+    await render(app, { scrollTop: 240 });
+    expect(qs<HTMLElement>(app.root, '.dash-page').scrollTop).toBe(240);
+    // An ordinary render owes nothing and must not move the page.
+    await render(app, { scrollTop: null });
+    expect(qs<HTMLElement>(app.root, '.dash-page').scrollTop).toBe(0);
+    // Zero is not worth writing either — and writing it would be indistinguishable
+    // from "no offset owed" anyway.
+    await render(app, { scrollTop: 0 });
+    expect(qs<HTMLElement>(app.root, '.dash-page').scrollTop).toBe(0);
   });
 });

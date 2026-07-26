@@ -3421,6 +3421,22 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* A member's stable host contributes its children (cards, or a state card)
    directly to the stream's flex-wrap — it is never itself a visible box. */
 .dash-kpi-member { display: contents; }
+/* #471: the member generates no box (`display: contents` above), so its tile action
+   is anchored inside the first CARD — the same reach-through `.is-nav-target` and
+   `.dash-drop-target` need. `position: relative` is scoped to the band, never put on
+   the shared `.kpi-card` base, which the Workbench KPI panel and the grid engine's
+   tile body also use. Revealed by hovering the CARD, since the member itself cannot
+   be hovered either. */
+.dash-kpi-stream .kpi-card,
+.dash-kpi-stream .dash-kpi-state-card { position: relative; }
+.dash-kpi-stream .kpi-card > .dash-tile-open,
+.dash-kpi-stream .dash-kpi-state-card > .dash-tile-open {
+  position: absolute; top: 4px; right: 4px; margin: 0;
+}
+.dash-kpi-stream .kpi-card:hover > .dash-tile-open,
+.dash-kpi-stream .kpi-card:focus-within > .dash-tile-open,
+.dash-kpi-stream .dash-kpi-state-card:hover > .dash-tile-open,
+.dash-kpi-stream .dash-kpi-state-card:focus-within > .dash-tile-open { opacity: 1; }
 .dash-grid.modkey .dash-kpi-member:hover > * { cursor: grab; }
 .dash-kpi-member.dash-drop-target > * {
   outline: 2px dashed var(--accent); outline-offset: -2px;

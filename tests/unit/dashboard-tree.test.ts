@@ -247,7 +247,7 @@ describe('renderDashboardTree — structure and ARIA', () => {
   it('marks the current Dashboard and member distinctly from keyboard focus', () => {
     const surface: MainSurfaceState = {
       kind: 'dashboard', dashboardId: 'sales', mode: 'edit',
-      currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null,
+      currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null, pendingScrollTop: null,
     };
     const { app, list } = treeApp({ mainSurface: surface });
     openAll(app, 'sales');
