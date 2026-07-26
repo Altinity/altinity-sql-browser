@@ -51,22 +51,39 @@ describe('openMenu — structure (every row kind)', () => {
     expect(handle.el.querySelector('.my-custom-row')).not.toBeNull();
   });
 
-  it('an item with no icon/meta renders no .fm-icon/.fm-meta', () => {
+  it('an item with no icon/meta/reason renders no .fm-icon/.fm-meta/.fm-reason', () => {
     const btn = trigger();
     const handle = openMenu({ document, trigger: btn, rows: [itemRow('Plain')] });
     const item = handle.el.querySelector('.fm-item')!;
     expect(item.querySelector('.fm-icon')).toBeNull();
     expect(item.querySelector('.fm-meta')).toBeNull();
+    expect(item.querySelector('.fm-reason')).toBeNull();
+  });
+
+  // #452: a disabled row explains itself in its own span. Deliberately NOT
+  // folded into `.fm-meta` (a monospace slot sized for `.json`) and not a
+  // `title` tooltip (a disabled <button> does not surface one).
+  it('renders a reason in its own .fm-reason span, alongside any meta', () => {
+    const btn = trigger();
+    const handle = openMenu({
+      document,
+      trigger: btn,
+      rows: [itemRow('Export', vi.fn(), { meta: '.json', reason: 'Open a dashboard', disabled: true })],
+    });
+    const item = handle.el.querySelector('.fm-item')!;
+    expect(item.querySelector('.fm-reason')!.textContent).toBe('Open a dashboard');
+    expect(item.querySelector('.fm-meta')!.textContent).toBe('.json');
+    expect(item.querySelector('.fm-label')!.textContent).toBe('Export');
   });
 
   it('extraClass adds a marker class alongside .fm-item; menuClass adds one to the menu itself', () => {
     const btn = trigger();
     const handle = openMenu({
-      document, trigger: btn, menuClass: 'dash-file-menu',
-      rows: [itemRow('X', vi.fn(), { extraClass: 'dash-fm-item' })],
+      document, trigger: btn, menuClass: 'dash-style-menu',
+      rows: [itemRow('X', vi.fn(), { extraClass: 'dash-style-item' })],
     });
-    expect(handle.el.classList.contains('dash-file-menu')).toBe(true);
-    expect(handle.el.querySelector('.fm-item')!.classList.contains('dash-fm-item')).toBe(true);
+    expect(handle.el.classList.contains('dash-style-menu')).toBe(true);
+    expect(handle.el.querySelector('.fm-item')!.classList.contains('dash-style-item')).toBe(true);
   });
 
   it('mounts under document.body, anchored under the trigger', () => {

@@ -222,10 +222,10 @@ export interface ActionsRegistry {
   insertCreate(target: string): Promise<void>;
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
-  /** #302 — export the current dashboard's dependency closure as a bundle. */
-  exportDashboard(): void;
-  /** #302 — import a Dashboard bundle through the transactional planner. */
-  importDashboard(): void;
+  // #452 removed `exportDashboard`/`importDashboard`: both existed only so the
+  // Dashboard's own File menu could reach implementations in file-menu.ts. With
+  // one shared menu those calls are module-local, and the actions took no
+  // target — which is what let them fall back to the compatibility Dashboard.
   insertAtCursor(text: string): void;
   replaceEditor(text: string): void;
   loadColumns(db: string, table: string): Promise<void>;

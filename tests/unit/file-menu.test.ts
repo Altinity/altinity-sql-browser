@@ -9,6 +9,8 @@ import { makeApp, statefulWorkspaceRepo } from '../helpers/fake-app.js';
 import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
+import type { FileMenuSurfaceContext } from '../../src/ui/file-menu.js';
+import type { DashboardImportTarget } from '../../src/core/file-menu-model.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
@@ -81,25 +83,54 @@ const bundleText = (over: Partial<PortableBundleV1> = {}): string => JSON.string
 const legacyFile = (queries: unknown[]): string =>
   JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
 
-// Build an app with the header controls mounted (File button + title slot in the DOM).
+// #452: the Query surface's context is the default. A Dashboard-context control
+// is mounted with `mountOn(...)`.
 function mount<O extends MakeAppOverrides = Record<string, never>>(over: O = {} as O) {
   const app = makeApp(over);
   for (const node of libraryControls(app)) document.body.appendChild(node);
   return app;
 }
-// #302: the File menu now only appends `importQueriesInput, openWorkspaceInput`
-// (in that order) — the old `importDashboardInput` between them is gone. #342
-// renamed the picker/action to "Open workspace…" without changing append order.
-const picker = (i: number): HTMLInputElement => document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[i];
+/** Mount the shared control with an explicit surface context (Dashboard Edit /
+ *  View / placeholder), the way `buildAppHeader` does for each surface. */
+function mountOn<O extends MakeAppOverrides = Record<string, never>>(
+  context: FileMenuSurfaceContext, over: O = {} as O,
+) {
+  const app = makeApp(over);
+  for (const node of libraryControls(app, context)) document.body.appendChild(node);
+  return app;
+}
+const dashEdit = (dashboardId: string | null = 'd1'): FileMenuSurfaceContext =>
+  ({ surface: 'dashboard', mode: 'edit', dashboardId });
+const dashView = (dashboardId: string | null = 'd1'): FileMenuSurfaceContext =>
+  ({ surface: 'dashboard', mode: 'view', dashboardId });
+
+/** The menu's own row labels, in render order. */
+const menuLabels = (): string[] =>
+  [...document.querySelectorAll('.file-menu .fm-item .fm-label')].map((el) => el.textContent || '');
+const row = (label: string): HTMLButtonElement =>
+  [...document.querySelectorAll<HTMLButtonElement>('.file-menu .fm-item')]
+    .find((b) => b.querySelector('.fm-label')?.textContent === label)!;
+const reasonOf = (label: string): string | null =>
+  row(label).querySelector('.fm-reason')?.textContent ?? null;
+
+// #452: the menu parents THREE hidden pickers (Import queries, Import workspace,
+// Import Dashboard). Addressed by the row that triggers each rather than by
+// append index, so adding a fourth cannot silently repoint an existing spec.
+const PICKER_INDEX: Record<string, number> = {
+  'Import queries…': 0, 'Import workspace…': 1, 'Import Dashboard…': 2,
+};
+const picker = (label: string): HTMLInputElement =>
+  document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[PICKER_INDEX[label]];
 const pickFile = (input: HTMLInputElement, name = 'file.json'): void => {
   Object.defineProperty(input, 'files', { configurable: true, value: [{ name }] });
   input.dispatchEvent(new Event('change', { bubbles: true }));
 };
-// #302: Import Dashboard is reachable only via `triggerImportDashboard`, which
-// builds its own hidden file input and appends it to `document.body` (no menu
-// involved) — pick the last file input appended to body after triggering.
-const pickDashboardImport = (app: App, name = 'file.json'): void => {
-  triggerImportDashboard(app);
+/** Drive Import Dashboard through `triggerImportDashboard`'s body-mounted input
+ *  (the no-menu entry point), against an explicit target. */
+const pickDashboardImport = (
+  app: App, target: DashboardImportTarget = { kind: 'create-first' }, name = 'file.json',
+): void => {
+  triggerImportDashboard(app, target);
   const input = [...document.querySelectorAll<HTMLInputElement>('input[type=file]')].pop()!;
   pickFile(input, name);
 };
@@ -167,24 +198,44 @@ describe('workspace title', () => {
   });
 });
 
+// The settled row order — one list, compared against on every surface (#452).
+const ROWS = [
+  'New workspace…', 'Import workspace…', 'Export workspace…',
+  'Import queries…', 'Import Dashboard…', 'Export Dashboard…',
+  'Download Library as Markdown', 'Download Library as SQL',
+];
+
 describe('file menu structure', () => {
-  it('lists every section + item, reflects the (pluralized) count, and re-open is a no-op', () => {
+  it('lists every row in the settled order, with no section headings, and re-open is a no-op', () => {
     const app = mount();
     app.state.savedQueries = [panelQuery('s1', 'A'), panelQuery('s2', 'B')];
     openFileMenu(app);
-    expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
-      'New workspace…', 'Import workspace…', 'Export workspace…', 'Import queries…',
-      'Download Markdown', 'Download SQL',
-    ]);
-    expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Share / Publish']);
+    expect(menuLabels()).toEqual(ROWS);
+    // #452 removed the per-surface section headings — they were the loudest way
+    // the two old menus disagreed with each other.
+    expect(document.querySelectorAll('.fm-section')).toHaveLength(0);
     expect(document.querySelector('.fm-checkbox')).toBeNull();
-    expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in workspace');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('2 Library queries · 0 dashboards');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
     // …and the aria-expanded re-entrancy guard means the redundant open added
-    // no orphan hidden pickers either (exactly the two from the first open).
-    expect(document.querySelectorAll('.file-menu input[type=file]')).toHaveLength(2);
+    // no orphan hidden pickers either (exactly the three from the first open).
+    expect(document.querySelectorAll('.file-menu input[type=file]')).toHaveLength(3);
+  });
+
+  // Issue test 1 + 2: the SAME implementation, class and rows on every surface.
+  it('renders identical rows, in identical order, under the same class on every surface', () => {
+    for (const context of [undefined, dashEdit(), dashView(), dashEdit(null)]) {
+      document.body.replaceChildren();
+      const app = context ? mountOn(context) : mount();
+      openFileMenu(app, context);
+      expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
+      expect(menuLabels()).toEqual(ROWS);
+      expect(document.querySelectorAll('.fm-section')).toHaveLength(0);
+      // No surface-specific menu or item classes survive.
+      expect(document.querySelector('.dash-file-menu')).toBeNull();
+      expect(document.querySelector('.dash-fm-item')).toBeNull();
+    }
   });
 
   it('autofocuses the first item (New workspace…) on open', async () => {
@@ -194,27 +245,43 @@ describe('file menu structure', () => {
     expect(document.activeElement).toBe(item(/New workspace/));
   });
 
-  it('#342: the first four rows are an unlabeled primary group (no heading before or inside it), followed by a separator', async () => {
+  it('groups the six primary rows unlabelled, then the two Library downloads behind a separator', async () => {
     const app = mount();
     openFileMenu(app);
-    const menu = document.querySelector('.file-menu')!;
-    const rows = [...menu.children];
-    const primary = rows.slice(0, 4);
+    const rows = [...document.querySelector('.file-menu')!.children];
+    const primary = rows.slice(0, 6);
     expect(primary.every((r) => r.classList.contains('fm-item'))).toBe(true);
-    expect(primary.map((r) => r.querySelector('.fm-label')!.textContent)).toEqual([
-      'New workspace…', 'Import workspace…', 'Export workspace…', 'Import queries…',
-    ]);
-    expect(rows[4].classList.contains('fm-sep')).toBe(true);
+    expect(primary.map((r) => r.querySelector('.fm-label')!.textContent)).toEqual(ROWS.slice(0, 6));
+    expect(rows[6].classList.contains('fm-sep')).toBe(true);
+    expect(rows[7].querySelector('.fm-label')!.textContent).toBe('Download Library as Markdown');
+    expect(rows[9].classList.contains('fm-sep')).toBe(true);
+    expect(rows[10].classList.contains('fm-count')).toBe(true);
     // Keyboard focus order matches the visual row order exactly.
     await flush();
     key(document, 'ArrowDown');
     expect(document.activeElement).toBe(item(/Import workspace/));
   });
 
-  it('footer shows the empty state when there are no queries', () => {
+  // Issue test 9.
+  it('the footer reports the Library projection count and the Dashboard count', () => {
+    const app = mount({
+      currentWorkspace: {
+        storageVersion: 4, id: 'w', key: 'w', name: 'W',
+        queries: [panelQuery('p1', 'Panel'), panelQuery('lib', 'Lib')],
+        dashboards: [dashboardDoc({ id: 'd1', tiles: [{ id: 't1', queryId: 'p1' }] })],
+      },
+    });
+    app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('lib', 'Lib')];
+    openFileMenu(app);
+    // `p1` is owned by d1's tile, so the LIBRARY projection is just `lib`.
+    expect(document.querySelector('.fm-count')!.textContent).toBe('1 Library query · 1 dashboard');
+  });
+
+  it('reports zero counts normally rather than changing the menu structure', () => {
     const app = mount();
     openFileMenu(app);
-    expect(document.querySelector('.fm-count')!.textContent).toBe('Workspace is empty');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('0 Library queries · 0 dashboards');
+    expect(menuLabels()).toEqual(ROWS);
   });
 
   it('closes on overlay click and on Escape (ignores other keys)', () => {
@@ -230,22 +297,107 @@ describe('file menu structure', () => {
   });
 });
 
-describe('Export', () => {
-  // #302: Export Dashboard is invoked from the Dashboard page's own File menu
-  // (`app.actions.exportDashboard` → `exportDashboardAction`), not the
-  // Workbench menu — drive it directly.
-  it('exportDashboardAction toasts "No dashboard to export" and does not download when there is no Dashboard', async () => {
-    const app = mount();
-    await exportDashboardAction(app);
+// Issue tests 3–8 at the DOM level: the pure matrix is covered in
+// file-menu-model.test.ts; these pin that the rendering actually honours it —
+// `disabled` + `aria-disabled`, a visible reason, and genuine inertness.
+describe('file menu availability (#452)', () => {
+  const openOn = (context: FileMenuSurfaceContext, over: MakeAppOverrides = {}) => {
+    const app = mountOn(context, over);
+    openFileMenu(app, context);
+    return app;
+  };
+
+  it('Query disables both Dashboard rows in place, with their reason', () => {
+    openOn({ surface: 'query' });
+    expect(menuLabels()).toEqual(ROWS); // still there, still in position
+    for (const label of ['Import Dashboard…', 'Export Dashboard…']) {
+      expect(row(label).disabled).toBe(true);
+      expect(row(label).getAttribute('aria-disabled')).toBe('true');
+      expect(reasonOf(label)).toBe('Open a dashboard');
+    }
+  });
+
+  it('Dashboard Edit enables both Dashboard rows', () => {
+    openOn(dashEdit('d1'));
+    expect(row('Import Dashboard…').disabled).toBe(false);
+    expect(row('Export Dashboard…').disabled).toBe(false);
+    expect(reasonOf('Import Dashboard…')).toBeNull();
+  });
+
+  it('Dashboard View exports but refuses both active-workspace imports', () => {
+    openOn(dashView('d1'));
+    expect(row('Export Dashboard…').disabled).toBe(false);
+    expect(reasonOf('Import Dashboard…')).toBe('Edit mode only');
+    expect(reasonOf('Import queries…')).toBe('Edit mode only');
+  });
+
+  it('the empty Dashboard placeholder imports and cannot export', () => {
+    openOn(dashEdit(null));
+    expect(row('Import Dashboard…').disabled).toBe(false);
+    expect(reasonOf('Export Dashboard…')).toBe('No dashboard');
+  });
+
+  it('an unresolvable selection over a non-empty collection refuses to import', () => {
+    openOn(dashEdit(null), {
+      currentWorkspace: {
+        storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [],
+        dashboards: [dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' })],
+      },
+    });
+    expect(reasonOf('Import Dashboard…')).toBe('Dashboard unavailable');
+  });
+
+  it('no active workspace disables what needs one, without moving a row', () => {
+    openOn({ surface: 'dashboard', mode: 'edit', dashboardId: null, workspaceMissing: true });
+    expect(menuLabels()).toEqual(ROWS);
+    expect(reasonOf('Export workspace…')).toBe('No workspace');
+    expect(reasonOf('Import Dashboard…')).toBe('No workspace');
+    // New/Import workspace need nothing at all — they stay reachable.
+    expect(row('New workspace…').disabled).toBe(false);
+    expect(row('Import workspace…').disabled).toBe(false);
+  });
+
+  it('an empty Library disables both downloads', () => {
+    openOn({ surface: 'query' });
+    for (const label of ['Download Library as Markdown', 'Download Library as SQL']) {
+      expect(row(label).disabled).toBe(true);
+      expect(reasonOf(label)).toBe('No Library queries');
+      expect(row(label).querySelector('.fm-meta')!.textContent).toMatch(/^\.(md|sql)$/);
+    }
+  });
+
+  // Issue: "Disabled rows … are skipped by keyboard activation".
+  it('a disabled row is skipped by the arrow-key order and does nothing when clicked', async () => {
+    const app = openOn({ surface: 'query' });
+    await flush();
+    // Import queries… (index 3) is enabled; the next TWO rows are the disabled
+    // Dashboard pair, so ArrowDown from it must land on a download row.
+    row('Import queries…').focus();
+    key(document, 'ArrowDown');
+    expect(document.activeElement).not.toBe(row('Import Dashboard…'));
+    expect(document.activeElement).not.toBe(row('Export Dashboard…'));
+    click(row('Export Dashboard…'));
     expect(app.downloadFile).not.toHaveBeenCalled();
-    expect(toast()).toBe('No dashboard to export');
+    expect(document.querySelector('.file-menu')).not.toBeNull(); // did not even close
+  });
+});
+
+describe('Export', () => {
+  // #452: Export Dashboard takes an EXPLICIT target. There is no "whichever
+  // Dashboard is current" call any more — that read is what let a Query-surface
+  // export download the collection's first entry.
+  it('exportDashboardAction fails closed when the target resolves to nothing', async () => {
+    const app = mount();
+    await exportDashboardAction(app, { dashboardId: 'd1' });
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('✕ That dashboard is no longer available');
   });
 
   it('exportDashboardAction downloads a valid bundle containing only its query dependencies', async () => {
     const app = mount();
     app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
     app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
-    await exportDashboardAction(app);
+    await exportDashboardAction(app, { dashboardId: 'd1' });
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Ops.json');
     expect(mime).toBe('application/json');
@@ -268,7 +420,7 @@ describe('Export', () => {
     // re-validation catches the role mismatch.
     app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
     app.state.savedQueries = [filterQuery];
-    await exportDashboardAction(app);
+    await exportDashboardAction(app, { dashboardId: 'd1' });
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);
   });
@@ -303,7 +455,7 @@ describe('Export', () => {
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
     app.state.savedQueries = [panelQuery('stale', 'Stale')];
-    await exportDashboardAction(app);
+    await exportDashboardAction(app, { dashboardId: 'd1' });
     const [fname, , content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Committed.json'); // committed title, not the stale one
     const decoded = decodePortableBundleJson(content as string);
@@ -391,28 +543,26 @@ describe('Export', () => {
     if (decoded.ok) expect(decoded.value.queries.map((q) => q.id).sort()).toEqual(['p1', 'p2']);
   });
 
-  it('Download Markdown + SQL: empty → toast; non-empty → files named from the workspace', () => {
+  // #452: the empty case is now DISABLED up front rather than clickable-then-
+  // toasting "Nothing to save" — see the availability specs above.
+  it('Download Library as Markdown + SQL name their files from the workspace', () => {
     const app = mount();
-    openFileMenu(app);
-    click(item(/Download Markdown/)!);
-    expect(app.downloadFile).not.toHaveBeenCalled();
-    expect(toast()).toBe('Nothing to save');
     setSaved(app, [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: false, description: 'd' }]);
     app.state.libraryName.value = 'Lib';
     openFileMenu(app);
-    click(item(/Download Markdown/)!);
+    click(item(/Download Library as Markdown/)!);
     expect(app.downloadFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['Lib.md', 'text/markdown']);
     openFileMenu(app);
-    click(item(/Download SQL/)!);
+    click(item(/Download Library as SQL/)!);
     expect(app.downloadFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['Lib.sql', 'application/sql']);
     // an unnamed / whitespace-only workspace name falls back to "queries"
     app.state.libraryName.value = '';
     openFileMenu(app);
-    click(item(/Download Markdown/)!);
+    click(item(/Download Library as Markdown/)!);
     expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.md');
     app.state.libraryName.value = '   ';
     openFileMenu(app);
-    click(item(/Download SQL/)!);
+    click(item(/Download Library as SQL/)!);
     expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.sql');
   });
 
@@ -438,8 +588,8 @@ describe('Export', () => {
       }],
     };
     openFileMenu(app);
-    expect(document.querySelector('.fm-count')!.textContent).toBe('1 query in workspace');
-    click(item(/Download Markdown/)!);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('1 Library query · 1 dashboard');
+    click(item(/Download Library as Markdown/)!);
     const [, , content] = app.downloadFile.mock.calls.at(-1)!;
     expect(content).toContain('Standalone');
     expect(content).not.toContain('Panel copy');
@@ -458,10 +608,12 @@ describe('Export', () => {
       }],
     };
     openFileMenu(app);
-    expect(document.querySelector('.fm-count')!.textContent).toBe('Workspace is empty');
-    click(item(/Download Markdown/)!);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('0 Library queries · 1 dashboard');
+    // Disabled up front, not clickable-then-refused: the projection is empty.
+    expect(row('Download Library as Markdown').disabled).toBe(true);
+    expect(reasonOf('Download Library as Markdown')).toBe('No Library queries');
+    click(row('Download Library as Markdown'));
     expect(app.downloadFile).not.toHaveBeenCalled();
-    expect(toast()).toBe('Nothing to save');
   });
 });
 
@@ -470,7 +622,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'Q1'), panelQuery('q2', 'Q2')] })) });
     app.state.savedQueries = [panelQuery('q1', 'Q1')]; // canonically identical to the incoming q1 → auto-resolved
     openFileMenu(app);
-    const input = picker(0);
+    const input = picker('Import queries…');
     input.click = vi.fn();
     click(item(/Import queries/)!);
     expect(document.querySelector('.file-menu')).toBeNull();
@@ -486,7 +638,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('new1'), panelQuery('new2')] })) });
     app.state.savedQueries = [panelQuery('existing')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     await flush();
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.savedQueries.map((q) => q.id).sort()).toEqual(['existing', 'new1', 'new2']);
@@ -495,7 +647,7 @@ describe('Import queries', () => {
   it('picking no file is a no-op', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })) });
     openFileMenu(app);
-    const input = picker(0);
+    const input = picker('Import queries…');
     Object.defineProperty(input, 'files', { configurable: true, value: [] });
     input.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.state.savedQueries).toEqual([]);
@@ -505,7 +657,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     const dialog = document.querySelector('.fm-dialog-card')!;
     expect(dialog.textContent).toContain('Resolve 1 conflicting query');
     expect(dialog.textContent).toContain('OldName'); // row shows the EXISTING query's name
@@ -543,7 +695,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     const rowSelect = document.querySelectorAll<HTMLSelectElement>('.fm-select')[1]; // [0] is the global select
     rowSelect.value = 'replace';
     rowSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -556,7 +708,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     const [globalSelect, rowSelect] = document.querySelectorAll<HTMLSelectElement>('.fm-select');
     globalSelect.value = 'skip';
     globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -574,7 +726,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     const globalSelect = document.querySelector<HTMLSelectElement>('.fm-select')!;
     globalSelect.value = 'copy';
     globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -588,7 +740,7 @@ describe('Import queries', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     const globalSelect = document.querySelector<HTMLSelectElement>('.fm-select')!;
     globalSelect.value = 'skip';
     globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -608,7 +760,7 @@ describe('Import queries', () => {
     });
     app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     click(document.querySelector('.fm-dialog-cancel')!);
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(commit).not.toHaveBeenCalled();
@@ -616,16 +768,97 @@ describe('Import queries', () => {
   });
 });
 
+// Issue tests 4, 10, 11, 14: the MENU ROWS themselves dispatch, against the
+// exact Dashboard the surface reported — never a re-read of the session
+// selection, which is what used to fall back to the collection's first entry.
+describe('Dashboard rows dispatch against the exact target (#452)', () => {
+  const wsWithDashboards = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV4 => ({
+    storageVersion: 4, id: 'w', key: 'w', name: 'W',
+    queries: [panelQuery('p1', 'Panel')], dashboards,
+  });
+  /** Point `state.workspaceId` at the fixture aggregate so `mutateWorkspace`'s
+   *  `loadById(state.workspaceId)` actually resolves — otherwise `latest` is
+   *  `null` and the planner silently falls back to the state-derived snapshot,
+   *  which would make the stale-target spec below unfalsifiable. */
+  const withActiveId = <T extends App>(app: T): T => {
+    app.state.workspaceId = 'w';
+    return app;
+  };
+
+  it('Export Dashboard… exports the exact Dashboard, not the collection’s first', async () => {
+    const first = dashboardDoc({ id: 'first', title: 'First' });
+    const second = dashboardDoc({ id: 'second', title: 'Second', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const committed = wsWithDashboards(first, second);
+    const app = mountOn(dashEdit('second'), {
+      currentWorkspace: committed,
+      workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) },
+    });
+    openFileMenu(app, dashEdit('second'));
+    click(row('Export Dashboard…'));
+    await flush();
+    expect(app.downloadFile.mock.calls[0][0]).toBe('Second.json');
+  });
+
+  it('Import Dashboard… opens the picker and commits into the exact target', async () => {
+    const target = dashboardDoc({ id: 'second', title: 'Second' });
+    const committed = wsWithDashboards(dashboardDoc({ id: 'first', title: 'First' }), target);
+    const incoming = dashboardDoc({ id: 'src', title: 'Incoming' });
+    const app = withActiveId(mountOn(dashEdit('second'), {
+      currentWorkspace: committed,
+      FileReader: fakeReader(bundleText({ dashboards: [incoming] })),
+      workspace: statefulWorkspaceRepo(committed),
+    }));
+    openFileMenu(app, dashEdit('second'));
+    const input = picker('Import Dashboard…');
+    input.click = vi.fn();
+    click(row('Import Dashboard…'));
+    expect(input.click).toHaveBeenCalled();
+    pickFile(input);
+    // An exact target always replaces an existing Dashboard → confirm first.
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    const saved = await loadActiveWorkspace(app);
+    // 'first' is untouched; the SECOND slot carries the import.
+    expect(saved.dashboards[0].title).toBe('First');
+    expect(saved.dashboards[1].title).toBe('Incoming');
+  });
+
+  // Issue test 11.
+  it('a target removed while the import dialog is open fails closed with a diagnostic and no commit', async () => {
+    const target = dashboardDoc({ id: 'doomed', title: 'Doomed' });
+    const committed = wsWithDashboards(dashboardDoc({ id: 'other', title: 'Other' }), target);
+    const repo = statefulWorkspaceRepo(committed);
+    const commit = vi.fn(repo.commit);
+    const app = withActiveId(mountOn(dashEdit('doomed'), {
+      currentWorkspace: committed,
+      FileReader: fakeReader(bundleText({ dashboards: [dashboardDoc({ id: 'src', title: 'Incoming' })] })),
+      workspace: { ...repo, commit },
+    }));
+    openFileMenu(app, dashEdit('doomed'));
+    const input = picker('Import Dashboard…');
+    click(row('Import Dashboard…'));
+    pickFile(input);
+    // The Dashboard disappears while the confirm dialog is up.
+    await repo.commit({ ...committed, dashboards: [committed.dashboards[0]] });
+    commit.mockClear();
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(toast()).toMatch(/^✕ /);
+    const saved = await loadActiveWorkspace(app);
+    expect(saved.dashboards.map((d) => d.id)).toEqual(['other']); // nothing landed
+  });
+});
+
 describe('Import Dashboard', () => {
-  // #302: reachable only through `triggerImportDashboard` now (the Dashboard
-  // page's own File menu → `app.actions.importDashboard`) — no Workbench menu
-  // item, no `picker(...)` index into `.file-menu`.
+  // #452: every entry point takes an EXPLICIT target. `create-first` is the
+  // empty-collection case — it commits through the compatibility slot, which is
+  // the only correct destination when there is nothing to overwrite.
   it('triggerImportDashboard appends a hidden file input to the body and clicks it; a single-dashboard file imports directly, minting a fresh id/revision, and the input self-removes on change', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
     const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
-    triggerImportDashboard(app);
+    triggerImportDashboard(app, { kind: 'create-first' });
     const input = [...document.querySelectorAll<HTMLInputElement>('input[type=file]')].pop()!;
     expect(input.parentElement).toBe(document.body);
     expect(input.style.display).toBe('none');
@@ -648,7 +881,7 @@ describe('Import Dashboard', () => {
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
     app.state.dashboard = dashboardDoc({ id: 'old', title: 'My existing dashboard' });
-    pickDashboardImport(app);
+    pickDashboardImport(app, { kind: 'exact', dashboardId: 'old' });
     const dialog = document.querySelector('.fm-dialog-card')!;
     expect(dialog.textContent).toContain('Import and replace current Dashboard?');
     click(document.querySelector('.fm-dialog-confirm')!);
@@ -662,7 +895,7 @@ describe('Import Dashboard', () => {
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales' });
     const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
     app.state.dashboard = dashboardDoc({ id: 'old', title: 'My existing dashboard' });
-    pickDashboardImport(app);
+    pickDashboardImport(app, { kind: 'exact', dashboardId: 'old' });
     expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Import and replace current Dashboard?');
     click(document.querySelector('.fm-dialog-cancel')!);
     expect(app.state.dashboard!.id).toBe('old');
@@ -777,7 +1010,7 @@ describe('Import workspace (#406 additive collection)', () => {
     app.state.savedQueries = [panelQuery('old', 'Old')];
     const oldId = app.state.workspaceId;
     openFileMenu(app);
-    const input = picker(1);
+    const input = picker('Import workspace…');
     input.click = vi.fn();
     click(item(/Import workspace/)!);
     expect(document.querySelector('.file-menu')).toBeNull();
@@ -816,7 +1049,7 @@ describe('Import workspace (#406 additive collection)', () => {
     });
     app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await flush();
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
@@ -828,7 +1061,7 @@ describe('Import workspace (#406 additive collection)', () => {
     const dash = dashboardDoc({ id: 'only', title: 'Only' });
     const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await flush();
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.dashboard?.id).toBe('only');
@@ -845,7 +1078,7 @@ describe('Import workspace (#406 additive collection)', () => {
       },
     });
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await app.flushWorkspaceWrites();
     await flush();
     expect(app.state.savedQueries.map((query) => query.id)).toEqual(['q1']);
@@ -857,7 +1090,7 @@ describe('Import workspace (#406 additive collection)', () => {
     app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
     app.state.savedQueries = [];
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await flush();
     expect(app.state.dashboard).toBeNull();
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
@@ -930,7 +1163,7 @@ describe('New workspace', () => {
 });
 
 describe('surface overlay disposal', () => {
-  // #424: the Import workspace picker(1) file input no longer opens a
+  // #424: the Import workspace picker('Import workspace…') file input no longer opens a
   // "which dashboard?" dialog (every bundled Dashboard imports directly) —
   // drive the body-mounted dialog through Import Dashboard's own
   // multi-dashboard picker instead, alongside a still-open dropdown menu.
@@ -951,21 +1184,21 @@ describe('decode failures', () => {
   it('malformed JSON toasts the parse diagnostic (no legacy fallback)', () => {
     const app = mount({ FileReader: fakeReader('{not json') });
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     expect(toast()).toBe('✕ Not a valid JSON file');
   });
 
   it('a read error toasts', () => {
     const app = mount({ FileReader: fakeReader('', true) });
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     expect(toast()).toBe('✕ Could not read file');
   });
 
   it('falls back to the legacy Library decoder for a v1/v2 saved-queries file', async () => {
     const app = mount({ FileReader: fakeReader(legacyFile([{ id: 'x', name: 'New', sql: 'S' }])) });
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     await flush();
     expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['New']);
     expect(toast()).toBe('Imported 1 query');
@@ -974,7 +1207,7 @@ describe('decode failures', () => {
   it('toasts the legacy diagnostic when neither decoder recognizes the file', () => {
     const app = mount({ FileReader: fakeReader(JSON.stringify({ foo: 1 })) });
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     expect(toast()).toMatch(/^✕ /);
   });
 
@@ -985,7 +1218,7 @@ describe('decode failures', () => {
     });
     const app = mount({ FileReader: fakeReader(bad) });
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     expect(toast()).toMatch(/^✕ /);
     expect(toast()).not.toContain('Unrecognized file format');
   });
@@ -1058,7 +1291,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     // import commits directly, no conflict dialog — queued behind the pending
     // mutation above the moment the file is picked.
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
 
     release();
     await pendingMutation;
@@ -1097,7 +1330,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     // Dialog time: existing=[q1], incoming=[new1] → no conflict, decisions=[].
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
 
     release();
@@ -1133,7 +1366,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     });
 
     openFileMenu(app);
-    pickFile(picker(0));
+    pickFile(picker('Import queries…'));
 
     release();
     await pendingMutation;
@@ -1189,7 +1422,7 @@ describe('commit failure', () => {
       FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })),
     });
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await app.flushWorkspaceWrites();
     await flush();
     expect(toast()).toBe('✕ import blocked');
@@ -1203,7 +1436,7 @@ describe('commit failure', () => {
       FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })),
     });
     openFileMenu(app);
-    pickFile(picker(1));
+    pickFile(picker('Import workspace…'));
     await app.flushWorkspaceWrites();
     await flush();
     expect(create).not.toHaveBeenCalled();

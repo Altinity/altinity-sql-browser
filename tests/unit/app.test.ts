@@ -6686,10 +6686,13 @@ describe('unified /sql routing', () => {
     addEventListener.mockRestore();
   });
 
-  it('the Dashboard export/import actions remain available without snapshot handoff', () => {
+  // #452 retired `actions.exportDashboard`/`.importDashboard`. They existed only
+  // so the Dashboard's own File menu could reach file-menu.ts, and neither took a
+  // target — which is what let them fall back to the compatibility Dashboard. The
+  // one shared menu calls the implementations directly, with an explicit target.
+  it('exposes no untargeted Dashboard file actions on the registry', () => {
     const app = createApp(env());
-    app.state.dashboard = null;
-    expect(() => app.actions.exportDashboard()).not.toThrow();
-    expect(() => app.actions.importDashboard()).not.toThrow();
+    expect('exportDashboard' in app.actions).toBe(false);
+    expect('importDashboard' in app.actions).toBe(false);
   });
 });

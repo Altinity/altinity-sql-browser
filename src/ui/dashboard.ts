@@ -32,7 +32,7 @@ import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
 import { buildAppHeader, routeButton } from './app-header.js';
 import { openMenu } from './menu.js';
-import type { MenuHandle, MenuRow } from './menu.js';
+import type { MenuHandle } from './menu.js';
 import { flashToast } from './toast.js';
 import { renderResolvedPanel } from './panels.js';
 import { openCellDetail } from './results.js';
@@ -189,8 +189,9 @@ export interface DashboardApp {
   // (per render) so an external workspace change rebuilds this viewer session from
   // committed truth. Fires only AFTER the app-level refresh projected a real change.
   onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
-  // #302 — the Dashboard page's own File-menu operations.
-  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openShortcuts' | 'openUserMenu'>;
+  // #452 removed this surface's File-menu operations: the one shared File menu
+  // owns them, and this surface supplies only context.
+  actions: Pick<ActionsRegistry, 'openShortcuts' | 'openUserMenu'>;
   genId(): string;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
@@ -306,7 +307,7 @@ function buildLayoutMenu(
     handle = openMenu({
       document: doc,
       trigger: el,
-      menuClass: 'dash-file-menu dash-style-menu',
+      menuClass: 'dash-style-menu',
       rows: options.map(([value, optionLabel, _title, shortcut]) => ({
         kind: 'item',
         label: optionLabel,
@@ -414,7 +415,12 @@ function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarge
   // header stays above a "Workspace not found" work area, reading as a
   // Dashboard-scoped error rather than the page-level one it is.
   target.setHeader(buildAppHeader(app as App, {
-    fileButton: buildDashboardFileMenu(app, true),
+    // #452: this surface EXISTS because no workspace aggregate resolved, so it
+    // says so directly rather than leaving the menu to infer it from a route
+    // status that can still read 'ready' here.
+    fileMenu: {
+      surface: 'dashboard', mode: target.mode, dashboardId: null, workspaceMissing: true,
+    },
     workspaceTitleEditable: false,
   }));
   installedDashboardHost = target.host;
@@ -454,7 +460,11 @@ function renderMissingDashboard(
         },
       }, 'Create dashboard'));
   target.setHeader(buildAppHeader(app as App, {
-    fileButton: buildDashboardFileMenu(app, readOnly),
+    // #452: no document resolved, so there is no exact Dashboard to act on. The
+    // File menu decides from `dashboardCount` whether this is a genuinely empty
+    // collection (Import creates the first) or a selection that stopped
+    // resolving against a NON-empty one (Import must not retarget entry 0).
+    fileMenu: { surface: 'dashboard', mode: target.mode, dashboardId: null },
     workspaceTitleEditable: !readOnly,
   }));
   installedDashboardHost = target.host;
@@ -503,60 +513,6 @@ function buildDashboardModeSwitch(app: DashboardApp, mode: DashboardSurfaceMode)
     class: 'editor-mode-switch dashboard-mode-switch',
     role: 'group', 'aria-label': 'Dashboard mode',
   }, button('View', 'view'), button('Edit', 'edit'));
-}
-
-/** #302/#331 — the standalone Dashboard header's own "File" menu: a keyboard-
- *  and screen-reader-accessible dropdown owning Dashboard-scoped operations,
- *  built on the shared `openMenu` primitive (menu.ts) — the same structure +
- *  interaction grammar (icons, `.fm-section` headings, Esc/outside-click
- *  close + focus-restore, ArrowUp/ArrowDown roving focus) as the Workbench
- *  File menu, with Dashboard-specific CONTENTS:
- *    EXPORT   ⭳ Export Dashboard…   .json
- *    IMPORT   ⭱ Import Dashboard…
- *  The unified live workspace makes Export safe in both modes; read-only view
- *  omits only the mutating Import row, while retaining the same File word and
- *  header position as Workbench. Every item delegates to an `app.actions.*`
- *  seam (dashboard.ts never reaches into app.ts). The trigger uses the shared downward-chevron
- *  treatment (`Icon.chevDown()`, matching the Workbench File button) rather
- *  than a right-pointing arrow, which would misread as navigation. The
- *  trigger owns its own open/close TOGGLE (unlike the Workbench menu, which
- *  only ever opens) — clicking it again while open closes the menu and
- *  restores focus, tracked here via the returned `MenuHandle` rather than a
- *  second `openMenu` call. */
-function buildDashboardFileMenu(app: DashboardApp, readOnly = false): HTMLButtonElement {
-  const doc = app.document;
-  const btn = h('button', {
-    class: 'hd-file-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    title: 'File — dashboard import/export', 'aria-label': 'Dashboard File menu',
-  }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
-
-  let handle: MenuHandle | null = null;
-  const onKeyboardOwnerChange = keyboardOwnerChannel(app);
-
-  const open = (): void => {
-    const rows: MenuRow[] = [
-      { kind: 'section', label: 'Export' },
-      {
-        kind: 'item', icon: Icon.download(), label: 'Export Dashboard…', meta: '.json', extraClass: 'dash-fm-item',
-        onClick: () => app.actions.exportDashboard(),
-      },
-      ...(!readOnly ? [
-        { kind: 'section' as const, label: 'Import' },
-        {
-          kind: 'item' as const, icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
-          onClick: () => app.actions.importDashboard(),
-        },
-      ] : []),
-    ];
-    handle = openMenu({
-      document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
-      onClose: () => { handle = null; },
-      onKeyboardOwnerChange,
-    });
-  };
-
-  btn.onclick = () => { if (handle) { handle.close(); btn.focus(); } else open(); };
-  return btn;
 }
 
 /** Render the selected Dashboard into the main-surface host the application
@@ -804,12 +760,17 @@ export async function renderDashboard(
   let waveSettled = false;
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutMenu.el);
 
-  // Dashboard keeps the shared header's File word and placement. View exposes
-  // the safe Export row only; edit additionally exposes Import. #425: the header
-  // goes into the SHELL's slot (the shell owns the frame now), not into this
+  // #452: Dashboard renders the same File menu as every other surface — View
+  // disables the mutating rows rather than dropping them. #425: the header goes
+  // into the SHELL's slot (the shell owns the frame now), not into this
   // surface's own DOM.
   target.setHeader(buildAppHeader(app as App, {
-    fileButton: buildDashboardFileMenu(app, readOnly),
+    // #452: the EXACT document this render resolved — `selectedDashboardId`,
+    // never `target.dashboardId`. The render target's requested id can be `null`
+    // while a real Dashboard is on screen (the route and `mainSurface` legitimately
+    // disagree, and the compatibility selector then resolves one), and a visible
+    // Dashboard must never report "No dashboard" to the File menu.
+    fileMenu: { surface: 'dashboard', mode: target.mode, dashboardId: selectedDashboardId },
     workspaceTitleEditable: !readOnly,
   }));
 

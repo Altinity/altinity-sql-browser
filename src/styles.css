@@ -686,16 +686,33 @@ h1, h2, h3, h4, h5, h6 {
 /* File dropdown */
 .fm-overlay { position: fixed; inset: 0; z-index: 60; }
 .file-menu {
-  z-index: 61; width: 252px; padding-bottom: 4px;
+  /* #452: 252px fitted the old short labels. "Download Library as Markdown"
+     alone consumed the whole 202px label box, wrapping its `.md` onto a line of
+     its own. Sized so the longest label plus its extension share one line. */
+  z-index: 61; width: 288px; padding-bottom: 4px;
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: var(--r-md); box-shadow: var(--shadow-popover); overflow: hidden;
 }
 .fm-item {
-  width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 7px 12px;
   border: none; background: transparent; color: var(--fg); font-family: inherit;
   font-size: var(--text-body); cursor: pointer; text-align: left;
 }
 .fm-item:hover { background: var(--bg-hover); }
+/* #452: an unavailable operation still renders in its settled position — the
+   menu's vocabulary must not change with the work surface, only its reachability.
+   Same treatment as `.dash-tree-menu .is-disabled`. The `:hover` override is
+   required: `.fm-item:hover` above still matches a disabled <button>. */
+.fm-item:disabled { opacity: .45; cursor: default; }
+.fm-item:disabled:hover { background: transparent; }
+/* Why a row is unavailable — its own line inside the row, indented to the label.
+   Not `.fm-meta` (a monospace slot sized for `.json`/`.md`) and not beside the
+   label: at 252px, "Download Library as Markdown" + "No Library queries" clipped
+   mid-word. `.fm-item` wraps so this can take a full line of its own. */
+.fm-reason {
+  flex-basis: 100%; margin-left: 24px; /* .fm-icon width (15) + .fm-item gap (9) */
+  font-size: var(--text-micro); color: var(--fg-faint);
+}
 .fm-icon { display: flex; width: 15px; justify-content: center; color: var(--fg-mute); flex-shrink: 0; }
 .fm-leading { display: inline-flex; flex-shrink: 0; }
 .fm-trailing { display: inline-flex; flex-shrink: 0; margin-left: auto; }
@@ -3160,9 +3177,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-btn:hover { background: var(--bg-hover); }
 .dash-btn:disabled { opacity: .55; cursor: default; }
-/* #302: the Dashboard header's own File menu reuses the shared .file-menu /
-   .fm-item dropdown chrome; only its width is tuned here. */
-.dash-file-menu { width: 220px; }
+/* The Dashboard style picker reuses the shared .file-menu / .fm-item dropdown
+   chrome; only its width is tuned here. #452 retired the `.dash-file-menu` class
+   this rule used to carry: the Dashboard's separate File menu is gone, and the
+   style picker was its only other user. */
+.dash-style-menu { width: 220px; }
 /* #288: the read-only viewer's not-found state (a stale/replaced dashboard link
    or a spent one-time preview token). */
 .dash-notfound-title { margin: 0 0 8px; font-size: var(--text-title); color: var(--fg); }

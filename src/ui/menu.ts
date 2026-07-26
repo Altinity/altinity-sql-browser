@@ -29,7 +29,10 @@ import type { KeyboardOwner } from './app.types.js';
  *  - `item` — an actionable `.fm-item` row: icon + label + optional meta text
  *    (e.g. a file extension), invoking `onClick` after the menu closes.
  *    `extraClass` adds a caller-specific marker class alongside `.fm-item`
- *    (e.g. `dash-fm-item`).
+ *    (e.g. `dash-style-item`). A `disabled` row may carry a `reason`, rendered
+ *    as its own `.fm-reason` span next to the label — NOT folded into `meta`,
+ *    which is a monospace extension slot too narrow for prose, and not a
+ *    `title` tooltip, which a disabled button does not surface.
  *  - `section` — a `.fm-section` heading.
  *  - `sep` — a `.fm-sep` divider.
  *  - `custom` — an arbitrary caller-built node spliced in as-is. `focusable:
@@ -37,7 +40,7 @@ import type { KeyboardOwner } from './app.types.js';
  *    focus target is the row's own first focusable descendant (an `<input>`/
  *    `<button>`/etc.), or the node itself when it can take focus directly. */
 export type MenuRow =
-  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
+  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; reason?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
   | { kind: 'section'; label: string }
   | { kind: 'sep' }
   | { kind: 'custom'; node: HTMLElement; focusable?: boolean };
@@ -51,7 +54,7 @@ export interface MenuOptions {
   trigger: HTMLElement;
   rows: readonly MenuRow[];
   /** Extra class(es) appended to the mounted `.file-menu` element (e.g.
-   *  `dash-file-menu` for the Dashboard's width override). */
+   *  `dash-style-menu` for the Dashboard style picker's width override). */
   menuClass?: string;
   /** Called once the menu is fully torn down, however it closed (Escape,
    *  overlay click, an item's own click, or an explicit `handle.close()`) —
@@ -117,7 +120,12 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       row.icon ? h('span', { class: 'fm-icon' }, row.icon) : null,
       h('span', { class: 'fm-label' }, row.label),
       row.trailing ? h('span', { class: 'fm-trailing' }, row.trailing) : null,
-      row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null);
+      row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null,
+      // LAST in the DOM on purpose: `.fm-reason` wraps onto its own line inside
+      // the row (`flex-basis: 100%`), so it must follow everything that belongs
+      // on the first one. A reason is prose and does not fit beside a label in a
+      // 252px menu — it clipped mid-word when it shared the line.
+      row.reason ? h('span', { class: 'fm-reason' }, row.reason) : null);
     if (!row.disabled) focusable.push(btn);
     return btn;
   };

@@ -10,6 +10,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **One File menu for the whole application** (#452). Query, Dashboard Edit,
+  Dashboard View, the empty-Dashboard placeholder and the Dashboard
+  workspace-not-found fallback now render the *same* File menu — same rows, same
+  order, same labels, same trigger behaviour. Before, the same header control
+  changed meaning with the work surface: the Dashboard's own menu offered
+  import/export and dropped every workspace and Library operation, Dashboard View
+  dropped a row again, the two implementations ordered and grouped their rows
+  differently, and only one of the two triggers toggled shut when clicked again.
+
+  Context now changes **enabled state only** — a row never disappears or moves.
+  An unavailable row is dimmed, carries `aria-disabled`, is skipped by keyboard
+  navigation, cannot be activated, and states its reason on its own line
+  (*Open a dashboard*, *Edit mode only*, *No dashboard*, *Dashboard unavailable*,
+  *No workspace*, *No Library queries*). The per-surface section headings are
+  gone, `Download Markdown`/`Download SQL` became **Download Library as
+  Markdown**/**as SQL** so their scope is unambiguous when opened over a
+  Dashboard, and the footer reports both counts (`N Library queries · M
+  dashboards`) from the zero-owner Library projection rather than the raw
+  collection.
+
+  **Dashboard operations now require an exact target.** `Export Dashboard…` and
+  `Import Dashboard…` receive the Dashboard the surface actually rendered instead
+  of re-reading the session selection, which returned `null` in Query mode and
+  silently made both commands act on the collection's *first* Dashboard. Import
+  onto the empty placeholder creates the workspace's first Dashboard, and is
+  offered only when the collection is genuinely empty — the placeholder is also
+  reached when a selection stops resolving against a non-empty collection, where
+  that path would have overwritten Dashboard #1. A target removed while the
+  import dialog is open fails closed with a diagnostic and commits nothing.
+
+  The File menu is 288px wide (from 252px) to fit the longer labels, and the
+  Dashboard-only `.dash-file-menu`/`.dash-fm-item`/`.dash-file-btn` classes,
+  the `AppHeaderOptions.fileButton` seam, and the untargeted
+  `actions.exportDashboard`/`actions.importDashboard` registry entries are gone.
 - **Every Dashboard panel and curated filter now owns a dedicated saved-query
   copy, and the lower-left pane is the Library** (#427). A workspace's queries
   split into two kinds: a **Library** query, which no Dashboard member

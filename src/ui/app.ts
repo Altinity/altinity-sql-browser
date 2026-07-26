@@ -95,9 +95,7 @@ import {
   buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
 } from '../core/sql-route.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import {
-  disposeFileMenuOverlays, exportDashboardAction, triggerImportDashboard,
-} from './file-menu.js';
+import { disposeFileMenuOverlays } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -2447,15 +2445,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
       if (dialog) app.shortcutDialog = dialog;
     },
-    // #425: the no-argument legacy entry point (a header/nav control with no
-    // Dashboard chooser yet) — it resolves the compatibility Dashboard and opens
-    // it by id. `app.openDashboard(request)` is the ID-addressed API.
-    // #302: Dashboard import/export invoked from the Dashboard page's own File
-    // menu (and still from the Workbench during the transition). Export is a
-    // read-only bundle download; import runs the transactional planner and, on
-    // the standalone Dashboard route, re-renders the dashboard on success.
-    exportDashboard: () => exportDashboardAction(app),
-    importDashboard: () => triggerImportDashboard(app),
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
     insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
