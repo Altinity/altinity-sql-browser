@@ -183,7 +183,18 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // so the badge stays here rather than duplicating the mobile-nav markup.
   app.dom.mobileBadge = h('span', { class: 'mnav-badge' });
   const navBtn = (view: string, icon: SVGElement, label: string, extra?: HTMLElement): HTMLButtonElement => h('button', {
-    class: 'mobile-nav-btn', 'data-view': view, onclick: () => { state.mobileView.value = view as 'tables' | 'editor' | 'results'; },
+    class: 'mobile-nav-btn', 'data-view': view, onclick: () => {
+      // #471: on the Dashboard surface this bar is a route OUT, not a panel
+      // switcher — #425 hid it here precisely because its three values say nothing
+      // about a Dashboard. #471 removed the Dashboard toolbar's generic
+      // Back-to-query button, and a per-tile action cannot rescue a Dashboard with
+      // no tiles, so the phone's route back lives here now: the CSS below leaves
+      // only Editor visible on this surface, and pressing it returns to the
+      // Workbench before selecting the panel — the same order
+      // `openSavedQuery`/`openVariableTab` use.
+      if (app.mainSurface.kind === 'dashboard') app.showQuerySurface();
+      state.mobileView.value = view as 'tables' | 'editor' | 'results';
+    },
   }, h('span', { class: 'mnav-ic' }, icon, extra || null), h('span', { class: 'mnav-label' }, label));
   app.dom.mobileNav = h('div', { class: 'mobile-nav' },
     navBtn('tables', Icon.database(), 'Tables'),

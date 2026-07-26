@@ -5055,6 +5055,40 @@ describe('mobile best-effort mode (#126)', () => {
     expect(mainRow.dataset.mobileView).toBe('results');
   });
 
+  // #471 — with the Dashboard toolbar's generic `< Query` button gone, and a
+  // per-tile Open-in-Workbench action unable to help a Dashboard that has no tiles,
+  // this bar is a phone's route to the Workbench: the mobile rules stop hiding it on
+  // the Dashboard surface, and Editor there means "leave the Dashboard" rather than
+  // "select a panel". Surface first, then the panel — the same order
+  // `openSavedQuery`/`openVariableTab` use, so the panel the user lands on is the
+  // one they asked for.
+  it('on the Dashboard surface, the Editor nav button returns to the Workbench', () => {
+    const { app } = mobileApp(true);
+    app.currentWorkspace = {
+      storageVersion: 5, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd', mode: 'view', currentMember: null, pendingFocus: null,
+    };
+    app.state.mobileView.value = 'tables';
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    nav(app, 'editor').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(showQuerySurface).toHaveBeenCalledOnce();
+    expect(app.state.mobileView.value).toBe('editor');
+  });
+
+  it('on the Query surface the same button only switches panels, never the surface', () => {
+    const { app } = mobileApp(true);
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    app.state.mobileView.value = 'tables';
+    nav(app, 'editor').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(showQuerySurface).not.toHaveBeenCalled();
+    expect(app.state.mobileView.value).toBe('editor');
+  });
+
   it('the Schema | Library segmented switches the sidebar pane (data-mobile-tab)', () => {
     const { app } = mobileApp(true);
     const sidebar = qs(app.root, '.sidebar');

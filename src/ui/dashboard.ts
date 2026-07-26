@@ -41,7 +41,7 @@ import { movedPastThreshold, hitTestTile, resolveOverlapInsertIndex, flipDelta }
 import type { TileRect } from '../core/tile-reorder.js';
 import { createDragAutoScroll } from '../core/dashboard-autoscroll.js';
 import type { DragAutoScrollController, DragAutoScrollTarget, FrameScheduler } from '../core/dashboard-autoscroll.js';
-import { resolvePanel } from '../core/panel-cfg.js';
+import { isQuerylessPanel, resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
 import {
@@ -96,7 +96,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV2, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV5,
+  Panel, SavedQueryV2, StoredWorkspaceV5,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -117,7 +117,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
-  chevLeft(): SVGElement;
+  code(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -163,12 +163,16 @@ export interface DashboardApp {
   currentWorkspace: StoredWorkspaceV5 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
-   *  navigation API its own chrome (View/Edit, Back to query) transitions
-   *  through. */
+   *  navigation API its own chrome (View/Edit, and #471's per-tile Open in
+   *  Workbench) transitions through. */
   mainSurface: App['mainSurface'];
   openDashboard: App['openDashboard'];
   showDashboardSurface: App['showDashboardSurface'];
   showQuerySurface: App['showQuerySurface'];
+  /** #471: a tile's own `Open in Workbench` action, by the tile's `queryId` — the
+   *  Dashboard-owned copy's stable id, which is what makes the opened tab, and
+   *  every later Save from it, target this Dashboard's document. */
+  openSavedQuery: App['openSavedQuery'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
@@ -417,30 +421,9 @@ function renderMissingDashboard(
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-        buildBackToQuery(app),
         h('span', { class: 'dash-toolbar-spacer' }),
         buildDashboardModeSwitch(app, target.mode))),
     body));
-}
-
-/**
- * #426 — the visible way back to the Query surface.
- *
- * #437 removed the separate Back-to-query row on the grounds that the
- * application header's `SQL Browser | Dashboard` pair already did this. #426 then
- * removed THAT pair (Dashboard selection moved to the sidebar tree), which
- * together would have left `g w` and "click a saved query" as the only routes back
- * — and neither is reachable on a phone, where the mobile rules drop the sidebar
- * and the bottom nav for a full-bleed Dashboard. #426's own Header-cleanup section
- * requires this control to be retained, so it returns here: icon-first and inside
- * the ONE compact toolbar, per #437's design rather than as a second row.
- */
-function buildBackToQuery(app: DashboardApp): HTMLElement {
-  return h('button', {
-    class: 'editor-mode-btn dash-back-to-query', type: 'button',
-    'aria-label': 'Back to query', title: 'Back to query (G then W)',
-    onclick: () => { app.showQuerySurface(); },
-  }, Icon.chevLeft(), h('span', { class: 'dash-back-label' }, 'Query'));
 }
 
 /** #425/#437: View/Edit — the other Dashboard-owned control the compact primary
@@ -1467,10 +1450,12 @@ export async function renderDashboard(
     const onPointerDown: EventListener = (event) => {
       const pe = event as PointerEvent;
       if (pe.button !== 0) return; // primary button only
-      // The resize handle (own stopPropagation) and delete button own their own
-      // gestures — never start a move from them.
+      // The resize handle (own stopPropagation), the delete button and #471's
+      // Open-in-Workbench action own their own gestures — never start a move from
+      // them. Open-in-Workbench is the only one of the three that also exists in
+      // View mode, where this handler is never wired at all.
       const target = pe.target as Element;
-      if (target.closest('.dash-gg-resize, .dash-gg-del')) return;
+      if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open')) return;
       clickSuppressCard = null; // a fresh gesture never inherits a stale suppress
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
@@ -1774,6 +1759,37 @@ export async function renderDashboard(
     });
   }
 
+  /**
+   * #471 — the tile's own `Open in Workbench` action, or `null` when this tile has
+   * no query document to open.
+   *
+   * Deliberately NOT `!readOnly`-gated the way the grip and delete button are:
+   * inspecting the query behind a tile is a View-mode act first, and the issue
+   * requires the action in both modes. Built once per tile, like the heading.
+   *
+   * The tile's `queryId` IS the stable document origin this action needs. #427 made
+   * every panel tile reference a dedicated saved-query copy that exactly one member
+   * owns, so handing that id to `openSavedQuery` re-selects the tab already open on
+   * the SAME copy (`loadIntoNewTab` dedups on `savedId`, never on the displayed
+   * name) and every later Save from that tab keeps targeting this Dashboard's copy
+   * rather than a same-named Library query. Two Dashboards holding same-named
+   * copies are two ids, therefore two tabs.
+   *
+   * `null` — never a disabled-and-silent button, and never a button pointing at
+   * some other tile's document — when there is nothing to open: a `text` panel is
+   * queryless by capability (`isQuerylessPanel`, the same shared predicate Save and
+   * share use), and an unresolvable `queryId` belongs to a tile that is already
+   * rendering its own missing-query error.
+   */
+  function tileOpenAction(ts: ViewerTileState): HTMLButtonElement | null {
+    if (!queryById.has(ts.queryId) || isQuerylessPanel(ts.panel as Panel | null)) return null;
+    return h('button', {
+      class: 'dash-tile-open', type: 'button', title: 'Open in Workbench',
+      'aria-label': 'Open ' + ts.title + ' in Workbench',
+      onclick: () => { app.openSavedQuery(ts.queryId); },
+    }, Icon.code());
+  }
+
   function ensureTileEl(ts: ViewerTileState): TileEl {
     const existing = tileEls.get(ts.tileId);
     if (existing) return existing;
@@ -1793,12 +1809,13 @@ export async function renderDashboard(
       class: 'dash-gg-del', title: 'Remove tile', 'aria-label': 'Remove ' + ts.title + ' from the dashboard',
       onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },
     }, Icon.trash()) : null;
+    const openBtn = tileOpenAction(ts);
     const heading = h('div', { class: 'dash-tile-heading' },
       h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
       ts.description ? h('span', {
         class: 'dash-tile-desc', title: ts.description,
       }, ts.description) : null);
-    const head = h('div', { class: 'dash-tile-head' }, grip, heading, delBtn);
+    const head = h('div', { class: 'dash-tile-head' }, grip, heading, openBtn, delBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly
@@ -2003,6 +2020,14 @@ export async function renderDashboard(
               'aria-label': ts.title,
               title: !readOnly ? 'Command/Ctrl-drag to move' : undefined,
             });
+            // #471 deliberately puts NO Open-in-Workbench action here. A flow KPI
+            // band member has no tile chrome of any kind — no head, no delete, no
+            // grip, no resize handle — and it is `display: contents` (styles.css),
+            // so it has no box at all: nothing can be positioned against it, which
+            // is also why `surfaceRect` derives its rect from its children. The
+            // action lives on every tile CARD instead, which covers both engines
+            // including the default one's KPI tiles. See the inbox issue on giving
+            // flow's KPI band real per-tile chrome.
             flowKpiHosts.set(member.tileId, host);
             if (!readOnly) wireTileDrag(member.tileId, host);
             stream.appendChild(host);
@@ -2309,14 +2334,14 @@ export async function renderDashboard(
   // #437: one compact toolbar row — style/count/search/time-filters, then the
   // freshness control, then View/Edit last. The separate #425 surface row (a
   // Back-to-query button plus a title) is gone.
-  // #426: Back to query returns as the row's FIRST control — icon-first, inside
-  // this same one row rather than as a second band. #437 could drop it because the
-  // application header still carried `SQL Browser | Dashboard`; #426 removed that
-  // pair, and without this the only routes back would be `g w` and clicking a
-  // saved query — neither reachable on a phone, where the mobile rules drop the
-  // sidebar and bottom nav for a full-bleed Dashboard.
+  // #471: so is the generic Back-to-query control #426 had put back here. It named
+  // no document — it was ordinary back-navigation occupying primary toolbar space —
+  // and leaving a Dashboard is now either a per-tile act (`Open in Workbench`,
+  // which says WHICH query it opens) or ordinary history/tree navigation. The
+  // phone route #426 was protecting moved to the bottom nav, which no longer hides
+  // itself on this surface (app-shell.ts + the `[data-surface="dashboard"]` mobile
+  // rules): a Dashboard with no tiles at all would otherwise be a dead end.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-    buildBackToQuery(app),
     layoutWrap,
     tileCount,
     tileSearch,

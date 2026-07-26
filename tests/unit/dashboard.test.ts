@@ -4039,9 +4039,9 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
     const primary = qs(app.root, '.dash-toolbar-primary');
-    // #426: Back to query lives IN this one row now (see the regression test
-    // below for why it had to come back at all).
-    expect(qs(primary, '.dash-back-to-query')).not.toBeNull();
+    // #471: and no generic Back-to-query control — #426 had put one here; leaving a
+    // Dashboard is a per-tile act now (see the Open-in-Workbench tests below).
+    expect(qs(primary, '.dash-back-to-query')).toBeNull();
     expect(qsa(app.root, '.dash-toolbar')).toHaveLength(2); // primary + filters
     // The View/Edit switch reflects the RENDERED mode, and lives in this toolbar.
     expect(qsa<HTMLButtonElement>(primary, '.dashboard-mode-switch .editor-mode-btn')
@@ -4056,31 +4056,36 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qs(app.root, '.dash-surface-title')).toBeNull();
     expect(qs(app.root, '.dash-surface-toolbar')).toBeNull();
     // Acceptance: "The empty-Dashboard state uses the same one-row toolbar
-    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch. #426:
-    // and Back to query, so the placeholder is never a dead end either.
+    // treatment" — one `.dash-toolbar-primary`, carrying the mode switch.
     expect(qsa(app.root, '.dash-toolbar')).toHaveLength(1);
     expect(qs(app.root, '.dash-toolbar-primary .dashboard-mode-switch')).not.toBeNull();
-    expect(qs(app.root, '.dash-toolbar-primary .dash-back-to-query')).not.toBeNull();
+    expect(qs(app.root, '.dash-toolbar-primary .dash-back-to-query')).toBeNull();
   });
 
-  // REGRESSION GUARD. #437 removed the Back-to-query control because the header
-  // still carried `SQL Browser | Dashboard`; #426 removed that pair. Together they
-  // would have left `g w` and "click a saved query" as the only ways out of a
-  // Dashboard — and on a phone the mobile rules drop the sidebar and the bottom
-  // nav, so there would have been NO reachable route back at all.
-  it('always offers a VISIBLE route back to the Query surface', async () => {
+  // REGRESSION GUARD, restated by #471. #437 removed the Back-to-query control
+  // because the header still carried `SQL Browser | Dashboard`; #426 removed that
+  // pair and put the control back, because on a phone the mobile rules drop the
+  // sidebar and the bottom nav — so a Dashboard would have had NO reachable route
+  // back at all. #471 removes the control for good, which is only safe because the
+  // route moved rather than vanished: per-tile Open-in-Workbench here, plus the
+  // bottom nav, which no longer hides itself on this surface (asserted against the
+  // real shell in app.test.ts — a tile-less Dashboard has only that one).
+  it('offers no generic back control in either mode, in favour of the per-tile route', async () => {
     for (const mode of ['view', 'edit'] as const) {
-      const { app } = modeApp({ workspace: wsWith(), mode });
+      const ws = wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+      const { app } = modeApp({ workspace: ws, mode });
       const showQuerySurface = vi.fn();
+      const openSavedQuery = vi.fn();
       app.showQuerySurface = showQuerySurface;
+      app.openSavedQuery = openSavedQuery;
       await render(app);
-      const back = qs<HTMLButtonElement>(app.root, '.dash-toolbar-primary .dash-back-to-query');
-      expect(back.getAttribute('aria-label')).toBe('Back to query');
-      // Discoverable: the shortcut is named in the tooltip rather than being the
-      // only way to find the action.
-      expect(back.getAttribute('title')).toContain('G then W');
-      back.click();
-      expect(showQuerySurface).toHaveBeenCalledOnce();
+      expect(qs(app.root, '.dash-back-to-query')).toBeNull();
+      expect(qsa(app.root, '.dash-toolbar-primary .dash-tile-open')).toHaveLength(0);
+      const open = qs<HTMLButtonElement>(app.root, '.dash-tile .dash-tile-open');
+      open.click();
+      // The tile action names a DOCUMENT; it never means "generic back".
+      expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+      expect(showQuerySurface).not.toHaveBeenCalled();
     }
   });
 
@@ -5210,5 +5215,178 @@ describe('renderDashboard — navigation focus (#425)', () => {
       expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't2' })).toBe('ok');
       expect(document.activeElement).toBe(qsa(app.root, '.dash-tile')[1]);
     });
+  });
+});
+
+// ── #471: the per-tile Open-in-Workbench action ─────────────────────────────
+// Replaces the Dashboard toolbar's generic `< Query` button. The contract that
+// matters is IDENTITY: the action carries the tile's own `queryId` — the
+// Dashboard-owned copy #427 gave it — so the tab it opens (and every Save from
+// that tab) targets this Dashboard's document, never a same-named Library query.
+describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
+  const openBtns = (app: TestApp): HTMLButtonElement[] => qsa<HTMLButtonElement>(app.root, '.dash-tile-open');
+  const oneTile = (): WsOver => ({
+    queries: [q('q1', 'SELECT 1')],
+    tiles: [{ id: 't1', queryId: 'q1' }],
+  });
+
+  it('exposes the action on a query-backed tile in BOTH modes, in BOTH layout engines', async () => {
+    for (const mode of ['view', 'edit'] as const) {
+      for (const layout of [
+        { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+        { type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } },
+      ]) {
+        const { app } = modeApp({ workspace: wsWith({ ...oneTile(), layout }), mode });
+        await render(app);
+        const buttons = openBtns(app);
+        expect(buttons, `${mode}/${layout.type}`).toHaveLength(1);
+        // A real <button>, so Enter/Space activation and tab-order come from the
+        // platform rather than a hand-rolled keydown handler.
+        expect(buttons[0].tagName).toBe('BUTTON');
+        expect(buttons[0].type).toBe('button');
+        expect(buttons[0].getAttribute('aria-hidden')).toBeNull();
+        expect(buttons[0].disabled).toBe(false);
+      }
+    }
+  });
+
+  it('names the action and the tile it belongs to, for the tooltip and the a11y tree', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT 1')],
+      tiles: [{ id: 't1', queryId: 'q1', title: 'Revenue by day' }],
+    });
+    const { app } = modeApp({ workspace: ws, mode: 'view' });
+    await render(app);
+    const [button] = openBtns(app);
+    expect(button.getAttribute('title')).toBe('Open in Workbench');
+    // The accessible name disambiguates WHICH tile — a bare "Open in Workbench"
+    // repeated per tile is unusable in a screen-reader control list.
+    expect(button.getAttribute('aria-label')).toBe('Open Revenue by day in Workbench');
+  });
+
+  it('opens the tile\'s own document — same-named copies in different tiles are different ids', async () => {
+    // The #464/#471 hazard, at its sharpest: `cloneQueryForDashboardOwner` copies
+    // the source NAME verbatim, so two Dashboard copies of one Library query are
+    // indistinguishable by name and separable only by id.
+    const ws = wsWith({
+      queries: [
+        q('copy-a', 'SELECT 1', { name: 'Live KPIs' }),
+        q('copy-b', 'SELECT 2', { name: 'Live KPIs' }),
+      ],
+      tiles: [{ id: 't1', queryId: 'copy-a' }, { id: 't2', queryId: 'copy-b' }],
+    });
+    const { app } = modeApp({ workspace: ws, mode: 'view' });
+    const openSavedQuery = vi.fn();
+    app.openSavedQuery = openSavedQuery;
+    await render(app);
+    const buttons = openBtns(app);
+    expect(buttons).toHaveLength(2);
+    buttons[0].click();
+    buttons[1].click();
+    expect(openSavedQuery.mock.calls).toEqual([['copy-a'], ['copy-b']]);
+  });
+
+  it('omits the action on a queryless (Text) tile rather than opening something unrelated', async () => {
+    const ws = wsWith({
+      queries: [
+        q('t-text', '', { panel: { cfg: { type: 'text', content: '# Notes' } } }),
+        q('q1', 'SELECT 1'),
+      ],
+      tiles: [{ id: 't1', queryId: 't-text' }, { id: 't2', queryId: 'q1' }],
+    });
+    const { app } = modeApp({ workspace: ws, mode: 'view' });
+    await render(app);
+    // Exactly one action, and it is NOT the Text tile's.
+    const buttons = openBtns(app);
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute('aria-label')).toContain('q1');
+  });
+
+  it('omits the action when the tile\'s queryId resolves to nothing', async () => {
+    const ws = wsWith({ queries: [], tiles: [{ id: 't1', queryId: 'gone' }] });
+    const { app } = modeApp({ workspace: ws, mode: 'view' });
+    await render(app);
+    expect(openBtns(app)).toHaveLength(0);
+    // The tile still renders — and still says what is wrong.
+    expect(qsa(app.root, '.dash-tile')).toHaveLength(1);
+  });
+
+  it('activating it never starts a tile drag (real button, real guard)', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    });
+    const { app, commit } = dashApp({ workspace: ws });
+    const openSavedQuery = vi.fn();
+    app.openSavedQuery = openSavedQuery;
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    // A modifier-held press ON THE ACTION is the worst case: the same gesture on
+    // the tile body WOULD arm a reorder.
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: 75, clientY: 25, metaKey: true,
+    });
+    button.dispatchEvent(down);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 275, clientY: 25 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: 275, clientY: 25 }));
+    expect(down.defaultPrevented).toBe(false); // no preventDefault → the click survives
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+    expect(commit).not.toHaveBeenCalled(); // no reorder was committed
+    // And the click itself still reaches the action.
+    button.click();
+    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+  });
+
+  const kpiWs = (layout: Record<string, unknown>): WsOver => ({
+    queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+    tiles: [{ id: 't1', queryId: 'k1' }],
+    layout,
+  });
+
+  it('reaches a grafana-grid KPI tile through its overlay head, in View mode too', async () => {
+    // The default engine (#321) renders a KPI tile as a frameless CARD whose head is
+    // an absolutely-positioned, pointer-transparent overlay. The action lives there,
+    // so styles.css has to opt it back into pointer events AND reveal that head in
+    // View mode — which nothing needed before, because every other control in that
+    // head is edit-mode-only. The reveal itself is CSS (see the e2e spec); this pins
+    // the wiring.
+    for (const mode of ['view', 'edit'] as const) {
+      const { app } = modeApp({
+        workspace: wsWith(kpiWs({ type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } })),
+        mode,
+      });
+      const openSavedQuery = vi.fn();
+      app.openSavedQuery = openSavedQuery;
+      await render(app);
+      const button = qs<HTMLButtonElement>(app.root, '.dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-open');
+      expect(button, mode).not.toBeNull();
+      button.click();
+      expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('k1');
+    }
+  });
+
+  // BOUNDARY — deliberate, and filed as its own issue rather than left implicit. A
+  // FLOW KPI tile renders into a `.dash-kpi-member` band host that carries no tile
+  // chrome at all (no head, no delete, no grip, no resize) and is `display:
+  // contents`, so it has no box to anchor an action to — which is also why the drag
+  // code derives its rect from its children. Absolutely positioning the action there
+  // put it in the Dashboard TOOLBAR in a real browser; happy-dom could not see that,
+  // so this test pins the boundary the e2e caught.
+  it('adds no action to a flow KPI band member, which has no tile chrome to carry one', async () => {
+    const { app } = modeApp({
+      workspace: wsWith(kpiWs({ type: 'flow', version: 1, preset: 'columns-2', items: {} })),
+      mode: 'view',
+    });
+    await render(app);
+    const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
+    expect(member).not.toBeNull();
+    expect(qsa(member, '.dash-tile-open')).toHaveLength(0);
+    // The band still renders its content, and nothing leaked into the toolbar.
+    expect(qs(member, '.kpi-card, .dash-kpi-state-card')).not.toBeNull();
+    expect(qsa(app.root, '.dash-topbar .dash-tile-open')).toHaveLength(0);
   });
 });
