@@ -272,6 +272,9 @@ than adapting it. The decisions that changed:
   `DashboardTimeRangeGroup.fromFilterId`, `.dash-filters`); those names now denote
   variables. Renaming them buys no semantics and would double an already large
   diff, so it is deferred to its own change.
+  *(Deferral spent: #459 did that rename — see the addendum below. The names in
+  this bullet are the pre-#459 ones and are kept verbatim as the record of what
+  was deferred.)*
 
 ## Addendum (#447 phase 2, 2026-07-26): option lists are one generated request, read by position
 
@@ -392,14 +395,14 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
   single scalar, and what is the element type" for `core/variable-options.ts`'s
   batch filter AND for `fieldControlKind`'s control choice. A type whose option SQL
   ran can therefore never be one the bar refuses to render a select for, which is
-  the same invariant `filter-bar.ts` already stated for the container verdict.
+  the same invariant `variable-bar.ts` already stated for the container verdict.
   `Tuple`/`Map`/`Nested` have no flat element list; `Array(Array(T))` is rejected by
   `param-serialize` outright. All four keep the adorned text field.
 
 - **`fieldControlKind` classifies the TYPE; the bar pairs it with the spec.** The
   pure function has no way to know whether option SQL was configured, and giving it
   one would mean passing UI state into a parameter-analysis helper. `'multi'` means
-  "this type can be multi-selected"; `filter-bar.ts` combines that with
+  "this type can be multi-selected"; `variable-bar.ts` combines that with
   `spec.options !== null`, and an `Array(scalar T)` with no options falls back to
   the same adorned input as before — with wording that names the fix ("add option
   SQL") instead of calling a controllable type uncontrollable.
@@ -409,13 +412,13 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
   escaping, big integers and empty-string elements covered and tested. Committing a
   pre-serialized string instead would put literal construction in the UI, and would
   make the committed value unparseable back into a selection for the popover to
-  re-open on. `dashboard-filter-store.ts` never lost its `string | string[]`
+  re-open on. `dashboard-variable-store.ts` never lost its `string | string[]`
   support, so persistence needed no change at all.
 
 - **The string boundary is `state.varValues`, and it is enforced by its TYPE.**
-  Arrays travel: viewer session → `ViewerFilterState.value` (already `unknown`) →
+  Arrays travel: viewer session → `ViewerVariableState.value` (already `unknown`) →
   `VariableFieldSpec.selection` → the control → `onCommitVariableSelection` → back.
-  They never enter `FilterBarApp.state.varValues`, which stays
+  They never enter `VariableBarApp.state.varValues`, which stays
   `Record<string, string>` because the Workbench var-strip owns and persists that
   same bag under `asb:varValues`. Widening it would NOT have been a safeguard —
   TypeScript's property assignability is covariant even for mutable properties, so
@@ -471,7 +474,7 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
     against the same partial list — `canonicalizeSelection` drops everything the
     list does not offer, so a no-change Apply committed `([], false)` and a
     single visible pick silently dropped the rest. So `optionsTruncated` rides on
-    `ViewerFilterState` down to the control, whose Apply keeps draft values the
+    `ViewerVariableState` down to the control, whose Apply keeps draft values the
     list does not contain, appended in committed order. They are invisible — no
     row exists for them — so the user cannot have deselected one, and the list is
     known to be a prefix, so it cannot be called stale. **Clear** still removes
@@ -484,6 +487,55 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
   "unreachable" — true only for the types that genuinely cannot be option-backed.
   Admitting `Array(scalar T)` into the batch made the comment honest, and the
   message now says what is actually wrong.
+
+## Addendum (#459, 2026-07-26): the runtime says "variable"; only the storage key still says "filter"
+
+#447's deferral above is spent. Every surviving runtime type, session method,
+module filename and CSS class that said "filter" for something that is now a
+Dashboard variable was renamed: `ViewerFilterState`/`ViewerFilterStatus`/
+`ViewerFilterOption`/`FilterRuntime` → `ViewerVariableState`/…/`VariableRuntime`,
+`setFilter`/`applyFilter`/`applyFilters`/`clearFilter`/`clearAllFilters`/
+`resetFilters`/`getFilterField` → the `…Variable(s)` forms,
+`DashboardViewState.filters` → `.variableStates`, `.filterDiagnostics` →
+`.optionDiagnostics`, `DashboardTimeRangeGroup`/`TimeRangePairCandidate`'s
+`fromFilterId`/`toFilterId` → `from`/`toVariableId`, `ui/filter-bar.ts` →
+`ui/variable-bar.ts`, `ui/filter-option-field.ts` → `ui/variable-option-field.ts`,
+`core/filter-width.ts` → `core/variable-width.ts`,
+`dashboard/model/dashboard-filter-store.ts` → `dashboard-variable-store.ts`, and
+the `.dash-filter*`/`.dash-clear-filters`/`.detached-filter-row`/`.filter-select`/
+`.ms-overlay` class family → their `variable`/`popover` equivalents. Behaviour is
+unchanged. Three decisions are worth recording.
+
+- **The persisted key keeps its historical name; nothing else does.**
+  `KEYS.dashFilters` still resolves to the string `'asb:dashFilters'`. The issue
+  offered a migration as the alternative, and it was rejected: the key holds real
+  committed variable values on users' machines, so renaming it discards every one
+  of them silently on the next load, and a read-old/write-new migration is a
+  behaviour change in a change whose whole contract is "no behaviour change". The
+  property name deliberately still matches the key string so the two cannot
+  drift. `state.filterActive`/`asb:filterActive` (and `saveFilterActive`/
+  `effectiveFilterActive`) are the second exception, for a different reason: they
+  name the WORKBENCH's optional-block activation map — a live concept that is not
+  a Dashboard variable at all — and are likewise persisted.
+
+- **The rename is unfalsifiable by construction, so two guards were added.** A
+  pure rename passes its whole suite whether or not it is correct, and every
+  existing persistence test reaches the storage key through the `KEYS` constant —
+  so changing the key's VALUE would have left 5600 tests green while orphaning
+  real data. `tests/unit/state.test.ts` now pins every `KEYS` literal string, and
+  `tests/unit/dashboard.test.ts` pins the two Dashboard group `aria-label`s
+  (previously asserted nowhere, which is why the only user-perceivable half of
+  this change could have regressed unnoticed). Both were sabotage-checked: each
+  fails when the thing it guards is reverted.
+
+- **The user-observable surface moved too, deliberately.** The variable row's
+  visible section label ("Filters" → "Variables"), the Dashboard group and
+  detached-view accessible names ("Dashboard filters"/"Dashboard time filters"/
+  "Query filters" → the "variables" forms), the multi-select trigger's
+  `"<name> filter, N selected"`, and two batch-error strings. Leaving the most
+  visible instances of the old vocabulary in place while renaming every hidden
+  one would have made the inconsistency worse, not smaller — the Dashboards tree
+  has said "Variables" since #447 phase 1.
 
 ## Alternatives considered
 

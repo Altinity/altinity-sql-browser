@@ -133,7 +133,7 @@ describe('partitionKpiBands (#240)', () => {
 
 // (dashboardParams moved into the parameter pipeline in #165 — the filter bar's
 // field discovery is now `fieldControls(analysis)`, tested with the pipeline in
-// param-pipeline.test.js and end-to-end in the filter-bar suite below.)
+// param-pipeline.test.js and end-to-end in the variable-bar suite below.)
 
 // ── auth/window fixture helpers ──────────────────────────────────────────────
 /** A minimal sessionStorage-like stub — a real `Storage` structurally
@@ -1136,7 +1136,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     });
     app.state.varRecent = recordRecent(emptyRecentMap(), 's', 'foo');
     await render(app);
-    const fieldFor = (name: string) => qsa(app.root, '.dash-filter-host .var-field')
+    const fieldFor = (name: string) => qsa(app.root, '.dash-variable-host .var-field')
       .find((f) => qs(f, '.var-name')?.textContent === name)!;
     // Type a relative value into the Date field so its preview reads the shim wallNow.
     const dInput = qs<HTMLInputElement>(fieldFor('d'), 'input');
@@ -2943,7 +2943,7 @@ describe('renderDashboard — Full view (#321)', () => {
   });
 });
 
-describe('renderDashboard — shared rich filter bar over the viewer (#188)', () => {
+describe('renderDashboard — shared rich variable bar over the viewer (#188)', () => {
   it('renders the shared rich field family — one var-field per declared param type', async () => {
     const { app } = dashApp({
       workspace: wsWith({
@@ -2952,18 +2952,35 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    const names = qsa(app.root, '.dash-filter-host .var-field .var-name').map((n) => n.textContent);
+    const names = qsa(app.root, '.dash-variable-host .var-field .var-name').map((n) => n.textContent);
     expect(names).toEqual(expect.arrayContaining(['s', 'e', 'd']));
     // Every field is a combobox-backed input (the shared rich field builders —
     // recents / enum / relative-time), not the old bare text/select swap.
-    expect(qsa(app.root, '.dash-filter-host .var-field input').length).toBeGreaterThanOrEqual(3);
+    expect(qsa(app.root, '.dash-variable-host .var-field input').length).toBeGreaterThanOrEqual(3);
+  });
+
+  // #459: the accessible names are the only part of this rename a user can
+  // perceive, and nothing asserted them before — so the terminology could have
+  // been renamed everywhere in source while assistive tech still announced
+  // "Dashboard filters". Pinned here so it stays falsifiable.
+  it('names both variable groups "variables", not "filters", for assistive tech', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE s = {s:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-variable-host')?.getAttribute('aria-label')).toBe('Dashboard variables');
+    expect(qs(app.root, '.dash-time-variable-host')?.getAttribute('aria-label'))
+      .toBe('Dashboard time variables');
   });
 
   // #447 deleted 'commits a curated (source-backed) selection through the
   // viewer in one affected-panel wave': there is no option-source query, so no
   // curated combobox to pick from.
 
-  it('shows ordinary-filter Clear all and enables it only once a variable is not UNSET', async () => {
+  it('shows ordinary-variable Clear all and enables it only once a variable is not UNSET', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -2971,10 +2988,10 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    const clear = qs<HTMLButtonElement>(app.root, '.dash-clear-filters');
+    const clear = qs<HTMLButtonElement>(app.root, '.dash-clear-variables');
     expect(clear).not.toBeNull();
     expect(clear.disabled).toBe(true);
-    const input = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    const input = qs<HTMLInputElement>(app.root, '.dash-variable-host input');
     input.value = '7';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('blur'));
@@ -2985,12 +3002,17 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(clear.disabled).toBe(true);
     // #447: Clear all resets the variable to UNSET (there is no persisted
     // default to restore any more).
-    expect(qs<HTMLInputElement>(app.root, '.dash-filter-host input').value).toBe('');
+    expect(qs<HTMLInputElement>(app.root, '.dash-variable-host input').value).toBe('');
+    // The four `.dash-filter-*` selectors below deliberately keep their old
+    // names: they assert the ABSENCE of markup the curated-filter layer used to
+    // render (a count chip, its host, a blocking badge, a bulk clear), so they
+    // must name what was removed. #459 renamed only identifiers the app still
+    // emits.
     expect(qs(app.root, '.dash-filter-count')).toBeNull();
     expect(qs(app.root, '.dash-filter-count-host')).toBeNull();
   });
 
-  it('the filter host IS the scrolling field viewport (#294, single-level since the count sibling was removed)', async () => {
+  it('the variable host IS the scrolling field viewport (#294, single-level since the count sibling was removed)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -2998,11 +3020,11 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    const host = qs(app.root, '.dash-filter-host');
-    expect(host.contains(qs(host, '.dash-filter-ordinary'))).toBe(true);
+    const host = qs(app.root, '.dash-variable-host');
+    expect(host.contains(qs(host, '.dash-variable-ordinary'))).toBe(true);
   });
 
-  it('renders no per-filter "required/invalid" badge (owner decision — dropped as noise)', async () => {
+  it('renders no per-variable "required/invalid" badge (owner decision — dropped as noise)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE x = {p:String}')],
@@ -3028,7 +3050,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
 // REAL session — a from/to date-like filter pair forms a `DashboardTimeRangeGroup`
 // (session.timeRangeGroups), the bar renders one compound control in its "Time"
 // section (suppressing the pair's two individual fields), Apply commits both
-// bounds atomically via `session.applyFilters` in one wave, per-group recents
+// bounds atomically via `session.applyVariables` in one wave, per-group recents
 // accumulate the OUTGOING committed pairs, and the closed trigger re-resolves
 // its label per wave (a live relative range) without a bar rebuild.
 describe('renderDashboard — compound time-range control (#335)', () => {
@@ -3055,11 +3077,11 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     });
     await render(app);
     expect(qs(app.root, '.trf-trigger')).not.toBeNull();
-    expect(qs(app.root, '.dash-time-filter-host .trf-trigger')).not.toBeNull();
-    expect(qsa(app.root, '.dash-filters .flabel').map((node) => node.textContent))
-      .toEqual(['Time', 'Filters']);
+    expect(qs(app.root, '.dash-time-variable-host .trf-trigger')).not.toBeNull();
+    expect(qsa(app.root, '.dash-variables .flabel').map((node) => node.textContent))
+      .toEqual(['Time', 'Variables']);
     // The pair's own two fields are gone; only the non-group field remains.
-    const names = qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name').map((n) => n.textContent);
+    const names = qsa(app.root, '.dash-variable-host .var-field:not(.is-time-range) .var-name').map((n) => n.textContent);
     expect(names).toEqual(['region']);
   });
 
@@ -3072,22 +3094,22 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     });
     await render(app);
     expect(qs(app.root, '.trf-trigger')).not.toBeNull();
-    expect(qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
+    expect(qsa(app.root, '.dash-variable-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
   });
 
-  it('keeps the time-range live region outside the hidden ordinary-filter toolbar', async () => {
+  it('keeps the time-range live region outside the hidden ordinary-variable toolbar', async () => {
     const { app } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     await render(app);
     const liveRegion = qs(app.root, '.dash-topbar > .sr-only');
-    const ordinaryToolbar = qs(app.root, '.dash-toolbar-filters');
+    const ordinaryToolbar = qs(app.root, '.dash-toolbar-variables');
     expect(liveRegion.getAttribute('aria-live')).toBe('polite');
     expect(ordinaryToolbar.style.display).toBe('none');
     expect(ordinaryToolbar.contains(liveRegion)).toBe(false);
   });
 
-  it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
+  it('Apply commits BOTH bounds through session.applyVariables in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
@@ -3222,7 +3244,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     inputs[0].value = '-1d'; inputs[0].dispatchEvent(inputEv());
     inputs[1].value = 'now'; inputs[1].dispatchEvent(inputEv());
     qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
-    // The synchronous applyFilters publish rebuilt the bar, detaching the old
+    // The synchronous applyVariables publish rebuilt the bar, detaching the old
     // trigger — focus lands on the fresh one (never stranded at <body>).
     const newTrigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
     expect(newTrigger).not.toBe(oldTrigger);
@@ -3339,11 +3361,11 @@ describe('renderDashboard — compound time-range control (#335)', () => {
 
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY
 // when a curated source's option VALUE CONTENT changes — including a clear to
-// null — never on an unchanged republish) and `filterDiagnostics` (its own
+// null — never on an unchanged republish) and `optionDiagnostics` (its own
 // merge diagnostics, separate from the presentation `diagnostics` above). The
-// UI folds `optionsRev` into the filter-bar rebuild signature and renders
+// UI folds `optionsRev` into the variable-bar rebuild signature and renders
 // each diagnostic's severity as its own `is-*` class.
-describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)', () => {
+describe('renderDashboard — option-source runtime rebuild + diagnostics (#359)', () => {
   it('renders presentation diagnostics from the viewer state', async () => {
     const { app } = dashApp({
       workspace: wsWith({
@@ -3407,15 +3429,15 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
       }),
     });
     await render(app);
-    const select = qs(app.root, '.filter-select');
+    const select = qs(app.root, '.variable-select');
     expect(select).not.toBeNull();
     const input = select.querySelector('.var-input') as HTMLInputElement;
     // Options arriving must NOT rebuild the bar: the batch lands asynchronously
     // and could complete while the user is mid-keystroke in another field.
     await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    expect(qs(app.root, '.filter-select')).toBe(select);
+    expect(qs(app.root, '.variable-select')).toBe(select);
     await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    expect(qs(app.root, '.filter-select')).toBe(select);
+    expect(qs(app.root, '.variable-select')).toBe(select);
     expect(select.querySelector('.var-input')).toBe(input);
   });
 
@@ -3440,8 +3462,8 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     await render(app);
     const fieldOf = (name: string): HTMLElement =>
       app.root!.querySelector<HTMLElement>(`[data-field-key="${name}"]`)!;
-    expect(fieldOf('country').querySelector('.filter-select')).not.toBeNull();
-    expect(fieldOf('note').querySelector('.filter-select')).toBeNull();
+    expect(fieldOf('country').querySelector('.variable-select')).not.toBeNull();
+    expect(fieldOf('note').querySelector('.variable-select')).toBeNull();
     expect(fieldOf('note').querySelector('.var-input')).not.toBeNull();
   });
 
@@ -3464,7 +3486,7 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
       }),
     });
     await render(app);
-    const input = qs(app.root, '.filter-select .var-input') as HTMLInputElement;
+    const input = qs(app.root, '.variable-select .var-input') as HTMLInputElement;
     const tileText = (): string => qs(app.root, '.dash-tile').textContent ?? '';
     const panelRuns = () => calls.filter((c) => !c.sql.includes('__variable_name'));
     // The panel is WAITING on an unset required variable, so it has not run.
@@ -3497,7 +3519,7 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
       }),
     });
     await render(app);
-    const input = qs(app.root, '.filter-select .var-input') as HTMLInputElement;
+    const input = qs(app.root, '.variable-select .var-input') as HTMLInputElement;
     // read-only rather than disabled, so the reason in `title` stays reachable.
     expect(input.readOnly).toBe(true);
     expect(input.title).toContain('cannot reference Dashboard variables');
@@ -3660,15 +3682,15 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
   });
 });
 
-// #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
-// #280 viewer session used to init every filter purely from its persisted
+// #303: the isolated per-dashboard variable store (`asb:dashFilters`) — the
+// #280 viewer session used to init every variable purely from its persisted
 // default (removed by #447; a variable now simply starts UNSET), so a committed
 // value lived only in memory and reset on reload. The stored bag is keyed by the
 // VARIABLE NAME since #447. `loadJSON`/`KEYS.dashFilters` reads through the
 // REAL default store (not through `app`), so these stub `globalThis.localStorage`
 // directly (never touching the ambient real one — Node 25 native Web Storage
 // flake, #130) — `app.saveJSON` (a `makeApp()` spy) is asserted on for writes.
-describe('renderDashboard — isolated per-dashboard filter persistence (#303)', () => {
+describe('renderDashboard — isolated per-dashboard variable persistence (#303)', () => {
   function memStore(initial: Record<string, string> = {}) {
     const m = new Map(Object.entries(initial));
     return {
@@ -3684,7 +3706,7 @@ describe('renderDashboard — isolated per-dashboard filter persistence (#303)',
     tiles: [{ id: 't1', queryId: 'q1' }],
     ...over,
   });
-  const nField = (app: TestApp): HTMLInputElement => qs<HTMLInputElement>(app.root, '.dash-filter-host .var-field input');
+  const nField = (app: TestApp): HTMLInputElement => qs<HTMLInputElement>(app.root, '.dash-variable-host .var-field input');
 
   it("seeds a variable's value/active from a stored bag for the dashboard id", async () => {
     vi.stubGlobal('localStorage', memStore({
@@ -4943,7 +4965,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     expect(calls.length - before).toBe(2); // two tiles, one rebuild, not three
   });
 
-  it('preserves the persisted per-Dashboard filter seed (KEYS.dashFilters) across the rebuild', async () => {
+  it('preserves the persisted per-Dashboard variable seed (KEYS.dashFilters) across the rebuild', async () => {
     const ws = wsWith({
       id: 'dfx', queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
       tiles: [{ id: 't1', queryId: 'q1' }],
@@ -4959,7 +4981,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
       const { app, loadActive } = dashApp({ workspace: ws });
       await render(app);
       const filterInput = (): HTMLInputElement => {
-        const field = qsa(app.root, '.dash-filter-host .var-field').find((f) => qs(f, '.var-name')?.textContent === 'n')!;
+        const field = qsa(app.root, '.dash-variable-host .var-field').find((f) => qs(f, '.var-name')?.textContent === 'n')!;
         return qs<HTMLInputElement>(field, 'input');
       };
       expect(filterInput().value).toBe('77'); // seeded from the store, not the unset default

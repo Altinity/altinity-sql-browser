@@ -30,12 +30,12 @@
       <div class="dash-topbar">
         <div id="shared-header"></div>
         <div id="primary-toolbar" class="dash-toolbar dash-toolbar-primary"></div>
-        <div class="dash-toolbar dash-toolbar-filters has-filters">
-          <div class="dash-filter-host dash-filters" role="group" aria-label="Dashboard filters"><div class="dash-filter-ordinary"></div></div>
-          <button class="dash-clear-filters">Clear all</button>
+        <div class="dash-toolbar dash-toolbar-variables has-variables">
+          <div class="dash-variable-host dash-variables" role="group" aria-label="Dashboard variables"><div class="dash-variable-ordinary"></div></div>
+          <button class="dash-clear-variables">Clear all</button>
         </div>
       </div>
-      <div id="no-filter-toolbar" class="dash-toolbar" style="display:none">Empty toolbar (no filters)</div>
+      <div id="no-variable-toolbar" class="dash-toolbar" style="display:none">Empty toolbar (no variables)</div>
       <main class="dash-grid is-report" aria-label="Dashboard panels">
         <section class="dash-tile"><div class="dash-tile-head">Panel one</div></section>
         <section class="dash-tile"><div class="dash-tile-head">Panel two</div></section>
@@ -175,16 +175,16 @@
     tileSearch.placeholder = 'Search';
     tileSearch.setAttribute('aria-label', 'Search dashboard tiles');
     const timeHost = document.createElement('div');
-    timeHost.className = 'dash-time-filter-host dash-filters';
+    timeHost.className = 'dash-time-variable-host dash-variables';
     timeHost.setAttribute('role', 'group');
-    timeHost.setAttribute('aria-label', 'Dashboard time filters');
+    timeHost.setAttribute('aria-label', 'Dashboard time variables');
     document.querySelector('#primary-toolbar').append(
       styleWrap, tileCount, tileSearch, timeHost,
       Object.assign(document.createElement('span'), { className: 'dash-toolbar-spacer' }),
       freshness, modeSwitch,
     );
 
-    const filters = document.querySelector('.dash-filter-ordinary');
+    const variables = document.querySelector('.dash-variable-ordinary');
     // 'version' is the one optional field here — real coverage for the bold
     // (required) vs muted (optional) `.var-name` contrast (2026-07-18: replaced
     // the leading "*" glyph).
@@ -200,7 +200,7 @@
       label.className = 'var-field' + (OPTIONAL.has(name) ? ' is-optional' : '');
       label.innerHTML = `<span class="var-name">${name}</span>`;
       label.append(field.el);
-      filters.append(label);
+      variables.append(label);
     }
     // A relative-time field's resolved-value preview line (#294 review finding)
     // makes this field taller than the plain recent-value fields above — real
@@ -215,10 +215,10 @@
     timeLabel.className = 'var-field';
     timeLabel.innerHTML = '<span class="var-name">since</span>';
     timeLabel.append(timeField.el);
-    filters.append(timeLabel);
+    variables.append(timeLabel);
 
     // #335: one compound time-range control, built through the same leaf builder
-    // the filter bar uses (`buildTimeRangeField`), in its own "Time" section —
+    // the variable bar uses (`buildTimeRangeField`), in its own "Time" section —
     // real coverage that the wrapped/scrolled mobile bar layout includes the
     // compound control without clipping, and that its wide resolved-range
     // trigger sits on the same field row as the plain fields.
@@ -227,7 +227,7 @@
       document,
       group: {
         key: 'mob-from\u0000mob-to',
-        fromFilterId: 'mob-from', toFilterId: 'mob-to',
+        fromVariableId: 'mob-from', toVariableId: 'mob-to',
         fromParameter: 'from', toParameter: 'to',
         fromType: parseParamType('DateTime'), toType: parseParamType('DateTime'),
       },
@@ -244,7 +244,7 @@
     // leaves the existing fields' positions (region first) untouched so the
     // pre-#335 layout assertions keep measuring exactly what they did before.
     const timeRegion = document.createElement('div');
-    timeRegion.className = 'dash-filter-time';
+    timeRegion.className = 'dash-variable-time';
     timeRegion.append(trHeading, trField.el, trSep);
     timeHost.append(timeRegion);
 

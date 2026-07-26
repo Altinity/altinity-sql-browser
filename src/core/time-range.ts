@@ -70,15 +70,15 @@ export interface TimeRangeVariable {
  * names (never labels, never array index) so it's stable across a group list
  * re-render as long as the underlying names don't change.
  *
- * `fromFilterId`/`toFilterId` hold VARIABLE NAMES. The field names are #335's
+ * `fromVariableId`/`toVariableId` hold VARIABLE NAMES. The field names are #335's
  * and are deliberately unchanged: renaming them would churn the Dashboard view,
  * the chart interaction controller, the range control and two e2e fixtures for
  * no semantic gain. A rename belongs with the wider terminology cleanup.
  */
 export interface DashboardTimeRangeGroup {
   key: string;
-  fromFilterId: string;
-  toFilterId: string;
+  fromVariableId: string;
+  toVariableId: string;
   fromParameter: string;
   toParameter: string;
   fromType: ParsedParamType;
@@ -94,7 +94,7 @@ export interface DashboardTimeRangeGroup {
 export interface TimeRangeGroupDiagnostic {
   tileId: string;
   queryId: string;
-  code: 'time-range-filter-unresolved' | 'time-range-contract-invalid';
+  code: 'time-range-variable-unresolved' | 'time-range-contract-invalid';
   message: string;
 }
 
@@ -103,13 +103,13 @@ export interface TimeRangeGroupDiagnostic {
  *  see this module's header comment). The field names are #335's, kept for the
  *  reason `DashboardTimeRangeGroup` documents. */
 export interface TimeRangePairCandidate {
-  fromFilterId: string;
-  toFilterId: string;
+  fromVariableId: string;
+  toVariableId: string;
 }
 
 // #334's interim recognized name-pair table (case-insensitive exact match on
 // the FULL parameter name — never a prefix/substring match). Order here is
-// also the emission order when more than one row matches distinct filters.
+// also the emission order when more than one row matches distinct variables.
 // `start`/`stop` is deliberately NOT a recognized pair (owner decision).
 const NAME_PAIR_TABLE: ReadonlyArray<readonly [string, string]> = [
   ['from', 'to'],
@@ -166,9 +166,9 @@ export function inferTimeRangePairs(
   // untestable branch rather than a safety net.
   const pairs: TimeRangePairCandidate[] = [];
   for (const [fromName, toName] of NAME_PAIR_TABLE) {
-    const fromFilterId = soleIdFor(fromName);
-    const toFilterId = soleIdFor(toName);
-    if (fromFilterId && toFilterId) pairs.push({ fromFilterId, toFilterId });
+    const fromVariableId = soleIdFor(fromName);
+    const toVariableId = soleIdFor(toName);
+    if (fromVariableId && toVariableId) pairs.push({ fromVariableId, toVariableId });
   }
   return pairs;
 }
@@ -216,16 +216,16 @@ export function resolveTimeRangeGroups(input: {
 
   const groups: DashboardTimeRangeGroup[] = [];
   for (const pair of pairs) {
-    const fromType = bound(pair.fromFilterId);
-    const toType = bound(pair.toFilterId);
+    const fromType = bound(pair.fromVariableId);
+    const toType = bound(pair.toVariableId);
     if (!fromType || !toType) continue;
 
     groups.push({
-      key: `${pair.fromFilterId}\u0000${pair.toFilterId}`,
-      fromFilterId: pair.fromFilterId,
-      toFilterId: pair.toFilterId,
-      fromParameter: pair.fromFilterId,
-      toParameter: pair.toFilterId,
+      key: `${pair.fromVariableId}\u0000${pair.toVariableId}`,
+      fromVariableId: pair.fromVariableId,
+      toVariableId: pair.toVariableId,
+      fromParameter: pair.fromVariableId,
+      toParameter: pair.toVariableId,
       fromType,
       toType,
       tileIds: [],
@@ -235,11 +235,11 @@ export function resolveTimeRangeGroups(input: {
   return groups;
 }
 
-/** Resolve saved-query time-range metadata to Dashboard filter identities,
+/** Resolve saved-query time-range metadata to Dashboard variable identities,
  * then aggregate every participating tile by that ordered identity pair.
  * Queries created before `timeRanges` existed retain #335's conservative
  * load-time name inference; an authored empty array is the explicit opt-out,
- * while a non-empty authored value remains authoritative. Filter targeting is
+ * while a non-empty authored value remains authoritative. Variable targeting is
  * supplied by the viewer session's single authoritative resolver; this core
  * function never reimplements target semantics. */
 export function resolveAuthoredTimeRangeGroups(input: {
@@ -248,7 +248,7 @@ export function resolveAuthoredTimeRangeGroups(input: {
   executableTileIds: ReadonlySet<string>;
   /** Variable NAME -> the tile ids that variable binds to, from the viewer
    *  session's single authoritative resolver. */
-  filterTargetTileIds: ReadonlyMap<string, ReadonlySet<string>>;
+  variableTargetTileIds: ReadonlyMap<string, ReadonlySet<string>>;
   tiles: ReadonlyArray<{ id: string; queryId: string }>;
   queries: ReadonlyArray<{ id: string; spec?: { timeRanges?: unknown } }>;
 }): { groups: DashboardTimeRangeGroup[]; diagnostics: TimeRangeGroupDiagnostic[] } {
@@ -269,12 +269,12 @@ export function resolveAuthoredTimeRangeGroups(input: {
       && Object.prototype.hasOwnProperty.call(query.spec, 'timeRanges');
     if (!hasAuthoredRanges) {
       // Compatibility for saved queries authored before #334 metadata: infer
-      // only among filters that actually target this tile, then reuse the
+      // only among variables that actually target this tile, then reuse the
       // exact same contract gate as authored metadata. Inference is silent and
       // fail-closed, matching #335; saving/committing the query will persist an
       // explicit pair or [] and make the choice authoritative thereafter.
       const tileVariables = input.variables.filter(
-        (variable) => input.filterTargetTileIds.get(variable.name)?.has(tile.id),
+        (variable) => input.variableTargetTileIds.get(variable.name)?.has(tile.id),
       );
       const inferredPairs = inferTimeRangePairs(tileVariables);
       // A legacy query with two distinct recognized pairs is just as
@@ -309,19 +309,19 @@ export function resolveAuthoredTimeRangeGroups(input: {
     // names are already known to differ — a `from === to` pair was rejected as
     // malformed above — so "resolved" is simply "both names found".
     const matching = (parameter: string) => input.variables.find((variable) => variable.name === parameter
-      && input.filterTargetTileIds.get(variable.name)?.has(tile.id));
+      && input.variableTargetTileIds.get(variable.name)?.has(tile.id));
     const from = matching(pair.from);
     const to = matching(pair.to);
     if (from === undefined || to === undefined) {
       diagnostics.push({
-        tileId: tile.id, queryId: tile.queryId, code: 'time-range-filter-unresolved',
+        tileId: tile.id, queryId: tile.queryId, code: 'time-range-variable-unresolved',
         message: `Time range for ${tile.queryId} could not resolve both parameters to one Dashboard variable each.`,
       });
       continue;
     }
     const resolved = resolveTimeRangeGroups({
       variables: input.variables, analysis: input.analysis, executableTileIds: input.executableTileIds,
-      pairs: [{ fromFilterId: from.name, toFilterId: to.name }],
+      pairs: [{ fromVariableId: from.name, toVariableId: to.name }],
     });
     if (resolved.length !== 1) {
       diagnostics.push({

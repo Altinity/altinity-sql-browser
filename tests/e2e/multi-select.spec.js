@@ -11,7 +11,7 @@ import { test, expect } from '@playwright/test';
 // `reclaimFocus` at the primitive level for the time-range consumer.
 
 const open = async (page) => {
-  await page.getByRole('button', { name: 'city filter, 0 selected' }).click();
+  await page.getByRole('button', { name: 'city variable, 0 selected' }).click();
   await expect(page.getByRole('dialog', { name: 'city options' })).toBeVisible();
 };
 
@@ -67,7 +67,7 @@ test.describe('Multi-select keyboard traversal', () => {
     await page.locator('.ms-option input[type="checkbox"]').first().check();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: 'city options' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'city filter, 0 selected' })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'city variable, 0 selected' })).toBeFocused();
     // The draft was discarded — the trigger still reads unset.
     await expect(page.locator('.ms-trigger')).toHaveText('Not set');
   });

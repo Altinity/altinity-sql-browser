@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 // The Workbench `{name:Type}` variable strip (#134/#248 precedent) already
 // implements the never-wrap/horizontally-scrolling interaction contract #294
-// generalizes to Dashboard filters. happy-dom cannot compute CSS layout
+// generalizes to Dashboard variables. happy-dom cannot compute CSS layout
 // (wrapping/overflow are invisible to the unit suite), so this real-browser
 // harness pins the contract directly against `.var-strip`.
 async function openAt(page, width, height = 700) {

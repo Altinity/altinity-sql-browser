@@ -936,7 +936,7 @@ export function createApp(env: CreateAppEnv = {}): App {
           input = combo.input;
           // #345: a stable, type-appropriate width — set once per field
           // build (never on keystroke), same rule the Dashboard/detached-view
-          // filter bar uses (filter-bar.js).
+          // filter bar uses (variable-bar.js).
           applyFieldWidth(input, v.type, ctl.kind === 'enum');
           wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
           if (conflictNote) input.classList.add('is-conflict');

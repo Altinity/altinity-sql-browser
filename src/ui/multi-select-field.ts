@@ -21,13 +21,13 @@
 //    overlay + panel mounted on open and torn down completely on close, the
 //    ARIA `dialog`/`aria-modal`/`aria-expanded` lifecycle, Escape and backdrop
 //    close, the Tab focus trap, `fixedAnchor` placement, and focus return;
-//  - `filter-option-field.ts`'s `setUnavailable` is the model for the
+//  - `variable-option-field.ts`'s `setUnavailable` is the model for the
 //    batch-failure affordance (`aria-disabled` + `aria-invalid` + the reason in
 //    `title`, never `disabled`).
 //
 // State ownership: the committed `selected`/`active` are frozen at construction
 // — a caller wanting a later committed-value change reflected rebuilds the
-// field, the same convention `buildFilterBar` uses everywhere else. `options`
+// field, the same convention `buildVariableBar` uses everywhere else. `options`
 // and the unavailable reason mutate in place (`setOptions`/`setUnavailable`),
 // because the option batch lands asynchronously and a rebuild would discard an
 // unrelated sibling's in-progress typing.
@@ -113,7 +113,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     type: 'button', id: 'ms-trigger-' + suffix, class: 'ms-trigger var-input',
     'aria-haspopup': 'dialog', 'aria-expanded': 'false',
   }) as HTMLButtonElement;
-  // Same wrapper convention as `buildFilterOptionField`'s `.var-combo`: the
+  // Same wrapper convention as `buildVariableOptionField`'s `.var-combo`: the
   // grid-column:2 sizing anchor and the status "wrapper" are one node.
   const control = h('div', { class: 'ms-field' }, trigger);
 
@@ -143,7 +143,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     const reason = inertReason();
     trigger.textContent = triggerText();
     trigger.title = reason ?? baseTitle;
-    trigger.setAttribute('aria-label', `${name} filter, ${selected.length} selected`);
+    trigger.setAttribute('aria-label', `${name} variable, ${selected.length} selected`);
     control.classList.toggle('is-error', unavailable !== null);
     trigger.classList.toggle('is-error', unavailable !== null);
     trigger.classList.toggle('is-loading', loading && unavailable === null);
@@ -206,7 +206,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     }
     // Local case-insensitive substring filter over label AND value — hidden
     // (filtered-out) rows are never touched by select-visible below.
-    function applyFilter(): void {
+    function applyVariable(): void {
       const q = searchText.trim().toLowerCase();
       let visible = 0;
       for (const row of rows) {
@@ -217,7 +217,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       liveEl.textContent = `${visible} of ${rows.length} options`;
       syncSelectAll();
     }
-    searchInput.addEventListener('input', () => { searchText = searchInput.value; applyFilter(); });
+    searchInput.addEventListener('input', () => { searchText = searchInput.value; applyVariable(); });
     selectAllCb.addEventListener('change', () => {
       const checked = selectAllCb.checked;
       for (const row of rows) {
@@ -280,9 +280,9 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       const changed = !(sameSelection(canonical, prevCanonical) && activeNext === active);
       // Close BEFORE calling `onApply` — the shared `openAnchoredDialog`
       // contract (#335, originally this control's own merge-gate finding for
-      // #189). `onApply` routes into `session.applyFilter`, which mutates state
+      // #189). `onApply` routes into `session.applyVariable`, which mutates state
       // and `publish()`es SYNCHRONOUSLY; a subscriber (`dashboard.ts`'s
-      // `rebuildFilterBar`) can run inside this very call stack, and it must
+      // `rebuildVariableBar`) can run inside this very call stack, and it must
       // observe this popover as ALREADY closed — never mistake an ordinary
       // commit for a force-cancelled outgoing popover, which is what used to
       // fire a false "options were refreshed" announcement.
@@ -304,7 +304,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       ariaLabel: `${name} options`,
       content,
       dialogClassName: 'ms-popover',
-      overlayClassName: 'ms-overlay',
+      overlayClassName: 'popover-overlay',
       minWidthFromTrigger: true,
       initialFocus: () => searchInput, // focus moves into the dialog on open
       onClose: () => { closeCurrent = null; },
@@ -312,7 +312,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     });
     closeCurrent = (closeOpts) => handle.close(closeOpts);
 
-    applyFilter(); // seeds the live-region count and the select-visible tri-state
+    applyVariable(); // seeds the live-region count and the select-visible tri-state
   }
 
   render();

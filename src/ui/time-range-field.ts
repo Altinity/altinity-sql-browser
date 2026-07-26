@@ -23,7 +23,7 @@
 // State ownership: the COMMITTED
 // `fromValue`/`toValue`/`active` are frozen at construction — a caller wanting
 // a later committed-value change reflected calls `buildTimeRangeField` again
-// (the same convention `buildFilterBar` uses). `refreshLabel(nowMs)`
+// (the same convention `buildVariableBar` uses). `refreshLabel(nowMs)`
 // re-resolves ONLY the closed trigger's label/aria in place (per execution
 // wave, no timers, no rebuild). The OPEN popover owns its own staged draft (the
 // two inputs' text) plus its right-column state, all local to `openPopover()`,
@@ -321,7 +321,7 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
       const fromT = fromInput.value.trim() === fromSeed.trim() ? fromValue.trim() : fromInput.value.trim();
       const toT = toInput.value.trim() === toSeed.trim() ? toValue.trim() : toInput.value.trim();
       // An identical (trimmed) draft is a no-op ONLY while the pair is already
-      // active: with committed-but-inactive bounds (clearFilter keeps the typed
+      // active: with committed-but-inactive bounds (clearVariable keeps the typed
       // value and just flips `active` off) an unchanged draft still activates
       // the range, so it must commit — the session counts the active flip as a
       // real change and runs the wave.

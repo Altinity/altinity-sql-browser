@@ -4,7 +4,7 @@ import type { MultiSelectFieldOpts, MultiSelectFieldHandle } from '../../src/ui/
 
 // The searchable multiselect for an `Array(scalar T)` Dashboard variable (#189,
 // restored onto the inferred-Variables model). Same local-factory + spy + real
-// DOM convention as `filter-option-field.test.ts` — no fake app, no snapshots:
+// DOM convention as `variable-option-field.test.ts` — no fake app, no snapshots:
 // every assertion is on a class, an ARIA attribute, or textContent, because
 // those ARE the contract a screen reader and the CSS both read.
 
@@ -71,7 +71,7 @@ describe('trigger text and accessible name', () => {
 
   it('names itself, and its selected count, for assistive tech', () => {
     const { trigger } = build({ selected: ['de', 'fr'], active: true });
-    expect(trigger.getAttribute('aria-label')).toBe('country filter, 2 selected');
+    expect(trigger.getAttribute('aria-label')).toBe('country variable, 2 selected');
     expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(trigger.id).toBe('ms-trigger-country');

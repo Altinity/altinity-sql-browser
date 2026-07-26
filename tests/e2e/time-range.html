@@ -21,8 +21,8 @@
     body { padding: 24px; background: var(--bg, var(--bg-editor)); color: var(--fg); font-family: var(--ui); }
     /* The dashboard filter bar's own scroll host — the compound control renders
        into it exactly as it does on the real dashboard toolbar. */
-    .dash-filter-host { overflow-x: auto; padding: 6px 2px; }
-    .dash-filters { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; }
+    .dash-variable-host { overflow-x: auto; padding: 6px 2px; }
+    .dash-variables { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; }
     .chart-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
     .chart-box { min-width: 0; height: 260px; }
     @media (max-width: 600px) { .chart-row { grid-template-columns: 1fr; } }
@@ -32,14 +32,14 @@
   <!-- #335: a REAL DashboardViewerSession whose two tiles consume {from:DateTime}
        + {to:DateTime} (so `from`/`to` resolve to a scalar date-like pair and form
        ONE time-range group), plus a third tile consuming {service:String} (a
-       non-group filter that keeps its own field). The real `buildFilterBar` is
-       mounted through the same glue `dashboard.ts`'s `rebuildFilterBar` uses:
+       non-group variable that keeps its own field). The real `buildVariableBar` is
+       mounted through the same glue `dashboard.ts`'s `rebuildVariableBar` uses:
        the same `timeRange` assembly, the same `onApplyTimeRange`
-       (recents-push + `session.applyFilters` batch + live announcement), the
+       (recents-push + `session.applyVariables` batch + live announcement), the
        same focus-restore dance, driven off a signals `effect` on
        `session.state`. This exercises the compound control end-to-end against
        the actual pipeline — not a hand-built widget. -->
-  <div class="dash-filter-host"><main id="bar" aria-label="Dashboard filters host"></main></div>
+  <div class="dash-variable-host"><main id="bar" aria-label="Dashboard variables host"></main></div>
   <div class="chart-row">
     <div class="chart-box"><canvas id="chart-a"></canvas></div>
     <div class="chart-box"><canvas id="chart-b"></canvas></div>
@@ -47,7 +47,7 @@
   </div>
   <script type="module">
     import { effect } from '@preact/signals-core';
-    import { buildFilterBar } from '/src/ui/filter-bar.js';
+    import { buildVariableBar } from '/src/ui/variable-bar.js';
     import { createDashboardViewerSession } from '/src/dashboard/application/dashboard-viewer-session.js';
     import { pushRecentRange } from '/src/core/time-range.js';
     import { formatChartTimeLabel, formatChartTimeRange } from '/src/core/time-range.js';
@@ -98,11 +98,11 @@
       ],
       exec,
       // #447: the variables `from`, `to` and `service` are INFERRED from the tile
-      // SQL above — there is no filter array to author. A persisted default is
+      // SQL above — there is no variable array to author. A persisted default is
       // gone too, so the committed seed (which is what makes the compound trigger
-      // render a resolved range immediately) arrives through `initialFilters`,
+      // render a resolved range immediately) arrives through `initialVariables`,
       // keyed by exact variable NAME rather than by a filter id.
-      initialFilters: {
+      initialVariables: {
         from: { value: '-1d', active: true },
         to: { value: 'now', active: true },
       },
@@ -129,9 +129,9 @@
       window.__selected = [fromMs, toMs];
       const formatted = formatChartTimeRange({ fromMs, toMs, fromType: rangeGroup.fromType, toType: rangeGroup.toType });
       if (!formatted.ok) return;
-      window.__lastApply = session.applyFilters([
-        { filterId: rangeGroup.fromFilterId, value: formatted.from, active: true },
-        { filterId: rangeGroup.toFilterId, value: formatted.to, active: true },
+      window.__lastApply = session.applyVariables([
+        { variableId: rangeGroup.fromVariableId, value: formatted.from, active: true },
+        { variableId: rangeGroup.toVariableId, value: formatted.to, active: true },
       ]);
       liveEl.textContent = `Time range applied: ${formatted.from} → ${formatted.to}`;
       await window.__lastApply;
@@ -161,11 +161,11 @@
     window.__charts = { a: chartA, b: chartB, c: chartC };
     window.__peerDraws = () => peerDraws;
 
-    // ── Shell glue mirroring dashboard.ts's rebuildFilterBar ──────────────
+    // ── Shell glue mirroring dashboard.ts's rebuildVariableBar ──────────────
     const host = document.querySelector('#bar');
     // Persistent sr-only announcer, a SIBLING of the bar host (survives the
     // rebuild that a commit synchronously triggers) — like dashboard.ts's
-    // `filterRefreshLiveEl`.
+    // `variableRefreshLiveEl`.
     const liveEl = document.createElement('div');
     liveEl.className = 'sr-only'; liveEl.setAttribute('aria-live', 'polite');
     host.after(liveEl);
@@ -173,7 +173,7 @@
 
     const draftValues = {};
     const draftActive = {};
-    const filterBarApp = {
+    const variableBarApp = {
       document,
       state: { varValues: draftValues, filterActive: draftActive, varRecent: {} },
       params: { saveVarValues() {}, saveFilterActive() {}, clearVarRecent() {} },
@@ -198,21 +198,21 @@
       currentBar?.dispose();
 
       const idByParam = new Map();
-      for (const f of sview.filters) {
+      for (const f of sview.variableStates) {
         draftValues[f.parameter] = valueString(f.value);
         draftActive[f.parameter] = f.active;
         idByParam.set(f.parameter, f.id);
       }
       const onCommit = (name) => {
         const id = idByParam.get(name);
-        if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
+        if (id) session.applyVariable(id, draftValues[name] ?? '', !!draftActive[name]);
       };
-      const getField = (name, mode) => session.getFilterField(name, mode, draftValues, draftActive);
+      const getField = (name, mode) => session.getVariableField(name, mode, draftValues, draftActive);
 
-      const filterById = new Map(sview.filters.map((f) => [f.id, f]));
+      const variableById = new Map(sview.variableStates.map((f) => [f.id, f]));
       const timeRange = session.timeRangeGroups.flatMap((group) => {
-        const fromF = filterById.get(group.fromFilterId);
-        const toF = filterById.get(group.toFilterId);
+        const fromF = variableById.get(group.fromVariableId);
+        const toF = variableById.get(group.toVariableId);
         if (!fromF || !toF) return [];
         return [{
           group,
@@ -224,22 +224,22 @@
         }];
       });
       const onApplyTimeRange = (group, from, to) => {
-        const fromF = filterById.get(group.fromFilterId);
-        const toF = filterById.get(group.toFilterId);
+        const fromF = variableById.get(group.fromVariableId);
+        const toF = variableById.get(group.toVariableId);
         const outFrom = fromF ? valueString(fromF.value) : '';
         const outTo = toF ? valueString(toF.value) : '';
         const wasActive = !!(fromF?.active && toF?.active);
         if (wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
           recents.set(group.key, pushRecentRange(recents.get(group.key) ?? [], { from: outFrom, to: outTo }));
         }
-        window.__lastApply = session.applyFilters([
-          { filterId: group.fromFilterId, value: from, active: true },
-          { filterId: group.toFilterId, value: to, active: true },
+        window.__lastApply = session.applyVariables([
+          { variableId: group.fromVariableId, value: from, active: true },
+          { variableId: group.toVariableId, value: to, active: true },
         ]);
         liveEl.textContent = `Time range applied: ${from} → ${to}`;
       };
 
-      const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, {
+      const bar = buildVariableBar(variableBarApp, session.controls, onCommit, getField, {
         document, timeRange, onApplyTimeRange,
       });
       host.replaceChildren(bar.el);
@@ -247,7 +247,7 @@
       if (restoreKey) bar.focusFieldTrigger(restoreKey);
     }
 
-    // Rebuild the bar only when its signature actually changes (filter
+    // Rebuild the bar only when its signature actually changes (variable
     // values/active/status, the resolved wave `now`, the control set) — exactly
     // dashboard.ts's barSig gating, so an OPEN popover is never torn down by a
     // rebuild while the user is merely interacting with it (no commit = no
@@ -257,7 +257,7 @@
       const sview = session.state.value;
       const sig = JSON.stringify({
         controls: session.controls.map((c) => c.name),
-        filters: sview.filters.map((f) => ({
+        variableStates: sview.variableStates.map((f) => ({
           p: f.parameter, v: sigValue(f.value), a: f.active, s: f.status, r: f.optionsRev,
         })),
         wave: sview.waveWallNowMs,
@@ -272,7 +272,7 @@
 
     await session.start();
     // Ignore the tile runs from the initial full wave — the spec resets the log
-    // before it asserts on a filter-commit wave.
+    // before it asserts on a variable-commit wave.
     window.__resetExec();
     window.__ready = true;
   </script>

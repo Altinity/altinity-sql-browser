@@ -51,7 +51,7 @@ export interface AnchoredDialogOptions {
   content: HTMLElement;
   /** The dialog element's class (e.g. `'trf-popover'`). */
   dialogClassName: string;
-  /** The overlay/backdrop element's class — defaults to `'ms-overlay'`. */
+  /** The overlay/backdrop element's class — defaults to `'popover-overlay'`. */
   overlayClassName?: string;
   /** When true, the dialog's `min-width` is floored at the trigger's width. */
   minWidthFromTrigger?: boolean;
@@ -95,7 +95,7 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
   const d = opts.document;
   const { trigger } = opts;
 
-  const overlay = h('div', { class: opts.overlayClassName ?? 'ms-overlay' });
+  const overlay = h('div', { class: opts.overlayClassName ?? 'popover-overlay' });
   const dialog = h('div', {
     class: opts.dialogClassName, role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.ariaLabel,
   }, opts.content);

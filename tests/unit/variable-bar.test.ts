@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { analyzeParameterizedSources, fieldControls } from '../../src/core/param-pipeline.js';
 import type { FieldControl, PreparedFieldState } from '../../src/core/param-pipeline.js';
-import { buildFilterBar, FILTER_DEBOUNCE_MS } from '../../src/ui/filter-bar.js';
+import { buildVariableBar, VARIABLE_DEBOUNCE_MS } from '../../src/ui/variable-bar.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { parseParamType } from '../../src/core/param-type.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../../src/core/time-range.js';
 import { makeApp } from '../helpers/fake-app.js';
 
-// #447 rewrote this spec: `buildFilterBar` has ONE field branch left. The
+// #447 rewrote this spec: `buildVariableBar` has ONE field branch left. The
 // curated branch (a Dashboard filter drawing its options from a saved
 // "Filter"-role query — the strict single-select combobox, the multiselect
 // dialog, and the per-field source-status affordance) went with the option-
@@ -21,27 +21,27 @@ const paramsFor = (sql: string): FieldControl[] =>
   fieldControls(analyzeParameterizedSources([{ id: 't', kind: 'tab', sql, bindPolicy: 'row-returning' }]));
 const okField = (): PreparedFieldState => ({ state: 'ok' });
 
-describe('buildFilterBar (shared filter row)', () => {
+describe('buildVariableBar (shared filter row)', () => {
   it('is a labeled group and builds a field per param when ariaLabel + document are given', () => {
     const app = makeApp();
-    const bar = buildFilterBar(
+    const bar = buildVariableBar(
       app,
       paramsFor('SELECT * FROM t WHERE x = {x:String}'),
       () => {},
       okField,
-      { document, ariaLabel: 'Query filters' },
+      { document, ariaLabel: 'Query variables' },
     );
     expect(bar.el.getAttribute('role')).toBe('group');
-    expect(bar.el.getAttribute('aria-label')).toBe('Query filters');
+    expect(bar.el.getAttribute('aria-label')).toBe('Query variables');
     expect(bar.el.querySelectorAll('.var-field').length).toBe(1);
     expect(bar.el.style.display).not.toBe('none');
   });
 
   it('renders a hidden-but-labeled empty bar when there are no params', () => {
     const app = makeApp();
-    const bar = buildFilterBar(app, [], () => {}, okField, { ariaLabel: 'Query filters' });
+    const bar = buildVariableBar(app, [], () => {}, okField, { ariaLabel: 'Query variables' });
     expect(bar.el.style.display).toBe('none');
-    expect(bar.el.getAttribute('aria-label')).toBe('Query filters');
+    expect(bar.el.getAttribute('aria-label')).toBe('Query variables');
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
     expect(() => bar.updateStatus({})).not.toThrow(); // nothing built — a no-op
@@ -54,14 +54,14 @@ describe('buildFilterBar (shared filter row)', () => {
 
   it('defaults to app.document and no group role when no options are passed', () => {
     const app = makeApp();
-    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
+    const bar = buildVariableBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
     expect(bar.el.getAttribute('role')).toBeNull();
     expect(bar.el.getAttribute('aria-label')).toBeNull();
     expect(bar.el.querySelectorAll('.var-field').length).toBe(1);
   });
 
   it('marks a plain optional parameter as optional', () => {
-    const bar = buildFilterBar(
+    const bar = buildVariableBar(
       makeApp(), paramsFor('SELECT 1 /*[ WHERE x = {x:String} ]*/'), () => {}, okField,
     );
     expect(bar.el.querySelector('.var-field')!.classList.contains('is-optional')).toBe(true);
@@ -69,7 +69,7 @@ describe('buildFilterBar (shared filter row)', () => {
 
   it('a blur before any edit is a no-op commit', () => {
     const onCommit = vi.fn();
-    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
+    const bar = buildVariableBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
     bar.el.querySelector('input')!.dispatchEvent(new Event('blur'));
     expect(onCommit).not.toHaveBeenCalled();
   });
@@ -79,7 +79,7 @@ describe('buildFilterBar (shared filter row)', () => {
     try {
       const app = makeApp();
       const onCommit = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField);
+      const bar = buildVariableBar(app, paramsFor('SELECT {x:String}'), onCommit, okField);
       const input = bar.el.querySelector('input')! as HTMLInputElement;
       input.value = 'abc';
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -90,7 +90,7 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(app.params.saveVarValues).toHaveBeenCalled();
       expect(app.params.saveFilterActive).toHaveBeenCalled();
       expect(onCommit).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+      vi.advanceTimersByTime(VARIABLE_DEBOUNCE_MS);
       expect(onCommit).toHaveBeenCalledWith('x');
       // Clearing the field deactivates it again.
       input.value = '';
@@ -105,14 +105,14 @@ describe('buildFilterBar (shared filter row)', () => {
     vi.useFakeTimers();
     try {
       const onCommit = vi.fn();
-      const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
+      const bar = buildVariableBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
       const input = bar.el.querySelector('input')! as HTMLInputElement;
       input.value = 'abc';
       input.dispatchEvent(new Event('input', { bubbles: true })); // arms the debounce
       input.dispatchEvent(new Event('blur', { bubbles: true }));
       expect(onCommit).toHaveBeenCalledTimes(1);
       // The armed timer was cleared by the hard commit — it must not fire again.
-      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS + 10);
+      vi.advanceTimersByTime(VARIABLE_DEBOUNCE_MS + 10);
       expect(onCommit).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
@@ -120,14 +120,14 @@ describe('buildFilterBar (shared filter row)', () => {
   });
 
   it('exposes the shared debounce constant', () => {
-    expect(FILTER_DEBOUNCE_MS).toBe(500);
+    expect(VARIABLE_DEBOUNCE_MS).toBe(500);
   });
 
   it('a recent-value pick commits immediately and Clear recent clears the field recents (#171)', () => {
     const app = makeApp();
     app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'foo');
     const onCommit = vi.fn();
-    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    const bar = buildVariableBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
     document.body.appendChild(bar.el);
     const input = bar.el.querySelector('input')!;
     input.dispatchEvent(new Event('focus'));
@@ -147,7 +147,7 @@ describe('buildFilterBar (shared filter row)', () => {
     const app = makeApp();
     app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'foo');
     const onCommit = vi.fn();
-    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    const bar = buildVariableBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
     document.body.appendChild(bar.el);
     const input = bar.el.querySelector('input')!;
     input.dispatchEvent(new Event('focus')); // opens the list without typing — no timer armed
@@ -158,7 +158,7 @@ describe('buildFilterBar (shared filter row)', () => {
   });
 
   it('reports no focused field when the document has no active element', () => {
-    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField, { document });
+    const bar = buildVariableBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField, { document });
     const descriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
     Object.defineProperty(document, 'activeElement', { configurable: true, value: null });
     try {
@@ -174,7 +174,7 @@ describe('buildFilterBar (shared filter row)', () => {
       { id: 'A', kind: 'tab', sql: 'SELECT {x:UInt64}', bindPolicy: 'row-returning' },
       { id: 'B', kind: 'tab', sql: 'SELECT {x:String}', bindPolicy: 'row-returning' },
     ]));
-    const bar = buildFilterBar(makeApp(), params, () => {}, okField);
+    const bar = buildVariableBar(makeApp(), params, () => {}, okField);
     const input = bar.el.querySelector('input')!;
     expect(input.classList.contains('is-conflict')).toBe(true);
     expect(input.title).toContain('Conflicting type declarations: UInt64 vs String');
@@ -182,7 +182,7 @@ describe('buildFilterBar (shared filter row)', () => {
 
   it('applies the shared is-invalid affordance from the prepared batch (#170)', () => {
     const invalidField = (): PreparedFieldState => ({ state: 'invalid', reason: 'Bad value' });
-    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, invalidField);
+    const bar = buildVariableBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, invalidField);
     const input = bar.el.querySelector('input')! as HTMLInputElement;
     expect(input.classList.contains('is-invalid')).toBe(true);
     expect(input.getAttribute('aria-invalid')).toBe('true');
@@ -190,7 +190,7 @@ describe('buildFilterBar (shared filter row)', () => {
   });
 
   it('an optional parameter names the blank-leaves-it-out contract in its tooltip', () => {
-    const bar = buildFilterBar(
+    const bar = buildVariableBar(
       makeApp(), paramsFor('SELECT 1 /*[ WHERE x = {x:String} ]*/'), () => {}, okField,
     );
     const input = bar.el.querySelector('input')! as HTMLInputElement;
@@ -202,26 +202,26 @@ describe('buildFilterBar (shared filter row)', () => {
   describe('field width (#345)', () => {
     it('a plain text field (String) gets the generic string width', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
+      const bar = buildVariableBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       expect(input.style.getPropertyValue('--var-input-ch')).toBe('16');
     });
     it('a tiny-integer field (UInt8) gets the bool/tiny-int width', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {flag:UInt8}'), () => {}, okField);
+      const bar = buildVariableBar(app, paramsFor('SELECT {flag:UInt8}'), () => {}, okField);
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       expect(input.style.getPropertyValue('--var-input-ch')).toBe('9');
     });
     it('a Date field is narrower than a DateTime field, even though both render the date-like combobox', () => {
       const app = makeApp();
-      const dateBar = buildFilterBar(app, paramsFor('SELECT {d:Date}'), () => {}, okField);
-      const dtBar = buildFilterBar(app, paramsFor('SELECT {dt:DateTime}'), () => {}, okField);
+      const dateBar = buildVariableBar(app, paramsFor('SELECT {d:Date}'), () => {}, okField);
+      const dtBar = buildVariableBar(app, paramsFor('SELECT {dt:DateTime}'), () => {}, okField);
       expect(dateBar.el.querySelector<HTMLInputElement>('.var-input')!.style.getPropertyValue('--var-input-ch')).toBe('13');
       expect(dtBar.el.querySelector<HTMLInputElement>('.var-input')!.style.getPropertyValue('--var-input-ch')).toBe('17');
     });
     it("a declared Enum8 field gets the enum width", () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor("SELECT {kind:Enum8('a' = 1, 'b' = 2)}"), () => {}, okField);
+      const bar = buildVariableBar(app, paramsFor("SELECT {kind:Enum8('a' = 1, 'b' = 2)}"), () => {}, okField);
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       expect(input.style.getPropertyValue('--var-input-ch')).toBe('14');
     });
@@ -231,13 +231,13 @@ describe('buildFilterBar (shared filter row)', () => {
         { id: 'A', kind: 'tab', sql: 'SELECT {x:UInt64}', bindPolicy: 'row-returning' },
         { id: 'B', kind: 'tab', sql: 'SELECT {x:String}', bindPolicy: 'row-returning' },
       ]));
-      const bar = buildFilterBar(app, params, () => {}, okField);
+      const bar = buildVariableBar(app, params, () => {}, okField);
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       expect(input.style.getPropertyValue('--var-input-ch')).toBe('13'); // UInt64 (first declaration) → numeric
     });
     it('never changes while typing — set once at field build, not on every keystroke', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
+      const bar = buildVariableBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       const before = input.style.getPropertyValue('--var-input-ch');
       input.value = 'a much longer value than the field is wide';
@@ -249,7 +249,7 @@ describe('buildFilterBar (shared filter row)', () => {
   // #335: the compound time-range control section + the handle-map
   // unification's seams. `buildTimeRangeField`'s own behavior (popover columns,
   // staged editing, validation) is covered exhaustively by
-  // time-range-field.test.ts — these exercise buildFilterBar's INTEGRATION of
+  // time-range-field.test.ts — these exercise buildVariableBar's INTEGRATION of
   // it: the "Time" section ahead of the fields, pair suppression, the unified
   // key-space (`group:…`), and `refreshTimeRangeLabels` delegation.
   describe('time-range section + unified handle map (#335)', () => {
@@ -258,7 +258,7 @@ describe('buildFilterBar (shared filter row)', () => {
     // escape here so this file stays plain text.
     const GROUP_KEY = 'from\u0000to';
     const dtGroup = (): DashboardTimeRangeGroup => ({
-      key: GROUP_KEY, fromFilterId: 'from', toFilterId: 'to',
+      key: GROUP_KEY, fromVariableId: 'from', toVariableId: 'to',
       fromParameter: 'from', toParameter: 'to', fromType: dt, toType: dt,
       tileIds: [], interactiveChartTileIds: [],
     });
@@ -272,12 +272,12 @@ describe('buildFilterBar (shared filter row)', () => {
     // from/to (grouped) + region (plain) — the group owns from/to.
     const groupParams = paramsFor('SELECT k FROM t WHERE d >= {from:DateTime} AND d < {to:DateTime} AND r = {region:String}');
 
-    it('renders a "Time" section (label + control + separator) AHEAD of the fields, suppresses the pair, and labels the rest "Filters"', () => {
+    it('renders a "Time" section (label + control + separator) AHEAD of the fields, suppresses the pair, and labels the rest "Variables"', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
       expect(bar.el.contains(bar.timeEl)).toBe(true);
       expect(bar.el.contains(bar.ordinaryEl)).toBe(true);
-      expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time', 'Filters']);
+      expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time', 'Variables']);
       // The combined form retains its section separator.
       expect(bar.el.querySelectorAll('.var-field.is-time-range').length).toBe(1);
       expect(bar.el.querySelector('.trf-trigger')).not.toBeNull();
@@ -297,30 +297,30 @@ describe('buildFilterBar (shared filter row)', () => {
       expect([...bar.el.children]).toEqual([bar.timeEl, bar.ordinaryEl]);
     });
 
-    it('omits the "Filters" label when every remaining param is grouped (no non-group field left)', () => {
+    it('omits the "Variables" label when every remaining param is grouped (no non-group field left)', () => {
       const app = makeApp();
       const params = paramsFor('SELECT k FROM t WHERE d >= {from:DateTime} AND d < {to:DateTime}');
-      const bar = buildFilterBar(app, params, () => {}, okField, { timeRange: [trEntry()] });
+      const bar = buildVariableBar(app, params, () => {}, okField, { timeRange: [trEntry()] });
       expect([...bar.el.querySelectorAll('.flabel')].map((n) => n.textContent)).toEqual(['Time']);
       expect(bar.el.querySelector('.var-field:not(.is-time-range)')).toBeNull();
     });
 
     it('renders no time section (no flabel/trf-sep) when timeRange is absent or empty — the plain path', () => {
       const app = makeApp();
-      const absent = buildFilterBar(app, groupParams, () => {}, okField);
+      const absent = buildVariableBar(app, groupParams, () => {}, okField);
       expect(absent.el.querySelector('.flabel')).toBeNull();
       expect(absent.el.querySelector('.trf-sep')).toBeNull();
       expect(absent.el.querySelector('.trf-trigger')).toBeNull();
       // All three params render as ordinary fields (nothing suppressed).
       expect([...absent.el.querySelectorAll('.var-name')].map((n) => n.textContent)).toEqual(['from', 'to', 'region']);
-      const empty = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [] });
+      const empty = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [] });
       expect(empty.el.querySelector('.flabel')).toBeNull();
     });
 
     it('openPopoverKey()/focusFieldTrigger() speak the group key-space; dispose() cancels an open time-range popover', () => {
       const app = makeApp();
       const onApplyTimeRange = vi.fn();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
       document.body.appendChild(bar.el);
       const key = `group:${GROUP_KEY}`;
       expect(bar.openPopoverKey()).toBeNull();
@@ -344,7 +344,7 @@ describe('buildFilterBar (shared filter row)', () => {
     it('an Apply routes through onApplyTimeRange with the group + trimmed bounds', () => {
       const app = makeApp();
       const onApplyTimeRange = vi.fn();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
       document.body.appendChild(bar.el);
       (bar.el.querySelector('.trf-trigger') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
       const inputs = [...document.body.querySelectorAll('.trf-input')] as HTMLInputElement[];
@@ -361,7 +361,7 @@ describe('buildFilterBar (shared filter row)', () => {
 
     it('an Apply with no onApplyTimeRange wired is a silent no-op (an older/simpler caller)', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
       document.body.appendChild(bar.el);
       (bar.el.querySelector('.trf-trigger') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
       const inputs = [...document.body.querySelectorAll('.trf-input')] as HTMLInputElement[];
@@ -374,7 +374,7 @@ describe('buildFilterBar (shared filter row)', () => {
 
     it('refreshTimeRangeLabels(nowMs) re-resolves every time-range control label in place; a no-op with no controls', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, {
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, {
         timeRange: [trEntry({ fromValue: '-1d', toValue: 'now', active: true, waveNowMs: 0 })],
       });
       const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
@@ -383,7 +383,7 @@ describe('buildFilterBar (shared filter row)', () => {
       bar.refreshTimeRangeLabels(86_400_000);
       expect(trigger.textContent).not.toBe(before);
       // No time-range controls at all → a harmless no-op.
-      const plain = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
+      const plain = buildVariableBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
       expect(() => plain.refreshTimeRangeLabels(1)).not.toThrow();
     });
 
@@ -391,7 +391,7 @@ describe('buildFilterBar (shared filter row)', () => {
       const app = makeApp();
       const onApplyTimeRange = vi.fn();
       const recents: TimeRangeRecent[] = [{ from: '-7d', to: 'now' }];
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, {
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, {
         timeRange: [trEntry({ recents: () => recents })], onApplyTimeRange,
       });
       document.body.appendChild(bar.el);
@@ -411,7 +411,7 @@ describe('buildFilterBar (shared filter row)', () => {
     // no-op. The contract under test is the routing, not an affordance.
     it('updateStatus routes a status to the keyed control it built, and ignores every other key', () => {
       const app = makeApp();
-      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
       const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
       const before = trigger.textContent;
       // A key this bar DID build a handle for — routed, and a no-op by contract.
@@ -436,12 +436,12 @@ describe('buildFilterBar (shared filter row)', () => {
     try {
       const app = makeApp();
       const onCommit = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField);
+      const bar = buildVariableBar(app, paramsFor('SELECT {x:String}'), onCommit, okField);
       const input = bar.el.querySelector('input')! as HTMLInputElement;
       input.value = 'a';
       input.dispatchEvent(new Event('input', { bubbles: true })); // arms the debounce
       bar.dispose();
-      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS + 10);
+      vi.advanceTimersByTime(VARIABLE_DEBOUNCE_MS + 10);
       expect(onCommit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -449,7 +449,7 @@ describe('buildFilterBar (shared filter row)', () => {
   });
 
   it('dispose() with no pending debounce is a no-op (the never-typed field)', () => {
-    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField);
+    const bar = buildVariableBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField);
     expect(() => bar.dispose()).not.toThrow();
   });
 });
@@ -459,12 +459,12 @@ describe('buildFilterBar (shared filter row)', () => {
 // this bar at all) must be completely unaffected — that guarantee is asserted
 // first and directly, because it is the reason the option is a map rather than a
 // mode flag.
-describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => {
+describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () => {
   const OPTIONS = [{ value: 'de', label: 'Germany' }, { value: 'fr', label: 'France' }];
   const bars: Array<{ dispose(): void }> = [];
-  const build = (sql: string, options: Parameters<typeof buildFilterBar>[4] = {}) => {
+  const build = (sql: string, options: Parameters<typeof buildVariableBar>[4] = {}) => {
     const app = makeApp();
-    const bar = buildFilterBar(app, paramsFor(sql), () => {}, okField, { document, ...options });
+    const bar = buildVariableBar(app, paramsFor(sql), () => {}, okField, { document, ...options });
     bars.push(bar);
     return { app, bar };
   };
@@ -487,7 +487,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       variables: { country: { options: null } },
     });
     const field = fieldFor(bar, 'country');
-    expect(field.querySelector('.filter-select')).toBeNull();
+    expect(field.querySelector('.variable-select')).toBeNull();
     expect(field.querySelector('.var-input')).not.toBeNull();
   });
 
@@ -496,7 +496,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       variables: { country: { options: OPTIONS } },
     });
     const field = fieldFor(bar, 'country');
-    expect(field.querySelector('.filter-select')).not.toBeNull();
+    expect(field.querySelector('.variable-select')).not.toBeNull();
     expect(field.querySelector('.var-combo-clear-inline')).not.toBeNull();
     expect(field.querySelector('.var-name')!.textContent).toBe('country');
   });
@@ -508,7 +508,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     const { bar } = build('SELECT * FROM t WHERE c = {country:String}', {
       variables: { country: { options: [] } },
     });
-    expect(fieldFor(bar, 'country').querySelector('.filter-select')).not.toBeNull();
+    expect(fieldFor(bar, 'country').querySelector('.variable-select')).not.toBeNull();
   });
 
   it('seeds the select from the shared draft bag and commits back through onCommitVariable', () => {
@@ -516,7 +516,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     app.state.varValues.country = 'de';
     app.state.filterActive.country = true;
     const onCommitVariable = vi.fn();
-    const bar = buildFilterBar(app, paramsFor('SELECT {country:String}'), () => {}, okField, {
+    const bar = buildVariableBar(app, paramsFor('SELECT {country:String}'), () => {}, okField, {
       document, variables: { country: { options: OPTIONS } }, onCommitVariable,
     });
     bars.push(bar);
@@ -582,11 +582,11 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       plain: { options: OPTIONS, error: null },   // a plain field — no handle
       ghost: { options: OPTIONS, error: null },   // never built at all
     })).not.toThrow();
-    expect(fieldFor(bar, 'plain').querySelector('.filter-select')).toBeNull();
+    expect(fieldFor(bar, 'plain').querySelector('.variable-select')).toBeNull();
   });
 
   it('setVariableOptions on a bar with no fields at all is a no-op', () => {
-    const bar = buildFilterBar(makeApp(), [], () => {}, okField, { document, variables: {} });
+    const bar = buildVariableBar(makeApp(), [], () => {}, okField, { document, variables: {} });
     expect(() => bar.setVariableOptions({ x: { options: OPTIONS, error: null } })).not.toThrow();
   });
 
@@ -636,7 +636,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
         variables: { tags: { options: OPTIONS } },
       });
-      expect(fieldFor(bar, 'tags').querySelector('.filter-select')).toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.variable-select')).toBeNull();
       expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).toBeNull();
       expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
       expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
@@ -689,7 +689,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       expect(trigger.textContent).toBe('Not set');
       // It REPLACES the plain input and the single-select, rather than adorning.
       expect(field.querySelector('.var-unsupported')).toBeNull();
-      expect(field.querySelector('.filter-select')).toBeNull();
+      expect(field.querySelector('.variable-select')).toBeNull();
       expect(field.querySelector('input.var-input')).toBeNull();
     }
   });
@@ -808,7 +808,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
   it('leaves a time-range-owned parameter to its compound control, map or not', () => {
     const group = {
       key: 'g', fromParameter: 'from', toParameter: 'to',
-      fromFilterId: 'from', toFilterId: 'to', type: 'DateTime', tileIds: ['t'],
+      fromVariableId: 'from', toVariableId: 'to', type: 'DateTime', tileIds: ['t'],
     } as unknown as DashboardTimeRangeGroup;
     const { bar } = build('SELECT * FROM t WHERE a >= {from:DateTime} AND a <= {to:DateTime}', {
       variables: { from: { options: OPTIONS }, to: { options: null } },

@@ -152,9 +152,9 @@ test.describe('Dashboard mobile layout', () => {
     expect(restored).toEqual({ maxWidth: '1100px', tileMinHeight: '440px', applyCount, stored: ['report', '3'] });
   });
 
-  test('scrolls filters in one row while fixed combobox content escapes clipping', async ({ page }) => {
+  test('scrolls variables in one row while fixed combobox content escapes clipping', async ({ page }) => {
     await openAt(page, 390);
-    const scroll = page.locator('.dash-filter-host');
+    const scroll = page.locator('.dash-variable-host');
     const before = await scroll.evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
@@ -179,7 +179,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(list).toBeVisible();
     const popover = await list.evaluate((node) => {
       const input = document.querySelector('[aria-label="region"]');
-      const toolbar = document.querySelector('.dash-toolbar.has-filters');
+      const toolbar = document.querySelector('.dash-toolbar.has-variables');
       const listRect = node.getBoundingClientRect();
       const inputRect = input.getBoundingClientRect();
       return {
@@ -194,13 +194,13 @@ test.describe('Dashboard mobile layout', () => {
     await expect(first).toHaveValue('alpha');
   });
 
-  test('includes the compound time-range control in the scrolled filter row without clipping at 360px (#335)', async ({ page }) => {
+  test('includes the compound time-range control in the scrolled variable row without clipping at 360px (#335)', async ({ page }) => {
     await openAt(page, 360, 800);
     await expect(page.locator('.trf-trigger')).toBeVisible();
-    // The "Time" section label sits in the same filter row, ahead of the fields.
-    await expect(page.locator('.dash-time-filter-host .flabel', { hasText: 'Time' })).toBeVisible();
+    // The "Time" section label sits in the same variable row, ahead of the fields.
+    await expect(page.locator('.dash-time-variable-host .flabel', { hasText: 'Time' })).toBeVisible();
 
-    const result = await page.locator('.dash-time-filter-host').evaluate((host) => {
+    const result = await page.locator('.dash-time-variable-host').evaluate((host) => {
       const field = host.querySelector('.var-field.is-time-range');
       const trigger = host.querySelector('.trf-trigger');
       return {
@@ -222,7 +222,7 @@ test.describe('Dashboard mobile layout', () => {
   test('keeps the time-range control on the field row without viewport overflow in landscape (~780px) (#335)', async ({ page }) => {
     await openAt(page, 780, 420);
     await expect(page.locator('.trf-trigger')).toBeVisible();
-    const result = await page.locator('.dash-time-filter-host').evaluate((host) => {
+    const result = await page.locator('.dash-time-variable-host').evaluate((host) => {
       const trigger = host.querySelector('.trf-trigger').getBoundingClientRect();
       return {
         triggerWithinRow: trigger.top >= host.getBoundingClientRect().top - 1,
@@ -235,14 +235,14 @@ test.describe('Dashboard mobile layout', () => {
 
   test('removes an empty toolbar at every viewport width (2026-07-18: the layout switcher no longer lives there, so an empty toolbar is never worth showing)', async ({ page }) => {
     await openAt(page, 390);
-    await expect(page.locator('#no-filter-toolbar')).toBeHidden();
+    await expect(page.locator('#no-variable-toolbar')).toBeHidden();
     await page.setViewportSize({ width: 1100, height: 844 });
-    await expect(page.locator('#no-filter-toolbar')).toBeHidden();
+    await expect(page.locator('#no-variable-toolbar')).toBeHidden();
   });
 
-  test('marks a required filter name bold instead of a leading asterisk; an optional name stays muted (2026-07-18)', async ({ page }) => {
+  test('marks a required variable name bold instead of a leading asterisk; an optional name stays muted (2026-07-18)', async ({ page }) => {
     await openAt(page, 1100, 800);
-    const names = await page.locator('.dash-filter-host .var-name').evaluateAll((nodes) => nodes.map((node) => ({
+    const names = await page.locator('.dash-variable-host .var-name').evaluateAll((nodes) => nodes.map((node) => ({
       // The old convention prepended a literal "*" via `::after { content }` —
       // never part of `textContent` even before this change — so the real
       // regression check is the CSS-generated content string itself, not the
@@ -260,21 +260,21 @@ test.describe('Dashboard mobile layout', () => {
     for (const n of optional) expect(Number(n.fontWeight)).toBeLessThan(700);
   });
 
-  test('desktop: filters stay on one row and Clear all remains reachable', async ({ page }) => {
+  test('desktop: variables stay on one row and Clear all remains reachable', async ({ page }) => {
     await openAt(page, 1100, 800);
-    await expect(page.locator('.dash-clear-filters')).toBeVisible();
+    await expect(page.locator('.dash-clear-variables')).toBeVisible();
     await expect(page.locator('.dash-filter-count')).toHaveCount(0);
     await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
 
-    const toolbar = page.locator('.dash-toolbar.has-filters');
+    const toolbar = page.locator('.dash-toolbar.has-variables');
     const before = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
 
     const layout = await page.evaluate(() => {
-      const host = document.querySelector('.dash-filter-host');
+      const host = document.querySelector('.dash-variable-host');
       const fields = [...host.querySelectorAll('.var-field')];
       return {
         toolbarWrap: getComputedStyle(document.querySelector('.dash-toolbar')).flexWrap,
-        filtersWrap: getComputedStyle(host).flexWrap,
+        variablesWrap: getComputedStyle(host).flexWrap,
         scrollWidth: host.scrollWidth,
         clientWidth: host.clientWidth,
         fieldTops: fields.map((field) => field.getBoundingClientRect().top),
@@ -289,7 +289,7 @@ test.describe('Dashboard mobile layout', () => {
       };
     });
     expect(layout.toolbarWrap).toBe('nowrap');
-    expect(layout.filtersWrap).toBe('nowrap');
+    expect(layout.variablesWrap).toBe('nowrap');
     expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
     expect(Math.max(...layout.fieldTops) - Math.min(...layout.fieldTops)).toBeLessThan(2);
     expect(Math.min(...layout.fieldWidths)).toBeGreaterThan(150);
@@ -298,10 +298,10 @@ test.describe('Dashboard mobile layout', () => {
     expect(layout.hostPaddingBottom).toBeGreaterThanOrEqual(3);
 
     // Scrolling the fields reaches the final one and doesn't grow the toolbar.
-    await page.locator('.dash-filter-host').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    await page.locator('.dash-variable-host').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
     const after = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
     expect(after).toBe(before);
-    const lastField = page.locator('.dash-filter-host .var-field').last();
+    const lastField = page.locator('.dash-variable-host .var-field').last();
     await expect(lastField).toBeInViewport();
   });
 

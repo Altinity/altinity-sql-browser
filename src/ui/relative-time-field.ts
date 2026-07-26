@@ -8,7 +8,7 @@
 // The field stays a plain free-text `<input class="var-input">` — never
 // read-only — so an absolute timestamp keeps working exactly as before
 // (#169 rule 6); picking a preset just inserts its expression text. The
-// caller (app.js's renderVarStrip / dashboard.js's buildFilterBar) keeps
+// caller (app.js's renderVarStrip / dashboard.js's buildVariableBar) keeps
 // 100% of its existing persistence/validation logic (oninput → persist +
 // applyFieldState + setRunBtn/debounced-commit; onblur/Enter → harden) — it
 // just also calls this object's `onFocus`/`onInput`/`onKeyDown`/`onBlur`/

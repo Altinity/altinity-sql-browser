@@ -20,7 +20,7 @@ const DT = parseParamType('DateTime');
 
 function grp(overrides: Partial<DashboardTimeRangeGroup> = {}): DashboardTimeRangeGroup {
   return {
-    key: 'f1\u0000f2', fromFilterId: 'f1', toFilterId: 'f2',
+    key: 'f1\u0000f2', fromVariableId: 'f1', toVariableId: 'f2',
     fromParameter: 'from', toParameter: 'to',
     fromType: DT, toType: DT,
     tileIds: [], interactiveChartTileIds: [],
@@ -372,7 +372,7 @@ describe('buildTimeRangeField — Apply / Cancel semantics', () => {
   });
 
   it('Apply with unchanged valid values on an INACTIVE pair still commits — activation is the change', () => {
-    // clearFilter keeps the typed value and only flips `active` off, so a
+    // clearVariable keeps the typed value and only flips `active` off, so a
     // committed-but-inactive pair seeds the popover with valid text; Apply is
     // the only activation path for a grouped pair and must not no-op here.
     const onApply = vi.fn();

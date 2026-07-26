@@ -86,7 +86,7 @@ describe('authored time-range metadata defensive shapes', () => {
         { id: 'opted-out', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
       ]),
       executableTileIds: new Set(['legacy', 'opted-out']),
-      filterTargetTileIds: new Map([
+      variableTargetTileIds: new Map([
         ['from', new Set(['legacy', 'opted-out'])],
         ['to', new Set(['legacy', 'opted-out'])],
       ]),
@@ -94,7 +94,7 @@ describe('authored time-range metadata defensive shapes', () => {
       queries: [{ id: 'legacy-query', spec: {} }, { id: 'opted-query', spec: { timeRanges: [] } }],
     });
     expect(result.groups).toEqual([
-      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['legacy'] }),
+      expect.objectContaining({ fromVariableId: 'from', toVariableId: 'to', tileIds: ['legacy'] }),
     ]);
     expect(result.diagnostics).toEqual([]);
   });
@@ -108,7 +108,7 @@ describe('authored time-range metadata defensive shapes', () => {
         id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}',
       }]),
       executableTileIds: ids,
-      filterTargetTileIds: new Map(variables.map((v) => [v.name, ids])),
+      variableTargetTileIds: new Map(variables.map((v) => [v.name, ids])),
       tiles: [{ id: 'tile', queryId: 'legacy-query' }],
       queries: [{ id: 'legacy-query', spec: {} }],
     });
@@ -120,7 +120,7 @@ describe('authored time-range metadata defensive shapes', () => {
       variables: [variable('from'), variable('to')],
       analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}' }]),
       executableTileIds: new Set(['tile']),
-      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      variableTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
       tiles: [{ id: 'tile', queryId: 'query' }],
       queries: [{ id: 'query', spec: { timeRanges: undefined } }],
     });
@@ -131,7 +131,7 @@ describe('authored time-range metadata defensive shapes', () => {
   it('ignores malformed extension values before filter resolution', () => {
     const base = {
       variables: [] as TimeRangeVariable[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
-      filterTargetTileIds: new Map<string, ReadonlySet<string>>(),
+      variableTargetTileIds: new Map<string, ReadonlySet<string>>(),
     };
     const result = resolveAuthoredTimeRangeGroups({
       ...base,
@@ -160,7 +160,7 @@ describe('authored time-range metadata defensive shapes', () => {
         { id: 'table', sql: 'SELECT * FROM u WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' },
       ]),
       executableTileIds: new Set(['chart', 'table']),
-      filterTargetTileIds: new Map([
+      variableTargetTileIds: new Map([
         ['from', new Set(['chart', 'table'])],
         ['to', new Set(['chart', 'table'])],
       ]),
@@ -169,7 +169,7 @@ describe('authored time-range metadata defensive shapes', () => {
     });
     expect(result.diagnostics).toEqual([]);
     expect(result.groups).toEqual([
-      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['chart', 'table'] }),
+      expect.objectContaining({ fromVariableId: 'from', toVariableId: 'to', tileIds: ['chart', 'table'] }),
     ]);
   });
 
@@ -178,13 +178,13 @@ describe('authored time-range metadata defensive shapes', () => {
       variables: [variable('from'), variable('to')],
       analysis: analysisFor([{ id: 'tile', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' }]),
       executableTileIds: new Set(['tile']),
-      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      variableTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
       tiles: [{ id: 'tile', queryId: 'q' }],
       queries: [{ id: 'q', spec: { timeRanges: [{ from: 'from', to: 'nope' }] } }],
     });
     expect(result.groups).toEqual([]);
     expect(result.diagnostics).toEqual([
-      expect.objectContaining({ code: 'time-range-filter-unresolved' }),
+      expect.objectContaining({ code: 'time-range-variable-unresolved' }),
     ]);
   });
 
@@ -193,7 +193,7 @@ describe('authored time-range metadata defensive shapes', () => {
       variables: [variable('from', 'DateTime(3)'), variable('to')],
       analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime(3)}, {to:DateTime}' }]),
       executableTileIds: new Set(['tile']),
-      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      variableTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
       tiles: [{ id: 'tile', queryId: 'query' }],
       queries: [{ id: 'query', spec: { timeRanges: [{ from: 'from', to: 'to' }] } }],
     });
@@ -205,15 +205,15 @@ describe('authored time-range metadata defensive shapes', () => {
 describe('inferTimeRangePairs', () => {
   it('recognizes from/to (case-insensitive)', () => {
     expect(inferTimeRangePairs([variable('From'), variable('TO')]))
-      .toEqual([{ fromFilterId: 'From', toFilterId: 'TO' }]);
+      .toEqual([{ fromVariableId: 'From', toVariableId: 'TO' }]);
   });
   it('recognizes from_time/to_time, start/end, start_time/end_time', () => {
     expect(inferTimeRangePairs([variable('from_time'), variable('to_time')]))
-      .toEqual([{ fromFilterId: 'from_time', toFilterId: 'to_time' }]);
+      .toEqual([{ fromVariableId: 'from_time', toVariableId: 'to_time' }]);
     expect(inferTimeRangePairs([variable('start'), variable('end')]))
-      .toEqual([{ fromFilterId: 'start', toFilterId: 'end' }]);
+      .toEqual([{ fromVariableId: 'start', toVariableId: 'end' }]);
     expect(inferTimeRangePairs([variable('start_time'), variable('end_time')]))
-      .toEqual([{ fromFilterId: 'start_time', toFilterId: 'end_time' }]);
+      .toEqual([{ fromVariableId: 'start_time', toVariableId: 'end_time' }]);
   });
   it('never recognizes start/stop', () => {
     expect(inferTimeRangePairs([variable('start'), variable('stop')])).toEqual([]);
@@ -223,7 +223,7 @@ describe('inferTimeRangePairs', () => {
   });
   it('a variable with null option SQL is a direct input — still eligible', () => {
     expect(inferTimeRangePairs([variable('from', 'DateTime', null), variable('to')]))
-      .toEqual([{ fromFilterId: 'from', toFilterId: 'to' }]);
+      .toEqual([{ fromVariableId: 'from', toVariableId: 'to' }]);
   });
   it('two variables differing only in CASE both match one entry, so no pair forms', () => {
     // Variable names are exact and case-SENSITIVE, while this table matches
@@ -235,8 +235,8 @@ describe('inferTimeRangePairs', () => {
   it('multiple independent groups: rows are emitted in NAME_PAIR_TABLE order regardless of input array order', () => {
     expect(inferTimeRangePairs([variable('start'), variable('end'), variable('to'), variable('from')]))
       .toEqual([
-        { fromFilterId: 'from', toFilterId: 'to' },
-        { fromFilterId: 'start', toFilterId: 'end' },
+        { fromVariableId: 'from', toVariableId: 'to' },
+        { fromVariableId: 'start', toVariableId: 'end' },
       ]);
   });
   it('no variables at all → no pairs', () => {
@@ -254,8 +254,8 @@ describe('resolveTimeRangeGroups — contract gating', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({
       key: 'from\u0000to',
-      fromFilterId: 'from',
-      toFilterId: 'to',
+      fromVariableId: 'from',
+      toVariableId: 'to',
       fromParameter: 'from',
       toParameter: 'to',
     });
@@ -319,7 +319,7 @@ describe('resolveTimeRangeGroups — contract gating', () => {
       variables,
       analysis,
       executableTileIds: new Set(['a']),
-      pairs: [{ fromFilterId: 'not_from_at_all', toFilterId: 'not_to_at_all' }],
+      pairs: [{ fromVariableId: 'not_from_at_all', toVariableId: 'not_to_at_all' }],
     });
     expect(groups).toHaveLength(1);
     expect(groups[0].key).toBe('not_from_at_all\u0000not_to_at_all');
@@ -333,8 +333,8 @@ describe('resolveTimeRangeGroups — contract gating', () => {
       analysis,
       executableTileIds: new Set(['a']),
       pairs: [
-        { fromFilterId: 'missing-from', toFilterId: 'to' },
-        { fromFilterId: 'from', toFilterId: 'missing-to' },
+        { fromVariableId: 'missing-from', toVariableId: 'to' },
+        { fromVariableId: 'from', toVariableId: 'missing-to' },
       ],
     });
     expect(groups).toEqual([]);
@@ -350,7 +350,7 @@ describe('resolveTimeRangeGroups — contract gating', () => {
       variables: [variable('from'), variable('to')],
       analysis: analysisFor([]),
       executableTileIds: new Set(),
-      pairs: [{ fromFilterId: 'from', toFilterId: 'to' }],
+      pairs: [{ fromVariableId: 'from', toVariableId: 'to' }],
     })).toEqual([]);
   });
 

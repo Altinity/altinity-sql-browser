@@ -39,7 +39,7 @@ function setup(overrides: Partial<AnchoredDialogOptions> = {}): {
 }
 
 const dialogEl = (): HTMLElement | null => document.body.querySelector('.pv-popover');
-const overlayEl = (cls = '.ms-overlay'): HTMLElement | null => document.body.querySelector(cls);
+const overlayEl = (cls = '.popover-overlay'): HTMLElement | null => document.body.querySelector(cls);
 
 describe('openAnchoredDialog — mount + ARIA', () => {
   it('mounts an overlay and a dialog with role/aria-modal/aria-label, and appends the content', () => {
@@ -59,7 +59,7 @@ describe('openAnchoredDialog — mount + ARIA', () => {
   it('honors a custom overlayClassName', () => {
     const { open } = setup({ overlayClassName: 'trf-overlay' });
     open();
-    expect(overlayEl('.ms-overlay')).toBeNull();
+    expect(overlayEl('.popover-overlay')).toBeNull();
     expect(overlayEl('.trf-overlay')).not.toBeNull();
   });
 

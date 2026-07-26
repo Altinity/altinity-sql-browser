@@ -96,6 +96,36 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   an `Array(scalar T)` nobody has configured.)
 
 ### Changed
+- **The Dashboard runtime now says "variable" everywhere it meant "variable"**
+  (#459). #447 replaced curated Dashboard filters with inferred variables but left
+  the surviving code calling them filters, so the source read as if a model it had
+  deleted were still there. Renamed, with no behaviour change: the runtime types
+  and session API (`ViewerFilterState` → `ViewerVariableState`, `applyFilters` →
+  `applyVariables`, `DashboardViewState.filters` → `.variableStates`,
+  `.filterDiagnostics` → `.optionDiagnostics`, and the rest of the
+  `setFilter`/`clearFilter`/`resetFilters` family), the time-range pair identities
+  (`fromFilterId`/`toFilterId` → `fromVariableId`/`toVariableId`), four modules
+  (`ui/filter-bar.ts` → `ui/variable-bar.ts`, `ui/filter-option-field.ts` →
+  `ui/variable-option-field.ts`, `core/filter-width.ts` → `core/variable-width.ts`,
+  `dashboard/model/dashboard-filter-store.ts` → `dashboard-variable-store.ts`), and
+  the `.dash-filter*`/`.dash-clear-filters`/`.detached-filter-row`/`.filter-select`
+  CSS family. `.ms-overlay` — the last trace of the deleted multi-select control's
+  prefix — became `.popover-overlay`.
+
+  The visible vocabulary moved with it: the variable row's section label reads
+  **Variables** rather than **Filters**, and the Dashboard, time-range,
+  detached-view and multi-select controls announce themselves to assistive tech as
+  variables ("Dashboard variables", "Query variables", "`<name>` variable, N
+  selected"). Nothing else about the controls changed.
+
+  **Saved Dashboard variable values are untouched.** The localStorage key stays
+  `asb:dashFilters`, keeping its historical name deliberately: renaming it would
+  have discarded every committed value on the next load. `asb:filterActive` and
+  its helpers keep their names too — they are the Workbench's optional-block
+  activation, not Dashboard variables. Both exceptions are documented where they
+  live, and a new test pins every persisted key string so a future rename cannot
+  orphan real data while the suite stays green.
+
 - **Dashboard variable option SQL is edited in the main editor, as its own tab**
   (#457). Clicking a variable in the Dashboards tree switches to Query and opens
   a dedicated **`Variable: <name>`** tab on that variable's committed option SQL

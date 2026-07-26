@@ -480,15 +480,29 @@ export const KEYS = {
   libraryName: 'asb:libraryName',
   resultRowLimit: 'asb:resultRowLimit',
   varValues: 'asb:varValues',
+  /** Per-parameter ACTIVATION for the Workbench's optional `/*[ … ]*\/` blocks —
+   *  which block is switched on, not a curated Dashboard filter. #459 left this
+   *  family (`filterActive`, `saveFilterActive`, `effectiveFilterActive`) alone
+   *  on purpose: the concept it names is still live, it is not a Dashboard
+   *  variable, and this is a persisted key besides. */
   filterActive: 'asb:filterActive',
   dashLayout: 'asb:dashLayout',
   dashCols: 'asb:dashCols',
   varRecent: 'asb:varRecent',
   varRecentDisabled: 'asb:varRecentDisabled',
-  /** Isolated per-dashboard Dashboard-filter persistence (#303 Option B) — a
-   *  single blob keyed `dashboardId -> filterId -> {value,active}`, read/written
-   *  through `dashboard/model/dashboard-filter-store.js`. Deliberately separate
-   *  from the Workbench's `varValues`/`filterActive` keys above. */
+  /** Isolated per-dashboard Dashboard-variable persistence (#303 Option B) — a
+   *  single blob keyed `dashboardId -> variableId -> {value,active}`, read/written
+   *  through `dashboard/model/dashboard-variable-store.js`. Deliberately separate
+   *  from the Workbench's `varValues`/`filterActive` keys above.
+   *
+   *  #459 renamed every OTHER surviving "filter" identifier to "variable", and
+   *  deliberately did NOT rename this one. The string `'asb:dashFilters'` is a
+   *  PERSISTED localStorage key: changing it makes every already-saved Dashboard
+   *  variable value unreadable, so the next load would silently reset users'
+   *  committed selections to unset. Its historical name is kept for
+   *  compatibility, and the property name matches the key so the two can never
+   *  drift. Renaming it later needs an explicit read-old/write-new migration,
+   *  not a rename. */
   dashFilters: 'asb:dashFilters',
 };
 

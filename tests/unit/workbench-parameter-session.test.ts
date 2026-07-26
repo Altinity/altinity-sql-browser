@@ -115,7 +115,7 @@ describe('tabAnalysis / prepare*', () => {
     const { deps, state } = makeDeps();
     const session = createWorkbenchParameterSession(deps);
     expect(session.prepareTabSource('SELECT {year:UInt16}', 1700000000000).missing).toEqual(['year']);
-    state.varValues.year = '2024'; // filter-bar.ts/dashboard.ts/results.ts write app.state.varValues directly
+    state.varValues.year = '2024'; // variable-bar.ts/dashboard.ts/results.ts write app.state.varValues directly
     expect(session.prepareTabSource('SELECT {year:UInt16}', 1700000000000).missing).toEqual([]);
   });
 
