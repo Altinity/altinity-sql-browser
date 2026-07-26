@@ -301,10 +301,16 @@ describe('inferred variables (#447)', () => {
     expect(state.variables[1].sql).toBeNull();
     expect(state.variables[2].diagnostic).toContain('not referenced by any Dashboard panel');
     // A variable's ONLY identity is its name — no filter id, no authored label,
-    // no option list, no source topology.
+    // no source topology.
+    //
+    // #447 phase 2: `configured` distinguishes the two control kinds from the
+    // FIRST publish, before any option query has run — `region` carries option
+    // SQL, so it is a single-select that is still 'loading', while `top` is a
+    // direct input and has nothing to load ('idle'). Both start with
+    // `options: null`; only a completed batch replaces that.
     expect(state.filters).toEqual([
-      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'idle', options: null, optionsRev: 0 },
-      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', options: null, optionsRev: 0 },
+      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0 },
+      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0 },
     ]);
     expect(state.resettableFilterIds).toEqual([]);
     expect(state.activeFilterCount).toBe(0);
@@ -1540,5 +1546,476 @@ describe('timeRangeGroups resolution (#335)', () => {
     const groups = session.timeRangeGroups;
     await session.applyFilters([{ filterId: 'from', value: '-1d', active: true }]);
     expect(session.timeRangeGroups).toBe(groups); // same reference — never recomputed
+  });
+});
+
+// #447 phase 2: the batched option query. Every configured variable on the
+// Dashboard is compiled into ONE `UNION ALL` request per refresh; its rows are
+// read POSITIONALLY and partitioned back by exact variable name. The pure
+// compiler/reader are covered in variable-options.test.ts — these assert the
+// SESSION's wiring: when the request is issued, what it carries, what it does to
+// each variable's runtime, and what a failure does.
+describe('batched option execution (#447 phase 2)', () => {
+  /** The rows the compiled batch would return for `[name, value, label]` triples. */
+  const optionRows = (...triples: [string, string, string][]) => ({
+    columns: [
+      { name: '__variable_name', type: 'String' },
+      { name: 'v', type: 'String' },
+      { name: 'l', type: 'String' },
+    ],
+    rows: triples as unknown[][],
+  });
+
+  const isOptionCall = (sql: string): boolean => sql.includes('__variable_name');
+
+  /** A session whose panel declares `country` + `city`, configured per `configs`. */
+  function optionSession(
+    configs: Record<string, { sql: string }>,
+    responder: Responder,
+    panelSql = 'SELECT 1 WHERE c = {country:String} AND t = {city:String}',
+  ) {
+    const { exec, calls } = makeExec(responder);
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')], variableConfigs: configs }),
+      exec,
+      queries: [query('q1', panelSql)],
+    }));
+    return { session, calls, optionCalls: () => calls.filter((c) => isOptionCall(c.sql)) };
+  }
+
+  it('issues ONE request for two configured variables, in Variables order', async () => {
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' }, city: { sql: 'SELECT a, b FROM cities' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'], ['city', 'ber', 'Berlin'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const calls = optionCalls();
+    expect(calls).toHaveLength(1);
+    const branch = (name: string, sql: string): string =>
+      `SELECT '${name}' AS __variable_name,\n`
+      + '       tupleElement(tuple(*), 1) AS __variable_value,\n'
+      + '       tupleElement(tuple(*), 2) AS __variable_label\n'
+      + `FROM (\n${sql}\n) LIMIT 1001`;
+    expect(calls[0].sql).toBe(
+      `${branch('country', 'SELECT a, b FROM countries')}\nUNION ALL\n${branch('city', 'SELECT a, b FROM cities')}`,
+    );
+    // The ordinary streaming transport: positional access is done in SQL, so no
+    // special wire format is needed (and none is available before ClickHouse 25.2).
+    expect(calls[0].format).toBe('Table');
+    expect(calls[0].params.readonly).toBe(2);
+    expect(calls[0].params.max_result_bytes).toBe(10_000_000);
+  });
+
+  it('partitions the response by exact name onto each variable, and marks them ready', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' }, city: { sql: 'SELECT a, b FROM cities' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['city', 'ber', 'Berlin'], ['country', 'de', 'Germany'], ['country', 'fr', 'France'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    expect(byId.get('country')!.options).toEqual([
+      { value: 'de', label: 'Germany' }, { value: 'fr', label: 'France' },
+    ]);
+    expect(byId.get('city')!.options).toEqual([{ value: 'ber', label: 'Berlin' }]);
+    expect(byId.get('country')!.status).toBe('ready');
+    expect(byId.get('city')!.status).toBe('ready');
+    expect(session.state.value.filterDiagnostics).toEqual([]);
+  });
+
+  it('issues NO request when no variable is configured', async () => {
+    const { session, optionCalls, calls } = optionSession({}, () => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    await session.start();
+    expect(optionCalls()).toHaveLength(0);
+    // Nothing at all was sent: no options plan exists, and the panel's two
+    // required variables are unset so the tile waits rather than executing.
+    expect(calls).toHaveLength(0);
+    expect(session.state.value.tiles[0].status).toBe('unfilled');
+    for (const filter of session.state.value.filters) {
+      expect(filter.configured).toBe(false);
+      expect(filter.status).toBe('idle');
+      expect(filter.options).toBeNull();
+    }
+  });
+
+  it('issues no request for a locally-rejected variable, but still SAYS so on its control', async () => {
+    // A parameterised option query never reaches the server: no cascading. It must
+    // not quietly become a direct-input text box either — that is indistinguishable
+    // from never having been configured, so the stored SQL would be silently
+    // ignored with nothing anywhere explaining why.
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM t WHERE x = {city:String}' } },
+      () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(optionCalls()).toHaveLength(0);
+    const country = session.state.value.filters.find((f) => f.id === 'country')!;
+    expect(country.configured).toBe(true);
+    expect(country.status).toBe('error');
+    expect(country.optionsError).toBe('Variable option queries cannot reference Dashboard variables yet.');
+    expect(country.options).toBeNull();
+    // Per-variable, NOT a Dashboard-wide banner: no batch ran, so nothing failed
+    // at batch level.
+    expect(session.state.value.filterDiagnostics).toEqual([]);
+  });
+
+  it('reports every local problem with the SQL on the control at once', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SHOW TABLES FORMAT JSON' } },
+      () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const error = session.state.value.filters.find((f) => f.id === 'country')!.optionsError!;
+    expect(error).toContain('must be a SELECT');
+    expect(error).toContain('FORMAT');
+  });
+
+  it('keeps a locally-rejected variable OUT of a batch that other variables still run', async () => {
+    const { session, optionCalls } = optionSession(
+      {
+        country: { sql: 'SELECT a, b FROM countries' },
+        city: { sql: 'SELECT a, b FROM t; SELECT 1, 2' },
+      },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    // One branch only, and the healthy variable is unaffected by the broken one.
+    expect(optionCalls()[0].sql).not.toContain('UNION ALL');
+    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    expect(byId.get('country')!.status).toBe('ready');
+    expect(byId.get('country')!.optionsError).toBeNull();
+    expect(byId.get('city')!.status).toBe('error');
+    expect(byId.get('city')!.optionsError).toContain('one statement');
+  });
+
+  it('a batch failure does not overwrite a locally-rejected variable\'s own reason', async () => {
+    const { session } = optionSession(
+      {
+        country: { sql: 'SELECT a, b FROM countries' },
+        city: { sql: 'SELECT a, b FROM t WHERE x = {country:String}' },
+      },
+      (sql) => (isOptionCall(sql) ? { error: 'boom' } : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    expect(byId.get('country')!.optionsError).toContain('boom');
+    // Replacing this with the batch message would be both vaguer and untrue: this
+    // variable was never in the batch.
+    expect(byId.get('city')!.optionsError).toBe('Variable option queries cannot reference Dashboard variables yet.');
+  });
+
+  it('rejects an optional block in option SQL, which could never activate', async () => {
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM t /*[ WHERE x = 1 ]*/' } },
+      () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(optionCalls()).toHaveLength(0);
+    expect(session.state.value.filters.find((f) => f.id === 'country')!.optionsError)
+      .toContain('optional /*[');
+  });
+
+  it('names the diagnostic path in a transport failure, not just a raw server error', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql) ? { error: 'Code: 47.' } : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(session.state.value.filterDiagnostics[0].message).toContain('Test');
+  });
+
+  it('warns when a variable\'s option list was truncated at the cap', async () => {
+    const rows: [string, string, string][] = [];
+    for (let i = 0; i < 1005; i++) rows.push(['country', `v${i}`, `L${i}`]);
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql) ? optionRows(...rows) : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const diagnostics = session.state.value.filterDiagnostics;
+    expect(diagnostics).toHaveLength(1);
+    // A warning, not an error: the options it DID return are usable — the only
+    // dishonest option is letting a truncated list look complete.
+    expect(diagnostics[0].severity).toBe('warning');
+    expect(diagnostics[0].message).toContain('country');
+    expect(session.state.value.filters[0].status).toBe('ready');
+    expect(session.state.value.filters[0].options).toHaveLength(1000);
+  });
+
+  it('excludes conflicted and orphaned variables from the batch', async () => {
+    const { exec, calls } = makeExec((sql) => (isOptionCall(sql)
+      ? optionRows(['ok', 'x', 'X'])
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+        variableConfigs: {
+          ok: { sql: 'SELECT a, b FROM good' },
+          clash: { sql: 'SELECT a, b FROM conflicted' },
+          gone: { sql: 'SELECT a, b FROM orphan', lastKnownType: 'String' },
+        },
+      }),
+      exec,
+      queries: [
+        query('q1', 'SELECT {ok:String} AS o, {clash:UInt64} AS c'),
+        query('q2', 'SELECT {clash:String} AS c'),
+      ],
+    }));
+    await session.start();
+    const optionSql = calls.filter((c) => isOptionCall(c.sql))[0].sql;
+    expect(optionSql).toContain("'ok'");
+    // A conflicted name has no agreed type and an orphan has no declaration, so
+    // neither can be bound into a panel — running their option SQL would be work
+    // for a control that is never rendered.
+    expect(optionSql).not.toContain("'clash'");
+    expect(optionSql).not.toContain("'gone'");
+    expect(optionSql).not.toContain('UNION ALL');
+  });
+
+  it('never auto-selects the first option — a configured variable starts unset', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'], ['country', 'fr', 'France'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const country = session.state.value.filters.find((f) => f.id === 'country')!;
+    expect(country.options).toHaveLength(2);
+    expect(country.value).toBe('');
+    expect(country.active).toBe(false);
+    expect(session.state.value.activeFilterCount).toBe(0);
+  });
+
+  it('leaves a panel WAITING while its required variable is unset, then runs it on commit', async () => {
+    const { session, calls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+      'SELECT 1 WHERE c = {country:String}',
+    );
+    await session.start();
+    const tileState = () => session.state.value.tiles[0];
+    expect(tileState().status).toBe('unfilled');
+    expect(tileState().unfilled).toEqual(['country']);
+    expect(calls.filter((c) => !isOptionCall(c.sql))).toHaveLength(0);
+    await session.applyFilter('country', 'de', true);
+    expect(tileState().status).toBe('ready');
+  });
+
+  it('does NOT re-run the batch when a value is committed', async () => {
+    // Option SQL cannot reference a variable, so no selection can change what any
+    // option query returns — that is what keeps this one request, not a graph.
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(optionCalls()).toHaveLength(1);
+    await session.applyFilter('country', 'de', true);
+    await session.setFilter('country', 'fr');
+    await session.clearFilter('country');
+    await session.clearAllFilters();
+    expect(optionCalls()).toHaveLength(1);
+  });
+
+  it('re-runs the batch on an explicit refresh, bumping optionsRev only on real change', async () => {
+    let call = 0;
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        call++;
+        // Same content twice, then DIFFERENT content of the same length — the
+        // case a length-only or emptiness-only signature would miss.
+        return call === 3
+          ? optionRows(['country', 'es', 'Spain'])
+          : optionRows(['country', 'de', 'Germany']);
+      },
+    );
+    await session.start();
+    const rev1 = session.state.value.filters[0].optionsRev;
+    expect(rev1).toBe(1);
+    await session.refresh();
+    expect(session.state.value.filters[0].optionsRev).toBe(rev1); // unchanged content
+    await session.refresh();
+    expect(session.state.value.filters[0].optionsRev).toBe(rev1 + 1);
+    expect(optionCalls()).toHaveLength(3);
+  });
+
+  it('reports a transport failure as a BATCH-level diagnostic and makes the controls unavailable', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' }, city: { sql: 'SELECT a, b FROM cities' } },
+      (sql) => (isOptionCall(sql)
+        ? { error: 'Code: 47. Unknown expression identifier' }
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const state = session.state.value;
+    expect(state.filterDiagnostics).toEqual([{
+      severity: 'error',
+      code: 'variable-options-batch-failed',
+      message: 'Variable options could not be loaded: Code: 47. Unknown expression identifier '
+        + '— use Test in a variable\u2019s editor to find the option SQL at fault.',
+    }]);
+    // Every option-backed control goes unavailable together — there is no
+    // automatic fall-back to N separate per-variable queries in this issue.
+    for (const filter of state.filters) expect(filter.status).toBe('error');
+    // The tiles themselves still ran: an options failure is not a tile failure.
+    expect(state.tiles[0].status).not.toBe('error');
+    expect(state.lastRefreshOutcome).toBe('success');
+  });
+
+  it('reports a wrong-shape response as a batch-level diagnostic pointing at Test', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        // One-column user SQL → the merged result is 2 columns, not 3.
+        ? { columns: [{ name: '__variable_name', type: 'String' }, { name: 'a', type: 'String' }], rows: [['country', 'de']] }
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const diagnostics = session.state.value.filterDiagnostics;
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].code).toBe('variable-option-batch-shape');
+    expect(diagnostics[0].message).toContain('Test');
+    expect(session.state.value.filters[0].status).toBe('error');
+  });
+
+  it('keeps a committed value through a batch failure', async () => {
+    // A restored selection (#303) is still bound into every panel that declares
+    // the name; discarding it because a LIST failed to load would silently change
+    // what the panels show.
+    const { exec } = makeExec((sql) => (isOptionCall(sql)
+      ? { error: 'boom' }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')], variableConfigs: { country: { sql: 'SELECT a, b FROM t' } } }),
+      exec,
+      queries: [query('q1', 'SELECT 1 WHERE c = {country:String}')],
+      initialFilters: { country: { value: 'de', active: true } },
+    }));
+    await session.start();
+    const country = session.state.value.filters[0];
+    expect(country.value).toBe('de');
+    expect(country.active).toBe(true);
+    expect(country.status).toBe('error');
+  });
+
+  it('recovers on the next refresh after a failure', async () => {
+    let failed = false;
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        if (!failed) { failed = true; return { error: 'boom' }; }
+        return optionRows(['country', 'de', 'Germany']);
+      },
+    );
+    await session.start();
+    expect(session.state.value.filterDiagnostics).toHaveLength(1);
+    await session.refresh();
+    // Replaced wholesale, never appended to — a failure must not outlive the
+    // wave that hit it.
+    expect(session.state.value.filterDiagnostics).toEqual([]);
+    expect(session.state.value.filters[0].status).toBe('ready');
+    expect(session.state.value.filters[0].options).toEqual([{ value: 'de', label: 'Germany' }]);
+  });
+
+  it('gives a configured variable whose query returned nothing an empty list, not an error', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql) ? optionRows() : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(session.state.value.filters[0].options).toEqual([]);
+    expect(session.state.value.filters[0].status).toBe('ready');
+    expect(session.state.value.filterDiagnostics).toEqual([]);
+  });
+
+  it('does not re-run the batch for a single-tile refresh', async () => {
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    await session.refreshTile('t1');
+    expect(optionCalls()).toHaveLength(1);
+  });
+
+  it('issues no options request at all when the session is destroyed before its preflight', async () => {
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    const started = session.start();
+    session.destroy(); // lands while the token preflight is still pending
+    await started;
+    await flush();
+    expect(optionCalls()).toHaveLength(0);
+    expect(session.state.value.filters[0].options).toBeNull();
+  });
+
+  it('drops an IN-FLIGHT options response that a destroy superseded', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      async (sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        await gate;
+        return optionRows(['country', 'de', 'Germany']);
+      },
+    );
+    const started = session.start();
+    // Get PAST the preflight, so the request is genuinely in flight — without this
+    // the destroy short-circuits `refresh()` before the batch is ever issued, and
+    // the assertion below would hold for the wrong reason.
+    await flush();
+    expect(optionCalls()).toHaveLength(1);
+    session.destroy();
+    release!();
+    await started;
+    await flush();
+    // The response arrived after teardown and was discarded.
+    expect(session.state.value.filters[0].options).toBeNull();
+    expect(session.state.value.filters[0].status).toBe('loading');
+  });
+
+  it('drops an in-flight options response that a LATER refresh superseded', async () => {
+    let call = 0;
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      async (sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        call++;
+        if (call === 1) { await gate; return optionRows(['country', 'stale', 'Stale']); }
+        return optionRows(['country', 'fresh', 'Fresh']);
+      },
+    );
+    const first = session.start();
+    await flush();
+    // A second wave overtakes the first and completes.
+    await session.refresh();
+    expect(session.state.value.filters[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
+    // Now let the stale one answer: it must not overwrite the newer options.
+    release!();
+    await first;
+    await flush();
+    expect(session.state.value.filters[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
   });
 });

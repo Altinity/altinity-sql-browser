@@ -1793,7 +1793,34 @@ body.detached-tab .graph-overlay-panel {
 }
 .varedit-input:focus-visible { outline: none; box-shadow: var(--ring); }
 .varedit-hint { margin: 0; font-size: var(--text-label); line-height: var(--lh-body); color: var(--fg-mute); }
+/* #447 phase 2: Test's verdict. `is-ok` also carries the "valid but empty" case,
+   which is a pass with a caveat rather than a failure. */
+.varedit-result {
+  margin: 0; padding: 8px 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--bg-chip);
+  font-size: var(--text-label); line-height: var(--lh-body); color: var(--fg);
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 180px; overflow-y: auto;
+}
+/* `is-ok` keeps the neutral base surface — only a failure changes colour. */
+.varedit-result.is-ok { border-color: var(--border); }
+.varedit-result.is-error { border-color: var(--error-bd); background: var(--error-bg); color: var(--error-fg); }
+.varedit-result-head { font-weight: var(--fw-semibold); }
+.varedit-result-row { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: var(--text-micro); }
+.varedit-result-row code { color: var(--fg); }
+.varedit-result-row span { color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.varedit-result-more { color: var(--fg-faint); font-size: var(--text-micro); }
 .varedit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+/* Pushes Cancel/Save to the trailing edge, leaving Test on the leading one. */
+.varedit-actions-gap { flex: 1; }
+.varedit-test {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  cursor: pointer; border-radius: var(--r-sm); padding: 5px 11px;
+  font: inherit; font-size: var(--text-body);
+}
+.varedit-test:hover:not(:disabled) { background: var(--bg-hover); }
+.varedit-test:disabled { cursor: progress; opacity: .6; }
 .varedit-cancel, .varedit-save {
   border: 1px solid var(--border); background: transparent; color: var(--fg);
   cursor: pointer; border-radius: var(--r-sm); padding: 5px 11px;
@@ -2057,6 +2084,32 @@ body.detached-tab .graph-overlay-panel {
   grid-column: 2;
   position: relative; display: inline-flex; flex-direction: column; align-items: flex-start;
   gap: 1px;
+}
+/* #447 phase 2: the option-backed variable select (filter-option-field.ts) — the
+   same combobox clothes as every other field, plus room for the inline clear (×)
+   that returns the variable to unset. Restored with that field, which phase 1
+   deleted along with the curated-filter layer. */
+.filter-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
+.filter-select .var-input:disabled { cursor: not-allowed; opacity: .7; }
+.var-combo-clear-inline {
+  position: absolute; top: 0; right: 3px; height: 24px;
+  width: 20px; border-radius: var(--r-xs); padding: 0;
+  border: none; background: transparent; color: var(--fg-faint); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
+.var-combo-clear-inline:disabled { cursor: not-allowed; opacity: .5; }
+/* #447 phase 2: a variable whose declared type is a container (Array/Tuple/Map/
+   Nested) gets no INFERRED control, so this marker sits beside its plain input
+   rather than replacing it — a literal value typed there still binds. Warning, not
+   error: nothing is wrong, the Dashboard just cannot infer a control. */
+.var-unsupported {
+  grid-column: 2;
+  margin-top: 2px;
+  height: 24px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 8px; border-radius: var(--r-sm);
+  border: 1px dashed var(--warn-bd); background: var(--warn-bg); color: var(--warn-fg);
+  font-size: var(--text-label); white-space: nowrap;
 }
 .var-combo-list {
   position: fixed; z-index: 70; max-height: 260px; overflow-y: auto;

@@ -708,4 +708,55 @@ describe('fieldControlKind (shared control priority — review F1/F8)', () => {
     expect(fieldControlKind({ type: 'String', conflict: ['String', 'UInt8'] }, ['x'])).toEqual({ kind: 'text', enumOptions: null });
     expect(fieldControlKind({ type: 'DateTime', conflict: ['DateTime', 'String'] })).toEqual({ kind: 'text', enumOptions: null });
   });
+
+  // #447 phase 2: the opt-in policy for a surface that binds ONE scalar per name.
+  describe('scalarControls policy', () => {
+    const scalar = { scalarControls: true };
+
+    it('is entirely opt-in — the default answer for every type is unchanged', () => {
+      // The guarantee that the workbench variables strip renders byte-identically.
+      for (const type of ['Bool', 'Boolean', 'Array(String)', 'Tuple(String, String)', 'Map(String, String)', 'Nested(a String)']) {
+        expect(fieldControlKind({ type })).toEqual({ kind: 'text', enumOptions: null });
+      }
+    });
+
+    it('offers true/false for Bool', () => {
+      expect(fieldControlKind({ type: 'Bool' }, null, scalar))
+        .toEqual({ kind: 'enum', enumOptions: ['true', 'false'] });
+      expect(fieldControlKind({ type: 'Boolean' }, null, scalar))
+        .toEqual({ kind: 'enum', enumOptions: ['true', 'false'] });
+      // Through the value-transparent wrappers too.
+      expect(fieldControlKind({ type: 'Nullable(Bool)' }, null, scalar).enumOptions)
+        .toEqual(['true', 'false']);
+    });
+
+    it('reports a compound type as unsupported', () => {
+      for (const type of ['Array(String)', 'Tuple(String, String)', 'Map(String, String)', 'Nested(a String)']) {
+        expect(fieldControlKind({ type }, null, scalar)).toEqual({ kind: 'unsupported', enumOptions: null });
+      }
+      // Wrapped, and nested one level deeper.
+      expect(fieldControlKind({ type: 'Nullable(Array(String))' }, null, scalar).kind).toBe('unsupported');
+      expect(fieldControlKind({ type: 'Array(Array(UInt8))' }, null, scalar).kind).toBe('unsupported');
+    });
+
+    it('leaves the enum/date priority ahead of the policy', () => {
+      // An Enum declaration and a date-like type are both claimed before the
+      // policy is consulted, so the priority order stays single-sourced.
+      expect(fieldControlKind({ type: ENUM }, null, scalar)).toEqual({ kind: 'enum', enumOptions: ['a', 'b'] });
+      expect(fieldControlKind({ type: 'Date' }, null, scalar)).toEqual({ kind: 'date', enumOptions: null });
+      expect(fieldControlKind({ type: 'String' }, ['x'], scalar)).toEqual({ kind: 'enum', enumOptions: ['x'] });
+    });
+
+    it('keeps a conflicted compound field on text, never unsupported', () => {
+      // A conflict means no single authoritative declaration to judge, so the
+      // #173 degrade-to-text rule still wins outright.
+      expect(fieldControlKind({ type: 'Array(String)', conflict: ['Array(String)', 'String'] }, null, scalar))
+        .toEqual({ kind: 'text', enumOptions: null });
+    });
+
+    it('leaves ordinary scalars on their usual controls', () => {
+      expect(fieldControlKind({ type: 'String' }, null, scalar)).toEqual({ kind: 'text', enumOptions: null });
+      expect(fieldControlKind({ type: 'UInt64' }, null, scalar)).toEqual({ kind: 'text', enumOptions: null });
+    });
+  });
 });

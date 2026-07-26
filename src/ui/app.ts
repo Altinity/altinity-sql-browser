@@ -24,6 +24,7 @@ import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
+import { VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP } from '../core/variable-options.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
   hasBlockingSpecErrors,
@@ -613,6 +614,30 @@ export function createApp(env: CreateAppEnv = {}): App {
     runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
   });
   app.exec = exec;
+  // #447 phase 2: the per-variable option-query runner the variable editor's Test
+  // action uses. Wired ONCE here — the editor is opened from the Dashboards tree,
+  // and a single callback keeps `StreamResult`/transport caps out of both that
+  // tree's narrow app contract and the editor module itself.
+  //
+  // Runs under the same bounded, read-only transport the refresh batch uses, and
+  // through the same nesting (`compileOptionProbe`), so Test cannot pass for a
+  // query the batch would reject — and cannot pull an unbounded result of its own.
+  app.runOptionQuery = async (sql: string) => {
+    if (!(await conn.ensureFreshToken())) {
+      return { columns: [], rows: [], error: 'Not signed in.' };
+    }
+    const rowLimit = VARIABLE_OPTION_CAP + 1;
+    const result = newResult('Table', rowLimit);
+    await exec.executeRead(result, {
+      sql, format: 'Table', rowLimit,
+      params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
+    });
+    return {
+      columns: result.columns.map((column) => ({ name: column.name, type: column.type })),
+      rows: result.rows,
+      error: result.error ?? (result.cancelled ? 'Cancelled' : null),
+    };
+  };
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
   app.now = now;

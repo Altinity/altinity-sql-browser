@@ -6615,3 +6615,59 @@ describe('unified /sql routing', () => {
     expect('importDashboard' in app.actions).toBe(false);
   });
 });
+
+// #447 phase 2: the option-query runner the variable editor's Test action uses.
+// Wired here (rather than threaded as `exec` + connection through the Dashboards
+// tree) so neither that tree's narrow app contract nor the editor module has to
+// know about streaming, caps or transports.
+describe('createApp — runOptionQuery (#447 phase 2)', () => {
+  const OPTION_SQL = 'SELECT * FROM (\nSELECT a, b FROM countries\n) LIMIT 1001';
+
+  it('runs under the bounded, read-only transport the refresh batch uses', async () => {
+    const fetchMock = makeFetch([
+      [(u, sql) => /countries/.test(sql), resp({
+        body: streamBody([
+          '{"meta":[{"name":"a","type":"String"},{"name":"b","type":"LowCardinality(String)"}]}\n',
+          '{"row":{"a":"de","b":"Germany"}}\n',
+          '{"row":{"a":"fr","b":"France"}}\n',
+        ]),
+      })],
+    ]);
+    const app = createApp(env({ fetch: fetchMock }));
+    const answer = await app.runOptionQuery(OPTION_SQL);
+    // Not call[0]: `createApp` fetches `/sql/config.json` first.
+    const url = asMock(fetchMock).mock.calls
+      .map((call) => String(call[0]))
+      .find((candidate) => candidate.includes('default_format='))!;
+    // The ordinary streaming transport — positional access is done in SQL by the
+    // compiler, so no special wire format is needed here either.
+    expect(url).toContain('default_format=JSONStringsEachRowWithProgress');
+    expect(url).toContain('readonly=2');
+    expect(url).toContain('max_result_bytes=10000000');
+    expect(url).toContain('max_result_rows=1001');
+    expect(answer.error).toBeNull();
+    // The real column TYPES come back, which is what makes the two-String-column
+    // rule checkable here — a merged UNION ALL column list could not report them.
+    expect(answer.columns).toEqual([
+      { name: 'a', type: 'String' }, { name: 'b', type: 'LowCardinality(String)' },
+    ]);
+    expect(answer.rows).toEqual([['de', 'Germany'], ['fr', 'France']]);
+  });
+
+  it('reports a server exception as an error rather than throwing', async () => {
+    const app = createApp(env({
+      fetch: makeFetch([[() => true, resp({ ok: false, status: 500, text: 'Code: 60. Unknown table' })]]),
+    }));
+    const answer = await app.runOptionQuery(OPTION_SQL);
+    expect(answer.error).toContain('Code: 60');
+    expect(answer.rows).toEqual([]);
+  });
+
+  it('refuses to run when the token preflight fails', async () => {
+    const app = createApp(env({ sessionStorage: memSession({}) }));
+    const answer = await app.runOptionQuery(OPTION_SQL);
+    expect(answer.error).toBe('Not signed in.');
+    expect(answer.columns).toEqual([]);
+    expect(answer.rows).toEqual([]);
+  });
+});

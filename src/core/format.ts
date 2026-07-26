@@ -116,17 +116,12 @@ export function withStatementBreak(sql?: string | null): string {
   return s === '' || /[\s;]$/.test(s) ? s : s + '\n';
 }
 
-/**
- * The trailing `FORMAT <Name>` clause of a query, or null. FORMAT and SETTINGS
- * are ClickHouse's two clauses that may trail a query in *either* order (its
- * parser explicitly allows `FORMAT x SETTINGS y` and `SETTINGS y FORMAT x`), so
- * a FORMAT immediately followed by a SETTINGS clause still counts as trailing.
- * Lets the results panel switch to raw passthrough when the user picks an
- * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`, with
- * or without a following `SETTINGS …`). Pure.
- */
-export function detectSqlFormat(sql?: string | null): string | null {
-  const text = String(sql || '');
+/** Every bare word in `sql`'s CODE spans at paren depth 0, in order — the shared
+ *  scan behind `detectSqlFormat` and `detectSqlOutfile`. Words inside strings,
+ *  quoted identifiers, heredocs and comments never appear (the scanner makes
+ *  those spans opaque), and neither do words nested in parentheses, so a
+ *  subquery's own trailing clause is never mistaken for the statement's. Pure. */
+function topLevelWords(text: string): string[] {
   const words: string[] = [];
   let depth = 0;
   for (const span of scanSpans(text)) {
@@ -144,6 +139,38 @@ export function detectSqlFormat(sql?: string | null): string | null {
       i++;
     }
   }
+  return words;
+}
+
+/**
+ * True when `sql` carries an `INTO OUTFILE` clause at the top level — a
+ * non-embeddable output clause, like `FORMAT`: it writes the result to a file
+ * instead of returning it, so a query bearing one cannot be nested as a
+ * subquery or run for its rows (#447 phase 2's option-SQL contract rejects it
+ * locally rather than letting the server answer with a syntax error from inside
+ * a generated batch).
+ *
+ * Matched as the adjacent word PAIR through the shared `topLevelWords` scan, so
+ * `'INTO OUTFILE'` inside a string literal, a quoted identifier or a comment is
+ * never a false reject, and neither is a column literally named `outfile`. Pure.
+ */
+export function detectSqlOutfile(sql?: string | null): boolean {
+  const words = topLevelWords(String(sql || ''));
+  return words.some((word, i) =>
+    word.toUpperCase() === 'INTO' && (words[i + 1] || '').toUpperCase() === 'OUTFILE');
+}
+
+/**
+ * The trailing `FORMAT <Name>` clause of a query, or null. FORMAT and SETTINGS
+ * are ClickHouse's two clauses that may trail a query in *either* order (its
+ * parser explicitly allows `FORMAT x SETTINGS y` and `SETTINGS y FORMAT x`), so
+ * a FORMAT immediately followed by a SETTINGS clause still counts as trailing.
+ * Lets the results panel switch to raw passthrough when the user picks an
+ * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`, with
+ * or without a following `SETTINGS …`). Pure.
+ */
+export function detectSqlFormat(sql?: string | null): string | null {
+  const words = topLevelWords(String(sql || ''));
   for (let i = words.length - 2; i >= 0; i--) {
     if (words[i].toUpperCase() !== 'FORMAT') continue;
     const rest = words.slice(i + 2);
@@ -162,7 +189,7 @@ export function detectSqlFormat(sql?: string | null): string | null {
  * Semicolons and comment characters inside strings/identifiers/heredocs are
  * never inspected, because the scanner already made those spans opaque. Pure.
  */
-function stripTrailingTrivia(text: string): string {
+export function stripTrailingTrivia(text: string): string {
   const spans = [...scanSpans(text)];
   let end = text.length;
   for (let si = spans.length - 1; si >= 0;) {

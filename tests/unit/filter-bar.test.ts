@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { analyzeParameterizedSources, fieldControls } from '../../src/core/param-pipeline.js';
 import type { FieldControl, PreparedFieldState } from '../../src/core/param-pipeline.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from '../../src/ui/filter-bar.js';
@@ -451,5 +451,243 @@ describe('buildFilterBar (shared filter row)', () => {
   it('dispose() with no pending debounce is a no-op (the never-typed field)', () => {
     const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField);
     expect(() => bar.dispose()).not.toThrow();
+  });
+});
+
+// #447 phase 2: the OPT-IN Dashboard-variable branches. A caller that passes no
+// `variables` map (the detached Data view, and the workbench, which does not use
+// this bar at all) must be completely unaffected — that guarantee is asserted
+// first and directly, because it is the reason the option is a map rather than a
+// mode flag.
+describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => {
+  const OPTIONS = [{ value: 'de', label: 'Germany' }, { value: 'fr', label: 'France' }];
+  const bars: Array<{ dispose(): void }> = [];
+  const build = (sql: string, options: Parameters<typeof buildFilterBar>[4] = {}) => {
+    const app = makeApp();
+    const bar = buildFilterBar(app, paramsFor(sql), () => {}, okField, { document, ...options });
+    bars.push(bar);
+    return { app, bar };
+  };
+  const fieldFor = (bar: { ordinaryEl: HTMLElement }, name: string): HTMLElement =>
+    bar.ordinaryEl.querySelector<HTMLElement>(`[data-field-key="${name}"]`)!;
+
+  it('renders byte-identical DOM with no variables map, with an empty one, and with an absent entry', () => {
+    const sql = 'SELECT * FROM t WHERE c = {country:String}';
+    const none = build(sql).bar;
+    const empty = build(sql, { variables: {} }).bar;
+    // An empty map and an absent map must not differ, and neither may a map that
+    // simply has no entry for this parameter.
+    expect(empty.ordinaryEl.outerHTML).toBe(none.ordinaryEl.outerHTML);
+    const other = build(sql, { variables: { somethingElse: { options: OPTIONS } } }).bar;
+    expect(other.ordinaryEl.outerHTML).toBe(none.ordinaryEl.outerHTML);
+  });
+
+  it('renders a plain field for a variable with no option SQL', () => {
+    const { bar } = build('SELECT * FROM t WHERE c = {country:String}', {
+      variables: { country: { options: null } },
+    });
+    const field = fieldFor(bar, 'country');
+    expect(field.querySelector('.filter-select')).toBeNull();
+    expect(field.querySelector('.var-input')).not.toBeNull();
+  });
+
+  it('renders a strict single-select for a variable WITH options', () => {
+    const { bar } = build('SELECT * FROM t WHERE c = {country:String}', {
+      variables: { country: { options: OPTIONS } },
+    });
+    const field = fieldFor(bar, 'country');
+    expect(field.querySelector('.filter-select')).not.toBeNull();
+    expect(field.querySelector('.var-combo-clear-inline')).not.toBeNull();
+    expect(field.querySelector('.var-name')!.textContent).toBe('country');
+  });
+
+  it('renders a select for an option-backed variable whose list is still EMPTY', () => {
+    // `[]` is meaningfully different from `null`: the variable IS option-backed
+    // (its batch is still loading, or returned no rows), so its control must not
+    // start life as a text box and change type once the query lands.
+    const { bar } = build('SELECT * FROM t WHERE c = {country:String}', {
+      variables: { country: { options: [] } },
+    });
+    expect(fieldFor(bar, 'country').querySelector('.filter-select')).not.toBeNull();
+  });
+
+  it('seeds the select from the shared draft bag and commits back through onCommitVariable', () => {
+    const app = makeApp();
+    app.state.varValues.country = 'de';
+    app.state.filterActive.country = true;
+    const onCommitVariable = vi.fn();
+    const bar = buildFilterBar(app, paramsFor('SELECT {country:String}'), () => {}, okField, {
+      document, variables: { country: { options: OPTIONS } }, onCommitVariable,
+    });
+    bars.push(bar);
+    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
+    expect(input.value).toBe('Germany');
+    const clear = fieldFor(bar, 'country').querySelector<HTMLButtonElement>('.var-combo-clear-inline')!;
+    clear.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onCommitVariable).toHaveBeenCalledWith('country', '', false);
+    // The shared draft bag is kept in step, so every other reader still sees one
+    // source of truth.
+    expect(app.state.varValues.country).toBe('');
+    expect(app.state.filterActive.country).toBe(false);
+  });
+
+  it('tolerates a select commit with no onCommitVariable wired', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
+    const clear = fieldFor(bar, 'country').querySelector<HTMLButtonElement>('.var-combo-clear-inline')!;
+    expect(() => clear.dispatchEvent(new MouseEvent('click', { bubbles: true }))).not.toThrow();
+  });
+
+  it('marks a select unavailable when built with an optionsError', () => {
+    const { bar } = build('SELECT {country:String}', {
+      variables: { country: { options: OPTIONS, optionsError: 'boom' } },
+    });
+    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
+    expect(input.readOnly).toBe(true);
+    expect(input.title).toBe('boom');
+  });
+
+  it('setVariableOptions updates a select IN PLACE, without rebuilding the bar', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: [] } } });
+    const field = fieldFor(bar, 'country');
+    const input = field.querySelector<HTMLInputElement>('.var-input')!;
+    // The select starts with nothing to offer.
+    input.focus();
+    input.dispatchEvent(new Event('focus'));
+    expect(field.querySelectorAll('.combo-option')).toHaveLength(0);
+    bar.setVariableOptions({ country: { options: OPTIONS, error: null } });
+    // Same nodes — this is the whole point: an options batch landing mid-session
+    // must not discard what the user is typing in some other field.
+    expect(fieldFor(bar, 'country')).toBe(field);
+    expect(field.querySelector('.var-input')).toBe(input);
+    // ...and the options really did arrive. Without this the test passes even if
+    // the bar never forwards them to the field.
+    expect([...field.querySelectorAll('.combo-option')].map((n) => n.textContent ?? '').join('|'))
+      .toContain('Germany');
+  });
+
+  it('setVariableOptions can flip a select to unavailable and back', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
+    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
+    bar.setVariableOptions({ country: { options: [], error: 'boom' } });
+    expect(input.readOnly).toBe(true);
+    bar.setVariableOptions({ country: { options: OPTIONS, error: null } });
+    expect(input.readOnly).toBe(false);
+  });
+
+  it('setVariableOptions ignores a key this bar built no select for', () => {
+    const { bar } = build('SELECT {country:String} AS c, {plain:String} AS p', {
+      variables: { country: { options: OPTIONS } },
+    });
+    expect(() => bar.setVariableOptions({
+      plain: { options: OPTIONS, error: null },   // a plain field — no handle
+      ghost: { options: OPTIONS, error: null },   // never built at all
+    })).not.toThrow();
+    expect(fieldFor(bar, 'plain').querySelector('.filter-select')).toBeNull();
+  });
+
+  it('setVariableOptions on a bar with no fields at all is a no-op', () => {
+    const bar = buildFilterBar(makeApp(), [], () => {}, okField, { document, variables: {} });
+    expect(() => bar.setVariableOptions({ x: { options: OPTIONS, error: null } })).not.toThrow();
+  });
+
+  it('disposes an option-backed select through the shared handle fold', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
+    expect(() => bar.dispose()).not.toThrow();
+  });
+
+  it('a select reports no per-field status, and updateStatus leaves it alone', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
+    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
+    bar.updateStatus({ country: { status: 'whatever', stale: true } });
+    expect(input.classList.contains('is-stale')).toBe(false);
+    expect(bar.openPopoverKey()).toBeNull();
+  });
+
+  it('resolves a select through fieldElement and focusedFieldKey like any other control', () => {
+    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
+    document.body.replaceChildren(bar.ordinaryEl);
+    expect(bar.fieldElement('country')).toBe(fieldFor(bar, 'country'));
+    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
+    input.focus();
+    expect(bar.focusedFieldKey()).toBe('country');
+  });
+
+  it('marks a container type as having no inferred control, but KEEPS its input', () => {
+    // Removing the input would make an existing Dashboard strictly less capable: a
+    // container-typed variable already had a free-text field, and param-serialize
+    // binds an array literal typed into it — taking it away leaves those panels
+    // permanently unfilled with no way to fill them.
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: null } },
+    });
+    const field = fieldFor(bar, 'tags');
+    expect(field.querySelector('.var-input')).not.toBeNull();
+    const note = field.querySelector('.var-unsupported')!;
+    expect(note.textContent).toContain('Array(String)');
+    expect(note.getAttribute('aria-label')).toContain('no inferred control');
+    expect(note.getAttribute('title')).toContain('container type');
+  });
+
+  it('the unsupported verdict wins over a configured option list', () => {
+    // If the value cannot bind, the fact that someone configured options for it
+    // does not make it usable.
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: OPTIONS } },
+    });
+    expect(fieldFor(bar, 'tags').querySelector('.filter-select')).toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+  });
+
+  it('reports unsupported for a container even with no entry in the variables map', () => {
+    // The verdict comes from the declared TYPE, not from the map.
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Map(String, String)}', { variables: {} });
+    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
+  });
+
+  it('never reports unsupported without the variables map — the workbench keeps its text field', () => {
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}');
+    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+  });
+
+  it('offers true/false suggestions for a Bool variable, and only under the map', () => {
+    const withMap = build('SELECT {flag:Bool}', { variables: { flag: { options: null } } }).bar;
+    const input = fieldFor(withMap, 'flag').querySelector<HTMLInputElement>('.var-input')!;
+    input.focus();
+    input.dispatchEvent(new Event('focus'));
+    const shown = [...fieldFor(withMap, 'flag').querySelectorAll('.combo-option')]
+      .map((n) => n.textContent ?? '').join('|');
+    expect(shown).toContain('true');
+    expect(shown).toContain('false');
+    // Still a free-text input: ClickHouse's Bool accept-set is not enumerable.
+    expect(input.readOnly).toBe(false);
+    const noMap = build('SELECT {flag:Bool}').bar;
+    const plain = fieldFor(noMap, 'flag').querySelector<HTMLInputElement>('.var-input')!;
+    plain.focus();
+    plain.dispatchEvent(new Event('focus'));
+    expect([...fieldFor(noMap, 'flag').querySelectorAll('.combo-option')]).toHaveLength(0);
+  });
+
+  it('leaves a time-range-owned parameter to its compound control, map or not', () => {
+    const group = {
+      key: 'g', fromParameter: 'from', toParameter: 'to',
+      fromFilterId: 'from', toFilterId: 'to', type: 'DateTime', tileIds: ['t'],
+    } as unknown as DashboardTimeRangeGroup;
+    const { bar } = build('SELECT * FROM t WHERE a >= {from:DateTime} AND a <= {to:DateTime}', {
+      variables: { from: { options: OPTIONS }, to: { options: null } },
+      timeRange: [{
+        group, fromValue: '', toValue: '', active: false, waveNowMs: null,
+        recents: (): readonly TimeRangeRecent[] => [],
+      }],
+    });
+    // Both bounds are represented by the group's own control, so neither gets a
+    // standalone field — an option list configured on one changes nothing here.
+    expect(bar.ordinaryEl.querySelector('[data-field-key="from"]')).toBeNull();
+    expect(bar.fieldElement('from')).toBe(bar.timeEl.querySelector('[data-field-key="group:g"]'));
+  });
+
+  afterEach(() => {
+    for (const bar of bars.splice(0)) bar.dispose();
   });
 });

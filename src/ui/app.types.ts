@@ -12,7 +12,7 @@ import type { EditorView } from '@codemirror/view';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
-import type { VariableEditorFactory } from './variable-editor.js';
+import type { VariableEditorFactory, VariableOptionQueryRunner } from './variable-editor.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
@@ -273,6 +273,12 @@ export interface App {
    * phase owns.
    */
   VariableEditor?: VariableEditorFactory;
+  /** #447 phase 2: runs ONE variable's option query for the variable editor's
+   *  Test action, under the same bounded/read-only/positional transport the
+   *  refresh batch uses. Bound by app.ts; a narrow callback rather than the
+   *  `exec` + connection pair it composes, so neither the Dashboards tree's app
+   *  contract nor the editor module has to know about streaming or caps. */
+  runOptionQuery: VariableOptionQueryRunner;
   /** #313: the open-the-reference-pane action the CM6 adapter's hover button
    *  and F1 command invoke — bound by app.ts to ui/doc-pane.ts's
    *  `openDocEntry(app, target)` so the editor layer never imports UI

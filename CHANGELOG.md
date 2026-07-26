@@ -9,6 +9,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard variables can offer a list of values, and every list on a Dashboard
+  loads in one request** (#447, phase 2). A variable (inferred from the
+  `{name:Type}` placeholders in its panels' SQL) may carry optional
+  Dashboard-local **option SQL**: one read query returning two `String` columns —
+  value, then label, by **position**; column names are never read. A variable with
+  option SQL renders a **strict single-select**; one without keeps the direct-input
+  control inferred from its declared type.
+
+  Every configured variable on the Dashboard is compiled into a **single
+  `UNION ALL` request per refresh**, so ten configured variables still cost one
+  round trip. It runs concurrently with the panel wave — option SQL cannot
+  reference a variable, so no panel is ever waiting on it. Each branch is bounded
+  independently (1,000 options), and a list cut off at that cap says so.
+
+  A select **never auto-selects**: a variable starts unset, its panels wait rather
+  than run, and the inline **×** returns it to unset. Changing a value re-runs only
+  the panels that declare that variable. Duplicate values collapse to the first
+  row's label.
+
+  The per-variable editor gains **Test**: it checks the draft locally first — one
+  statement, `SELECT`/`WITH` only, no `FORMAT`/`INTO OUTFILE`, no `{name:Type}`
+  placeholders, no optional blocks — and sends nothing for a problem it can already
+  see. Then it runs that one variable's query and validates its result shape, which
+  is the only place the two-`String`-column rule is checkable: a combined
+  `UNION ALL` reports one merged column list for every branch. That is why a
+  combined-query problem is reported as a **batch-level failure** (every
+  option-backed control unavailable, one banner, no automatic fall-back to N
+  separate queries) with Test named as the way to find the branch at fault.
+
+  Cascading option queries are rejected outright, and `Array`/`Tuple`/`Map`/
+  `Nested` variables are marked as having no inferred control — they keep their
+  text input, since a literal typed there still binds.
+
 ### Changed
 - **One File menu for the whole application** (#452). Query, Dashboard Edit,
   Dashboard View, the empty-Dashboard placeholder and the Dashboard

@@ -270,6 +270,60 @@ than adapting it. The decisions that changed:
   variables. Renaming them buys no semantics and would double an already large
   diff, so it is deferred to its own change.
 
+## Addendum (#447 phase 2, 2026-07-26): option lists are one generated request, read by position
+
+Phase 2 adds the runtime the inferred-variable model was built for. Two decisions
+are worth recording because both contradict something the issue's own text implies.
+
+- **The generated batch names its payload columns; it does not pass the user's
+  through.** The issue's snippet is
+  `SELECT 'country' AS __variable_name, * FROM ( … )`. That shape cannot be read
+  correctly: the streaming transport sends each row as a JSON object keyed by
+  column name, so two identically-named columns collapse on parse — and
+  `SELECT environment, environment FROM environments`, the option contract's own
+  documented example, is exactly that shape. In a `UNION ALL` the result column
+  names come from the FIRST branch alone, so one branch with a duplicate name
+  silently rewrites a LATER branch's value into its label. Reproduced against
+  ClickHouse 26.6.
+
+  The fix takes the user's columns **by position** —
+  `tupleElement(tuple(*), 1)` / `tupleElement(tuple(*), 2)` — which is what the
+  contract actually specifies ("column position defines meaning; column names do
+  not") and yields names that cannot collide.
+
+  A positional *wire format* (`JSONCompactStringsEachRowWithProgress`) was
+  implemented first and then reverted: it first shipped in ClickHouse **25.2**, so
+  it would have made the whole feature fail on anything older, with no fallback
+  available. `tuple`/`tupleElement` date from 20.4, so doing it in SQL needs no
+  version gate and leaves the transport untouched.
+
+- **Local rejection makes a variable's control say so; it does not silently
+  degrade.** A configured variable whose option SQL cannot run (multiple
+  statements, a `{name:Type}` placeholder, an unterminated span, …) stays a select
+  and reports its own reason. Falling back to a direct-input text box would be
+  indistinguishable from a variable nobody ever configured, which is how stored
+  SQL ends up ignored with nothing explaining why. The *batch* keeps one
+  Dashboard-level diagnostic for a combined-query failure, per the issue; the two
+  never overwrite each other.
+
+- **A configuration write asks a rendered Dashboard to re-read committed truth.**
+  The compiled batch and each variable's control kind are fixed at session
+  construction, and `syncDocument` deliberately never adopts `variableConfigs`.
+  Phase 1 had the same staleness harmlessly (a configuration had no runtime
+  consequence yet); phase 2 makes it visible, so `commitVariableConfig` now fires
+  the same "workspace changed" hook a cross-tab edit uses.
+
+- **The illustrative control mapping was not followed literally.** The issue lists
+  `Date -> date input`, `Bool -> checkbox`, `integer -> numeric input` after the
+  words "for example". Date-like types keep the existing relative-time combobox: a
+  native picker cannot express `-1d`/`now`, so it would regress #169 presets and
+  #335 relative tokens and would reject already-persisted values. A checkbox cannot
+  represent UNSET, which three acceptance bullets require, so `Bool` offers
+  `true`/`false` suggestions instead; numeric types keep the text field that #170
+  already validates. Only the compound-type case is new — and it *adorns* the input
+  rather than replacing it, because `param-serialize` binds an array literal typed
+  there and removing the field would leave those panels permanently unfillable.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from
