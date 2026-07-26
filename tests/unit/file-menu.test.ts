@@ -273,7 +273,7 @@ describe('file menu structure', () => {
   it('the footer reports the Library projection count and the Dashboard count', () => {
     const app = mount({
       currentWorkspace: {
-        storageVersion: 4, id: 'w', key: 'w', name: 'W',
+        storageVersion: 5, id: 'w', key: 'w', name: 'W',
         queries: [panelQuery('p1', 'Panel'), panelQuery('lib', 'Lib')],
         dashboards: [dashboardDoc({ id: 'd1', tiles: [{ id: 't1', queryId: 'p1' }] })],
       },
@@ -347,7 +347,7 @@ describe('file menu availability (#452)', () => {
   it('an unresolvable selection over a non-empty collection refuses to import', () => {
     openOn(dashEdit(null), {
       currentWorkspace: {
-        storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [],
+        storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [],
         dashboards: [dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' })],
       },
     });
@@ -788,8 +788,8 @@ describe('Import queries', () => {
 // exact Dashboard the surface reported — never a re-read of the session
 // selection, which is what used to fall back to the collection's first entry.
 describe('Dashboard rows dispatch against the exact target (#452)', () => {
-  const wsWithDashboards = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV4 => ({
-    storageVersion: 4, id: 'w', key: 'w', name: 'W',
+  const wsWithDashboards = (...dashboards: DashboardDocumentV2[]): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'w', key: 'w', name: 'W',
     queries: [panelQuery('p1', 'Panel')], dashboards,
   });
   /** Point `state.workspaceId` at the fixture aggregate so `mutateWorkspace`'s
@@ -846,8 +846,8 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
   // tab (or the placeholder's own Create button) can seat a Dashboard in that
   // window. The planner re-checks at dequeue time and fails closed.
   it('a create-first import aborts if the collection stopped being empty before the commit', async () => {
-    const empty: StoredWorkspaceV4 = {
-      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+    const empty: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
     };
     const repo = statefulWorkspaceRepo(empty);
     const app = withActiveId(mountOn(dashEdit(null), {
