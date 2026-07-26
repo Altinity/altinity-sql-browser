@@ -42,6 +42,10 @@ import { queryName } from '../../core/saved-query.js';
 import { panelExecution } from '../../core/panel-execution.js';
 import { bindableVariables, inferDashboardVariables } from '../../core/dashboard-variables.js';
 import type { DashboardVariable } from '../../core/dashboard-variables.js';
+import {
+  VARIABLE_OPTION_BYTE_CAP, compileVariableOptionBatch, readVariableOptionBatch,
+} from '../../core/variable-options.js';
+import type { VariableOption } from '../../core/variable-options.js';
 import { resolveAuthoredTimeRangeGroups } from '../../core/time-range.js';
 import type { DashboardTimeRangeGroup } from '../../core/time-range.js';
 import type { Diagnostic } from '../../core/diagnostics.js';
@@ -94,22 +98,19 @@ export interface ViewerTileState {
   progressRows: number;
 }
 
-/** A variable control's status. #447 removed option-source queries, so every
- *  transport/curation outcome a source could produce (`loading`, `waiting`,
- *  `ready`, `missing-helper`, `helper-error`, `source-error`) is gone with it:
- *  a direct-input control has nothing to load and nothing to fail, so `'idle'`
- *  is the only state it can be in. Kept as a named union (rather than dropped)
- *  because the filter-bar renderer still reads the field. */
-export type ViewerFilterStatus = 'idle';
+/** A variable control's status.
+ *
+ *  A DIRECT-INPUT variable (no option SQL) has nothing to load and nothing to
+ *  fail, so it is always `'idle'`. A CONFIGURED variable moves
+ *  `'loading'` → `'ready'` as the refresh's one option batch runs, or to
+ *  `'error'` when that batch fails (#447 phase 2). */
+export type ViewerFilterStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-/** One option a curated variable control would offer. #447 retains this ONLY
- *  because `src/ui/dashboard.ts` still reads `options`/`optionsRev` off
- *  `ViewerFilterState` (another session owns that file); with option-source
- *  queries gone nothing ever populates it. */
-export interface ViewerFilterOption {
-  value: string;
-  label: string;
-}
+/** One option a configured variable's control offers. Structurally the shared
+ *  `VariableOption` (core/variable-options.types.ts) — aliased rather than
+ *  redeclared so the viewer, the pure compiler/reader and the shared filter bar
+ *  all name one shape. */
+export type ViewerFilterOption = VariableOption;
 
 /** One Dashboard VARIABLE's runtime state (#447). `id`, `parameter` and `label`
  *  are all the variable's exact, case-sensitive name — it has no other
@@ -121,10 +122,19 @@ export interface ViewerFilterState {
   active: boolean;
   value: unknown;
   status: ViewerFilterStatus;
-  /** #447: always `null` — a variable has no option-source query. Retained
-   *  because the filter-bar renderer still reads it (see `ViewerFilterOption`). */
+  /** True when this variable has Dashboard-local option SQL that is locally
+   *  acceptable — i.e. it renders a single-select rather than a direct input.
+   *  Published SEPARATELY from `options` because it is known at construction
+   *  while `options` only arrives with the first batch: without it a control
+   *  would have to start as a text box and change type once the query landed.
+   *  #447 phase 2. */
+  configured: boolean;
+  /** The options the last successful batch returned for this variable, or `null`
+   *  before one has (and always, for a direct-input variable). An EMPTY array is
+   *  a real answer — the option query returned no rows. */
   options: ViewerFilterOption[] | null;
-  /** #447: always `0`, for the same reason as `options`. */
+  /** Bumped only when this variable's option CONTENT actually changes, so a
+   *  consumer can tell a genuine refresh from an unchanged republish. */
   optionsRev: number;
 }
 
@@ -180,11 +190,15 @@ export interface DashboardViewState {
   lastRefreshOutcome: 'success' | 'failure' | null;
   /** Presentation/structural diagnostics that make a tile invalid. */
   diagnostics: WorkspaceDiagnostic[];
-  /** #447: always empty. This carried the shared-source merge's diagnostics
-   *  (#359); with option-source queries gone nothing produces one, and a
-   *  variable's own problems (a type conflict, an orphaned configuration) are
-   *  published on `variables[].diagnostic` instead. Retained because
-   *  `src/ui/dashboard.ts` still renders this array (another session owns it). */
+  /** BATCH-level option-query diagnostics (#447 phase 2). A variable's own
+   *  problems (a type conflict, an orphaned configuration) are published on
+   *  `variables[].diagnostic` instead; this array carries only what went wrong
+   *  with the ONE compiled option request — which, per the issue, is a
+   *  batch-level failure rather than a per-variable one: a single malformed
+   *  branch makes the whole `UNION ALL` unrunnable, so every option-backed
+   *  control goes unavailable together and the per-variable editor's Test action
+   *  is the path to finding out which branch is at fault. Empty when the batch
+   *  succeeded, or when there was nothing to run. */
   filterDiagnostics: Diagnostic[];
   /** Persistent saved-query time-range resolution diagnostics. */
   timeRangeDiagnostics: WorkspaceDiagnostic[];
@@ -361,6 +375,17 @@ interface FilterRuntime {
   state: ViewerFilterState;
 }
 
+/** The compiled option batch for this session, or `null` when no variable is
+ *  configured (in which case NO options request is ever issued). Fixed for the
+ *  session, exactly like `variables`: the tile set and the saved queries cannot
+ *  change without rebuilding the session, and option SQL lives on the document,
+ *  whose variable configs `syncDocument` never adopts. */
+interface OptionBatchPlan {
+  sql: string;
+  names: string[];
+  rowLimit: number;
+}
+
 const cfgType = (panel: unknown): string | undefined =>
   (isObject(panel) && isObject(panel.cfg) && typeof panel.cfg.type === 'string' ? panel.cfg.type : undefined);
 
@@ -523,17 +548,38 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // to bind and gate `unfilled`, while every panel that does not declare it
   // runs exactly as before.
   const bindable: DashboardVariable[] = bindableVariables(variables);
+  // #447 phase 2: the ONE compiled option request for every CONFIGURED variable
+  // (inferred, type-consistent, non-orphaned, with locally-acceptable option SQL
+  // — `optionBatchVariables`' rule, applied inside the compiler). `null` when
+  // nothing qualifies, which is how "execute no options request when no valid
+  // configured variables exist" is enforced: there is simply no plan to run.
+  const compiled = compileVariableOptionBatch(variables);
+  const optionBatch: OptionBatchPlan | null = compiled === null ? null : {
+    sql: compiled.sql,
+    names: compiled.branches.map((branch) => branch.name),
+    rowLimit: compiled.rowLimit,
+  };
+  // The names that render a single-select. Read at construction so a configured
+  // variable's control type is stable from the first publish, rather than starting
+  // as a text box and changing once the batch lands.
+  const configuredNames = new Set(optionBatch === null ? [] : optionBatch.names);
   const filters: FilterRuntime[] = bindable.map((variable) => {
     const name = variable.name;
     // #303: a persisted seed for this VARIABLE NAME overrides the unset start
     // (untouched when `initialFilters` is absent/empty, or has no entry for this
     // name). A seed whose `value` is nullish falls back to the unset value.
     const seed = deps.initialFilters ? deps.initialFilters[name] : undefined;
+    const configured = configuredNames.has(name);
     const state: ViewerFilterState = {
       id: name, parameter: name, label: name,
       active: seed !== undefined ? !!seed.active : false,
       value: seed !== undefined ? (seed.value ?? UNSET_VALUE) : UNSET_VALUE,
-      status: 'idle', options: null, optionsRev: 0,
+      // A configured variable is 'loading' from the very first publish: its
+      // control exists but cannot offer a choice until the batch returns.
+      status: configured ? 'loading' : 'idle',
+      configured,
+      options: null,
+      optionsRev: 0,
     };
     return { def: { id: name, parameter: name }, state };
   });
@@ -605,9 +651,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     severity: 'error', code: item.code, message: item.message, resource: item.tileId,
   }));
 
-  // #447: always empty — see `DashboardViewState.filterDiagnostics`. Kept as one
-  // shared constant so a publish never allocates a throwaway array.
-  const filterDiagnostics: Diagnostic[] = [];
+  // #447 phase 2: the BATCH-level option diagnostics — see
+  // `DashboardViewState.filterDiagnostics`. Replaced wholesale by each options
+  // wave (never appended to), so a failure never outlives the wave that hit it.
+  // Starts as one shared empty array so a Dashboard with no configured variable
+  // never allocates.
+  const NO_FILTER_DIAGNOSTICS: Diagnostic[] = [];
+  let filterDiagnostics: Diagnostic[] = NO_FILTER_DIAGNOSTICS;
+  // Stale-wave guard for the options request, reserved BEFORE the token preflight
+  // can yield — exactly like a tile's generation. Without that ordering a
+  // superseded wave could still be the last one to publish its rows.
+  let optionsGen = 0;
 
   const rawValues = (): Record<string, string> =>
     Object.fromEntries(filters.map((filter) => [filter.def.parameter, toValueString(filter.state.value)]));
@@ -787,6 +841,81 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     publish();
   }
 
+  // ── The option batch ──────────────────────────────────────────────────────
+
+  /** Apply one variable's fresh option list, bumping `optionsRev` only when the
+   *  CONTENT actually changed — so a consumer can distinguish a real refresh from
+   *  an unchanged republish (a same-length list with different members included,
+   *  which a bare length or emptiness check would miss). */
+  function applyOptions(filter: FilterRuntime, options: VariableOption[]): void {
+    const previous = filter.state.options;
+    const changed = previous === null
+      || previous.length !== options.length
+      || options.some((option, i) => previous[i].value !== option.value || previous[i].label !== option.label);
+    filter.state.options = options;
+    filter.state.status = 'ready';
+    if (changed) filter.state.optionsRev += 1;
+  }
+
+  /**
+   * Run the ONE compiled option request for this refresh and partition its rows
+   * back onto the configured variables.
+   *
+   * A no-op when nothing is configured — there is no plan, so no request is
+   * issued at all. Never re-run by a value commit: option SQL may not reference
+   * `{name:Type}` parameters in this issue, so no selection can change what any
+   * option query returns (which is precisely what keeps this a single request
+   * instead of a dependency graph).
+   *
+   * A failure is BATCH-level by design: every option-backed control goes
+   * unavailable together and one diagnostic is published for the Dashboard. There
+   * is deliberately no automatic fall-back to N separate per-variable queries —
+   * the per-variable editor's Test action is the diagnostic path.
+   */
+  async function runOptionBatch(generation: number): Promise<void> {
+    if (optionBatch === null) return;
+    const result = newResult('TableCompact', optionBatch.rowLimit);
+    await deps.exec.executeRead(result, {
+      sql: optionBatch.sql,
+      format: 'TableCompact',
+      rowLimit: optionBatch.rowLimit,
+      params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
+    });
+    if (optionsGen !== generation || destroyed) return; // superseded
+    const failure = result.error != null || result.cancelled
+      ? (result.error || 'Cancelled')
+      : null;
+    if (failure !== null) {
+      markOptionsFailed(`Variable options could not be loaded: ${failure}`);
+      return;
+    }
+    const read = readVariableOptionBatch(
+      { columns: result.columns, rows: result.rows }, optionBatch.names,
+    );
+    if (read.error !== null) {
+      markOptionsFailed(read.error.message, read.error.code);
+      return;
+    }
+    filterDiagnostics = NO_FILTER_DIAGNOSTICS;
+    for (const filter of filters) {
+      const options = read.byName.get(filter.def.id);
+      if (options === undefined) continue; // not a configured variable
+      applyOptions(filter, options);
+    }
+  }
+
+  /** Publish a batch-level options failure: one Dashboard diagnostic, and every
+   *  configured variable's control marked unavailable. Their committed VALUES are
+   *  deliberately untouched — a restored selection (#303) is still bound into
+   *  every panel that declares the name, and discarding it because a list failed
+   *  to load would silently change what the panels show. */
+  function markOptionsFailed(message: string, code = 'variable-options-batch-failed'): void {
+    filterDiagnostics = [{ severity: 'error', code, message }];
+    for (const filter of filters) {
+      if (filter.state.configured) filter.state.status = 'error';
+    }
+  }
+
   function markTextAndErrorTiles(): void {
     for (const runtime of tiles) {
       if (runtime.presentationError) { runtime.state.status = 'error'; continue; }
@@ -842,14 +971,30 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const runnable = runnableTiles();
     // Reserve every runnable tile's generation up front (stale-wave guard).
     const generations = new Map<string, number>(runnable.map((runtime) => [runtime.tile.id, supersede(runtime)]));
+    // #447 phase 2: reserve the options generation HERE, synchronously with the
+    // tile reservations and before any await can yield, so a superseded wave can
+    // never be the last one to publish its option rows.
+    const optionsGeneration = ++optionsGen;
     publish(true);
     // #447: there is no filter/source wave for a panel to wait for any more (a
-    // variable's value is direct input, so it is always already known) — the
-    // pre-wave "affected vs unaffected" split #235 needed is gone with it and
-    // every runnable tile runs in ONE batch against the committed values.
+    // variable's value is direct input, or a selection the user has already made
+    // from a list that cannot depend on any other variable) — the pre-wave
+    // "affected vs unaffected" split #235 needed is gone with it and every
+    // runnable tile runs in ONE batch against the committed values.
     const batch = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
-    await runPool(runnable, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, batch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
+    // The option batch runs CONCURRENTLY with the tiles, not before them: option
+    // SQL cannot reference a variable, so no tile's parameters depend on what it
+    // returns, and gating the whole grid behind one extra round trip would delay
+    // every panel for a list nothing is waiting on. Both are inside the `running`
+    // window, so the refresh control stays busy until the options have landed too.
+    await Promise.all([
+      runOptionBatch(optionsGeneration),
+      runPool(runnable, VIEWER_TILE_CONCURRENCY,
+        (runtime) => runTile(runtime, batch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!)),
+    ]);
+    // #437: classified from the TILES only. An options failure has its own
+    // published diagnostic and must not overwrite the last known-good tile
+    // timestamp — the panels did refresh successfully.
     recordRefreshOutcome(runnable, waveMs);
     publish(false, destroyed ? null : deps.now());
   }
@@ -1092,6 +1237,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   function destroy(): void {
     destroyed = true;
+    // Supersede any in-flight options request too, so its response can never
+    // publish onto a torn-down session.
+    optionsGen++;
     for (const runtime of tiles) {
       runtime.gen++;
       if (runtime.abortController) {

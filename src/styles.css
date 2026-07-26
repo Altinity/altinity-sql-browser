@@ -2058,6 +2058,31 @@ body.detached-tab .graph-overlay-panel {
   position: relative; display: inline-flex; flex-direction: column; align-items: flex-start;
   gap: 1px;
 }
+/* #447 phase 2: the option-backed variable select (filter-option-field.ts) — the
+   same combobox clothes as every other field, plus room for the inline clear (×)
+   that returns the variable to unset. Restored with that field, which phase 1
+   deleted along with the curated-filter layer. */
+.filter-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
+.filter-select .var-input:disabled { cursor: not-allowed; opacity: .7; }
+.var-combo-clear-inline {
+  position: absolute; top: 0; right: 3px; height: 24px;
+  width: 20px; border-radius: var(--r-xs); padding: 0;
+  border: none; background: transparent; color: var(--fg-faint); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
+.var-combo-clear-inline:disabled { cursor: not-allowed; opacity: .5; }
+/* #447 phase 2: a variable whose declared type is a container (Array/Tuple/Map/
+   Nested) has no single-scalar control, so the field says so in place of an input
+   that could never produce a valid value. Warning, not error — the SQL is fine;
+   it is the Dashboard that cannot bind it. */
+.var-unsupported {
+  grid-column: 2;
+  height: 24px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 8px; border-radius: var(--r-sm);
+  border: 1px dashed var(--warn-bd); background: var(--warn-bg); color: var(--warn-fg);
+  font-size: var(--text-label); white-space: nowrap;
+}
 .var-combo-list {
   position: fixed; z-index: 70; max-height: 260px; overflow-y: auto;
   margin: 0; padding: 4px; list-style: none;

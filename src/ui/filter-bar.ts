@@ -32,7 +32,10 @@ import { buildEnumField } from './enum-field.js';
 import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildTimeRangeField } from './time-range-field.js';
+import { buildFilterOptionField } from './filter-option-field.js';
+import { Icon } from './icons.js';
 import type { KeyboardOwner } from './app.types.js';
+import type { VariableOption } from '../core/variable-options.types.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
@@ -81,6 +84,35 @@ export interface BuildFilterBarOptions {
    *  reached when `timeRange` built at least one control. */
   onApplyTimeRange?(group: DashboardTimeRangeGroup, from: string, to: string): void;
   onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
+  /** #447 phase 2: the Dashboard VARIABLE spec per parameter name, keyed by that
+   *  name. Entirely OPT-IN: a caller that omits it (the detached Data view, and
+   *  any Dashboard whose variables are all direct input) gets byte-identical DOM
+   *  to the pre-#447-phase-2 bar, because every field then takes the plain
+   *  branch exactly as before.
+   *
+   *  A parameter present here with `options` is rendered as the strict
+   *  single-select over those options instead of a free-text field; one with
+   *  `unsupportedType` renders a diagnostic in place of a control. A parameter
+   *  ABSENT from the map is a plain direct-input field. */
+  variables?: Record<string, VariableFieldSpec>;
+  /** #447 phase 2: fires when an option-backed select commits — a pick, or the
+   *  inline × clearing back to UNSET. Separate from `onCommit` because a select
+   *  commits a value AND an activation together, with no debounce (a pick is a
+   *  complete, deliberate action), where `onCommit` only names the parameter and
+   *  lets the caller read the shared draft bag. */
+  onCommitVariable?(name: string, value: string, active: boolean): void;
+}
+
+/** #447 phase 2: how ONE Dashboard variable's control differs from a plain
+ *  direct-input field. */
+export interface VariableFieldSpec {
+  /** The options its Dashboard-local option SQL returned, or `null` when the
+   *  variable is direct input (no option SQL configured). An EMPTY array is
+   *  meaningfully different from `null`: the variable IS option-backed, and its
+   *  query legitimately returned no rows. */
+  options: readonly VariableOption[] | null;
+  /** Non-null when the option batch failed: the select renders unavailable. */
+  optionsError?: string | null;
 }
 
 /** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
@@ -111,6 +143,11 @@ export interface FieldStatus {
 interface FieldHandle {
   el?: HTMLElement;
   updateStatus(s: FieldStatus): void;
+  /** #447 phase 2: carried only by an option-backed select. Replaces its offered
+   *  options IN PLACE, so a refresh's option batch landing mid-session never
+   *  rebuilds the bar — which would blow away in-progress typing in every other
+   *  field and silently cancel any open popover. */
+  setOptions?(next: readonly VariableOption[], error: string | null): void;
   /** Present on the popover-bearing controls (today: time-range); every fold
    *  over the map that needs one uses optional chaining so a handle without
    *  them is simply skipped. */
@@ -177,6 +214,16 @@ export interface FilterBarHandle {
    *  status-only change instead of tearing down and rebuilding the whole bar,
    *  which would blow away in-progress typing on every other field. */
   updateStatus(states: Record<string, FieldStatus>): void;
+  /** #447 phase 2: push fresh option rows into whichever option-backed selects
+   *  THIS bar instance already built, without rebuilding anything. A key this bar
+   *  built no select for is silently ignored.
+   *
+   *  This is the reason an options batch does not participate in the bar's
+   *  rebuild signature. A rebuild is triggered by a user COMMIT, which is
+   *  inherently typing-ending; an options batch lands asynchronously and could
+   *  arrive while the user is mid-keystroke in an unrelated field, so rebuilding
+   *  on it would discard that input and silently cancel any open popover. */
+  setVariableOptions(states: Record<string, { options: readonly VariableOption[]; error: string | null }>): void;
   /** #189, #189-F2b, GENERALIZED (#335): the opaque KEY of a popover-bearing
    *  control built by THIS bar instance that currently has its popover open,
    *  or `null` when none does (including a bar that built no such control at
@@ -263,7 +310,7 @@ export function buildFilterBar(
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }, timeEl, ordinaryEl),
       timeEl, ordinaryEl,
-      dispose: () => {}, updateStatus: () => {},
+      dispose: () => {}, updateStatus: () => {}, setVariableOptions: () => {},
       openPopoverKey: () => null, focusedFieldKey: () => null,
       focusFieldTrigger: () => {}, fieldElement: () => null,
       refreshTimeRangeLabels: () => {},
@@ -292,6 +339,64 @@ export function buildFilterBar(
   const suppressed = new Set<string>();
   for (const tr of timeRange) { suppressed.add(tr.group.fromParameter); suppressed.add(tr.group.toParameter); }
 
+  // #447 phase 2: the opt-in Dashboard-variable specs. Absent for every
+  // non-Dashboard caller, in which case `specOf` always answers `undefined` and
+  // every field takes the plain branch below, unchanged.
+  const variables = options.variables;
+  const specOf = (name: string): VariableFieldSpec | undefined =>
+    (variables ? variables[name] : undefined);
+
+  /** A variable whose declared type has no single-scalar control. Rendered
+   *  instead of an input, because an input could never produce a valid value —
+   *  and because leaving the field looking operable is how a user ends up waiting
+   *  forever for a panel that will never run. */
+  const buildUnsupportedField = (p: FieldControl, type: string): HTMLElement =>
+    h('label', { class: 'var-field' },
+      h('span', { class: 'var-name' }, p.name),
+      h('span', {
+        class: 'var-unsupported',
+        role: 'img',
+        'aria-label': `${p.name} cannot be filtered: ${type} is not a supported variable type`,
+        title: `A Dashboard variable must be a single scalar value. ${type} is a container type, `
+          + 'so no control can be shown for it.',
+      }, Icon.eyeOff(), type));
+
+  /** The strict single-select over one variable's batched option rows. */
+  const buildOptionField = (p: FieldControl, spec: VariableFieldSpec): HTMLElement => {
+    const field = buildFilterOptionField({
+      document,
+      name: p.name,
+      options: spec.options ?? [],
+      value: app.state.varValues[p.name] || '',
+      active: !!app.state.filterActive[p.name],
+      title: p.name + ': ' + p.type,
+      onCommit: (value, active) => {
+        // A select commits value AND activation together — a pick (or the × that
+        // clears back to unset) is a complete, deliberate action, so it bypasses
+        // the keystroke debounce entirely. The shared draft bag is kept in step so
+        // every other reader (the invalid-field affordance, a sibling rebuild)
+        // still sees one source of truth.
+        app.state.varValues[p.name] = value;
+        app.state.filterActive[p.name] = active;
+        options.onCommitVariable?.(p.name, value, active);
+      },
+    });
+    if (spec.optionsError != null) field.setUnavailable(spec.optionsError);
+    handles.set(p.name, {
+      el: field.el,
+      // A select has no transient per-field status of its own; its only failure
+      // mode is the batch failing, which arrives through `setOptions`.
+      updateStatus: () => {},
+      setOptions: (next, error) => {
+        field.setOptions(next);
+        field.setUnavailable(error);
+      },
+      dispose: field.dispose,
+    });
+    return h('label', { class: 'var-field' },
+      h('span', { class: 'var-name' }, p.name), field.el);
+  };
+
   const buildParamField = (p: FieldControl): HTMLElement => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
@@ -317,7 +422,11 @@ export function buildFilterBar(
     // combobox + live preview > plain text with recents.
     // The field stays free-text in every case; D3's debounce/Enter/blur
     // commit semantics are unchanged either way.
-    const ctl = fieldControlKind(p);
+    // #447 phase 2: a Dashboard variable binds ONE scalar per name, so that
+    // surface opts into the scalar-controls policy (Bool gains true/false
+    // suggestions). Every other caller passes nothing and keeps the exact
+    // enum > date > text dispatch it had before.
+    const ctl = fieldControlKind(p, null, { scalarControls: !!variables });
     let combo: FilterBarComboField | null = null;
     let input: HTMLInputElement;
     const onValueInput = (): void => {
@@ -396,8 +505,23 @@ export function buildFilterBar(
   }
 
   // The per-param fields (every param NOT owned by a time-range group).
+  // #447 phase 2 adds two variable-only branches ahead of the plain one; with no
+  // `variables` map every param still reaches `buildParamField` unchanged.
+  const buildField = (p: FieldControl): HTMLElement => {
+    // The unsupported verdict comes from the SAME shared decision `buildParamField`
+    // consults, rather than being passed in by the caller — one decision point, so
+    // the control a Dashboard renders and the policy that classified its type can
+    // never disagree. It wins over an option list: if the value cannot bind, the
+    // fact that someone configured options for it does not make it usable.
+    if (fieldControlKind(p, null, { scalarControls: !!variables }).kind === 'unsupported') {
+      return buildUnsupportedField(p, p.type);
+    }
+    const spec = specOf(p.name);
+    if (spec && spec.options !== null) return buildOptionField(p, spec);
+    return buildParamField(p);
+  };
   const perParamFields = params.filter((p) => !suppressed.has(p.name))
-    .map((p) => stampFieldKey(buildParamField(p), p.name));
+    .map((p) => stampFieldKey(buildField(p), p.name));
 
   // Compose: Time section, then a "Filters" section label (only when BOTH a
   // Time section rendered AND at least one non-group field remains), then the
@@ -431,6 +555,14 @@ export function buildFilterBar(
       for (const [key, handle] of handles) {
         const s = states[key];
         if (s) handle.updateStatus(s);
+      }
+    },
+    // #447 phase 2: fold over the same unified map — only option-backed selects
+    // carry `setOptions`, so every other handle is skipped.
+    setVariableOptions: (states) => {
+      for (const [key, handle] of handles) {
+        const s = states[key];
+        if (s) handle.setOptions?.(s.options, s.error);
       }
     },
     // #189-F2b, GENERALIZED (#335): read by the caller BEFORE disposing this
