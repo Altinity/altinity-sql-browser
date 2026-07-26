@@ -26,7 +26,9 @@ const ws = (over: Partial<TreeWorkspace> = {}): TreeWorkspace => ({
 
 const onDashboard = (
   dashboardId: string, currentMember: { kind: 'tile' | 'variable'; id: string } | null = null,
-): MainSurfaceState => ({ kind: 'dashboard', dashboardId, mode: 'edit', currentMember, pendingFocus: null });
+): MainSurfaceState => ({
+  kind: 'dashboard', dashboardId, mode: 'edit', currentMember, pendingFocus: null, pendingScrollTop: null,
+});
 
 /** Expand a Dashboard and both its groups — the usual "show me everything" state. */
 const allOpen = (dashboardIds: string[]): DashboardTreeUiState => {

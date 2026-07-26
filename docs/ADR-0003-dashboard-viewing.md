@@ -523,15 +523,55 @@ recording.
   advertised an affordance that can never work, and pointing it at the Dashboard's
   first query would have opened someone else's document.
 
-- **A flow KPI band member gets no action, and that is a boundary, not an
-  oversight.** Flow renders a KPI tile into a `.dash-kpi-member` host that carries
-  no tile chrome of any kind — no head, no delete, no grip, no resize — and is
-  `display: contents`, so it has no box at all; that is also why the drag code
-  derives its rect from the host's children. Absolutely positioning the action
-  against it put the button in the Dashboard toolbar in a real browser, which
-  happy-dom could not see. The action therefore lives on every tile *card*, which
-  covers both engines including the default one's KPI tiles. Giving flow's KPI band
-  real per-tile chrome — it has no delete affordance either — is #475.
+- **A flow KPI band member reaches its action through the card, not the host.** Flow
+  renders a KPI tile into a `.dash-kpi-member` host that carries no tile chrome of any
+  kind — no head, no delete, no grip, no resize — and is `display: contents`, so it
+  generates no box at all; that is also why the drag code derives its rect from the
+  host's children. Absolutely positioning the action against it put the button in the
+  Dashboard toolbar in a real browser, which happy-dom could not see. It is therefore
+  anchored INSIDE the member's first card, the same reach-through the `.is-nav-target`
+  ring and the `.dash-drop-target` outline already need for this host — which leaves
+  the drag geometry untouched, because the button sits inside one of the very child
+  boxes those rects are derived from. `renderKpiInto` replaces that card on every
+  publish, so the attachment is re-applied with each repaint rather than once.
+  (Giving the band a full chrome surface — it still has no delete affordance — remains
+  #475.)
+
+**Back is now a supported way home, which needed a per-entry memory.** #471's
+acceptance criteria lean on ordinary history navigation precisely because the global
+control is gone — and that exposed a hole #425 had left tolerable: the URL carries no
+Dashboard id (by design, above), the Dashboard DOM is disposed when the Workbench
+takes the work area, and `adoptRouteMainSurface` had nothing to consult once the
+session said "query". It resolved the *compatibility* Dashboard, so Back out of a tile
+opened the collection's FIRST Dashboard, at the top of the page, however many
+Dashboards the user had moved through.
+
+The fix keeps the URL exactly as it was and puts the missing facts in
+`history.state` instead — `{dash: {workspaceKey, dashboardId, currentMember,
+scrollTop}}`, written onto the entry being LEFT (and onto a Dashboard entry as it is
+created). Three properties made that the right home rather than a session-wide "last
+Dashboard" memo:
+
+- it is **per entry**, so several Back steps across several Dashboards each restore
+  their own — a single memo can only ever be right about the most recent one;
+- it is **invisible**, so shareable URLs are untouched and #425's "the URL is derived
+  from the session surface, never the other way round" still holds;
+- it is **discardable**: an entry that carries none (a fresh load, or one written
+  before this existed) simply falls back to the old behaviour.
+
+It is validated like any other selection — `restoreDashboardSurface` runs the snapshot
+through `reconcileMainSurface`, so a remembered Dashboard that has since been deleted
+lands on **Query** rather than retargeting to a different one, and the snapshot is
+rejected outright when its `workspaceKey` does not match (a Dashboard id is unique per
+workspace, not globally — the #457 addendum's rule).
+
+The offset rides in `MainSurfaceState` as `pendingScrollTop`, a second one-shot
+delivery beside `pendingFocus` and consumed with it, so no later repaint can yank a
+page the user has since scrolled. Applying it is not a single write: at mount the grid
+host is still empty (tiles arrive with the first publish, and grafana-grid's per-tile
+px heights with them), so an offset written then clamps silently to `0`. It is
+re-attempted after each publish until one sticks — which happy-dom cannot observe at
+all, since it stores whatever was assigned.
 
 The mobile consequence is recorded here too, because it reverses part of the #425
 addendum. #426 had restored the back button specifically because the mobile rules

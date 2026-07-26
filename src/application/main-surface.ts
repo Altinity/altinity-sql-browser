@@ -54,6 +54,19 @@ export type MainSurfaceState =
     mode: DashboardSurfaceMode;
     currentMember: DashboardFocusTarget | null;
     pendingFocus: DashboardFocusTarget | null;
+    /**
+     * #471 — a scroll offset still owed to the surface, consumed exactly once
+     * alongside `pendingFocus`.
+     *
+     * A second delivery field rather than part of `pendingFocus` because it has a
+     * different origin: focus comes from a navigation REQUEST, this comes from
+     * history. Opening a tile's query tears the Dashboard DOM down (the Workbench
+     * disposes it), so Back rebuilds it from scratch — and #471 removed the global
+     * control that used to make that round trip avoidable, which is what turns
+     * "scroll is lost" from a wart into a broken requirement. `null` means "start
+     * where a fresh render starts", i.e. the top.
+     */
+    pendingScrollTop: number | null;
   };
 
 /** The one application-level Dashboard navigation request (#425). */
@@ -61,6 +74,62 @@ export interface OpenDashboardRequest {
   dashboardId: string;
   mode: DashboardSurfaceMode;
   focus?: DashboardFocusTarget;
+  /** #471: only history restoration supplies this — see `restoreDashboardSurface`. */
+  scrollTop?: number;
+}
+
+/**
+ * What a Dashboard history entry has to remember (#471).
+ *
+ * Everything here is absent from the URL by design: #425 keeps the selected Dashboard
+ * id, the current member and the scroll offset as session state, so a history entry
+ * that records none of them cannot be returned to faithfully. Held in
+ * `history.state`, which is per-entry and invisible to the user, so multiple
+ * Back steps across several Dashboards each restore their own.
+ */
+export interface DashboardHistorySnapshot {
+  workspaceKey: string | null;
+  dashboardId: string;
+  currentMember: DashboardFocusTarget | null;
+  scrollTop: number;
+}
+
+/** Read a snapshot back out of an opaque `history.state`, or `null` when the entry
+ *  carries none (a fresh load, an entry written before this existed) or when it
+ *  belongs to a DIFFERENT workspace — a Dashboard id is unique per workspace, not
+ *  globally, so a coincidental match must not resolve. */
+export function readDashboardHistorySnapshot(
+  state: unknown, workspaceKey: string | null,
+): DashboardHistorySnapshot | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const dash = (state as { dash?: unknown }).dash;
+  if (typeof dash !== 'object' || dash === null) return null;
+  const candidate = dash as Partial<DashboardHistorySnapshot>;
+  if (typeof candidate.dashboardId !== 'string' || candidate.dashboardId === '') return null;
+  if ((candidate.workspaceKey ?? null) !== workspaceKey) return null;
+  return {
+    workspaceKey,
+    dashboardId: candidate.dashboardId,
+    currentMember: candidate.currentMember ?? null,
+    scrollTop: typeof candidate.scrollTop === 'number' && Number.isFinite(candidate.scrollTop)
+      ? candidate.scrollTop
+      : 0,
+  };
+}
+
+/** The snapshot for the surface currently on screen, or `null` in Query mode —
+ *  written onto the history entry being LEFT, with the live scroll offset the DOM
+ *  has right now. */
+export function dashboardHistorySnapshot(
+  surface: MainSurfaceState, workspaceKey: string | null, scrollTop: number,
+): DashboardHistorySnapshot | null {
+  if (surface.kind !== 'dashboard') return null;
+  return {
+    workspaceKey,
+    dashboardId: surface.dashboardId,
+    currentMember: surface.currentMember,
+    scrollTop,
+  };
 }
 
 /** The Query surface carries no parameters, so one frozen value serves every
@@ -109,8 +178,42 @@ export function resolveOpenDashboard(
       mode: request.mode,
       currentMember: presentMember(lookup.dashboard, requested),
       pendingFocus: requested,
+      // #471: an OPEN request never restores a scroll offset — only history does
+      // (`restoreDashboardSurface`). Opening a Dashboard deliberately starts at the
+      // top; carrying a stale offset here would land the user mid-page for a
+      // Dashboard they navigated to fresh.
+      pendingScrollTop: request.scrollTop ?? null,
     },
   };
+}
+
+/**
+ * Rebuild a Dashboard selection from a history entry (#471).
+ *
+ * The URL carries no Dashboard id (#425 keeps it session state), so returning to a
+ * Dashboard entry with Back had nothing to resolve and fell back to the collection's
+ * FIRST Dashboard — the wrong document whenever the user had selected another. The
+ * snapshot rides in `history.state` instead of the URL, which keeps the shareable URL
+ * unchanged and makes the memory per-history-entry rather than one global "last
+ * Dashboard".
+ *
+ * Validated like any other selection: a snapshot whose Dashboard is gone (or
+ * ambiguous) falls back to Query mode rather than retargeting, and a stale member
+ * reference drops itself.
+ */
+export function restoreDashboardSurface(
+  snapshot: DashboardHistorySnapshot, mode: DashboardSurfaceMode, workspace: WorkspaceDashboards | null,
+): MainSurfaceState {
+  return reconcileMainSurface({
+    kind: 'dashboard',
+    dashboardId: snapshot.dashboardId,
+    // The MODE comes from the route, not the snapshot: the URL does carry it, and it
+    // is the authority for what the entry describes.
+    mode,
+    currentMember: snapshot.currentMember,
+    pendingFocus: null,
+    pendingScrollTop: snapshot.scrollTop,
+  }, workspace);
 }
 
 /**
@@ -205,8 +308,12 @@ export function isSameDashboardSelection(
  *  marking the member the user navigated to after its one-shot delivery is
  *  spent. */
 export function withoutPendingFocus(surface: MainSurfaceState): MainSurfaceState {
-  if (surface.kind !== 'dashboard' || surface.pendingFocus === null) return surface;
-  return { ...surface, pendingFocus: null };
+  if (surface.kind !== 'dashboard') return surface;
+  // #471: `pendingScrollTop` is handed to the same render pass and consumed with it,
+  // for the same reason — a later repaint must not yank the page back to an offset
+  // the user has since scrolled away from.
+  if (surface.pendingFocus === null && surface.pendingScrollTop === null) return surface;
+  return { ...surface, pendingFocus: null, pendingScrollTop: null };
 }
 
 /**

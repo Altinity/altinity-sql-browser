@@ -44,7 +44,7 @@ import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
-import { disposeDashboardSurface, renderDashboard } from './dashboard.js';
+import { dashboardScrollTop, disposeDashboardSurface, renderDashboard } from './dashboard.js';
 import type { DashboardRenderTarget } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';
 import { openSchemaView } from './explain-graph.js';
@@ -83,7 +83,8 @@ import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
   carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
-  withoutPendingFocus,
+  withoutPendingFocus, dashboardHistorySnapshot, readDashboardHistorySnapshot,
+  restoreDashboardSurface,
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
@@ -1749,6 +1750,9 @@ export function createApp(env: CreateAppEnv = {}): App {
       dashboardId: surface.kind === 'dashboard' ? surface.dashboardId : null,
       mode: surface.kind === 'dashboard' ? surface.mode : routeMode,
       focus: surface.kind === 'dashboard' ? surface.pendingFocus : null,
+      // #471: the offset a history restoration owes this render, consumed with the
+      // focus delivery below for the same reason.
+      scrollTop: surface.kind === 'dashboard' ? surface.pendingScrollTop : null,
       setHeader: (header) => mounted.setHeader(header),
     };
     // #425: a focus target is delivered ONCE. Every later repaint of the same
@@ -2309,9 +2313,32 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Surface changes stay in this tab and create one useful history entry;
   // a View/Edit mode change replaces so presentation toggles do not pollute
   // Back (ADR-0003).
+  // #471 — write the Dashboard the CURRENT history entry is showing onto that entry,
+  // with the scroll offset the DOM has right now.
+  //
+  // The URL deliberately carries neither (#425 keeps the selected id and the offset as
+  // session state), so an entry that records nothing cannot be returned to: Back out
+  // of a tile's Open-in-Workbench used to land on the collection's first Dashboard, at
+  // the top. It has to run BEFORE the transition, because `pushState` leaves the
+  // outgoing entry's state exactly as it was last written — and again after writing a
+  // Dashboard route, so a freshly created entry carries its id immediately (Forward
+  // into it, or a second Back, restores the same way).
+  const stampDashboardHistoryEntry = (): void => {
+    const snapshot = dashboardHistorySnapshot(
+      app.mainSurface, app.sqlRoute.workspaceKey, dashboardScrollTop() ?? 0,
+    );
+    // `null` (Query mode) is written too: it clears a snapshot this entry may carry
+    // from an earlier surface, so a Query entry never restores a Dashboard.
+    // Unguarded, exactly like `writeRoute` immediately below — a platform with no
+    // history API fails there on the same transition either way.
+    win.history.replaceState({ dash: snapshot }, '', conn.basePath + routeSearch + (loc.hash || ''));
+  };
+
   const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
+    stampDashboardHistoryEntry();
     app.mainSurface = surface;
     writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
+    if (surface.kind === 'dashboard') stampDashboardHistoryEntry();
     // #426: the tree lives in the PERSISTENT shell, so a surface transition does
     // not repaint it as a side effect of re-rendering the work area — it needs
     // telling. Current Dashboard/member styling is derived from this state.
@@ -2463,10 +2490,26 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, pendingFocus: null }, workspace);
       return;
     }
+    // #471: the route says "a Dashboard" but carries no id, and the session no longer
+    // holds one (we are arriving from Query — typically Back out of a tile's
+    // Open-in-Workbench). The history ENTRY is the only thing that knows WHICH
+    // Dashboard this was, so it is consulted before the compatibility fallback:
+    // without it, Back reliably opened the collection's first Dashboard instead of
+    // the one the user left, at the top of the page.
+    const snapshot = readDashboardHistorySnapshot(win.history?.state, app.sqlRoute.workspaceKey);
+    if (snapshot) {
+      const restored = restoreDashboardSurface(snapshot, mode, workspace);
+      // A snapshot whose Dashboard is gone reconciles to Query; fall through to the
+      // compatibility entry only then, exactly as a boot with no snapshot does.
+      if (restored.kind === 'dashboard') { app.mainSurface = restored; return; }
+    }
     const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
     app.mainSurface = selectedId === null
       ? QUERY_SURFACE
-      : { kind: 'dashboard', dashboardId: selectedId, mode, currentMember: null, pendingFocus: null };
+      : {
+        kind: 'dashboard', dashboardId: selectedId, mode,
+        currentMember: null, pendingFocus: null, pendingScrollTop: null,
+      };
   };
 
   app.reloadDashboardRoute = () => {

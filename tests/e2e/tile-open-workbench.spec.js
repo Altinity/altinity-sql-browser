@@ -195,6 +195,38 @@ test('Saving the opened tab updates the Dashboard copy, not the same-named sibli
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-sales' });
 });
 
+test('Back returns to the Dashboard the tile belonged to, at the offset it was left at', async ({ page }) => {
+  // #471's own acceptance criteria: opening a tile's query must not disturb the
+  // Dashboard, and ordinary history navigation is the way back — which is exactly
+  // what removing the global `< Query` button leans on. The URL carries no Dashboard
+  // id, so before the history snapshot this landed on the collection's FIRST
+  // Dashboard, at the top of the page. Two Dashboards and a non-zero offset is the
+  // only shape that can tell the difference.
+  await open(page, { width: 1280, height: 600 });
+  await openDashboard(page, 'ops');       // an entry for a DIFFERENT Dashboard first
+  await openDashboard(page, 'sales');     // …then the one we actually leave
+
+  const scroller = page.locator('.dash-page');
+  await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  const left = await scroller.evaluate((el) => el.scrollTop);
+  expect(left, 'the fixture must be scrollable for this to mean anything').toBeGreaterThan(0);
+
+  await tileAction(page, 'Live KPIs').click();
+  await expect.poll(() => surface(page)).toBe('query');
+
+  await page.goBack();
+
+  await expect.poll(() => surface(page)).toBe('dashboard');
+  await expect(page.locator('.dash-page')).toBeVisible();
+  // The Dashboard the tile belonged to — `sales`, not `ops` and not the first entry.
+  expect(await page.evaluate(() => window.__app.mainSurface.dashboardId)).toBe('sales');
+  // Its own tiles are what came back (`ops` has a single tile and no KPI).
+  await expect(page.locator('.dash-tile')).toHaveCount(3);
+  // …at the offset it was left at, not the top.
+  await expect.poll(() => page.locator('.dash-page').evaluate((el) => el.scrollTop))
+    .toBeGreaterThan(left / 2);
+});
+
 test('a queryless (Text) tile exposes no action at all', async ({ page }) => {
   await open(page);
   await openDashboard(page, 'sales');

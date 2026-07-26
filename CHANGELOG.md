@@ -124,8 +124,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   full-bleed Dashboard, **the bottom nav no longer hides itself on the Dashboard
   surface** — it shows only **Editor**, which returns to the Workbench. Without
   that, a phone looking at a Dashboard with no tiles would have had no route back
-  at all. A flow-layout KPI *band member* has no tile chrome to carry the action;
-  giving that band real per-tile chrome is #475.
+  at all.
+
+  **Returning with Back now lands on the Dashboard you left, where you left it.**
+  The URL deliberately carries no Dashboard id, and opening a query tears the
+  Dashboard down, so Back used to rebuild the *first* Dashboard in the workspace at
+  the top of the page — tolerable while a global back button existed, and not
+  tolerable once per-tile actions are the way out. Each Dashboard history entry now
+  remembers its own id, current member and scroll offset, so several Back steps
+  across several Dashboards each return correctly; a remembered Dashboard that has
+  since been deleted falls back to the Workbench rather than to some other one.
 
 - **Dashboard variable option SQL is edited in the main editor, as its own tab**
   (#457). Clicking a variable in the Dashboards tree switches to Query and opens
