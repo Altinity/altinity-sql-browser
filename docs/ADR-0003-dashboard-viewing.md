@@ -513,10 +513,31 @@ unchanged. Three decisions are worth recording.
   of them silently on the next load, and a read-old/write-new migration is a
   behaviour change in a change whose whole contract is "no behaviour change". The
   property name deliberately still matches the key string so the two cannot
-  drift. `state.filterActive`/`asb:filterActive` (and `saveFilterActive`/
-  `effectiveFilterActive`) are the second exception, for a different reason: they
-  name the WORKBENCH's optional-block activation map — a live concept that is not
-  a Dashboard variable at all — and are likewise persisted.
+  drift.
+
+- **`filterActive` stays, and the reason is narrower than "it's the Workbench's".**
+  `state.filterActive`/`asb:filterActive`/`saveFilterActive`/
+  `effectiveFilterActive` keep their names because what they name is *activation
+  of a parameter's optional `/*[ … ]*/` filter block* — `variable-bar.ts`'s
+  `app.state.filterActive[p.name] = input.value !== ''` is exactly that — which is
+  a live SQL-filter concept that predates the curated Dashboard model and survived
+  its removal. The key is persisted besides.
+
+  What that argument does **not** cover, and an earlier draft of this addendum
+  wrongly implied it did: `VariableBarApp` — the SHARED port both the Dashboard and
+  the detached Data view build the bar through — also declares `state.filterActive`
+  and `params.saveFilterActive`, and the Dashboard satisfies it with a purely local
+  `draftActive` map and a **no-op** `saveFilterActive`. So one of the port's two
+  callers has no Workbench state and nothing persisted behind that name. The
+  concept is still optional-block activation in both callers, so this is a leaky
+  abstraction rather than a surviving curated-filter name — but naming a shared
+  port after one caller's persisted field is worth fixing on its own terms, not
+  inside a rename. Deferred to #478 deliberately: `params` is a
+  `Pick<WorkbenchParameterSession, …>` (renaming a member stops it being a Pick,
+  so the detached caller can no longer pass the app straight through), and the bar
+  MUTATES the caller's map in place before calling `saveFilterActive()` — an
+  adapter that copies instead of aliasing would silently stop persisting
+  activation in the detached view, with no test today that would fail.
 
 - **The rename is unfalsifiable by construction, so two guards were added.** A
   pure rename passes its whole suite whether or not it is correct, and every
