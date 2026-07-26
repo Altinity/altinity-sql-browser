@@ -28,7 +28,7 @@
 // options still displays. A variable's committed value is restored from the
 // per-Dashboard store (#303) before any option query has run, and option SQL can
 // change under it — showing the raw value is honest, where blanking it would
-// silently discard a filter the panels are still bound to.
+// silently discard a value the panels are still bound to.
 
 import { createCombobox, idSafe, wireComboInput } from './combobox.js';
 import { h } from './dom.js';
@@ -45,8 +45,8 @@ export const UNSET_OPTION_LABEL = 'Not set';
  *  option query may return up to `VARIABLE_OPTION_CAP` rows. */
 export const OPTION_DROPDOWN_CAP = 200;
 
-/** `buildFilterOptionField`'s options bag. */
-export interface FilterOptionFieldOpts {
+/** `buildVariableOptionField`'s options bag. */
+export interface VariableOptionFieldOpts {
   document?: Document;
   /** The exact variable name — used for the accessible name and element ids. */
   name: string;
@@ -59,9 +59,9 @@ export interface FilterOptionFieldOpts {
   onCommit?: (value: string, active: boolean) => void;
 }
 
-/** What `buildFilterOptionField` returns — the `FieldHandle` shape `filter-bar.ts`
+/** What `buildVariableOptionField` returns — the `FieldHandle` shape `variable-bar.ts`
  *  registers, plus the wrapper and its input. */
-export interface FilterOptionField {
+export interface VariableOptionField {
   el: HTMLElement;
   input: HTMLInputElement;
   /** Replace the offered options WITHOUT rebuilding the field, preserving the
@@ -76,10 +76,10 @@ export interface FilterOptionField {
   dispose(): void;
 }
 
-export function buildFilterOptionField({
+export function buildVariableOptionField({
   document: doc, name, options = [], value = '', active = false, title,
   onCommit = () => {},
-}: FilterOptionFieldOpts): FilterOptionField {
+}: VariableOptionFieldOpts): VariableOptionField {
   const d = doc || document;
   const suffix = idSafe(name);
   const listId = 'variable-option-list-' + suffix;
@@ -181,7 +181,7 @@ export function buildFilterOptionField({
   }, Icon.close());
 
   return {
-    el: h('div', { class: 'var-combo filter-select' }, input, clear, listEl, liveEl),
+    el: h('div', { class: 'var-combo variable-select' }, input, clear, listEl, liveEl),
     input,
     setOptions: (next) => {
       current = next;

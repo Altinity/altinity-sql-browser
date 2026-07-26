@@ -4,16 +4,16 @@
 // from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
 // document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
-// runtime — presentation resolution, the filter/tile execution waves (with
+// runtime — presentation resolution, the variable/tile execution waves (with
 // #235 parallelism), bounded concurrency, per-tile cancellation, and the
 // normative `flow@1` layout math — all live in the session and its pure
 // dependencies; this module is the render/interaction shell over them.
 //
-// The filter bar is the SHARED `buildFilterBar` (the same rich field family the
+// The variable bar is the SHARED `buildVariableBar` (the same rich field family the
 // Workbench var-strip and detached view use — relative-time presets, recents,
-// enum + curated comboboxes), driven over the viewer's filter model: a draft
-// value/active bag the bar mutates, `session.getFilterField` for live #170
-// validation, and `session.applyFilter` on commit (which owns activation).
+// enum + curated comboboxes), driven over the viewer's variable model: a draft
+// value/active bag the bar mutates, `session.getVariableField` for live #170
+// validation, and `session.applyVariable` on commit (which owns activation).
 // Recents come from the real app (a cross-surface concern) through the shim —
 // the viewer never touches global AppState (check-boundaries keeps it that way).
 //
@@ -53,9 +53,9 @@ import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import { buildFilterBar, FILTER_DEBOUNCE_MS } from './filter-bar.js';
-import type { VariableFieldSpec, VariableOptionsUpdate } from './filter-bar.js';
-import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
+import { buildVariableBar, VARIABLE_DEBOUNCE_MS } from './variable-bar.js';
+import type { VariableFieldSpec, VariableOptionsUpdate } from './variable-bar.js';
+import type { VariableBarApp, VariableBarHandle } from './variable-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
 import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
@@ -64,8 +64,8 @@ import { createDashboardChartInteractionController } from './dashboard-chart-int
 import type { DashboardChartInteractionController } from './dashboard-chart-interaction.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
-  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerFilterState,
-  ViewerFilterOption,
+  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerVariableState,
+  ViewerVariableOption,
 } from '../dashboard/application/dashboard-viewer-session.js';
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
@@ -89,9 +89,9 @@ import type {
 import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
-  readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
-} from '../dashboard/model/dashboard-filter-store.js';
-import type { DashboardFilterBag } from '../dashboard/model/dashboard-filter-store.js';
+  readDashboardVariableBag, writeDashboardVariableBag, variableBagSignature,
+} from '../dashboard/model/dashboard-variable-store.js';
+import type { DashboardVariableBag } from '../dashboard/model/dashboard-variable-store.js';
 import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
@@ -146,7 +146,7 @@ export interface DashboardRenderTarget {
 }
 
 /** The narrow `app` surface this render module reads (not the full App —
- *  matches the convention results.ts/filter-bar.ts established). */
+ *  matches the convention results.ts/variable-bar.ts established). */
 export interface DashboardApp {
   document: Document;
   state: AppState;
@@ -202,7 +202,7 @@ export interface DashboardApp {
   // owns them, and this surface supplies only context.
   actions: Pick<ActionsRegistry, 'openShortcuts' | 'openUserMenu'>;
   genId(): string;
-  /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
+  /** #303: persists the isolated per-dashboard variable store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
   /** #332: the shared cell-detail drawer's own resize persist (`openCellDetail`
    *  → `attachDrawerResize` reads `state.cellDrawerPx` + `prefs.save`). Declared
@@ -214,7 +214,7 @@ export interface DashboardApp {
 const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
-/** #189: an array-safe stand-in for `valueString`, used ONLY by the filter-bar
+/** #189: an array-safe stand-in for `valueString`, used ONLY by the variable-bar
  *  rebuild signature below — an array JSON-encodes (so a committed
  *  `['a','b']` is distinct from the joined string `"a,b"`, which
  *  `valueString`'s `String()` fallback would otherwise collapse it to);
@@ -524,7 +524,7 @@ export async function renderDashboard(
   // (see `settleCommand`) — the route rebuilds once the queue drains.
   let needsRebuild = false;
 
-  // Merge explicit + synthesized implicit filters for the viewer.
+  // No pre-processing of the document's variables for the viewer.
   // #447: the document needs no pre-processing before the session sees it. This
   // used to synthesize a filter definition per undeclared `{name:Type}` panel
   // parameter, and to attach an option source by matching a filter-role query's
@@ -532,13 +532,13 @@ export async function renderDashboard(
   // panel SQL itself, and option SQL is authored per variable on the document.
   const viewerDoc: DashboardDocumentV2 = currentDoc;
 
-  // #303: seed each filter's initial value/active from the isolated
+  // #303: seed each variable's initial value/active from the isolated
   // per-dashboard store (never the Workbench's asb:varValues/asb:filterActive
-  // keys) — restores committed filter state across a reload. `initialBag` is
+  // keys) — restores committed variable state across a reload. `initialBag` is
   // ALSO the baseline the persist effect below compares against, so the very
   // first publish (which merely echoes this seed) does not immediately write
   // defaults back over it.
-  const initialBag: DashboardFilterBag = readDashboardFilterBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id);
+  const initialBag: DashboardVariableBag = readDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id);
 
   // #291: the grafana-grid engine's own responsive effective-columns clamp
   // (12/6/4/2) needs a measured container width, unlike flow's coarser
@@ -560,7 +560,7 @@ export async function renderDashboard(
     containerWidth: () => containerWidthPx,
     onAuthFailed: () => app.conn.chCtx.onSignedOut(),
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
-    initialFilters: initialBag,
+    initialVariables: initialBag,
   });
   let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
   const syncSessionDocument = (next: DashboardDocumentV2): void => {
@@ -589,9 +589,9 @@ export async function renderDashboard(
   // synchronously, before the first publish) and kept current by the render
   // effect (Part D) whenever `sview.layout.renderMode` changes.
   let gridRenderMode: GridRenderMode = 'tiles';
-  // 2026-07-18 owner override: moved off the filter toolbar and into the top
+  // 2026-07-18 owner override: moved off the variable toolbar and into the top
   // header row (right after File) so the toolbar's whole width is available
-  // for filters; its File-style menu keeps the active layout visible without
+  // for variables; its File-style menu keeps the active layout visible without
   // a second header label.
   // #321: "Full view" is a TRANSIENT runtime render-mode override over the
   // grafana-grid engine (never persisted) — it sits alongside "Grid Tiles" in
@@ -715,7 +715,7 @@ export async function renderDashboard(
     oninput: (event: Event) => {
       const input = event.target as HTMLInputElement;
       if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
-      tileSearchTimer = setTimeout(() => commitTileSearch(input), FILTER_DEBOUNCE_MS);
+      tileSearchTimer = setTimeout(() => commitTileSearch(input), VARIABLE_DEBOUNCE_MS);
     },
     onblur: (event: Event) => commitTileSearch(event.target as HTMLInputElement),
     onkeydown: (event: KeyboardEvent) => {
@@ -724,39 +724,39 @@ export async function renderDashboard(
   }) as HTMLInputElement;
   const tileSearch = h('label', { class: 'dash-tile-search-wrap' },
     Icon.search(), tileSearchInput);
-  const timeFilterHost = h('div', {
-    class: 'dash-time-filter-host dash-filters',
-    role: 'group', 'aria-label': 'Dashboard time filters',
+  const timeVariableHost = h('div', {
+    class: 'dash-time-variable-host dash-variables',
+    role: 'group', 'aria-label': 'Dashboard time variables',
   });
-  const ordinaryFilterHost = h('div', {
-    class: 'dash-filter-host dash-filters',
-    role: 'group', 'aria-label': 'Dashboard filters',
+  const ordinaryVariableHost = h('div', {
+    class: 'dash-variable-host dash-variables',
+    role: 'group', 'aria-label': 'Dashboard variables',
   });
   const ordinaryTimeIds = new Set(session.timeRangeGroups.flatMap((group) =>
-    [group.fromFilterId, group.toFilterId]));
-  const ordinaryFilterIds = session.state.value.filters
-    .filter((filter) => !ordinaryTimeIds.has(filter.id)).map((filter) => filter.id);
-  const clearFiltersBtn = h('button', {
-    class: 'dash-clear-filters', type: 'button', disabled: true,
-    onclick: () => { void session.resetFilters(ordinaryFilterIds); },
+    [group.fromVariableId, group.toVariableId]));
+  const ordinaryVariableIds = session.state.value.variableStates
+    .filter((variable) => !ordinaryTimeIds.has(variable.id)).map((variable) => variable.id);
+  const clearVariablesBtn = h('button', {
+    class: 'dash-clear-variables', type: 'button', disabled: true,
+    onclick: () => { void session.resetVariables(ordinaryVariableIds); },
   }, 'Clear all') as HTMLButtonElement;
 
-  // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
+  // ── Variable bar (shared buildVariableBar, viewer-backed) ─────────────────────
   // The compound time controls mount in the primary row; ordinary controls
   // mount in the second scrolling row beside selective Clear all.
-  // #189: a PERSISTENT sr-only announcer, a SIBLING of `filterHost` (never a
-  // child — `filterHost.replaceChildren` below only ever replaces the bar's
+  // #189: a PERSISTENT sr-only announcer, a SIBLING of `ordinaryVariableHost` (never a
+  // child — `ordinaryVariableHost.replaceChildren` below only ever replaces the bar's
   // own root) so it survives the very rebuild that fires it: when a rebuild
   // disposes an outgoing bar that had a multiselect popover open, the dispose
   // silently Cancels that popover (see multi-select-field.ts), and this is
   // the only trace of that left for an assistive-tech user.
-  const filterRefreshLiveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
-  // The draft value/active bag the shared filter bar reads + mutates; re-seeded
-  // from committed filter state on each (re)build. Recents come from the real
+  const variableRefreshLiveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
+  // The draft value/active bag the shared variable bar reads + mutates; re-seeded
+  // from committed variable state on each (re)build. Recents come from the real
   // app — the viewer never touches AppState.
   const draftValues: Record<string, string> = {};
   const draftActive: Record<string, boolean> = {};
-  const filterBarApp: FilterBarApp = {
+  const variableBarApp: VariableBarApp = {
     document: doc,
     state: { varValues: draftValues, filterActive: draftActive, varRecent: state.varRecent },
     params: {
@@ -768,21 +768,21 @@ export async function renderDashboard(
   };
   // #189: the retained bar itself (not just its `dispose`) — `hasOpenMultiSelect`
   // is read off it right before a rebuild disposes it (see below).
-  let currentFilterBar: FilterBarHandle | null = null;
+  let currentVariableBar: VariableBarHandle | null = null;
   // Maintainer merge-gate fix (#189): each parameter's `optionsRev` as of the
   // CURRENTLY-RETAINED bar's own build — compared, below, against the
   // incoming view's `optionsRev` for whichever parameter had an open (or
   // just-closed) multiselect popover, so the refresh announcement fires only
   // when that parameter's options actually changed content, never merely
   // because a rebuild happened to run while (or right after) its popover was
-  // up. Replaced wholesale after every rebuild (never merged) — a filter that
-  // disappears from `sview.filters` simply drops out.
+  // up. Replaced wholesale after every rebuild (never merged) — a variable that
+  // disappears from `sview.variableStates` simply drops out.
   // #335: shell-owned, session-lifetime per-group "Recently used" ranges,
   // keyed by `group.key`. NOT persisted in v1 (owner decision) and naturally
   // discarded when this `renderDashboard` call's session is torn down or the
   // dashboard switches (a fresh render builds a fresh map). Each successful,
   // changing commit pushes the OUTGOING committed pair (see `onApplyTimeRange`
-  // in `rebuildFilterBar`).
+  // in `rebuildVariableBar`).
   const timeRangeRecents = new Map<string, TimeRangeRecent[]>();
   const timeRangeApplyGeneration = new Map<string, number>();
   const groupByTileId = new Map(session.timeRangeGroups.flatMap((group) => group.tileIds.map((tileId) => [tileId, group] as const)));
@@ -792,29 +792,29 @@ export async function renderDashboard(
   ): Promise<void> => {
     const generation = (timeRangeApplyGeneration.get(group.key) ?? 0) + 1;
     timeRangeApplyGeneration.set(group.key, generation);
-    const filterById = new Map(session.state.value.filters.map((filter) => [filter.id, filter] as const));
-    const fromF = filterById.get(group.fromFilterId);
-    const toF = filterById.get(group.toFilterId);
+    const variableById = new Map(session.state.value.variableStates.map((variable) => [variable.id, variable] as const));
+    const fromF = variableById.get(group.fromVariableId);
+    const toF = variableById.get(group.toVariableId);
     const outFrom = fromF ? valueString(fromF.value) : '';
     const outTo = toF ? valueString(toF.value) : '';
     const wasActive = !!(fromF?.active && toF?.active);
-    const result = await session.applyFilters([
-      { filterId: group.fromFilterId, value: from, active: true },
-      { filterId: group.toFilterId, value: to, active: true },
+    const result = await session.applyVariables([
+      { variableId: group.fromVariableId, value: from, active: true },
+      { variableId: group.toVariableId, value: to, active: true },
     ]);
     if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
     if (timeRangeApplyGeneration.get(group.key) !== generation) return;
     /* v8 ignore next 3 -- the mounted controls and chart formatter prevalidate;
        retained for a stale/destroyed-session race so failure is announced. */
     if (!result.ok) {
-      filterRefreshLiveEl.textContent = `Time range was not changed: ${result.error}`;
+      variableRefreshLiveEl.textContent = `Time range was not changed: ${result.error}`;
       return;
     }
     if (result.changed && wasActive && outFrom !== '' && outTo !== '' && (outFrom !== from || outTo !== to)) {
       timeRangeRecents.set(group.key,
         pushRecentRange(timeRangeRecents.get(group.key) ?? [], { from: outFrom, to: outTo }));
     }
-    filterRefreshLiveEl.textContent = `Time range applied: ${from} → ${to}`;
+    variableRefreshLiveEl.textContent = `Time range applied: ${from} → ${to}`;
   };
 
   const chartInteraction = createDashboardChartInteractionController({
@@ -833,17 +833,17 @@ export async function renderDashboard(
   });
   installedDashboardChartInteraction = chartInteraction;
 
-  function rebuildFilterBar(sview: DashboardViewState): void {
+  function rebuildVariableBar(sview: DashboardViewState): void {
     // #189-F2b, GENERALIZED (#335): ask the OUTGOING bar WHICH control's
     // popover is open (if any) BEFORE disposing it — disposing while open is
     // that control's own silent Cancel (multi-select-field.ts /
     // time-range-field.ts), so this is the only chance to notice it, tell an
     // assistive-tech user their popover just closed out from under them (the
-    // shared `filterRefreshLiveEl`, never torn down by the rebuild), and move
+    // shared `variableRefreshLiveEl`, never torn down by the rebuild), and move
     // focus to that SAME control's trigger on the freshly-built bar below
     // (never left stranded at `<body>` — F2 review finding). The key is a
     // parameter name for a multiselect field, `group:…` for a time-range one.
-    const openPopoverKey = currentFilterBar?.openPopoverKey() ?? null;
+    const openPopoverKey = currentVariableBar?.openPopoverKey() ?? null;
     // Maintainer merge-gate fix (#189): an ordinary Apply already closed its
     // OWN popover before its commit callback reached the session — by the
     // time that commit's synchronous `publish()` gets here, `openPopoverKey`
@@ -852,9 +852,9 @@ export async function renderDashboard(
     // restoration below has a signal to work with even when there was no open
     // popover to speak of — never used for the ANNOUNCE decision (only a
     // genuinely open popover's cancellation is ever worth announcing).
-    const focusedFieldKey = currentFilterBar?.focusedFieldKey() ?? null;
+    const focusedFieldKey = currentVariableBar?.focusedFieldKey() ?? null;
     const restoreFocusKey = openPopoverKey ?? focusedFieldKey;
-    currentFilterBar?.dispose();
+    currentVariableBar?.dispose();
     const idByParam = new Map<string, string>();
     // #447 phase 2: a variable renders either a direct input for its declared
     // type, or — when it carries Dashboard-local option SQL — a strict
@@ -864,7 +864,7 @@ export async function renderDashboard(
     // as a text box and changes type once the query lands. `null` options mean
     // direct input; `[]` means option-backed with nothing to offer yet.
     const variables: Record<string, VariableFieldSpec> = {};
-    for (const f of sview.filters) {
+    for (const f of sview.variableStates) {
       // An `Array(scalar T)` variable's committed value is a real `string[]`.
       // It must NOT be flattened into the shared scalar draft bag — `String()`
       // would turn `['a','b']` into `"a,b"`, a value nothing can round-trip —
@@ -896,36 +896,36 @@ export async function renderDashboard(
     }
     const onCommit = (name: string): void => {
       const id = idByParam.get(name);
-      if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
+      if (id) session.applyVariable(id, draftValues[name] ?? '', !!draftActive[name]);
     };
     // A select commits its value AND activation together, with no debounce — a
     // pick (or the × clearing back to unset) is a complete, deliberate action.
     const onCommitVariable = (name: string, value: string, active: boolean): void => {
       const id = idByParam.get(name);
-      if (id) void session.applyFilter(id, value, active);
+      if (id) void session.applyVariable(id, value, active);
     };
     // The multi-select's Apply. Same "complete, deliberate action" semantics as
     // the single-select above; the only difference is that the value is a real
-    // array, which `applyFilter` already accepts (`value: unknown`) and the
+    // array, which `applyVariable` already accepts (`value: unknown`) and the
     // session reduces to unset when it is empty.
     const onCommitVariableSelection = (name: string, values: string[], active: boolean): void => {
       const id = idByParam.get(name);
-      if (id) void session.applyFilter(id, values, active);
+      if (id) void session.applyVariable(id, values, active);
     };
-    const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
+    const getField = (name: string, mode: ValidationMode) => session.getVariableField(name, mode, draftValues, draftActive);
     // #335: assemble the time-range option — one entry per resolved group,
-    // reading each bound's committed value/active straight off `sview.filters`
-    // (the from/to filters stay in the view regardless of presentation, so a
+    // reading each bound's committed value/active straight off `sview.variableStates`
+    // (the from/to variables stay in the view regardless of presentation, so a
     // time-range commit still flips `barSig` below and rebuilds this bar). The
     // pair's two individual fields are suppressed by parameter name inside
-    // `buildFilterBar`. `waveNowMs` is this wave's shared `now` snapshot.
-    const filterById = new Map(sview.filters.map((f) => [f.id, f] as const));
+    // `buildVariableBar`. `waveNowMs` is this wave's shared `now` snapshot.
+    const variableById = new Map(sview.variableStates.map((f) => [f.id, f] as const));
     const timeRange = session.timeRangeGroups.flatMap((group) => {
-      const fromF = filterById.get(group.fromFilterId);
-      const toF = filterById.get(group.toFilterId);
+      const fromF = variableById.get(group.fromVariableId);
+      const toF = variableById.get(group.toVariableId);
       return [{
         group,
-        // timeRangeGroups is resolved from this same filter collection.
+        // timeRangeGroups is resolved from this same variable collection.
         fromValue: valueString(fromF!.value),
         toValue: valueString(toF!.value),
         active: fromF!.active && toF!.active,
@@ -940,15 +940,15 @@ export async function renderDashboard(
     const onApplyTimeRange = (group: DashboardTimeRangeGroup, from: string, to: string): void => {
       void applyTimeRange(group, from, to);
     };
-    const bar = buildFilterBar(
-      filterBarApp, session.controls, onCommit, getField,
+    const bar = buildVariableBar(
+      variableBarApp, session.controls, onCommit, getField,
       { document: doc, timeRange, onApplyTimeRange, variables, onCommitVariable,
         onCommitVariableSelection,
         onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
-    timeFilterHost.replaceChildren(bar.timeEl);
-    ordinaryFilterHost.replaceChildren(bar.ordinaryEl);
-    currentFilterBar = bar;
+    timeVariableHost.replaceChildren(bar.timeEl);
+    ordinaryVariableHost.replaceChildren(bar.ordinaryEl);
+    currentVariableBar = bar;
     // #447 removed the "Filter options were refreshed" announcement. It fired
     // when an OPEN popover's option list changed content between two builds,
     // which only a running option-source query could cause; a direct-input
@@ -965,7 +965,7 @@ export async function renderDashboard(
     if (restoreFocusKey) bar.focusFieldTrigger(restoreFocusKey);
   }
 
-  const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
+  const variableDiagnosticsHost = h('div', { class: 'dash-variable-diagnostics' });
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
     // #427: the star no longer adds a panel, so this must not tell the user to
@@ -1895,7 +1895,7 @@ export async function renderDashboard(
         /* v8 ignore next 3 -- controller invokes onSelect only with finite
            scale values; retained as a defensive contract boundary. */
         if (!formatted.ok) {
-          filterRefreshLiveEl.textContent = `Time range was not changed: ${formatted.error}`;
+          variableRefreshLiveEl.textContent = `Time range was not changed: ${formatted.error}`;
           return;
         }
         void applyTimeRange(timeRangeGroup, formatted.from, formatted.to);
@@ -2175,17 +2175,17 @@ export async function renderDashboard(
   // tile-progress tick (same wave `now`) never churns the labels. Seeded from
   // the session's initial state (`null` before the first wave).
   let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
-  // #303: the committed-filter bag for a published view, built exactly the way
+  // #303: the committed-variable bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
   // A multi-select variable's committed value is a real `string[]` and is
-  // persisted as one — `dashboard-filter-store.ts` has round-tripped arrays
+  // persisted as one — `dashboard-variable-store.ts` has round-tripped arrays
   // since #189 (`value: string | string[]`, with an array-aware coerce that
   // drops non-string elements rather than stringifying them), so a selection
   // survives a reload without ever becoming the joined `"a,b"` that
   // `valueString`'s `String()` fallback would produce.
-  const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
-    const bag: DashboardFilterBag = {};
-    for (const f of filters) {
+  const persistBagOf = (variableStates: readonly ViewerVariableState[]): DashboardVariableBag => {
+    const bag: DashboardVariableBag = {};
+    for (const f of variableStates) {
       bag[f.id] = {
         value: Array.isArray(f.value) ? f.value.map(valueString) : valueString(f.value),
         active: f.active,
@@ -2196,12 +2196,12 @@ export async function renderDashboard(
   // #303: a SEPARATE signature from `barSig` above — that one also flips when
   // curated options arrive (no committed value/active change), which would
   // otherwise trigger a redundant write. Seeded from the session's OWN initial
-  // filter state (post-`initialFilters` seeding + defaults), not the raw stored
+  // variable state (post-`initialVariables` seeding + defaults), not the raw stored
   // `initialBag`, so the very first publish — which merely echoes that state —
   // never writes: an empty/partial store would otherwise differ from the
   // default-filled published bag and persist defaults on first open, freezing
-  // them against later Spec-editor changes to a filter's default.
-  let lastFilterPersistSig = filterBagSignature(persistBagOf(session.state.value.filters));
+  // them against later Spec-editor changes to a variable's default.
+  let lastVariablePersistSig = variableBagSignature(persistBagOf(session.state.value.variableStates));
   const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
@@ -2215,7 +2215,7 @@ export async function renderDashboard(
       return;
     }
     lastMobile = mobileNow;
-    // Rebuild the shared filter bar only on a STRUCTURAL change (activation or
+    // Rebuild the shared variable bar only on a STRUCTURAL change (activation or
     // committed value) — not on a bare status flip, not on tile progress ticks,
     // and (#447 phase 2) NOT when an option list arrives. `status` and
     // `optionsRev` are both deliberately EXCLUDED: they are updated in the
@@ -2227,12 +2227,12 @@ export async function renderDashboard(
     // batch instead lands ASYNCHRONOUSLY and can complete while the user is
     // mid-keystroke in an unrelated field, so rebuilding on it would discard
     // that input and silently cancel any open popover.
-    const sig = JSON.stringify(sview.filters.map((f) =>
+    const sig = JSON.stringify(sview.variableStates.map((f) =>
       [f.id, f.active, sigValue(f.value)]));
     let rebuilt = false;
     if (sig !== barSig) {
       barSig = sig;
-      rebuildFilterBar(sview);
+      rebuildVariableBar(sview);
       rebuilt = true;
     }
     // #447 phase 2: push fresh option rows (and the batch's unavailable state)
@@ -2244,17 +2244,17 @@ export async function renderDashboard(
     // changes how the control COMMITS (whether an off-list value is preserved),
     // so a flip must reach it even in the contrived case where the option
     // content it accompanies is byte-identical.
-    const optionsSig = JSON.stringify(sview.filters.map((f) =>
+    const optionsSig = JSON.stringify(sview.variableStates.map((f) =>
       [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
     if (!rebuilt && optionsSig !== lastOptionsSig) {
       const states: Record<string, VariableOptionsUpdate> = {};
-      for (const f of sview.filters) {
+      for (const f of sview.variableStates) {
         if (!f.configured) continue;
         states[f.parameter] = {
           options: f.options ?? [], error: f.optionsError, incomplete: f.optionsTruncated,
         };
       }
-      currentFilterBar?.setVariableOptions(states);
+      currentVariableBar?.setVariableOptions(states);
     }
     lastOptionsSig = optionsSig;
     // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
@@ -2263,16 +2263,16 @@ export async function renderDashboard(
     // advanced needs the closed labels re-resolved in place — a committed
     // relative range (`-1d` → `now`) moves per wave without any bar rebuild.
     if (!rebuilt && sview.waveWallNowMs != null && sview.waveWallNowMs !== lastLabelWaveNowMs) {
-      currentFilterBar?.refreshTimeRangeLabels(sview.waveWallNowMs);
+      currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs);
     }
     lastLabelWaveNowMs = sview.waveWallNowMs;
-    // #303: persist committed filter value/active into the isolated per-dashboard
+    // #303: persist committed variable value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
-    const filterBag = persistBagOf(sview.filters);
-    const persistSig = filterBagSignature(filterBag);
-    if (persistSig !== lastFilterPersistSig) {
-      lastFilterPersistSig = persistSig;
-      app.saveJSON(KEYS.dashFilters, writeDashboardFilterBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, filterBag));
+    const variableBag = persistBagOf(sview.variableStates);
+    const persistSig = variableBagSignature(variableBag);
+    if (persistSig !== lastVariablePersistSig) {
+      lastVariablePersistSig = persistSig;
+      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, variableBag));
     }
     tileCountLabel.textContent = sview.tileSearch.trim()
       ? `${sview.visibleTileCount} of ${sview.totalTileCount} tiles`
@@ -2280,20 +2280,20 @@ export async function renderDashboard(
     const noMatch = !!sview.tileSearch.trim() && sview.visibleTileCount === 0 && sview.totalTileCount > 0;
     empty.style.display = sview.totalTileCount === 0 ? '' : 'none';
     searchEmpty.style.display = noMatch ? '' : 'none';
-    clearFiltersBtn.disabled = !sview.resettableFilterIds.some((id) => ordinaryFilterIds.includes(id));
+    clearVariablesBtn.disabled = !sview.resettableVariableIds.some((id) => ordinaryVariableIds.includes(id));
     // Genuine dashboard-config diagnostics only (a tile whose presentation
-    // could not resolve, etc.). Per-filter "required/invalid" badges were
-    // dropped as noise (owner decision) — an unfilled required filter simply
+    // could not resolve, etc.). Per-variable "required/invalid" badges were
+    // dropped as noise (owner decision) — an unfilled required variable simply
     // leaves its target tiles in their normal unfilled state.
-    filterDiagnosticsHost.replaceChildren(
+    variableDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
       ...sview.timeRangeDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
       // #447 phase 2: the option batch's own failure. Rendered in the
-      // variables/filter-control area, as the issue requires — one banner for the
+      // variable-control area, as the issue requires — one banner for the
       // whole Dashboard, because a single malformed branch makes the combined
       // `UNION ALL` unrunnable and takes every option-backed control with it.
       // Severity-mapped like the others so it never reads as unstyled text.
-      ...sview.filterDiagnostics.map((d) => h('div', {
+      ...sview.optionDiagnostics.map((d) => h('div', {
         class: 'dash-config-diagnostic is-' + (d.severity ?? 'error'),
       }, d.message)),
     );
@@ -2341,7 +2341,7 @@ export async function renderDashboard(
     }
   });
 
-  // #437: one compact toolbar row — style/count/search/time-filters, then the
+  // #437: one compact toolbar row — style/count/search/time variables, then the
   // freshness control, then View/Edit last. The separate #425 surface row (a
   // Back-to-query button plus a title) is gone.
   // #471: so is the generic Back-to-query control #426 had put back here. It named
@@ -2355,29 +2355,29 @@ export async function renderDashboard(
     layoutWrap,
     tileCount,
     tileSearch,
-    timeFilterHost,
+    timeVariableHost,
     h('span', { class: 'dash-toolbar-spacer' }),
     freshness,
     buildDashboardModeSwitch(app, target.mode));
-  const hasOrdinaryFilters = ordinaryFilterIds.length > 0;
-  const filterToolbar = h('div', {
-    class: 'dash-toolbar dash-toolbar-filters',
-    style: hasOrdinaryFilters ? undefined : { display: 'none' },
-  }, ordinaryFilterHost, clearFiltersBtn);
+  const hasOrdinaryVariables = ordinaryVariableIds.length > 0;
+  const variableToolbar = h('div', {
+    class: 'dash-toolbar dash-toolbar-variables',
+    style: hasOrdinaryVariables ? undefined : { display: 'none' },
+  }, ordinaryVariableHost, clearVariablesBtn);
 
   installedDashboardHost = target.host;
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
-      primaryToolbar, filterToolbar, filterRefreshLiveEl),
-    filterDiagnosticsHost, empty, searchEmpty, grid));
+      primaryToolbar, variableToolbar, variableRefreshLiveEl),
+    variableDiagnosticsHost, empty, searchEmpty, grid));
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard
   // rebuild must not leave Chart.js observers, signal effects, popovers, or
   // viewer requests attached to the replaced page.
   installedDashboardCleanup = () => {
     if (app.surfaceCommands === commandPort) app.surfaceCommands = null;
-    currentFilterBar?.dispose();
-    currentFilterBar = null;
+    currentVariableBar?.dispose();
+    currentVariableBar = null;
     if (tileSearchTimer != null) clearTimeout(tileSearchTimer);
     tileSearchTimer = null;
     disposeDashboardEffect();
@@ -2450,7 +2450,7 @@ export async function renderDashboard(
   // the node it names actually exists and is stable. Both are straight-line
   // sequencing off real completion signals, never a timeout.
   //
-  // Arm the "user got there first" signal for the deferred (filter) delivery
+  // Arm the "user got there first" signal for the deferred (variable) delivery
   // below, before the wave starts. Capture phase, so a click that a control's own
   // handler stops still counts.
   let userInteracted = false;
@@ -2475,8 +2475,8 @@ export async function renderDashboard(
   if (target.focus?.kind === 'tile') applyNavigationFocus(target.focus);
 
   await session.start();
-  // #426: from here on a curated filter's control is stable, so the command port
-  // can deliver filter focus in place instead of reporting `pending`.
+  // #426: from here on a variable's control is stable, so the command port
+  // can deliver variable focus in place instead of reporting `pending`.
   waveSettled = true;
 
   // A VARIABLE field is not stable across that first publish: it changes the
@@ -2502,9 +2502,9 @@ export async function renderDashboard(
    * highlight sequence cannot drift into two copies that disagree.
    *
    * `respectUserInteraction` is the difference between them. The render-time
-   * delivery must yield to a user who got there first: filter focus lands after
+   * delivery must yield to a user who got there first: variable focus lands after
    * the opening wave resolves, which can take seconds — long enough to Tab into
-   * another filter and start typing, and the filter bar's own rebuild already
+   * another variable and start typing, and the variable bar's own rebuild already
    * restores focus to whatever field that was. Yanking it away mid-keystroke is
    * worse than not navigating at all. An in-place request IS the user's own click,
    * so it must NOT be suppressed by that flag — which the click itself just set.
@@ -2518,7 +2518,7 @@ export async function renderDashboard(
     // on screen.
     if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return 'pending';
     if (respectUserInteraction && userInteracted) return 'ok';
-    const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : filterFocusTarget(focus.id);
+    const node = focus.kind === 'tile' ? tileFocusTarget(focus.id) : variableFocusTarget(focus.id);
     if (!node) return 'missing';
     // #426: the member IS on this Dashboard, but its node is not in the document —
     // `tileEls` is a write-only cache, and the layout reconcilers rebuild the grid
@@ -2528,7 +2528,7 @@ export async function renderDashboard(
     // render transition rebuilds the surface (which resets that per-session search)
     // and delivers the focus for real.
     if (!node.isConnected) return 'pending';
-    // A tile card and a filter field are both non-interactive containers, so
+    // A tile card and a variable field are both non-interactive containers, so
     // they need a programmatic-focus target; `-1` keeps them out of the Tab
     // order, leaving normal keyboard navigation untouched.
     if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
@@ -2548,8 +2548,8 @@ export async function renderDashboard(
   /** Resolve a variable by its exact NAME, within the selected Dashboard only.
    *  A variable's name IS its parameter, so there is no definition to look up
    *  first — the name goes straight to the built control. */
-  function filterFocusTarget(variableName: string): HTMLElement | null {
-    return currentFilterBar?.fieldElement(variableName) ?? null;
+  function variableFocusTarget(variableName: string): HTMLElement | null {
+    return currentVariableBar?.fieldElement(variableName) ?? null;
   }
 
   /** A temporary navigation highlight, IN ADDITION to the normal focus ring.

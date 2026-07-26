@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 // #335: the compound Dashboard time-range control, driven in a REAL browser
-// against the actual DashboardViewerSession + buildFilterBar + buildTimeRangeField
+// against the actual DashboardViewerSession + buildVariableBar + buildTimeRangeField
 // + openAnchoredDialog + validateTimeRangeDraft pipeline (see time-range.html).
 // happy-dom cannot exercise the popover placement/viewport clamp, the real
 // focus trap / focus return, or the `.fill()`-driven input revalidation, so
@@ -36,10 +36,10 @@ test.describe('Dashboard compound time-range control', () => {
     await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
 
     // The "Time" section label sits ahead of the per-param fields.
-    await expect(page.locator('.dash-filters .flabel', { hasText: 'Time' })).toBeVisible();
+    await expect(page.locator('.dash-variables .flabel', { hasText: 'Time' })).toBeVisible();
 
     // The pair's own individual fields are gone (the compound control
-    // represents them); the non-group `service` filter keeps its field.
+    // represents them); the non-group `service` variable keeps its field.
     await expect(page.getByRole('combobox', { name: 'from' })).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'to' })).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'service' })).toHaveCount(1);
@@ -168,7 +168,7 @@ test.describe('Dashboard compound time-range control', () => {
 
     // Backdrop click (a genuine mousedown+click whose target is the overlay).
     await open(page);
-    await page.locator('.ms-overlay').click({ position: { x: 4, y: 4 } });
+    await page.locator('.popover-overlay').click({ position: { x: 4, y: 4 } });
     await expect(page.locator('.trf-popover')).toHaveCount(0);
   });
 

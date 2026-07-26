@@ -46,11 +46,11 @@ The [**Iceberg catalog explorer**](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md) is a
 distributable installer + two dashboards for Iceberg data-lake catalogs:
 [`examples/iceberg-install.json`](examples/iceberg-install.json) generates the
 `ice_meta_<catalog>` navigation views (per catalog, plus a cross-catalog union
-layer) straight from filter inputs, and
+layer) straight from variable inputs, and
 [`examples/iceberg-catalog-dashboard.json`](examples/iceberg-catalog-dashboard.json) (BI) /
 [`examples/iceberg-dba-dashboard.json`](examples/iceberg-dba-dashboard.json) (DBA,
 with snapshot/metadata **log panels**) explore them with one shared `catalog`
-filter across every tile.
+variable across every tile.
 
 ## How it works
 
@@ -198,7 +198,7 @@ The SQL editor provides:
   and re-binds `param_d`; parameters of an omitted block are never sent). The
   strip marks a **required** parameter's name with a leading `*` (`name*:`) —
   a block-only parameter stays optional (`name:`, muted) and the Dashboard
-  filter bar behaves the same way — a blank optional filter runs the tile
+  variable row behaves the same way — a blank optional variable runs the tile
   unfiltered instead of blocking it. Values are never interpolated into the
   SQL: the materialized query still carries `{name:Type}` placeholders and
   ClickHouse does the typed substitution. The syntax is **SQL-transparent**: to
@@ -222,7 +222,7 @@ The SQL editor provides:
   `now-7d`, `now/d` — so a "last hour of logs" or "yesterday's traffic" query
   keeps a **moving window**: the stored value is the expression, and it
   re-resolves against "now" every time it runs (workbench Run, Dashboard
-  load/Refresh, a filter-change wave) rather than freezing at the moment it
+  load/Refresh, a variable-change wave) rather than freezing at the moment it
   was typed. Grammar (Grafana's, adopted verbatim — case-sensitive units):
 
   ```text
@@ -294,7 +294,7 @@ The SQL editor provides:
   fill in the members. Two ways to actually get it: paste the **full**
   `Enum8('a'=1,'b'=2,…)` type into the declaration for a real, blocking
   validation (a non-member value is rejected on both the workbench and the
-  Dashboard filter bar); or, workbench only, declare the variable as
+  Dashboard variable row); or, workbench only, declare the variable as
   `{o:String}` and compare it directly to the Enum column
   (`WHERE operation = {o:String}`) — the dropdown is then inferred from that
   column's *cached* schema type, offered purely as a **suggestion**: the

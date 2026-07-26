@@ -34,7 +34,7 @@ interface FakeChart {
 
 const DT = parseParamType('DateTime');
 const group = (key = 'from\u0000to'): DashboardTimeRangeGroup => ({
-  key, fromFilterId: 'from', toFilterId: 'to', fromParameter: 'from', toParameter: 'to',
+  key, fromVariableId: 'from', toVariableId: 'to', fromParameter: 'from', toParameter: 'to',
   fromType: DT, toType: DT, tileIds: ['a', 'b'], interactiveChartTileIds: [],
 });
 

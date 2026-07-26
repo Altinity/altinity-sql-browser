@@ -5,13 +5,13 @@
 // inserts its text.
 //
 // `getRecents(text)` must be a LIVE callback (called fresh on every open/
-// keystroke), not a snapshot array: the var-strip/filter-bar rebuild their
+// keystroke), not a snapshot array: the var-strip/variable-bar rebuild their
 // input DOM only when the detected `{name:Type}` *set* changes (a signature
 // guard), so a value recorded by a run that completes without changing that
 // set would otherwise never reach an already-built field. Callers pass
 // `core/recent-values.js`'s `recentOptions(state.varRecent, name, type, text)`
 // (type-filtered per #170's validator, then text-filtered) — see app.js's
-// `renderVarStrip` / dashboard.js's `buildFilterBar`.
+// `renderVarStrip` / dashboard.js's `buildVariableBar`.
 
 import { h } from './dom.js';
 import { createCombobox, idSafe } from './combobox.js';
@@ -35,7 +35,7 @@ export interface BuildRecentFieldOpts {
 }
 
 /** What `buildRecentField` returns — the field controller its caller (the
- *  workbench var-strip / dashboard filter bar) delegates its own DOM
+ *  workbench var-strip / dashboard variable bar) delegates its own DOM
  *  listeners to. */
 export interface RecentField {
   el: HTMLElement;

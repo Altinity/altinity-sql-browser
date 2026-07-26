@@ -8,7 +8,7 @@
 // The field stays a plain free-text `<input class="var-input">` — never
 // read-only — so an absolute timestamp keeps working exactly as before
 // (#169 rule 6); picking a preset just inserts its expression text. The
-// caller (app.js's renderVarStrip / dashboard.js's buildFilterBar) keeps
+// caller (app.js's renderVarStrip / dashboard.js's buildVariableBar) keeps
 // 100% of its existing persistence/validation logic (oninput → persist +
 // applyFieldState + setRunBtn/debounced-commit; onblur/Enter → harden) — it
 // just also calls this object's `onFocus`/`onInput`/`onKeyDown`/`onBlur`/
@@ -137,7 +137,7 @@ export interface BuildRelativeTimeFieldOpts {
 }
 
 /** What `buildRelativeTimeField` returns — the field controller its caller
- *  (the workbench var-strip / dashboard filter bar) delegates its own DOM
+ *  (the workbench var-strip / dashboard variable bar) delegates its own DOM
  *  listeners to. `previewEl` is the extra field `applyFieldState` (var-
  *  field.js) points `aria-describedby` at. */
 export interface RelativeTimeField {
@@ -170,7 +170,7 @@ export function buildRelativeTimeField({
   const liveEl = h('div', { class: 'sr-only', id: liveId, 'aria-live': 'polite' });
   // Review finding #4: this is the "real element" `applyFieldState` (var-
   // field.js) points `aria-describedby` at — a stable id, shared by both the
-  // workbench var-strip and the dashboard filter bar (both build fields
+  // workbench var-strip and the dashboard variable bar (both build fields
   // through this one module).
   const previewEl = h('div', { class: 'var-combo-preview', id: previewId });
 

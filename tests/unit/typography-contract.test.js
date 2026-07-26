@@ -309,6 +309,14 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // drawer #447 had carved out of the tree's markup) — option SQL is edited in
       // the main editor now, whose markup is already covered by app-shell.ts,
       // workbench/workbench-shell.ts and tabs.ts above.
+      //
+      // #459: the shared variable bar builds the Dashboard's and the detached
+      // view's `{name:Type}` rows — markup dashboard.ts (gated above) delegates
+      // rather than renders, so it was outside this gate for the same
+      // carved-out-markup reason the comment opens with. Adding it here is what
+      // makes an emitter/rule drift on a class like `.dash-variable-time`
+      // detectable at all.
+      'src/ui/variable-bar.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
     const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));

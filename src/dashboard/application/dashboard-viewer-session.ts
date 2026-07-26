@@ -23,9 +23,11 @@
 // id, label, option-source query, or explicit target list anywhere — a
 // variable's value is direct scalar input, always already known, so there is no
 // filter/source wave for a panel to wait for and every runnable tile runs in
-// ONE batch. The runtime shape (`FilterRuntime`/`ViewerFilterState`/`setFilter`/
-// `applyFilters`/…) deliberately keeps its names; only where its inputs come
-// from changed.
+// ONE batch. #459 renamed the surviving runtime shape to match what it now
+// models: `VariableRuntime`/`ViewerVariableState`/`setVariable`/`applyVariables`/…
+// (the curated-filter names it kept through #447 described a model that no
+// longer exists). Only the persisted `asb:dashFilters` key keeps its historical
+// name — see `KEYS.dashFilters` in `state.ts`.
 
 import { signal } from '@preact/signals-core';
 import type { ReadonlySignal, Signal } from '@preact/signals-core';
@@ -107,24 +109,24 @@ export interface ViewerTileState {
  *  fail, so it is always `'idle'`. A CONFIGURED variable moves
  *  `'loading'` → `'ready'` as the refresh's one option batch runs, or to
  *  `'error'` when that batch fails (#447 phase 2). */
-export type ViewerFilterStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type ViewerVariableStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /** One option a configured variable's control offers. Structurally the shared
  *  `VariableOption` (core/variable-options.types.ts) — aliased rather than
- *  redeclared so the viewer, the pure compiler/reader and the shared filter bar
+ *  redeclared so the viewer, the pure compiler/reader and the shared variable bar
  *  all name one shape. */
-export type ViewerFilterOption = VariableOption;
+export type ViewerVariableOption = VariableOption;
 
 /** One Dashboard VARIABLE's runtime state (#447). `id`, `parameter` and `label`
  *  are all the variable's exact, case-sensitive name — it has no other
  *  identity, and there is no separate authored label. */
-export interface ViewerFilterState {
+export interface ViewerVariableState {
   id: string;
   parameter: string;
   label: string;
   active: boolean;
   value: unknown;
-  status: ViewerFilterStatus;
+  status: ViewerVariableStatus;
   /** True when this variable has Dashboard-local option SQL AT ALL — so it
    *  renders a single-select rather than a direct input. Published SEPARATELY
    *  from `options` because it is known at construction while `options` only
@@ -140,12 +142,12 @@ export interface ViewerFilterState {
   /** Why this variable's control cannot offer options: its own option SQL is
    *  locally unacceptable, or the batch it belongs to failed. `null` when it is
    *  fine (and always, for a direct-input variable). Distinct from
-   *  `DashboardViewState.filterDiagnostics`, which is the BATCH-level report. */
+   *  `DashboardViewState.optionDiagnostics`, which is the BATCH-level report. */
   optionsError: string | null;
   /** The options the last successful batch returned for this variable, or `null`
    *  before one has (and always, for a direct-input variable). An EMPTY array is
    *  a real answer — the option query returned no rows. */
-  options: ViewerFilterOption[] | null;
+  options: ViewerVariableOption[] | null;
   /** Bumped only when this variable's option CONTENT actually changes, so a
    *  consumer can tell a genuine refresh from an unchanged republish. */
   optionsRev: number;
@@ -183,18 +185,19 @@ export interface DashboardViewState {
   /** Variable names that are not in the UNSET state (`value: ''`, inactive) —
    *  #447 removed persisted defaults, so "resettable" now means "has anything
    *  to clear". */
-  resettableFilterIds: string[];
-  filters: ViewerFilterState[];
+  resettableVariableIds: string[];
+  variableStates: ViewerVariableState[];
   /** #447: every INFERRED variable, in inference order — including the
    *  `conflicted` and `orphaned` ones, which render a diagnostic row in the
-   *  Variables subtree but never get a runtime and never execute. `filters`
-   *  above is exactly the `bindableVariables` subset of this list. */
+   *  Variables subtree but never get a runtime and never execute.
+   *  `variableStates` above is exactly the `bindableVariables` subset of this
+   *  list. */
   variables: DashboardVariable[];
   layout: DashboardLayoutView;
   /** The effective header style, including any session-local View-mode choice. */
   style: DashboardStyle;
   /** Count of ACTIVE variables (not non-empty stored values, #188). */
-  activeFilterCount: number;
+  activeVariableCount: number;
   running: boolean;
   updatedAt: number | null;
   /** #437: wall-clock ms (`deps.wallNow()`) of the last `refresh()` wave that
@@ -220,7 +223,7 @@ export interface DashboardViewState {
    *  control goes unavailable together and running ONE variable's SQL on its own
    *  — in its main-editor tab (#457) — is the path to finding out which branch is
    *  at fault. Empty when the batch succeeded, or when there was nothing to run. */
-  filterDiagnostics: Diagnostic[];
+  optionDiagnostics: Diagnostic[];
   /** Persistent saved-query time-range resolution diagnostics. */
   timeRangeDiagnostics: WorkspaceDiagnostic[];
   /** #335: the ONE wall-clock snapshot (`deps.wallNow()`) the latest execution
@@ -298,20 +301,20 @@ export interface DashboardViewerDeps {
    *  always starting unset. A variable with no entry here (absent/empty map, or
    *  no key for its name) starts UNSET (`value: ''`, `active: false`); an entry
    *  whose `value` is nullish falls back to that same unset value. */
-  initialFilters?: Record<string, { value: unknown; active: boolean }>;
+  initialVariables?: Record<string, { value: unknown; active: boolean }>;
 }
 
 export interface DashboardViewerSession {
   readonly state: ReadonlySignal<DashboardViewState>;
-  /** The `{name:Type}` field controls the filter bar renders (structure only). */
+  /** The `{name:Type}` field controls the variable bar renders (structure only). */
   readonly controls: FieldControl[];
   /** #335: the resolved time-range groups (pairs of scalar date-like variables,
    *  identified by variable NAME since #447) — computed ONCE at construction and
    *  never recomputed across the session; empty when no pair resolves. */
   readonly timeRangeGroups: DashboardTimeRangeGroup[];
-  /** One field's prepared #170 validation state against the filter bar's DRAFT
+  /** One field's prepared #170 validation state against the variable bar's DRAFT
    *  values/active (in-progress typing) — for the shared invalid-field affordance. */
-  getFilterField(
+  getVariableField(
     name: string, mode: ValidationMode, values: Record<string, unknown>, active: Record<string, boolean>,
   ): PreparedFieldState;
   /** Run the whole Dashboard once (token preflight → one tile wave). */
@@ -321,28 +324,28 @@ export interface DashboardViewerSession {
   /** Re-run one tile with the current variable values. */
   refreshTile(tileId: string): Promise<void>;
   /** Set one variable's value (activates it) and run the one affected-panel wave. */
-  setFilter(filterId: string, value: unknown): Promise<void>;
-  /** Set one variable's value AND activation explicitly (the filter bar's
+  setVariable(variableId: string, value: unknown): Promise<void>;
+  /** Set one variable's value AND activation explicitly (the variable bar's
    *  commit, which owns activation for optional fields), then run the one
    *  affected-panel wave. */
-  applyFilter(filterId: string, value: unknown, active: boolean): Promise<void>;
+  applyVariable(variableId: string, value: unknown, active: boolean): Promise<void>;
   /** #335: commit MULTIPLE variables atomically (the time-range control's
    *  From/To pair, and #334's drag-to-select) in ONE execution wave over the
-   *  union of every changed variable's resolved targets. Every `filterId`
+   *  union of every changed variable's resolved targets. Every `variableId`
    *  must resolve, uniquely; the complete proposed batch is
    *  validated through the shared execution pipeline before either value is
    *  mutated. Returns a diagnostic failure for an invalid batch. A call in
    *  which nothing actually changes publishes nothing and runs no wave. */
-  applyFilters(entries: Array<{ filterId: string; value: string; active: boolean }>): Promise<ApplyFiltersResult>;
+  applyVariables(entries: Array<{ variableId: string; value: string; active: boolean }>): Promise<ApplyVariablesResult>;
   /** Deactivate one variable WITHOUT discarding its value (reactivation
    *  restores it); one affected-panel wave (#188 clear-one). */
-  clearFilter(filterId: string): Promise<void>;
+  clearVariable(variableId: string): Promise<void>;
   /** Reset every variable to UNSET, coalesced into ONE affected-panel wave
    *  (#188 clear-all). */
-  clearAllFilters(): Promise<void>;
+  clearAllVariables(): Promise<void>;
   /** Reset only the named variables to UNSET (#447 — there are no persisted
    *  defaults to restore any more). */
-  resetFilters(filterIds: readonly string[]): Promise<void>;
+  resetVariables(variableIds: readonly string[]): Promise<void>;
   /** Set the transient presentation-only tile search. */
   setTileSearch(query: string): void;
   /** Abort one tile's in-flight request. */
@@ -368,11 +371,11 @@ export interface DashboardViewerSession {
   destroy(): void;
 }
 
-export type ApplyFiltersResult =
+export type ApplyVariablesResult =
   | { ok: true; changed: boolean }
   | { ok: false; error: string };
 
-// ── Per-tile / per-filter runtime records (never published directly) ──────────
+// ── Per-tile / per-variable runtime records (never published directly) ──────────
 
 interface TileRuntime {
   tile: DashboardTileV1;
@@ -391,13 +394,13 @@ interface TileRuntime {
  *  field name `def` is deliberately unchanged so callers do not churn, but it
  *  is no longer a persisted definition — just the variable's identity, in which
  *  `id` and `parameter` are BOTH the exact variable name. */
-interface FilterRuntime {
+interface VariableRuntime {
   def: { id: string; parameter: string };
-  state: ViewerFilterState;
+  state: ViewerVariableState;
   /** Whether this variable binds a SELECTION (`Array(scalar T)` with a running
    *  option batch) rather than one scalar. Decided once, at construction, from
    *  the same pure predicate the bar renders its control on. Session-internal:
-   *  the published `ViewerFilterState` carries no such flag, because a consumer
+   *  the published `ViewerVariableState` carries no such flag, because a consumer
    *  can read the shape off `value` itself. */
   multiple: boolean;
 }
@@ -456,7 +459,7 @@ const valueImpliesActive = (value: unknown): boolean =>
  *  non-empty value counts as active.
  *
  *  The value-derived pass is only ever a fallback for a name with NO entry in
- *  the `active` map, and `activeMap()` supplies one for every filter — so the
+ *  the `active` map, and `activeMap()` supplies one for every variable — so the
  *  array case cannot arise here in production and is deliberately not branched
  *  on. `commitValue` has already reduced an empty selection to `''` anyway. */
 function effectiveActive(
@@ -510,9 +513,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // #335: the single wall-clock snapshot the LATEST execution wave resolved its
   // relative tokens against (published as `state.waveWallNowMs`). `null` until
   // the first wave; every wave entry point (`refresh`/`runAffectedWave`/the
-  // `commitAndRerun` filter-source chain) captures ONE `deps.wallNow()` at
+  // `commitAndRerun` commit chain) captures ONE `deps.wallNow()` at
   // entry, sets this, and threads that same instant into every `prepareBatch`/
-  // filter-source resolution it runs.
+  // option-batch resolution it runs.
   let waveWallNowMs: number | null = null;
   // #437: the freshness control's own state — see `DashboardViewState` above.
   // Set only by `recordRefreshOutcome`, called from `refresh()` right before
@@ -565,7 +568,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // A tile is EXECUTABLE/runnable when it has a query and is neither a text
   // panel nor a presentation error — structural, fixed for the session, so
-  // `runnableTiles()` (below) and `applyFilters`'s scoped re-analysis derive it
+  // `runnableTiles()` (below) and `applyVariables`'s scoped re-analysis derive it
   // from this ONE predicate and can never drift apart.
   const isRunnableTileRuntime = (runtime: TileRuntime): boolean =>
     !!runtime.query && !runtime.isText && !runtime.presentationError;
@@ -646,12 +649,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       : 'This variable’s option SQL cannot be used: its type has no option list.');
   }
   const configuredNames = new Set([...batchedNames, ...localOptionErrors.keys()]);
-  const filters: FilterRuntime[] = bindable.map((variable) => {
+  const variableRuntimes: VariableRuntime[] = bindable.map((variable) => {
     const name = variable.name;
     // #303: a persisted seed for this VARIABLE NAME overrides the unset start
-    // (untouched when `initialFilters` is absent/empty, or has no entry for this
+    // (untouched when `initialVariables` is absent/empty, or has no entry for this
     // name). A seed whose `value` is nullish falls back to the unset value.
-    const seed = deps.initialFilters ? deps.initialFilters[name] : undefined;
+    const seed = deps.initialVariables ? deps.initialVariables[name] : undefined;
     const configured = configuredNames.has(name);
     const localError = localOptionErrors.get(name) ?? null;
     // Whether this variable binds a SELECTION rather than one scalar — fixed
@@ -666,7 +669,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // instead of being carried forward.
     const seeded = seed !== undefined && Array.isArray(seed.value) === multiple
       ? (seed.value ?? UNSET_VALUE) : UNSET_VALUE;
-    const state: ViewerFilterState = {
+    const state: ViewerVariableState = {
       id: name, parameter: name, label: name,
       // A selection carries its own activation: an array seed that survived the
       // shape check is active iff it has elements. `commitValue` has already
@@ -687,7 +690,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     };
     return { def: { id: name, parameter: name }, state, multiple };
   });
-  const filterById = new Map<string, FilterRuntime>(filters.map((filter) => [filter.def.id, filter]));
+  const variableById = new Map<string, VariableRuntime>(variableRuntimes.map((variable) => [variable.def.id, variable]));
 
   /** One variable's resolved target tile set: every tile whose SQL declares
    *  that exact name (`requiredIn`/`optionalIn` from a parameter analysis).
@@ -695,7 +698,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  selects WHICH analysis to read: the execution `analysis` (text tiles
    *  blanked) for the affected-panel planner, or the wider `timeRangeAnalysis`
    *  (every panel family) for time-range group membership. */
-  function resolveFilterTargets(
+  function resolveVariableTargets(
     def: { parameter: string }, sourceAnalysis: ParameterAnalysis = analysis,
   ): Set<string> {
     const field = sourceAnalysis.fields[def.parameter];
@@ -706,7 +709,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // this for every committed parameter — one entry per variable, resolved once.
   // Variable names are unique by construction, so no union step is needed.
   const targetsByParameter = new Map<string, Set<string>>(
-    filters.map((filter) => [filter.def.parameter, resolveFilterTargets(filter.def)]),
+    variableRuntimes.map((variable) => [variable.def.parameter, resolveVariableTargets(variable.def)]),
   );
 
   /** The union of the target tiles of every named parameter this session
@@ -736,14 +739,14 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     id: runtime.tile.id, label: runtime.state.title, kind: 'time-range-tile',
     sql: runtime.query?.sql ?? '', bindPolicy: 'row-returning',
   })));
-  const filterTargetTileIds = new Map<string, ReadonlySet<string>>(
-    filters.map((filter) => [filter.def.id, resolveFilterTargets(filter.def, timeRangeAnalysis)]),
+  const variableTargetTileIds = new Map<string, ReadonlySet<string>>(
+    variableRuntimes.map((variable) => [variable.def.id, resolveVariableTargets(variable.def, timeRangeAnalysis)]),
   );
   const authoredTimeRanges = resolveAuthoredTimeRangeGroups({
     variables: bindable,
     analysis: timeRangeAnalysis,
     executableTileIds: knownTileIds,
-    filterTargetTileIds,
+    variableTargetTileIds,
     tiles: tiles.map((runtime) => ({ id: runtime.tile.id, queryId: runtime.tile.queryId })),
     queries,
   });
@@ -756,15 +759,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }));
 
   // #447 phase 2: the BATCH-level option diagnostics — see
-  // `DashboardViewState.filterDiagnostics`. Replaced wholesale by each options
+  // `DashboardViewState.optionDiagnostics`. Replaced wholesale by each options
   // wave (never appended to), so a failure never outlives the wave that hit it.
   // Starts as one shared empty array so a Dashboard with no configured variable
   // never allocates.
-  const NO_FILTER_DIAGNOSTICS: Diagnostic[] = [];
+  const NO_OPTION_DIAGNOSTICS: Diagnostic[] = [];
   /** Shared empty return for every `runOptionBatch` path that reconciles
    *  nothing — the common case, so it never allocates. */
   const NO_RECONCILED: string[] = [];
-  let filterDiagnostics: Diagnostic[] = NO_FILTER_DIAGNOSTICS;
+  let optionDiagnostics: Diagnostic[] = NO_OPTION_DIAGNOSTICS;
   // Stale-wave guard for the options request, reserved BEFORE the token preflight
   // can yield — exactly like a tile's generation. Without that ordering a
   // superseded wave could still be the last one to publish its rows.
@@ -776,15 +779,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // downstream (`prepareBatch`, `prepareParameterizedBatch`) is already
   // `unknown`-typed, so only this coercion had to go.
   const rawValues = (): Record<string, unknown> =>
-    Object.fromEntries(filters.map((filter) => [
-      filter.def.parameter,
-      Array.isArray(filter.state.value) ? filter.state.value.slice() : toValueString(filter.state.value),
+    Object.fromEntries(variableRuntimes.map((variable) => [
+      variable.def.parameter,
+      Array.isArray(variable.state.value) ? variable.state.value.slice() : toValueString(variable.state.value),
     ]));
   const activeMap = (): Record<string, boolean> =>
-    Object.fromEntries(filters.map((filter) => [filter.def.parameter, filter.state.active]));
+    Object.fromEntries(variableRuntimes.map((variable) => [variable.def.parameter, variable.state.active]));
 
   // Prepare a batch, optionally against a caller's DRAFT values/active (the
-  // filter bar's in-progress typing) rather than the committed variable state —
+  // variable bar's in-progress typing) rather than the committed variable state —
   // so live #170 validation can run without mutating committed state.
   const prepareBatch = (
     mode: ValidationMode = 'execute',
@@ -792,7 +795,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     active: Record<string, boolean> = activeMap(),
     // #335: the wave's shared wall-clock snapshot — every relative token in this
     // batch resolves against it. Defaults to a FRESH `deps.wallNow()` so the
-    // keystroke-time `getFilterField` path (which passes no snapshot) keeps
+    // keystroke-time `getVariableField` path (which passes no snapshot) keeps
     // resolving previews against live wall-now; each execution-wave caller
     // passes its own single snapshot instead.
     wallNowMs: number = deps.wallNow(),
@@ -801,8 +804,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   });
 
   /** One field's prepared #170 state against the caller's draft values/active
-   *  (the filter bar reads this on every keystroke for the invalid affordance). */
-  const getFilterField = (
+   *  (the variable bar reads this on every keystroke for the invalid affordance). */
+  const getVariableField = (
     name: string, mode: ValidationMode, values: Record<string, unknown>, active: Record<string, boolean>,
   ) => prepareBatch(mode, values, active).fields[name];
 
@@ -859,16 +862,16 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       tileSearch,
       // #447: "resettable" is simply "not unset" — there are no persisted
       // defaults to compare against any more.
-      resettableFilterIds: filters
-        .filter((filter) => filter.state.active || filter.state.value !== UNSET_VALUE)
-        .map((filter) => filter.def.id),
-      filters: filters.map((filter) => ({ ...filter.state })),
+      resettableVariableIds: variableRuntimes
+        .filter((variable) => variable.state.active || variable.state.value !== UNSET_VALUE)
+        .map((variable) => variable.def.id),
+      variableStates: variableRuntimes.map((variable) => ({ ...variable.state })),
       variables,
       layout,
       style: selectedStyle,
-      activeFilterCount: filters.filter((filter) => filter.state.active).length,
+      activeVariableCount: variableRuntimes.filter((variable) => variable.state.active).length,
       running, updatedAt, lastSuccessWallMs, lastRefreshOutcome, diagnostics: presentationDiagnostics,
-      filterDiagnostics,
+      optionDiagnostics,
       timeRangeDiagnostics,
       waveWallNowMs,
     };
@@ -967,20 +970,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  SELECTION against the fresh list actually changed the bound SET; the caller
    *  collects those names and runs ONE wave over their union. `null` otherwise —
    *  including for every scalar variable, whose off-list committed value is
-   *  deliberately kept and shown verbatim (`filter-option-field.ts`'s documented
+   *  deliberately kept and shown verbatim (`variable-option-field.ts`'s documented
    *  leniency): a value that is still bound into panels is not something an
    *  option refresh gets to silently drop. */
-  function applyOptions(filter: FilterRuntime, options: VariableOption[], incomplete: boolean): string | null {
-    const previous = filter.state.options;
+  function applyOptions(variable: VariableRuntime, options: VariableOption[], incomplete: boolean): string | null {
+    const previous = variable.state.options;
     const changed = previous === null
       || previous.length !== options.length
       || options.some((option, i) => previous[i].value !== option.value || previous[i].label !== option.label);
-    filter.state.options = options;
-    filter.state.status = 'ready';
-    filter.state.optionsError = null;
-    filter.state.optionsTruncated = incomplete;
-    if (changed) filter.state.optionsRev += 1;
-    if (!Array.isArray(filter.state.value)) return null;
+    variable.state.options = options;
+    variable.state.status = 'ready';
+    variable.state.optionsError = null;
+    variable.state.optionsTruncated = incomplete;
+    if (changed) variable.state.optionsRev += 1;
+    if (!Array.isArray(variable.state.value)) return null;
     // A list the server cut off at the cap is not evidence that anything was
     // removed: a selected value could simply live past row 1,000. Pruning against
     // it would silently delete a valid selection, re-run the panels, and persist
@@ -988,15 +991,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // value and shows it verbatim; a selection gets the same benefit of the doubt.
     // The truncation WARNING still publishes, so the incompleteness is not hidden.
     if (incomplete) return null;
-    const reconciled = reconcileSelection(filter.state.value, options);
+    const reconciled = reconcileSelection(variable.state.value, options);
     // `reconcileSelection` never reorders, so a no-wave outcome means there is
     // nothing to adopt: the committed value already IS the reconciled one.
     if (!reconciled.waveNeeded) return null;
     // A selected value is gone from the list. Never auto-select a replacement:
     // `reconcileSelection` only ever filters what was already committed.
-    filter.state.value = commitValue(reconciled.value);
-    if (reconciled.deactivate) filter.state.active = false;
-    return filter.def.parameter;
+    variable.state.value = commitValue(reconciled.value);
+    if (reconciled.deactivate) variable.state.active = false;
+    return variable.def.parameter;
   }
 
   /**
@@ -1046,17 +1049,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // A variable whose list was cut off at the cap is reported once, as a warning
     // rather than an error: the options it DID return are usable, and the only
     // honest alternative to saying so is letting a truncated list look complete.
-    filterDiagnostics = read.truncated.size === 0 ? NO_FILTER_DIAGNOSTICS : [{
+    optionDiagnostics = read.truncated.size === 0 ? NO_OPTION_DIAGNOSTICS : [{
       severity: 'warning',
       code: 'variable-options-truncated',
       message: `Only the first ${VARIABLE_OPTION_CAP.toLocaleString()} options are shown for `
         + `${[...read.truncated].join(', ')}. Narrow the option SQL to see the rest.`,
     }];
     const reconciled: string[] = [];
-    for (const filter of filters) {
-      const options = read.byName.get(filter.def.id);
+    for (const variable of variableRuntimes) {
+      const options = read.byName.get(variable.def.id);
       if (options === undefined) continue; // not in this batch
-      const name = applyOptions(filter, options, read.truncated.has(filter.def.id));
+      const name = applyOptions(variable, options, read.truncated.has(variable.def.id));
       if (name !== null) reconciled.push(name);
     }
     // Publish as soon as the options land. Without this they would be invisible
@@ -1078,15 +1081,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  every panel that declares the name, and discarding it because a list failed
    *  to load would silently change what the panels show. */
   function markOptionsFailed(message: string, code = 'variable-options-batch-failed'): void {
-    filterDiagnostics = [{ severity: 'error', code, message }];
+    optionDiagnostics = [{ severity: 'error', code, message }];
     // Only the variables this batch was actually running for. One whose SQL was
     // rejected locally keeps its OWN, more specific reason — overwriting it with
     // the batch's message would replace "your SQL declares a parameter" with
     // "the combined query failed", which is both vaguer and untrue for it.
-    for (const filter of filters) {
-      if (batchedNames.has(filter.def.id)) {
-        filter.state.status = 'error';
-        filter.state.optionsError = message;
+    for (const variable of variableRuntimes) {
+      if (batchedNames.has(variable.def.id)) {
+        variable.state.status = 'error';
+        variable.state.optionsError = message;
       }
     }
     // Same reason as the success path: a failure the user cannot see until every
@@ -1107,7 +1110,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // A tile is runnable when it has a query and is neither a text panel nor a
   // presentation error — the ONE `isRunnableTileRuntime` predicate, shared with
-  // `applyFilters`'s scoped re-analysis.
+  // `applyVariables`'s scoped re-analysis.
   const runnableTiles = (): TileRuntime[] => tiles.filter(isRunnableTileRuntime);
 
   /** #437: classify a just-finished `refresh()` wave from the tiles it
@@ -1222,7 +1225,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // request is issued after `destroy()`.
     if (!(await preflight())) { publish(); return; }
     // Consult each committed variable's RESOLVED targets (`targetsByParameter`,
-    // built once at construction from `resolveFilterTargets`) rather than
+    // built once at construction from `resolveVariableTargets`) rather than
     // blindly rerunning every tile that merely declares the name — the two must
     // agree, so both derive from the ONE `affectedTileIds` fold.
     reserveAffected(parameters, reservations);
@@ -1251,63 +1254,63 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     await runAffectedWave(changed, waveMs, reservations);
   }
 
-  async function setFilter(filterId: string, value: unknown): Promise<void> {
+  async function setVariable(variableId: string, value: unknown): Promise<void> {
     if (destroyed) return;
-    const filter = filterById.get(filterId);
-    if (!filter) return;
+    const variable = variableById.get(variableId);
+    if (!variable) return;
     // A non-empty value counts as a value, so it activates — by length for a
     // selection, by emptiness for a scalar.
-    filter.state.value = commitValue(value);
-    filter.state.active = valueImpliesActive(value);
+    variable.state.value = commitValue(value);
+    variable.state.active = valueImpliesActive(value);
     publish();
-    await commitAndRerun([filter.def.parameter]);
+    await commitAndRerun([variable.def.parameter]);
   }
 
-  async function applyFilter(filterId: string, value: unknown, active: boolean): Promise<void> {
+  async function applyVariable(variableId: string, value: unknown, active: boolean): Promise<void> {
     if (destroyed) return;
-    const filter = filterById.get(filterId);
-    if (!filter) return;
-    // The filter bar owns activation for optional fields, so value and active
-    // are set independently (unlike setFilter's value-implies-active).
-    filter.state.value = commitValue(value);
-    filter.state.active = active;
+    const variable = variableById.get(variableId);
+    if (!variable) return;
+    // The variable bar owns activation for optional fields, so value and active
+    // are set independently (unlike setVariable's value-implies-active).
+    variable.state.value = commitValue(value);
+    variable.state.active = active;
     publish();
-    await commitAndRerun([filter.def.parameter]);
+    await commitAndRerun([variable.def.parameter]);
   }
 
-  async function applyFilters(
-    entries: Array<{ filterId: string; value: string; active: boolean }>,
-  ): Promise<ApplyFiltersResult> {
+  async function applyVariables(
+    entries: Array<{ variableId: string; value: string; active: boolean }>,
+  ): Promise<ApplyVariablesResult> {
     if (destroyed) return { ok: false, error: 'Dashboard is no longer active.' };
     // Resolve EVERY id up front, all-or-nothing: an unknown OR duplicate id
     // aborts the whole call before any mutation (atomicity — matches
-    // `applyFilter`'s unknown-id no-op, extended across the batch so a partial
+    // `applyVariable`'s unknown-id no-op, extended across the batch so a partial
     // time-range commit can never leave one bound applied and the other not).
     // #447: a variable's id IS its parameter name, so ONE `seen` set is both the
     // duplicate-id and the duplicate-parameter guard.
-    const resolved: { filter: FilterRuntime; value: string; active: boolean }[] = [];
+    const resolved: { variable: VariableRuntime; value: string; active: boolean }[] = [];
     const seen = new Set<string>();
     for (const entry of entries) {
-      const filter = filterById.get(entry.filterId);
-      if (!filter || seen.has(entry.filterId)) {
-        return { ok: false, error: 'The filter batch contains an unknown or duplicate filter.' };
+      const variable = variableById.get(entry.variableId);
+      if (!variable || seen.has(entry.variableId)) {
+        return { ok: false, error: 'The variable batch contains an unknown or duplicate variable.' };
       }
-      seen.add(entry.filterId);
-      resolved.push({ filter, value: entry.value, active: entry.active });
+      seen.add(entry.variableId);
+      resolved.push({ variable, value: entry.value, active: entry.active });
     }
     // Validate the complete proposed state before mutating either variable. We
     // intentionally inspect only fields in this batch: an unrelated optional
     // variable may still be empty and must not veto an otherwise valid range.
     const proposedValues: Record<string, unknown> = rawValues();
     const proposedActive = activeMap();
-    for (const { filter, value, active } of resolved) {
-      proposedValues[filter.def.parameter] = value;
-      proposedActive[filter.def.parameter] = active;
+    for (const { variable, value, active } of resolved) {
+      proposedValues[variable.def.parameter] = value;
+      proposedActive[variable.def.parameter] = active;
     }
     const validationWallMs = deps.wallNow();
-    for (const { filter, active } of resolved) {
+    for (const { variable, active } of resolved) {
       if (!active) continue;
-      const targetIds = resolveFilterTargets(filter.def);
+      const targetIds = resolveVariableTargets(variable.def);
       const scopedAnalysis = analyzeParameterizedSources(tiles
         .filter((runtime) => targetIds.has(runtime.tile.id) && isRunnableTileRuntime(runtime))
         .map((runtime) => ({
@@ -1317,26 +1320,26 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       const proposal = prepareParameterizedBatch(scopedAnalysis, {
         values: proposedValues, active: proposedActive, wallNowMs: validationWallMs, validationMode: 'execute',
       });
-      const field = proposal.fields[filter.def.parameter];
+      const field = proposal.fields[variable.def.parameter];
       if (!field || field.state !== 'ok') {
-        return { ok: false, error: field?.reason || `${filter.def.parameter} is not a valid filter value.` };
+        return { ok: false, error: field?.reason || `${variable.def.parameter} is not a valid variable value.` };
       }
     }
 
-    // Mutate every resolved entry (the filter bar owns activation, like
-    // `applyFilter`), collecting the changed variable names via the same
-    // scalar value + active comparison `resetFilters` uses.
+    // Mutate every resolved entry (the variable bar owns activation, like
+    // `applyVariable`), collecting the changed variable names via the same
+    // scalar value + active comparison `resetVariables` uses.
     const changed: string[] = [];
-    for (const { filter, value, active } of resolved) {
-      if (filter.state.active !== active || filter.state.value !== value) changed.push(filter.def.parameter);
-      filter.state.value = value;
-      filter.state.active = active;
+    for (const { variable, value, active } of resolved) {
+      if (variable.state.active !== active || variable.state.value !== value) changed.push(variable.def.parameter);
+      variable.state.value = value;
+      variable.state.active = active;
     }
     // Nothing actually differs from the committed state → no publish, no wave
     // (an identical-pair Apply is a true no-op, never a spurious rerun).
     if (!changed.length) return { ok: true, changed: false };
     // Reserve generations synchronously with the atomic state commit, before
-    // token preflight or a dependent filter-source query can yield. This is
+    // token preflight or a dependent option query can yield. This is
     // the stale-result boundary for the whole batch.
     const reservations = reserveAffected(changed);
     publish();
@@ -1344,32 +1347,32 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return { ok: true, changed: true };
   }
 
-  async function clearFilter(filterId: string): Promise<void> {
+  async function clearVariable(variableId: string): Promise<void> {
     if (destroyed) return;
-    const filter = filterById.get(filterId);
-    if (!filter) return;
+    const variable = variableById.get(variableId);
+    if (!variable) return;
     // Deactivate but keep the value so reactivation restores it.
-    filter.state.active = false;
+    variable.state.active = false;
     publish();
-    await commitAndRerun([filter.def.parameter]);
+    await commitAndRerun([variable.def.parameter]);
   }
 
-  async function clearAllFilters(): Promise<void> {
-    await resetFilters(filters.map((filter) => filter.def.id));
+  async function clearAllVariables(): Promise<void> {
+    await resetVariables(variableRuntimes.map((variable) => variable.def.id));
   }
 
   /** #447: reset the named variables to UNSET — `value: ''`, `active: false`.
    *  There are no persisted `defaultValue`/`defaultActive` to restore any more,
    *  so this is the same terminal state a fresh, unseeded session starts in. */
-  async function resetFilters(filterIds: readonly string[]): Promise<void> {
+  async function resetVariables(variableIds: readonly string[]): Promise<void> {
     if (destroyed) return;
-    const ids = new Set(filterIds);
+    const ids = new Set(variableIds);
     const changed: string[] = [];
-    for (const filter of filters) {
-      if (!ids.has(filter.def.id)) continue;
-      if (filter.state.active || filter.state.value !== UNSET_VALUE) changed.push(filter.def.parameter);
-      filter.state.active = false;
-      filter.state.value = UNSET_VALUE;
+    for (const variable of variableRuntimes) {
+      if (!ids.has(variable.def.id)) continue;
+      if (variable.state.active || variable.state.value !== UNSET_VALUE) changed.push(variable.def.parameter);
+      variable.state.active = false;
+      variable.state.value = UNSET_VALUE;
     }
     if (!changed.length) return;
     publish();
@@ -1436,8 +1439,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
-    controls, timeRangeGroups, getFilterField,
-    start, refresh, refreshTile, setFilter, applyFilter, applyFilters, clearFilter, clearAllFilters, resetFilters,
+    controls, timeRangeGroups, getVariableField,
+    start, refresh, refreshTile, setVariable, applyVariable, applyVariables, clearVariable, clearAllVariables, resetVariables,
     setTileSearch, cancelTile, syncDocument, setGridRenderMode, setDashboardStyle, destroy,
   };
 }

@@ -99,7 +99,7 @@ export const DASH_TABLE_DISPLAY_CAP = 1000;
 // is now `newResult('Table', DASH_TILE_ROW_CAP)`'s trim + `capped` flag, and
 // the tile result shape is pinned by `dashboardTileResult` in src/ui/dashboard.js.)
 
-// (The filter bar's field discovery moved to the parameter pipeline in #165:
+// (The variable bar's field discovery moved to the parameter pipeline in #165:
 // `fieldControls(analysis)` in param-pipeline.js replaces the old
 // `dashboardParams(favorites)` union — the analysis view also sees params
 // confined to optional blocks, which readStatementParams never could.)

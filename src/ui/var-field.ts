@@ -1,5 +1,5 @@
 // Shared invalid-field affordance for `{name:Type}` variable inputs (#170):
-// both the workbench var-strip (app.js) and the Dashboard's global filter bar
+// both the workbench var-strip (app.js) and the Dashboard's global variable bar
 // (dashboard.js) render one `<input class="var-input">` per declared variable
 // and need to reflect its validated field state (param-pipeline's per-param
 // rollup — `{state, reason?}` from `prepareParameterizedBatch(...).fields`)
@@ -19,7 +19,7 @@
 // `descEl` (#174 §1 review finding #4) is the optional inline element that
 // already carries the field's error/preview text for screen-reader users —
 // today that's `relative-time-field.js`'s `previewEl` (passed by both the
-// workbench var-strip and the dashboard filter bar, the two callers that
+// workbench var-strip and the dashboard variable bar, the two callers that
 // build fields through it); a plain scalar `<input>` has no such element and
 // is called without one, so it keeps today's title-only affordance. This
 // function never writes `descEl`'s text — that stays owned by whichever
@@ -30,12 +30,12 @@
 // `applyFieldWidth` (#345) is the same-shape sibling for the field's visible
 // WIDTH rather than its validity: both callers build a field's `<input>`
 // exactly once per rebuild (a fresh field, not a per-keystroke repaint — the
-// signature guards in app.js/filter-bar.js's callers only rebuild when the
+// signature guards in app.js/variable-bar.js's callers only rebuild when the
 // detected `{name:Type}` set changes), so calling it once right after
 // construction keeps a compact, stable, type-appropriate width for the
 // field's whole lifetime without it ever resizing while the user types.
 
-import { filterInputWidthCh } from '../core/filter-width.js';
+import { variableInputWidthCh } from '../core/variable-width.js';
 
 /** The validated per-param rollup shape (param-pipeline's `.fields[name]`) —
  *  `state`'s other values ('ok'/'incomplete'/'missing'/'inactive') all render
@@ -61,10 +61,10 @@ export function applyFieldState(
 
 /**
  * Sets the compact, type-aware `--var-input-ch` custom property (#345) a
- * `.var-input`'s CSS width reads (`styles.css`) — `filterInputWidthCh`'s
+ * `.var-input`'s CSS width reads (`styles.css`) — `variableInputWidthCh`'s
  * resolved band for `type`/`isEnumLike`. See the header comment for why this
  * is a build-time-once call, never a per-keystroke one.
  */
 export function applyFieldWidth(input: HTMLElement, type: string, isEnumLike: boolean = false): void {
-  input.style.setProperty('--var-input-ch', String(filterInputWidthCh(type, isEnumLike)));
+  input.style.setProperty('--var-input-ch', String(variableInputWidthCh(type, isEnumLike)));
 }

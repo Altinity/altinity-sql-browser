@@ -1,10 +1,10 @@
-// Pure resolution of a compact, stable `{name:Type}` filter/variable input's
+// Pure resolution of a compact, stable `{name:Type}` variable input's
 // visible width (#345): one width per field for its whole lifetime, selected
 // by declared ClickHouse type + control kind, never derived from the current
-// value or recomputed on keystroke. Shared by every `{name:Type}` filter
+// value or recomputed on keystroke. Shared by every `{name:Type}` variable
 // surface — the workbench var-strip (`src/ui/app.ts`), the Dashboard/detached-
-// view shared filter bar (`src/ui/filter-bar.ts`), and its curated single-
-// select branch — so none of them can drift out of sync (CLAUDE.md rule 5).
+// view shared variable bar (`src/ui/variable-bar.ts`), and its option-backed
+// single-select branch — so none of them can drift out of sync (CLAUDE.md rule 5).
 //
 // Keyed off the type's EFFECTIVE base (`parseParamType` already unwraps
 // `Nullable`/`LowCardinality`), not the field's rendered control kind alone:
@@ -24,7 +24,7 @@ const NUMERIC_BASE = /^(U?Int(16|32|64|128|256)|Float32|Float64|BFloat16|Decimal
 
 /** The width category a `{name:Type}` field resolves to — see the issue's
  *  sizing contract (#345) for the reasoning behind each band. */
-export type FilterWidthCategory = 'bool' | 'numeric' | 'date' | 'datetime' | 'enum' | 'string';
+export type VariableWidthCategory = 'bool' | 'numeric' | 'date' | 'datetime' | 'enum' | 'string';
 
 // One stable `ch` width per category — each inside the issue's suggested
 // band (bool 8–10, numeric 11–13, date 12–14, date-time 15–18, enum 12–16,
@@ -40,7 +40,7 @@ export type FilterWidthCategory = 'bool' | 'numeric' | 'date' | 'datetime' | 'en
 // family, so that's the accepted tradeoff the issue's own "preserve
 // horizontal scrolling for values longer than the visible width" requirement
 // exists for, not a gap in this table.
-const WIDTH_CH: Record<FilterWidthCategory, number> = {
+const WIDTH_CH: Record<VariableWidthCategory, number> = {
   bool: 9,
   numeric: 13,
   date: 13,
@@ -52,16 +52,16 @@ const WIDTH_CH: Record<FilterWidthCategory, number> = {
 /**
  * Which width category a declared `{name:Type}` field falls into.
  * `isEnumLike` is the caller's own decision (an `Enum8`/`Enum16` declaration
- * OR a Dashboard curated Filter-source single-select — see
- * `fieldControlKind`/`buildFilterBar`'s curated branch) — it always wins over
- * the type's own base, since an enum/curated dropdown's width is about the
+ * OR a Dashboard option-backed single-select — see
+ * `fieldControlKind`/`buildVariableBar`'s option branch) — it always wins over
+ * the type's own base, since an enum/option dropdown's width is about the
  * option labels, not the underlying scalar. Otherwise falls back to the
  * generic `'string'` band for anything not recognized as boolean/numeric/
  * date/date-time (String, UUID, FixedString, Array, an unparsable
  * declaration, …) — the same "opaque passthrough" fallback
  * `parseParamType` itself uses. Pure.
  */
-export function filterWidthCategory(type: string, isEnumLike: boolean = false): FilterWidthCategory {
+export function variableWidthCategory(type: string, isEnumLike: boolean = false): VariableWidthCategory {
   if (isEnumLike) return 'enum';
   const base = parseParamType(type).base;
   if (BOOL_TINY_INT.test(base)) return 'bool';
@@ -73,9 +73,9 @@ export function filterWidthCategory(type: string, isEnumLike: boolean = false): 
 
 /**
  * The stable `ch`-unit width a `{name:Type}` field's `.var-input` should use
- * for its whole lifetime — `filterWidthCategory`'s resolved band, in `ch`.
- * Pure; see `filterWidthCategory` for the category rules.
+ * for its whole lifetime — `variableWidthCategory`'s resolved band, in `ch`.
+ * Pure; see `variableWidthCategory` for the category rules.
  */
-export function filterInputWidthCh(type: string, isEnumLike: boolean = false): number {
-  return WIDTH_CH[filterWidthCategory(type, isEnumLike)];
+export function variableInputWidthCh(type: string, isEnumLike: boolean = false): number {
+  return WIDTH_CH[variableWidthCategory(type, isEnumLike)];
 }

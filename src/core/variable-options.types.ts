@@ -3,7 +3,7 @@
 // behaviour.
 //
 // Lives here rather than on the viewer session so that BOTH the Dashboard
-// application layer (which runs the batch) and `src/ui/filter-bar.ts` (which is
+// application layer (which runs the batch) and `src/ui/variable-bar.ts` (which is
 // shared with the detached Data view and must not depend on the Dashboard
 // application layer) can name these shapes.
 

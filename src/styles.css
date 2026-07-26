@@ -105,7 +105,7 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   --ring-warn: 0 0 0 3px color-mix(in oklab, var(--warn-fg) 22%, transparent);
   --ring-error: 0 0 0 3px color-mix(in oklab, var(--error-fg) 22%, transparent);
   /* The fourth member says something focus does not: "this is the thing you were
-     sent to" (#425's tile/filter navigation target). It has to be found without
+     sent to" (#425's tile/variable navigation target). It has to be found without
      the user having pointed at anything, so it adds a solid accent edge UNDER the
      same halo — same hue, same oklab mix, same 22% — rather than inventing a
      second translucent accent. It arrived as `color-mix(in srgb, … 25%, …)`
@@ -1169,7 +1169,7 @@ h1, h2, h3, h4, h5, h6 {
    (an unknown/setup role, an unresolved presentation, an unresolvable time-range
    pair) gets one styled surface so it never reads as unstyled fallback text next
    to the polished tile grid. */
-.dash-filter-diagnostics { display: flex; flex-direction: column; gap: 8px; }
+.dash-variable-diagnostics { display: flex; flex-direction: column; gap: 8px; }
 .dash-config-diagnostic {
   margin: 10px 20px 0; padding: 10px 14px;
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1382,7 +1382,7 @@ body.detached-tab .graph-overlay-panel {
 .data-pane-body { flex: 1; min-height: 0; overflow: hidden; }
 /* Interactive detached view (#185): the captured query title + description form
    the bar header (a real heading, single-line title + 2-line clamped
-   description); a sticky filter row sits below the view toolbar, and the result
+   description); a sticky variable row sits below the view toolbar, and the result
    body fills the remaining height. */
 .detached-bar { align-items: flex-start; }
 .detached-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
@@ -1394,12 +1394,12 @@ body.detached-tab .graph-overlay-panel {
   font-size: var(--text-label); color: var(--fg-mute); line-height: var(--lh-label); max-width: 100%;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
 }
-.detached-filter-row {
+.detached-variable-row {
   display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
   padding: 8px 10px; border-bottom: 1px solid var(--border);
   background: var(--bg-toolbar); flex-shrink: 0;
 }
-.detached-filter-row .dash-filters { flex: 1 1 auto; min-width: 0; }
+.detached-variable-row .dash-variables { flex: 1 1 auto; min-width: 0; }
 .detached-refresh { margin-left: auto; flex-shrink: 0; }
 .detached-status { flex-basis: 100%; font-size: var(--text-label); color: var(--warn-fg); }
 .detached-status:empty { display: none; }
@@ -1636,7 +1636,7 @@ body.detached-tab .graph-overlay-panel {
 
 /* ------------ Dashboard hierarchy tree (#426) ------------ */
 .dash-tree-row { position: relative; }
-/* The group rows (Filters / Panels) are structure, not content. */
+/* The group rows (Variables / Panels) are structure, not content. */
 .dash-tree-group { color: var(--fg-faint); font-weight: var(--fw-medium); }
 .dash-tree-count { margin-left: 2px; font-size: var(--text-label); }
 /* CURRENT RESOURCE vs KEYBOARD FOCUS must read differently (#426): the current
@@ -1865,17 +1865,17 @@ body.detached-tab .graph-overlay-panel {
 .ed-toolbar::-webkit-scrollbar { display: none; }
 /* Shared "hide the native scrollbar, allow horizontal auto-scroll, contain
    overscroll" viewport contract (#294) — the Workbench var-strip and the
-   Dashboard filter host (`.dash-filter-host`, below) read it off one
+   Dashboard variable host (`.dash-variable-host`, below) read it off one
    declaration so the two surfaces can't drift apart. Each keeps its own
    layout rule (`.var-strip` is itself the flex/nowrap row; the Dashboard
-   nests a separate flex row — `.dash-filters` — inside this viewport). */
+   nests a separate flex row — `.dash-variables` — inside this viewport). */
 .var-strip,
-.dash-filter-host {
+.dash-variable-host {
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;
 }
 .var-strip::-webkit-scrollbar,
-.dash-filter-host::-webkit-scrollbar { display: none; }
+.dash-variable-host::-webkit-scrollbar { display: none; }
 /* Query-variable strip (#134): one field per detected {name:Type}. A single
    row that swipe-scrolls horizontally when it overflows (many variables, or a
    narrow/mobile workbench) — never wraps to a second line and never clips.
@@ -1912,7 +1912,7 @@ body.detached-tab .graph-overlay-panel {
 .var-field:not(.is-optional) .var-name { font-weight: var(--fw-bold); }
 /* Compact, type-aware width (#345): `--var-input-ch` is set once per field,
    at build time, by whichever field-family builder created the input
-   (`applyFieldWidth`, var-field.ts — filter-width.ts resolves the ch count
+   (`applyFieldWidth`, var-field.ts — variable-width.ts resolves the ch count
    from the declared type). Falls back to the generic string band (16ch) for
    any input this custom property was never set on. */
 .var-input {
@@ -1928,7 +1928,7 @@ body.detached-tab .graph-overlay-panel {
 }
 /* Typed-validation invalid affordance (#170): a value that's certainly wrong
    for its declared type — shared by the workbench var-strip and the
-   Dashboard's global filter bar (both build on var-field.js's
+   Dashboard's global variable bar (both build on var-field.js's
    applyFieldState). Only 'invalid' gets this; 'incomplete' (a plausible
    mid-typing prefix) stays visually neutral until it hardens on blur/Enter/
    execute. The reason string ("Expected UInt8 from 0 to 255") replaces the
@@ -1937,7 +1937,7 @@ body.detached-tab .graph-overlay-panel {
    declared with disagreeing types across statements/tiles. Distinct from
    is-invalid — the VALUE isn't wrong, the declarations disagree — so it warns
    (amber) instead of erroring (red); the field's title lists the conflicting
-   declarations, and both the workbench var-strip and the Dashboard filter bar
+   declarations, and both the workbench var-strip and the Dashboard variable bar
    degrade the control to a plain text input (fieldControlKind). is-invalid,
    when both apply, wins (declared later in this sheet). */
 .var-input.is-conflict {
@@ -1958,7 +1958,7 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: var(--ring-error);
 }
 
-/* #360 source-backed Dashboard filter transport states. The field is also
+/* #360 source-backed Dashboard variable transport states. The field is also
    `disabled`; these mark WHY, so a benign 'waiting' (dashed, with a
    "Waiting for: …" note) or a 'stale'/refreshing field (dimmed) reads
    differently from a real 'error' (red) at a glance. */
@@ -1968,7 +1968,7 @@ body.detached-tab .graph-overlay-panel {
 .var-field-note { grid-column: 2; font-size: var(--text-label); color: var(--fg-mute); white-space: nowrap; }
 /* Relative-time preset combobox (#169): the accessible dropdown-on-focus +
    type-to-filter control for date-like {name:Type} variables (#174 §1) —
-   shared by the workbench var-strip and the Dashboard filter bar
+   shared by the workbench var-strip and the Dashboard variable bar
    (relative-time-field.js on top of combobox.js's generic primitive). The
    listbox is `position: fixed` (combobox.js positions it via fixedAnchor
    at open time) so it escapes the horizontally-scrolling strip's own
@@ -1978,12 +1978,12 @@ body.detached-tab .graph-overlay-panel {
   position: relative; display: inline-flex; flex-direction: column; align-items: flex-start;
   gap: 1px;
 }
-/* #447 phase 2: the option-backed variable select (filter-option-field.ts) — the
+/* #447 phase 2: the option-backed variable select (variable-option-field.ts) — the
    same combobox clothes as every other field, plus room for the inline clear (×)
    that returns the variable to unset. Restored with that field, which phase 1
    deleted along with the curated-filter layer. */
-.filter-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
-.filter-select .var-input:disabled { cursor: not-allowed; opacity: .7; }
+.variable-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
+.variable-select .var-input:disabled { cursor: not-allowed; opacity: .7; }
 .var-combo-clear-inline {
   position: absolute; top: 0; right: 3px; height: 24px;
   width: 20px; border-radius: var(--r-xs); padding: 0;
@@ -2064,7 +2064,7 @@ body.detached-tab .graph-overlay-panel {
 /* Searchable multiselect Dashboard variable control (#189, multi-select-field.ts)
    — a dedicated dialog popover rather than the single-select combobox
    (.var-combo/.var-combo-list) forced into multiselect ARIA roles. The trigger
-   reuses .var-input's sizing/border so it sits flush with every other filter
+   reuses .var-input's sizing/border so it sits flush with every other variable
    field; the popover is its own `position:fixed` panel, the same
    escape-the-scrolling-strip trick as .var-combo-list/.file-menu.
    #447 deleted this block with the curated filter model; it came back with the
@@ -2095,7 +2095,7 @@ body.detached-tab .graph-overlay-panel {
 }
 /* The shared anchored-dialog backdrop (popover.ts's default `overlayClassName`),
    mounted by this control and by the time-range popover alike. */
-.ms-overlay { position: fixed; inset: 0; z-index: 60; }
+.popover-overlay { position: fixed; inset: 0; z-index: 60; }
 .ms-search {
   height: 24px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
   border: 1px solid var(--border); border-radius: var(--r-sm); font: inherit;
@@ -2132,7 +2132,7 @@ body.detached-tab .graph-overlay-panel {
    trigger reuses .var-input's sizing/border; the popover is
    its own `position:fixed` two-column panel (staged From/To editors on the
    left, a contextual recents/constants column on the right). All colours come
-   from the shared theme tokens so light + dark both work; D2 (filter-bar +
+   from the shared theme tokens so light + dark both work; D2 (variable-bar +
    dashboard) may extend these rules. */
 .var-field.is-time-range { display: inline-flex; align-items: center; }
 .trf-trigger {
@@ -2195,7 +2195,7 @@ body.detached-tab .graph-overlay-panel {
   border: 1px solid var(--border); background: transparent; color: var(--fg);
 }
 .trf-btn:hover { background: var(--bg-hover); }
-/* Primary-action state model for BOTH filter popovers' Apply (#386 follow-up):
+/* Primary-action state model for BOTH variable popovers' Apply (#386 follow-up):
    the multiselect's and the time-range control's. One selector list, never two
    parallel blocks — the two buttons are the same affordance and must never
    drift apart. This block follows the generic `.trf-btn`/`.ms-btn` hover rules
@@ -2214,17 +2214,17 @@ body.detached-tab .graph-overlay-panel {
   border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
   cursor: not-allowed; opacity: 1;
 }
-/* #335 D2 (filter-bar integration): the "Time"/"Filters" section labels and
+/* #335 D2 (variable-bar integration): the "Time"/"Variables" section labels and
    the separator between the compound time-range control and the per-param
-   fields. Both sit in the same flex row as the fields (`.dash-filters`), so
+   fields. Both sit in the same flex row as the fields (`.dash-variables`), so
    they align to the field baseline and stay reachable when the bar scrolls/
    wraps. All colours come from the shared theme tokens (light + dark). */
-.dash-filters .flabel {
+.dash-variables .flabel {
   align-self: center; flex-shrink: 0;
   font-size: var(--text-micro); text-transform: uppercase; letter-spacing: .04em;
   color: var(--fg-faint); font-weight: var(--fw-semibold); white-space: nowrap;
 }
-.dash-filters .trf-sep {
+.dash-variables .trf-sep {
   align-self: stretch; flex-shrink: 0;
   width: 1px; min-height: 22px; background: var(--border-faint); margin: 2px 0;
 }
@@ -3077,14 +3077,14 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    sidebar stays visible. The host is itself a `min-height:0` flex column, so
    `height:100%` here still resolves and the page still scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
-/* #425 — the temporary navigation highlight marking the tile or filter a caller
+/* #425 — the temporary navigation highlight marking the tile or variable a caller
    navigated to, cleared after a bounded interval or on the next user interaction.
    A `box-shadow` ring, NOT an outline: an element has exactly one outline, so an
    outline here would replace the focus ring rather than sit alongside it, and
    #425 asks for a highlight in ADDITION to the normal focus indicator.
 
    Deliberately sets no radius. A `box-shadow` already follows whatever radius the
-   element it marks has, so the ring is correct on a `--r-md` tile and on a filter
+   element it marks has, so the ring is correct on a `--r-md` tile and on a variable
    field alike. The hard 6px radius this shipped with instead RE-ROUNDED the target
    — a tile visibly changed shape for as long as it was highlighted, and the ring
    mitred against the very corner it was drawing attention to. A highlight must not
@@ -3097,16 +3097,19 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    to for the same reason; the card carries `--r-md`, so the ring lands on the real
    geometry rather than on a zero-sized rectangle. */
 .dash-kpi-member.is-nav-target > * { box-shadow: var(--ring-nav); }
-/* The one-row application header and optional filter toolbar share one sticky
+/* The one-row application header and optional variable toolbar share one sticky
    top bar so Dashboard controls stay visible while the grid scrolls. */
 .dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }
-/* Filter toolbar (#149 D2, now filters-only since the layout switcher moved to
-   the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): filters
+/* Variable toolbar (#149 D2, now variables-only since the layout switcher moved to
+   the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): variables
    used to wrap the toolbar onto extra rows once several `{name:Type}` params
    were present, growing the toolbar's height as the dashboard's data area
-   shrank. Hidden entirely (`:not(.has-filters)`) at every width, not just
-   mobile, now that it holds nothing else worth showing when there are no
-   filters. */
+   shrank. Hidden entirely at every width, not just mobile, now that it holds
+   nothing else worth showing when there are no variables — via an inline
+   `display: none` from `ui/dashboard.ts`, not the `:not(.has-variables)` rule
+   this comment used to claim (there has never been such a rule here, and the
+   app never sets that class; only the `dashboard-mobile.html` e2e fixture does
+   — see #473). */
 .dash-toolbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
   min-height: 40px; padding: 5px 20px;
@@ -3121,36 +3124,36 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    leaving a Dashboard is a per-tile act now (`.dash-tile-open`), and the phone
    route it protected lives in the bottom nav. */
 /* The File-style layout menu in the header's top row, replacing the old
-   `.dash-seg` segmented button group that lived in the filter toolbar. */
+   `.dash-seg` segmented button group that lived in the variable toolbar. */
 .dash-layout-wrap { display: inline-flex; align-items: center; flex: 0 0 auto; }
-/* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
+/* Global variable bar (#149 D3) — one field per detected {name:Type}, reusing the
    workbench's var-field/var-name/var-input classes.
    #294: the field region IS its own horizontally-scrolling viewport
-   (`.dash-filter-host`, the shared scroll contract above, following the
+   (`.dash-variable-host`, the shared scroll contract above, following the
    workbench `.var-strip` / editor-tabs precedent) so excess fields scroll
    instead of wrapping, at every viewport width — not just the ≤768px
    breakpoint. Selective Clear all sits outside this viewport, while the
    removed "N active" count stays absent. The 4px vertical padding keeps a
    focused field's box-shadow ring from being clipped by the viewport's
    `overflow-y: hidden`. */
-.dash-filter-host { flex: 1 1 auto; min-width: 0; padding: 4px 0; }
-.dash-filters { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
-/* `.dash-filters` is shared with the detached Data view's filter row
-   (`.detached-filter-row .dash-filters`, above), which keeps the default wrap
-   — only the Dashboard toolbar's instance, nested in `.dash-filter-host`,
+.dash-variable-host { flex: 1 1 auto; min-width: 0; padding: 4px 0; }
+.dash-variables { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+/* `.dash-variables` is shared with the detached Data view's variable row
+   (`.detached-variable-row .dash-variables`, above), which keeps the default wrap
+   — only the Dashboard toolbar's instance, nested in `.dash-variable-host`,
    needs the never-wrap contract, so the override is scoped to that ancestor
    rather than changed on the shared class itself. `.var-field` already sets
    `flex-shrink: 0`, so `flex-wrap: nowrap` alone is enough for the overflow to
    reach the scroll viewport above — no extra width rule needed. */
-.dash-filter-time,
-.dash-filter-ordinary { display: contents; }
-.dash-filter-host,
-.dash-time-filter-host {
+.dash-variable-time,
+.dash-variable-ordinary { display: contents; }
+.dash-variable-host,
+.dash-time-variable-host {
   display: flex; align-items: flex-start; gap: 14px; flex-wrap: nowrap;
 }
-.dash-time-filter-host .trf-sep { display: none; }
-.dash-time-filter-host:empty { display: none; }
-.dash-time-filter-host { min-width: 0; }
+.dash-time-variable-host .trf-sep { display: none; }
+.dash-time-variable-host:empty { display: none; }
+.dash-time-variable-host { min-width: 0; }
 /* #437: a compact 120–145px range rather than a fixed 170px — the label search
    scope doesn't need a wide field, and the freed width keeps the whole toolbar
    on one row longer before it needs to scroll. */
@@ -3170,13 +3173,13 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border-color: var(--accent);
   box-shadow: var(--ring);
 }
-.dash-clear-filters {
+.dash-clear-variables {
   height: 26px; padding: 0 7px; border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--fg-mute); font-family: var(--ui); font-size: var(--text-body); font-weight: var(--fw-medium);
   cursor: pointer; white-space: nowrap;
 }
-.dash-clear-filters:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
-.dash-clear-filters:disabled { opacity: .45; cursor: default; }
+.dash-clear-variables:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
+.dash-clear-variables:disabled { opacity: .45; cursor: default; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -3385,7 +3388,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border: 1px solid var(--error-bd); border-radius: var(--r-md); font-size: var(--text-body);
   font-family: var(--mono); max-width: 90%;
 }
-/* A tile blocked on an empty {name:Type} filter value (#149 D3) — one filter
+/* A tile blocked on an empty {name:Type} variable value (#149 D3) — one variable
    value away from chartable, so it reads as a prompt, not an error. */
 .dash-tile-unfilled {
   margin: auto; padding: 12px; color: var(--fg-mute); font-size: var(--text-body); text-align: center;
@@ -3446,7 +3449,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-kpi-warning { color: var(--fg-mute); font-size: var(--text-body); }
 /* The canonical app mobile breakpoint: keep only the primary Dashboard
    actions in one header row, visually normalize every saved desktop layout,
-   and let the shared filter controls scroll horizontally without clipping
+   and let the shared variable controls scroll horizontally without clipping
    their fixed-position popovers. These are CSS-only overrides, so widening
    restores the persisted desktop layout without writing preferences. */
 @media (max-width: 768px) {

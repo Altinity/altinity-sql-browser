@@ -850,11 +850,11 @@ describe('expandDataPane', () => {
     expect(win.document.title).toBe('Filtered'); // browser tab title matches
   });
 
-  it('omits the filter row (and description) when the source has no params / empty description', () => {
+  it('omits the variable row (and description) when the source has no params / empty description', () => {
     const app = makeApp();
     expandDataPane(app, tableResult()); // plain SELECT, description ''
     const overlay = qs(document, '.graph-overlay');
-    expect(qs(overlay, '.detached-filter-row')).toBeNull();
+    expect(qs(overlay, '.detached-variable-row')).toBeNull();
     expect(qs(overlay, '.detached-desc')).toBeNull();
     expect(qs(overlay, 'h2.detached-title').textContent).toBe('My data');
   });
@@ -866,13 +866,13 @@ describe('expandDataPane', () => {
     expect(qs(document, '.graph-overlay .stat').textContent).toContain('2 rows (capped)');
   });
 
-  it('renders the shared filter row for a parameterized source and issues NO query on open', () => {
+  it('renders the shared variable row for a parameterized source and issues NO query on open', () => {
     const app = makeApp();
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
-    const row = qs(overlay, '.detached-filter-row');
+    const row = qs(overlay, '.detached-variable-row');
     expect(row).not.toBeNull();
-    expect(qs(row, '.dash-filters[aria-label="Query filters"]')).not.toBeNull();
+    expect(qs(row, '.dash-variables[aria-label="Query variables"]')).not.toBeNull();
     expect(qsa(row, '.var-field')).toHaveLength(1);
     expect(app.exec.executeRead).not.toHaveBeenCalled(); // open = snapshot, no request
   });
@@ -1075,7 +1075,7 @@ describe('expandDataPane', () => {
     expect(refreshBtn(overlay)!.disabled).toBe(true);
     // blank the field and commit (input arms the debounce, blur fires it): a
     // blocked rerun supersedes (and aborts) run 1 — Refresh must re-enable.
-    const input = qs<HTMLInputElement>(overlay, '.detached-filter-row .var-field input');
+    const input = qs<HTMLInputElement>(overlay, '.detached-variable-row .var-field input');
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('blur', { bubbles: true }));

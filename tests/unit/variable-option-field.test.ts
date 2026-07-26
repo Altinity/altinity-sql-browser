@@ -8,9 +8,9 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import {
-  OPTION_DROPDOWN_CAP, UNSET_OPTION_LABEL, buildFilterOptionField,
-} from '../../src/ui/filter-option-field.js';
-import type { FilterOptionFieldOpts } from '../../src/ui/filter-option-field.js';
+  OPTION_DROPDOWN_CAP, UNSET_OPTION_LABEL, buildVariableOptionField,
+} from '../../src/ui/variable-option-field.js';
+import type { VariableOptionFieldOpts } from '../../src/ui/variable-option-field.js';
 
 const OPTIONS = [
   { value: 'de', label: 'Germany' },
@@ -18,9 +18,9 @@ const OPTIONS = [
   { value: 'es', label: 'Spain' },
 ];
 
-function build(over: Partial<FilterOptionFieldOpts> = {}) {
+function build(over: Partial<VariableOptionFieldOpts> = {}) {
   const onCommit = vi.fn();
-  const field = buildFilterOptionField({
+  const field = buildVariableOptionField({
     document, name: 'country', options: OPTIONS, onCommit, ...over,
   });
   document.body.replaceChildren(field.el);
@@ -44,11 +44,11 @@ const type = (input: HTMLInputElement, text: string): void => {
 };
 const blur = (input: HTMLInputElement): void => { input.dispatchEvent(new Event('blur')); };
 
-describe('buildFilterOptionField', () => {
+describe('buildVariableOptionField', () => {
   it('wears the shared combobox clothes rather than its own listbox', () => {
     const { field, input } = build();
     expect(field.el.classList.contains('var-combo')).toBe(true);
-    expect(field.el.classList.contains('filter-select')).toBe(true);
+    expect(field.el.classList.contains('variable-select')).toBe(true);
     expect(input.classList.contains('var-input')).toBe(true);
     expect(input.getAttribute('role')).toBe('combobox');
     expect(listOf(field.el).getAttribute('role')).toBe('listbox');
@@ -282,7 +282,7 @@ describe('buildFilterOptionField', () => {
   });
 
   it('falls back to the ambient document and the name as the title', () => {
-    const field = buildFilterOptionField({ name: 'plain' });
+    const field = buildVariableOptionField({ name: 'plain' });
     expect(field.input.title).toBe('plain');
     expect(field.el.querySelector('.var-input')).toBe(field.input);
   });
@@ -290,14 +290,14 @@ describe('buildFilterOptionField', () => {
   it('is usable with no onCommit wired at all', () => {
     // The default is a real no-op, so a caller that only wants to display a
     // selection does not have to supply a callback to avoid a crash.
-    const field = buildFilterOptionField({ document, name: 'country', options: OPTIONS, value: 'de', active: true });
+    const field = buildVariableOptionField({ document, name: 'country', options: OPTIONS, value: 'de', active: true });
     document.body.replaceChildren(field.el);
     expect(() => clearBtn(field.el).dispatchEvent(new MouseEvent('click', { bubbles: true }))).not.toThrow();
     expect(field.input.value).toBe('');
   });
 
   it('builds element ids that survive a name needing escaping', () => {
-    const field = buildFilterOptionField({ document, name: 'a b/c' });
+    const field = buildVariableOptionField({ document, name: 'a b/c' });
     const list = field.el.querySelector('.var-combo-list') as HTMLElement;
     expect(list.id).toBe('variable-option-list-a_b_c');
     expect(field.input.getAttribute('aria-controls')).toBe(list.id);

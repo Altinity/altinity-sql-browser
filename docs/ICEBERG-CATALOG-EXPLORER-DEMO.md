@@ -87,7 +87,7 @@ DEFINER` so readers need zero S3 privilege:
 
 `ice_meta_all` unions the seven zero-arg views across catalogs with a leading
 `catalog` column; every dashboard tile targets it with
-`/*[ AND catalog = {catalog:String} ]*/` so one filter-bar field drives the
+`/*[ AND catalog = {catalog:String} ]*/` so one variable-bar field drives the
 whole dashboard (blank = all catalogs).
 
 ## Known limitations
