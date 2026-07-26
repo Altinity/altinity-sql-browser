@@ -156,22 +156,6 @@ export interface VariableFieldSpec {
   optionsIncomplete?: boolean;
 }
 
-/** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
- *  `ViewerVariableState`'s own fields, dashboard-viewer-session.ts), applied
- *  through the returned `updateStatus` without rebuilding the bar.
- *
- *  #447: every field this bar builds is now a PLAIN direct input, and a plain
- *  field has no source to be waiting on — so no per-param field consumes a
- *  status any more. The seam itself is kept because the handle map is the one
- *  place a LATER, non-rebuild affordance change can land (the compound
- *  time-range control registers a handle too, and answers with a documented
- *  no-op), and because `dashboard.ts` still publishes a status map per wave. */
-export interface FieldStatus {
-  status?: string;
-  stale?: boolean;
-  waitingFor?: string[];
-}
-
 /** #335 handle-map unification: the ONE contract every retained field control
  *  in the bar is addressed through — a single `Map<string, FieldHandle>` keyed
  *  by an OPAQUE string: a parameter name for a per-param field,
@@ -183,7 +167,6 @@ export interface FieldStatus {
  *  time-range handles (folded by `refreshTimeRangeLabels`). */
 interface FieldHandle {
   el?: HTMLElement;
-  updateStatus(s: FieldStatus): void;
   /** #447 phase 2: carried only by an option-backed select. Replaces its offered
    *  options IN PLACE, so a refresh's option batch landing mid-session never
    *  rebuilds the bar — which would blow away in-progress typing in every other
@@ -248,13 +231,6 @@ export interface VariableBarHandle {
   /** Separately mountable ordinary-variable region. */
   ordinaryEl: HTMLElement;
   dispose(): void;
-  /** Apply a per-key `FieldStatus` to whichever controls this SAME bar instance
-   *  already built (the unified handle map, keyed by parameter name for a
-   *  per-param field — #335) — a key this bar built nothing for is silently
-   *  ignored. The caller (`dashboard.ts`'s `rebuildVariableBar`) uses this for a
-   *  status-only change instead of tearing down and rebuilding the whole bar,
-   *  which would blow away in-progress typing on every other field. */
-  updateStatus(states: Record<string, FieldStatus>): void;
   /** #447 phase 2: push fresh option rows into whichever option-backed selects
    *  THIS bar instance already built, without rebuilding anything. A key this bar
    *  built no select for is silently ignored.
@@ -351,7 +327,7 @@ export function buildVariableBar(
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }, timeEl, ordinaryEl),
       timeEl, ordinaryEl,
-      dispose: () => {}, updateStatus: () => {}, setVariableOptions: () => {},
+      dispose: () => {}, setVariableOptions: () => {},
       openPopoverKey: () => null, focusedFieldKey: () => null,
       focusFieldTrigger: () => {}, fieldElement: () => null,
       refreshTimeRangeLabels: () => {},
@@ -361,7 +337,7 @@ export function buildVariableBar(
   // #335 handle-map unification: ONE map (see `FieldHandle`) keyed by the
   // opaque control key — a parameter name for a per-param field,
   // `group:${group.key}` for a time-range control.
-  // `updateStatus`/`dispose`/`openPopoverKey`/`focusedFieldKey`/
+  // `dispose`/`openPopoverKey`/`focusedFieldKey`/
   // `focusFieldTrigger`/`refreshTimeRangeLabels` all fold over this one map.
   const handles = new Map<string, FieldHandle>();
   // #425: the DOM counterpart of the `handles` key, stamped on every field's own
@@ -448,9 +424,6 @@ export function buildVariableBar(
     if (spec.optionsError != null) field.setUnavailable(spec.optionsError);
     handles.set(p.name, {
       el: field.el,
-      // Like the single-select: no transient per-field status of its own, its
-      // only failure mode being the batch's, which arrives through `setOptions`.
-      updateStatus: () => {},
       setOptions: (next, error, incomplete) => {
         field.setOptions(next, incomplete);
         field.setUnavailable(error);
@@ -486,9 +459,6 @@ export function buildVariableBar(
     if (spec.optionsError != null) field.setUnavailable(spec.optionsError);
     handles.set(p.name, {
       el: field.el,
-      // A select has no transient per-field status of its own; its only failure
-      // mode is the batch failing, which arrives through `setOptions`.
-      updateStatus: () => {},
       setOptions: (next, error) => {
         field.setOptions(next);
         field.setUnavailable(error);
@@ -587,7 +557,7 @@ export function buildVariableBar(
   // #335: the "Time" section — a `.flabel` heading + one compound time-range
   // control per group + a separator — rendered AHEAD of the per-param fields.
   // Each control's handle is registered under `group:${group.key}` so it
-  // participates in the unified map's status/dispose/focus/refresh folds. Its
+  // participates in the unified map's dispose/focus/refresh folds. Its
   // Apply (and immediate recents pick) route through `onApplyTimeRange`.
   const timeSection: (HTMLElement | null)[] = [];
   if (timeRange.length) {
@@ -662,15 +632,6 @@ export function buildVariableBar(
       // teardown always tears every open popover down this way. A plain field
       // registers no handle and so has nothing to dispose beyond its timer.
       for (const handle of handles.values()) handle.dispose?.();
-    },
-    updateStatus: (states) => {
-      // #335: one loop over the unified map. A per-param field's key IS its
-      // parameter name, so `states[key]` would find its status; a time-range
-      // control's key is `group:…` (never a parameter name).
-      for (const [key, handle] of handles) {
-        const s = states[key];
-        if (s) handle.updateStatus(s);
-      }
     },
     // #447 phase 2: fold over the same unified map — only option-backed selects
     // carry `setOptions`, so every other handle is skipped.

@@ -400,13 +400,6 @@ describe('buildTimeRangeField — Apply / Cancel semantics', () => {
 });
 
 describe('buildTimeRangeField — handle surface', () => {
-  it('updateStatus is a no-op that does not throw or change the trigger', () => {
-    const handle = buildTimeRangeField(baseOpts());
-    const before = trigger(handle.el).textContent;
-    expect(() => handle.updateStatus({ status: 'anything' })).not.toThrow();
-    expect(trigger(handle.el).textContent).toBe(before);
-  });
-
   it('focusTrigger focuses the trigger button', () => {
     const handle = buildTimeRangeField(baseOpts());
     document.body.appendChild(handle.el);

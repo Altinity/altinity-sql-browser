@@ -565,6 +565,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the product's own vocabulary, with the destructive Overwrite action carrying
   error tokens and the safe Reload action as the accented default.
 
+### Removed
+- The variable bar's `updateStatus` seam and its `FieldStatus` type (#460).
+  `updateStatus` was the per-field execution-status affordance the curated
+  filter model published through — #447 phase 1 deleted every producer, but
+  kept the consumer side as a documented no-op for a later, non-rebuild
+  affordance to land through. Phase 2 and #457 both landed without ever
+  needing it, and #460 confirmed it has zero production callers (only test
+  callers remained), so the bar-level fold, the `FieldHandle`/
+  `VariableBarHandle` method, and the three no-op implementations (the
+  multi-select field, the option-backed select, and the time-range control in
+  `time-range-field.ts`) are gone. `ViewerVariableState.options`/`optionsRev`
+  were audited too and kept — phase 2's batched option runtime is a real,
+  live producer of both.
+
 ## [0.6.4] - 2026-07-24
 
 ### Fixed

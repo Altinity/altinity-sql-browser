@@ -44,7 +44,6 @@ describe('buildVariableBar (shared variable row)', () => {
     expect(bar.el.getAttribute('aria-label')).toBe('Query variables');
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
-    expect(() => bar.updateStatus({})).not.toThrow(); // nothing built — a no-op
     expect(bar.openPopoverKey()).toBeNull(); // no popover-bearing controls at all — always null
     expect(bar.focusedFieldKey()).toBeNull();
     expect(() => bar.focusFieldTrigger('x')).not.toThrow(); // unknown param — a no-op
@@ -403,32 +402,6 @@ describe('buildVariableBar (shared variable row)', () => {
       expect(onApplyTimeRange).toHaveBeenCalledWith(expect.objectContaining({ key: GROUP_KEY }), '-7d', 'now');
       bar.el.remove();
     });
-
-    // #447: `updateStatus` is the seam a LATER, non-rebuild affordance change
-    // lands through. No PLAIN field consumes a status (a direct input has no
-    // source to be waiting on), so the only handle it can currently reach is the
-    // compound time-range control — whose own `updateStatus` is a documented
-    // no-op. The contract under test is the routing, not an affordance.
-    it('updateStatus routes a status to the keyed control it built, and ignores every other key', () => {
-      const app = makeApp();
-      const bar = buildVariableBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
-      const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
-      const before = trigger.textContent;
-      // A key this bar DID build a handle for — routed, and a no-op by contract.
-      expect(() => bar.updateStatus({ [`group:${GROUP_KEY}`]: { status: 'loading', stale: true } })).not.toThrow();
-      // A plain field's parameter name registers no handle; an unrelated key
-      // matches nothing. Neither throws, and neither disturbs the built control.
-      expect(() => bar.updateStatus({ region: { status: 'waiting', waitingFor: ['x'] } })).not.toThrow();
-      expect(() => bar.updateStatus({ nope: { status: 'ready' } })).not.toThrow();
-      expect(() => bar.updateStatus({})).not.toThrow();
-      expect(bar.el.querySelector('.trf-trigger')).toBe(trigger); // never rebuilt
-      expect(trigger.textContent).toBe(before);
-      expect(trigger.disabled).toBe(false);
-      // A plain field is never disabled or marked by a status update.
-      const plainInput = bar.ordinaryEl.querySelector('input') as HTMLInputElement;
-      expect(plainInput.disabled).toBe(false);
-      expect(plainInput.classList.contains('is-waiting')).toBe(false);
-    });
   });
 
   it('dispose() clears a pending debounce timer so a later value edit never fires the stale commit (#276)', () => {
@@ -595,21 +568,14 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
     expect(() => bar.dispose()).not.toThrow();
   });
 
-  it('a select reports no per-field status, and updateStatus leaves it alone', () => {
-    const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
-    const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
-    bar.updateStatus({ country: { status: 'whatever', stale: true } });
-    expect(input.classList.contains('is-stale')).toBe(false);
-    expect(bar.openPopoverKey()).toBeNull();
-  });
-
-  it('resolves a select through fieldElement and focusedFieldKey like any other control', () => {
+  it('resolves a select through fieldElement, focusedFieldKey and openPopoverKey (always null for a select) like any other control', () => {
     const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
     document.body.replaceChildren(bar.ordinaryEl);
     expect(bar.fieldElement('country')).toBe(fieldFor(bar, 'country'));
     const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
     input.focus();
     expect(bar.focusedFieldKey()).toBe('country');
+    expect(bar.openPopoverKey()).toBeNull();
   });
 
   it('marks a container type as having no inferred control, but KEEPS its input', () => {
