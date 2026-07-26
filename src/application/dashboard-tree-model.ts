@@ -1,6 +1,14 @@
-// The Dashboard hierarchy tree's pure derivation (#426): Dashboard → Filters →
+// The Dashboard hierarchy tree's pure derivation (#426): Dashboard → Variables →
 // Panels, projected from the committed workspace aggregate plus main-surface
 // navigation state. No DOM, no persistence, no globals.
+//
+// #447 replaced the Filters subtree with a VARIABLES subtree. A variable is not
+// a persisted object with an id: it is inferred from the `{name:Type}`
+// placeholders in the queries this Dashboard's panel tiles own, unioned with any
+// orphaned `dashboard.variableConfigs` key. All of that aggregation — ordering,
+// status, type display and the hover diagnostics — belongs to the pure
+// `core/dashboard-variables.ts` service; this module only projects its result
+// into rows. It never re-composes a diagnostic string of its own.
 //
 // Lives in `src/application/` (not `src/core/` or `src/dashboard/`) for the same
 // reason `main-surface.ts` does: it resolves against the workspace aggregate AND
@@ -21,6 +29,8 @@
 import type { DashboardFocusTarget, MainSurfaceState, OpenDashboardRequest } from './main-surface.js';
 import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard-tree-ui-state.js';
 import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
+import { inferDashboardVariables } from '../core/dashboard-variables.js';
+import type { DashboardVariable } from '../core/dashboard-variables.js';
 
 // ── Deliberately loosened input shapes ──────────────────────────────────────
 // The persisted-workspace validator normally rejects broken references, but the
@@ -28,11 +38,15 @@ import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js
 // so the collections the generated schema types mark REQUIRED are optional here.
 // Every guard this buys has a malformed fixture in the spec that reaches it; none
 // is unreachable defensive padding (which the coverage config forbids).
-// A real `StoredWorkspaceV4` / `DashboardDocumentV1` / `SavedQueryV2` satisfies
+// A real `StoredWorkspaceV5` / `DashboardDocumentV2` / `SavedQueryV2` satisfies
 // these structurally, with no cast at the call site.
 
 export interface TreeQuery {
   id: string;
+  /** #447: the SQL the variable inference scans for `{name:Type}` declarations.
+   *  Optional here for the same reason the collections are — a real
+   *  `SavedQueryV2` always carries it. */
+  sql?: string;
   spec?: { name?: string; description?: string } | null;
 }
 
@@ -43,23 +57,19 @@ export interface TreeTile {
   description?: string;
 }
 
-export interface TreeFilter {
-  id: string;
-  parameter?: string;
-  label?: string;
-  sourceQueryId?: string | null;
-}
-
 export interface TreeDashboard {
   id: string;
   title?: string;
   description?: string;
-  filters?: readonly TreeFilter[] | null;
+  /** #447: stored Dashboard-local option SQL, keyed by EXACT variable name. The
+   *  only persisted variable state there is — every other variable fact is
+   *  inferred from the panel queries. */
+  variableConfigs?: Record<string, { sql: string; lastKnownType?: string }> | null;
   tiles?: readonly TreeTile[] | null;
 }
 
 export interface TreeWorkspace {
-  /** `StoredWorkspaceV4.id` — the immutable opaque identity, never the URL key. */
+  /** `StoredWorkspaceV5.id` — the immutable opaque identity, never the URL key. */
   id: string;
   dashboards?: readonly TreeDashboard[] | null;
   queries?: readonly TreeQuery[] | null;
@@ -67,12 +77,32 @@ export interface TreeWorkspace {
 
 // ── Output ──────────────────────────────────────────────────────────────────
 
-export type DashboardTreeRowKind = 'dashboard' | 'group' | 'filter' | 'panel';
+export type DashboardTreeRowKind = 'dashboard' | 'group' | 'variable' | 'panel';
 
-/** Why a row cannot open a query. `null` covers both "it can" and the
- *  TRANSITIONAL source-less filter, which is not an error: before #427 a curated
- *  filter legitimately has no `sourceQueryId`. */
-export type DashboardTreeInvalid = 'unresolved-query' | 'unresolved-source' | null;
+/**
+ * What is wrong with a row. `null` means nothing is.
+ *
+ * #447 widened this beyond "why a row cannot open a query": a variable row's
+ * annotation is about the VARIABLE, not about a reference it fails to resolve.
+ * The two variable states are deliberately distinct values rather than one
+ * shared "bad" marker — they differ in severity, in the word the view renders,
+ * and in the accessible label a screen reader announces.
+ */
+export type DashboardTreeInvalid =
+  | 'unresolved-query'
+  | 'variable-conflict'
+  | 'variable-unused'
+  | null;
+
+/**
+ * How loudly a row's annotation reads. A conflicted variable is an ERROR — no
+ * control can be rendered for it, so a Dashboard is genuinely broken until it is
+ * resolved. An orphaned configuration is a WARNING — the Dashboard works, some
+ * stored SQL is simply not being executed. The view styles and LABELS the two
+ * differently (colour is never the only signal), which a single boolean could
+ * not express.
+ */
+export type DashboardTreeSeverity = 'error' | 'warning' | null;
 
 /**
  * One fully-resolved operation a row can perform. The model emits the COMMAND,
@@ -87,7 +117,12 @@ export type DashboardTreeInvalid = 'unresolved-query' | 'unresolved-source' | nu
 export type DashboardTreeCommand =
   | { kind: 'toggle' }
   | { kind: 'open-query'; queryId: string }
-  | { kind: 'open-dashboard'; request: OpenDashboardRequest };
+  | { kind: 'open-dashboard'; request: OpenDashboardRequest }
+  /** #447: open THIS variable's option-SQL editor. Deliberately not
+   *  `open-query`: a variable is not a saved query (an orphan has no declaring
+   *  panel at all), and its editor is addressed by Dashboard id + exact name,
+   *  which is the only identity a variable has. */
+  | { kind: 'open-variable'; dashboardId: string; name: string };
 
 export interface DashboardTreeMenuItem {
   label: string;
@@ -99,18 +134,21 @@ export interface DashboardTreeMenuItem {
 
 export interface DashboardTreeRow {
   /** Stable identity: `<workspaceId>:<dashboardId>` plus, for a group,
-   *  `:group:filters|panels`, and for a member `:filter:<id>` / `:tile:<id>`.
-   *  Never derived from an array index, a title, a query id or a label. */
+   *  `:group:variables|panels`, and for a member `:variable:<name>` /
+   *  `:tile:<id>`. Never derived from an array index, a title, a query id or a
+   *  label. */
   key: string;
   kind: DashboardTreeRowKind;
   /** 1-based, for `aria-level`. */
   level: number;
   parentKey: string | null;
   label: string;
-  /** An inline count rendered right after the label (`Filters · 3`), matching the
-   *  lower switcher's `.side-count` treatment. */
+  /** An inline count rendered right after the label (`Variables · 3`), matching
+   *  the lower switcher's `.side-count` treatment. */
   count: number | null;
-  /** Right-aligned trailing text — the Dashboard row's panel count. */
+  /** Right-aligned trailing text — the Dashboard row's panel count, or a
+   *  variable row's type(s) (`String`, `String | UInt64`, or nothing at all for
+   *  an orphan with no `lastKnownType`). */
   meta: string;
   expandable: boolean;
   expanded: boolean;
@@ -128,8 +166,17 @@ export interface DashboardTreeRow {
   /** The open Dashboard, or the member most recently navigated to inside it. */
   current: boolean;
   invalid: DashboardTreeInvalid;
-  /** Accessible description for an invalid row; `null` otherwise. */
+  /** How loudly `invalid` reads; `null` exactly when `invalid` is. */
+  severity: DashboardTreeSeverity;
+  /** Accessible description for an annotated row; `null` otherwise. For a
+   *  variable this is the variable's OWN diagnostic, verbatim from
+   *  `core/dashboard-variables.ts` — never re-composed here. */
   diagnostic: string | null;
+  /** #447: whether this row offers a trailing destructive affordance. True for
+   *  an ORPHANED variable only — deleting it drops stored SQL that nothing else
+   *  holds. An active or conflicted variable is inferred from the panel queries,
+   *  so there is nothing about it a tree row could delete. */
+  deletable: boolean;
   dashboardId: string;
   /** The member this row addresses, by Dashboard-local id — never by query id. */
   member: DashboardFocusTarget | null;
@@ -141,7 +188,10 @@ export interface DashboardTreeRow {
   single: DashboardTreeCommand | null;
   double: DashboardTreeCommand | null;
   shift: DashboardTreeCommand | null;
-  /** The keyboard-reachable equivalent of every gesture this row offers. */
+  /** The keyboard-reachable equivalent of every gesture this row offers. EMPTY
+   *  for a variable row: #447 forbids the `…` menu there, and a variable row has
+   *  no double/Shift gesture for it to expose — its single activation (open the
+   *  option-SQL editor) is already reachable with Enter. */
   menu: readonly DashboardTreeMenuItem[];
 }
 
@@ -160,10 +210,11 @@ export interface DashboardTreeInput {
 }
 
 export const UNTITLED_DASHBOARD = 'Untitled dashboard';
-export const UNTITLED_FILTER = 'Untitled filter';
 export const UNTITLED_PANEL = 'Untitled panel';
 const MISSING_QUERY_DIAGNOSTIC = 'This panel\'s query is not in this workspace, so it cannot be opened.';
-const MISSING_SOURCE_DIAGNOSTIC = 'This filter\'s option-source query is not in this workspace, so it cannot be opened.';
+/** The word a warning-severity variable row shows next to its name. Rendered as
+ *  TEXT, not only as a colour or an icon. */
+export const UNUSED_VARIABLE_STATUS = 'unused';
 
 /** A fully-resolved Dashboard-open command. A member target makes it a FOCUS
  *  navigation; omitting one opens the Dashboard row itself. */
@@ -178,12 +229,13 @@ const trimmed = (value: string | undefined): string => (typeof value === 'string
 const specName = (query: TreeQuery | null): string => trimmed(query?.spec?.name ?? undefined);
 const specDescription = (query: TreeQuery | null): string => trimmed(query?.spec?.description ?? undefined);
 
-/** One member's resolved facts, computed once and used for the label, the search
+/** One panel's resolved facts, computed once and used for the label, the search
  *  haystack, the invalid annotation and the action set alike. */
 interface MemberFacts {
   label: string;
   haystack: readonly string[];
-  invalid: DashboardTreeInvalid;
+  /** A panel's only failure mode: its query is not in this workspace. */
+  invalid: 'unresolved-query' | null;
   queryId: string | null;
 }
 
@@ -203,42 +255,90 @@ function tileFacts(tile: TreeTile, queries: ReadonlyMap<string, TreeQuery>): Mem
   };
 }
 
-function filterFacts(filter: TreeFilter, queries: ReadonlyMap<string, TreeQuery>): MemberFacts {
-  const label = trimmed(filter.label);
-  const parameter = trimmed(filter.parameter);
-  // ABSENT is the transitional case (#427 gives curated filters a dedicated
-  // filter-role query); PRESENT-but-unresolved is a genuine broken reference.
-  // They must not be conflated: only the second is a diagnostic.
-  const sourceId = typeof filter.sourceQueryId === 'string' ? filter.sourceQueryId : null;
-  const source = sourceId === null ? null : queries.get(sourceId) ?? null;
-  const name = specName(source);
-  return {
-    label: label || name || parameter || UNTITLED_FILTER,
-    haystack: [label, parameter, name, specDescription(source)],
-    invalid: sourceId !== null && source === null ? 'unresolved-source' : null,
-    queryId: source === null ? null : sourceId,
-  };
+/** One tile plus its resolved facts — computed once per paint and shared by the
+ *  panel rows and the variable inference (which labels its conflict diagnostic
+ *  with the very same panel labels this tree displays). */
+interface TileEntry {
+  tile: TreeTile;
+  facts: MemberFacts;
 }
 
-const MEMBER_MENU_LABELS: Record<'panel' | 'filter', Record<'open' | 'view' | 'edit', string>> = {
-  panel: {
-    open: 'Open query',
-    view: 'Open Dashboard in View and focus panel',
-    edit: 'Open Dashboard in Edit and focus panel',
-  },
-  filter: {
-    open: 'Open source query',
-    view: 'Open Dashboard in View and focus filter',
-    edit: 'Open Dashboard in Edit and focus filter',
-  },
+const queryMap = (workspace: TreeWorkspace | null): ReadonlyMap<string, TreeQuery> => {
+  const queries = new Map<string, TreeQuery>();
+  for (const query of workspace?.queries ?? []) queries.set(query.id, query);
+  return queries;
+};
+
+const tileEntriesOf = (
+  dashboard: TreeDashboard, queries: ReadonlyMap<string, TreeQuery>,
+): TileEntry[] => (dashboard.tiles ?? []).map((tile) => ({ tile, facts: tileFacts(tile, queries) }));
+
+/**
+ * #447 — one Dashboard's variables, in the canonical inference order that IS the
+ * Variables subtree's row order. The ONE place the tree layer builds an
+ * `inferDashboardVariables` input, so the rows and the per-variable editor can
+ * never disagree about what a Dashboard's variables are.
+ */
+function variablesFor(
+  dashboard: TreeDashboard, tileEntries: readonly TileEntry[], allQueries: readonly TreeQuery[],
+): DashboardVariable[] {
+  const tileLabels: Record<string, string> = {};
+  const declaringTiles: { id: string; queryId: string }[] = [];
+  for (const { tile } of tileEntries) {
+    // A tile with no query declares nothing. A tile whose query is MISSING from
+    // this workspace is still passed in: the id is what inference looks the SQL
+    // up by, and an unresolvable id simply contributes no declarations.
+    if (typeof tile.queryId === 'string') declaringTiles.push({ id: tile.id, queryId: tile.queryId });
+  }
+  for (const { tile, facts } of tileEntries) tileLabels[tile.id] = facts.label;
+  return inferDashboardVariables({
+    tiles: declaringTiles,
+    queries: allQueries,
+    variableConfigs: dashboard.variableConfigs ?? undefined,
+    tileLabels,
+  });
+}
+
+/**
+ * One Dashboard's variables, resolved straight from the committed aggregate — the
+ * per-variable option-SQL editor's resolver (`ui/variable-editor.ts`), which is
+ * handed only a Dashboard id and a NAME and must agree exactly with the row the
+ * user clicked. An unknown Dashboard id resolves to no variables at all rather
+ * than throwing; with a duplicated id (which a write path refuses outright) the
+ * FIRST entry answers, matching the row order this tree paints.
+ */
+export function dashboardVariables(
+  workspace: TreeWorkspace | null, dashboardId: string,
+): DashboardVariable[] {
+  if (workspace === null) return [];
+  const dashboard = (workspace.dashboards ?? []).find((entry) => entry.id === dashboardId);
+  if (dashboard === undefined) return [];
+  return variablesFor(dashboard, tileEntriesOf(dashboard, queryMap(workspace)), workspace.queries ?? []);
+}
+
+/** One variable's row annotation. Derived ONLY from the status the pure
+ *  inference already decided — this never re-classifies a variable. */
+const variableAnnotation = (
+  variable: DashboardVariable,
+): { invalid: DashboardTreeInvalid; severity: DashboardTreeSeverity } => {
+  if (variable.status === 'conflicted') return { invalid: 'variable-conflict', severity: 'error' };
+  if (variable.status === 'orphaned') return { invalid: 'variable-unused', severity: 'warning' };
+  return { invalid: null, severity: null };
+};
+
+/** A panel row's action vocabulary. #447 removed the filter half: a variable row
+ *  has no menu at all. */
+const PANEL_MENU_LABELS = {
+  open: 'Open query',
+  view: 'Open Dashboard in View and focus panel',
+  edit: 'Open Dashboard in Edit and focus panel',
 };
 
 export function deriveDashboardTree(
   { workspace, surface, ui }: DashboardTreeInput,
 ): DashboardTree {
   const dashboards = workspace?.dashboards ?? [];
-  const queries = new Map<string, TreeQuery>();
-  for (const query of workspace?.queries ?? []) queries.set(query.id, query);
+  const queries = queryMap(workspace);
 
   const search = ui.searchText.trim().toLowerCase();
   const hits = (haystack: readonly string[]): boolean =>
@@ -256,18 +356,25 @@ export function deriveDashboardTree(
     const description = trimmed(dashboard.description);
     const dashboardMatched = search !== '' && hits([title, description]);
 
-    const filters = dashboard.filters ?? [];
     const tiles = dashboard.tiles ?? [];
-    const filterEntries = filters.map((filter) => ({ filter, facts: filterFacts(filter, queries) }));
-    const tileEntries = tiles.map((tile) => ({ tile, facts: tileFacts(tile, queries) }));
+    const tileEntries = tileEntriesOf(dashboard, queries);
+    // #447: the variable rows come from the pure inference service, over THIS
+    // Dashboard's panel-owned queries plus its stored option SQL.
+    const variables = variablesFor(dashboard, tileEntries, workspace?.queries ?? []);
+    // Name, every displayed type, AND the stored option SQL — #447 asks for all
+    // three "where practical", and all three are in hand here.
+    const variableEntries = variables.map((variable) => ({
+      variable,
+      haystack: [variable.name, ...variable.types, variable.sql ?? ''],
+    }));
 
     // A direct Dashboard match shows its COMPLETE hierarchy for context (#426
     // permits this); otherwise only the members that matched are shown.
     const showAll = search === '' || dashboardMatched;
-    const shownFilters = showAll ? filterEntries : filterEntries.filter((e) => hits(e.facts.haystack));
+    const shownVariables = showAll ? variableEntries : variableEntries.filter((e) => hits(e.haystack));
     const shownTiles = showAll ? tileEntries : tileEntries.filter((e) => hits(e.facts.haystack));
 
-    if (search !== '' && !dashboardMatched && shownFilters.length === 0 && shownTiles.length === 0) continue;
+    if (search !== '' && !dashboardMatched && shownVariables.length === 0 && shownTiles.length === 0) continue;
 
     // A search EXPOSES matching paths at presentation time; it never writes the
     // user's expansion sets, so clearing it restores exactly what was open — which
@@ -283,7 +390,8 @@ export function deriveDashboardTree(
       parentKey: null,
       label: title || UNTITLED_DASHBOARD,
       count: null,
-      // Filters are Dashboard-level controls and are deliberately NOT counted here.
+      // Variables are Dashboard-level controls and are deliberately NOT counted
+      // here — this is the PANEL count.
       meta: String(tiles.length),
       expandable: true,
       expanded: dashboardExpanded,
@@ -291,7 +399,9 @@ export function deriveDashboardTree(
       matched: dashboardMatched,
       current: isCurrentDashboard,
       invalid: null,
+      severity: null,
       diagnostic: null,
+      deletable: false,
       dashboardId: dashboard.id,
       member: null,
       queryId: null,
@@ -307,26 +417,106 @@ export function deriveDashboardTree(
 
     if (!dashboardExpanded) continue;
 
-    // Filters ALWAYS precedes Panels, and both group rows stay visible while the
-    // Dashboard is expanded — including when empty, because #428 will use them as
-    // stable drop targets.
-    const groups: readonly { group: DashboardTreeGroup; label: string; total: number; shown: readonly { facts: MemberFacts; member: DashboardFocusTarget }[] }[] = [
-      {
-        group: 'filters',
-        label: 'Filters',
-        total: filters.length,
-        shown: shownFilters.map((e) => ({ facts: e.facts, member: { kind: 'filter' as const, id: e.filter.id } })),
-      },
-      {
+    const groupKeyFor = (group: DashboardTreeGroup): string => dashboardKey + ':group:' + group;
+    const isCurrentMember = (member: DashboardFocusTarget): boolean =>
+      isCurrentDashboard && currentMember !== null
+      && currentMember.kind === member.kind && currentMember.id === member.id;
+
+    // #447 — one VARIABLE row. No `…` menu (the issue forbids it), no double or
+    // Shift gesture, and a trailing trash affordance for an orphan only.
+    const variableRows = shownVariables.map(({ variable, haystack }): DashboardTreeRow => {
+      const member: DashboardFocusTarget = { kind: 'variable', id: variable.name };
+      const { invalid, severity } = variableAnnotation(variable);
+      return {
+        key: dashboardKey + ':variable:' + encodeKeyPart(variable.name),
+        kind: 'variable',
+        level: 3,
+        parentKey: groupKeyFor('variables'),
+        // The NAME is the label: it is the variable's whole identity, and it is
+        // what the `{name:Type}` placeholders in the panel SQL say.
+        label: variable.name,
+        count: null,
+        // One type when active, every disagreeing type when conflicted, the
+        // stored `lastKnownType` for an orphan that has one — and nothing at all
+        // for an orphan that does not, rather than an invented type.
+        meta: variable.types.join(' | '),
+        expandable: false,
+        expanded: false,
+        toggleable: false,
+        matched: search !== '' && hits(haystack),
+        current: isCurrentMember(member),
+        invalid,
+        severity,
+        // Verbatim from the inference service — never re-composed here.
+        diagnostic: variable.diagnostic,
+        deletable: variable.status === 'orphaned',
+        dashboardId: dashboard.id,
+        member,
+        queryId: null,
+        group: 'variables',
+        single: { kind: 'open-variable', dashboardId: dashboard.id, name: variable.name },
+        double: null,
+        shift: null,
+        menu: [],
+      };
+    });
+
+    const panelRows = shownTiles.map(({ tile, facts }): DashboardTreeRow => {
+      const member: DashboardFocusTarget = { kind: 'tile', id: tile.id };
+      // One query can back several panels, so this is one row PER TILE — never
+      // merged by query id or label.
+      const openQuery: DashboardTreeCommand | null = facts.queryId === null
+        ? null
+        : { kind: 'open-query', queryId: facts.queryId };
+      const focusView = openDashboardCommand(dashboard.id, 'view', member);
+      const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
+      return {
+        key: dashboardKey + ':tile:' + encodeKeyPart(tile.id),
+        kind: 'panel',
+        level: 3,
+        parentKey: groupKeyFor('panels'),
+        label: facts.label,
+        count: null,
+        meta: '',
+        expandable: false,
+        expanded: false,
+        toggleable: false,
+        matched: search !== '' && hits(facts.haystack),
+        current: isCurrentMember(member),
+        invalid: facts.invalid,
+        severity: facts.invalid === null ? null : 'error',
+        diagnostic: facts.invalid === null ? null : MISSING_QUERY_DIAGNOSTIC,
+        deletable: false,
+        dashboardId: dashboard.id,
+        member,
+        queryId: facts.queryId,
         group: 'panels',
-        label: 'Panels',
-        total: tiles.length,
-        shown: shownTiles.map((e) => ({ facts: e.facts, member: { kind: 'tile' as const, id: e.tile.id } })),
-      },
+        // Only the query-open action is withheld: Dashboard View/Edit focus
+        // navigation stays available so a broken panel's diagnostics remain
+        // reachable.
+        single: openQuery,
+        double: focusView,
+        shift: focusEdit,
+        menu: [
+          { label: PANEL_MENU_LABELS.open, command: openQuery },
+          { label: PANEL_MENU_LABELS.view, command: focusView },
+          { label: PANEL_MENU_LABELS.edit, command: focusEdit },
+        ],
+      };
+    });
+
+    // Variables ALWAYS precedes Panels, and both group rows stay visible while
+    // the Dashboard is expanded — including when empty, because #428 uses them as
+    // stable drop targets.
+    const groups: readonly { group: DashboardTreeGroup; label: string; total: number; members: readonly DashboardTreeRow[] }[] = [
+      // The count is distinct INFERRED names plus orphaned configuration names —
+      // which is exactly `variables.length`, because the inference already unions
+      // the two. Independent of the search, like the panel count.
+      { group: 'variables', label: 'Variables', total: variables.length, members: variableRows },
+      { group: 'panels', label: 'Panels', total: tiles.length, members: panelRows },
     ];
 
-    for (const { group, label, total, shown } of groups) {
-      const groupKey = dashboardKey + ':group:' + group;
+    for (const { group, label, total, members } of groups) {
       // A search FORCES a group open only when it actually has a match to reveal;
       // otherwise the user's own expansion still decides. Mirrors `ui/schema.ts`'s
       // second level, whose forcing term is likewise conditional
@@ -335,10 +525,10 @@ export function deriveDashboardTree(
       // cannot open (nothing to show) and cannot stay closed once it does match,
       // and clicking it silently writes expansion that only surfaces later, after
       // the search is cleared.
-      const groupForced = search !== '' && shown.length > 0;
+      const groupForced = search !== '' && members.length > 0;
       const groupExpanded = ui.expandedGroups.has(groupStateKey(dashboard.id, group)) || groupForced;
       rows.push({
-        key: groupKey,
+        key: groupKeyFor(group),
         kind: 'group',
         level: 2,
         parentKey: dashboardKey,
@@ -351,7 +541,9 @@ export function deriveDashboardTree(
         matched: false,
         current: false,
         invalid: null,
+        severity: null,
         diagnostic: null,
+        deletable: false,
         dashboardId: dashboard.id,
         member: null,
         queryId: null,
@@ -363,53 +555,7 @@ export function deriveDashboardTree(
         shift: null,
         menu: [],
       });
-      if (!groupExpanded) continue;
-
-      for (const { facts, member } of shown) {
-        const kind = member.kind === 'tile' ? 'panel' : 'filter';
-        const labels = MEMBER_MENU_LABELS[kind];
-        // Before #427 one query can back several members, so this is one row PER
-        // MEMBER — never merged by query id or label.
-        const openQuery: DashboardTreeCommand | null = facts.queryId === null
-          ? null
-          : { kind: 'open-query', queryId: facts.queryId };
-        const focusView = openDashboardCommand(dashboard.id, 'view', member);
-        const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
-        rows.push({
-          key: dashboardKey + ':' + member.kind + ':' + encodeKeyPart(member.id),
-          kind,
-          level: 3,
-          parentKey: groupKey,
-          label: facts.label,
-          count: null,
-          meta: '',
-          expandable: false,
-          expanded: false,
-          toggleable: false,
-          matched: search !== '' && hits(facts.haystack),
-          current: isCurrentDashboard && currentMember !== null
-            && currentMember.kind === member.kind && currentMember.id === member.id,
-          invalid: facts.invalid,
-          diagnostic: facts.invalid === null
-            ? null
-            : facts.invalid === 'unresolved-query' ? MISSING_QUERY_DIAGNOSTIC : MISSING_SOURCE_DIAGNOSTIC,
-          dashboardId: dashboard.id,
-          member,
-          queryId: facts.queryId,
-          group,
-          // Only the query-open action is withheld: Dashboard View/Edit focus
-          // navigation stays available so a broken member's diagnostics remain
-          // reachable.
-          single: openQuery,
-          double: focusView,
-          shift: focusEdit,
-          menu: [
-            { label: labels.open, command: openQuery },
-            { label: labels.view, command: focusView },
-            { label: labels.edit, command: focusEdit },
-          ],
-        });
-      }
+      if (groupExpanded) rows.push(...members);
     }
   }
 

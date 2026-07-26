@@ -255,19 +255,6 @@
           "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)"
         }
       }
-    },
-    {
-      "id": "shop-filter-options",
-      "sql": "SELECT (SELECT arraySort(groupUniqArray(country)) FROM shop.events_raw) AS country, (SELECT arraySort(groupUniqArray(category)) FROM shop.products) AS category",
-      "specVersion": 1,
-      "spec": {
-        "name": "Shop dimensions",
-        "description": "Country and product-category choices for the Shop dashboard.",
-        "favorite": false,
-        "dashboard": {
-          "role": "filter"
-        }
-      }
     }
   ],
   "dashboards": [
@@ -383,7 +370,6 @@
           "id": "shop-country",
           "parameter": "country",
           "label": "Country",
-          "sourceQueryId": "shop-filter-options",
           "defaultValue": [],
           "defaultActive": false,
           "targets": [
@@ -399,7 +385,6 @@
           "id": "shop-category",
           "parameter": "category",
           "label": "Category",
-          "sourceQueryId": "shop-filter-options",
           "defaultValue": [],
           "defaultActive": false,
           "targets": [

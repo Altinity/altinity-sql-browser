@@ -5,18 +5,18 @@ import {
   renameWorkspace, replaceWorkspaceContents,
 } from '../../src/workspace/workspace-operations.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string): SavedQueryV2 => ({
   id, sql: 'SELECT 1', specVersion: 1, spec: { name: id, favorite: false },
 });
-const dashboard = (id: string): DashboardDocumentV1 => ({
-  documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [],
+const dashboard = (id: string): DashboardDocumentV2 => ({
+  documentVersion: 2, id, title: id.toUpperCase(), revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [],
 });
-const base = (): StoredWorkspaceV4 => ({
-  storageVersion: 4,
+const base = (): StoredWorkspaceV5 => ({
+  storageVersion: 5,
   id: 'id-1',
   key: 'stable_key',
   name: 'Display name',
@@ -25,7 +25,7 @@ const base = (): StoredWorkspaceV4 => ({
 });
 
 describe('workspace operations', () => {
-  it('creates an empty V4 workspace from the injected ID, key, and name', () => {
+  it('creates an empty V5 workspace from the injected ID, key, and name', () => {
     const genId = () => 'opaque-id';
     expect(createNewWorkspace(genId, 'clickhouse_ops', 'ClickHouse Ops')).toEqual({
       storageVersion: CURRENT_STORAGE_VERSION,
@@ -35,7 +35,7 @@ describe('workspace operations', () => {
       queries: [],
       dashboards: [],
     });
-    expect(CURRENT_STORAGE_VERSION).toBe(4);
+    expect(CURRENT_STORAGE_VERSION).toBe(5);
     expect(generateWorkspaceId(genId)).toBe('opaque-id');
   });
 

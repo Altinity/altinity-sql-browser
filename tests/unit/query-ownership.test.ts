@@ -10,16 +10,11 @@ const query = (id: string, spec: Partial<QuerySpecV1> = {}): SavedQueryV2 => ({
   id, sql: `SELECT ${id}`, specVersion: 1, spec: { name: id.toUpperCase(), ...spec } as QuerySpecV1,
 });
 
-const dashboard = (
-  id: string, tiles: readonly string[], filterSources: readonly (string | null)[] = [],
-): OwnershipDashboard => ({
+/** #447: a panel tile is the only kind of Dashboard member that can own a
+ *  query, so the fixture builds tiles only — there is no filter shape left. */
+const dashboard = (id: string, tiles: readonly string[]): OwnershipDashboard => ({
   id,
   tiles: tiles.map((queryId, index) => ({ id: `${id}-t${index}`, queryId })),
-  filters: filterSources.map((sourceQueryId, index) => (sourceQueryId === null
-    // A PLAIN filter — a date or free-text control with no option list. It owns
-    // nothing, so it must not appear in the index at all.
-    ? { id: `${id}-f${index}` }
-    : { id: `${id}-f${index}`, sourceQueryId })),
 });
 
 const workspace = (
@@ -29,45 +24,27 @@ const workspace = (
 describe('buildQueryOwnershipIndex', () => {
   it('partitions existing queries into Library (zero owners) and owned (one owner)', () => {
     const index = buildQueryOwnershipIndex(workspace(
-      [query('standalone'), query('panel-copy'), query('filter-copy')],
-      [dashboard('d1', ['panel-copy'], ['filter-copy'])],
+      [query('standalone'), query('panel-copy')],
+      [dashboard('d1', ['panel-copy'])],
     ));
     expect([...index.libraryQueryIds]).toEqual(['standalone']);
-    expect([...index.dashboardOwnedQueryIds].sort()).toEqual(['filter-copy', 'panel-copy']);
+    expect([...index.dashboardOwnedQueryIds]).toEqual(['panel-copy']);
     expect(index.ownersByQueryId.get('panel-copy')).toEqual([
       { kind: 'panel', dashboardId: 'd1', tileId: 'd1-t0' },
-    ]);
-    expect(index.ownersByQueryId.get('filter-copy')).toEqual([
-      { kind: 'filter', dashboardId: 'd1', filterId: 'd1-f0' },
     ]);
     expect(index.ownersByQueryId.has('standalone')).toBe(false);
   });
 
-  it('derives ownership ONLY from references — a favourite or a role owns nothing', () => {
+  it('derives ownership ONLY from references — a favourite owns nothing', () => {
     // The whole point of #427: membership is a Dashboard reference, never a flag
-    // on the query. A favourited, filter-role query with no reference to it is a
-    // Library query like any other.
+    // on the query. A favourited query with no reference to it is a Library
+    // query like any other.
     const index = buildQueryOwnershipIndex(workspace(
-      [query('starred', { favorite: true, dashboard: { role: 'filter' } })],
+      [query('starred', { favorite: true })],
       [dashboard('d1', [])],
     ));
     expect([...index.libraryQueryIds]).toEqual(['starred']);
     expect(index.dashboardOwnedQueryIds.size).toBe(0);
-  });
-
-  it('orders owners by Dashboard, then FILTERS before TILES — the migration order', () => {
-    // `owners[0]` has to mean the same member here and in the migration, because
-    // validation reports "every owner after the first".
-    const owners = buildQueryOwnershipIndex(workspace(
-      [query('shared')],
-      [dashboard('d1', ['shared'], ['shared']), dashboard('d2', ['shared'], ['shared'])],
-    )).ownersByQueryId.get('shared');
-    expect(owners).toEqual([
-      { kind: 'filter', dashboardId: 'd1', filterId: 'd1-f0' },
-      { kind: 'panel', dashboardId: 'd1', tileId: 'd1-t0' },
-      { kind: 'filter', dashboardId: 'd2', filterId: 'd2-f0' },
-      { kind: 'panel', dashboardId: 'd2', tileId: 'd2-t0' },
-    ]);
   });
 
   it('records every sharing shape as multiple owners, and keeps the query out of Library', () => {
@@ -78,11 +55,6 @@ describe('buildQueryOwnershipIndex', () => {
     expect(twoPanels.libraryQueryIds.size).toBe(0);
     expect([...twoPanels.dashboardOwnedQueryIds]).toEqual(['q']);
 
-    const twoFilters = buildQueryOwnershipIndex(workspace(
-      [query('q')], [dashboard('d1', [], ['q', 'q'])],
-    ));
-    expect(twoFilters.ownersByQueryId.get('q')).toHaveLength(2);
-
     const crossDashboard = buildQueryOwnershipIndex(workspace(
       [query('q')], [dashboard('d1', ['q']), dashboard('d2', ['q'])],
     ));
@@ -92,24 +64,15 @@ describe('buildQueryOwnershipIndex', () => {
     ]);
   });
 
-  it('a plain filter owns nothing', () => {
-    const index = buildQueryOwnershipIndex(workspace(
-      [query('q')], [dashboard('d1', [], [null, null])],
-    ));
-    expect(index.ownersByQueryId.size).toBe(0);
-    expect([...index.libraryQueryIds]).toEqual(['q']);
-  });
-
   it('keeps a DANGLING reference as an owner while joining neither partition', () => {
     // Ownership reports what the document says; a reference to a query that does
     // not exist stays the separate cross-resource diagnostic it already is.
     const index = buildQueryOwnershipIndex(workspace(
-      [query('present')], [dashboard('d1', ['gone'], ['also-gone'])],
+      [query('present')], [dashboard('d1', ['gone'])],
     ));
     expect(index.ownersByQueryId.get('gone')).toEqual([
       { kind: 'panel', dashboardId: 'd1', tileId: 'd1-t0' },
     ]);
-    expect(index.ownersByQueryId.has('also-gone')).toBe(true);
     expect(index.libraryQueryIds.has('gone')).toBe(false);
     expect(index.dashboardOwnedQueryIds.has('gone')).toBe(false);
     // The query that does exist is unaffected.
@@ -166,12 +129,9 @@ describe('ownerOfQuery', () => {
     expect(ownerOfQuery(workspace([query('a')], []), 'a')).toBeNull();
   });
 
-  it('returns the single panel or filter owner', () => {
-    const ws = workspace(
-      [query('p'), query('f')], [dashboard('d1', ['p'], ['f'])],
-    );
+  it('returns the single panel owner', () => {
+    const ws = workspace([query('p')], [dashboard('d1', ['p'])]);
     expect(ownerOfQuery(ws, 'p')).toEqual({ kind: 'panel', dashboardId: 'd1', tileId: 'd1-t0' });
-    expect(ownerOfQuery(ws, 'f')).toEqual({ kind: 'filter', dashboardId: 'd1', filterId: 'd1-f0' });
   });
 
   it('REFUSES to pick when a query has more than one owner', () => {
@@ -194,14 +154,14 @@ describe('ownerOfQuery', () => {
 });
 
 describe('cloneQueryForDashboardOwner', () => {
-  it('sets the owner role and clears the favourite, preserving everything else', () => {
+  it('sets the owner role to panel and clears the favourite, preserving everything else', () => {
     const source = query('src', {
       favorite: true,
       description: 'kept',
       view: 'panel',
       panel: { cfg: { type: 'timeseries' } },
     });
-    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-1', role: 'panel' });
+    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-1' });
 
     expect(clone.id).toBe('own-1');
     expect(clone.sql).toBe('SELECT src');
@@ -217,38 +177,31 @@ describe('cloneQueryForDashboardOwner', () => {
     expect(source.id).toBe('src');
   });
 
-  it('mints a filter-role copy', () => {
-    const clone = cloneQueryForDashboardOwner({
-      source: query('src'), newId: 'own-2', role: 'filter',
-    });
-    expect(clone.spec.dashboard).toEqual({ role: 'filter' });
-  });
-
-  it('retains sibling spec.dashboard fields while overwriting only the role', () => {
+  it('retains sibling spec.dashboard fields while overwriting the role to panel', () => {
+    // A tile is the only kind of owner left (#447), so every copy takes role
+    // panel regardless of the source's own role — but siblings survive.
     const source = query('src', {
-      dashboard: { role: 'panel', variants: { small: { view: 'table' } } },
+      dashboard: { role: 'setup', variants: { small: { view: 'table' } } },
     });
-    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-3', role: 'filter' });
-    expect(clone.spec.dashboard).toEqual({ role: 'filter', variants: { small: { view: 'table' } } });
+    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-3' });
+    expect(clone.spec.dashboard).toEqual({ role: 'panel', variants: { small: { view: 'table' } } });
   });
 
   it('preserves unknown forward-compatible Spec fields', () => {
     const source = query('src', { futureThing: { nested: [1, 2] } } as unknown as Partial<QuerySpecV1>);
-    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-4', role: 'panel' });
+    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-4' });
     expect((clone.spec as Record<string, unknown>).futureThing).toEqual({ nested: [1, 2] });
   });
 
   it('is a deep copy — mutating the clone cannot reach the source', () => {
     const source = query('src', { panel: { cfg: { type: 'timeseries' } } });
-    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-5', role: 'panel' });
+    const clone = cloneQueryForDashboardOwner({ source, newId: 'own-5' });
     clone.spec.panel!.cfg!.type = 'stat';
     expect(source.spec.panel!.cfg!.type).toBe('timeseries');
   });
 
   it('leaves a source with no favourite and no dashboard block alone apart from the role', () => {
-    const clone = cloneQueryForDashboardOwner({
-      source: query('bare'), newId: 'own-6', role: 'panel',
-    });
+    const clone = cloneQueryForDashboardOwner({ source: query('bare'), newId: 'own-6' });
     expect(Object.hasOwn(clone.spec, 'favorite')).toBe(false);
     expect(clone.spec.dashboard).toEqual({ role: 'panel' });
     expect(clone.spec.name).toBe('BARE');
@@ -258,8 +211,8 @@ describe('cloneQueryForDashboardOwner', () => {
     // #427: copying one Library query into two Dashboard members creates two
     // INDEPENDENT copies — never one shared query.
     const source = query('src');
-    const first = cloneQueryForDashboardOwner({ source, newId: 'own-a', role: 'panel' });
-    const second = cloneQueryForDashboardOwner({ source, newId: 'own-b', role: 'panel' });
+    const first = cloneQueryForDashboardOwner({ source, newId: 'own-a' });
+    const second = cloneQueryForDashboardOwner({ source, newId: 'own-b' });
     const index = buildQueryOwnershipIndex(workspace(
       [source, first, second],
       [dashboard('d1', ['own-a']), dashboard('d2', ['own-b'])],

@@ -112,14 +112,14 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(result.pageOverflow).toBeLessThanOrEqual(0);
   });
 
-  test('expands into Filters before Panels, indented by level', async ({ page }) => {
+  test('expands into Variables before Panels, indented by level', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     // The chevron is the instant path — no double-click window to wait out.
     await treeRow(page, 'workspace:sales').locator('.chev').click();
     await expect(page.locator('.dash-tree-row')).toHaveCount(5);
     await expect(page.locator('.dash-tree-row .label')).toHaveText([
-      'Sales revenue', 'Filters', 'Panels', 'Ops latency',
+      'Sales revenue', 'Variables', 'Panels', 'Ops latency',
       'A very long dashboard title that must ellipsize rather than widen the sidebar',
     ]);
     await treeRow(page, 'workspace:sales:group:panels').click();
@@ -196,20 +196,21 @@ test.describe('Dashboard hierarchy tree', () => {
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
   });
 
-  test('a source-less filter offers no query-open but still navigates', async ({ page }) => {
+  test('a variable row opens its SQL editor immediately and never a query', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     await treeRow(page, 'workspace:sales').locator('.chev').click();
-    await treeRow(page, 'workspace:sales:group:filters').click();
+    await treeRow(page, 'workspace:sales:group:variables').click();
 
-    await treeRow(page, 'workspace:sales:filter:f-bare').click();
-    await page.waitForTimeout(400);
+    // Both variables come from the panel SQL, shown as `name` + its type.
+    await expect(page.locator('.dash-tree-row[data-key^="workspace:sales:variable:"] .label'))
+      .toHaveText(['zone', 'region']);
+
+    // A variable row acts on the FIRST click — there is no competing
+    // double-click gesture on it, because there is no query to open.
+    await treeRow(page, 'workspace:sales:variable:region').click();
+    await expect(page.locator('.varedit-panel')).toBeVisible();
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
-
-    await treeRow(page, 'workspace:sales:filter:f-bare').dblclick();
-    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
-      { kind: 'dashboard', dashboardId: 'sales', mode: 'view', focus: { kind: 'filter', id: 'f-bare' } },
-    ]);
   });
 
   test('keyboard traversal reaches every level and Enter acts', async ({ page }) => {
@@ -219,14 +220,13 @@ test.describe('Dashboard hierarchy tree', () => {
     await first.focus();
     await page.keyboard.press('ArrowRight'); // expand
     await expect(page.locator('.dash-tree-row')).toHaveCount(5);
-    await page.keyboard.press('ArrowRight'); // into Filters
-    await page.keyboard.press('ArrowRight'); // expand Filters
+    await page.keyboard.press('ArrowRight'); // into Variables
+    await page.keyboard.press('ArrowRight'); // expand Variables
     await page.keyboard.press('ArrowDown');
-    await expect(treeRow(page, 'workspace:sales:filter:f-zone')).toBeFocused();
+    await expect(treeRow(page, 'workspace:sales:variable:zone')).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
-      { kind: 'query', queryId: 'q-zones' },
-    ]);
+    await expect(page.locator('.varedit-panel')).toBeVisible();
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 
   test('the action menu exposes the double-click operations to the keyboard', async ({ page }) => {
@@ -248,8 +248,8 @@ test.describe('Dashboard hierarchy tree', () => {
     await roleTab(page, 'Dashboards').click();
     const search = page.locator('.upper-role-host[data-role="dashboards"] input');
     await search.fill('zone');
-    // The filter's source-query name matches, so its ancestors are exposed.
-    await expect(page.locator('.dash-tree-row .label')).toHaveText(['Sales revenue', 'Filters', 'Zone list', 'Panels']);
+    // The variable's own NAME matches, so its ancestors are exposed.
+    await expect(page.locator('.dash-tree-row .label')).toHaveText(['Sales revenue', 'Variables', 'zone', 'Panels']);
     // The caret survives, because the input lives outside the repainted row list.
     await expect(search).toBeFocused();
     await search.fill('');
@@ -261,7 +261,7 @@ test.describe('Dashboard hierarchy tree', () => {
     await roleTab(page, 'Dashboards').click();
     // Open everything to make the list taller than the pane.
     await treeRow(page, 'workspace:sales').locator('.chev').click();
-    await treeRow(page, 'workspace:sales:group:filters').click();
+    await treeRow(page, 'workspace:sales:group:variables').click();
     await treeRow(page, 'workspace:sales:group:panels').click();
     const result = await page.evaluate(() => {
       const list = document.querySelector('.dash-tree-list');

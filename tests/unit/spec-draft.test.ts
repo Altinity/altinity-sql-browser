@@ -60,7 +60,10 @@ describe('Spec semantic validation', () => {
       'key.with.dots': [{ anything: true }],
     };
     expect(validateSpec(spec)).toEqual([]);
-    expect(CORE_SPEC_VALIDATORS).toHaveLength(2);
+    // #447 removed the `['dashboard','role']` entry (it validated the Filter
+    // role's source SQL). `['timeRanges']` is the only core feature validator
+    // left — the rest of the static contract lives in the canonical schema.
+    expect(CORE_SPEC_VALIDATORS.map((entry) => entry.path)).toEqual([['timeRanges']]);
   });
 
   it('rejects a time range whose From and To name the same parameter', () => {

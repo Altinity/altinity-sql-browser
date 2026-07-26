@@ -47,8 +47,7 @@ export type ParamValidationStatus = 'valid' | 'invalid' | 'incomplete' | 'unknow
 /** `validateParamValue`'s return shape — a `reason` is only ever present
  *  alongside `'invalid'`, but that pairing isn't worth a discriminated union
  *  for this module's small, uniform set of call sites (both destructure
- *  `.status`/`.reason` directly — see `param-pipeline.js` and
- *  `dashboard-filters.js`). */
+ *  `.status`/`.reason` directly — see `param-pipeline.js`). */
 export interface ParamValidationResult {
   status: ParamValidationStatus;
   reason?: string;

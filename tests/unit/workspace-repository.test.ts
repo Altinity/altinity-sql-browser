@@ -5,10 +5,10 @@ import type {
   WorkspaceStore, WorkspaceStoreCreateResult, WorkspaceStoreRecord,
   WorkspaceStoreReplaceResult,
 } from '../../src/workspace/workspace-store.types.js';
-import type { StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
-const workspace = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
-  storageVersion: 4,
+const workspace = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
+  storageVersion: 5,
   id: 'w1',
   key: 'workspace_one',
   name: 'Workspace One',
@@ -17,7 +17,7 @@ const workspace = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => 
   ...over,
 });
 
-const encode = (value: StoredWorkspaceV4): string => {
+const encode = (value: StoredWorkspaceV5): string => {
   const result = encodeStoredWorkspaceJson(value);
   if (!result.ok) throw new Error('invalid test fixture');
   return result.value;
@@ -94,7 +94,7 @@ function memoryStore(initial: WorkspaceStoreRecord[] = []) {
 }
 
 const record = (
-  value: StoredWorkspaceV4, lastOpenedAt: number | null = null,
+  value: StoredWorkspaceV5, lastOpenedAt: number | null = null,
 ): WorkspaceStoreRecord => ({
   id: value.id, key: value.key, text: encode(value), lastOpenedAt,
 });
@@ -146,12 +146,12 @@ describe('workspace repository collection', () => {
     });
     const owned = workspace({
       id: 'w9', key: 'owned_key', name: 'Owned',
-      queries: [query('lib'), query('panel-copy')] as StoredWorkspaceV4['queries'],
+      queries: [query('lib'), query('panel-copy')] as StoredWorkspaceV5['queries'],
       dashboards: [{
-        documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+        documentVersion: 2, id: 'd1', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        filters: [], tiles: [{ id: 't1', queryId: 'panel-copy' }],
-      }] as StoredWorkspaceV4['dashboards'],
+        tiles: [{ id: 't1', queryId: 'panel-copy' }],
+      }] as StoredWorkspaceV5['dashboards'],
     });
     const store = memoryStore([record(owned)]);
     const result = await createWorkspaceRepository({ store }).list();
@@ -204,12 +204,11 @@ describe('workspace repository collection', () => {
         spec: { name: 'q1', favorite: true },
       }],
       dashboards: [{
-        documentVersion: 1,
+        documentVersion: 2,
         id: 'd1',
         title: 'Dashboard',
         revision: 4,
         layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-        filters: [],
         tiles: [],
       }],
     });
@@ -346,11 +345,20 @@ describe('implicit workspace resolution and opened metadata', () => {
   });
 });
 
-// #424: the repository's canonical aggregate is V3. A record persisted as V2
-// is migrated by the codec on read; the RECORD upgrades on its next ordinary
-// commit, so opening a workspace stays a pure read.
-describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
+// #424/#447: the repository's canonical aggregate is V5. A record persisted as
+// V2/V3/V4 is migrated by the codec on read; the RECORD upgrades on its next
+// ordinary commit, so opening a workspace stays a pure read.
+describe('workspace repository — StoredWorkspaceV5 (#424/#447)', () => {
+  // The CURRENT (document v2) shape, used for every fixture that is created or
+  // committed fresh in this describe block.
   const dashboard = (id: string, revision = 1) => ({
+    documentVersion: 2 as const, id, title: id.toUpperCase(), revision,
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    tiles: [],
+  });
+  // The LEGACY (document v1, curated filters) shape — used only to build raw
+  // pre-#424 stored JSON text below, which the codec must still migrate.
+  const dashboardV1 = (id: string, revision = 1) => ({
     documentVersion: 1 as const, id, title: id.toUpperCase(), revision,
     layout: { type: 'flow', version: 1, preset: 'report', items: {} },
     filters: [], tiles: [],
@@ -361,23 +369,24 @@ describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
     key: 'workspace_one',
     text: JSON.stringify({
       storageVersion: 2, id: 'w1', key: 'workspace_one', name: 'Workspace One',
-      queries: [], dashboard: dashboard('legacy', 6),
+      queries: [], dashboard: dashboardV1('legacy', 6),
     }),
     lastOpenedAt,
   });
 
-  it('reads a persisted V2 record as V4, preserving the Dashboard and its revision', async () => {
+  it('reads a persisted V2 record as V5, preserving the Dashboard and its revision', async () => {
     const store = memoryStore([legacyRecord()]);
     const repository = createWorkspaceRepository({ store });
     const loaded = await repository.loadById('w1');
     expect(loaded.status).toBe('ok');
     if (loaded.status !== 'ok') return;
-    expect(loaded.workspace.storageVersion).toBe(4);
+    expect(loaded.workspace.storageVersion).toBe(5);
+    // #447: the migrated Dashboard is document v2 — filters dropped.
     expect(loaded.workspace.dashboards).toEqual([dashboard('legacy', 6)]);
     // A read is a pure read: the stored TEXT is untouched until a real write.
     expect(JSON.parse(store.records.get('w1')!.text).storageVersion).toBe(2);
 
-    // …and the same record summarizes and resolves implicitly as V3 too.
+    // …and the same record summarizes and resolves implicitly as V5 too.
     expect((await repository.list()).summaries).toEqual([
       { id: 'w1', key: 'workspace_one', name: 'Workspace One', queryCount: 0, hasDashboard: true, lastOpenedAt: null },
     ]);
@@ -385,7 +394,7 @@ describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
     expect(implicit.status === 'ok' && implicit.workspace.dashboards).toHaveLength(1);
   });
 
-  it('rewrites a migrated record canonically as V4 on its next commit, keeping lastOpenedAt', async () => {
+  it('rewrites a migrated record canonically as V5 on its next commit, keeping lastOpenedAt', async () => {
     const store = memoryStore([legacyRecord(1234)]);
     const repository = createWorkspaceRepository({ store });
     const loaded = await repository.loadById('w1');
@@ -394,7 +403,7 @@ describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
     const committed = await repository.commit(loaded.workspace);
     expect(committed.ok).toBe(true);
     const text = store.records.get('w1')!.text;
-    expect(text).toContain('"storageVersion": 4');
+    expect(text).toContain('"storageVersion": 5');
     expect(text).toContain('"dashboards"');
     expect(text).not.toContain('"dashboard":');
     expect(text).toBe(encode(loaded.workspace));
@@ -470,7 +479,7 @@ describe('workspace repository — StoredWorkspaceV4 (#424)', () => {
       text: JSON.stringify({
         storageVersion: 2, id: 'w1', key: 'workspace_one', name: 'Workspace One',
         queries: [],
-        dashboard: { ...dashboard('legacy'), tiles: [{ id: 't1', queryId: 'gone' }] },
+        dashboard: { ...dashboardV1('legacy'), tiles: [{ id: 't1', queryId: 'gone' }] },
       }),
       lastOpenedAt: null,
     }]);

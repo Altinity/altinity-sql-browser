@@ -4,10 +4,10 @@ import {
 } from '../../src/workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from '../../src/workspace/workspace-sync.js';
 import { savedQuery } from '../helpers/saved-query.js';
-import type { SavedQueryV2, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
-const ws = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'w1', key: 'ws', name: 'WS', queries: [], dashboards: [], ...over,
+const ws = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'w1', key: 'ws', name: 'WS', queries: [], dashboards: [], ...over,
 });
 
 const tab = (over: Partial<LinkedTabSnapshot> = {}): LinkedTabSnapshot => ({
@@ -30,7 +30,7 @@ describe('workspaceToken', () => {
   it('collapses an invalid workspace to empty rather than throwing', () => {
     // Unsupported storageVersion fails the codec — token is '' (equality probe,
     // not a validator).
-    expect(workspaceToken(ws({ storageVersion: 1 as unknown as 4 }))).toBe('');
+    expect(workspaceToken(ws({ storageVersion: 1 as unknown as 5 }))).toBe('');
   });
 });
 

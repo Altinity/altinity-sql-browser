@@ -21,7 +21,7 @@ assertType<AppState>(state);
 // The reactive slices carry their precise value types.
 assertType<Signal<QueryTab[]>>(state.tabs);
 assertType<Signal<Set<string>>>(state.expanded);
-assertType<Signal<'table' | 'json' | 'panel' | 'filter'>>(state.resultView);
+assertType<Signal<'table' | 'json' | 'panel'>>(state.resultView);
 assertType<SavedQueryV2[]>(state.savedQueries);
 assertType<HistoryEntry[]>(state.history);
 

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
 import type { ParameterAnalysis } from '../../src/core/param-pipeline.js';
-import type { FilterSelectionFilterDef } from '../../src/core/filter-selection.js';
 import { parseParamType } from '../../src/core/param-type.js';
 import {
   inferTimeRangePairs,
@@ -15,7 +14,7 @@ import {
   instantToChartScaleTime,
   pushRecentRange,
 } from '../../src/core/time-range.js';
-import type { TimeRangeRecent } from '../../src/core/time-range.js';
+import type { TimeRangeRecent, TimeRangeVariable } from '../../src/core/time-range.js';
 
 // Same fixture convention as tests/unit/filter-selection.test.ts: round-trip
 // through the real `analyzeParameterizedSources` rather than a hand-crafted
@@ -23,7 +22,11 @@ import type { TimeRangeRecent } from '../../src/core/time-range.js';
 const analysisFor = (sources: { id: string; sql: string }[]): ParameterAnalysis =>
   analyzeParameterizedSources(sources.map((s) => ({ id: s.id, kind: 'tab', sql: s.sql, bindPolicy: 'row-returning' })));
 
-type TRFilterDef = FilterSelectionFilterDef & { sourceQueryId?: string | null };
+// #447: a time-range bound is an inferred VARIABLE — its exact name is its only
+// identity, its type comes from the panel declarations that agree on it, and only
+// a direct-input variable (no option SQL) is a candidate.
+const variable = (name: string, type: string | null = 'DateTime', sql: string | null = null): TimeRangeVariable =>
+  ({ name, type, sql });
 
 describe('chart time-range formatting', () => {
   it('normalizes reverse selection and formats each declared wire type without shifting Date days', () => {
@@ -76,9 +79,8 @@ describe('chart time-range formatting', () => {
 
 describe('authored time-range metadata defensive shapes', () => {
   it('infers legacy metadata-absent tiles on load but honors an explicit empty opt-out', () => {
-    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
     const result = resolveAuthoredTimeRangeGroups({
-      filters,
+      variables: [variable('from'), variable('to')],
       analysis: analysisFor([
         { id: 'legacy', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
         { id: 'opted-out', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
@@ -98,18 +100,15 @@ describe('authored time-range metadata defensive shapes', () => {
   });
 
   it('fails closed when one legacy tile has more than one recognized pair', () => {
-    const filters: TRFilterDef[] = [
-      { id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' },
-      { id: 'start', parameter: 'start' }, { id: 'end', parameter: 'end' },
-    ];
+    const variables = [variable('from'), variable('to'), variable('start'), variable('end')];
     const ids = new Set(['tile']);
     const result = resolveAuthoredTimeRangeGroups({
-      filters,
+      variables,
       analysis: analysisFor([{
         id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}, {start:DateTime}, {end:DateTime}',
       }]),
       executableTileIds: ids,
-      filterTargetTileIds: new Map(filters.map((filter) => [filter.id, ids])),
+      filterTargetTileIds: new Map(variables.map((v) => [v.name, ids])),
       tiles: [{ id: 'tile', queryId: 'legacy-query' }],
       queries: [{ id: 'legacy-query', spec: {} }],
     });
@@ -117,9 +116,8 @@ describe('authored time-range metadata defensive shapes', () => {
   });
 
   it('treats an own undefined timeRanges value as malformed authored metadata, never as legacy omission', () => {
-    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
     const result = resolveAuthoredTimeRangeGroups({
-      filters,
+      variables: [variable('from'), variable('to')],
       analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}' }]),
       executableTileIds: new Set(['tile']),
       filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
@@ -132,7 +130,7 @@ describe('authored time-range metadata defensive shapes', () => {
 
   it('ignores malformed extension values before filter resolution', () => {
     const base = {
-      filters: [] as TRFilterDef[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
+      variables: [] as TimeRangeVariable[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
       filterTargetTileIds: new Map<string, ReadonlySet<string>>(),
     };
     const result = resolveAuthoredTimeRangeGroups({
@@ -154,10 +152,45 @@ describe('authored time-range metadata defensive shapes', () => {
     expect(result.diagnostics.every((item) => item.code === 'time-range-contract-invalid')).toBe(true);
   });
 
-  it('diagnoses authored pairs whose declarations use unsupported date/time forms', () => {
-    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+  it('resolves authored metadata to one group carrying every tile that declares the pair', () => {
     const result = resolveAuthoredTimeRangeGroups({
-      filters,
+      variables: [variable('from'), variable('to')],
+      analysis: analysisFor([
+        { id: 'chart', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' },
+        { id: 'table', sql: 'SELECT * FROM u WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' },
+      ]),
+      executableTileIds: new Set(['chart', 'table']),
+      filterTargetTileIds: new Map([
+        ['from', new Set(['chart', 'table'])],
+        ['to', new Set(['chart', 'table'])],
+      ]),
+      tiles: [{ id: 'chart', queryId: 'q' }, { id: 'table', queryId: 'q' }],
+      queries: [{ id: 'q', spec: { timeRanges: [{ from: 'from', to: 'to' }] } }],
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.groups).toEqual([
+      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['chart', 'table'] }),
+    ]);
+  });
+
+  it('diagnoses authored metadata naming a parameter no variable of this tile carries', () => {
+    const result = resolveAuthoredTimeRangeGroups({
+      variables: [variable('from'), variable('to')],
+      analysis: analysisFor([{ id: 'tile', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' }]),
+      executableTileIds: new Set(['tile']),
+      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      tiles: [{ id: 'tile', queryId: 'q' }],
+      queries: [{ id: 'q', spec: { timeRanges: [{ from: 'from', to: 'nope' }] } }],
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: 'time-range-filter-unresolved' }),
+    ]);
+  });
+
+  it('diagnoses authored pairs whose declarations use unsupported date/time forms', () => {
+    const result = resolveAuthoredTimeRangeGroups({
+      variables: [variable('from', 'DateTime(3)'), variable('to')],
       analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime(3)}, {to:DateTime}' }]),
       executableTileIds: new Set(['tile']),
       filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
@@ -171,88 +204,58 @@ describe('authored time-range metadata defensive shapes', () => {
 
 describe('inferTimeRangePairs', () => {
   it('recognizes from/to (case-insensitive)', () => {
-    const pairs = inferTimeRangePairs([{ id: 'f1', parameter: 'From' }, { id: 'f2', parameter: 'TO' }]);
-    expect(pairs).toEqual([{ fromFilterId: 'f1', toFilterId: 'f2' }]);
+    expect(inferTimeRangePairs([variable('From'), variable('TO')]))
+      .toEqual([{ fromFilterId: 'From', toFilterId: 'TO' }]);
   });
   it('recognizes from_time/to_time, start/end, start_time/end_time', () => {
-    expect(inferTimeRangePairs([{ id: 'a', parameter: 'from_time' }, { id: 'b', parameter: 'to_time' }]))
-      .toEqual([{ fromFilterId: 'a', toFilterId: 'b' }]);
-    expect(inferTimeRangePairs([{ id: 'a', parameter: 'start' }, { id: 'b', parameter: 'end' }]))
-      .toEqual([{ fromFilterId: 'a', toFilterId: 'b' }]);
-    expect(inferTimeRangePairs([{ id: 'a', parameter: 'start_time' }, { id: 'b', parameter: 'end_time' }]))
-      .toEqual([{ fromFilterId: 'a', toFilterId: 'b' }]);
+    expect(inferTimeRangePairs([variable('from_time'), variable('to_time')]))
+      .toEqual([{ fromFilterId: 'from_time', toFilterId: 'to_time' }]);
+    expect(inferTimeRangePairs([variable('start'), variable('end')]))
+      .toEqual([{ fromFilterId: 'start', toFilterId: 'end' }]);
+    expect(inferTimeRangePairs([variable('start_time'), variable('end_time')]))
+      .toEqual([{ fromFilterId: 'start_time', toFilterId: 'end_time' }]);
   });
   it('never recognizes start/stop', () => {
-    expect(inferTimeRangePairs([{ id: 'a', parameter: 'start' }, { id: 'b', parameter: 'stop' }])).toEqual([]);
+    expect(inferTimeRangePairs([variable('start'), variable('stop')])).toEqual([]);
   });
-  it('a filter with a non-null sourceQueryId (curated) is never a candidate', () => {
-    const pairs = inferTimeRangePairs([
-      { id: 'a', parameter: 'from', sourceQueryId: 'q1' },
-      { id: 'b', parameter: 'to' },
-    ]);
-    expect(pairs).toEqual([]);
+  it('a variable carrying option SQL is never a candidate', () => {
+    expect(inferTimeRangePairs([variable('from', 'DateTime', 'SELECT v, l'), variable('to')])).toEqual([]);
   });
-  it('a null sourceQueryId is NOT curated — still eligible', () => {
-    const pairs = inferTimeRangePairs([
-      { id: 'a', parameter: 'from', sourceQueryId: null },
-      { id: 'b', parameter: 'to' },
-    ]);
-    expect(pairs).toEqual([{ fromFilterId: 'a', toFilterId: 'b' }]);
+  it('a variable with null option SQL is a direct input — still eligible', () => {
+    expect(inferTimeRangePairs([variable('from', 'DateTime', null), variable('to')]))
+      .toEqual([{ fromFilterId: 'from', toFilterId: 'to' }]);
   });
-  it('a parameter name borne by more than one filter def is unusable — no pair forms at all', () => {
-    const pairs = inferTimeRangePairs([
-      { id: 'f1', parameter: 'from' },
-      { id: 'f2', parameter: 'from' },
-      { id: 'f3', parameter: 'to' },
-    ]);
-    expect(pairs).toEqual([]);
+  it('two variables differing only in CASE both match one entry, so no pair forms', () => {
+    // Variable names are exact and case-SENSITIVE, while this table matches
+    // case-INSENSITIVELY. `From` and `from` are therefore two real, distinct
+    // variables that both claim the same entry — neither can be preferred, so the
+    // entry is dropped rather than guessed at.
+    expect(inferTimeRangePairs([variable('From'), variable('from'), variable('to')])).toEqual([]);
   });
   it('multiple independent groups: rows are emitted in NAME_PAIR_TABLE order regardless of input array order', () => {
-    const pairs = inferTimeRangePairs([
-      { id: 'se-start', parameter: 'start' },
-      { id: 'se-end', parameter: 'end' },
-      { id: 'ft-to', parameter: 'to' },
-      { id: 'ft-from', parameter: 'from' },
-    ]);
-    expect(pairs).toEqual([
-      { fromFilterId: 'ft-from', toFilterId: 'ft-to' },
-      { fromFilterId: 'se-start', toFilterId: 'se-end' },
-    ]);
+    expect(inferTimeRangePairs([variable('start'), variable('end'), variable('to'), variable('from')]))
+      .toEqual([
+        { fromFilterId: 'from', toFilterId: 'to' },
+        { fromFilterId: 'start', toFilterId: 'end' },
+      ]);
   });
-  it('ambiguity: a filter id used across two would-be pairs drops BOTH pairs (defensive general rule)', () => {
-    // Contrived (a filter def with a reused/duplicated id is a data-integrity
-    // bug upstream), but exercises the general "at most one emitted pair per
-    // filter id" rule directly: 'shared' appears once as a `from`-role match
-    // and once as an `end`-role match, so both candidate pairs involving it
-    // are dropped.
-    const pairs = inferTimeRangePairs([
-      { id: 'shared', parameter: 'from' },
-      { id: 'other1', parameter: 'to' },
-      { id: 'other2', parameter: 'start' },
-      { id: 'shared', parameter: 'end' },
-    ]);
-    expect(pairs).toEqual([]);
-  });
-  it('no filters at all → no pairs', () => {
+  it('no variables at all → no pairs', () => {
     expect(inferTimeRangePairs([])).toEqual([]);
   });
 });
 
 describe('resolveTimeRangeGroups — contract gating', () => {
-  it('both bounds scalar + date-like across their executable consumers → one group', () => {
-    const filters: TRFilterDef[] = [
-      { id: 'f-from', parameter: 'from' },
-      { id: 'f-to', parameter: 'to' },
-    ];
+  it('both bounds date-like with an executable consumer → one group', () => {
+    const variables = [variable('from'), variable('to')];
     const analysis = analysisFor([
       { id: 'a', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' },
     ]);
-    const groups = resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) });
+    const groups = resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) });
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({
-      key: 'f-from\u0000f-to',
-      fromFilterId: 'f-from',
-      toFilterId: 'f-to',
+      key: 'from\u0000to',
+      fromFilterId: 'from',
+      toFilterId: 'to',
       fromParameter: 'from',
       toParameter: 'to',
     });
@@ -260,47 +263,33 @@ describe('resolveTimeRangeGroups — contract gating', () => {
     expect(groups[0].toType.base).toBe('DateTime');
   });
 
-  it('a non-date-like consumer type → no group', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+  it('a non-date-like declared type → no group', () => {
+    const variables = [variable('from', 'String'), variable('to')];
     const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE x = {from:String} AND y = {to:DateTime}' }]);
-    expect(resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) })).toEqual([]);
+    expect(resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) })).toEqual([]);
   });
 
-  it('an Array(...) contract (arity: multiple) → no group', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
-    const analysis = analysisFor([
-      { id: 'a', sql: 'SELECT * FROM t WHERE ts IN {from:Array(DateTime)} AND ts2 = {to:DateTime}' },
-    ]);
-    expect(resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) })).toEqual([]);
-  });
-
-  it('any resolution diagnostics (e.g. conflicting consumer types) → no group', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+  it('a CONFLICTED bound (no agreed type) → no group, even though the other bound qualifies', () => {
+    // Two panels declaring `from` with different types make it a conflicted
+    // variable, whose agreed `type` is null. It can carry no contract, so the
+    // pair must not form.
+    const variables = [variable('from', null), variable('to')];
     const analysis = analysisFor([
       { id: 'a', sql: 'SELECT * FROM t WHERE ts = {from:DateTime} AND te = {to:DateTime}' },
       { id: 'b', sql: 'SELECT * FROM u WHERE ts = {from:String}' },
     ]);
-    // Both 'a' and 'b' are executable, so `from`'s consumers conflict
-    // (DateTime vs String) — resolveFilterSelection surfaces a diagnostic,
-    // and the group must not form even though `to` alone would qualify.
-    expect(resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a', 'b']) })).toEqual([]);
+    expect(resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a', 'b']) })).toEqual([]);
   });
 
-  it('a curated (sourceQueryId-backed) filter never becomes a candidate pair, so no group forms', () => {
-    const filters: TRFilterDef[] = [
-      { id: 'f-from', parameter: 'from', sourceQueryId: 'saved-query-1' },
-      { id: 'f-to', parameter: 'to' },
-    ];
+  it('a variable with option SQL never becomes a candidate pair, so no group forms', () => {
+    const variables = [variable('from', 'DateTime', 'SELECT v, l'), variable('to')];
     const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' }]);
-    expect(resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) })).toEqual([]);
+    expect(resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) })).toEqual([]);
   });
 
   it('multiple independent groups resolve together, in pair-table order', () => {
-    const filters: TRFilterDef[] = [
-      { id: 'se-start', parameter: 'start' },
-      { id: 'se-end', parameter: 'end' },
-      { id: 'ft-from', parameter: 'from' },
-      { id: 'ft-to', parameter: 'to' },
+    const variables = [
+      variable('start', 'Date'), variable('end', 'Date'), variable('from'), variable('to'),
     ];
     const analysis = analysisFor([
       {
@@ -308,65 +297,69 @@ describe('resolveTimeRangeGroups — contract gating', () => {
         sql: 'SELECT * FROM t WHERE s >= {start:Date} AND s < {end:Date} AND f >= {from:DateTime} AND f < {to:DateTime}',
       },
     ]);
-    const groups = resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) });
-    expect(groups.map((g) => g.key)).toEqual(['ft-from\u0000ft-to', 'se-start\u0000se-end']);
+    const groups = resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) });
+    expect(groups.map((g) => g.key)).toEqual(['from\u0000to', 'start\u0000end']);
   });
 
   it('key stability: recomputing over the same input yields an identical key', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+    const variables = [variable('from'), variable('to')];
     const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' }]);
-    const g1 = resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) });
-    const g2 = resolveTimeRangeGroups({ filters, analysis, executableTileIds: new Set(['a']) });
+    const g1 = resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) });
+    const g2 = resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['a']) });
     expect(g1[0].key).toBe(g2[0].key);
-    expect(g1[0].key).toBe('f-from\u0000f-to');
+    expect(g1[0].key).toBe('from\u0000to');
   });
 
-  it('an explicit `pairs` seam (e.g. a future #334 resolution) is used verbatim instead of inference', () => {
-    const filters: TRFilterDef[] = [
-      { id: 'weird-from', parameter: 'not_from_at_all' },
-      { id: 'weird-to', parameter: 'not_to_at_all' },
-    ];
+  it('an explicit `pairs` seam (#334 metadata resolution) is used verbatim instead of inference', () => {
+    const variables = [variable('not_from_at_all'), variable('not_to_at_all')];
     const analysis = analysisFor([
       { id: 'a', sql: 'SELECT * FROM t WHERE ts >= {not_from_at_all:DateTime} AND ts < {not_to_at_all:DateTime}' },
     ]);
     const groups = resolveTimeRangeGroups({
-      filters,
+      variables,
       analysis,
       executableTileIds: new Set(['a']),
-      pairs: [{ fromFilterId: 'weird-from', toFilterId: 'weird-to' }],
+      pairs: [{ fromFilterId: 'not_from_at_all', toFilterId: 'not_to_at_all' }],
     });
     expect(groups).toHaveLength(1);
-    expect(groups[0].key).toBe('weird-from\u0000weird-to');
+    expect(groups[0].key).toBe('not_from_at_all\u0000not_to_at_all');
   });
 
-  it('a pair referencing a filter id absent from `filters` is skipped rather than throwing', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+  it('a pair naming a variable absent from `variables` is skipped rather than throwing', () => {
+    const variables = [variable('from'), variable('to')];
     const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' }]);
     const groups = resolveTimeRangeGroups({
-      filters,
+      variables,
       analysis,
       executableTileIds: new Set(['a']),
       pairs: [
-        { fromFilterId: 'missing-from', toFilterId: 'f-to' },
-        { fromFilterId: 'f-from', toFilterId: 'missing-to' },
+        { fromFilterId: 'missing-from', toFilterId: 'to' },
+        { fromFilterId: 'from', toFilterId: 'missing-to' },
       ],
     });
     expect(groups).toEqual([]);
   });
 
-  it('an empty filters/pairs list resolves to no groups', () => {
-    const analysis = analysisFor([]);
-    expect(resolveTimeRangeGroups({ filters: [], analysis, executableTileIds: new Set() })).toEqual([]);
+  it('an empty variables/pairs list resolves to no groups', () => {
+    expect(resolveTimeRangeGroups({ variables: [], analysis: analysisFor([]), executableTileIds: new Set() }))
+      .toEqual([]);
   });
 
-  it('skips an explicit pair whose filters have no executable consumer contract', () => {
-    const filters: TRFilterDef[] = [{ id: 'f-from', parameter: 'from' }, { id: 'f-to', parameter: 'to' }];
+  it('skips an explicit pair whose variables no executable tile declares', () => {
     expect(resolveTimeRangeGroups({
-      filters,
+      variables: [variable('from'), variable('to')],
       analysis: analysisFor([]),
       executableTileIds: new Set(),
-      pairs: [{ fromFilterId: 'f-from', toFilterId: 'f-to' }],
+      pairs: [{ fromFilterId: 'from', toFilterId: 'to' }],
     })).toEqual([]);
+  });
+
+  it('skips a pair declared ONLY by a non-executable tile', () => {
+    const variables = [variable('from'), variable('to')];
+    const analysis = analysisFor([
+      { id: 'text-tile', sql: 'SELECT * FROM t WHERE ts >= {from:DateTime} AND ts < {to:DateTime}' },
+    ]);
+    expect(resolveTimeRangeGroups({ variables, analysis, executableTileIds: new Set(['other']) })).toEqual([]);
   });
 });
 

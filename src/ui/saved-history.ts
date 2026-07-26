@@ -17,15 +17,12 @@ import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
 import { libraryQueries } from '../dashboard/model/query-ownership.js';
-import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
-import { filterRoleBadge } from './tabs.js';
 import type { App } from './app.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 
 /** The `resultView` signal's value union (state.ts) — `launchView`/`'panel'`
- *  below are proven members of it (SAVED_VIEWS membership, or the role/
- *  queryless branches that only ever assign 'filter'/'panel'), never an
- *  arbitrary string. */
+ *  below are proven members of it (SAVED_VIEWS membership, or the queryless
+ *  branch that only ever assigns 'panel'), never an arbitrary string. */
 type ResultView = AppState['resultView']['value'];
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
@@ -163,12 +160,10 @@ function renderSaved(app: App, list: HTMLElement): void {
     const name = queryName(q);
     const description = queryDescription(q);
     const panel = queryPanel(q);
-    // Library launch precedence (#244): a role-owned transient preview (Filter)
-    // wins over the persisted view, even when dormant Panel state persists a
-    // `spec.view` of its own — the role reflects the query's *current*
-    // intended representation, the dormant view is just preserved for later.
-    const rolePreview = rolePreviewView(q.spec);
-    const launchView = rolePreview || queryView(q);
+    // #447 removed the role-owned transient launch preview (#244): the Filter
+    // role was its only owner, so a Library launch now simply restores the
+    // query's own persisted view.
+    const launchView = queryView(q);
     const star = h('button', {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
@@ -211,15 +206,9 @@ function renderSaved(app: App, list: HTMLElement): void {
     const open = (): void => {
       app.actions.loadIntoNewTab({ ...q });
       if (isAutoRunnable(q.sql)) app.actions.run({ view: launchView });
-      // A role-owned preview isn't in SAVED_VIEWS (it's transient, never
-      // persisted — #244) but still wins here: a Filter-role entry that can't
-      // auto-run (e.g. empty/DDL SQL from an import that skipped validation)
-      // still opens the Filter drawer, which renders its own empty state,
-      // rather than falling through to a dormant Table/JSON/Panel view.
-      // `as`: SAVED_VIEWS.has(launchView) (or the rolePreview truthiness
-      // alongside it) is exactly the runtime proof that launchView is one of
-      // the resultView signal's known members here.
-      else if (rolePreview || SAVED_VIEWS.has(launchView ?? '')) app.state.resultView.value = launchView as ResultView;
+      // `as`: SAVED_VIEWS.has(launchView) is exactly the runtime proof that
+      // launchView is one of the resultView signal's known members here.
+      else if (SAVED_VIEWS.has(launchView ?? '')) app.state.resultView.value = launchView as ResultView;
       // A queryless panel without a remembered view (hand-authored/imported
       // file) still needs the Panel drawer open, or clicking it shows nothing.
       else if (isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
@@ -228,9 +217,6 @@ function renderSaved(app: App, list: HTMLElement): void {
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, name),
-        effectiveDashboardRole(q.spec) === 'filter'
-          ? filterRoleBadge(app, () => { app.actions.loadIntoNewTab({ ...q }); return app.activeTab(); })
-          : null,
         h('button', {
           class: 'sv-act', title: 'Edit name & description',
           onclick: (e: Event) => {

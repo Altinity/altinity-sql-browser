@@ -30,7 +30,7 @@ Three flagship bundles cover the main workflows without a pile of one-feature
 fixtures:
 
 - [**On-time flights**](docs/ONTIME-CHART-DEMO.md) — seven analytical tiles,
-  a KPI band, a shared 2023 date range, and carrier/airport multiselects over
+  a KPI band, a shared 2023 date range, and carrier/airport variables over
   the public `ontime` dataset.
 - [**Shop analytics**](docs/SHOP-ANALYTICS-DEMO.md) — seven business tiles over
   the schema, sample data, materialized views, and dictionary created by
@@ -436,7 +436,7 @@ read; DDL secrets remain masked unless the role separately holds
 Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**
 panel. Each carries a name, an optional **description**, and — when set — its
 remembered result view and chart config. The Library lists your **standalone**
-queries; a query a Dashboard panel or curated filter owns is reached through the
+queries; a query a Dashboard panel owns is reached through the
 **Dashboards** tree instead (#427), and the ★ star is purely a Library ordering
 preference — it never adds or removes a Dashboard panel. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the
@@ -509,32 +509,30 @@ The workspace name is editable inline (click it in the header). The **•** dot
 appears after any change not yet written to a file and clears on export / import /
 New workspace.
 
-### Dashboard Filter sources
+### Dashboard Variables
 
-A **Library** query whose Spec contains `"dashboard": { "role": "filter" }`
-provides curated options instead of a tile — matched to a panel parameter by
-NAME; the favorite star plays no part since #427, and a copy a Dashboard already
-owns is not a candidate. Its SQL must be one parameter-free,
-row-returning statement with no trailing `FORMAT`, and must return exactly one
-row. Each result column targets the Dashboard parameter with the same
-case-sensitive name and may contain an ordered `Array(T)`, an ordered
-`Array(Tuple(value T, label L))`, or a `Map(K,V)` (sorted by label then value).
-The client preserves large integers and Decimals as strings, rejects NULL or
-nested option values, limits each helper to 1,000 options, and falls back to the
-ordinary parameter field when a source, consumer type, or provider conflicts.
-Filter sources run and reconcile saved values before any Panel query starts.
+A Dashboard's variables are **inferred** from the `{name:Type}` placeholders in
+the queries its panels own — there is nothing to declare. The name is matched
+exactly and case-sensitively, so `country` and `Country` are two variables, and a
+variable binds automatically to every panel query on the same Dashboard that
+declares that exact name. Adding or removing a panel changes the variable list by
+itself.
 
-The flagship bundles demonstrate the same contracts in context: readable
-`Array(Tuple(value, label))` airport options in On-time, targeted country and
-category filters in Shop, and inferred `Array(T)` multiselects for operational
-query-log dimensions in ClickHouse Operations.
+The Dashboards tree lists them under **Variables** as `name : Type`. Declaring one
+name with two different types shows a single row carrying both types, marked as an
+error, and blocks only the panels that require it; it clears itself once the panel
+SQL agrees. Clicking a row opens an SQL editor scoped to that variable, where you
+can give it optional Dashboard-local option SQL. Saving blank SQL removes that
+configuration and returns the variable to a direct input. If the last panel
+referencing a configured variable goes away its SQL is preserved as an `unused`
+row you can still edit, or delete with the trash icon.
 
-```sql
-SELECT
-  arraySort(groupUniqArray(toString(Origin))) AS origin,
-  arraySort(groupUniqArray(toString(Dest))) AS destination
-FROM ontime
-```
+Option SQL must be one embeddable read query returning exactly two `String`
+columns — value, then visible label, by POSITION rather than by column name — and
+may not reference Dashboard variables itself. Executing it, the strict column
+validation, and the single batched request that runs every configured variable's
+options at once arrive in the next phase of this work; until then a variable
+renders a direct input.
 
 ## Local install
 

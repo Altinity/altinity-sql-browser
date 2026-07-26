@@ -25,7 +25,7 @@ import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
-import type { StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
 
@@ -163,7 +163,7 @@ function memSession(initial: Record<string, string> = {}): MemSession {
 
 // ── ui/dashboard.js (viewer-driven render, #286 — reads dashboard.tiles[]) ────
 // The favorites-derived render was replaced by a DashboardViewerSession bound
-// to the persisted StoredWorkspaceV4; these tests drive renderDashboard through
+// to the persisted StoredWorkspaceV5; these tests drive renderDashboard through
 // a controlled current workspace + a fake streaming `executeRead`, exactly as
 // the app wires the real repository projection + exec seam.
 
@@ -203,19 +203,21 @@ const q = (id: string, sql: string, extra: Partial<SavedQueryFixture> = {}): Sav
 interface WsOver {
   id?: string;
   key?: string;
-  tiles?: StoredWorkspaceV4['dashboards'][number]['tiles'];
-  filters?: Record<string, unknown>[];
+  tiles?: StoredWorkspaceV5['dashboards'][number]['tiles'];
   layout?: Record<string, unknown>;
   queries?: ReturnType<typeof savedQuery>[];
   title?: string;
 }
+// #447: a Dashboard document no longer stores filter definitions — a variable is
+// declared by a `{name:Type}` placeholder in a PANEL tile's own query SQL, so a
+// fixture that wants a control puts the placeholder in `queries`.
 const wsWith = (over: WsOver = {}) => ({
-  storageVersion: 4 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
+  storageVersion: 5 as const, id: 'w', key: over.key ?? 'workspace', name: 'W',
   queries: over.queries ?? [],
   dashboards: [{
-    documentVersion: 1 as const, id: over.id ?? 'd', title: over.title ?? 'My Dash', revision: 1,
+    documentVersion: 2 as const, id: over.id ?? 'd', title: over.title ?? 'My Dash', revision: 1,
     layout: over.layout ?? { type: 'flow', version: 1, preset: 'columns-2', items: {} },
-    filters: over.filters ?? [], tiles: over.tiles ?? [],
+    tiles: over.tiles ?? [],
   }],
 });
 
@@ -236,7 +238,7 @@ function dashApp(opts: {
   // then a success, or a slow-to-resolve first call — still keeps
   // `loadById` in sync: only a genuinely OK result advances `current`,
   // exactly like the real `WorkspaceRepository`).
-  let current: StoredWorkspaceV4 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV4 | null;
+  let current: StoredWorkspaceV5 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV5 | null;
   // #341: default commit ECHOES the candidate it was given (mirrors
   // `appDefaults.workspace.commit` in fake-app.ts) — `runCommand`'s post-commit
   // projection (`applyCommittedWorkspace(result.workspace)`, `currentDoc =
@@ -292,7 +294,7 @@ function dashApp(opts: {
   };
   if (current) app.applyCommittedWorkspace(current);
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
-  const loadActive = async (): Promise<StoredWorkspaceV4> => {
+  const loadActive = async (): Promise<StoredWorkspaceV5> => {
     const loaded = await app.workspace.loadById(app.state.workspaceId);
     if (loaded.status !== 'ok') throw new Error(`Expected active workspace, got ${loaded.status}`);
     return loaded.workspace;
@@ -2950,39 +2952,15 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(qsa(app.root, '.dash-filter-host .var-field input').length).toBeGreaterThanOrEqual(3);
   });
 
-  it('commits a curated (source-backed) selection through the viewer in one affected-panel wave', async () => {
-    const { app, calls } = dashApp({
-      responder: (sql) => (sql.includes('opts')
-        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
-        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE x = {p:String}'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
-      }),
-    });
-    await render(app);
-    // The source query's options upgraded the field to the curated combobox.
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    expect(field).not.toBeNull();
-    const before = calls.length;
-    qs<HTMLInputElement>(field, 'input').dispatchEvent(new Event('focus'));
-    qs(field, '[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await Promise.resolve(); await Promise.resolve();
-    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
-    expect(added.length).toBe(1); // one affected-panel wave, tile re-run with the picked value
-    expect(added[0].params.param_p).toBe('x');
-  });
+  // #447 deleted 'commits a curated (source-backed) selection through the
+  // viewer in one affected-panel wave': there is no option-source query, so no
+  // curated combobox to pick from.
 
-  it('shows ordinary-filter Clear all and enables it only when a filter differs from its default', async () => {
+  it('shows ordinary-filter Clear all and enables it only once a variable is not UNSET', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
         tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
       }),
     });
     await render(app);
@@ -2998,7 +2976,9 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     clear.click();
     await flush();
     expect(clear.disabled).toBe(true);
-    expect(qs<HTMLInputElement>(app.root, '.dash-filter-host input').value).toBe('5');
+    // #447: Clear all resets the variable to UNSET (there is no persisted
+    // default to restore any more).
+    expect(qs<HTMLInputElement>(app.root, '.dash-filter-host input').value).toBe('');
     expect(qs(app.root, '.dash-filter-count')).toBeNull();
     expect(qs(app.root, '.dash-filter-count-host')).toBeNull();
   });
@@ -3008,7 +2988,6 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
         tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
       }),
     });
     await render(app);
@@ -3030,290 +3009,13 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
   });
 });
 
-// #189/#364 (Bug 3): a favorited `filter`-role saved query whose OUTPUT COLUMN
-// name matches an implicit (undeclared) panel-tile parameter auto-binds its
-// options to that parameter — `synthesizeImplicitFilters` sets `sourceQueryId`,
-// so the field upgrades from a plain text box to a curated combobox WITHOUT any
-// explicit `doc.filters` entry. Exactly one favorited source binds; zero or
-// more than one (ambiguous) leaves the field plain.
-describe('renderDashboard — auto-bind favorited filter source by column name (#364)', () => {
-  // A panel tile whose only parameter is `user1: Array(String)` — the implicit
-  // filter target these tests wire (or decline to wire) a source to.
-  const CONSUMER = 'SELECT k, v FROM a WHERE has(user1, {user1:Array(String)})';
-  const optionsResponder: ExecResponder = (sql) => (sql.includes('opts')
-    ? { columns: [{ name: 'user1', type: 'Array(String)' }], rows: [[['x', 'y']]] }
-    : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] });
-
-  it('binds a favorited filter source that outputs the same column name (field becomes curated)', async () => {
-    const { app } = dashApp({
-      responder: optionsResponder,
-      workspace: wsWith({
-        queries: [
-          q('q1', CONSUMER),
-          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-      }),
-    });
-    await render(app);
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    expect(field).not.toBeNull();
-    expect(qs(field, '.var-name').textContent).toBe('user1');
-  });
-
-  it('leaves the field plain when NO favorited filter source outputs the column', async () => {
-    const { app } = dashApp({
-      responder: optionsResponder,
-      workspace: wsWith({
-        queries: [
-          q('q1', CONSUMER),
-          // A favorited filter source, but it outputs a DIFFERENT column.
-          q('src', 'SELECT groupArray(region) AS someOther FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-      }),
-    });
-    await render(app);
-    // The user1 field still renders, just not curated (no source attached).
-    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
-    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
-  });
-
-  it('does NOT bind when two Library filter sources output the same column (ambiguous)', async () => {
-    const { app } = dashApp({
-      responder: optionsResponder,
-      workspace: wsWith({
-        queries: [
-          q('q1', CONSUMER),
-          q('srcA', 'SELECT groupArray(region) AS user1 FROM a -- opts', { dashboard: { role: 'filter' }, favorite: true }),
-          q('srcB', 'SELECT groupArray(region) AS user1 FROM b -- opts', { dashboard: { role: 'filter' }, favorite: true }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-      }),
-    });
-    await render(app);
-    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
-    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).toBeNull();
-  });
-
-  // #427: matching is on the variable NAME alone. A favourite is a Library
-  // preference now and has no business deciding whether a query can supply a
-  // parameter's options, so an UNfavourited Library filter source binds.
-  it('binds a NON-favorited Library filter-role query that outputs the column', async () => {
-    const { app } = dashApp({
-      responder: optionsResponder,
-      workspace: wsWith({
-        queries: [
-          q('q1', CONSUMER),
-          q('src', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: false }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-      }),
-    });
-    await render(app);
-    expect(qs(app.root, '.dash-filter-host .var-field .var-name').textContent).toBe('user1');
-    expect(qs(app.root, '.dash-filter-host .var-field.is-curated')).not.toBeNull();
-  });
-
-  // …and what DOES exclude a candidate is ownership: a dedicated copy owned by a
-  // Dashboard member must not be borrowed as another Dashboard's implicit source.
-  it('ignores a filter-role query a Dashboard member already OWNS', async () => {
-    const { app } = dashApp({
-      responder: optionsResponder,
-      workspace: wsWith({
-        queries: [
-          q('q1', CONSUMER),
-          q('owned', 'SELECT groupArray(region) AS user1 FROM t -- opts', { dashboard: { role: 'filter' }, favorite: true }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'explicit', parameter: 'other', sourceQueryId: 'owned' }],
-      }),
-    });
-    await render(app);
-    const fields = qsa(app.root, '.dash-filter-host .var-field');
-    const implicit = fields.find((field) => qs(field, '.var-name').textContent === 'user1')!;
-    expect(implicit.classList.contains('is-curated')).toBe(false);
-  });
-});
-
-// #189: the searchable multiselect (an Array(...) consumer contract, default
-// `selection.mode`) and the single-select-on-Array wrap (`selection.mode:
-// 'single'` against the same Array contract) — both new curated shapes,
-// wired end to end through the REAL session's `applyFilter` (never a bare
-// callback spy), so a committed value is a genuine array all the way through
-// `param-serialize.ts`'s wire format.
-describe('renderDashboard — searchable multiselect + array-wrapped curated filters (#189)', () => {
-  it('an Array(...) consumer contract renders a multiselect field; Apply commits an array through the real session', async () => {
-    const { app, calls } = dashApp({
-      responder: (sql) => (sql.includes('opts')
-        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
-        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
-      }),
-    });
-    await render(app);
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    expect(field).not.toBeNull();
-    expect(qs(field, '.ms-field')).not.toBeNull(); // the multiselect control, not the scalar combobox
-    const before = calls.length;
-    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    const cb = qs<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]');
-    cb.checked = true;
-    cb.dispatchEvent(new Event('change', { bubbles: true }));
-    qs(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
-    expect(added.length).toBe(1); // one affected-panel wave
-    expect(added[0].params.param_p).toBe("['x']"); // a real ClickHouse array literal, not a joined string
-  });
-
-  it('a single-select curated field over an Array(...) contract commits a WRAPPED [value] (never a bare scalar), through the real session', async () => {
-    const { app, calls } = dashApp({
-      responder: (sql) => (sql.includes('opts')
-        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
-        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', selection: { mode: 'single' } }],
-      }),
-    });
-    await render(app);
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    expect(qs(field, '.var-combo')).not.toBeNull(); // stays the scalar combobox, not a multiselect
-    const before = calls.length;
-    qs<HTMLInputElement>(field, 'input').dispatchEvent(new Event('focus'));
-    qs(field, '[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
-    expect(added.length).toBe(1);
-    expect(added[0].params.param_p).toBe("['x']"); // wrapped, never the bare scalar "'x'"
-  });
-
-  // #189 review (F2): a NEW option generation while the popover is open must
-  // force-close it as a silent Cancel (never a committed value from the open
-  // draft), announce the closure, and move focus to the FRESH bar's trigger
-  // for the same parameter — driven end to end through the real session (a
-  // refresh that reruns the shared source with DIFFERENT option content).
-  it('a NEW option generation while the multiselect popover is open force-closes it with no applyFilter call, announces the refresh, and focuses the new trigger', async () => {
-    let srcCalls = 0;
-    const { app, calls } = dashApp({
-      responder: (sql) => {
-        if (sql.includes('opts')) {
-          srcCalls++;
-          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[srcCalls === 2 ? ['a', 'b', 'c'] : ['x', 'y']]] };
-        }
-        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
-      },
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
-      }),
-    });
-    await render(app);
-    // `app.root` (fake-app.ts) is a detached div by default — connect it so a
-    // real `.focus()` inside it actually becomes `document.activeElement`
-    // (the popover itself is already appended straight to the real
-    // `document.body` by `multi-select-field.ts`, unaffected either way).
-    document.body.appendChild(rootEl(app));
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(qs(document.body, '.ms-popover')).not.toBeNull();
-    // Mutate the OPEN DRAFT only — check the second option ('y') too, so the
-    // draft becomes ['x','y'] — never Apply.
-    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
-    draftCb.checked = true;
-    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
-    const before = calls.length;
-    // Refresh reruns the shared source, which returns a DIFFERENT option set
-    // (same length as the #359 rebuild trigger) — a new option generation.
-    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    // The popover was force-closed as a silent Cancel — no call anywhere
-    // reflects the open draft's ['x','y'] pick (the real seam that would
-    // carry it, `applyFilter`, is never reached).
-    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
-    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(false);
-    expect(document.body.querySelector('.ms-popover')).toBeNull();
-    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Filter options were refreshed');
-    // The committed value ['x'] (never touched by the draft) is now dormant
-    // against the NEW option set — the merge deactivates it (existing
-    // dormant-value self-heal behavior, unrelated to this fix) — the fresh
-    // bar's trigger reads "Not set", never "2 selected" (which only a
-    // committed ['x','y'] — i.e. the discarded draft — would have produced).
-    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
-    expect(newTrigger.textContent).toBe('Not set');
-    expect(document.activeElement).toBe(newTrigger);
-    rootEl(app).remove();
-  });
-
-  // Maintainer merge-gate finding: an ORDINARY Apply — the user's own commit,
-  // not an outgoing bar's popover getting force-cancelled by someone/something
-  // else — must never announce "Filter options were refreshed". Driven end to
-  // end through the real session: the shared source republishes the SAME
-  // option content on every rerun (no genuine option-generation change), so
-  // `optionsRev` never bumps and the announcement must stay silent even though
-  // `session.applyFilter`'s synchronous `publish()` forces this exact
-  // multiselect's own bar to rebuild out from under its own (already-closed)
-  // popover.
-  it('a normal Apply commits through the real session without announcing "Filter options were refreshed", and focuses the fresh trigger', async () => {
-    const { app, calls } = dashApp({
-      responder: (sql) => {
-        if (sql.includes('opts')) {
-          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] };
-        }
-        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
-      },
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
-      }),
-    });
-    await render(app);
-    document.body.appendChild(rootEl(app));
-    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
-    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(qs(document.body, '.ms-popover')).not.toBeNull();
-    const liveRegionBefore = qs(app.root, '.dash-topbar > .sr-only').textContent;
-    // Check the second option ('y') too, then Apply — a real value change.
-    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
-    draftCb.checked = true;
-    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
-    const before = calls.length;
-    qs<HTMLButtonElement>(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    // The popover is torn down synchronously (multi-select-field.ts's Apply
-    // handler closes before calling `onApply`) — no macrotask/microtask flush
-    // needed to observe it gone.
-    expect(document.body.querySelector('.ms-popover')).toBeNull();
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
-    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(true); // the commit went through
-    // The live region is untouched — no false "refreshed" announcement.
-    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe(liveRegionBefore);
-    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
-    // Focus lands on the FRESH bar's trigger for the same parameter (the old
-    // one, focused by `close()`, was detached by the synchronous rebuild).
-    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
-    expect(document.activeElement).toBe(newTrigger);
-    rootEl(app).remove();
-  });
-});
+// #447 deleted two whole describes here:
+//  - 'auto-bind favorited filter source by column name (#364)' — a Dashboard
+//    variable is matched by NAME from panel SQL, never by an option-source
+//    query's output column, so implicit-filter synthesis is gone.
+//  - 'searchable multiselect + array-wrapped curated filters (#189)' — values
+//    are scalar strings now; there is no multiselect control, no array value,
+//    no `selection.mode`, and no option generation to refresh.
 
 // #335: the compound time-range control, integrated end to end through the
 // REAL session — a from/to date-like filter pair forms a `DashboardTimeRangeGroup`
@@ -3482,17 +3184,14 @@ describe('renderDashboard — compound time-range control (#335)', () => {
   it('re-resolves the closed trigger label per wave WITHOUT rebuilding the bar (a relative range moves as `now` advances)', async () => {
     let clock = 1000;
     const { app } = dashApp({
-      workspace: wsWith({
-        queries: [paired()],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [
-          { id: 'from', parameter: 'from', defaultValue: '-1d', defaultActive: true },
-          { id: 'to', parameter: 'to', defaultValue: 'now', defaultActive: true },
-        ],
-      }),
+      workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     app.wallNow = () => clock;
     await render(app);
+    document.body.appendChild(rootEl(app));
+    // #447: there are no persisted filter defaults to seed an active relative
+    // range — commit one through the control itself, then let `now` advance.
+    await applyRange(app, '-1d', 'now');
     const trigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
     const before = trigger.textContent;
     expect(trigger.classList.contains('is-error')).toBe(false);
@@ -3544,11 +3243,10 @@ describe('renderDashboard — compound time-range control (#335)', () => {
   it('renders unresolved authored metadata as a persistent Dashboard diagnostic', async () => {
     const { app } = dashApp({
       workspace: wsWith({
-        queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [
-          { id: 'from', parameter: 'from', targets: [] },
-          { id: 'to', parameter: 'to', targets: [] },
-        ],
+        // Authored `timeRanges` naming from/to, but the SQL declares NEITHER
+        // placeholder — so neither bound resolves to a Dashboard variable
+        // (#447: a variable exists only where a panel query declares it).
+        queries: [paired('SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
       }),
     });
     await render(app);
@@ -3577,16 +3275,22 @@ describe('renderDashboard — compound time-range control (#335)', () => {
         super(canvas, config); built = this as FakeChart & Record<string, unknown>;
       }
     }
+    // #447: there are no persisted filter defaults left, so the pair's opening
+    // committed values come from the isolated per-Dashboard bag (#303, keyed by
+    // variable NAME) instead — the same two absolute bounds this case has always
+    // started from, so the OUTGOING pair pushed to recents below is unchanged.
+    const realLoadJSON = storage.loadJSON;
+    const seed = vi.spyOn(storage, 'loadJSON').mockImplementation((key, fallback, store) => (
+      key === KEYS.dashFilters
+        ? { d: { from: { value: '1700000000', active: true }, to: { value: '1800000000', active: true } } }
+        : realLoadJSON(key, fallback, store)
+    ));
     const { app, calls } = dashApp({
       workspace: wsWith({
         queries: [q('q1', PAIR, {
           timeRanges: [{ from: 'from', to: 'to' }], panel: { cfg: { type: 'line', x: 0, y: [1] } },
         })],
         tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [
-          { id: 'from', parameter: 'from', defaultValue: '1700000000', defaultActive: true },
-          { id: 'to', parameter: 'to', defaultValue: '1800000000', defaultActive: true },
-        ],
       }),
       responder: () => ({
         columns: [{ name: 'ts', type: 'DateTime' }, { name: 'v', type: 'UInt64' }],
@@ -3622,6 +3326,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
     expect(qs(document.body, '.trf-recent').textContent)
       .toBe('2023-11-14 22:13:20 → 2027-01-15 08:00:00');
+    seed.mockRestore();
   });
 });
 
@@ -3643,236 +3348,23 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     expect(qs(app.root, '.dash-config-diagnostic.is-error').textContent).toContain('missing');
   });
 
-  it('rebuilds the filter bar when curated option CONTENT changes (same length), not on an unchanged republish', async () => {
-    let call = 0;
-    const { app } = dashApp({
-      responder: (sql) => {
-        if (sql.includes('opts')) {
-          call++;
-          // Same content on the first two runs (initial start + one refresh);
-          // different content (same length) on the third run.
-          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[call === 3 ? ['a', 'b'] : ['x', 'y']]] };
-        }
-        return {};
-      },
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE x = {p:String}'),
-          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
-      }),
-    });
-    await render(app);
-    const barBefore = qs(app.root, '.dash-filter-host').firstElementChild;
-    expect(barBefore).not.toBeNull();
-    // Refresh #1: the source republishes the SAME option content — no rebuild
-    // (the pre-#359 boolean-only signature would have missed this distinction
-    // too, since it only ever asked "empty vs non-empty").
-    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    expect(qs(app.root, '.dash-filter-host').firstElementChild).toBe(barBefore);
-    // Refresh #2: the source returns DIFFERENT content, same length — this is
-    // exactly the case the old boolean-only signature missed; `optionsRev`
-    // fixes it.
-    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    expect(qs(app.root, '.dash-filter-host').firstElementChild).not.toBe(barBefore);
-  });
-
-  it('renders filterDiagnostics with severity-mapped classes, alongside presentation diagnostics', async () => {
-    const { app } = dashApp({
-      responder: (sql) => {
-        if (sql.includes('optsinfo')) return { columns: [{ name: 'pinfo', type: 'Array(String)' }], rows: [[['x', 'x']]] };
-        if (sql.includes('optswarn')) {
-          return {
-            columns: [{ name: 'pwarn2', type: 'Array(String)' }, { name: 'pwarn', type: 'Array(String)' }],
-            rows: [[['a', 'b'], ['c', 'd']]],
-          };
-        }
-        return {};
-      },
-      workspace: wsWith({
-        queries: [
-          // #189: every source-backed filter below needs a real EXECUTABLE
-          // consumer declaring its own parameter (a scalar type) — otherwise
-          // `resolveFilterSelection` sees zero consumers and the strict
-          // fallback strips it from its source's `consumers` before the
-          // source ever runs, at construction (never a benign carve-out
-          // anymore — see `dashboard-viewer-session.ts`'s
-          // `resolveFilterSelection` wiring). `t1` declares all three so
-          // every one of `ferr`/`fwarn`/`finfo`'s sources still executes.
-          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String} AND w = {pwarn2:String} AND z = {perr:String}'),
-          // A duplicate option value ('x' twice) → an 'info' diagnostic
-          // (`filter-duplicate-option`) from readFilterOptions.
-          q('srcInfo', "SELECT ['x','x'] AS pinfo -- optsinfo", { dashboard: { role: 'filter' } }),
-          // 'pwarn2' is the REAL, consumed filter parameter (keeps this
-          // shared source alive); 'pwarn' is an extra returned column no
-          // filter definition even names — a genuinely-unmatched helper
-          // column (not a no-consumer filter — #189 would have stripped
-          // that before the source ever ran) → a 'warning' diagnostic
-          // (`filter-helper-unused`) from the merge.
-          q('srcWarn', "SELECT ['a','b'] AS pwarn2, ['c','d'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [
-          // An unresolvable source query id → an 'error' diagnostic
-          // (`filter-source-missing`).
-          { id: 'ferr', parameter: 'perr', sourceQueryId: 'nope' },
-          { id: 'fwarn', parameter: 'pwarn2', sourceQueryId: 'srcWarn' },
-          { id: 'finfo', parameter: 'pinfo', sourceQueryId: 'srcInfo' },
-        ],
-      }),
-    });
-    await render(app);
-    const rows = qsa(app.root, '.dash-filter-diagnostics .dash-config-diagnostic');
-    const bySeverity = (cls: string) => rows.find((r) => r.classList.contains(cls));
-    expect(bySeverity('is-error')?.textContent).toBe('Filter references unknown source query "nope"');
-    expect(bySeverity('is-warning')?.textContent).toBe('Filter helper "pwarn" has no current Panel consumer.');
-    expect(bySeverity('is-info')?.textContent).toBe('Filter helper "pinfo" contains a duplicate value.');
-  });
-});
-
-// #360 plan-review BLOCKER-2 (+ maintainer-review follow-up): `rebuildFilterBar`
-// used to gate a filter into the curated (rich combobox) rendering path only
-// `if (f.options && f.options.length)`, then — a first fix — `if (f.status
-// !== 'idle')` — so a source-backed filter with NO options yet (waiting on a
-// root dependency, mid-flight, or errored, OR simply not yet run) fell OUT of
-// that path entirely and rendered as a bare, unlabelled plain field with zero
-// indication anything was pending. The gate is now `f.sourceId != null` —
-// TOPOLOGY, set once at construction, never the transient `status` — so a
-// source-backed filter is ALWAYS curated, at any status, from the very first
-// (still-'idle') render onward. A plain (non-source-backed) filter has no
-// `sourceId` and never touches this path.
-describe('renderDashboard — curated field stays curated while its shared source is waiting (#360)', () => {
-  it('a source-backed filter whose source waits on a root dependency renders the curated waiting affordance, not a bare plain field', async () => {
-    const { app, calls } = dashApp({
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
-          // 'src' depends on the ROOT filter 'from', which starts inactive/blank
-          // below — so this source is 'waiting', never executes ("depsrc" never
-          // appears in `calls`), and publishes `options: null` for 'region'.
-          q('src', "SELECT ['east','west'] AS region FROM a WHERE ts >= {from:String} -- depsrc", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [
-          { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
-          { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
-        ],
-      }),
-    });
-    await render(app);
-    expect(calls.some((c) => c.sql.includes('depsrc'))).toBe(false); // still waiting — never ran
-    const fields = qsa(app.root, '.dash-filter-host .var-field');
-    const regionField = fields.find((f) => qs(f, '.var-name')?.textContent === 'region');
-    expect(regionField).toBeDefined();
-    const region = regionField as HTMLElement;
-    // Stays curated (not the old silent fall-out to a bare plain field) and
-    // carries the structural waiting affordance: class + disabled input +
-    // literal text naming the missing root param.
-    expect(region.classList.contains('is-curated')).toBe(true);
-    expect(region.classList.contains('is-waiting')).toBe(true);
-    const input = qs<HTMLInputElement>(region, 'input');
-    expect(input.disabled).toBe(true);
-    expect(region.textContent).toContain('Waiting for: from');
-  });
-});
-
-// #360 maintainer-review follow-up: `rebuildFilterBar` gates curation on
-// TOPOLOGY (`sourceId != null`) and updates a settled bar's STATUS in place
-// (`filterBar.updateStatus`, never a rebuild) — the effect's `barSig` (a
-// structural signature: id/active/value/optionsRev/sourceId) is now separate
-// from its own status signature (status/stale/waitingFor). These tests pin
-// that split directly: a source-backed filter is curated from its very first
-// (still-'idle'/'loading') render, a pure status change never disturbs the
-// bar's DOM (same `<input>` instance — proof no rebuild happened), and a
-// genuinely structural change (option content) still rebuilds it.
-describe('renderDashboard — filter status vs. structural rebuild split (#360 follow-up)', () => {
-  it('a source-backed filter is curated and shows the pending affordance before its shared source has ever settled — never an enabled plain control', async () => {
-    let resolveSrc!: (v: ExecResp) => void;
-    const pendingSrc = new Promise<ExecResp>((resolve) => { resolveSrc = resolve; });
-    const { app } = dashApp({
-      responder: (sql) => (sql.includes('pendingsrc') ? pendingSrc : {}),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
-          q('src', "SELECT ['east','west'] AS region -- pendingsrc", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
-      }),
-    });
-    const rendering = render(app);
-    // Flush the microtasks up to (but not past) the in-flight source query's
-    // own await — same technique as the KPI "Loading…" card test above: the
-    // session sets status 'loading' (mirroring its still-'idle' construction-
-    // time value — both read as "pending" — see `applyFieldStatus`) and
-    // publishes synchronously before awaiting the responder.
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-    const fields = qsa(app.root, '.dash-filter-host .var-field');
-    const regionField = fields.find((f) => qs(f, '.var-name')?.textContent === 'region') as HTMLElement;
-    expect(regionField).toBeDefined();
-    expect(regionField.classList.contains('is-curated')).toBe(true);
-    expect(regionField.classList.contains('is-stale')).toBe(true);
-    const input = qs<HTMLInputElement>(regionField, 'input');
-    expect(input.disabled).toBe(true);
-    resolveSrc({ columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] });
-    await rendering;
-    // Settles to 'ready' — the SAME curated field, now enabled with options.
-    const settledInput = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
-    expect(settledInput.disabled).toBe(false);
-  });
-
-  it('a status-only refresh (unchanged options/value/active) updates the field in place — its <input> instance survives, no rebuild', async () => {
-    const { app } = dashApp({
-      responder: (sql) => (sql.includes('samesrc')
-        ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] } : {}),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
-          q('src', "SELECT ['east','west'] AS region -- samesrc", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
-      }),
-    });
-    await render(app);
-    const inputBefore = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
-    // A refresh republishes the exact same option content — status cycles
-    // loading → ready with optionsRev unchanged, so only `updateStatus` runs.
-    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    const inputAfter = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
-    expect(inputAfter).toBe(inputBefore);
-    expect(inputAfter.disabled).toBe(false);
-  });
-
-  it('a structural change (option content changes) still rebuilds the bar — a fresh <input> instance', async () => {
-    let call = 0;
-    const { app } = dashApp({
-      responder: (sql) => (sql.includes('changingsrc')
-        ? (() => { call++; return { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[call === 1 ? ['east', 'west'] : ['north', 'south']]] }; })()
-        : {}),
-      workspace: wsWith({
-        queries: [
-          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
-          q('src', "SELECT ['east','west'] AS region -- changingsrc", { dashboard: { role: 'filter' } }),
-        ],
-        tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
-      }),
-    });
-    await render(app);
-    const inputBefore = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
-    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
-    const inputAfter = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
-    expect(inputAfter).not.toBe(inputBefore); // optionsRev bumped — a real rebuild
-  });
+  // #447 deleted the rest of this describe and the two #360 describes that
+  // followed it:
+  //  - 'rebuilds the filter bar when curated option CONTENT changes' and
+  //    'renders filterDiagnostics with severity-mapped classes' (#359) — there
+  //    is no option-source query, no `optionsRev` content, and no
+  //    option-merge diagnostic to render.
+  //  - 'curated field stays curated while its shared source is waiting (#360)'
+  //    and 'filter status vs. structural rebuild split (#360 follow-up)' — a
+  //    variable has no `sourceId`, no `waitingFor` and only the `idle` status,
+  //    so there is no curated/waiting/stale affordance left to gate.
 });
 
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
-// #280 viewer session used to init every filter purely from
-// `def.defaultValue`/`defaultActive`, so a committed value lived only in
-// memory and reset on reload. `loadJSON`/`KEYS.dashFilters` reads through the
+// #280 viewer session used to init every filter purely from its persisted
+// default (removed by #447; a variable now simply starts UNSET), so a committed
+// value lived only in memory and reset on reload. The stored bag is keyed by the
+// VARIABLE NAME since #447. `loadJSON`/`KEYS.dashFilters` reads through the
 // REAL default store (not through `app`), so these stub `globalThis.localStorage`
 // directly (never touching the ambient real one — Node 25 native Web Storage
 // flake, #130) — `app.saveJSON` (a `makeApp()` spy) is asserted on for writes.
@@ -3886,15 +3378,15 @@ describe('renderDashboard — isolated per-dashboard filter persistence (#303)',
   }
   afterEach(() => vi.unstubAllGlobals());
 
+  // The `n` variable is INFERRED from the panel query's own `{n:UInt8}` (#447).
   const filterWs = (over: WsOver = {}) => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
     tiles: [{ id: 't1', queryId: 'q1' }],
-    filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
     ...over,
   });
   const nField = (app: TestApp): HTMLInputElement => qs<HTMLInputElement>(app.root, '.dash-filter-host .var-field input');
 
-  it("seeds a filter's value/active from a stored bag for the dashboard id", async () => {
+  it("seeds a variable's value/active from a stored bag for the dashboard id", async () => {
     vi.stubGlobal('localStorage', memStore({
       [KEYS.dashFilters]: JSON.stringify({ d: { n: { value: '42', active: false } } }),
     }));
@@ -3910,11 +3402,12 @@ describe('renderDashboard — isolated per-dashboard filter persistence (#303)',
     }));
     const { app } = dashApp({ workspace: filterWs() });
     await render(app);
-    // The dashboard's own default (5) wins — the Workbench keys are never read.
-    expect(nField(app).value).toBe('5');
+    // The variable starts UNSET — the Workbench keys are never read (a shared
+    // store would have shown 'workbench-only-value' here).
+    expect(nField(app).value).toBe('');
   });
 
-  it('does not write defaults back over an existing stored bag on the initial publish', async () => {
+  it('does not write back over an existing stored bag on the initial publish', async () => {
     vi.stubGlobal('localStorage', memStore({
       [KEYS.dashFilters]: JSON.stringify({ d: { n: { value: '42', active: false } } }),
     }));
@@ -3923,18 +3416,17 @@ describe('renderDashboard — isolated per-dashboard filter persistence (#303)',
     expect(app.saveJSON).not.toHaveBeenCalled();
   });
 
-  it('does not persist filter defaults on the initial publish when nothing is stored yet', async () => {
-    // Empty store + a filter with a non-empty default (n=5, active) — the first
-    // publish merely echoes the seeded default state, so it must NOT write:
-    // persisting defaults here would freeze them against a later Spec-editor
-    // change to the filter's default (regression guard for the review fix).
+  it('does not persist anything on the initial publish when nothing is stored yet', async () => {
+    // Empty store — the first publish merely echoes the seeded (unset) state, so
+    // it must NOT write: persisting on the opening publish would turn every
+    // Dashboard open into a storage write (regression guard for the review fix).
     vi.stubGlobal('localStorage', memStore());
     const { app } = dashApp({ workspace: filterWs() });
     await render(app);
     expect(app.saveJSON).not.toHaveBeenCalled();
   });
 
-  it('persists a committed filter change, keyed by dashboard id + filter id, isolated from the Workbench keys', async () => {
+  it('persists a committed variable change, keyed by dashboard id + variable name, isolated from the Workbench keys', async () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = dashApp({ workspace: filterWs() });
     await render(app);
@@ -4097,12 +3589,12 @@ describe('app.renderDashboard', () => {
       ]),
     })]]);
     const app = realApp(appEnv({ fetch: asFetch(fetch) }));
-    // Drive the read-flip deterministically: a StoredWorkspaceV4 whose one tile
+    // Drive the read-flip deterministically: a StoredWorkspaceV5 whose one tile
     // references the query (bypassing IndexedDB), then the real exec seam runs it.
     const query = savedQuery({ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart' });
     app.currentWorkspace = {
-      storageVersion: 4, id: 'w', key: 'workspace', name: 'W', queries: [query],
-      dashboards: [{ documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] }],
+      storageVersion: 5, id: 'w', key: 'workspace', name: 'W', queries: [query],
+      dashboards: [{ documentVersion: 2, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [{ id: 't1', queryId: '1' }] }],
     };
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'workspace', mode: 'edit' };
     await app.renderDashboard();
@@ -4211,7 +3703,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
       const rerender = vi.fn();
       app.renderDashboard = rerender;
       await render(app);
-      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV4;
+      const created = wsWith({ id: 'created-elsewhere' }) as unknown as StoredWorkspaceV5;
       app.currentWorkspace = created;
       app.onWorkspaceExternallyChanged({ workspace: created, queriesChanged: false });
       expect(rerender).toHaveBeenCalledOnce();
@@ -4222,7 +3714,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
     await render(app);
-    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV4;
+    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV5;
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const, workspace: concurrentlyUpdated,
     }));
@@ -4567,7 +4059,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     app.workspace.loadById = vi.fn(async () => ({
       status: 'ok' as const,
       workspace: {
-        storageVersion: 4 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
+        storageVersion: 5 as const, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
       },
     }));
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
@@ -4616,14 +4108,15 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
-  it('remove-tile clears every explicit filter target and leaves the query alone', async () => {
+  // #447 dropped this case's explicit-filter-target half (`doc.filters[].targets`
+  // no longer exists — a variable binds by NAME to whichever panel queries
+  // declare it, so removing a tile needs no target rewrite at all). What is left
+  // is the #427 half: the removed tile's own query, and its Library favourite,
+  // survive the removal untouched.
+  it('remove-tile leaves the removed tile\'s query and its Library favourite alone', async () => {
     const workspace = wsWith({
       queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
-      filters: [
-        { id: 'f1', parameter: 'x', targets: ['t1', 't2'] },
-        { id: 'f2', parameter: 'y', targets: ['t1'] },
-      ],
       layout: { type: 'grafana-grid', version: 1, items: {} },
     });
     const { app, commit } = dashApp({ workspace });
@@ -4634,7 +4127,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // #427: no favourite write-back. Removing a tile is a Dashboard-document
     // change; the query's Library preference is not part of it.
     expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(true);
-    expect(candidate.dashboards[0]?.filters.map((filter) => filter.targets)).toEqual([['t2'], []]);
+    expect(candidate.dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t2']);
     expect(candidate.dashboards[0]?.revision).toBe(2);
   });
 
@@ -4667,7 +4160,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('rapid commands commit in STRICT invocation order — a slow-to-resolve first commit is never skipped or reordered by a second', async () => {
     const seen: string[] = [];
     let resolveFirst!: (v: unknown) => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV4) => {
+    const commit = vi.fn((candidate: StoredWorkspaceV5) => {
       const layout = candidate.dashboards[0]!.layout;
       seen.push(layout.type === 'flow' ? String(layout.preset) : layout.type);
       const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision };
@@ -4705,7 +4198,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV5) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
@@ -4739,7 +4232,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     let resolveA!: (v: unknown) => void;
     const commit = vi.fn()
       .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
-      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV5) => (
         { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTilesGrid(), commit });
@@ -4851,9 +4344,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   // Dashboard entry; other Dashboards remain unchanged".
   it('commits an edit to the SELECTED entry, not the collection\'s first', async () => {
     const first = {
-      documentVersion: 1 as const, id: 'first', title: 'First', revision: 12,
+      documentVersion: 2 as const, id: 'first', title: 'First', revision: 12,
       layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
-      filters: [], tiles: [],
+      tiles: [],
     };
     const base = twoTilesGrid();
     const selected = base.dashboards[0];
@@ -4884,9 +4377,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   // nothing else in the suite would notice.
   it('an ordinary tile edit preserves every other stored Dashboard, revisions included', async () => {
     const hidden = {
-      documentVersion: 1 as const, id: 'hidden', title: 'Hidden', revision: 12,
+      documentVersion: 2 as const, id: 'hidden', title: 'Hidden', revision: 12,
       layout: { type: 'flow' as const, version: 1 as const, preset: 'report', items: {} },
-      filters: [], tiles: [],
+      tiles: [],
     };
     const base = twoTilesGrid();
     const workspace = { ...base, dashboards: [base.dashboards[0], hidden] };
@@ -4929,9 +4422,9 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
       candidate: {
         ...latest,
         dashboards: [{
-          documentVersion: 1, id: 'imported', title: 'Imported', revision: 1,
+          documentVersion: 2, id: 'imported', title: 'Imported', revision: 1,
           layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-          filters: [], tiles: [],
+          tiles: [],
         }],
       },
     } : null));
@@ -4991,13 +4484,12 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
         ok: false,
         diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
       })
-      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV5) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const workspace = wsWith({
       queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
-      filters: [{ id: 'f1', parameter: 'x', targets: ['t1'] }],
       layout: { type: 'grafana-grid', version: 1, items: {} },
     });
     const { app, loadActive } = dashApp({ workspace, commit });
@@ -5013,7 +4505,6 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // truth), and nothing was persisted.
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
     expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
-    expect(app.state.dashboard?.filters[0].targets).toEqual(['t1']);
     expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'q1'))).toBe(true);
     expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
     // The rebuilt route is fully functional — a later command still commits.
@@ -5030,7 +4521,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
   it('a REJECTED commit (storage threw) rolls back, toasts, and does not wedge the queue or the pending-command bookkeeping', async () => {
     const commit = vi.fn()
       .mockRejectedValueOnce(new Error('storage blocked'))
-      .mockImplementation(async (candidate: StoredWorkspaceV4) => (
+      .mockImplementation(async (candidate: StoredWorkspaceV5) => (
         { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
@@ -5112,7 +4603,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app, calls } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV4;
+    const changed = { ...workspace, queries: [q('q1', 'SELECT 99')] } as unknown as StoredWorkspaceV5;
     app.currentWorkspace = changed;
     const before = calls.length;
     app.onWorkspaceExternallyChanged({ workspace: changed as never, queriesChanged: true });
@@ -5122,7 +4613,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
 
   it('a stale rebuild waits until pending Dashboard command descriptors settle', async () => {
     let resolveCommit!: () => void;
-    const commit = vi.fn((candidate: StoredWorkspaceV4) => new Promise((resolve) => {
+    const commit = vi.fn((candidate: StoredWorkspaceV5) => new Promise((resolve) => {
       resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision });
     }));
     const { app, calls, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
@@ -5156,7 +4647,6 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const ws = wsWith({
       id: 'dfx', queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
       tiles: [{ id: 't1', queryId: 'q1' }],
-      filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
     });
     // `dashboard.ts` reads the persisted filter bag through `core/storage`'s
     // `loadJSON` on EVERY render (initial + rebuild); seed just that key (the
@@ -5172,7 +4662,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
         const field = qsa(app.root, '.dash-filter-host .var-field').find((f) => qs(f, '.var-name')?.textContent === 'n')!;
         return qs<HTMLInputElement>(field, 'input');
       };
-      expect(filterInput().value).toBe('77'); // seeded from the store, not the default 5
+      expect(filterInput().value).toBe('77'); // seeded from the store, not the unset default
       app.onWorkspaceExternallyChanged({ workspace: await loadActive(), queriesChanged: false });
       await flush(); await flush();
       expect(filterInput().value).toBe('77'); // still seeded after the rebuild re-reads the store
@@ -5195,7 +4685,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
 });
 
 // #425 — the explicit navigation focus contract: a caller can ask to land on one
-// tile or one curated filter of the Dashboard it opens.
+// tile or one variable of the Dashboard it opens.
 describe('renderDashboard — navigation focus (#425)', () => {
   const focusWs = () => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
@@ -5268,13 +4758,12 @@ describe('renderDashboard — navigation focus (#425)', () => {
     }
   });
 
-  it('focuses a curated filter by FILTER id, without scrolling the tile grid', async () => {
+  it('focuses a variable by its NAME, without scrolling the tile grid', async () => {
     const { app } = focusApp(wsWith({
       queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
       tiles: [{ id: 't1', queryId: 'q1' }],
-      filters: [{ id: 'f-region', parameter: 'region' }],
     }));
-    await render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    await render(app, { focus: { kind: 'variable', id: 'region' } });
     const field = qs(app.root, '[data-field-key="region"]');
     expect(field).not.toBeNull();
     expect(document.activeElement).toBe(field);
@@ -5286,7 +4775,7 @@ describe('renderDashboard — navigation focus (#425)', () => {
 
   it('opens the Dashboard anyway when the focus target is missing', async () => {
     const { app } = focusApp();
-    await render(app, { focus: { kind: 'filter', id: 'no-such-filter' } });
+    await render(app, { focus: { kind: 'variable', id: 'no-such-variable' } });
     expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
     expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
     expect(document.querySelector('.share-toast')!.textContent)
@@ -5309,13 +4798,12 @@ describe('renderDashboard — navigation focus (#425)', () => {
     const { app } = focusApp(wsWith({
       queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
       tiles: [{ id: 't1', queryId: 'q1' }],
-      filters: [{ id: 'f-region', parameter: 'region' }],
     }));
     // Filter focus is delivered only AFTER the opening wave resolves, which can
     // take seconds — long enough for the user to Tab into another field and type.
     // The filter bar's own rebuild already restored focus there; stealing it back
     // mid-keystroke is worse than not navigating.
-    const render1 = render(app, { focus: { kind: 'filter', id: 'f-region' } });
+    const render1 = render(app, { focus: { kind: 'variable', id: 'region' } });
     document.dispatchEvent(new Event('keydown', { bubbles: true }));
     await render1;
     expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
@@ -5337,7 +4825,6 @@ describe('renderDashboard — navigation focus (#425)', () => {
     const filterWs = () => wsWith({
       queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
       tiles: [{ id: 't1', queryId: 'q1' }],
-      filters: [{ id: 'f-region', parameter: 'region' }],
     });
 
     it('focuses, scrolls to and highlights a tile without a re-render', async () => {
@@ -5353,26 +4840,26 @@ describe('renderDashboard — navigation focus (#425)', () => {
       expect(qsa(app.root, '.dash-tile')[1]).toBe(cards[1]);
     });
 
-    it('focuses a curated filter once the opening wave has settled', async () => {
+    it('focuses a variable once the opening wave has settled', async () => {
       const { app } = focusApp(filterWs());
       await render(app);
-      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+      expect(app.surfaceCommands!.focusMember({ kind: 'variable', id: 'region' })).toBe('ok');
       expect(document.activeElement).toBe(qs(app.root, '[data-field-key="region"]'));
     });
 
     // The port is installed SYNCHRONOUSLY, before the opening wave's await, so a
     // tree click that lands mid-load still reaches a live port. A tile card
-    // already exists at that point; a curated filter's control does not (the
+    // already exists at that point; a variable's control does not (the
     // first publish replaces the whole bar), so only the filter defers.
-    it('delivers a TILE mid-wave but reports a mid-wave FILTER as pending', async () => {
+    it('delivers a TILE mid-wave but reports a mid-wave VARIABLE as pending', async () => {
       const { app } = focusApp(filterWs());
       const opening = render(app);
-      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('pending');
+      expect(app.surfaceCommands!.focusMember({ kind: 'variable', id: 'region' })).toBe('pending');
       expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
       expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 't1' })).toBe('ok');
       await opening;
-      // ...and the same filter request succeeds once the wave has settled.
-      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'f-region' })).toBe('ok');
+      // ...and the same variable request succeeds once the wave has settled.
+      expect(app.surfaceCommands!.focusMember({ kind: 'variable', id: 'region' })).toBe('ok');
     });
 
     it('reports a member that is not on this Dashboard as missing, and touches nothing', async () => {
@@ -5382,7 +4869,7 @@ describe('renderDashboard — navigation focus (#425)', () => {
       // whether this was a tree click or an API call.
       const toasts = document.querySelectorAll('.share-toast').length;
       expect(app.surfaceCommands!.focusMember({ kind: 'tile', id: 'nope' })).toBe('missing');
-      expect(app.surfaceCommands!.focusMember({ kind: 'filter', id: 'nope' })).toBe('missing');
+      expect(app.surfaceCommands!.focusMember({ kind: 'variable', id: 'nope' })).toBe('missing');
       expect(qsa(app.root, '.is-nav-target')).toHaveLength(0);
       expect(document.querySelectorAll('.share-toast')).toHaveLength(toasts);
     });

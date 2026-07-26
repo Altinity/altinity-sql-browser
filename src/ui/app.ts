@@ -16,7 +16,7 @@ import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import type { SavedQueryV2, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
@@ -24,7 +24,6 @@ import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
-import { effectiveDashboardRole } from '../core/result-choice.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
   hasBlockingSpecErrors,
@@ -231,7 +230,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  // Atomic StoredWorkspaceV4 persistence: the injected IndexedDB factory seam
+  // Atomic StoredWorkspaceV5 persistence: the injected IndexedDB factory seam
   // (mirrors crypto/sessionStorage) backs the workspace collection, behind
   // which the pure WorkspaceRepository validates create/replace commits.
   // Constructed lazily — no database is opened until
@@ -409,15 +408,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     const tab = app.activeTab();
     tab.sqlDraft = value;
     tab.dirtySql = true;
-    // Only a Filter-role Spec's diagnostics depend on the SQL text (the Filter
-    // source SQL must be a single row-returning statement, no params/FORMAT —
-    // filter-execution.js). For every other tab the Spec is independent of the
-    // SQL, so re-evaluating the whole validator graph on each keystroke is
-    // wasted work — gate it to filter tabs.
-    if (effectiveDashboardRole(tab.specParsed) === 'filter') {
-      queryDoc.applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
-      app.specEditor.setDiagnostics(tab.specDiagnostics);
-    }
+    // #447: no re-evaluation of the Spec on a SQL keystroke any more. The ONLY
+    // validator whose diagnostics depended on the SQL text was the Filter role's
+    // (its source SQL had to be a single row-returning statement), and that role
+    // no longer exists — every surviving rule reads the Spec alone, so
+    // re-running the whole validator graph per keystroke is pure waste.
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
@@ -734,7 +729,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
       recordBoundParams: (bp) => params.recordBoundParams([...bp]),
       prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked,
-      prepareFilterPreview: params.prepareFilterPreview,
       execStatementSql: params.execStatementSql, sessionParamsFor,
       getSelectionText: () => app.sqlEditor.getSelection().text,
       tickElapsed,
@@ -1716,7 +1710,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   };
 
-  // Project the active StoredWorkspaceV4 onto the current application surface.
+  // Project the active StoredWorkspaceV5 onto the current application surface.
   // Persistence is now a collection; this projection identifies which record
   // this tab is editing, while the repository remains independently addressable
   // by immutable id and stable URL key. #424: `state.dashboard` is the
@@ -1730,7 +1724,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
   app.invalidateDashboardTree = invalidateDashboardTree;
 
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV4): void => {
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
     // #425: re-validate the selected Dashboard against committed truth. A
@@ -1970,7 +1964,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const runWorkspaceRefresh = async (): Promise<void> => {
     const requestedWorkspaceId = app.state.workspaceId;
     const requestedRouteGeneration = routeLoadGeneration;
-    let loaded: StoredWorkspaceV4 | null;
+    let loaded: StoredWorkspaceV5 | null;
     try {
       const result = await app.workspace.loadById(requestedWorkspaceId);
       if (result.status === 'corrupt') { warnRefreshFailed(); return; }
@@ -2060,7 +2054,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
   };
 
-  const recordOpened = async (workspace: StoredWorkspaceV4): Promise<void> => {
+  const recordOpened = async (workspace: StoredWorkspaceV5): Promise<void> => {
     const result = await app.workspace.markOpened(workspace.key);
     if (!result.ok) {
       flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
@@ -2279,7 +2273,7 @@ export function createApp(env: CreateAppEnv = {}): App {
         // is deliberately NOT marked current — nothing there to mark.
         flashToast(member.kind === 'tile'
           ? 'That panel is no longer on this dashboard.'
-          : 'That filter is no longer on this dashboard.', { document: doc });
+          : 'That variable is no longer on this dashboard.', { document: doc });
         return;
       }
       // `pending` — a curated filter whose control the opening wave is about to
@@ -2374,7 +2368,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // missing or ambiguous id, which leaves the collection untouched rather than
     // guessing — the surface reconciles to Query mode on its next projection.
     const selectedId = selectedDashboardId(app.mainSurface);
-    const foldProjection = (workspace: StoredWorkspaceV4): StoredWorkspaceV4 => {
+    const foldProjection = (workspace: StoredWorkspaceV5): StoredWorkspaceV5 => {
       if (!app.state.dashboard) return workspace;
       if (selectedId === null) return withCompatibilityDashboard(workspace, app.state.dashboard);
       return replaceDashboard(workspace, selectedId, app.state.dashboard) ?? workspace;

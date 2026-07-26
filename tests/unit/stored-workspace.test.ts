@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_STORED_WORKSPACE_VERSION, LEGACY_STORED_WORKSPACE_VERSIONS,
   STORED_WORKSPACE_V2_SCHEMA_ID, STORED_WORKSPACE_V3_SCHEMA_ID, STORED_WORKSPACE_V4_SCHEMA_ID,
+  STORED_WORKSPACE_V5_SCHEMA_ID,
   decodeStoredWorkspaceJson, encodeStoredWorkspaceJson, migrateStoredWorkspaceV2ToV3,
   validateStoredWorkspaceDocument,
 } from '../../src/workspace/stored-workspace.js';
@@ -14,9 +15,23 @@ const find = (d: WorkspaceDiagnostic[], code: string): WorkspaceDiagnostic =>
   d.find((x) => x.code === code)!;
 
 const panelQuery = (id: string) => ({ id, sql: 'SELECT 1', specVersion: 1, spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } } } });
-const dashboardDoc = (over: Record<string, unknown> = {}) => ({
+
+// Legacy Dashboard document v1 (curated filters), used ONLY for pre-#447
+// stored fixtures (V2/V3/V4 storage). Document v1 stays readable through
+// migration; it must never be used for a "current" V5-storage fixture.
+const dashboardDocV1 = (over: Record<string, unknown> = {}) => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
+});
+const tiledV1 = (id: string, tileId: string, queryId: string) => dashboardDocV1({
+  id,
+  tiles: [{ id: tileId, queryId }],
+  layout: { type: 'flow', version: 1, preset: 'report', items: { [tileId]: {} } },
+});
+// Current Dashboard document v2 (#447 — no curated filters).
+const dashboardDoc = (over: Record<string, unknown> = {}) => ({
+  documentVersion: 2, id: 'd1', title: 'D', revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [], ...over,
 });
 const tiled = (id: string, tileId: string, queryId: string) => dashboardDoc({
   id,
@@ -24,7 +39,7 @@ const tiled = (id: string, tileId: string, queryId: string) => dashboardDoc({
   layout: { type: 'flow', version: 1, preset: 'report', items: { [tileId]: {} } },
 });
 const workspace = (over: Record<string, unknown> = {}) => ({
-  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [], ...over,
+  storageVersion: 5, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [], ...over,
 });
 /** A record persisted before #424 — the shape the codec must still read. */
 const legacy = (over: Record<string, unknown> = {}) => ({
@@ -34,6 +49,11 @@ const legacy = (over: Record<string, unknown> = {}) => ({
  *  still SHARE a Library query. Also still readable. */
 const legacyV3 = (over: Record<string, unknown> = {}) => ({
   storageVersion: 3, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [], ...over,
+});
+/** A record persisted before #447: already single-owner, but its Dashboards
+ *  still carry curated `filters`. Also still readable. */
+const legacyV4 = (over: Record<string, unknown> = {}) => ({
+  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [], ...over,
 });
 
 describe('validateStoredWorkspaceDocument', () => {
@@ -52,7 +72,9 @@ describe('validateStoredWorkspaceDocument', () => {
   });
 
   // #427 — the ownership invariant. Reported at every owner AFTER the first, so
-  // the diagnostics name the references that have to change.
+  // the diagnostics name the references that have to change. #447 removed the
+  // only other multi-owner shape (a curated filter sharing its option-source
+  // query with a tile), so sharing can now only ever be tile-vs-tile.
   it('rejects every shape of query sharing, at each owner after the first', () => {
     const twoDashboards = validateStoredWorkspaceDocument(workspace({
       queries: [panelQuery('p1')],
@@ -75,69 +97,22 @@ describe('validateStoredWorkspaceDocument', () => {
     }));
     expect(find(twoTiles, 'dashboard-query-multiple-owners').path)
       .toEqual(['dashboards', 0, 'tiles', 1, 'queryId']);
-
-    // A filter and a tile sharing one query. The filter is walked first, so the
-    // TILE is the owner after the first — and the pre-existing, more precise
-    // `filter-source-is-tile` still fires too.
-    const filterAndTile = validateStoredWorkspaceDocument(workspace({
-      queries: [panelQuery('p1')],
-      dashboards: [dashboardDoc({
-        tiles: [{ id: 't1', queryId: 'p1' }],
-        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'p1' }],
-      })],
-    }));
-    expect(find(filterAndTile, 'dashboard-query-multiple-owners').path)
-      .toEqual(['dashboards', 0, 'tiles', 0, 'queryId']);
-    expect(has(filterAndTile, 'filter-source-is-tile')).toBe(true);
-
-    // …and the other way round: when a TILE is the first owner, the later
-    // FILTER is the one reported, at its own `sourceQueryId` path.
-    const tileThenFilter = validateStoredWorkspaceDocument(workspace({
-      queries: [{
-        id: 'q', sql: "SELECT ['a'] AS p", specVersion: 1,
-        spec: { name: 'Q', dashboard: { role: 'filter' } },
-      }],
-      dashboards: [
-        dashboardDoc({
-          id: 'first', tiles: [{ id: 't1', queryId: 'q' }],
-          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        }),
-        dashboardDoc({ id: 'second', filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'q' }] }),
-      ],
-    }));
-    expect(find(tileThenFilter, 'dashboard-query-multiple-owners').path)
-      .toEqual(['dashboards', 1, 'filters', 0, 'sourceQueryId']);
-    expect(find(tileThenFilter, 'dashboard-query-multiple-owners').message)
-      .toContain('filter "flt"');
   });
 
-  it('accepts a plain filter, which owns nothing, and a zero-owner Library query', () => {
-    // A date or free-text control has no option list and therefore no source
-    // query; a favourited Library query with no reference is still just a
-    // Library query.
-    expect(validateStoredWorkspaceDocument(workspace({
-      queries: [{
-        id: 'lib', sql: 'SELECT 1', specVersion: 1,
-        spec: { name: 'lib', favorite: true, dashboard: { role: 'filter' } },
-      }],
-      dashboards: [dashboardDoc({ filters: [{ id: 'from', parameter: 'from' }] })],
-    }))).toEqual([]);
-  });
-
-  it('fails closed on identity problems, and is strict about the V4 version', () => {
+  it('fails closed on identity problems, and is strict about the V5 version', () => {
     expect(codes(validateStoredWorkspaceDocument(null))).toEqual(['workspace-invalid-root']);
     expect(codes(validateStoredWorkspaceDocument({}))).toEqual(['workspace-version-missing']);
     expect(codes(validateStoredWorkspaceDocument({ storageVersion: 1.5 }))).toEqual(['workspace-version-invalid']);
-    expect(codes(validateStoredWorkspaceDocument({ storageVersion: 5 }))).toEqual(['workspace-version-unsupported']);
-    // A legacy document is not a valid CANDIDATE — only the decoder reads V2/V3.
+    expect(codes(validateStoredWorkspaceDocument({ storageVersion: 6 }))).toEqual(['workspace-version-unsupported']);
+    // A legacy document is not a valid CANDIDATE — only the decoder reads V2/V3/V4.
     expect(codes(validateStoredWorkspaceDocument(legacy()))).toEqual(['workspace-version-unsupported']);
     expect(codes(validateStoredWorkspaceDocument(legacyV3()))).toEqual(['workspace-version-unsupported']);
+    expect(codes(validateStoredWorkspaceDocument(legacyV4()))).toEqual(['workspace-version-unsupported']);
   });
 
   it('reports structural schema errors, e.g. the required dashboards array', () => {
     const d = validateStoredWorkspaceDocument({
-      storageVersion: 4, id: 'w', key: 'workspace', name: 'W', queries: [],
+      storageVersion: 5, id: 'w', key: 'workspace', name: 'W', queries: [],
     });
     expect(has(d, 'schema-required')).toBe(true);
     // The retired singular field is rejected outright, never silently ignored.
@@ -191,23 +166,9 @@ describe('validateStoredWorkspaceDocument', () => {
     })), 'dashboard-duplicate-tile-id')).toBe(true);
   });
 
-  it('scopes filter targets and layout placements to their OWN Dashboard', () => {
-    // `t1` exists only in the first Dashboard; the second may not reach it,
-    // through a filter target or through a layout placement key.
-    const crossFilter = validateStoredWorkspaceDocument(workspace({
-      queries: [panelQuery('p1'), panelQuery('p2')],
-      dashboards: [
-        tiled('d1', 't1', 'p1'),
-        dashboardDoc({
-          id: 'd2', tiles: [{ id: 't2', queryId: 'p2' }],
-          layout: { type: 'flow', version: 1, preset: 'report', items: { t2: {} } },
-          filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
-        }),
-      ],
-    }));
-    expect(find(crossFilter, 'filter-target-missing').path)
-      .toEqual(['dashboards', 1, 'filters', 0, 'targets', 0]);
-
+  it('scopes layout placements to their OWN Dashboard', () => {
+    // `t1` exists only in the first Dashboard; the second may not reach it
+    // through a layout placement key.
     const crossLayout = validateStoredWorkspaceDocument(workspace({
       queries: [panelQuery('p1'), panelQuery('p2')],
       dashboards: [
@@ -220,17 +181,6 @@ describe('validateStoredWorkspaceDocument', () => {
     }));
     expect(find(crossLayout, 'layout-orphan-placement').path)
       .toEqual(['dashboards', 1, 'layout', 'items', 't1']);
-  });
-
-  it('enforces the per-Dashboard limits independently, at each Dashboard\'s own index', () => {
-    const permissive = { validate: () => [], getSchema: () => undefined };
-    const tooManyFilters = Array.from({ length: 33 }, (_, i) => ({ id: `f${i}`, parameter: 'p' }));
-    const d = validateStoredWorkspaceDocument(workspace({
-      dashboards: [dashboardDoc(), dashboardDoc({ id: 'd2', filters: tooManyFilters })],
-    }), { validationService: permissive });
-    expect(find(d, 'limit-filter-count').path).toEqual(['dashboards', 1, 'filters']);
-    // The query-collection limit stays workspace-scoped, applied once.
-    expect(has(d, 'limit-query-count')).toBe(false);
   });
 
   it('bounds the Dashboard collection at the shared portable capacity', () => {
@@ -261,7 +211,7 @@ describe('migrateStoredWorkspaceV2ToV3', () => {
 
   it('preserves ids, revisions, unknown fields, and favorites exactly', () => {
     const dashboard = {
-      ...tiled('dashboard-main', 'revenue-tile', 'revenue-query'),
+      ...tiledV1('dashboard-main', 'revenue-tile', 'revenue-query'),
       revision: 4, title: 'Analytics', futureField: { kept: true },
     };
     const query = {
@@ -304,21 +254,21 @@ describe('migrateStoredWorkspaceV2ToV3', () => {
     // …and an unfavorited query keeps its existing tile.
     const unfavorited = { id: 'p1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'P', favorite: false } };
     const migrated = migrateStoredWorkspaceV2ToV3(legacy({
-      queries: [unfavorited], dashboard: tiled('d1', 't1', 'p1'),
+      queries: [unfavorited], dashboard: tiledV1('d1', 't1', 'p1'),
     }) as unknown as StoredWorkspaceV2);
     expect(migrated.dashboards[0].tiles).toEqual([{ id: 't1', queryId: 'p1' }]);
   });
 });
 
 describe('decodeStoredWorkspaceJson', () => {
-  it('parses, validates, and returns the canonical V4 value', () => {
+  it('parses, validates, and returns the canonical V5 value', () => {
     const result = decodeStoredWorkspaceJson(JSON.stringify(workspace()));
     expect(result.ok).toBe(true);
     expect(result.ok && result.value.storageVersion).toBe(CURRENT_STORED_WORKSPACE_VERSION);
   });
 
-  it('reads a persisted V2 record through the whole V2 -> V3 -> V4 chain', () => {
-    const dashboard = { ...tiled('d1', 't1', 'p1'), revision: 7 };
+  it('reads a persisted V2 record through the whole V2 -> V3 -> V5 chain', () => {
+    const dashboard = { ...tiledV1('d1', 't1', 'p1'), revision: 7 };
     const decoded = decodeStoredWorkspaceJson(JSON.stringify(
       legacy({ queries: [panelQuery('p1')], dashboard }),
     ));
@@ -327,7 +277,10 @@ describe('decodeStoredWorkspaceJson', () => {
     expect(decoded.value.storageVersion).toBe(CURRENT_STORED_WORKSPACE_VERSION);
     // #427: the tile now owns a dedicated copy, the original stays in the
     // Library, and the Dashboard's identity and revision are untouched.
+    // #447: the migrated Dashboard is document v2, with no filters.
     expect(decoded.value.dashboards[0].id).toBe('d1');
+    expect(decoded.value.dashboards[0].documentVersion).toBe(2);
+    expect(decoded.value.dashboards[0]).not.toHaveProperty('filters');
     expect(decoded.value.dashboards[0].revision).toBe(7);
     expect(decoded.value.dashboards[0].tiles[0].id).toBe('t1');
     expect(decoded.value.dashboards[0].tiles[0].queryId).not.toBe('p1');
@@ -337,7 +290,7 @@ describe('decodeStoredWorkspaceJson', () => {
     // second transformation, no second clone.
     const again = decodeStoredWorkspaceJson(JSON.stringify(decoded.value));
     expect(again.ok && again.value).toEqual(decoded.value);
-    expect([...LEGACY_STORED_WORKSPACE_VERSIONS]).toEqual([2, 3]);
+    expect([...LEGACY_STORED_WORKSPACE_VERSIONS]).toEqual([2, 3, 4]);
   });
 
   it('reads a persisted V3 record and gives every member a dedicated copy', () => {
@@ -345,15 +298,16 @@ describe('decodeStoredWorkspaceJson', () => {
     // by tiles in two Dashboards.
     const decoded = decodeStoredWorkspaceJson(JSON.stringify(legacyV3({
       queries: [panelQuery('p1')],
-      dashboards: [tiled('exec', 'exec-t', 'p1'), tiled('sales', 'sales-t', 'p1')],
+      dashboards: [tiledV1('exec', 'exec-t', 'p1'), tiledV1('sales', 'sales-t', 'p1')],
     })));
     expect(decoded.ok).toBe(true);
     if (!decoded.ok) return;
-    expect(decoded.value.storageVersion).toBe(4);
+    expect(decoded.value.storageVersion).toBe(CURRENT_STORED_WORKSPACE_VERSION);
     // The original survives as the Library source; each tile points at its own copy.
     expect(decoded.value.queries).toHaveLength(3);
     expect(decoded.value.queries[0].id).toBe('p1');
     const [exec, sales] = decoded.value.dashboards;
+    expect(exec.documentVersion).toBe(2);
     expect(exec.tiles[0].queryId).not.toBe(sales.tiles[0].queryId);
     expect(exec.tiles[0].queryId).not.toBe('p1');
     // Member ids and order are preserved, so #426's tree state stays valid.
@@ -363,13 +317,39 @@ describe('decodeStoredWorkspaceJson', () => {
     // is what keeps `workspaceToken` stable across tabs and refreshes.
     expect(decodeStoredWorkspaceJson(JSON.stringify(legacyV3({
       queries: [panelQuery('p1')],
-      dashboards: [tiled('exec', 'exec-t', 'p1'), tiled('sales', 'sales-t', 'p1')],
+      dashboards: [tiledV1('exec', 'exec-t', 'p1'), tiledV1('sales', 'sales-t', 'p1')],
     })))).toEqual(decoded);
+  });
+
+  it('reads a persisted V4 record, drops curated filters, and keeps a formerly filter-owned query in the Library', () => {
+    // A pre-#447 record: already single-owner (V4), but the Dashboard still
+    // carries a curated filter whose option-source query ('p2') is a
+    // Library query with no tile reference.
+    const dashboard = {
+      ...tiledV1('d1', 't1', 'p1'),
+      filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'p2' }],
+    };
+    const decoded = decodeStoredWorkspaceJson(JSON.stringify(legacyV4({
+      queries: [panelQuery('p1'), panelQuery('p2')],
+      dashboards: [dashboard],
+    })));
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(decoded.value.storageVersion).toBe(CURRENT_STORED_WORKSPACE_VERSION);
+    expect(decoded.value.dashboards[0].documentVersion).toBe(2);
+    expect(decoded.value.dashboards[0]).not.toHaveProperty('filters');
+    // Already single-owner, so the tile's own reference is untouched — no new
+    // copy is minted for it.
+    expect(decoded.value.dashboards[0].tiles[0].queryId).toBe('p1');
+    // The filter's option-source query loses its only owner and reappears as a
+    // Library query, exactly like any other query an edit orphans (#427).
+    expect(decoded.value.queries.map((q) => q.id)).toEqual(['p1', 'p2']);
+    expect(decoded.value.queries).toHaveLength(2);
   });
 
   it("reports a legacy record's own structural problems at its own paths", () => {
     const bad = decodeStoredWorkspaceJson(JSON.stringify(
-      legacy({ dashboard: dashboardDoc({ documentVersion: 4 }) }),
+      legacy({ dashboard: dashboardDocV1({ documentVersion: 4 }) }),
     ));
     expect(!bad.ok && find(bad.diagnostics, 'dashboard-version-unsupported').path)
       .toEqual(['dashboard', 'documentVersion']);
@@ -377,9 +357,9 @@ describe('decodeStoredWorkspaceJson', () => {
 
   it('rejects a legacy record whose migrated form would be invalid, committing nothing', () => {
     // Structurally fine as V2 (cross-resource rules are not schema rules), so
-    // only the post-migration V3 semantic pass can catch the dangling tile.
+    // only the post-migration semantic pass can catch the dangling tile.
     const broken = decodeStoredWorkspaceJson(JSON.stringify(
-      legacy({ dashboard: tiled('d1', 't1', 'gone') }),
+      legacy({ dashboard: tiledV1('d1', 't1', 'gone') }),
     ));
     expect(!broken.ok && find(broken.diagnostics, 'dashboard-tile-query-missing').path)
       .toEqual(['dashboards', 0, 'tiles', 0, 'queryId']);
@@ -387,7 +367,7 @@ describe('decodeStoredWorkspaceJson', () => {
 
   it('propagates codec-guard failures and fails closed on unknown versions', () => {
     expect(decodeStoredWorkspaceJson('{bad').ok).toBe(false);
-    const invalid = decodeStoredWorkspaceJson(JSON.stringify({ storageVersion: 5 }));
+    const invalid = decodeStoredWorkspaceJson(JSON.stringify({ storageVersion: 6 }));
     expect(!invalid.ok && invalid.diagnostics[0].code).toBe('workspace-version-unsupported');
     expect(!invalid.ok && invalid.diagnostics).toHaveLength(1);
   });
@@ -400,7 +380,8 @@ describe('encodeStoredWorkspaceJson', () => {
     if (!result.ok) return;
     expect(result.value.indexOf('"storageVersion"')).toBeLessThan(result.value.indexOf('"id"'));
     expect(result.value.indexOf('"queries"')).toBeLessThan(result.value.indexOf('"dashboards"'));
-    // Reference schema ids stay exported: v4 for writes, v3/v2 for legacy reads.
+    // Reference schema ids stay exported: v5 for writes, v4/v3/v2 for legacy reads.
+    expect(STORED_WORKSPACE_V5_SCHEMA_ID).toContain('stored-workspace-v5');
     expect(STORED_WORKSPACE_V4_SCHEMA_ID).toContain('stored-workspace-v4');
     expect(STORED_WORKSPACE_V3_SCHEMA_ID).toContain('stored-workspace-v3');
     expect(STORED_WORKSPACE_V2_SCHEMA_ID).toContain('stored-workspace-v2');
@@ -412,7 +393,7 @@ describe('encodeStoredWorkspaceJson', () => {
   });
 
   it('rejects an invalid workspace before encoding', () => {
-    const result = encodeStoredWorkspaceJson({ storageVersion: 5 });
+    const result = encodeStoredWorkspaceJson({ storageVersion: 6 });
     expect(!result.ok && result.diagnostics[0].code).toBe('workspace-version-unsupported');
   });
 

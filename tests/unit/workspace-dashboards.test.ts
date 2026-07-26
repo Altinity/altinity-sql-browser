@@ -3,15 +3,15 @@ import {
   findDashboard, findDashboardStrict, replaceDashboard, resolveCompatibilityDashboard,
   withCompatibilityDashboard,
 } from '../../src/workspace/workspace-dashboards.js';
-import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
-const dash = (id: string, over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
-  documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
+const dash = (id: string, over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+  documentVersion: 2, id, title: id.toUpperCase(), revision: 1,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-  filters: [], tiles: [], ...over,
+  tiles: [], ...over,
 });
-const ws = (dashboards: DashboardDocumentV1[]): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
+const ws = (dashboards: DashboardDocumentV2[]): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
 });
 
 describe('resolveCompatibilityDashboard', () => {

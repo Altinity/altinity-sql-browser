@@ -16,14 +16,17 @@ const panelQuery = (id: string, over: Record<string, unknown> = {}, dashboard?: 
   id, sql: 'SELECT 1', specVersion: 1,
   spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } }, ...(dashboard ? { dashboard } : {}), ...over },
 });
+// A non-panel-role query, still a valid fixture for role-compatibility checks
+// (a tile referencing anything other than role panel is incompatible).
 const filterQuery = (id: string, sql = "SELECT ['a','b'] AS country") => ({
   id, sql, specVersion: 1, spec: { name: id, dashboard: { role: 'filter' } },
 });
 const flowLayout = (items: Record<string, unknown> = {}) => ({ type: 'flow', version: 1, preset: 'report', items });
 const gridLayout = (items: Record<string, unknown> = {}) => ({ type: 'grafana-grid', version: 1, items });
+// #447: Dashboard document v2 — no curated filters.
 const dashboardDoc = (over: Record<string, unknown> = {}) => ({
-  documentVersion: 1, id: 'd1', title: 'D', revision: 1,
-  layout: flowLayout(), filters: [], tiles: [], ...over,
+  documentVersion: 2, id: 'd1', title: 'D', revision: 1,
+  layout: flowLayout(), tiles: [], ...over,
 });
 const tile = (id: string, queryId: string, over: Record<string, unknown> = {}) => ({ id, queryId, ...over });
 
@@ -63,12 +66,21 @@ describe('fail-closed version pre-scans', () => {
     expect(diagnostics[0].resource).toBe('bad');
   });
 
-  it('flags dashboards whose documentVersion is a known integer other than 1', () => {
+  it('flags dashboards whose documentVersion is a known integer other than the expected one (2 by default, #447)', () => {
     const diagnostics = unsupportedDashboardVersionDiagnostics([
-      { id: 'ok', documentVersion: 1 }, { id: 'future', documentVersion: 2 }, 'x', { documentVersion: 'nope' },
+      { id: 'ok', documentVersion: 2 }, { id: 'legacy', documentVersion: 1 }, 'x', { documentVersion: 'nope' },
     ]);
     expect(codes(diagnostics)).toEqual(['dashboard-version-unsupported']);
-    expect(diagnostics[0].resource).toBe('future');
+    expect(diagnostics[0].resource).toBe('legacy');
+  });
+
+  it('accepts an explicit expected version override, so a legacy container branch can pre-scan its own document version', () => {
+    // #447: a stored-workspace v2/v3/v4 record (and a portable-bundle v1 file)
+    // legitimately still carries document v1 at the pre-migration boundary.
+    const diagnostics = unsupportedDashboardVersionDiagnostics(
+      [{ id: 'legacy', documentVersion: 1 }], ['dashboards'], 1,
+    );
+    expect(diagnostics).toEqual([]);
   });
 });
 
@@ -148,16 +160,12 @@ describe('validateQueryCollectionSemantics', () => {
 });
 
 describe('validateDashboardSemantics', () => {
-  it('accepts a clean dashboard with resolvable tiles and filters', () => {
-    const queries = [panelQuery('p1'), filterQuery('f1')];
+  it('accepts a clean dashboard with resolvable tiles', () => {
+    const queries = [panelQuery('p1')];
     const dashboard = dashboardDoc({
       tiles: [tile('t1', 'p1')],
       layout: flowLayout({ t1: { span: 1, height: 'medium' } }),
-      filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
     });
-    // t1's query p1 must declare parameter `country` for the target check.
-    queries[0] = panelQuery('p1', {}, undefined);
-    queries[0].sql = 'SELECT * WHERE c = {country:String}';
     expect(validateDashboardSemantics(dashboard, { queries })).toEqual([]);
   });
 
@@ -167,7 +175,9 @@ describe('validateDashboardSemantics', () => {
 
   it('returns nothing for a non-object dashboard and fails closed on a bad documentVersion', () => {
     expect(validateDashboardSemantics(null)).toEqual([]);
-    const diagnostics = validateDashboardSemantics(dashboardDoc({ documentVersion: 2 }));
+    // A document v1 Dashboard (pre-#447) reaches this validator only through a
+    // legacy container's migration; passed directly, it is simply unsupported.
+    const diagnostics = validateDashboardSemantics(dashboardDoc({ documentVersion: 1 }));
     expect(codes(diagnostics)).toEqual(['dashboard-version-unsupported']);
     expect(diagnostics[0].resource).toBe('d1');
   });
@@ -284,7 +294,7 @@ describe('validateDashboardSemantics', () => {
     // The grid primary's own schema errors omit `resource` too when the
     // dashboard itself has no id (mirrors the flow/fallback schema-error path).
     const badGridNoId = {
-      documentVersion: 1, title: 'T', revision: 1, filters: [],
+      documentVersion: 2, title: 'T', revision: 1,
       tiles: [tile('t1', 'p1')],
       layout: { ...gridLayout({ t1: { span: 13 } }), fallback: flowLayout({ t1: { span: 2 } }) },
     };
@@ -312,167 +322,13 @@ describe('validateDashboardSemantics', () => {
     expect(has(validateDashboardSemantics(dashboardDoc({ layout })), 'schema-required')).toBe(true);
   });
 
-  it('validates filter identity, source role/uniqueness, and target/parameter resolution', () => {
-    const queries = [panelQuery('p1'), filterQuery('f1'), filterQuery('f2')];
-    queries[0].sql = 'SELECT {country:String}';
-
-    const dupFilter = dashboardDoc({
-      tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-      filters: [{ id: 'x', parameter: 'country' }, { id: 'x', parameter: 'country' }],
-    });
-    expect(has(validateDashboardSemantics(dupFilter, { queries }), 'dashboard-duplicate-filter-id')).toBe(true);
-
-    const missingSource = dashboardDoc({ filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'gone' }] });
-    expect(has(validateDashboardSemantics(missingSource, { queries }), 'filter-source-missing')).toBe(true);
-
-    const setupSource = dashboardDoc({ filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 's1' }] });
-    expect(has(validateDashboardSemantics(setupSource, { queries: [panelQuery('s1', {}, { role: 'setup' })] }), 'dashboard-setup-reference')).toBe(true);
-
-    const panelSource = dashboardDoc({ filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'p1' }] });
-    expect(has(validateDashboardSemantics(panelSource, { queries }), 'filter-source-role')).toBe(true);
-
-    const sourceIsTile = dashboardDoc({
-      tiles: [tile('t1', 'f1')], layout: flowLayout({ t1: {} }),
-      filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'f1' }],
-    });
-    // f1 is filter-role so it is a role-incompatible tile AND a source-is-tile.
-    expect(has(validateDashboardSemantics(sourceIsTile, { queries }), 'filter-source-is-tile')).toBe(true);
-  });
-
-  it('checks targets exist and declare the parameter, and detects type conflicts', () => {
-    const qString = panelQuery('a'); qString.sql = 'SELECT {country:String}';
-    const qInt = panelQuery('b'); qInt.sql = 'SELECT {country:UInt32}';
-    const qNone = panelQuery('c'); qNone.sql = 'SELECT 1';
-    const dashboard = dashboardDoc({
-      tiles: [tile('ta', 'a'), tile('tb', 'b'), tile('tc', 'c')],
-      layout: flowLayout({ ta: {}, tb: {}, tc: {} }),
-      filters: [{ id: 'flt', parameter: 'country', targets: ['ta', 'tb', 'tc', 'missing'] }],
-    });
-    const d = validateDashboardSemantics(dashboard, { queries: [qString, qInt, qNone] });
-    expect(has(d, 'filter-target-missing')).toBe(true);
-    expect(has(d, 'filter-parameter-undeclared')).toBe(true); // tc's query
-    expect(has(d, 'filter-parameter-type-conflict')).toBe(true); // String vs UInt32
-  });
-
-  // #189/#360 merge-gate follow-up: `validateDashboardSemantics` now runs the
-  // SAME `resolveFilterSelection` the viewer session uses, for every
-  // SOURCE-BACKED filter, translating its diagnostics to exact dashboard JSON
-  // paths (mode-table → `selection.mode`, per-target → `targets[j]`,
-  // contract/agreement → `parameter`).
-  describe('source-backed filter selection-contract validation (#189/#360)', () => {
-    it('selection.mode "multiple" against a scalar-only contract → diagnostic at filters[i].selection.mode', () => {
-      const q = panelQuery('p1'); q.sql = 'SELECT {country:String}';
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', selection: { mode: 'multiple' } }],
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
-      const diag = d.find((x) => x.code === 'filter-selection-mode-requires-array');
-      expect(diag).toBeDefined();
-      expect(diag!.path).toEqual(['filters', 0, 'selection', 'mode']);
-    });
-
-    it('an explicit target not declaring the parameter → diagnostic at filters[i].targets[j]', () => {
-      const q = panelQuery('p1'); // default sql 'SELECT 1' — declares nothing
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
-      const diag = d.find((x) => x.code === 'filter-selection-target-missing-declaration');
-      expect(diag).toBeDefined();
-      expect(diag!.path).toEqual(['filters', 0, 'targets', 0]);
-      // The older unbound check is subsumed for a source-backed filter — no
-      // duplicate `filter-parameter-undeclared` on top.
-      expect(has(d, 'filter-parameter-undeclared')).toBe(false);
-    });
-
-    it('implicit targets (none declared) mixing scalar/Array across two tiles → diagnostic at filters[i].parameter', () => {
-      const qScalar = panelQuery('a'); qScalar.sql = 'SELECT {country:String}';
-      const qArray = panelQuery('b'); qArray.sql = 'SELECT {country:Array(String)}';
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'a'), tile('t2', 'b')], layout: flowLayout({ t1: {}, t2: {} }),
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1' }], // no targets
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [qScalar, qArray, filterQuery('f1')] });
-      const diag = d.find((x) => x.code === 'filter-selection-mixed-arity');
-      expect(diag).toBeDefined();
-      expect(diag!.path).toEqual(['filters', 0, 'parameter']);
-    });
-
-    it('a nested Array(Array(...)) declaration → diagnostic at filters[i].parameter', () => {
-      const q = panelQuery('p1'); q.sql = 'SELECT {country:Array(Array(String))}';
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1' }],
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
-      const diag = d.find((x) => x.code === 'filter-selection-nested-array');
-      expect(diag).toBeDefined();
-      expect(diag!.path).toEqual(['filters', 0, 'parameter']);
-    });
-
-    it('a VALID Array(T) setup produces no selection diagnostics', () => {
-      const q = panelQuery('p1'); q.sql = 'SELECT {tags:Array(String)}';
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-        filters: [{ id: 'flt', parameter: 'tags', sourceQueryId: 'f1', selection: { mode: 'multiple' } }],
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [q, filterQuery('f1')] });
-      expect(d.filter((x) => x.code.startsWith('filter-selection-'))).toEqual([]);
-    });
-
-    it('a Filter source declaring the SAME parameter (even conflicting) does NOT poison an otherwise-valid contract', () => {
-      const q = panelQuery('p1'); q.sql = 'SELECT {shared:String}';
-      // f1's own SQL declares {shared:UInt64} — a conflicting type — but f1 is
-      // a Filter SOURCE, never a tile, so it is excluded from the tile-side
-      // ParameterAnalysis entirely and cannot influence the contract.
-      const sourceQuery = filterQuery('f1', 'SELECT {shared:UInt64} AS x');
-      const dashboard = dashboardDoc({
-        tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: {} }),
-        filters: [{ id: 'flt', parameter: 'shared', sourceQueryId: 'f1' }],
-      });
-      const d = validateDashboardSemantics(dashboard, { queries: [q, sourceQuery] });
-      expect(d.filter((x) => x.code.startsWith('filter-selection-'))).toEqual([]);
-    });
-  });
-
-  it('skips target parameter checks when parameter is absent and tolerates unknown target queries', () => {
-    const dashboard = dashboardDoc({
-      tiles: [tile('t1', 'gone')], layout: flowLayout({ t1: {} }),
-      filters: [{ id: 'flt', targets: ['t1'] }],
-    });
-    // parameter absent → no undeclared/type check; queryId resolves to a missing
-    // query (already reported at the tile), so the target loop `continue`s.
-    const d = validateDashboardSemantics(dashboard);
-    expect(has(d, 'filter-parameter-undeclared')).toBe(false);
-    expect(has(d, 'dashboard-tile-query-missing')).toBe(true);
-  });
-
-  it('does not duplicate a missing-query diagnostic during plain-filter declaration checks', () => {
-    const dashboard = dashboardDoc({
-      tiles: [tile('t1', 'gone')], layout: flowLayout({ t1: {} }),
-      filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
-    });
-    const d = validateDashboardSemantics(dashboard);
-    expect(d.filter((x) => x.code === 'dashboard-tile-query-missing')).toHaveLength(1);
-    expect(has(d, 'filter-parameter-undeclared')).toBe(false);
-  });
-
-  it('enforces filter-count and serialized filter-default byte limits', () => {
-    const many = dashboardDoc({ filters: Array.from({ length: PORTABLE_LIMITS.maxFiltersPerDashboard + 1 }, (_, i) => ({ id: `f${i}`, parameter: 'p' })) });
-    expect(has(validateDashboardSemantics(many), 'limit-filter-count')).toBe(true);
-    const bigDefault = dashboardDoc({ filters: [{ id: 'f', parameter: 'p', defaultValue: 'x'.repeat(PORTABLE_LIMITS.maxSerializedFilterDefaultBytes + 10) }] });
-    expect(has(validateDashboardSemantics(bigDefault), 'limit-filter-default-bytes')).toBe(true);
-  });
-
-  it('skips non-object filters and non-object dashboards without a layout', () => {
-    const noLayout = { documentVersion: 1, id: 'd', title: 'T', revision: 1, filters: ['x'], tiles: [] };
+  it('skips non-object dashboards without a layout', () => {
+    const noLayout = { documentVersion: 2, id: 'd', title: 'T', revision: 1, tiles: [] };
     expect(validateDashboardSemantics(noLayout)).toEqual([]);
   });
 
   it('omits the resource id when the dashboard has no id (schema errors mapped too)', () => {
-    const badPlacement = { documentVersion: 1, title: 'T', revision: 1, tiles: [tile('t1', 'p1')], filters: [], layout: flowLayout({ t1: { bogus: true } }) };
+    const badPlacement = { documentVersion: 2, title: 'T', revision: 1, tiles: [tile('t1', 'p1')], layout: flowLayout({ t1: { bogus: true } }) };
     const d = validateDashboardSemantics(badPlacement, { queries: [panelQuery('p1')] });
     expect(d.some((x) => x.code === 'schema-unknown-property' && x.resource === undefined)).toBe(true);
   });

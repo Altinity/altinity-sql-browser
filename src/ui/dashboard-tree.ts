@@ -8,6 +8,12 @@
 // structure and never reaches into the Dashboard renderer's DOM (navigation goes
 // through `app.openDashboard` / `app.openSavedQuery` only).
 //
+// #447: the second level is Variables (inferred), not curated Filters, and a
+// variable row carries two things a member row never had — a status word plus a
+// severity-specific marker, and (for an orphaned configuration only) a trailing
+// trash button that confirms before it deletes. Both of those still come from the
+// model's row: the only judgement made here is how to PAINT them.
+//
 // Row CSS reuses the schema tree's `.tree-row` grammar (chevron · icon · label ·
 // meta) deliberately: DESIGN.md asks for one tree vocabulary, and the two trees
 // then stay visually identical for free. The MARKUP is built here rather than
@@ -21,15 +27,17 @@ import { Icon } from './icons.js';
 import { openMenu } from './menu.js';
 import { createClickArbiter, type ClickArbiter } from '../core/tree-click-arbiter.js';
 import {
-  deriveDashboardTree, type DashboardTreeCommand, type DashboardTreeRow, type TreeWorkspace,
+  UNUSED_VARIABLE_STATUS, deriveDashboardTree,
+  type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
+import { commitVariableConfig, openVariableEditor, type VariableEditorFactory } from './variable-editor.js';
 import {
   clampKeyboardRow, readTreeUi, setDashboardExpanded, setGroupExpanded, setKeyboardRow,
   setTreeScroll, toggleDashboardExpanded, toggleGroupExpanded,
   type DashboardTreeUiState,
 } from '../core/dashboard-tree-ui-state.js';
 import type { AppState } from '../state.js';
-import type { AppDom } from './app.types.js';
+import type { App, AppDom } from './app.types.js';
 import type { MainSurfaceState, OpenDashboardRequest } from '../application/main-surface.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the full
@@ -43,6 +51,13 @@ export interface DashboardTreeApp {
   mainSurface: MainSurfaceState;
   openDashboard(request: OpenDashboardRequest): void;
   openSavedQuery(queryId: string): void;
+  /** #447: the ONE write this otherwise read-only tree performs — deleting an
+   *  orphaned variable's stored option SQL, through the same
+   *  read-latest-at-dequeue primitive every other producer commits with. */
+  mutateWorkspace: App['mutateWorkspace'];
+  /** #447: the injected option-SQL editor surface, threaded straight through to
+   *  `openVariableEditor` (see `ui/variable-editor.ts`). */
+  VariableEditor?: VariableEditorFactory;
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
@@ -56,10 +71,28 @@ const INDENT_PX = 14;
 const OPEN_ROTATE = 'rotate(0deg)';
 const CLOSED_ROTATE = 'rotate(-90deg)';
 
+/** #447: `Icon.braces()` for the Variables group AND for a variable row — a
+ *  variable IS a `{name:Type}` placeholder, so the brace glyph names it exactly,
+ *  and it reads distinctly from Panels' stacked `Icon.layers()`. (The old
+ *  `Icon.eye()` filter glyph described a *selection* control, which a variable is
+ *  not; no new icon file was added.) */
 const rowIcon = (row: DashboardTreeRow): SVGElement => {
   if (row.kind === 'dashboard') return Icon.dashboard();
-  if (row.kind === 'group') return row.group === 'filters' ? Icon.eye() : Icon.layers();
-  return row.kind === 'panel' ? Icon.chart() : Icon.eye();
+  if (row.kind === 'group') return row.group === 'variables' ? Icon.braces() : Icon.layers();
+  return row.kind === 'panel' ? Icon.chart() : Icon.braces();
+};
+
+/**
+ * The accessible name of a row's status marker. The three states get THREE
+ * different labels, because a screen-reader user has to be able to tell a
+ * missing query from a type conflict from an unused configuration — colour and a
+ * shared "warning" label would collapse all three into one. `title` (the row's
+ * own diagnostic) then carries the detail.
+ */
+const STATUS_LABELS: Record<Exclude<DashboardTreeInvalid, null>, string> = {
+  'unresolved-query': 'Broken reference',
+  'variable-conflict': 'Type conflict',
+  'variable-unused': 'Unused',
 };
 
 /** One arbiter per app instance, surviving the repaints that replace every row. */
@@ -100,12 +133,16 @@ function toggleRow(app: DashboardTreeApp, row: DashboardTreeRow): void {
 }
 
 /**
- * The ONE command dispatcher. Three exhaustive branches with no null guards: the
+ * The ONE command dispatcher. Four exhaustive branches with no null guards: the
  * model resolves every argument, so there is nothing here to defend against.
  */
 function runCommand(app: DashboardTreeApp, row: DashboardTreeRow, command: DashboardTreeCommand): void {
   if (command.kind === 'toggle') { toggleRow(app, row); return; }
   if (command.kind === 'open-query') { app.openSavedQuery(command.queryId); return; }
+  if (command.kind === 'open-variable') {
+    openVariableEditor(app, command.dashboardId, command.name);
+    return;
+  }
   app.openDashboard(command.request);
 }
 
@@ -139,7 +176,7 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
   if (tree.rows.length === 0) {
     list.appendChild(h('div', { class: 'schema-empty' }, tree.empty === 'no-dashboards'
       ? 'No dashboards in this workspace.'
-      : 'No matching dashboards, filters, or panels.'));
+      : 'No matching dashboards, variables, or panels.'));
     return;
   }
 
@@ -185,9 +222,20 @@ function buildRow(
   const count = row.count === null
     ? null
     : h('span', { class: 'side-count dash-tree-count' }, '· ' + row.count);
-  const warning = row.invalid === null
+  // #447: the WORD, not only a colour — an unused (orphaned) variable says so in
+  // text, right after its name.
+  const status = row.invalid === 'variable-unused'
+    ? h('span', { class: 'dash-tree-status' }, UNUSED_VARIABLE_STATUS)
+    : null;
+  // Warning severity gets its OWN glyph as well as its own label and class: two
+  // states that differ only in hue are one state to most readers.
+  const marker = row.invalid === null
     ? null
-    : h('span', { class: 'dash-tree-warn', role: 'img', 'aria-label': 'Broken reference' }, Icon.shield());
+    : h('span', {
+      class: row.severity === 'warning' ? 'dash-tree-warn dash-tree-warn-mild' : 'dash-tree-warn',
+      role: 'img',
+      'aria-label': STATUS_LABELS[row.invalid],
+    }, row.severity === 'warning' ? Icon.eyeOff() : Icon.shield());
 
   const rowEl = h('div', {
     class: 'tree-row dash-tree-row'
@@ -195,7 +243,8 @@ function buildRow(
       + (row.kind === 'group' ? ' dash-tree-group' : '')
       + (row.matched ? ' match' : '')
       + (row.current ? ' is-current' : '')
-      + (row.invalid === null ? '' : ' is-invalid'),
+      + (row.severity === 'error' ? ' is-invalid' : '')
+      + (row.severity === 'warning' ? ' is-warning' : ''),
     'data-key': row.key,
     role: 'treeitem',
     'aria-level': String(row.level),
@@ -217,27 +266,88 @@ function buildRow(
       syncRovingTabindex(rowEl.parentElement, row.key);
       pressRow(app, row, event.shiftKey);
     },
-  }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count,
-    h('span', { class: 'meta' }, row.meta), warning,
+  }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
+    h('span', { class: 'meta' }, row.meta), marker,
+    row.deletable ? buildDeleteButton(app, doc, row) : null,
     row.menu.length === 0 ? null : buildMenuButton(app, doc, row));
 
   return rowEl;
 }
 
-/** Route one primary press through the arbiter — except a group row, whose single
- *  action is expansion with no competing double or Shift gesture, so deferring it
- *  would only make the tree feel slow. */
+/** Route one primary press through the arbiter — except a row with NO double and
+ *  NO Shift gesture (a group row, whose single action is expansion; a variable
+ *  row, whose single action opens its editor), which has nothing to arbitrate
+ *  against and would only feel slow if its action waited out the double-click
+ *  window. */
 function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean): void {
-  if (row.kind === 'group') {
+  if (row.double === null && row.shift === null) {
     app._dashTreeArbiter?.cancelFor(row.key);
-    if (row.toggleable) toggleRow(app, row);
+    if (row.single !== null) runCommand(app, row, row.single);
     return;
   }
+  // Every row that reaches the arbiter has BOTH a double and a Shift action — the
+  // early return above took every row that has neither — so only `single` (which a
+  // search-forced Dashboard row, or a panel with an unresolved query, withholds)
+  // still needs a null check here.
   arbiterFor(app).press(row.key, {
     single: row.single === null ? null : () => runCommand(app, row, row.single!),
-    double: row.double === null ? null : () => runCommand(app, row, row.double!),
-    immediate: shift && row.shift !== null ? () => runCommand(app, row, row.shift!) : null,
+    double: () => runCommand(app, row, row.double!),
+    immediate: shift ? () => runCommand(app, row, row.shift!) : null,
   });
+}
+
+/**
+ * #447 — the trailing trash affordance, rendered for an ORPHANED variable only.
+ *
+ * Deleting drops stored SQL nothing else holds, so it CONFIRMS first. The
+ * confirmation is `openMenu` (ui/menu.ts) anchored on the trash button itself —
+ * the same primitive this row's own action menu uses, so no new dialog is
+ * invented: it gives the destructive action a real `<button role="menuitem">`, an
+ * explicit Cancel, Escape/outside-click dismissal, and focus restored to the
+ * trigger. (`file-menu.ts`'s `openConfirm` is module-private to that file, and
+ * `window.confirm` is browser chrome this stylesheet cannot reach.)
+ *
+ * Like the menu button, it stops propagation and calls `cancelFor` rather than
+ * going through the arbiter: clicking trash must NOT also open the variable's
+ * editor, and it must cancel no OTHER row's pending click.
+ */
+function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
+  // `row.label` IS the variable's exact name by construction — the model sets a
+  // variable row's label to its name precisely because that name is the variable's
+  // whole identity (see `dashboard-tree-model.ts`). Reading it here needs no null
+  // check, unlike `row.member`, which is nullable for the row kinds that have none.
+  const trigger: HTMLButtonElement = h('button', {
+    class: 'dash-tree-del-btn', type: 'button',
+    'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    'aria-label': 'Delete the stored option SQL for ' + row.label,
+    title: 'Delete stored option SQL',
+    onclick: (event: MouseEvent) => {
+      event.stopPropagation();
+      app._dashTreeArbiter?.cancelFor(row.key);
+      openMenu({
+        document: doc,
+        trigger,
+        menuClass: 'dash-tree-confirm',
+        rows: [
+          {
+            kind: 'section',
+            label: 'Delete the stored option SQL for “' + row.label + '”? The SQL is lost.',
+          },
+          {
+            kind: 'item',
+            label: 'Delete option SQL',
+            extraClass: 'dash-tree-confirm-go',
+            // Removes ONLY this key from `variableConfigs` (both `sql` and
+            // `lastKnownType` go with it). No panel query is touched — a
+            // variable's name and type live in the panel SQL, not here.
+            onClick: () => commitVariableConfig(app, row.dashboardId, row.label, null),
+          },
+          { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
+        ],
+      });
+    },
+  }, Icon.trash());
+  return trigger;
 }
 
 /** The keyboard-reachable equivalent of the double-click and Shift-click gestures,

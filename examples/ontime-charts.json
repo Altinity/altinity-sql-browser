@@ -356,19 +356,6 @@
           }
         }
       }
-    },
-    {
-      "id": "ontime-filter-options",
-      "sql": "SELECT\n  (SELECT arraySort(groupUniqArray(Carrier)) FROM ontime.fact_ontime WHERE Carrier != '') AS carrier,\n  (SELECT mapFromArrays(groupArray(AirportCode), groupArray(DisplayAirportName)) FROM (SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName)) AS origin",
-      "specVersion": 1,
-      "spec": {
-        "name": "On-time dimensions",
-        "description": "Carrier codes and airport-code values with readable airport labels.",
-        "favorite": false,
-        "dashboard": {
-          "role": "filter"
-        }
-      }
     }
   ],
   "dashboards": [
@@ -484,7 +471,6 @@
           "id": "ontime-carrier",
           "parameter": "carrier",
           "label": "Carrier",
-          "sourceQueryId": "ontime-filter-options",
           "defaultValue": [],
           "defaultActive": false,
           "targets": [
@@ -501,7 +487,6 @@
           "id": "ontime-origin",
           "parameter": "origin",
           "label": "Origin airport",
-          "sourceQueryId": "ontime-filter-options",
           "defaultValue": [],
           "defaultActive": false,
           "targets": [

@@ -57,7 +57,7 @@ import { cloneJson } from '../../core/saved-query.js';
 import { deriveFlowPlacement } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
 import type {
-  DashboardDocumentV1, FlowHeightV1, FlowLayoutV1, FlowTilePlacementV1,
+  DashboardDocumentV2, FlowHeightV1, FlowLayoutV1, FlowTilePlacementV1,
   GrafanaGridHeightV1,
 } from '../../generated/json-schema.types.js';
 
@@ -223,7 +223,7 @@ export function resolveGridPlacement(placement: unknown): { span: number; height
  *  document converges to the numeric vocabulary over time; a value already
  *  numeric (valid or not — validation is `validatePlacement`'s job, not
  *  this normalization step) is left untouched. */
-function normalize(dashboard: DashboardDocumentV1): DashboardDocumentV1 {
+function normalize(dashboard: DashboardDocumentV2): DashboardDocumentV2 {
   const next = cloneJson(dashboard);
   const tileIds = new Set<string>();
   for (const tile of Array.isArray(next.tiles) ? next.tiles : []) {

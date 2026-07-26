@@ -216,6 +216,60 @@ is a Library query. Four decisions are worth recording.
   filters remain valid and own nothing. Making them a distinct persisted control
   kind is deferred to its own issue.
 
+## Addendum (#447, 2026-07-26): a Dashboard variable is inferred, not authored
+
+Phase 1 of #447 removes the curated-filter/option-provider model outright rather
+than adapting it. The decisions that changed:
+
+- **A variable's identity is its exact name, and nothing is persisted about it.**
+  A Dashboard's variables are derived from the `{name:Type}` placeholders in the
+  queries its panel tiles own, aggregated by exact, case-sensitive name. There is
+  no filter id, no label, no `sourceQueryId`, no `targets` list and no selection
+  mode; a variable binds automatically to every panel query on the Dashboard that
+  declares that name. The only persisted state is
+  `dashboards[].variableConfigs[name] = { sql, lastKnownType? }` — optional
+  Dashboard-local option SQL. `lastKnownType` is display-only, so an orphaned
+  configuration can still show a type; a live declaration always wins.
+
+- **This supersedes the "curated filter has a source query; a plain filter is a
+  different kind" note above.** That note deferred making plain filters a distinct
+  persisted control kind. The question is now moot in the other direction: there
+  is no persisted control kind at all. `core/time-range.ts` still pairs only
+  variables WITHOUT option SQL — the same rule, expressed against the surviving
+  concept — and the 11 filters across five shipped example bundles are dropped by
+  the read-time migration rather than being made to satisfy a stricter invariant.
+
+- **Ownership loses its one legitimate multi-owner case.** #427 allowed several
+  owners when every one was a curated filter of the same Dashboard, because one
+  option-source query legitimately supplied several filters and splitting it
+  re-created #359's duplicate-provider failure. A variable's option SQL lives on
+  the Dashboard document, so a panel tile is now the only member that references a
+  query and "shared" is unconditionally invalid.
+
+- **Delete before build, and no compatibility branch.** The provider runtime, the
+  `filter` role, array/multiselect controls and the persisted filter model are
+  removed in the same change that introduces inference, so no code path can serve
+  both models at once. A stored document carrying the removed `filter` role is
+  reported unsupported and recreated rather than migrated: the representation was
+  experimental, and retaining a decode path for it would be exactly the
+  compatibility branch the issue forbids.
+
+- **The Dashboard sidebar now reaches an editor port, which
+  `build/check-boundaries.mjs` records an intent against.** That guard's Phase-3
+  note says the Dashboard surface must not depend on the editor ports at all. The
+  variable SQL editor is opened from the Dashboards TREE, which lives in `src/ui/`
+  and is not covered by an active rule, so `check:arch` passes — but the intent is
+  now partly spent, and the editor factory is threaded as an injected seam off
+  `env` exactly like `Editor`/`SpecEditor`/`CodeViewer` rather than imported
+  concretely. If a `src/ui/dashboard/` directory is ever created, that dormant rule
+  activates and this decision has to be revisited deliberately.
+
+- **Deliberately deferred, not decided here.** Terminology inside the surviving
+  runtime still says "filter" (`ViewerFilterState`, `applyFilters`,
+  `DashboardTimeRangeGroup.fromFilterId`, `.dash-filters`); those names now denote
+  variables. Renaming them buys no semantics and would double an already large
+  diff, so it is deferred to its own change.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

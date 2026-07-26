@@ -7,11 +7,16 @@ import { parseParamType } from '../../src/core/param-type.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../../src/core/time-range.js';
 import { makeApp } from '../helpers/fake-app.js';
 
-// The field-family construction, debounce, commit, conflict, and optional
-// behavior of buildFilterBar are exercised end-to-end through the dashboard
-// suite (renderDashboard → buildFilterBar). These tests cover the extraction's
-// own seams: the injected document realm, the accessible-group label (#185),
-// and the dispose seam (#276 Phase 3b).
+// #447 rewrote this spec: `buildFilterBar` has ONE field branch left. The
+// curated branch (a Dashboard filter drawing its options from a saved
+// "Filter"-role query — the strict single-select combobox, the multiselect
+// dialog, and the per-field source-status affordance) went with the option-
+// provider model, so every field the bar builds is now a PLAIN direct input.
+// These tests cover that surviving surface end to end: the field-family
+// construction, the debounce/Enter/blur commit semantics, the shared
+// invalid/conflict affordances, the #345 widths, the #335 compound time-range
+// section, and the extraction's own seams (injected document realm, the #185
+// accessible-group label, and the #276 Phase 3b dispose seam).
 const paramsFor = (sql: string): FieldControl[] =>
   fieldControls(analyzeParameterizedSources([{ id: 't', kind: 'tab', sql, bindPolicy: 'row-returning' }]));
 const okField = (): PreparedFieldState => ({ state: 'ok' });
@@ -39,8 +44,8 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.el.getAttribute('aria-label')).toBe('Query filters');
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
-    expect(() => bar.updateStatus({})).not.toThrow(); // no curated fields — a no-op
-    expect(bar.openPopoverKey()).toBeNull(); // no multiselect fields at all — always null
+    expect(() => bar.updateStatus({})).not.toThrow(); // nothing built — a no-op
+    expect(bar.openPopoverKey()).toBeNull(); // no popover-bearing controls at all — always null
     expect(bar.focusedFieldKey()).toBeNull();
     expect(() => bar.focusFieldTrigger('x')).not.toThrow(); // unknown param — a no-op
     expect(bar.fieldElement('x')).toBeNull(); // #425: nothing built, nothing to navigate to
@@ -69,6 +74,51 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 
+  it('typing persists the value + activation and commits once the debounce elapses', () => {
+    vi.useFakeTimers();
+    try {
+      const app = makeApp();
+      const onCommit = vi.fn();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField);
+      const input = bar.el.querySelector('input')! as HTMLInputElement;
+      input.value = 'abc';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Persisted synchronously (#165: a text control syncs activation with the
+      // value), committed only after the shared debounce.
+      expect(app.state.varValues.x).toBe('abc');
+      expect(app.state.filterActive.x).toBe(true);
+      expect(app.params.saveVarValues).toHaveBeenCalled();
+      expect(app.params.saveFilterActive).toHaveBeenCalled();
+      expect(onCommit).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+      expect(onCommit).toHaveBeenCalledWith('x');
+      // Clearing the field deactivates it again.
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(app.state.filterActive.x).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a blur AFTER an edit commits immediately, consuming the pending debounce exactly once', () => {
+    vi.useFakeTimers();
+    try {
+      const onCommit = vi.fn();
+      const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
+      const input = bar.el.querySelector('input')! as HTMLInputElement;
+      input.value = 'abc';
+      input.dispatchEvent(new Event('input', { bubbles: true })); // arms the debounce
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      expect(onCommit).toHaveBeenCalledTimes(1);
+      // The armed timer was cleared by the hard commit — it must not fire again.
+      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS + 10);
+      expect(onCommit).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('exposes the shared debounce constant', () => {
     expect(FILTER_DEBOUNCE_MS).toBe(500);
   });
@@ -93,6 +143,20 @@ describe('buildFilterBar (shared filter row)', () => {
     bar.el.remove();
   });
 
+  it('a preset pick with no pending debounce still commits (the un-armed onPick path)', () => {
+    const app = makeApp();
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'foo');
+    const onCommit = vi.fn();
+    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    document.body.appendChild(bar.el);
+    const input = bar.el.querySelector('input')!;
+    input.dispatchEvent(new Event('focus')); // opens the list without typing — no timer armed
+    bar.el.querySelector('[role="option"]')!
+      .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(onCommit).toHaveBeenCalledWith('x');
+    bar.el.remove();
+  });
+
   it('reports no focused field when the document has no active element', () => {
     const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField, { document });
     const descriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
@@ -105,64 +169,36 @@ describe('buildFilterBar (shared filter row)', () => {
     }
   });
 
-  it('persists and commits curated selections', () => {
-    const app = makeApp();
-    const onCommit = vi.fn();
-    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, {
-      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
-    });
-    document.body.appendChild(bar.el);
-    bar.el.querySelector('input')!.dispatchEvent(new Event('focus'));
-    bar.el.querySelector('[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    expect(app.state.varValues.x).toBe('a');
-    expect(app.state.filterActive.x).toBe(true);
-    expect(app.params.saveVarValues).toHaveBeenCalled();
-    expect(app.params.saveFilterActive).toHaveBeenCalled();
-    expect(onCommit).toHaveBeenCalledWith('x');
-    bar.el.remove();
-  });
-
-  it('marks a curated field is-optional when its param is optional, same as a plain field', () => {
-    const app = makeApp();
-    const bar = buildFilterBar(
-      app,
-      paramsFor('SELECT {y:String} FROM t /*[ AND x = {x:String} ]*/'),
-      () => {}, okField,
-      { curatedFields: { y: { options: [{ value: 'a', label: 'Alpha' }] }, x: { options: [{ value: 'b', label: 'Beta' }] } } },
-    );
-    const fields = [...bar.el.querySelectorAll('.var-field')];
-    expect(fields.map((f) => f.querySelector('.var-name')!.textContent)).toEqual(['y', 'x']);
-    expect(fields.map((f) => f.classList.contains('is-optional'))).toEqual([false, true]);
-    expect(fields.every((f) => f.classList.contains('is-curated'))).toBe(true);
-  });
-
-  it('marks a curated field is-conflict when its declared type disagrees across favorites (#173)', () => {
-    const app = makeApp();
+  it('marks a field is-conflict when its declared type disagrees across sources (#173)', () => {
     const params = fieldControls(analyzeParameterizedSources([
       { id: 'A', kind: 'tab', sql: 'SELECT {x:UInt64}', bindPolicy: 'row-returning' },
       { id: 'B', kind: 'tab', sql: 'SELECT {x:String}', bindPolicy: 'row-returning' },
     ]));
-    const bar = buildFilterBar(app, params, () => {}, okField, {
-      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
-    });
+    const bar = buildFilterBar(makeApp(), params, () => {}, okField);
     const input = bar.el.querySelector('input')!;
     expect(input.classList.contains('is-conflict')).toBe(true);
     expect(input.title).toContain('Conflicting type declarations: UInt64 vs String');
   });
 
-  it('applies the shared is-invalid affordance to a curated field, same as a plain one', () => {
-    const app = makeApp();
+  it('applies the shared is-invalid affordance from the prepared batch (#170)', () => {
     const invalidField = (): PreparedFieldState => ({ state: 'invalid', reason: 'Bad value' });
-    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, invalidField, {
-      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
-    });
-    const input = bar.el.querySelector('input')!;
+    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, invalidField);
+    const input = bar.el.querySelector('input')! as HTMLInputElement;
     expect(input.classList.contains('is-invalid')).toBe(true);
-    expect((input as HTMLInputElement).title).toBe('Bad value');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.title).toBe('Bad value');
+  });
+
+  it('an optional parameter names the blank-leaves-it-out contract in its tooltip', () => {
+    const bar = buildFilterBar(
+      makeApp(), paramsFor('SELECT 1 /*[ WHERE x = {x:String} ]*/'), () => {}, okField,
+    );
+    const input = bar.el.querySelector('input')! as HTMLInputElement;
+    expect(input.title).toBe('x: String — optional: blank leaves its filter block out');
   });
 
   // #345: compact, type-aware field widths — one stable ch width per field,
-  // resolved from the declared type (or 'enum' for a dropdown/curated field).
+  // resolved from the declared type (or 'enum' for a declared-Enum dropdown).
   describe('field width (#345)', () => {
     it('a plain text field (String) gets the generic string width', () => {
       const app = makeApp();
@@ -189,14 +225,6 @@ describe('buildFilterBar (shared filter row)', () => {
       const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
       expect(input.style.getPropertyValue('--var-input-ch')).toBe('14');
     });
-    it('a curated field gets the enum width regardless of its declared type', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:UInt64}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
-      });
-      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
-      expect(input.style.getPropertyValue('--var-input-ch')).toBe('14');
-    });
     it('a type-conflicted field still gets a width, from its first bound declaration\'s type', () => {
       const app = makeApp();
       const params = fieldControls(analyzeParameterizedSources([
@@ -218,386 +246,19 @@ describe('buildFilterBar (shared filter row)', () => {
     });
   });
 
-  // #360: a source-backed curated field now stays in this rich-combobox
-  // rendering path for EVERY status (including 'idle', its FIRST-ever value
-  // before the shared source has run at all — dashboard.ts's rebuildFilterBar
-  // now gates curation on `sourceId != null`, topology, never on `status`) and
-  // shows a structural (class + disabled/aria-disabled +, for 'waiting',
-  // literal text) affordance instead of silently rendering (or falling out
-  // to) an unmarked control (plan-review BLOCKER-2).
-  describe('curated field status affordance (#360)', () => {
-    it('status: "idle" (a source-backed field that has never run yet) still renders CURATED, marked pending — not an enabled plain control', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [], status: 'idle' } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(label.classList.contains('is-curated')).toBe(true);
-      // 'idle' reads exactly like 'loading' — pending, not yet actionable.
-      expect(label.classList.contains('is-stale')).toBe(true);
-      expect(input.disabled).toBe(true);
-      expect(input.getAttribute('aria-disabled')).toBe('true');
-    });
-
-    it('an explicit status: "ready" (or an absent status) renders the normal curated combobox — no new classes, not disabled', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(label.classList.contains('is-curated')).toBe(true);
-      expect(label.classList.contains('is-waiting')).toBe(false);
-      expect(label.classList.contains('is-error')).toBe(false);
-      expect(label.classList.contains('is-stale')).toBe(false);
-      expect(input.disabled).toBe(false);
-      expect(input.hasAttribute('aria-disabled')).toBe(false);
-    });
-
-    it('status: "waiting" disables the field, adds is-waiting, and names the missing params as literal text', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [], status: 'waiting', waitingFor: ['from', 'to'] } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(label.classList.contains('is-curated')).toBe(true);
-      expect(label.classList.contains('is-waiting')).toBe(true);
-      expect(input.disabled).toBe(true);
-      expect(input.getAttribute('aria-disabled')).toBe('true');
-      expect(input.placeholder).toBe('Waiting for: from, to');
-      expect(label.textContent).toContain('Waiting for: from, to');
-    });
-
-    it('status: "waiting" with no waitingFor still renders (empty missing-list text, no throw)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [], status: 'waiting' } },
-      });
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(input.placeholder).toBe('Waiting for: ');
-    });
-
-    // #189 review (F4, coordinator ruling — REVERTED): this is the STRICT
-    // single-select curated combobox (#160 — blur/Enter reverts non-option
-    // text), so leaving it enabled while erroring was a dishonest affordance
-    // (looks editable, silently discards everything typed). Disabled again on
-    // every error status, same as before #189.
-    it.each(['source-error', 'helper-error', 'missing-helper'])(
-      'status: "%s" disables the field and adds is-error, without the waiting note', (status) => {
-        const app = makeApp();
-        const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-          curatedFields: { x: { options: [], status } },
-        });
-        const label = bar.el.querySelector('.var-field')!;
-        const input = bar.el.querySelector('input') as HTMLInputElement;
-        expect(label.classList.contains('is-error')).toBe(true);
-        expect(label.classList.contains('is-waiting')).toBe(false);
-        expect(input.disabled).toBe(true);
-        expect(input.getAttribute('aria-disabled')).toBe('true');
-        expect(label.querySelector('.var-field-note')).toBeNull();
-      },
-    );
-
-    it('status: "loading" marks the field is-stale + disabled while keeping its last-known options, not clearing them', () => {
-      const app = makeApp();
-      app.state.varValues.x = 'a';
-      app.state.filterActive.x = true;
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'loading' } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(label.classList.contains('is-stale')).toBe(true);
-      expect(input.disabled).toBe(true);
-      expect(input.getAttribute('aria-disabled')).toBe('true');
-      // The last-known selection is still shown (not blanked as "no longer
-      // current") — only marked stale, per the #360 acceptance criterion.
-      expect(input.value).toBe('Alpha');
-    });
-
-    it('stale: true (independent of status) also marks the field is-stale, e.g. a ready-but-just-superseded read', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready', stale: true } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      expect(label.classList.contains('is-stale')).toBe(true);
-      expect((bar.el.querySelector('input') as HTMLInputElement).disabled).toBe(true);
-    });
-  });
-
-  // #360 follow-up: `updateStatus` updates a curated field's affordance IN
-  // PLACE — the whole point being that the caller (dashboard.ts) never has to
-  // rebuild the bar (and disturb every other field's in-progress typing) just
-  // because ONE source-backed filter's status changed.
-  describe('updateStatus (#360 follow-up)', () => {
-    it('flips a curated field idle → loading → ready → waiting → error without ever rebuilding it (same input instance throughout)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [], status: 'idle' } },
-      });
-      const label = bar.el.querySelector('.var-field')!;
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-
-      bar.updateStatus({ x: { status: 'loading' } });
-      expect(bar.el.querySelector('input')).toBe(input); // same instance — no rebuild
-      expect(label.classList.contains('is-stale')).toBe(true);
-      expect(input.disabled).toBe(true);
-
-      bar.updateStatus({ x: { status: 'ready' } });
-      expect(bar.el.querySelector('input')).toBe(input);
-      expect(label.classList.contains('is-stale')).toBe(false);
-      expect(input.disabled).toBe(false);
-      expect(input.hasAttribute('aria-disabled')).toBe(false);
-
-      bar.updateStatus({ x: { status: 'waiting', waitingFor: ['from'] } });
-      expect(bar.el.querySelector('input')).toBe(input);
-      expect(label.classList.contains('is-waiting')).toBe(true);
-      expect(label.classList.contains('is-stale')).toBe(false);
-      expect(input.disabled).toBe(true);
-      expect(label.textContent).toContain('Waiting for: from');
-      const noteEl = label.querySelector('.var-field-note');
-
-      // A SECOND consecutive 'waiting' update (still missing a different root
-      // param) reuses the SAME note element — updates its text in place
-      // rather than removing and recreating it.
-      bar.updateStatus({ x: { status: 'waiting', waitingFor: ['to'] } });
-      expect(label.querySelector('.var-field-note')).toBe(noteEl);
-      expect(label.textContent).toContain('Waiting for: to');
-
-      bar.updateStatus({ x: { status: 'source-error' } });
-      expect(bar.el.querySelector('input')).toBe(input);
-      expect(label.classList.contains('is-error')).toBe(true);
-      expect(label.classList.contains('is-waiting')).toBe(false);
-      // #189 F4 revert: error disables the field again (see the it.each above).
-      expect(input.disabled).toBe(true);
-      // The waiting note is removed once the field leaves 'waiting'.
-      expect(label.querySelector('.var-field-note')).toBeNull();
-    });
-
-    it('preserves an in-progress typed draft across an updateStatus call (no rebuild disturbs it)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
-      });
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      input.value = 'still typing…';
-      bar.updateStatus({ x: { status: 'loading' } });
-      expect(input.value).toBe('still typing…'); // untouched by the status update
-      expect(bar.el.querySelector('input')).toBe(input);
-    });
-
-    it('ignores a status for a param this bar never curated (a plain field), and a plain field is never disabled by it', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(() => bar.updateStatus({ x: { status: 'waiting' } })).not.toThrow();
-      expect(input.disabled).toBe(false);
-      expect(input.classList.contains('is-waiting')).toBe(false);
-    });
-
-    it('an updateStatus() call that names no curated field is a no-op (leaves its current affordance untouched)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
-      });
-      const input = bar.el.querySelector('input') as HTMLInputElement;
-      expect(() => bar.updateStatus({})).not.toThrow();
-      expect(input.disabled).toBe(false); // still ready — never touched
-    });
-  });
-
-  // #189: the curated MULTISELECT field (selection.mode: 'multiple') and the
-  // single-select-on-Array wrap (selection.mode: 'single', array: true) —
-  // both new curated shapes wired through `onApplyCurated`.
-  describe('multiselect / array-wrapped curated fields (#189)', () => {
-    it('renders buildMultiSelectField (not the combobox) for selection.mode "multiple", and Apply routes through onApplyCurated', () => {
-      const app = makeApp();
-      const onApplyCurated = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: {
-            options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Bravo' }],
-            selection: { mode: 'multiple', array: true }, value: ['a'], active: true,
-          },
-        },
-        onApplyCurated,
-      });
-      document.body.appendChild(bar.el);
-      expect(bar.el.querySelector('.ms-field')).not.toBeNull();
-      expect(bar.el.querySelector('.var-combo')).toBeNull(); // not the scalar combobox path
-      bar.el.querySelector('.ms-trigger')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      const cbs = [...document.body.querySelectorAll('.ms-option input[type="checkbox"]')] as HTMLInputElement[];
-      cbs[1].checked = true;
-      cbs[1].dispatchEvent(new Event('change', { bubbles: true }));
-      document.body.querySelector('.ms-btn-primary')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(onApplyCurated).toHaveBeenCalledWith('x', ['a', 'b'], true);
-      bar.el.remove();
-    });
-
-    it('does NOT render a multiselect field for a scalar (absent or single, non-array) selection contract', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
-      });
-      expect(bar.el.querySelector('.ms-field')).toBeNull();
-      expect(bar.el.querySelector('.var-combo')).not.toBeNull();
-    });
-
-    it('a multiselect field in an error status falls back to the SAME plain-commit seam a non-curated field uses', () => {
-      const app = makeApp();
-      const onCommit = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, {
-        curatedFields: {
-          x: {
-            options: [], selection: { mode: 'multiple', array: true }, value: ['a'], active: true,
-            status: 'source-error',
-          },
-        },
-      });
-      document.body.appendChild(bar.el);
-      const errInput = bar.el.querySelector('input.is-error') as HTMLInputElement;
-      expect(errInput).not.toBeNull();
-      errInput.value = 'raw text';
-      errInput.dispatchEvent(new Event('input', { bubbles: true }));
-      errInput.dispatchEvent(new Event('blur', { bubbles: true }));
-      expect(app.state.varValues.x).toBe('raw text');
-      expect(app.state.filterActive.x).toBe(true);
-      expect(app.params.saveVarValues).toHaveBeenCalled();
-      expect(app.params.saveFilterActive).toHaveBeenCalled();
-      expect(onCommit).toHaveBeenCalledWith('x');
-      bar.el.remove();
-    });
-
-    it('updateStatus patches a multiselect field in place (same trigger instance, no rebuild)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: {
-            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
-            value: [], active: false, status: 'ready',
-          },
-        },
-      });
-      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
-      bar.updateStatus({ x: { status: 'loading' } });
-      expect(bar.el.querySelector('.ms-trigger')).toBe(trigger);
-      expect(trigger.disabled).toBe(true);
-    });
-
-    it('openPopoverKey() reflects an open popover\'s parameter, and dispose() cancels it with no onApplyCurated call', () => {
-      const app = makeApp();
-      const onApplyCurated = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: {
-            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
-            value: [], active: false,
-          },
-        },
-        onApplyCurated,
-      });
-      document.body.appendChild(bar.el);
-      expect(bar.openPopoverKey()).toBeNull();
-      bar.el.querySelector('.ms-trigger')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(bar.openPopoverKey()).toBe('x');
-      expect(document.body.querySelector('.ms-popover')).not.toBeNull();
-      bar.dispose();
-      expect(document.body.querySelector('.ms-popover')).toBeNull();
-      expect(onApplyCurated).not.toHaveBeenCalled();
-      bar.el.remove();
-    });
-
-    it('focusFieldTrigger(key) focuses that parameter\'s trigger (#189 F2b)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: {
-            options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true },
-            value: [], active: false,
-          },
-        },
-      });
-      document.body.appendChild(bar.el);
-      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
-      bar.focusFieldTrigger('x');
-      expect(document.activeElement).toBe(trigger);
-      bar.el.remove();
-    });
-
-    it('an absent (undefined) committed value falls back to an empty array, not the raw string passthrough', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: { x: { options: [], selection: { mode: 'multiple', array: true } } },
-      });
-      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
-      expect(trigger.textContent).toBe('Not set'); // required (not optional) + empty/inactive
-    });
-
-    it('a raw-string committed value (#189 F1 error-mode fallback) passes through instead of dropping to an empty array', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: {
-            options: [], selection: { mode: 'multiple', array: true }, value: 'typed raw', active: true,
-            status: 'ready',
-          },
-        },
-      });
-      const trigger = bar.el.querySelector('.ms-trigger') as HTMLButtonElement;
-      expect(trigger.textContent).toBe('typed raw');
-    });
-
-    it('marks the multiselect field is-optional when its param is optional, same as the scalar curated field (T2)', () => {
-      const app = makeApp();
-      const bar = buildFilterBar(
-        app,
-        paramsFor('SELECT {y:String} FROM t /*[ AND x = {x:String} ]*/'),
-        () => {}, okField,
-        {
-          curatedFields: {
-            y: { options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'multiple', array: true }, value: [] },
-            x: { options: [{ value: 'b', label: 'Beta' }], selection: { mode: 'multiple', array: true }, value: [] },
-          },
-        },
-      );
-      const fields = [...bar.el.querySelectorAll('.var-field')];
-      expect(fields.map((f) => f.querySelector('.var-name')!.textContent)).toEqual(['y', 'x']);
-      expect(fields.map((f) => f.classList.contains('is-optional'))).toEqual([false, true]);
-      expect(fields.every((f) => f.querySelector('.ms-field') !== null)).toBe(true);
-    });
-
-    it('a single-select curated field over an Array(...) contract commits a WRAPPED [value]/[] instead of a bare scalar', () => {
-      const app = makeApp();
-      const onApplyCurated = vi.fn();
-      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
-        curatedFields: {
-          x: { options: [{ value: 'a', label: 'Alpha' }], selection: { mode: 'single', array: true } },
-        },
-        onApplyCurated,
-      });
-      document.body.appendChild(bar.el);
-      bar.el.querySelector('input')!.dispatchEvent(new Event('focus'));
-      bar.el.querySelector('[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      expect(onApplyCurated).toHaveBeenCalledWith('x', ['a'], true);
-      bar.el.querySelector('.var-combo-clear-inline')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(onApplyCurated).toHaveBeenCalledWith('x', [], false);
-      bar.el.remove();
-    });
-  });
-
   // #335: the compound time-range control section + the handle-map
-  // unification's new/renamed seams. `buildTimeRangeField`'s own behavior
-  // (popover columns, staged editing, validation) is covered exhaustively by
+  // unification's seams. `buildTimeRangeField`'s own behavior (popover columns,
+  // staged editing, validation) is covered exhaustively by
   // time-range-field.test.ts — these exercise buildFilterBar's INTEGRATION of
   // it: the "Time" section ahead of the fields, pair suppression, the unified
   // key-space (`group:…`), and `refreshTimeRangeLabels` delegation.
   describe('time-range section + unified handle map (#335)', () => {
     const dt = parseParamType('DateTime');
+    // The group key's own separator is a NUL (core/time-range.ts) — written as an
+    // escape here so this file stays plain text.
+    const GROUP_KEY = 'from\u0000to';
     const dtGroup = (): DashboardTimeRangeGroup => ({
-      key: 'from to', fromFilterId: 'from', toFilterId: 'to',
+      key: GROUP_KEY, fromFilterId: 'from', toFilterId: 'to',
       fromParameter: 'from', toParameter: 'to', fromType: dt, toType: dt,
       tileIds: [], interactiveChartTileIds: [],
     });
@@ -661,12 +322,15 @@ describe('buildFilterBar (shared filter row)', () => {
       const onApplyTimeRange = vi.fn();
       const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()], onApplyTimeRange });
       document.body.appendChild(bar.el);
-      const key = 'group:from to';
+      const key = `group:${GROUP_KEY}`;
       expect(bar.openPopoverKey()).toBeNull();
       const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
       trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(document.body.querySelector('.trf-popover')).not.toBeNull();
       expect(bar.openPopoverKey()).toBe(key);
+      // The same key-space answers focusedFieldKey() while the trigger holds focus.
+      trigger.focus();
+      expect(bar.focusedFieldKey()).toBe(key);
       // focusFieldTrigger addresses the same key-space.
       bar.focusFieldTrigger(key);
       expect(document.activeElement).toBe(trigger);
@@ -689,9 +353,22 @@ describe('buildFilterBar (shared filter row)', () => {
       (document.body.querySelector('.trf-btn-primary') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(onApplyTimeRange).toHaveBeenCalledTimes(1);
       const [group, from, to] = onApplyTimeRange.mock.calls[0];
-      expect(group.key).toBe('from to');
+      expect(group.key).toBe(GROUP_KEY);
       expect(from).toBe('-1d');
       expect(to).toBe('now');
+      bar.el.remove();
+    });
+
+    it('an Apply with no onApplyTimeRange wired is a silent no-op (an older/simpler caller)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      document.body.appendChild(bar.el);
+      (bar.el.querySelector('.trf-trigger') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const inputs = [...document.body.querySelectorAll('.trf-input')] as HTMLInputElement[];
+      inputs[0].value = '-1d'; inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+      inputs[1].value = 'now'; inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+      expect(() => (document.body.querySelector('.trf-btn-primary') as HTMLButtonElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))).not.toThrow();
       bar.el.remove();
     });
 
@@ -723,8 +400,34 @@ describe('buildFilterBar (shared filter row)', () => {
       expect(recentBtn.textContent).toBe('-7d → now');
       recentBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(document.body.querySelector('.trf-popover')).toBeNull(); // closed first
-      expect(onApplyTimeRange).toHaveBeenCalledWith(expect.objectContaining({ key: 'from to' }), '-7d', 'now');
+      expect(onApplyTimeRange).toHaveBeenCalledWith(expect.objectContaining({ key: GROUP_KEY }), '-7d', 'now');
       bar.el.remove();
+    });
+
+    // #447: `updateStatus` is the seam a LATER, non-rebuild affordance change
+    // lands through. No PLAIN field consumes a status (a direct input has no
+    // source to be waiting on), so the only handle it can currently reach is the
+    // compound time-range control — whose own `updateStatus` is a documented
+    // no-op. The contract under test is the routing, not an affordance.
+    it('updateStatus routes a status to the keyed control it built, and ignores every other key', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, groupParams, () => {}, okField, { timeRange: [trEntry()] });
+      const trigger = bar.el.querySelector('.trf-trigger') as HTMLButtonElement;
+      const before = trigger.textContent;
+      // A key this bar DID build a handle for — routed, and a no-op by contract.
+      expect(() => bar.updateStatus({ [`group:${GROUP_KEY}`]: { status: 'loading', stale: true } })).not.toThrow();
+      // A plain field's parameter name registers no handle; an unrelated key
+      // matches nothing. Neither throws, and neither disturbs the built control.
+      expect(() => bar.updateStatus({ region: { status: 'waiting', waitingFor: ['x'] } })).not.toThrow();
+      expect(() => bar.updateStatus({ nope: { status: 'ready' } })).not.toThrow();
+      expect(() => bar.updateStatus({})).not.toThrow();
+      expect(bar.el.querySelector('.trf-trigger')).toBe(trigger); // never rebuilt
+      expect(trigger.textContent).toBe(before);
+      expect(trigger.disabled).toBe(false);
+      // A plain field is never disabled or marked by a status update.
+      const plainInput = bar.ordinaryEl.querySelector('input') as HTMLInputElement;
+      expect(plainInput.disabled).toBe(false);
+      expect(plainInput.classList.contains('is-waiting')).toBe(false);
     });
   });
 
@@ -743,5 +446,10 @@ describe('buildFilterBar (shared filter row)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('dispose() with no pending debounce is a no-op (the never-typed field)', () => {
+    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField);
+    expect(() => bar.dispose()).not.toThrow();
   });
 });

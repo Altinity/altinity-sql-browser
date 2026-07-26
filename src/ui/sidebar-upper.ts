@@ -56,8 +56,8 @@ export function buildSidebarUpper(
   // Built ONCE and never inside the repainted row list, so typing keeps the caret
   // (the same reason `saved-history.ts` builds its search box outside `renderList`).
   app.dom.dashboardSearchInput = h('input', {
-    type: 'text', placeholder: 'Search dashboards, filters, panels…',
-    'aria-label': 'Search dashboards, filters, panels',
+    type: 'text', placeholder: 'Search dashboards, variables, panels…',
+    'aria-label': 'Search dashboards, variables, panels',
     oninput: (event: Event) => {
       const workspaceId = app.currentWorkspace?.id ?? '';
       const next = setTreeSearch(readTreeUi(state.dashboardTreeUi, workspaceId), (event.target as HTMLInputElement).value);

@@ -4,12 +4,12 @@ import {
   computeFlowLayout, deriveFlowPlacement, effectiveSpan, flowLayoutPlugin,
   presetColumns, resolvePlacement, setFlowPlacement,
 } from '../../src/dashboard/layouts/flow-layout.js';
-import type { DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2 } from '../../src/generated/json-schema.types.js';
 
 const flowLayout = (items: Record<string, Record<string, unknown>> = {}) => ({ type: 'flow', version: 1, preset: 'report', items });
-const doc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
-  documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: flowLayout(), filters: [], tiles: [], ...over,
-} as DashboardDocumentV1);
+const doc = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+  documentVersion: 2, id: 'd', title: 'D', revision: 1, layout: flowLayout(), tiles: [], ...over,
+} as DashboardDocumentV2);
 
 describe('deriveFlowPlacement', () => {
   it('maps preferred size hints to a span', () => {

@@ -928,12 +928,14 @@ export interface RunQueryResult {
  */
 export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {}): Promise<RunQueryResult> {
   const fmt = o.format || 'Table';
-  const isStreaming = fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter';
+  // #447 removed the `Filter` transport arm along with the Filter role — nothing
+  // can request that format any more.
+  const isStreaming = fmt === 'Table' || fmt === 'KPI';
   // Streaming gets the progress-bearing JSON; raw mode sends the requested format
   // verbatim as default_format (a real ClickHouse format name from a FORMAT clause
   // or an implicit EXPLAIN). 'TSV' keeps its with-names-and-types expansion.
   const fmtParam = isStreaming
-    ? (fmt === 'KPI' || fmt === 'Filter' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
+    ? (fmt === 'KPI' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
     : fmt === 'TSV'
       ? 'TabSeparatedWithNamesAndTypes'
       : fmt;

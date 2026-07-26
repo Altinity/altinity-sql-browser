@@ -1,7 +1,7 @@
-// The ONE narrow Dashboard selection/access seam over a StoredWorkspaceV4
+// The ONE narrow Dashboard selection/access seam over a StoredWorkspaceV5
 // Dashboard collection (#424). Pure — no DOM, no persistence.
 //
-// V4 stores `dashboards: DashboardDocumentV1[]`, but the current UI still
+// V4 stores `dashboards: DashboardDocumentV2[]`, but the current UI still
 // exposes exactly one Dashboard surface with no selector. Rather than
 // scattering `workspace.dashboards[0]` across the application, every call site
 // resolves the visible document through `resolveCompatibilityDashboard` and
@@ -12,18 +12,18 @@
 // The compatibility rule is deliberately TEMPORARY application behavior, not a
 // persisted field: V4 carries no `activeDashboardId`/`defaultDashboardId`.
 
-import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
+import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 
 /** Enough of a workspace to resolve a Dashboard from — the readers below never
  *  need the identity envelope, so an in-flight candidate satisfies them too. */
-export type WorkspaceDashboards = Pick<StoredWorkspaceV4, 'dashboards'>;
+export type WorkspaceDashboards = Pick<StoredWorkspaceV5, 'dashboards'>;
 
 /** Which Dashboard the current single-surface UI renders and edits, with its
  *  stable identity so downstream commands can address their write BY ID rather
  *  than by array position. */
 export interface WorkspaceDashboardSelection {
   selectedId: string | null;
-  dashboard: DashboardDocumentV1 | null;
+  dashboard: DashboardDocumentV2 | null;
 }
 
 /** The compatibility Dashboard: the FIRST entry, or none when the collection is
@@ -41,7 +41,7 @@ export function resolveCompatibilityDashboard(
  *  without depending on the entry's position. */
 export function findDashboard(
   workspace: WorkspaceDashboards, dashboardId: string,
-): DashboardDocumentV1 | null {
+): DashboardDocumentV2 | null {
   return workspace.dashboards.find((dashboard) => dashboard.id === dashboardId) ?? null;
 }
 
@@ -50,7 +50,7 @@ export function findDashboard(
  *  deleted (fall back), `duplicate` is a workspace whose ids are ambiguous and
  *  which therefore must never be written through a guess. */
 export type DashboardLookup =
-  | { status: 'ok'; dashboard: DashboardDocumentV1 }
+  | { status: 'ok'; dashboard: DashboardDocumentV2 }
   | { status: 'missing' }
   | { status: 'duplicate' };
 
@@ -77,8 +77,8 @@ export function findDashboardStrict(
  * write). Never mutates `workspace`.
  */
 export function replaceDashboard(
-  workspace: StoredWorkspaceV4, dashboardId: string, next: DashboardDocumentV1,
-): StoredWorkspaceV4 | null {
+  workspace: StoredWorkspaceV5, dashboardId: string, next: DashboardDocumentV2,
+): StoredWorkspaceV5 | null {
   if (findDashboardStrict(workspace, dashboardId).status !== 'ok') return null;
   return {
     ...workspace,
@@ -96,8 +96,8 @@ export function replaceDashboard(
  * Never mutates `workspace`.
  */
 export function withCompatibilityDashboard(
-  workspace: StoredWorkspaceV4, next: DashboardDocumentV1 | null,
-): StoredWorkspaceV4 {
+  workspace: StoredWorkspaceV5, next: DashboardDocumentV2 | null,
+): StoredWorkspaceV5 {
   const rest = workspace.dashboards.slice(1);
   return { ...workspace, dashboards: next === null ? rest : [next, ...rest] };
 }

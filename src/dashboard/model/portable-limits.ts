@@ -20,19 +20,21 @@ export const PORTABLE_LIMITS = {
   maxDecodedJsonBytes: 20 * 1024 * 1024,
   maxJsonDepth: 64,
 
-  // #427 raised this from #280's 1000. The V3->V4 ownership migration clones one
-  // dedicated query per Dashboard member, and a VALID v3 record can hold
-  // maxQueries originals plus maxDashboards x (maxTilesPerDashboard +
-  // maxFiltersPerDashboard) = 4224 member references. At 1000, migrating a
-  // legitimate large workspace produced a record that fails validation on every
-  // future open with no repair path, so the bound is the post-migration
-  // worst case: 1000 + 4224. Applies to portable bundles too, so a migrated
-  // workspace stays exportable (an older build will reject a very large new
-  // bundle — a deliberate, documented consequence).
+  // #427 raised this from #280's 1000 to the then-derived post-migration worst
+  // case: 1000 originals plus maxDashboards x (maxTilesPerDashboard +
+  // maxFiltersPerDashboard) = 4224 owned member copies. #447 deleted
+  // `maxFiltersPerDashboard` (a Dashboard has no persisted filters any more), so
+  // the arithmetic behind 5224 no longer reconstructs — but the NUMBER stays.
+  // It is now a COMPATIBILITY CEILING for records that already migrated under
+  // #427, not a derived bound: lowering it to the newly-derived 4200 would make
+  // every already-committed workspace above that count fail validation on open,
+  // with no repair path (exactly the #427 failure being avoided here). Applies
+  // to portable bundles too, so a migrated workspace stays exportable (an older
+  // build will reject a very large new bundle — a deliberate, documented
+  // consequence).
   maxQueries: 5224,
   maxDashboards: 32,
   maxTilesPerDashboard: 100,
-  maxFiltersPerDashboard: 32,
   maxLayoutItemsPerDashboard: 100,
   maxVariantsPerQuery: 32,
 
@@ -44,7 +46,6 @@ export const PORTABLE_LIMITS = {
 
   maxSerializedQuerySpecBytes: 1024 * 1024,
   maxSerializedLayoutConfigBytes: 256 * 1024,
-  maxSerializedFilterDefaultBytes: 64 * 1024,
 } as const;
 
 export type PortableLimits = typeof PORTABLE_LIMITS;

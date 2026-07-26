@@ -34,7 +34,7 @@ const PARAM_RE = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z].*)$/;
 
 /** One ClickHouse `{name:Type}` declaration — a name and its declared type
  *  text. The shape every existing caller (query-params.js, param-pipeline.js,
- *  optional-blocks.js, filter-execution.js) relies on. */
+ *  optional-blocks.js) relies on. */
 export interface ParamDeclaration {
   name: string;
   type: string;

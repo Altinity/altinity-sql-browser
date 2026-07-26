@@ -5,7 +5,7 @@
 // in tests and unguessable in production.
 //
 // A PortableBundle import always resolves to one COMPLETE candidate
-// StoredWorkspaceV4 built from the repository-level primitives in
+// StoredWorkspaceV5 built from the repository-level primitives in
 // workspace-operations.ts, then validated in one pass through
 // validateStoredWorkspaceDocument — exactly the same "build the whole
 // candidate, validate once, never commit an invalid one" discipline
@@ -34,7 +34,7 @@ import { validateStoredWorkspaceDocument } from './stored-workspace.js';
 import { assignDedicatedOwnership } from './stored-workspace-ownership.js';
 import type { WorkspaceCodecOptions } from './stored-workspace.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../generated/json-schema.types.js';
 
 // --- Dashboard listing -------------------------------------------------------
@@ -44,18 +44,16 @@ export interface DashboardSummary {
   id: string;
   title: string;
   tileCount: number;
-  filterCount: number;
 }
 
 /** Summarize every Dashboard in a bundle, preserving `bundle.dashboards`
  *  ARRAY ORDER — array order is import-time presentation order, not a
  *  catalog to re-sort (owner decision, #280/#287). */
-export function listBundleDashboards(bundle: PortableBundleV1): DashboardSummary[] {
+export function listBundleDashboards(bundle: PortableBundleV2): DashboardSummary[] {
   return bundle.dashboards.map((dashboard) => ({
     id: dashboard.id,
     title: dashboard.title,
     tileCount: dashboard.tiles.length,
-    filterCount: dashboard.filters.length,
   }));
 }
 
@@ -194,7 +192,7 @@ function resolveMapping(
 }
 
 export interface RewriteDashboardReferencesResult {
-  dashboard: DashboardDocumentV1;
+  dashboard: DashboardDocumentV2;
   invalidated: boolean;
   missingRequiredIds: string[];
 }
@@ -210,7 +208,7 @@ export interface RewriteDashboardReferencesResult {
  * mutates `dashboard`.
  */
 export function rewriteDashboardReferences(
-  dashboard: DashboardDocumentV1, mapping: Map<string, string | null> | IdMapping,
+  dashboard: DashboardDocumentV2, mapping: Map<string, string | null> | IdMapping,
 ): RewriteDashboardReferencesResult {
   const next = cloneJson(dashboard);
   const missing = new Set<string>();
@@ -229,9 +227,6 @@ export function rewriteDashboardReferences(
   // `queryId` is a required string per DashboardTileV1 — no runtime guard
   // needed (structurally-invalid tiles are the schema layer's job).
   next.tiles = next.tiles.map((tile) => ({ ...tile, queryId: remap(tile.queryId) }));
-  next.filters = next.filters.map((filter) => (
-    typeof filter.sourceQueryId === 'string' ? { ...filter, sourceQueryId: remap(filter.sourceQueryId) } : filter
-  ));
 
   return { dashboard: next, invalidated, missingRequiredIds: [...missing] };
 }
@@ -305,7 +300,7 @@ function replaceIncomingQueries(
 export interface PortableBundleImportPlan {
   sourceDashboardId?: string;
   queryMappings: IdMapping;
-  candidateWorkspace: StoredWorkspaceV4 | null;
+  candidateWorkspace: StoredWorkspaceV5 | null;
   diagnostics: WorkspaceDiagnostic[];
 }
 
@@ -339,8 +334,8 @@ function invalidPlan(
  * untouched Dashboard already owns.
  */
 function normalizedForOwnership(
-  candidate: StoredWorkspaceV4, scope: ReadonlySet<string>,
-): StoredWorkspaceV4 {
+  candidate: StoredWorkspaceV5, scope: ReadonlySet<string>,
+): StoredWorkspaceV5 {
   const normalized = assignDedicatedOwnership({
     queries: candidate.queries, dashboards: candidate.dashboards, scope,
   });
@@ -349,7 +344,7 @@ function normalizedForOwnership(
 }
 
 function validatedPlan(
-  candidate: StoredWorkspaceV4, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
+  candidate: StoredWorkspaceV5, queryMappings: IdMapping, options: WorkspaceCodecOptions, sourceDashboardId?: string,
 ): PortableBundleImportPlan {
   const diagnostics = validateStoredWorkspaceDocument(candidate, options);
   if (diagnostics.length) return invalidPlan(diagnostics, queryMappings, sourceDashboardId);
@@ -418,7 +413,7 @@ function staleImportTargetPlan(
  * `spec.favorite` is a Library preference and no longer mints a tile (or a whole
  * Dashboard). Every stored Dashboard is carried through untouched. */
 export function planImportQueries(
-  workspace: StoredWorkspaceV4, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV5, bundle: PortableBundleV2,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
@@ -456,7 +451,7 @@ export function planImportQueries(
  *  what stops that window from silently destroying a Dashboard the import never
  *  named. Fails closed, exactly like a stale explicit target. */
 export function planImportDashboard(
-  workspace: StoredWorkspaceV4, bundle: PortableBundleV1, sourceDashboardId: string,
+  workspace: StoredWorkspaceV5, bundle: PortableBundleV2, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
   targetDashboardId: string | null = null,
@@ -477,7 +472,7 @@ export function planImportDashboard(
   if (rewritten.invalidated) {
     return invalidatedDashboardPlan(sourceDashboardId, mapping, rewritten.missingRequiredIds);
   }
-  const finalDashboard: DashboardDocumentV1 = mode === 'copy'
+  const finalDashboard: DashboardDocumentV2 = mode === 'copy'
     ? { ...rewritten.dashboard, id: genId(), revision: 1 }
     : rewritten.dashboard;
 
@@ -512,14 +507,14 @@ export function planImportDashboard(
  *  Dashboard, exactly as before. Duplicate incoming Dashboard ids are
  *  diagnosed by the candidate's own validation, never silently deduplicated. */
 export function planReplaceWorkspace(
-  workspace: StoredWorkspaceV4, bundle: PortableBundleV1,
+  workspace: StoredWorkspaceV5, bundle: PortableBundleV2,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
 ): PortableBundleImportPlan {
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = replaceIncomingQueries(bundle.queries, workspace.queries, mapping);
 
-  const dashboards: DashboardDocumentV1[] = [];
+  const dashboards: DashboardDocumentV2[] = [];
   for (const [index, source] of bundle.dashboards.entries()) {
     const rewritten = rewriteDashboardReferences(source, mapping);
     if (rewritten.invalidated) {

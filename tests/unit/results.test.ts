@@ -58,7 +58,7 @@ const backdropClick = (el: Element | null | undefined): void => {
 // index signature).
 interface StateOverride {
   running?: boolean;
-  resultView?: 'table' | 'json' | 'panel' | 'filter';
+  resultView?: 'table' | 'json' | 'panel';
   resultSort?: ResultSort;
   resultRowLimit?: number;
   exporting?: boolean;
@@ -252,23 +252,8 @@ describe('renderResults states', () => {
     expect(app.state.resultView.value).toBe('panel');
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
   });
-  it('renders the Filter preview in the results area when the view is filter', () => {
-    const app = appWithResult(tableResult(), { resultView: 'filter' });
-    app.activeTab().filterPreview = {
-      status: 'success',
-      normalized: {
-        helpers: [{ name: 'kind', options: [{ value: 'a', label: 'Alpha' }], totalOptions: 1, sourceType: 'Array(String)', truncated: false }],
-        diagnostics: [],
-      },
-    };
-    renderResults(app);
-    // The drawer shows the filter preview (its own container), not the raw
-    // result table — reached via the panel picker / run(), no dedicated tab.
-    expect(qs(app.dom.resultsRegion, '.filter-preview')).toBeTruthy();
-    expect(app.dom.resultsRegion.textContent).toContain('kind');
-    expect([...qsa(app.dom.resultsRegion, '.result-view-tab')].map((b) => b.textContent)
-      .some((t) => t.includes('Filter'))).toBe(false); // no Filter view tab
-  });
+  // #447 deleted the Filter-preview result-view case: `resultView` no longer
+  // has a `filter` arm and a tab carries no `filterPreview`.
 });
 
 describe('renderTable', () => {

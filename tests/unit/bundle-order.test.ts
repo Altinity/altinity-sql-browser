@@ -4,30 +4,36 @@ import {
   orderBundleQueries, sortDashboardsCanonically,
 } from '../../src/dashboard/model/bundle-order.js';
 
-const dashboard = (id: string, tiles: string[], filterSources: string[] = []) => ({
+const dashboard = (id: string, tiles: string[]) => ({
   id,
   tiles: tiles.map((queryId, index) => ({ id: `${id}-t${index}`, queryId })),
-  filters: filterSources.map((sourceQueryId, index) => ({ id: `${id}-f${index}`, parameter: 'p', sourceQueryId })),
 });
 
 describe('dashboardDependencyQueryIds', () => {
-  it('emits tile queries first in semantic order, then filter sources, once each', () => {
-    const d = dashboard('d1', ['q3', 'q1', 'q3'], ['q1', 'q9']);
-    expect(dashboardDependencyQueryIds(d)).toEqual(['q3', 'q1', 'q9']);
+  // #447: a tile reference is the WHOLE closure. A curated filter used to
+  // contribute its option-source query here; a variable's option SQL lives on the
+  // Dashboard document itself and references no query at all.
+  it('emits tile queries in semantic order, once each', () => {
+    expect(dashboardDependencyQueryIds(dashboard('d1', ['q3', 'q1', 'q3']))).toEqual(['q3', 'q1']);
+  });
+
+  it('never treats a legacy filters array as a dependency source', () => {
+    expect(dashboardDependencyQueryIds({
+      tiles: [{ queryId: 'q1' }],
+      filters: [{ id: 'f0', parameter: 'p', sourceQueryId: 'q9' }],
+    })).toEqual(['q1']);
   });
 
   it('tolerates missing/invalid structures', () => {
     expect(dashboardDependencyQueryIds(null)).toEqual([]);
     expect(dashboardDependencyQueryIds({})).toEqual([]);
-    expect(dashboardDependencyQueryIds({ tiles: [null, { queryId: 5 }, { queryId: 'q1' }], filters: [null, { sourceQueryId: 7 }] }))
+    expect(dashboardDependencyQueryIds({ tiles: [null, { queryId: 5 }, { queryId: 'q1' }] }))
       .toEqual(['q1']);
   });
 
   it('ignores scalar dashboard members and empty query ids', () => {
-    expect(dashboardDependencyQueryIds({
-      tiles: 'not-an-array', filters: [{ sourceQueryId: '' }, 5],
-    })).toEqual(['']);
-    expect(dashboardDependencyQueryIds({ tiles: [5], filters: 'not-an-array' })).toEqual([]);
+    expect(dashboardDependencyQueryIds({ tiles: 'not-an-array' })).toEqual([]);
+    expect(dashboardDependencyQueryIds({ tiles: [5, { queryId: '' }] })).toEqual(['']);
   });
 });
 
@@ -61,8 +67,8 @@ describe('orderBundleQueries', () => {
   const q = (id: string) => ({ id });
   it('orders by first reference across dashboards, then unreferenced in catalog order', () => {
     const queries = [q('q1'), q('q2'), q('q3'), q('q4')];
-    const dashboards = [dashboard('d1', ['q3'], ['q2']), dashboard('d2', ['q3', 'q1'])];
-    // First reference: q3 (d1 tile), q2 (d1 filter), q1 (d2 tile); q4 unreferenced last.
+    const dashboards = [dashboard('d1', ['q3', 'q2']), dashboard('d2', ['q3', 'q1'])];
+    // First reference: q3 then q2 (d1's tiles), q1 (d2's second tile); q4 unreferenced last.
     expect(orderBundleQueries(queries, dashboards).map((x) => x.id)).toEqual(['q3', 'q2', 'q1', 'q4']);
   });
 

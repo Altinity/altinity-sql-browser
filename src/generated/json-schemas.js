@@ -304,17 +304,16 @@ export const querySpecV1Schema = {
       "type": "object",
       "properties": {
         "role": {
-          "title": "Dashboard role (Panel, Filter, or Setup)",
-          "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.",
+          "title": "Dashboard role (Panel or Setup)",
+          "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. setup is reserved for serialized Dashboard setup execution. The removed filter role (#447) returned one row whose columns supplied option lists for same-named parameters; a Dashboard variable's options are now Dashboard-local SQL stored under the variable name, so no saved query has an option-supplying role. A stored document still carrying role filter fails validation and is reported unsupported rather than migrated — the experimental representation has no production legacy to preserve.",
           "type": "string",
           "enum": [
             "panel",
-            "filter",
             "setup"
           ],
           "default": "panel",
           "examples": [
-            "filter"
+            "setup"
           ]
         },
         "defaultVariant": {
@@ -1737,6 +1736,123 @@ export const dashboardV1Schema = {
   }
 };
 
+export const dashboardV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json",
+  "title": "Altinity SQL Browser Dashboard document v2",
+  "description": "One explicit Dashboard aggregate: tile instances, semantic tile order, layout, optional Dashboard-local variable option SQL, and persistence revision. Supersedes dashboard-v1 by REMOVING curated filter definitions (#447): a Dashboard's variables are no longer persisted objects but are inferred from the {name:Type} placeholders in the queries its panel tiles own, matched by exact case-sensitive name. The only persisted variable state is `variableConfigs` — optional option-list SQL stored under a variable name. Filter identities, labels, option-source query references, explicit panel targets, default values, and selection modes are all gone; the authoritative variable name and type come from the panel query placeholders alone. Runtime values and result caches are never persisted here. Unknown future documentVersion values fail closed.",
+  "x-altinity-kind": "dashboard",
+  "x-altinity-version": 2,
+  "type": "object",
+  "required": [
+    "documentVersion",
+    "id",
+    "title",
+    "revision",
+    "layout",
+    "tiles"
+  ],
+  "properties": {
+    "documentVersion": {
+      "title": "Dashboard document version",
+      "description": "Dashboard document contract version; always 2 for this contract.",
+      "type": "integer",
+      "const": 2
+    },
+    "id": {
+      "title": "Dashboard identifier",
+      "description": "Stable application-managed Dashboard identity.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "title": {
+      "title": "Dashboard title",
+      "description": "User-visible Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "description": {
+      "title": "Dashboard description",
+      "description": "Optional authoring note shown with the Dashboard.",
+      "type": "string",
+      "maxLength": 16384
+    },
+    "revision": {
+      "title": "Persistence revision",
+      "description": "Incremented once for each successfully committed Dashboard document mutation. Validation, preview, and export never increment it. Starts at 1.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "layout": {
+      "$ref": "dashboard-v1.schema.json#/$defs/dashboardLayoutDocumentV1"
+    },
+    "tiles": {
+      "title": "Tiles",
+      "description": "Tile instances in canonical semantic order: execution planning, DOM and keyboard traversal, fallback rendering, print/export, and serialization all follow this order. Required even when empty.",
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "dashboard-v1.schema.json#/$defs/dashboardTileV1"
+      }
+    },
+    "variableConfigs": {
+      "title": "Variable option SQL",
+      "description": "Optional Dashboard-local option-list SQL keyed by EXACT inferred variable name. A key with no matching {name:Type} declaration in any panel-owned query is an orphaned configuration: its SQL is preserved and shown, but never executed. Absent or empty means every variable uses a direct-input control inferred from its declared ClickHouse type. The property bound matches dashboard-v1's former filter bound, so a Dashboard cannot store more configured variables than it could once store filters.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/dashboardVariableConfigV1"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "documentVersion",
+    "id",
+    "title",
+    "description",
+    "revision",
+    "layout",
+    "tiles",
+    "variableConfigs"
+  ],
+  "$defs": {
+    "dashboardVariableConfigV1": {
+      "title": "Dashboard variable configuration",
+      "description": "Dashboard-local option SQL for one inferred variable. The variable's name and ClickHouse type are NOT stored here — they come from the panel query placeholders that declare it.",
+      "type": "object",
+      "required": [
+        "sql"
+      ],
+      "properties": {
+        "sql": {
+          "title": "Option SQL",
+          "description": "One embeddable read query returning exactly two String columns: value, then visible label. Column position defines meaning; column names do not. Empty SQL is not stored — saving blank SQL removes the configuration and returns the variable to direct input. Parameterised option SQL is rejected: option queries cannot reference Dashboard variables.",
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "lastKnownType": {
+          "title": "Last known variable type",
+          "description": "Informational only, so an orphaned configuration can still display a type after its last panel declaration disappears. A newly inferred declaration always wins over this value; nothing executable ever reads it.",
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "sql",
+        "lastKnownType"
+      ]
+    }
+  }
+};
+
 export const storedWorkspaceV2Schema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json",
@@ -1959,6 +2075,79 @@ export const storedWorkspaceV4Schema = {
   ]
 };
 
+export const storedWorkspaceV5Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v5.schema.json",
+  "title": "Altinity SQL Browser stored workspace v5",
+  "description": "One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v4 by carrying dashboard-v2 documents (#447): curated filter definitions are gone, so the only Dashboard members that own a dedicated saved-query copy are panel tiles. The version exists so an older build fails closed on a record whose Dashboards it would misread, and so the one-time V4 migration — which drops `dashboards[].filters` and leaves each formerly filter-owned query copy in place, where having no owner makes it a Library query — has a boundary to run at. v4, v3 and v2 records remain readable and migrate deterministically on read, EXCEPT that a record containing a saved query with the removed Dashboard role `filter` is rejected as unsupported and must be recreated: the role is no longer in the query-spec contract, so such a record fails validation before migration can reach it. Internal persistence contract; portable interchange uses portable-bundle-v2 instead.",
+  "x-altinity-kind": "stored-workspace",
+  "x-altinity-version": 5,
+  "type": "object",
+  "required": [
+    "storageVersion",
+    "id",
+    "key",
+    "name",
+    "queries",
+    "dashboards"
+  ],
+  "properties": {
+    "storageVersion": {
+      "title": "Storage version",
+      "description": "Stored-workspace contract version; always 5 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 5
+    },
+    "id": {
+      "title": "Workspace identifier",
+      "description": "Stable generated application identity. Two workspaces with the same display name still have distinct IDs.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "key": {
+      "title": "Workspace URL key",
+      "description": "Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "name": {
+      "title": "Workspace name",
+      "description": "Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Holds both Library queries (referenced by no Dashboard member) and the dedicated copies panel tiles own. The bound stays at v4's 5224 even though removing filters lowers the derived worst case to 1000 + 32 x 100: a v4 record already at 5224 must keep decoding, so this is a compatibility ceiling rather than a recomputed maximum. Required even when empty.",
+      "type": "array",
+      "maxItems": 5224,
+      "items": {
+        "$ref": "saved-query-v2.schema.json"
+      }
+    },
+    "dashboards": {
+      "title": "Dashboards",
+      "description": "This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile and layout placement IDs stay Dashboard-local. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "dashboard-v2.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "storageVersion",
+    "id",
+    "key",
+    "name",
+    "queries",
+    "dashboards"
+  ]
+};
+
 export const portableBundleV1Schema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
@@ -2049,6 +2238,96 @@ export const portableBundleV1Schema = {
   ]
 };
 
+export const portableBundleV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
+  "title": "Altinity SQL Browser portable bundle v2",
+  "description": "The one canonical portable interchange format: saved queries plus zero or more Dashboard documents. Supersedes portable-bundle-v1 solely to carry dashboard-v2 documents (#447), because v1 pins dashboard-v1, which requires the removed `filters` array and closes its property set. All newly written importable/exportable JSON uses this format; portable-bundle-v1 stays registered read-only so existing bundles still import, and legacy Library v1/v2 files remain readable through compatibility decoders.",
+  "x-altinity-kind": "portable-bundle",
+  "x-altinity-version": 2,
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "exportedAt",
+    "queries",
+    "dashboards"
+  ],
+  "properties": {
+    "$schema": {
+      "title": "Schema identifier",
+      "description": "Optional schema hint for editors, agents, and third-party tools.",
+      "const": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json"
+    },
+    "format": {
+      "title": "Format identifier",
+      "const": "altinity-sql-browser/portable-bundle"
+    },
+    "version": {
+      "title": "Bundle format version",
+      "description": "Portable bundle contract version; always 2 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 2
+    },
+    "exportedAt": {
+      "title": "Export timestamp",
+      "description": "RFC 3339 timestamp indicating when this portable bundle was created.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "title": "Bundle metadata",
+      "description": "Optional human-readable bundle name and description.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "title": "Bundle name",
+          "type": "string",
+          "maxLength": 512
+        },
+        "description": {
+          "title": "Bundle description",
+          "type": "string",
+          "maxLength": 16384
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "name",
+        "description"
+      ]
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty. The bound tracks the stored-workspace capacity so a migrated workspace stays exportable; an older build rejects a bundle above its own bound.",
+      "type": "array",
+      "maxItems": 5224,
+      "items": {
+        "$ref": "saved-query-v2.schema.json"
+      }
+    },
+    "dashboards": {
+      "title": "Dashboard documents",
+      "description": "Bundled Dashboard documents. Multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "dashboard-v2.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "$schema",
+    "format",
+    "version",
+    "exportedAt",
+    "metadata",
+    "queries",
+    "dashboards"
+  ]
+};
+
 export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json": querySpecV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json": savedQueryV2Schema,
@@ -2056,8 +2335,11 @@ export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": flowLayoutV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json": grafanaGridLayoutV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": dashboardV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json": dashboardV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json": storedWorkspaceV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json": storedWorkspaceV3Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json": storedWorkspaceV4Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v5.schema.json": storedWorkspaceV5Schema,
   "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": portableBundleV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json": portableBundleV2Schema,
 };

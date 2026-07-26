@@ -1,6 +1,6 @@
 // The live Dashboard surface (#149 / #240 / #280 / #286 / #407). Phase 4 of #280
 // FLIPS Dashboard membership reads off `spec.favorite` and onto
-// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV4`
+// `dashboard.tiles[]`: this module resolves the current `StoredWorkspaceV5`
 // from `app.currentWorkspace`, constructs a `DashboardViewerSession` over that
 // document + the workspace
 // queries, and renders the DOM from the session's `state` signal. The heavy
@@ -93,8 +93,8 @@ import type { DashboardFilterBag } from '../dashboard/model/dashboard-filter-sto
 import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
-  DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
+  SavedQueryV2, StoredWorkspaceV5,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -158,7 +158,7 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  currentWorkspace: StoredWorkspaceV4 | null;
+  currentWorkspace: StoredWorkspaceV5 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
    *  navigation API its own chrome (View/Edit, Back to query) transitions
@@ -176,7 +176,7 @@ export interface DashboardApp {
   captureSurfaceGeneration(): number;
   isSurfaceGenerationCurrent(generation: number): boolean;
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
-  applyCommittedWorkspace(workspace: StoredWorkspaceV4): void;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV5): void;
   // #341/#344: every editable Dashboard command commits through
   // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
   // saved-query mutations use, so a rapid sequence of drag/resize/preset/
@@ -353,62 +353,6 @@ interface TileEl {
   resizeHandle: HTMLElement | null;
 }
 
-/** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
- *  that no explicit filter already targets — so a migrated Dashboard (whose
- *  persisted `filters` is empty) still surfaces its implicit param filters.
- *
- *  #189/#364 (Bug 3): when a `filter`-role saved query outputs a column whose
- *  name equals the parameter, the synthesized filter also gets that query's
- *  `sourceQueryId`, so its option list attaches automatically (the field becomes
- *  a curated combobox instead of a plain text box). A parameter produced by
- *  EXACTLY ONE candidate source binds; zero or more than one (ambiguous) leaves
- *  the filter plain — ambiguity degrades gracefully, never guesses.
- *
- *  #427 changed WHICH queries are candidates, in two ways:
- *
- *   - the FAVOURITE requirement is gone. A favourite is a Library preference now
- *     and carries no membership meaning, so it has no business deciding whether a
- *     query can supply a parameter's options. Matching is on the variable name
- *     alone. This widens the candidate set, so a workspace that previously had
- *     exactly one favourited match can now be ambiguous and degrade to a plain
- *     field — visible, and preferable to a hidden flag choosing for the user.
- *   - only LIBRARY (zero-owner) queries are candidates. A dedicated copy owned by
- *     some Dashboard's curated filter must not also be borrowed as this
- *     Dashboard's implicit source: that is exactly the sharing #427 removed, and
- *     after migration every owned copy has a Library original to match anyway.
- *
- *  Runtime-only; never persisted. */
-function synthesizeImplicitFilters(
-  doc: DashboardDocumentV1, queryById: Map<string, SavedQueryV2>,
-  ownedQueryIds: ReadonlySet<string>,
-): DashboardFilterDefinitionV1[] {
-  const declared = new Set((doc.filters || []).map((f) => f.parameter));
-  const panelSources = (doc.tiles || [])
-    .map((tile) => queryById.get(tile.queryId))
-    .filter((query): query is SavedQueryV2 => !!query && queryDashboardRole(query) === 'panel')
-    .map((query, index) => ({ id: 't' + index, kind: 'tile', sql: query.sql, bindPolicy: 'row-returning' }));
-  const analysis = analyzeParameterizedSources(panelSources);
-  // column name -> the Library filter-role source ids that output it.
-  const columnSources = new Map<string, Set<string>>();
-  for (const source of queryById.values()) {
-    if (queryDashboardRole(source) !== 'filter' || ownedQueryIds.has(source.id)) continue;
-    for (const column of selectOutputColumns(source.sql)) {
-      let ids = columnSources.get(column);
-      if (!ids) { ids = new Set(); columnSources.set(column, ids); }
-      ids.add(source.id);
-    }
-  }
-  const out: DashboardFilterDefinitionV1[] = [];
-  for (const control of fieldControls(analysis)) {
-    if (declared.has(control.name)) continue;
-    const def: DashboardFilterDefinitionV1 = { id: control.name, parameter: control.name };
-    const ids = columnSources.get(control.name);
-    if (ids && ids.size === 1) def.sourceQueryId = [...ids][0];
-    out.push(def);
-  }
-  return out;
-}
-
 /** #407 — an explicit workspace route that no longer resolves. */
 function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarget): void {
   // #425: install this surface's own header too. Without it the PREVIOUS surface's
@@ -565,7 +509,7 @@ export async function renderDashboard(
 
   // The live document — layout/order edits replace it; membership is read from
   // `dashboard.tiles[]` (NOT `savedQueries.filter(queryFavorite)`).
-  let currentDoc: DashboardDocumentV1 = selected;
+  let currentDoc: DashboardDocumentV2 = selected;
   let committedRevision = currentDoc.revision;
   // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
   // CACHE of the last commit this route observed — never the baseline a
@@ -576,7 +520,7 @@ export async function renderDashboard(
   // rebuild its candidate from this stale snapshot and silently reverse that
   // other producer's mutation. `null` when no persisted aggregate exists yet
   // (legacy/empty) — commands then stay optimistic-only, same as before #341.
-  let committedWorkspace: StoredWorkspaceV4 | null = workspace;
+  let committedWorkspace: StoredWorkspaceV5 | null = workspace;
   // #344 review fix: queued command DESCRIPTORS (dispatch order), not
   // pre-built document snapshots. A snapshot-based queue (the pre-#344
   // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
@@ -593,15 +537,12 @@ export async function renderDashboard(
   let needsRebuild = false;
 
   // Merge explicit + synthesized implicit filters for the viewer.
-  // #427: computed from the WHOLE collection, so a copy owned by any Dashboard
-  // (not just this one) is excluded from implicit-source candidacy.
-  const ownedQueryIds = buildQueryOwnershipIndex({
-    queries: workspace.queries, dashboards: workspace.dashboards,
-  }).dashboardOwnedQueryIds;
-  const withImplicitFilters = (d: DashboardDocumentV1): DashboardDocumentV1 => (
-    { ...d, filters: [...(d.filters || []), ...synthesizeImplicitFilters(d, queryById, ownedQueryIds)] }
-  );
-  const viewerDoc: DashboardDocumentV1 = withImplicitFilters(currentDoc);
+  // #447: the document needs no pre-processing before the session sees it. This
+  // used to synthesize a filter definition per undeclared `{name:Type}` panel
+  // parameter, and to attach an option source by matching a filter-role query's
+  // OUTPUT COLUMN name — both are gone. The session infers its variables from the
+  // panel SQL itself, and option SQL is authored per variable on the document.
+  const viewerDoc: DashboardDocumentV2 = currentDoc;
 
   // #303: seed each filter's initial value/active from the isolated
   // per-dashboard store (never the Workbench's asb:varValues/asb:filterActive
@@ -634,7 +575,7 @@ export async function renderDashboard(
     initialFilters: initialBag,
   });
   let trackedSessionTileIds = new Set(viewerDoc.tiles.map((tile) => tile.id));
-  const syncSessionDocument = (next: DashboardDocumentV1): void => {
+  const syncSessionDocument = (next: DashboardDocumentV2): void => {
     session.syncDocument(next);
     trackedSessionTileIds = new Set(next.tiles.map((tile) => tile.id));
   };
@@ -746,12 +687,12 @@ export async function renderDashboard(
     refresh: () => session.refresh(),
     setDashboardStyle: selectLayout,
     focusMember: (member: DashboardFocusTarget): DashboardFocusOutcome => {
-      // A curated filter's control is REPLACED by the opening wave's first
-      // publish (see the deferred delivery at the end of this render), so a node
-      // focused now would be detached moments later. Report `pending` and let the
-      // caller take the normal render transition, which delivers filter focus at
-      // the deterministic point the node is stable.
-      if (member.kind === 'filter' && !waveSettled) return 'pending';
+      // A VARIABLE's control is REPLACED by the opening wave's first publish
+      // (see the deferred delivery at the end of this render), so a node focused
+      // now would be detached moments later. Report `pending` and let the caller
+      // take the normal render transition, which delivers variable focus at the
+      // deterministic point the node is stable.
+      if (member.kind === 'variable' && !waveSettled) return 'pending';
       return deliverFocus(member, { respectUserInteraction: false });
     },
   };
@@ -840,10 +781,6 @@ export async function renderDashboard(
   // #189: the retained bar itself (not just its `dispose`) — `hasOpenMultiSelect`
   // is read off it right before a rebuild disposes it (see below).
   let currentFilterBar: FilterBarHandle | null = null;
-  // #360: the retained bar's `updateStatus` — a status-only publish (below,
-  // the `barSig`/status-signal split) calls this directly instead of tearing
-  // down and rebuilding the whole bar.
-  let filterBarUpdateStatus: FilterBarHandle['updateStatus'] | null = null;
   // Maintainer merge-gate fix (#189): each parameter's `optionsRev` as of the
   // CURRENTLY-RETAINED bar's own build — compared, below, against the
   // incoming view's `optionsRev` for whichever parameter had an open (or
@@ -852,7 +789,6 @@ export async function renderDashboard(
   // because a rebuild happened to run while (or right after) its popover was
   // up. Replaced wholesale after every rebuild (never merged) — a filter that
   // disappears from `sview.filters` simply drops out.
-  let lastBuiltOptionsRev = new Map<string, number>();
   // #335: shell-owned, session-lifetime per-group "Recently used" ranges,
   // keyed by `group.key`. NOT persisted in v1 (owner decision) and naturally
   // discarded when this `renderDashboard` call's session is torn down or the
@@ -932,58 +868,19 @@ export async function renderDashboard(
     const restoreFocusKey = openPopoverKey ?? focusedFieldKey;
     currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
-    // #360: curation is gated on TOPOLOGY (`sourceId != null`, set once at
-    // construction from the filter definition's `sourceQueryId`), never on
-    // the transient `status` — status is execution state, not topology. A
-    // source-backed filter starts `status: 'idle'` before its source has even
-    // run, so gating curation on status instead would render it as a bare,
-    // enabled plain-text control until the source settled. A plain
-    // (non-source-backed) filter has no `sourceId` and is never gated into
-    // this path.
-    const curatedFields: Record<string, {
-      options: NonNullable<ViewerFilterState['options']>;
-      status: ViewerFilterState['status'];
-      stale?: boolean;
-      waitingFor?: string[];
-      selection?: ViewerFilterState['selection'];
-      value?: unknown;
-      active?: boolean;
-    }> = {};
+    // #447: every Dashboard variable renders the PLAIN field for its declared
+    // type. There is no curated branch left to gate — option-backed
+    // single-selects arrive in phase 2, driven by the variable's own option SQL
+    // rather than by a filter-role query discovered through a matching output
+    // column name.
     for (const f of sview.filters) {
-      // #189: the draft bag (`app.state.varValues`, `Record<string,string>`)
-      // cannot hold an array — a MULTISELECT filter never reads it at all
-      // (stays `''`); a single-select-on-Array-contract filter seeds it with
-      // the committed array's FIRST element, for display only (its own
-      // commit bypasses the draft bag entirely — see filter-bar.ts's
-      // `onApplyCurated`/`wrapsArray`). Every other filter keeps the
-      // pre-#189 `valueString(f.value)` seed unchanged.
-      if (f.selection?.mode === 'multiple') {
-        draftValues[f.parameter] = '';
-      } else if (f.selection?.mode === 'single' && f.selection.array) {
-        const arr = Array.isArray(f.value) ? f.value as string[] : [];
-        draftValues[f.parameter] = arr.length ? arr[0] : '';
-      } else {
-        draftValues[f.parameter] = valueString(f.value);
-      }
+      draftValues[f.parameter] = valueString(f.value);
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
-      if (f.sourceId != null) {
-        curatedFields[f.parameter] = {
-          options: f.options ?? [], status: f.status, stale: f.stale, waitingFor: f.waitingFor,
-          selection: f.selection, value: f.value, active: f.active,
-        };
-      }
     }
     const onCommit = (name: string): void => {
       const id = idByParam.get(name);
       if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
-    };
-    // #189: the array-committing seam (multiselect Apply, single-on-array
-    // pick/clear) — bypasses the scalar draft bag entirely, straight to
-    // `session.applyFilter` with the already-built array value/active.
-    const onApplyCurated = (name: string, next: string[], active: boolean): void => {
-      const id = idByParam.get(name);
-      if (id) session.applyFilter(id, next, active);
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     // #335: assemble the time-range option — one entry per resolved group,
@@ -1015,29 +912,16 @@ export async function renderDashboard(
     };
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
-      { curatedFields, document: doc, onApplyCurated, timeRange, onApplyTimeRange,
+      { document: doc, timeRange, onApplyTimeRange,
         onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
     ordinaryFilterHost.replaceChildren(bar.ordinaryEl);
     currentFilterBar = bar;
-    filterBarUpdateStatus = bar.updateStatus;
-    // Maintainer merge-gate fix (#189): announce the refresh ONLY when the
-    // open param's options actually changed content between the OUTGOING
-    // bar's own last build (`lastBuiltOptionsRev`) and this incoming view —
-    // a rebuild triggered by a plain value/active commit (this field's own
-    // Apply, already closed by the time it gets here, or any OTHER field's
-    // commit) never bumps `optionsRev`, so it never announces, even on the
-    // rare chance this param's popover was still genuinely open when some
-    // unrelated commit forced the whole bar to rebuild.
-    if (openPopoverKey) {
-      const prevRev = lastBuiltOptionsRev.get(openPopoverKey);
-      const nextRev = sview.filters.find((f) => f.parameter === openPopoverKey)?.optionsRev;
-      if (nextRev !== undefined && nextRev !== prevRev) {
-        filterRefreshLiveEl.textContent = 'Filter options were refreshed';
-      }
-    }
-    lastBuiltOptionsRev = new Map(sview.filters.map((f) => [f.parameter, f.optionsRev]));
+    // #447 removed the "Filter options were refreshed" announcement. It fired
+    // when an OPEN popover's option list changed content between two builds,
+    // which only a running option-source query could cause; a direct-input
+    // variable has no option list to refresh.
     // #189-F2b, GENERALIZED (#335): land focus on the NEW bar's corresponding
     // trigger for whichever control key the OUTGOING bar had open, or (absent
     // that) had focus on its trigger (an Apply that already closed its own
@@ -1096,7 +980,7 @@ export async function renderDashboard(
   // against committed truth (`latest`/`committedWorkspace`), whose `queries`
   // may have moved on since this route was opened (another producer's saved-
   // query CRUD op committed through the same shared queue).
-  function ctxFor(baseDoc: DashboardDocumentV1, queriesForResolver: SavedQueryV2[]) {
+  function ctxFor(baseDoc: DashboardDocumentV2, queriesForResolver: SavedQueryV2[]) {
     return {
       // The Dashboard UI never dispatches add-query commands; retain the
       // required context seam without an unreachable local lambda.
@@ -1109,7 +993,7 @@ export async function renderDashboard(
    * raw remove-tile is first command-validated, then replaced by the shared
    * transform that also cleans targets and synchronizes spec.favorite. */
   function applyRouteCommand(
-    baseDoc: DashboardDocumentV1, command: DashboardCommand, queriesForResolver: SavedQueryV2[],
+    baseDoc: DashboardDocumentV2, command: DashboardCommand, queriesForResolver: SavedQueryV2[],
   ) {
     const applied = applyCommand(baseDoc, command, ctxFor(baseDoc, queriesForResolver));
     if (!applied.ok) return applied;
@@ -1155,7 +1039,7 @@ export async function renderDashboard(
     // trips its own edit) or a rebase corrects it once resolutions land.
     currentDoc = normalized;
     layoutMenu.sync();
-    syncSessionDocument(withImplicitFilters(normalized));
+    syncSessionDocument(normalized);
 
     pendingCommands.push(command);
 
@@ -1170,7 +1054,7 @@ export async function renderDashboard(
     // moved past the route cache, so rebasing from the stale cache would
     // re-publish a document containing what the concurrent commit removed.
     // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV4 | null | undefined;
+    let observed: StoredWorkspaceV5 | null | undefined;
     void app.mutateWorkspace((latest) => {
       observed = latest;
       // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
@@ -1182,7 +1066,7 @@ export async function renderDashboard(
       const base = latest && findDashboard(latest, selectedDashboardId);
       if (!base) return null;
       // `base` is truthy only when `latest` was, so the aggregate exists here.
-      const committed = latest as StoredWorkspaceV4;
+      const committed = latest as StoredWorkspaceV5;
       const reapplied = applyRouteCommand(base, command, committed.queries);
       if (!reapplied.ok) return null;
       const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
@@ -1258,7 +1142,7 @@ export async function renderDashboard(
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
   // head descriptor, refresh committed truth, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV4 | null | undefined): void {
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV5 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();
@@ -1300,7 +1184,7 @@ export async function renderDashboard(
     // dispatch and dequeue (this command was re-applied to THAT base, e.g.
     // a saved-query delete whose resolver pruned a tile), and after every
     // resolution the rendered doc must equal committed truth exactly.
-    let rebased: DashboardDocumentV1 | null = committedWorkspace
+    let rebased: DashboardDocumentV2 | null = committedWorkspace
       ? findDashboard(committedWorkspace, selectedDashboardId) : null;
     // #424: the pinned Dashboard vanished from committed truth (an Import
     // Dashboard replaced the compatibility slot with a different document while
@@ -1332,7 +1216,7 @@ export async function renderDashboard(
     // rebuilt one.
     if (rebased.tiles.some((t) => !trackedSessionTileIds.has(t.id))) needsRebuild = true;
     if (needsRebuild) { rebuildRouteFromCommitted(); return; }
-    syncSessionDocument(withImplicitFilters(rebased));
+    syncSessionDocument(rebased);
     layoutMenu.sync();
   }
 
@@ -2206,30 +2090,13 @@ export async function renderDashboard(
   // tile-progress tick (same wave `now`) never churns the labels. Seeded from
   // the session's initial state (`null` before the first wave).
   let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
-  const statusSigOf = (filters: readonly ViewerFilterState[]): string =>
-    JSON.stringify(filters.map((f) => [f.parameter, f.status, !!f.stale, f.waitingFor ?? null]));
-  const statesByParam = (filters: readonly ViewerFilterState[]): Record<string, {
-    status: ViewerFilterState['status']; stale?: boolean; waitingFor?: string[];
-  }> => Object.fromEntries(filters.map((f) => [f.parameter, { status: f.status, stale: f.stale, waitingFor: f.waitingFor }]));
   // #303: the committed-filter bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
-  // #189: a committed multiselect/single-on-array value is a REAL string
-  // array — persisted as one (`DashboardFilterEntry.value: string | string[]`),
-  // never coerced through `valueString`'s `String()` fallback (which would
-  // turn `['a','b']` into the literal text `"a,b"`, indistinguishable from an
-  // actual scalar `"a,b"` value on the next load). Non-string elements are
-  // dropped defensively, the same posture `dashboard-filter-store.ts`'s own
-  // `coerceValue` takes when READING this same persisted shape back.
+  // #447: a variable's committed value is a SCALAR string — the array shape the
+  // #189 multiselect persisted is gone, so there is nothing to narrow here.
   const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
     const bag: DashboardFilterBag = {};
-    for (const f of filters) {
-      bag[f.id] = {
-        value: Array.isArray(f.value)
-          ? (f.value as unknown[]).filter((v): v is string => typeof v === 'string')
-          : valueString(f.value),
-        active: f.active,
-      };
-    }
+    for (const f of filters) bag[f.id] = { value: valueString(f.value), active: f.active };
     return bag;
   };
   // #303: a SEPARATE signature from `barSig` above — that one also flips when
@@ -2258,29 +2125,18 @@ export async function renderDashboard(
     // committed value, curated option CONTENT arriving/changing via
     // `optionsRev`, or a filter gaining/losing its source topology) — not on
     // a bare status flip and not on tile progress ticks — so in-progress
-    // typing is never disturbed mid-wave. `status`/`stale`/`waitingFor` are
-    // deliberately EXCLUDED from this signature (#360): `rebuildFilterBar`
-    // gates curation on topology (`sourceId != null`), not status, so a pure
-    // status change only needs its OWN existing curated DOM updated in place
-    // — see `statusSig` below — never a rebuild. This also preserves #359's
-    // own invariant that an unchanged republish never disturbs in-progress
-    // typing.
+    // typing is never disturbed mid-wave. `status` is deliberately EXCLUDED
+    // from this signature: a pure status change only needs the existing DOM
+    // updated in place — see `statusSig` below — never a rebuild. That
+    // preserves the invariant that an unchanged republish never disturbs
+    // in-progress typing.
     const sig = JSON.stringify(sview.filters.map((f) =>
-      [f.id, f.active, sigValue(f.value), f.optionsRev, f.sourceId != null]));
-    const newStatusSig = statusSigOf(sview.filters);
+      [f.id, f.active, sigValue(f.value)]));
     let rebuilt = false;
     if (sig !== barSig) {
       barSig = sig;
       rebuildFilterBar(sview);
       rebuilt = true;
-      // A fresh rebuild already applies the CURRENT status to every curated
-      // field (buildFilterBar applies it at build time) — refresh the stored
-      // status signature too, so this same publish doesn't ALSO fire a
-      // redundant `updateStatus` immediately after.
-      statusSig = newStatusSig;
-    } else if (newStatusSig !== statusSig) {
-      statusSig = newStatusSig;
-      filterBarUpdateStatus?.(statesByParam(sview.filters));
     }
     // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
     // rebuilt every time-range control against this wave's `now` (assembled
@@ -2313,10 +2169,6 @@ export async function renderDashboard(
     filterDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
       ...sview.timeRangeDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
-      // #359: the shared-source filter wave's own merge diagnostics
-      // (info/warning/error), separate from the presentation diagnostics
-      // above — each severity maps directly to its `is-*` class.
-      ...sview.filterDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-' + d.severity }, d.message)),
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
@@ -2500,12 +2352,11 @@ export async function renderDashboard(
   // can deliver filter focus in place instead of reporting `pending`.
   waveSettled = true;
 
-  // A FILTER field is not stable across that first publish: it changes the bar's
-  // signature (committed values, active flags, arriving options), and a rebuild
-  // replaces the whole control — so focus set before `start()` would be dropped
-  // onto the detached node. The resolved wave is this control's own
-  // render-complete signal.
-  if (target.focus?.kind === 'filter') applyNavigationFocus(target.focus);
+  // A VARIABLE field is not stable across that first publish: it changes the
+  // bar's signature (committed values, active flags), and a rebuild replaces the
+  // whole control — so focus set before `start()` would be dropped onto the
+  // detached node. The resolved wave is this control's own render-complete signal.
+  if (target.focus?.kind === 'variable') applyNavigationFocus(target.focus);
 
   // The RENDER-TIME delivery: one shot, and it defers to the user (see
   // `respectUserInteraction` below). Called only from the two narrowed call sites
@@ -2515,7 +2366,7 @@ export async function renderDashboard(
     if (deliverFocus(focus, { respectUserInteraction: true }) !== 'missing') return;
     flashToast(focus.kind === 'tile'
       ? 'That panel is no longer on this dashboard.'
-      : 'That filter is no longer on this dashboard.', { document: doc });
+      : 'That variable is no longer on this dashboard.', { document: doc });
   }
 
   /**
@@ -2567,12 +2418,11 @@ export async function renderDashboard(
     return flowKpiHosts.get(tileId) ?? tileEls.get(tileId)?.card ?? null;
   }
 
-  /** Resolve a curated filter by its FILTER id, within the selected Dashboard
-   *  only: filter id → its declared parameter → the built control. */
-  function filterFocusTarget(filterId: string): HTMLElement | null {
-    const definition = (viewerDoc.filters || []).find((filter) => filter.id === filterId);
-    if (!definition) return null;
-    return currentFilterBar?.fieldElement(definition.parameter) ?? null;
+  /** Resolve a variable by its exact NAME, within the selected Dashboard only.
+   *  A variable's name IS its parameter, so there is no definition to look up
+   *  first — the name goes straight to the built control. */
+  function filterFocusTarget(variableName: string): HTMLElement | null {
+    return currentFilterBar?.fieldElement(variableName) ?? null;
   }
 
   /** A temporary navigation highlight, IN ADDITION to the normal focus ring.

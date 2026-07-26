@@ -9,7 +9,6 @@ import {
   // before (spec-schema.js's own export, consumed directly by other modules).
   querySpecSchemaService,
 } from './spec-schema.js';
-import { filterSqlDiagnostics } from './filter-execution.js';
 import type { QuerySpecV1 } from '../generated/json-schema.types.js';
 import { hasSameTimeRangeParameter } from './query-time-range.js';
 
@@ -249,11 +248,11 @@ function isValidatorEntryList(value: unknown): value is readonly SpecValidatorEn
 
 // Compatibility name for feature validators that predate the canonical
 // schema. Known static fields now live exclusively in query-spec-v1.schema.json.
+// #447 removed the `['dashboard','role']` entry: the Filter role it validated
+// (its SQL had to be a single row-returning statement so its columns could
+// supply option lists) no longer exists — `role`'s schema enum is
+// `["panel","setup"]` — so there is nothing left for it to check.
 export const CORE_SPEC_VALIDATORS: readonly SpecValidatorEntry[] = Object.freeze([
-  {
-    path: ['dashboard', 'role'],
-    validate: ({ value, context }: SpecValidatorArgs) => value === 'filter' ? filterSqlDiagnostics(context.sql) : [],
-  },
   {
     path: ['timeRanges'],
     validate: ({ value }: SpecValidatorArgs) => {

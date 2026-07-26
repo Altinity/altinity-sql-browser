@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json",
+  "title": "Altinity SQL Browser Dashboard document v2",
+  "description": "One explicit Dashboard aggregate: tile instances, semantic tile order, layout, optional Dashboard-local variable option SQL, and persistence revision. Supersedes dashboard-v1 by REMOVING curated filter definitions (#447): a Dashboard's variables are no longer persisted objects but are inferred from the {name:Type} placeholders in the queries its panel tiles own, matched by exact case-sensitive name. The only persisted variable state is `variableConfigs` — optional option-list SQL stored under a variable name. Filter identities, labels, option-source query references, explicit panel targets, default values, and selection modes are all gone; the authoritative variable name and type come from the panel query placeholders alone. Runtime values and result caches are never persisted here. Unknown future documentVersion values fail closed.",
+  "x-altinity-kind": "dashboard",
+  "x-altinity-version": 2,
+  "type": "object",
+  "required": ["documentVersion", "id", "title", "revision", "layout", "tiles"],
+  "properties": {
+    "documentVersion": {
+      "title": "Dashboard document version",
+      "description": "Dashboard document contract version; always 2 for this contract.",
+      "type": "integer",
+      "const": 2
+    },
+    "id": {
+      "title": "Dashboard identifier",
+      "description": "Stable application-managed Dashboard identity.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "title": {
+      "title": "Dashboard title",
+      "description": "User-visible Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "description": {
+      "title": "Dashboard description",
+      "description": "Optional authoring note shown with the Dashboard.",
+      "type": "string",
+      "maxLength": 16384
+    },
+    "revision": {
+      "title": "Persistence revision",
+      "description": "Incremented once for each successfully committed Dashboard document mutation. Validation, preview, and export never increment it. Starts at 1.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "layout": { "$ref": "dashboard-v1.schema.json#/$defs/dashboardLayoutDocumentV1" },
+    "tiles": {
+      "title": "Tiles",
+      "description": "Tile instances in canonical semantic order: execution planning, DOM and keyboard traversal, fallback rendering, print/export, and serialization all follow this order. Required even when empty.",
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "dashboard-v1.schema.json#/$defs/dashboardTileV1" }
+    },
+    "variableConfigs": {
+      "title": "Variable option SQL",
+      "description": "Optional Dashboard-local option-list SQL keyed by EXACT inferred variable name. A key with no matching {name:Type} declaration in any panel-owned query is an orphaned configuration: its SQL is preserved and shown, but never executed. Absent or empty means every variable uses a direct-input control inferred from its declared ClickHouse type. The property bound matches dashboard-v1's former filter bound, so a Dashboard cannot store more configured variables than it could once store filters.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "minLength": 1, "maxLength": 256 },
+      "additionalProperties": { "$ref": "#/$defs/dashboardVariableConfigV1" }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": ["documentVersion", "id", "title", "description", "revision", "layout", "tiles", "variableConfigs"],
+  "$defs": {
+    "dashboardVariableConfigV1": {
+      "title": "Dashboard variable configuration",
+      "description": "Dashboard-local option SQL for one inferred variable. The variable's name and ClickHouse type are NOT stored here — they come from the panel query placeholders that declare it.",
+      "type": "object",
+      "required": ["sql"],
+      "properties": {
+        "sql": {
+          "title": "Option SQL",
+          "description": "One embeddable read query returning exactly two String columns: value, then visible label. Column position defines meaning; column names do not. Empty SQL is not stored — saving blank SQL removes the configuration and returns the variable to direct input. Parameterised option SQL is rejected: option queries cannot reference Dashboard variables.",
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "lastKnownType": {
+          "title": "Last known variable type",
+          "description": "Informational only, so an orphaned configuration can still display a type after its last panel declaration disappears. A newly inferred declaration always wins over this value; nothing executable ever reads it.",
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": ["sql", "lastKnownType"]
+    }
+  }
+}

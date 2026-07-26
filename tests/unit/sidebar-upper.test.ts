@@ -157,8 +157,8 @@ describe('buildSidebarUpper — persistent hosts', () => {
   it('gives the Dashboard tree its own labelled search box, outside the row list', () => {
     const { app } = mount();
     const input = app.dom.dashboardSearchInput!;
-    expect(input.placeholder).toBe('Search dashboards, filters, panels…');
-    expect(input.getAttribute('aria-label')).toBe('Search dashboards, filters, panels');
+    expect(input.placeholder).toBe('Search dashboards, variables, panels…');
+    expect(input.getAttribute('aria-label')).toBe('Search dashboards, variables, panels');
     // Outside the repainted list, which is what keeps the caret while typing.
     expect(app.dom.dashboardTreeList!.contains(input)).toBe(false);
   });

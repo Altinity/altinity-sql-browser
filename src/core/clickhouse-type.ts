@@ -36,12 +36,12 @@ import type { Span } from './sql-spans.js';
 import { scanDelimited } from './quoted-span.js';
 
 // ── AST shapes ───────────────────────────────────────────────────────────
-// The exported discriminated union every consumer (param-type.ts,
-// filter-options.ts, kpi.js) reads: a `TypeArg` is either a nested `TypeNode`
-// (`kind: 'type'`) or a `LiteralArg` (`kind: 'string' | 'number'`) — never
-// anything else. `param-type.ts`/`filter-options.ts` each pin an identical
-// local copy of this shape over the (previously unconverted) module; keep
-// those two files' pinned shapes and this one in sync if either changes.
+// The exported discriminated union every consumer (param-type.ts, kpi.js)
+// reads: a `TypeArg` is either a nested `TypeNode` (`kind: 'type'`) or a
+// `LiteralArg` (`kind: 'string' | 'number'`) — never anything else.
+// `param-type.ts` pins an identical local copy of this shape over the
+// (previously unconverted) module; keep that pinned shape and this one in sync
+// if either changes.
 
 /** A non-type argument (`Decimal`'s precision/scale, `FixedString`'s length,
  *  `DateTime`'s timezone) — never a fake type node. */

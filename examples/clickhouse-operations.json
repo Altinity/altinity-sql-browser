@@ -1,7 +1,7 @@
 {
-  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
     "name": "ClickHouse Operations",
@@ -2655,19 +2655,6 @@
       }
     },
     {
-      "id": "gco-filter",
-      "sql": "SELECT\n  [toUInt8(1), toUInt8(0)] AS is_initial_query,\n  (\n    SELECT arraySort(groupUniqArray(query_kind))\n    FROM merge(system, '^query_log')\n    WHERE event_time >= now() - INTERVAL 7 DAY AND query_kind != ''\n  ) AS query_kind,\n  (\n    SELECT arraySort(groupUniqArray(initial_user))\n    FROM merge(system, '^query_log')\n    WHERE event_time >= now() - INTERVAL 7 DAY AND initial_user != ''\n  ) AS user,\n  (\n    SELECT groupArray((exception_code AS value, concat(toString(exception_code), ' · ', errorCodeToName(exception_code)) AS label))\n    FROM\n    (\n      SELECT exception_code\n      FROM merge(system, '^query_log')\n      WHERE event_time >= now() - INTERVAL 7 DAY AND exception_code != 0\n      GROUP BY exception_code\n      ORDER BY count() DESC\n      LIMIT 100\n    )\n  ) AS exception_code,\n  (\n    SELECT groupArray((normalized_query_hash AS value, concat(toString(normalized_query_hash), ' · ', substring(sample_query, 1, 80)) AS label))\n    FROM\n    (\n      SELECT normalized_query_hash, anyHeavy(replaceAll(query, '\\n', ' ')) AS sample_query\n      FROM merge(system, '^query_log')\n      WHERE event_time >= now() - INTERVAL 7 DAY AND normalized_query_hash != 0\n      GROUP BY normalized_query_hash\n      ORDER BY count() DESC\n      LIMIT 80\n    )\n  ) AS query_hash,\n  ['count', 'avg_duration', 'max_duration', 'cpu_time', 'read_bytes', 'written_bytes', 'avg_written_rows', 'result_bytes', 'network_bytes', 'memory', 'max_memory', 'network_wait', 'io_time', 'io_wait', 'zk_txns', 'read_bps', 'write_bps', 'parts_inserted', 'parts_inserted_avg', 'marks_load_time', 'marks_miss_rate', 'selected_parts', 'selected_ranges', 'selected_marks', 'exceptions', 'open_files', 'external_processing_files', 'threads1', 'threads2', 'threads3'] AS metric\nSETTINGS enable_named_columns_in_function_tuple = 1",
-      "specVersion": 1,
-      "spec": {
-        "name": "Grafana port filters",
-        "description": "Filter source for single-select metric/is_initial_query and inferred multiselect query_kind, user, exception_code, and query_hash controls. Blank means all.",
-        "favorite": false,
-        "dashboard": {
-          "role": "filter"
-        }
-      }
-    },
-    {
       "id": "ops-largest-tables",
       "sql": "SELECT concat(database, '.', table) AS table, formatReadableSize(sum(bytes_on_disk)) AS disk, sum(bytes_on_disk) AS disk_bytes FROM system.parts WHERE active GROUP BY database, table ORDER BY disk_bytes DESC LIMIT 15",
       "specVersion": 1,
@@ -2718,7 +2705,7 @@
   ],
   "dashboards": [
     {
-      "documentVersion": 1,
+      "documentVersion": 2,
       "id": "clickhouse-operations",
       "title": "ClickHouse Operations",
       "description": "Operator-first server overview, resources, background work, and investigation views.",
@@ -2864,109 +2851,6 @@
           }
         }
       },
-      "filters": [
-        {
-          "id": "ops-from",
-          "parameter": "from",
-          "label": "From",
-          "defaultValue": "-1h",
-          "defaultActive": true,
-          "targets": [
-            "tile-gco-029-running-queries",
-            "tile-gco-040-queries-started",
-            "tile-gco-055-connections",
-            "tile-gco-041-cpus-loaded",
-            "tile-gco-053-memory",
-            "tile-gco-058-io-util",
-            "tile-gco-046-network",
-            "tile-gco-047-merges",
-            "tile-gco-048-mutations",
-            "tile-gco-064-replicated-checks",
-            "tile-gco-099-error-log",
-            "tile-gco-025-query-hash",
-            "tile-gco-030-query-hash-details",
-            "tile-ops-recent-server-logs"
-          ]
-        },
-        {
-          "id": "ops-to",
-          "parameter": "to",
-          "label": "To",
-          "defaultValue": "now",
-          "defaultActive": true,
-          "targets": [
-            "tile-gco-029-running-queries",
-            "tile-gco-040-queries-started",
-            "tile-gco-055-connections",
-            "tile-gco-041-cpus-loaded",
-            "tile-gco-053-memory",
-            "tile-gco-058-io-util",
-            "tile-gco-046-network",
-            "tile-gco-047-merges",
-            "tile-gco-048-mutations",
-            "tile-gco-064-replicated-checks",
-            "tile-gco-099-error-log",
-            "tile-gco-025-query-hash",
-            "tile-gco-030-query-hash-details",
-            "tile-ops-recent-server-logs"
-          ]
-        },
-        {
-          "id": "ops-user",
-          "parameter": "user",
-          "label": "user",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-query_kind",
-          "parameter": "query_kind",
-          "label": "query kind",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-exception_code",
-          "parameter": "exception_code",
-          "label": "exception code",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-query_hash",
-          "parameter": "query_hash",
-          "label": "query hash",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-metric",
-          "parameter": "metric",
-          "label": "Metric",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": "count",
-          "defaultActive": true
-        },
-        {
-          "id": "ops-initial",
-          "parameter": "is_initial_query",
-          "label": "Initial query",
-          "sourceQueryId": "gco-filter",
-          "defaultValue": 1,
-          "defaultActive": false
-        },
-        {
-          "id": "ops-search",
-          "parameter": "search",
-          "label": "Log search",
-          "defaultValue": "",
-          "defaultActive": false
-        }
-      ],
       "tiles": [
         {
           "id": "tile-gco-kpi-overview",

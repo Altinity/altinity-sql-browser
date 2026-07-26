@@ -10,8 +10,8 @@
 // forced: that one reads `MainSurfaceState`, and `src/core/` may never import
 // `src/workspace/` (build/check-boundaries.mjs).
 //
-// Never exported and never persisted: `StoredWorkspaceV4` carries none of this.
-// Keyed by `StoredWorkspaceV4.id` — the immutable opaque application identity
+// Never exported and never persisted: `StoredWorkspaceV5` carries none of this.
+// Keyed by `StoredWorkspaceV5.id` — the immutable opaque application identity
 // (#406) — never by the mutable `name` or the rewritable URL `key`.
 //
 // Deliberately NOT a signal, matching `state.libraryFilter`'s precedent
@@ -39,8 +39,20 @@
  */
 export const encodeKeyPart = (part: string): string => part.replace(/%/g, '%25').replace(/:/g, '%3A');
 
-/** Which of a Dashboard's two groups a group key names. */
-export type DashboardTreeGroup = 'filters' | 'panels';
+/**
+ * Which of a Dashboard's two groups a group key names.
+ *
+ * #447 renamed `'filters'` to `'variables'`: a Dashboard's controls are no
+ * longer persisted curated filters but variables INFERRED from the
+ * `{name:Type}` placeholders its panel queries declare. The rename deliberately
+ * invalidates any persisted `expandedGroups` entry keyed on the old word — a
+ * Dashboard whose Filters group was expanded opens with Variables collapsed
+ * ONCE. This is session UI state (never persisted in `StoredWorkspaceV5`, see
+ * the header), so it is not worth a migration: the cost is one collapsed group,
+ * and mapping the old key would have to guess that the two groups mean the same
+ * thing to the user, which they do not.
+ */
+export type DashboardTreeGroup = 'variables' | 'panels';
 
 export interface DashboardTreeUiState {
   /** Expanded Dashboards, by stable Dashboard id. */

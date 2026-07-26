@@ -13,7 +13,7 @@ core/          pure logic (no DOM, no globals, no imports from other layers)
 net/           integration: OAuth + the ClickHouse HTTP client (fetch injected via ctx)
 application/   route-agnostic services & sessions (no App, no DOM, no ui/editor imports)
 ui/workbench/  the workbench route: session (run lifecycle) + shell (DOM + effects)
-ui/dashboard/  the dashboard route: session (tile/filter runtime); ui/dashboard.ts is its shell
+ui/dashboard/  the dashboard route: session (tile/variable runtime); ui/dashboard.ts is its shell
 ui/*           render modules (hyperscript), editor ports live in editor/
 ui/app.ts      composition/bootstrap: constructs everything, wires routes
 state.ts       the shared signal-backed model + pure ops
@@ -69,7 +69,7 @@ service is tested with plain stubs at the per-file coverage gate.
   thin call into it.
 - `ui/dashboard/dashboard-session.ts` owns the dashboard runtime: the 6-way
   tile pool, wave generations (reserved at wave creation), per-slot
-  cancellation, filter waves and merging, `destroy()`. Its input is an
+  cancellation, the variable-commit wave, `destroy()`. Its input is an
   explicit `DashboardRuntimeInput` built by the shell from the favorites
   list — a stored dashboard document can replace that source without touching
   the session. `ui/dashboard.ts` is its shell (own header; no sidebar), typed

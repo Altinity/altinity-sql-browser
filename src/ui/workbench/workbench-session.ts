@@ -29,9 +29,6 @@ import { mergedSourceArgs } from '../../core/param-pipeline.js';
 import type { PreparedSource, BoundParamSnapshot } from '../../core/param-pipeline.js';
 import { supportsExplainPretty, detectSqlFormat, isSchemaMutatingSql } from '../../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../../core/explain.js';
-import { effectiveDashboardRole } from '../../core/result-choice.js';
-import type { FilterSourcePreparation } from '../../core/filter-execution.js';
-import { readFilterOptions } from '../../core/filter-options.js';
 import { isKpiPanel, panelExecution } from '../../core/panel-execution.js';
 import { newResult } from '../../core/stream.js';
 import { buildResultSource } from '../../core/query-source.js';
@@ -100,14 +97,6 @@ export interface WorkbenchHooks {
    *  only mode run()/runScript() ever use) — Phase 4 moves this into a
    *  WorkbenchParameterSession; injected until then. */
   prepareTabSource(sql: string, waveMs: number): PreparedSource;
-  /** #360 Workbench parity: a Filter tab's own preview, prepared through the
-   *  SAME shared analyze/prepare pipeline the Dashboard's runFilterSource
-   *  calls (`WorkbenchParameterSession.prepareFilterPreview` — issue #360's
-   *  explicit "do not independently implement parameter binding" rule).
-   *  run()'s Filter branch is gated ENTIRELY by this preparation's own
-   *  readiness ('runnable' | 'waiting' | 'error') — the generic
-   *  `varGateBlocked` below stays bypassed for Filter tabs. */
-  prepareFilterPreview(sql: string, waveMs: number): FilterSourcePreparation;
   /** True (and already toasted, shell-owned) when the active tab's
    *  {name:Type} variables block execution. */
   varGateBlocked(waveMs: number): boolean;
@@ -185,9 +174,8 @@ export interface RunOpts {
 }
 
 /** The transport `run()` executes under for a KPI-owned panel — the shared
- *  read of `core/panel-execution.js`'s `PanelExecutionResult` (the non-Filter
- *  branch) and the plain Filter-role stand-in literal (the `isFilter` branch),
- *  narrowed to exactly the fields `run()` itself reads. */
+ *  read of `core/panel-execution.js`'s `PanelExecutionResult`, narrowed to
+ *  exactly the fields `run()` itself reads. */
 interface KpiExecutionTransport {
   format?: string;
   rowLimit?: number;
@@ -241,31 +229,8 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // trailing `;`, history).
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
     if (!srcSql.trim()) return;
-    const isFilter = effectiveDashboardRole(tab.specParsed) === 'filter';
     const waveMs = deps.wallNow(); // one wall clock for this run wave: gate + args see the same instant
-    // #360 Workbench parity: a Filter tab's own preview runs through the SAME
-    // shared analyze/prepare pipeline the Dashboard's runFilterSource calls —
-    // never a second, independently-maintained parameter-binding path (issue
-    // #360's explicit rule). `prep`'s own readiness is the ONLY gate Filter
-    // execution respects below; the generic varGateBlocked stays bypassed for
-    // Filter tabs (next line) — removing that bypass would toast-and-block a
-    // missing-param Filter tab before the 'waiting' preview state below is
-    // ever reached.
-    const filterPrep = isFilter ? hooks.prepareFilterPreview(srcSql, waveMs) : null;
-    if (filterPrep && filterPrep.readiness !== 'runnable') {
-      tab.filterPreview = filterPrep.readiness === 'waiting'
-        ? { status: 'waiting', missing: filterPrep.missing }
-        : { status: 'error', error: filterPrep.error ?? undefined };
-      if (filterPrep.readiness === 'error') {
-        const filterErrorResult: QueryResult = newResult(filterPrep.format, filterPrep.rowLimit);
-        filterErrorResult.error = filterPrep.error;
-        Object.assign(tab, { result: filterErrorResult });
-      }
-      state.resultView.value = 'filter';
-      hooks.renderResults();
-      return; // NO network for either non-runnable state
-    }
-    if (!isFilter && hooks.varGateBlocked(waveMs)) return; // Filter parameters fail statically above
+    if (hooks.varGateBlocked(waveMs)) return;
     // One prepared source for the whole run wave (#173), captured NOW —
     // synchronously with the gate check above, BEFORE the auth awaits below
     // (review F6 invariant, shared with runScript/exportDirect/exportScript):
@@ -274,9 +239,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // the server as a never-gate-checked binding. Reused on success for the
     // recent-value recording (#171), so it reads exactly the boundParams that
     // were sent.
-    // A Filter tab prepares via `filterPrep` (the shared #360 pipeline) above, so
-    // it never reads `src` — skip the redundant generic tab analysis for it.
-    const src = isFilter ? null : hooks.prepareTabSource(srcSql, waveMs);
+    const src = hooks.prepareTabSource(srcSql, waveMs);
     await deps.ensureConfig();
     if (!(await deps.getToken())) { hooks.onAuthFailed(); return; }
 
@@ -292,13 +255,11 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // execution view (#165): inactive optional blocks removed, markers
     // stripped — byte-identical to srcSql for SQL without blocks. History still
     // records the template (srcSql / tab.sqlDraft).
-    const execSql = isFilter ? filterPrep!.execSql : hooks.execStatementSql(srcSql);
+    const execSql = hooks.execStatementSql(srcSql);
 
-    const kpiExecution: KpiExecutionTransport = isFilter
-      ? { format: 'Table', rowLimit: state.resultRowLimit, params: {}, error: null }
-      : panelExecution(tabPanel(tab), execSql, {
-        format: 'Table', rowLimit: state.resultRowLimit, params: {},
-      });
+    const kpiExecution: KpiExecutionTransport = panelExecution(tabPanel(tab), execSql, {
+      format: 'Table', rowLimit: state.resultRowLimit, params: {},
+    });
     if (kpiExecution.error) {
       const kpiErrorResult: QueryResult = newResult('KPI', 2);
       kpiErrorResult.error = kpiExecution.error;
@@ -311,16 +272,14 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
     // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
     // the five EXPLAIN views; everything else streams structured (Table).
-    const panelIsKpi = !isFilter && isKpiPanel(tabPanel(tab));
-    const explicitFmt = isFilter || panelIsKpi ? null : detectSqlFormat(execSql);
-    const parsed = isFilter || explicitFmt ? null : parseExplain(execSql);
-    const explainMode = !isFilter && !explicitFmt && (parsed != null || state.forceExplain);
+    const panelIsKpi = isKpiPanel(tabPanel(tab));
+    const explicitFmt = panelIsKpi ? null : detectSqlFormat(execSql);
+    const parsed = explicitFmt ? null : parseExplain(execSql);
+    const explainMode = !explicitFmt && (parsed != null || state.forceExplain);
     let runSql = execSql;
     let fmt: string;
     let explainView: string | null = null;
-    if (isFilter) {
-      fmt = filterPrep!.format;
-    } else if (explainMode) {
+    if (explainMode) {
       // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
       // is honored exactly (canonical match → its rich view, else the verbatim
       // Explain view); the button-forced path falls through to Explain. We never
@@ -343,11 +302,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
     // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = isFilter ? filterPrep!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
+    const rowLimit = explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
     const t0 = deps.now();
     const result: QueryResult = newResult(fmt, rowLimit);
     Object.assign(tab, { result });
-    if (isFilter) tab.filterPreview = { status: 'running' };
     if (explainView) result.explainView = explainView;
     state.resultSort = { col: null, dir: 'asc' };
     runT0 = t0;
@@ -363,7 +321,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // already be set. (The old explicit setRunBtn(true)/renderResults are now
     // those effects' job.)
     batch(() => {
-      state.resultView.value = view != null && ['table', 'json', 'panel', 'filter'].includes(view)
+      state.resultView.value = view != null && ['table', 'json', 'panel'].includes(view)
         ? (view as WorkbenchResultView) : state.resultView.value;
       state.running.value = true;
     });
@@ -378,9 +336,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
-        params: isFilter
-          ? filterPrep!.params
-          : { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src!), ...kpiExecution.params },
+        params: { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => hooks.renderResults(),
       });
     } finally {
@@ -390,18 +346,6 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       runQueryId = null;
       runT0 = null;
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
-      if (isFilter) {
-        tab.filterPreview = result.error || result.cancelled
-          ? { status: 'error', error: result.error || 'Filter query was cancelled.' }
-          : {
-              status: 'success',
-              normalized: readFilterOptions({
-                columns: result.columns,
-                row: result.rows[0],
-                rowCount: result.rows.length,
-              }),
-            };
-      }
       // #185: capture the source that produced a normal, row-returning
       // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
       // empty results stay ineligible), so the Data Pane's Expand can open an
@@ -430,19 +374,17 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         // Spec completion is intentionally stable during a run and survives a
         // later failed/cancelled run. Snapshot only completed structured
         // results; never expose partially streamed metadata to the editor.
-        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter')
+        // #447 dropped the third arm, `fmt === 'Filter'`: the Filter wire format
+        // was only ever produced by the removed Filter-role run path, so `run()`
+        // can no longer reach it.
+        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI')
           ? result.columns.map((column) => ({ ...column }))
           : [];
         hooks.recordHistory(tab, opts && opts.sql);
         // #171: this statement succeeded — record its bound params (exactly
         // what was actually sent; an omitted-optional-block param never
-        // reached `src.statements[*].boundParams` in the first place). A
-        // Filter tab records `filterPrep.boundParams` instead — #360 parity
-        // with the Dashboard's own runFilterSource, which records the SAME
-        // shared preparation's boundParams.
-        hooks.recordBoundParams(
-          (isFilter ? filterPrep!.boundParams : src!.statements.flatMap((s) => s.boundParams)) as BoundParamSnapshot[],
-        );
+        // reached `src.statements[*].boundParams` in the first place).
+        hooks.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
         if (isSchemaMutatingSql(runSql)) hooks.loadSchema(); // not awaited — fire and forget
       }
     }
@@ -559,9 +501,6 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // Mobile (#126): a run jumps the bottom-nav to the Results panel so the data
     // the user just asked for is what they see next.
     if (state.isMobile.value) state.mobileView.value = 'results';
-    if (effectiveDashboardRole(deps.activeTab().specParsed) === 'filter') {
-      return run(hasSel ? { ...opts, sql: input } : opts);
-    }
     // >1 statement → script grid (a remembered single-result view doesn't apply).
     if (statements.length > 1) return runScript(statements, input);
     // 1 statement → today's rich path. Forward opts (e.g. a saved query's

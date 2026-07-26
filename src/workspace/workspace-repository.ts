@@ -2,7 +2,7 @@
 // encoding, collection policy, and translation of store outcomes into
 // application-facing diagnostics. IndexedDB remains behind WorkspaceStore.
 //
-// #424/#427: the canonical aggregate is StoredWorkspaceV4 (`dashboards[]` plus
+// #424/#427: the canonical aggregate is StoredWorkspaceV5 (`dashboards[]` plus
 // the query-ownership invariant). A record persisted as V2 or V3 is migrated by
 // the codec on every read, so nothing above this layer ever sees a legacy
 // document; the RECORD itself upgrades on its next ordinary commit (every write
@@ -23,7 +23,7 @@ import type { JsonSchemaValidationService } from '../core/json-schema-validation
 import { normalizeWorkspaceKeyLookup } from '../core/workspace-key.js';
 import { resolveCompatibilityDashboard } from './workspace-dashboards.js';
 import { libraryQueries } from '../dashboard/model/query-ownership.js';
-import type { StoredWorkspaceV4 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 
 export interface WorkspaceSummary {
   readonly id: string;
@@ -48,7 +48,7 @@ export interface WorkspaceListResult {
 /** Explicit keyed loads never silently select a different workspace. */
 export type WorkspaceLoadResult =
   | { readonly status: 'empty' }
-  | { readonly status: 'ok'; readonly workspace: StoredWorkspaceV4 }
+  | { readonly status: 'ok'; readonly workspace: StoredWorkspaceV5 }
   | {
     readonly status: 'corrupt';
     /** Record identity stays available for targeted reset/recovery. */
@@ -60,7 +60,7 @@ export type WorkspaceLoadResult =
 export type WorkspaceCommitResult =
   | {
     readonly ok: true;
-    readonly workspace: StoredWorkspaceV4;
+    readonly workspace: StoredWorkspaceV5;
     readonly dashboardRevision: number | null;
   }
   | { readonly ok: false; readonly diagnostics: WorkspaceDiagnostic[] };
@@ -77,8 +77,8 @@ export interface WorkspaceRepository {
   list(): Promise<WorkspaceListResult>;
   loadById(id: string): Promise<WorkspaceLoadResult>;
   loadByKey(key: string): Promise<WorkspaceLoadResult>;
-  create(workspace: StoredWorkspaceV4): Promise<WorkspaceCommitResult>;
-  commit(workspace: StoredWorkspaceV4): Promise<WorkspaceCommitResult>;
+  create(workspace: StoredWorkspaceV5): Promise<WorkspaceCommitResult>;
+  commit(workspace: StoredWorkspaceV5): Promise<WorkspaceCommitResult>;
   /** Idempotent: an unknown ID succeeds with `deleted: false`. */
   delete(id: string): Promise<WorkspaceDeleteResult>;
   /** Resolve startup's implicit workspace; explicit URL-key loads use loadByKey. */
@@ -109,7 +109,7 @@ const persistenceFailure = (verb: string, error: unknown): WorkspaceCommitResult
 });
 
 const published = (encoded: string): Extract<WorkspaceCommitResult, { ok: true }> => {
-  const workspace = JSON.parse(encoded) as StoredWorkspaceV4;
+  const workspace = JSON.parse(encoded) as StoredWorkspaceV5;
   return {
     ok: true,
     workspace,
@@ -118,7 +118,7 @@ const published = (encoded: string): Extract<WorkspaceCommitResult, { ok: true }
 };
 
 const summary = (
-  workspace: StoredWorkspaceV4, lastOpenedAt: number | null,
+  workspace: StoredWorkspaceV5, lastOpenedAt: number | null,
 ): WorkspaceSummary => ({
   id: workspace.id,
   key: workspace.key,
@@ -198,7 +198,7 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     return record === null ? { status: 'empty' } : decodeRecord(record);
   }
 
-  async function create(workspace: StoredWorkspaceV4): Promise<WorkspaceCommitResult> {
+  async function create(workspace: StoredWorkspaceV5): Promise<WorkspaceCommitResult> {
     const encoded = encodeStoredWorkspaceJson(workspace, codecOptions);
     if (!encoded.ok) return { ok: false, diagnostics: encoded.diagnostics };
     try {
@@ -213,7 +213,7 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     }
   }
 
-  async function commit(workspace: StoredWorkspaceV4): Promise<WorkspaceCommitResult> {
+  async function commit(workspace: StoredWorkspaceV5): Promise<WorkspaceCommitResult> {
     const encoded = encodeStoredWorkspaceJson(workspace, codecOptions);
     if (!encoded.ok) return { ok: false, diagnostics: encoded.diagnostics };
     try {

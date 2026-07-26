@@ -9,29 +9,35 @@ import {
 } from '../../src/core/dashboard-tree-ui-state.js';
 import type { MainSurfaceState } from '../../src/application/main-surface.js';
 import type { TreeWorkspace } from '../../src/application/dashboard-tree-model.js';
-import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { App } from '../../src/ui/app.types.js';
+import { closeVariableEditor } from '../../src/ui/variable-editor.js';
+import type { SavedQueryV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
 
-const query = (id: string, name: string): SavedQueryV2 => ({
-  id, sql: 'SELECT 1', specVersion: 1, spec: { specVersion: 1, name },
+const query = (id: string, name: string, sql = 'SELECT 1'): SavedQueryV2 => ({
+  id, sql, specVersion: 1, spec: { specVersion: 1, name },
 });
 
-/** The standard fixture: two Dashboards, one with a filter and two panels, one of
- *  which has a broken query reference. */
+/**
+ * The standard fixture: two Dashboards. `sales` has two panels (one with a broken
+ * query reference) plus two variables — `country`, inferred from the working
+ * panel's `{country:String}` and configured with option SQL, and `region`, an
+ * ORPHANED configuration no panel declares any more.
+ */
 const workspace = (): TreeWorkspace => ({
   id: 'w1',
-  queries: [query('q1', 'Revenue'), query('q-src', 'Zones')],
+  queries: [query('q1', 'Revenue', 'SELECT * FROM rev WHERE c = {country:String}')],
   dashboards: [
     {
       id: 'sales', title: 'Sales',
-      filters: [
-        { id: 'f-src', parameter: 'zone', sourceQueryId: 'q-src' },
-        { id: 'f-bare', parameter: 'region' },
-      ],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't-broken', queryId: 'q-gone' }],
+      variableConfigs: {
+        country: { sql: 'SELECT c, c FROM countries' },
+        region: { sql: 'SELECT r, r FROM regions', lastKnownType: 'String' },
+      },
     },
-    { id: 'ops', title: 'Ops', filters: [], tiles: [] },
+    { id: 'ops', title: 'Ops', tiles: [] },
   ],
 });
 
@@ -47,17 +53,30 @@ const treeApp = (over: Partial<DashboardTreeApp> = {}) => {
   app.openDashboard = vi.fn();
   app.openSavedQuery = vi.fn();
   Object.assign(app, over);
+  // #447: the tree's one write (deleting an orphaned variable's option SQL) goes
+  // through `mutateWorkspace`. The fixture's version reads the SAME workspace the
+  // rows were derived from as committed truth, and records the candidate.
+  const committed: (StoredWorkspaceV5 | null)[] = [];
+  if (!('mutateWorkspace' in over)) {
+    app.mutateWorkspace = (async (transform) => {
+      const input = await transform(app.currentWorkspace as StoredWorkspaceV5);
+      const candidate = input === null ? null : input.candidate;
+      committed.push(candidate);
+      if (candidate === null) return { ok: false, aborted: true };
+      return { ok: true, workspace: candidate, dashboardRevision: null };
+    }) as App['mutateWorkspace'];
+  }
   const upper = buildSidebarUpper(app, []);
   document.body.appendChild(upper.dashboardsHost);
   upper.dashboardsHost.hidden = false;
-  return { app, upper, list: app.dom.dashboardTreeList! };
+  return { app, upper, committed, list: app.dom.dashboardTreeList! };
 };
 
 const setUi = (app: DashboardTreeApp, mutate: (ui: typeof EMPTY_TREE_UI) => typeof EMPTY_TREE_UI): void => {
   app.state.dashboardTreeUi.set('w1', mutate(readTreeUi(app.state.dashboardTreeUi, 'w1')));
 };
 const openAll = (app: DashboardTreeApp, id: string): void => setUi(app, (ui) =>
-  toggleGroupExpanded(toggleGroupExpanded(toggleDashboardExpanded(ui, id), id, 'filters'), id, 'panels'));
+  toggleGroupExpanded(toggleGroupExpanded(toggleDashboardExpanded(ui, id), id, 'variables'), id, 'panels'));
 
 const rows = (list: HTMLElement): HTMLElement[] => [...list.querySelectorAll<HTMLElement>('.dash-tree-row')];
 const rowFor = (list: HTMLElement, key: string): HTMLElement =>
@@ -71,7 +90,15 @@ const key = (list: HTMLElement, k: string, over: KeyboardEventInit = {}): void =
   list.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...over }));
 };
 
-beforeEach(() => { document.body.innerHTML = ''; });
+beforeEach(() => {
+  // A variable editor a test opened is registered per document, so close it before
+  // the DOM is cleared or it leaks into the next case.
+  closeVariableEditor({
+    document, currentWorkspace: null,
+    mutateWorkspace: (async () => ({ ok: false, aborted: true })) as App['mutateWorkspace'],
+  });
+  document.body.innerHTML = '';
+});
 
 describe('renderDashboardTree — structure and ARIA', () => {
   it('renders a role=tree container with treeitem rows carrying aria-level', () => {
@@ -124,7 +151,7 @@ describe('renderDashboardTree — structure and ARIA', () => {
     const populated = treeApp();
     setUi(populated.app, (ui) => setTreeSearch(ui, 'nothing here'));
     renderDashboardTree(populated.app);
-    expect(populated.list.textContent).toContain('No matching dashboards, filters, or panels.');
+    expect(populated.list.textContent).toContain('No matching dashboards, variables, or panels.');
   });
 
   it('no-ops when the list is not mounted', () => {
@@ -141,10 +168,81 @@ describe('renderDashboardTree — structure and ARIA', () => {
     expect(broken.classList.contains('is-invalid')).toBe(true);
     expect(broken.querySelector('.dash-tree-warn')!.getAttribute('aria-label')).toBe('Broken reference');
     expect(broken.getAttribute('title')).toContain('cannot be opened');
-    // A source-LESS filter is transitional, not broken — no marker at all.
-    const bare = rowFor(list, 'w1:sales:filter:f-bare');
-    expect(bare.classList.contains('is-invalid')).toBe(false);
-    expect(bare.querySelector('.dash-tree-warn')).toBeNull();
+    // A healthy variable carries no marker at all.
+    const healthy = rowFor(list, 'w1:sales:variable:country');
+    expect(healthy.classList.contains('is-invalid')).toBe(false);
+    expect(healthy.classList.contains('is-warning')).toBe(false);
+    expect(healthy.querySelector('.dash-tree-warn')).toBeNull();
+    expect(healthy.hasAttribute('title')).toBe(false);
+  });
+
+  it('renders a variable row with its name, its type and no menu', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const variable = rowFor(list, 'w1:sales:variable:country');
+    expect(variable.querySelector('.label')!.textContent).toBe('country');
+    expect(variable.querySelector('.meta')!.textContent).toBe('String');
+    // #447 explicitly forbids the `…` overflow menu on a variable row.
+    expect(variable.querySelector('.dash-tree-menu-btn')).toBeNull();
+    // Panel rows keep theirs.
+    expect(rowFor(list, 'w1:sales:tile:t1').querySelector('.dash-tree-menu-btn')).not.toBeNull();
+  });
+
+  it('labels the Variables group with the brace glyph and a count', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const groups = rows(list).filter((row) => row.classList.contains('dash-tree-group'));
+    expect(groups.map((row) => row.querySelector('.label')!.textContent)).toEqual(['Variables', 'Panels']);
+    // Two variables: the inferred `country` plus the orphaned `region` config.
+    expect(rowFor(list, 'w1:sales:group:variables').querySelector('.dash-tree-count')!.textContent).toBe('· 2');
+    // The two groups must not be confusable at a glance.
+    expect(rowFor(list, 'w1:sales:group:variables').querySelector('.icon')!.innerHTML)
+      .not.toBe(rowFor(list, 'w1:sales:group:panels').querySelector('.icon')!.innerHTML);
+  });
+
+  // #447: colour is NEVER the only signal, and the two annotated states must not
+  // be announced identically.
+  it('distinguishes a conflict (error) from an unused variable (warning) by class, glyph, WORD and label', () => {
+    const conflicted = treeApp({
+      currentWorkspace: {
+        id: 'w1',
+        queries: [
+          query('q1', 'A', 'SELECT 1 WHERE c = {customer_id:String}'),
+          query('q2', 'B', 'SELECT 1 WHERE c = {customer_id:UInt64}'),
+        ],
+        dashboards: [{
+          id: 'sales', title: 'Sales',
+          tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        }],
+      } as never,
+    });
+    openAll(conflicted.app, 'sales');
+    renderDashboardTree(conflicted.app);
+    const conflict = rowFor(conflicted.list, 'w1:sales:variable:customer_id');
+    expect(conflict.classList.contains('is-invalid')).toBe(true);
+    expect(conflict.classList.contains('is-warning')).toBe(false);
+    expect(conflict.querySelector('.dash-tree-warn')!.getAttribute('aria-label')).toBe('Type conflict');
+    expect(conflict.querySelector('.dash-tree-warn-mild')).toBeNull();
+    expect(conflict.querySelector('.dash-tree-status')).toBeNull();
+    expect(conflict.getAttribute('title')).toContain('incompatible types');
+    expect(conflict.querySelector('.meta')!.textContent).toBe('String | UInt64');
+
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const unused = rowFor(list, 'w1:sales:variable:region');
+    expect(unused.classList.contains('is-warning')).toBe(true);
+    expect(unused.classList.contains('is-invalid')).toBe(false);
+    // A DIFFERENT accessible label, a different glyph, and the word in text.
+    const marker = unused.querySelector('.dash-tree-warn')!;
+    expect(marker.getAttribute('aria-label')).toBe('Unused');
+    expect(marker.getAttribute('role')).toBe('img');
+    expect(marker.classList.contains('dash-tree-warn-mild')).toBe(true);
+    expect(marker.innerHTML).not.toBe(conflict.querySelector('.dash-tree-warn')!.innerHTML);
+    expect(unused.querySelector('.dash-tree-status')!.textContent).toBe('unused');
+    expect(unused.getAttribute('title')).toContain('not referenced by any Dashboard panel');
   });
 
   it('marks the current Dashboard and member distinctly from keyboard focus', () => {
@@ -238,31 +336,31 @@ describe('renderDashboardTree — mouse gestures', () => {
     });
   });
 
-  it('a source-backed filter row opens its SOURCE query; a source-less one opens nothing', () => {
+  // #447: a variable row opens its own editor, IMMEDIATELY — it has no double or
+  // Shift gesture to arbitrate against, so waiting out the double-click window
+  // would only make the tree feel slow.
+  it('a variable row click opens its option-SQL editor with no delay, and opens no query', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    click(rowFor(list, 'w1:sales:filter:f-src'));
+    click(rowFor(list, 'w1:sales:variable:country'));
+    expect(document.querySelector('.varedit-panel')).not.toBeNull();
+    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('country');
+    // The stored option SQL is what opens, not the declaring panel's query.
+    expect(document.querySelector<HTMLTextAreaElement>('.varedit-input')!.value)
+      .toBe('SELECT c, c FROM countries');
     settle();
-    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q-src');
-
-    click(rowFor(list, 'w1:sales:filter:f-bare'));
-    settle();
-    // Still exactly one call — query-open is unavailable, not silently retargeted.
-    expect(app.openSavedQuery).toHaveBeenCalledOnce();
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+    expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
-  it('a source-less filter still answers double-click and Shift-click', () => {
+  it('an ORPHANED variable row still opens its editor', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    const row = rowFor(list, 'w1:sales:filter:f-bare');
-    click(row);
-    click(row);
-    settle();
-    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({
-      dashboardId: 'sales', mode: 'view', focus: { kind: 'filter', id: 'f-bare' },
-    });
+    click(rowFor(list, 'w1:sales:variable:region'));
+    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('region');
+    expect(document.querySelector<HTMLTextAreaElement>('.varedit-input')!.value).toBe('SELECT r, r FROM regions');
   });
 
   it('an unresolved panel row cannot open a query but still navigates', () => {
@@ -406,10 +504,10 @@ describe('renderDashboardTree — action menu', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    click(menuButton(list, 'w1:sales:filter:f-bare'));
-    expect(menuLabels()[0]).toBe('Open source query');
+    click(menuButton(list, 'w1:sales:tile:t-broken'));
+    expect(menuLabels()[0]).toBe('Open query');
     const disabled = document.querySelector<HTMLButtonElement>('.dash-tree-menu .is-disabled')!;
-    expect(disabled.textContent).toContain('Open source query');
+    expect(disabled.textContent).toContain('Open query');
     // Disabled SEMANTICALLY, not merely greyed out: assistive technology would
     // otherwise announce an enabled action, and keyboard activation would silently
     // do nothing.
@@ -441,6 +539,97 @@ describe('renderDashboardTree — action menu', () => {
     setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
     renderDashboardTree(app);
     expect(rowFor(list, 'w1:sales:group:panels').querySelector('.dash-tree-menu-btn')).toBeNull();
+  });
+});
+
+describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
+  const trash = (list: HTMLElement, rowKey: string): HTMLButtonElement | null =>
+    rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-del-btn');
+  const confirmItems = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
+  const open = () => {
+    const fixture = treeApp();
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+
+  it('renders the trash affordance on an ORPHAN row only', () => {
+    const { list } = open();
+    expect(trash(list, 'w1:sales:variable:region')).not.toBeNull();
+    // Never on an active variable, a panel, a group or the Dashboard row.
+    expect(trash(list, 'w1:sales:variable:country')).toBeNull();
+    expect(trash(list, 'w1:sales:tile:t1')).toBeNull();
+    expect(trash(list, 'w1:sales:group:variables')).toBeNull();
+    expect(trash(list, 'w1:sales')).toBeNull();
+  });
+
+  it('names what it deletes, for the keyboard and for assistive technology', () => {
+    const { list } = open();
+    const button = trash(list, 'w1:sales:variable:region')!;
+    expect(button.getAttribute('aria-label')).toBe('Delete the stored option SQL for region');
+    expect(button.type).toBe('button');
+  });
+
+  it('CONFIRMS before deleting, and deletes nothing until the confirmation is taken', async () => {
+    const { list, committed } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    // A confirmation, not a deletion: the consequence is stated, and both taking
+    // and refusing it are explicit, keyboard-reachable buttons.
+    expect(document.querySelector('.dash-tree-confirm')).not.toBeNull();
+    expect(document.querySelector('.dash-tree-confirm .fm-section')!.textContent)
+      .toContain('The SQL is lost');
+    expect(confirmItems().map((item) => item.textContent))
+      .toEqual(['Delete option SQL', 'Cancel']);
+    await Promise.resolve();
+    expect(committed).toEqual([]);
+  });
+
+  it('deletes nothing when the confirmation is refused', async () => {
+    const { list, committed } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    click(confirmItems()[1]);
+    await Promise.resolve(); await Promise.resolve();
+    expect(committed).toEqual([]);
+    expect(document.querySelector('.dash-tree-confirm')).toBeNull();
+  });
+
+  it('removes ONLY that variableConfigs entry, leaving panel queries and other configs alone', async () => {
+    const { list, committed } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    click(confirmItems()[0]);
+    await Promise.resolve(); await Promise.resolve();
+    const dashboard = committed[0]!.dashboards[0];
+    // `region` is gone — both its sql and its lastKnownType — and nothing else moved.
+    expect(dashboard.variableConfigs).toEqual({ country: { sql: 'SELECT c, c FROM countries' } });
+    expect(dashboard.tiles).toEqual(workspace().dashboards![0].tiles);
+    expect(committed[0]!.queries).toEqual(workspace().queries);
+    expect(committed[0]!.dashboards[1]).toEqual(workspace().dashboards![1]);
+  });
+
+  it('does NOT also open the variable editor', () => {
+    vi.useFakeTimers();
+    const { list } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    vi.advanceTimersByTime(400);
+    // The trash button bypasses row activation entirely (like the action menu).
+    expect(document.querySelector('.varedit-panel')).toBeNull();
+    click(confirmItems()[0]);
+    vi.advanceTimersByTime(400);
+    expect(document.querySelector('.varedit-panel')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('cancels its OWN row\'s pending click but no other row\'s', () => {
+    vi.useFakeTimers();
+    const { app, list } = open();
+    // A pending single belongs to the PANEL row...
+    click(rowFor(list, 'w1:sales:tile:t1'));
+    // ...and the trash button clicked here belongs to a DIFFERENT row.
+    click(trash(list, 'w1:sales:variable:region')!);
+    vi.advanceTimersByTime(400);
+    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    vi.useRealTimers();
   });
 });
 
@@ -476,12 +665,12 @@ describe('renderDashboardTree — keyboard', () => {
     // Still on the Dashboard row — expanding is the whole action.
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales');
     key(list, 'ArrowRight');
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:filters');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:variables');
   });
 
   it('Right on an expanded LEAF-less group with no children does nothing', () => {
     const { app, list } = treeApp();
-    setUi(app, (ui) => toggleGroupExpanded(toggleDashboardExpanded(ui, 'ops'), 'ops', 'filters'));
+    setUi(app, (ui) => toggleGroupExpanded(toggleDashboardExpanded(ui, 'ops'), 'ops', 'variables'));
     renderDashboardTree(app);
     key(list, 'End'); // the last row: Ops' Panels group
     const before = readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey;
@@ -494,13 +683,13 @@ describe('renderDashboardTree — keyboard', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    key(list, 'ArrowDown'); // Filters group
-    key(list, 'ArrowDown'); // first filter
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:filter:f-src');
+    key(list, 'ArrowDown'); // Variables group
+    key(list, 'ArrowDown'); // first variable
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:variable:country');
     key(list, 'ArrowLeft'); // a leaf: step out to the group
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:filters');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:variables');
     key(list, 'ArrowLeft'); // an open group: collapse it
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedGroups.has(groupStateKey('sales', 'filters'))).toBe(false);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedGroups.has(groupStateKey('sales', 'variables'))).toBe(false);
     key(list, 'ArrowLeft'); // now closed: step out to the Dashboard
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales');
   });
@@ -539,19 +728,34 @@ describe('renderDashboardTree — keyboard', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    key(list, 'ArrowDown'); // Filters
-    key(list, 'ArrowDown'); // f-src
-    key(list, 'ArrowDown'); // f-bare — source-less
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:filter:f-bare');
+    key(list, 'End'); // Ops
+    key(list, 'ArrowUp'); // the broken tile — its query cannot be opened
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:tile:t-broken');
     key(list, 'Enter');
     expect(app.openSavedQuery).not.toHaveBeenCalled();
+  });
+
+  // #447: a variable row's primary action is its own editor, and Enter is the
+  // keyboard equivalent — the row has no `…` menu to reach it through.
+  it('Enter on a variable row opens its option-SQL editor', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    key(list, 'ArrowDown'); // Variables group
+    key(list, 'ArrowDown'); // country
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:variable:country');
+    key(list, 'Enter');
+    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('country');
+    // Shift+Enter has no Edit action to run on a variable row.
+    key(list, 'Enter', { shiftKey: true });
+    expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
   it('Shift+Enter on a group row does nothing — it has no Edit action', () => {
     const { app, list } = treeApp();
     setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
     renderDashboardTree(app);
-    key(list, 'ArrowDown'); // Filters group
+    key(list, 'ArrowDown'); // Variables group
     key(list, 'Enter', { shiftKey: true });
     expect(app.openDashboard).not.toHaveBeenCalled();
   });
@@ -616,8 +820,8 @@ describe('renderDashboardTree — focus and scroll across repaints', () => {
     openAll(app, 'sales');
     renderDashboardTree(app);
     key(list, 'ArrowDown');
-    key(list, 'ArrowDown'); // a filter row, three levels deep
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:filter:f-src');
+    key(list, 'ArrowDown'); // a variable row, three levels deep
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:variable:country');
     // Collapsing the Dashboard takes that row out of the visible set; the owner
     // must fall back to something real or the tree becomes keyboard-unreachable.
     setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
@@ -661,7 +865,7 @@ describe('renderDashboardTree — search', () => {
     const { app, list } = treeApp();
     setUi(app, (ui) => setTreeSearch(ui, 'revenue'));
     renderDashboardTree(app);
-    expect(labels(list)).toEqual(['Sales', 'Filters', 'Panels', 'Revenue']);
+    expect(labels(list)).toEqual(['Sales', 'Variables', 'Panels', 'Revenue']);
     setUi(app, (ui) => setTreeSearch(ui, ''));
     renderDashboardTree(app);
     // Back to exactly the collapsed collection — search never wrote expansion.
@@ -686,9 +890,13 @@ describe('renderDashboardTree — search', () => {
     expect(dashboardRow.querySelector('.chev')!.getAttribute('onclick')).toBeNull();
     click(dashboardRow.querySelector('.chev')!);
     click(dashboardRow);
+    // The forced GROUP row likewise offers no action to run at all — a group whose
+    // expansion the search owns must not write the user's own expansion set.
+    click(rowFor(list, 'w1:sales:group:panels'));
     vi.advanceTimersByTime(400);
     // Nothing was written, so clearing the search restores the untouched state.
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedGroups.size).toBe(0);
     setUi(app, (ui) => setTreeSearch(ui, ''));
     renderDashboardTree(app);
     expect(labels(list)).toEqual(['Sales', 'Ops']);
@@ -702,7 +910,7 @@ describe('renderDashboardTree — search', () => {
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
     // Right on a forced-open row steps INTO it instead of expanding it.
     key(list, 'ArrowRight');
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:filters');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:group:variables');
   });
 
   it('typing in the search box repaints the rows but keeps the input mounted', () => {

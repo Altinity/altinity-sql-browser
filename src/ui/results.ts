@@ -32,7 +32,6 @@ import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp } from './filter-bar.js';
 import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
 import { panelExecution } from '../core/panel-execution.js';
-import { renderFilterPreview } from './filter-preview.js';
 import type { AppDom, App, KeyboardOwner } from './app.types.js';
 import type { PanelResolution } from '../core/panel-cfg.js';
 import type { ResultSource } from '../core/query-source.js';
@@ -128,7 +127,7 @@ export type Result = ScriptResult | ScriptExportResult | QueryResult;
 // Not the full ~50-member `App` contract (app.types.ts) — tests/helpers/
 // fake-app.js's long-standing `makeApp()` stub (and panels.test.ts's own
 // further-narrowed fixture) satisfy this directly, matching the convention
-// filter-bar.ts/filter-preview.ts/explain-graph.ts already established for
+// filter-bar.ts/explain-graph.ts already established for
 // their own narrow app surfaces. The three calls into panels.ts's registry
 // (which wants the literal `App`, since it's also Dashboard's shared
 // registry) cast at that one seam (`app as App`) — the real production
@@ -248,16 +247,14 @@ export function renderResults(app: ResultsApp): void {
   // Beyond this point `r` is narrowed to `QueryResult | null`.
   const view = app.state.resultView.value;
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
-  if (streamingBlank && view !== 'filter') {
+  if (streamingBlank) {
     inner.appendChild(loadingPlaceholder('Starting query…'));
-  } else if (!r && view !== 'panel' && view !== 'filter') {
+  } else if (!r && view !== 'panel') {
     // The Panel tab renders even with no result at all (#166): a text panel
     // needs none, and query-backed types show their own empty-preview hint.
     inner.appendChild(h('div', { class: 'empty-results' },
       h('div', { class: 'chip' }, Icon.play()),
       h('div', null, 'Press ', h('kbd', null, '⌘↵'), ' to run query')));
-  } else if (view === 'filter') {
-    inner.appendChild(renderFilterPreview(app));
   } else if (r && r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r && r.schemaGraph) {

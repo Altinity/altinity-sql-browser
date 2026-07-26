@@ -44,13 +44,95 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Dashboard-only `.dash-file-menu`/`.dash-fm-item`/`.dash-file-btn` classes,
   the `AppHeaderOptions.fileButton` seam, and the untargeted
   `actions.exportDashboard`/`actions.importDashboard` registry entries are gone.
-- **Every Dashboard panel and curated filter now owns a dedicated saved-query
-  copy, and the lower-left pane is the Library** (#427). A workspace's queries
-  split into two kinds: a **Library** query, which no Dashboard member
-  references, and a Dashboard-**owned** copy, referenced by exactly one panel
-  tile or one curated filter. Ownership is derived from those references alone —
-  there is no flag on the query — and no query may be shared by two tiles, two
-  filters, a panel and a filter, or members of different Dashboards. Existing
+- **Dashboard filters are gone; a Dashboard's variables are INFERRED from the
+  `{name:Type}` placeholders in its panels' own SQL** (#447, phase 1). There is no
+  persisted filter object any more — no filter id, no label separate from the
+  name, no option-source query reference, no explicit target list, no selection
+  mode. A variable's name and ClickHouse type come from the panel queries that
+  declare it, matched **exactly and case-sensitively**: `country` and `Country`
+  are two variables, and a variable binds automatically to every panel query on
+  the same Dashboard that declares that exact name. Adding or removing a panel
+  changes the variable list by itself; creating a variable is never a separate
+  action. The one thing still stored is `dashboards[].variableConfigs` — optional
+  Dashboard-local option SQL keyed by variable name, holding only the SQL plus an
+  informational `lastKnownType` so an orphaned entry can still show a type.
+
+  The lower-left tree's **Filters** group is now **Variables**, listing
+  `name : Type` for every distinct inferred name plus every preserved orphaned
+  configuration. Declaring one name with two different types produces ONE row
+  showing every type, marked with an error icon and accessible error text (never
+  colour alone), whose hover diagnostic lists the conflicting panels; it renders
+  no working control, is excluded from execution, blocks only the panels that
+  require it, and resolves by itself once the panel SQL agrees. When the last
+  panel reference to a CONFIGURED variable disappears its SQL is preserved as an
+  `unused` orphan — warning-marked, hidden from the controls, excluded from
+  execution, still editable, and deletable through a trailing trash icon that
+  asks for confirmation because SQL will be lost. An UNconfigured variable that
+  loses its last reference simply disappears. A variable row has exactly two
+  operations: click to open its SQL editor, and (orphans only) delete. There is
+  no overflow menu.
+
+  Because the tree group was renamed, a Dashboard whose Filters group was
+  expanded opens with Variables collapsed once; session expansion state is not
+  migrated.
+
+  **Not in this phase** (they land with #447's phase 2): the typed direct-input
+  control matrix and its unsupported-compound diagnostics, option-backed
+  single-selects, the strict two-`String`-column option contract, the
+  `UNION ALL` batch compiler and its one-request execution, per-variable
+  Run/Test, and panel-waits-for-unset semantics. Dashboard controls in this phase
+  are the existing direct-input fields, now fed by inferred variables. In
+  particular, clearing a variable deactivates it but still leaves its last value
+  bound where a panel requires that parameter outside an optional block — the
+  pre-existing behaviour for plain filters, which phase 2's unset/selection work
+  addresses.
+
+- **`Filter` is no longer a saved-query role or a panel type** (#447). The role
+  enum is `["panel", "setup"]`, and the result-panel picker is a flat list of real
+  visualisations: the `Dashboard role` category, the `Filter` option, the
+  `Preview…` placeholder and the `Panel` heading are all removed, along with the
+  Filter result view and its preview. The whole option-provider runtime goes with
+  them — implicit filter synthesis, provider discovery by output-column name,
+  provider merging and duplicate-provider arbitration, identical-provider
+  collapse, shared-source execution dedup, one query feeding several filter
+  arrays, array/multiselect parsing and controls, and per-filter panel targets.
+  A Dashboard tile is now the only kind of member that references a saved query,
+  so "one query, several owners" has no valid form left.
+
+- **Stored workspaces are `storageVersion: 5`, Dashboard documents
+  `documentVersion: 2`, portable bundles `version: 2`** (#447). v2/v3/v4 records
+  and v1 bundles stay readable and migrate on read: each is validated against its
+  OWN schema at its own Dashboard document version, then carried forward. There is
+  no v3→v4 step any more — filters are dropped first, so the ownership migration
+  only ever walks document v2 and mints a dedicated copy per panel tile. A copy a
+  filter used to own is **kept**: losing its last owner makes it a Library query,
+  exactly as removing any other member does, so no SQL is destroyed and the query
+  reappears in the Library beside the original it was cloned from. Owned-copy ids
+  still derive to the same values they did before, so nothing is re-minted and no
+  open tab is disturbed. `maxQueries` stays at 5224 — removing filters lowers the
+  derived worst case, but a record already at that bound must keep decoding, so it
+  is a compatibility ceiling now rather than a recomputed maximum.
+
+  One document is deliberately **not** recoverable: a stored workspace or bundle
+  carrying a saved query with the removed `filter` role fails its structural pass
+  before migration can reach it, and is reported unsupported rather than migrated.
+  The curated-filter representation was experimental with no production legacy, so
+  such a workspace is recreated rather than repaired — delete the stored record (or
+  the `asb-workspaces-v2` IndexedDB database) and re-import.
+
+- **The compound From/To time-range control and the chart crosshair/brush
+  survive** (#335/#334), re-based from curated filter definitions onto inferred
+  variables. A range pair is still discovered from the recognized name table or
+  authoritative saved-query `timeRanges` metadata, but a bound is now identified by
+  its variable name and typed by that variable's agreed declaration, so the
+  array/selection-mode gate the old resolver applied is gone.
+- **Every Dashboard panel owns a dedicated saved-query copy, and the lower-left
+  pane is the Library** (#427; #447 removed the curated-filter half of this). A
+  workspace's queries split into two kinds: a **Library** query, which no
+  Dashboard member references, and a Dashboard-**owned** copy, referenced by
+  exactly one panel tile. Ownership is derived from those references alone —
+  there is no flag on the query — and no query may be shared by two tiles or by
+  members of different Dashboards. Existing
   workspaces migrate on open (`storageVersion: 4`): every original query stays
   exactly where it was as the Library source, and each member gains its own copy
   with the owner's role and no favourite. Dashboard, tile, filter and layout ids,
@@ -80,20 +162,6 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   not a Library entry. Markdown/SQL document exports and the workspace picker's
   query count follow the same projection, so a migrated workspace no longer
   exports every panel twice.
-- **A curated filter's option source is copied per DASHBOARD, not per filter**
-  (#427). A filter-role query returns one row whose columns each supply the
-  options for the parameter of the same name, so a single source legitimately
-  serves many curated filters — the shipped ClickHouse Operations dashboard has
-  one that serves six. Giving each filter its own copy re-created the #359 bug:
-  six identical sources ran six times, every helper column then had six providers,
-  and every filter on the dashboard failed with *"Multiple Filter queries provide
-  …"*. So all curated filters of one Dashboard share their Dashboard's copy, while
-  a panel query is still owned by exactly one tile, and cross-Dashboard sharing
-  stays forbidden — editing one Dashboard's option list still cannot reach
-  another's. Relatedly, several option sources offering the SAME column now
-  conflict only when they actually **disagree**: content-identical providers
-  collapse to one instead of taking every filter out of service, while two
-  genuinely different queries claiming one column remain an error.
 - **The favourite star is a Library preference, with no Dashboard meaning
   whatsoever** (#427, closes #434). It used to BE membership: starring a query
   appended a tile — minting a whole Dashboard if the workspace had none — and

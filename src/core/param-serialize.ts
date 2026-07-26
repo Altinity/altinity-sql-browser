@@ -30,8 +30,8 @@ import type { ParsedParamType } from './param-type.js';
 import { INT_TOKEN, isValidFloatToken } from './param-validate.js';
 
 /** `serializeParamValue`'s return shape — the same `{ok:true,value} | {ok:
- *  false,error,structural?}` contract `param-pipeline.ts`/`dashboard-filters.ts`
- *  already pin locally for this (previously unconverted) module's result. */
+ *  false,error,structural?}` contract `param-pipeline.ts` already pins locally
+ *  for this (previously unconverted) module's result. */
 export type SerializeParamResult =
   | { ok: true; value: string }
   | { ok: false; error: string; structural?: boolean };

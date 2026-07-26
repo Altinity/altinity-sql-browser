@@ -47,27 +47,23 @@
       spec: { name, panel: { cfg: { type: 'bar', x: 0, y: [1] } }, ...over },
     });
     const dash = (id, title, over = {}) => ({
-      documentVersion: 1, id, title, revision: 1,
+      documentVersion: 2, id, title, revision: 1,
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      filters: [], tiles: [], ...over,
+      tiles: [], ...over,
     });
     const seed = {
-      storageVersion: 4, id: 'workspace', key: 'workspace', name: 'Workspace',
+      storageVersion: 5, id: 'workspace', key: 'workspace', name: 'Workspace',
       queries: [
-        // The panel query DECLARES both filter parameters — whole-workspace
-        // validation rejects a curated filter with no executable consumer.
+        // #447: the panel query's own `{name:Type}` placeholders ARE the
+        // Dashboard's variables — `zone` and `region`. Nothing declares them.
         query('q-rev', 'Revenue', 'SELECT 1 AS v, {zone:String} AS z, {region:String} AS r'),
         query('q-cost', 'Cost'),
-        // The curated filter's option source is a filter-role query, which never
-        // becomes a tile.
-        query('q-zones', 'Zone list', "SELECT ['eu','us'] AS zone", { dashboard: { role: 'filter' } }),
       ],
       dashboards: [
         dash('sales', 'Sales revenue', {
-          filters: [
-            { id: 'f-zone', parameter: 'zone', sourceQueryId: 'q-zones' },
-            { id: 'f-bare', parameter: 'region' },
-          ],
+          // `zone` carries Dashboard-local option SQL, so it is a CONFIGURED
+          // variable (and its SQL is searchable); `region` is a direct input.
+          variableConfigs: { zone: { sql: "SELECT 'eu', 'Europe'" } },
           tiles: [{ id: 't-rev', queryId: 'q-rev' }, { id: 't-cost', queryId: 'q-cost' }],
         }),
         dash('ops', 'Ops latency'),
