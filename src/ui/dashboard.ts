@@ -2026,8 +2026,8 @@ export async function renderDashboard(
             // so it has no box at all: nothing can be positioned against it, which
             // is also why `surfaceRect` derives its rect from its children. The
             // action lives on every tile CARD instead, which covers both engines
-            // including the default one's KPI tiles. See the inbox issue on giving
-            // flow's KPI band real per-tile chrome.
+            // including the default one's KPI tiles. Giving this band real per-tile
+            // chrome is #475.
             flowKpiHosts.set(member.tileId, host);
             if (!readOnly) wireTileDrag(member.tileId, host);
             stream.appendChild(host);

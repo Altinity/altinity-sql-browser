@@ -82,8 +82,10 @@ export interface AppShellHandle {
    * but contributes no layout, so a Dashboard genuinely owns the whole
    * right-hand work area and no invisible result drawer consumes space.
    *
-   * Also mirrored onto `.main-row[data-surface]` for the mobile rules, which
-   * need to drop the sidebar and the bottom nav for a full-bleed Dashboard.
+   * Also mirrored onto `.main-row[data-surface]` for the mobile rules, which drop
+   * the sidebar for a full-bleed Dashboard and reduce the bottom nav to its Editor
+   * entry — #471's route back, now that the Dashboard toolbar carries no generic
+   * one.
    */
   showHost(kind: SurfaceHostKind): void;
   dispose(): void;

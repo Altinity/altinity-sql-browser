@@ -485,6 +485,64 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
   Admitting `Array(scalar T)` into the batch made the comment honest, and the
   message now says what is actually wrong.
 
+## Addendum (#471, 2026-07-26): leaving a Dashboard is a per-tile act
+
+The `Back to query` control the #426 addendum above restored is removed. It named
+no document: generic back-navigation in the primary toolbar, which left the user to
+find the corresponding query in the Workbench themselves. Every query-backed tile
+carries its own `Open in Workbench` action instead. Four decisions are worth
+recording.
+
+- **The tile's `queryId` IS the provenance the feature needs — no new tab model.**
+  #471 asks for tab identity by "stable document origin, such as `dashboardId +
+  dashboardQueryId`", and #464 proposes a `QueryTabOrigin` union. Neither is
+  required here, because the #427 addendum above already made ownership a
+  reference: a panel tile points at a dedicated saved-query copy that exactly one
+  member owns, so that copy's id already IS a per-Dashboard document identity.
+  `loadIntoNewTab` has always deduplicated on `savedId` and `commitSavedQuery`
+  resolves its write target by id, so "re-opening selects the existing tab", "two
+  same-named copies are two tabs" and "Save targets the Dashboard copy" all hold by
+  construction. What #464 still owns is the *visible* half — the collision badges
+  and full-origin tooltips that make two identically-named tabs tellable apart. A
+  `TabDocument` arm for this would have been a second, redundant identity next to
+  `savedId`, which is exactly the "second source of truth" #427 refused.
+
+- **The action is not edit-mode chrome.** The grip, delete and resize handle are all
+  `!readOnly`-gated and built only in Edit mode. This one is built unconditionally,
+  like the heading: inspecting the query behind a tile is a View-mode act first, and
+  the issue requires both modes. That had one consequence nothing else forced — a
+  Grid-Tiles KPI tile's head is an absolutely-positioned, `pointer-events: none`
+  overlay whose reveal rules were scoped `:not(.is-view)`, correct while every
+  control inside it was edit-only. View mode now reveals it and the action opts back
+  into pointer events.
+
+- **Nothing to open means no control, not a disabled one.** A `text` panel is
+  queryless by capability (`isQuerylessPanel`, the same predicate Save and share
+  already use) and an unresolvable `queryId` belongs to a tile already rendering its
+  own missing-query error. Both render no action. A disabled button would have
+  advertised an affordance that can never work, and pointing it at the Dashboard's
+  first query would have opened someone else's document.
+
+- **A flow KPI band member gets no action, and that is a boundary, not an
+  oversight.** Flow renders a KPI tile into a `.dash-kpi-member` host that carries
+  no tile chrome of any kind — no head, no delete, no grip, no resize — and is
+  `display: contents`, so it has no box at all; that is also why the drag code
+  derives its rect from the host's children. Absolutely positioning the action
+  against it put the button in the Dashboard toolbar in a real browser, which
+  happy-dom could not see. The action therefore lives on every tile *card*, which
+  covers both engines including the default one's KPI tiles. Giving flow's KPI band
+  real per-tile chrome — it has no delete affordance either — is #475.
+
+The mobile consequence is recorded here too, because it reverses part of the #425
+addendum. #426 had restored the back button specifically because the mobile rules
+drop the sidebar *and* the bottom nav for a full-bleed Dashboard, and a per-tile
+action cannot rescue a Dashboard with no tiles. Per the owner decision on #471, the
+bottom nav stops hiding itself on this surface and shows only **Editor** — the other
+two panel values still say nothing about a Dashboard — and pressing it switches
+surface before selecting the panel, the same order `openSavedQuery` and
+`openVariableTab` use. Full-bleed was a *width* claim; a bottom bar shortens the
+Dashboard without overlapping it.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from
