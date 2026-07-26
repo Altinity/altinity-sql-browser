@@ -220,14 +220,19 @@ export function openFileMenu(
   // state after a surface change without its rows moving. Only the SURFACE half
   // of the context is fixed when the header was built — the surface is what
   // knows which document it actually rendered.
+  // Not `app.currentWorkspace !== null`: that is also null on the legacy
+  // no-aggregate path, where export/import deliberately fall back to the
+  // `state`-derived workspace and must stay available.
+  const hasWorkspace = app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true;
   const model = fileMenuModel({
     surface: context,
-    // Not `app.currentWorkspace !== null`: that is also null on the legacy
-    // no-aggregate path, where export/import deliberately fall back to the
-    // `state`-derived workspace and must stay available.
-    hasWorkspace: app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true,
+    hasWorkspace,
     libraryQueryCount: list.length,
-    dashboardIds: workspaceDashboards(app).map((dashboard) => dashboard.id),
+    // No resolved workspace means no Dashboards to act on, whatever `state` is
+    // still projecting: the workspace-not-found surface exists BECAUSE nothing
+    // resolved, and a `state.dashboard` left over from the workspace the user
+    // came from would otherwise offer to export a document that is not there.
+    dashboardIds: hasWorkspace ? workspaceDashboards(app).map((dashboard) => dashboard.id) : [],
   });
 
   const importQueriesInput = pickerInput(app, 'import-queries', (f) => onImportQueriesFile(app, f));
@@ -389,7 +394,7 @@ function workspaceDashboards(app: App): readonly DashboardDocumentV2[] {
 function afterLibraryChange(app: App): void {
   // Dashboard shares the application header, but none of the Workbench body
   // chrome below exists. Re-render its route after any allowed header/File
-  // mutation (rename or Import Dashboard).
+  // mutation (rename, New dashboard, or Import dashboard).
   if (app.sqlRoute.surface === 'dashboard') { app.reloadDashboardRoute(); return; }
   app.updateSaveBtn();
   // Always defined by the time a file-menu action can run (post-boot,
@@ -768,11 +773,22 @@ function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: stri
     // silently resolved to the collection's FIRST entry, overwriting a Dashboard
     // the user never named) is now unrepresentable: `planImportDashboard` has no
     // parameter that can name an existing entry.
+    //
+    // `lastPlan` carries the minted LOCAL id back out of the queued builder, the
+    // same way `startImportQueries` carries its count. An append is otherwise
+    // invisible — the imported Dashboard lands last in a collection the user may
+    // not even have open — so opening it is what distinguishes a successful
+    // additive import from a silent no-op.
+    let lastPlan: PortableBundleImportPlan | null = null;
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
-        (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, app.genId)),
+        (base, revalidated) => (lastPlan = planImportDashboard(base, bundle, dashboardId, revalidated, app.genId))),
       'Imported dashboard',
-    );
+    ).then((committed) => {
+      // `lastPlan!` / `importedDashboardId!` — a COMMITTED plan is a valid plan,
+      // and a valid `planImportDashboard` always reports the id it minted.
+      if (committed) app.openDashboard({ dashboardId: lastPlan!.importedDashboardId!, mode: 'edit' });
+    });
   });
 }
 
@@ -975,7 +991,16 @@ export function disposeFileMenuOverlays(app: Pick<App, 'document' | 'dom'>): voi
 
 /** Mount one `.fm-dialog-backdrop`/`.fm-dialog-card` (title + caller-supplied
  *  content nodes), wired for Esc + outside-click close — the shared shell
- *  the conflict dialog/the dashboard picker/the name dialog all build on. */
+ *  the conflict dialog/the dashboard picker/the name dialog all build on.
+ *
+ *  #463: closing RETURNS FOCUS to the File trigger. Every one of these dialogs
+ *  is opened from a File-menu row, and the row is already gone by the time the
+ *  dialog mounts (the shared `openMenu` closes before running the click) — so
+ *  `activeElement` is `<body>` and there is nothing to remember. Without this,
+ *  dismissing a dialog left focus on `<body>` and a keyboard user lost their
+ *  place in the menu they had just been in. `fileBtn!` holds the same invariant
+ *  `openFileMenu` asserts; on a detached button (a surface swap tore the header
+ *  down under an open dialog) `focus()` is a harmless no-op. */
 function openDialogShell(app: App, title: string, content: unknown[], extraCardClass?: string): DialogHandle {
   const doc = app.document;
   const releaseKeyboard = app.acquireKeyboardOwner('modal');
@@ -987,6 +1012,7 @@ function openDialogShell(app: App, title: string, content: unknown[], extraCardC
     backdrop.remove();
     if (app.dom.fileDialog === backdrop) app.dom.fileDialog = undefined;
     releaseKeyboard();
+    app.dom.fileBtn!.focus();
   };
   const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
   const card = h('div', { class: extraCardClass ? `fm-dialog-card ${extraCardClass}` : 'fm-dialog-card' },

@@ -311,8 +311,10 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  * the same primitive this row's own action menu uses, so no new dialog is
  * invented: it gives the destructive action a real `<button role="menuitem">`, an
  * explicit Cancel, Escape/outside-click dismissal, and focus restored to the
- * trigger. (`file-menu.ts`'s `openConfirm` is module-private to that file, and
- * `window.confirm` is browser chrome this stylesheet cannot reach.)
+ * trigger. (`file-menu.ts`'s `.fm-dialog-*` shell is module-private to that
+ * file — and #463 retired its one confirm dialog with the destructive import
+ * that needed it — while `window.confirm` is browser chrome this stylesheet
+ * cannot reach.)
  *
  * Like the menu button, it stops propagation and calls `cancelFor` rather than
  * going through the arbiter: clicking trash must NOT also open the variable's

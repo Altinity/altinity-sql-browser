@@ -373,6 +373,18 @@ describe('file menu availability (#452)', () => {
     expect(reasonOf('Export dashboard…')).toBeNull();
   });
 
+  // #463 review: the workspace-not-found surface exists BECAUSE no aggregate
+  // resolved, but `state.dashboard` can still be projecting the workspace the
+  // user came from. Export must not offer to download a document that is not
+  // there — the id list is gated on the workspace resolving at all.
+  it('the workspace-not-found surface exports nothing, whatever state still projects', () => {
+    const app = mountOn({ surface: 'dashboard', mode: 'edit', dashboardId: null, workspaceMissing: true });
+    app.state.dashboard = dashboardDoc({ id: 'from-the-old-workspace', title: 'Ghost' });
+    openFileMenu(app, { surface: 'dashboard', mode: 'edit', dashboardId: null, workspaceMissing: true });
+    expect(reasonOf('Export dashboard…')).toBe('No dashboards');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('0 Library queries · 0 dashboards');
+  });
+
   it('no active workspace disables what needs one, without moving a row', () => {
     openOn({ surface: 'dashboard', mode: 'edit', dashboardId: null, workspaceMissing: true });
     expect(menuLabels()).toEqual(ROWS);
@@ -859,8 +871,10 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
   // "the chooser lists Dashboard names and enough secondary identity to
   // distinguish duplicate names" — and picking one still exports BY ID.
   it('the export chooser distinguishes duplicate names and exports the exact id', async () => {
-    const twinA = dashboardDoc({ id: 'aaa111', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
-    const twinB = dashboardDoc({ id: 'bbb222', title: 'Ops' });
+    // Ids deliberately LONGER than the tail the chooser shows, so the assertion
+    // fails if the fragment ever widens to the whole id.
+    const twinA = dashboardDoc({ id: 'ws-dashboard-aaa111', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const twinB = dashboardDoc({ id: 'ws-dashboard-bbb222', title: 'Ops' });
     const committed = wsWithDashboards(twinA, twinB);
     const app = mount({
       currentWorkspace: committed,
@@ -872,11 +886,11 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     const metas = [...dialog.querySelectorAll('.fm-meta')].map((el) => el.textContent);
     expect(metas).toEqual(['1 tile · aaa111', '0 tiles · bbb222']);
     // The second twin carries no tile, so the exported bundle proves WHICH one.
-    click(dialog.querySelector<HTMLButtonElement>('[data-dashboard-id="bbb222"]')!);
+    click(dialog.querySelector<HTMLButtonElement>('[data-dashboard-id="ws-dashboard-bbb222"]')!);
     await flush();
     const decoded = decodePortableBundleJson(app.downloadFile.mock.calls[0][2] as string);
     expect(decoded.ok).toBe(true);
-    if (decoded.ok) expect(decoded.value.dashboards[0].id).toBe('bbb222');
+    if (decoded.ok) expect(decoded.value.dashboards[0].id).toBe('ws-dashboard-bbb222');
   });
 
   it('cancelling the export chooser downloads nothing', () => {
@@ -916,6 +930,7 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
       FileReader: fakeReader(bundleText({ dashboards: [incoming] })),
       workspace: statefulWorkspaceRepo(committed),
     }));
+    app.openDashboard = vi.fn();
     openFileMenu(app, dashEdit('second'));
     const input = picker('Import dashboard…');
     input.click = vi.fn();
@@ -926,6 +941,10 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     const saved = await loadActiveWorkspace(app);
     expect(saved.dashboards.map((d) => d.title)).toEqual(['First', 'Second', 'Incoming']);
+    // An append is invisible otherwise: the new Dashboard lands last, in a
+    // collection the user may not have open. Opening it is what separates a
+    // successful additive import from a silent no-op.
+    expect(app.openDashboard).toHaveBeenCalledWith({ dashboardId: saved.dashboards[2].id, mode: 'edit' });
     // The Dashboard that was OPEN is byte-identical — the import did not merge
     // into it, and the reminted id proves the appended entry is a new document.
     expect(saved.dashboards[1]).toEqual(committed.dashboards[1]);
@@ -1397,10 +1416,10 @@ describe('New dashboard (#463)', () => {
     expect((await loadActiveWorkspace(app)).dashboards.map((d) => d.title)).toEqual(['Typed']);
   });
 
-  // The legacy/first-run install: no aggregate is persisted yet, so
-  // `mutateWorkspace` hands the builder `latest: null` and the append has to
-  // fall back to the `state`-derived workspace — the same fallback every other
-  // commit in this module uses, at dequeue time.
+  // No aggregate resolves for `state.workspaceId`, so the builder is handed
+  // `latest: null` and the append falls back to the `state`-derived workspace —
+  // the same `latest ?? currentWorkspace(app)` fallback every commit in this
+  // module carries for the legacy/first-run install.
   it('creates the first Dashboard of a workspace with no persisted aggregate', async () => {
     const app = mount({ workspace: statefulWorkspaceRepo(null) });
     app.state.savedQueries = [panelQuery('lib', 'Library query')];
@@ -1478,6 +1497,31 @@ describe('New dashboard (#463)', () => {
     const saved = await loadActiveWorkspace(app);
     expect(saved.dashboards.map((d) => d.title)).toEqual(['D', 'From view']);
     expect(app.openDashboard).toHaveBeenCalledWith({ dashboardId: saved.dashboards[1].id, mode: 'edit' });
+  });
+
+  // The issue's Tests list: "keyboard operation, focus return, Escape, and
+  // outside-click dismissal". The row click closes the menu (which returns focus
+  // to the File trigger), then the dialog takes it — so dismissing has to hand
+  // it back rather than dropping the user on <body>.
+  it.each([
+    ['Cancel', () => click(document.querySelector('.fm-dialog-cancel')!)],
+    ['Escape', () => key(document, 'Escape')],
+    ['an outside click', () => {
+      // `attachBackdropClose` only closes on a press that STARTED on the
+      // backdrop, so a bare click is not the gesture.
+      const backdrop = document.querySelector('.fm-dialog-backdrop')!;
+      backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      click(backdrop);
+    }],
+  ])('returns focus to the File trigger when dismissed by %s', async (_name, dismiss) => {
+    const app = mountWith(wsWith());
+    openFileMenu(app);
+    click(row('New dashboard…'));
+    await flush();
+    dismiss();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(document.activeElement).toBe(app.dom.fileBtn);
+    expect((await loadActiveWorkspace(app)).dashboards).toEqual([]);
   });
 
   it('focuses and selects the name field so typing replaces the default', async () => {

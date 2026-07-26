@@ -296,6 +296,13 @@ function replaceIncomingQueries(
 
 export interface PortableBundleImportPlan {
   sourceDashboardId?: string;
+  /** The LOCAL id the appended Dashboard was minted under (#463) — set by
+   *  `planImportDashboard` on a valid plan, and by nothing else. The caller has
+   *  to open what it just imported, and the bundle's own id is not it: the
+   *  import always remints. Reported rather than left to be re-derived from
+   *  `candidateWorkspace.dashboards.at(-1)`, which would make the navigation
+   *  depend on the append staying an append. */
+  importedDashboardId?: string;
   queryMappings: IdMapping;
   candidateWorkspace: StoredWorkspaceV5 | null;
   diagnostics: WorkspaceDiagnostic[];
@@ -441,10 +448,15 @@ export function planImportDashboard(
   const base = replaceWorkspaceContents(
     workspace, { queries: nextQueries, dashboards: workspace.dashboards },
   );
-  return validatedPlan(
+  const plan = validatedPlan(
     normalizedForOwnership(appendDashboard(base, finalDashboard), new Set([finalDashboard.id])),
     mapping, options, sourceDashboardId,
   );
+  // Only a plan that will actually commit reports a local id — an invalidated
+  // one has nothing to open.
+  return plan.candidateWorkspace
+    ? { ...plan, importedDashboardId: finalDashboard.id }
+    : plan;
 }
 
 /** Replace the workspace's queries AND Dashboards atomically (preserving

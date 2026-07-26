@@ -459,38 +459,52 @@ operations.
 the empty-Dashboard placeholder all render the *same* rows in the same order.
 Context changes only whether a row is **enabled** — a row never disappears or
 moves, and an unavailable one is dimmed, marked `aria-disabled`, skipped by
-keyboard activation, and labelled with a short reason (*Open a dashboard*, *Edit
-mode only*, *No dashboard*, *No workspace*, *No Library queries*). Dashboard
-operations always act on the **exact** Dashboard on screen and never fall back to
-the first one in the collection.
+keyboard activation, and labelled with a short reason (*Edit mode only*, *No
+dashboards*, *No workspace*, *No Library queries*).
 
-The first six rows are one unlabeled primary-action group, in this order:
+**Dashboard commands are workspace operations (#463).** They act on the
+workspace, not on whichever Dashboard happens to be open: **New** and **Import**
+*append* a Dashboard, so neither can overwrite an existing one, and **Export**
+resolves an **exact** Dashboard by id — never a fallback to the first in the
+collection.
+
+The nine rows are grouped by verb — create, import, export, download — behind
+three dividers, in this order:
 
 - **New workspace…** — creates and activates a new empty, default-named
   workspace without deleting the previous one. Open editor tabs are unaffected.
+- **New dashboard…** — asks for a name, appends a new empty Dashboard to the
+  current workspace, and opens it in **Edit** mode. Duplicate names are allowed
+  (identity is the Dashboard id); Cancel and Escape commit nothing. Needs a
+  writable workspace (*No workspace*).
+
 - **Import workspace…** — creates and activates a new local workspace from a
   portable bundle; imported identity is reminted and made unique. Every bundled
   Dashboard is imported, in file order.
-- **Export workspace…** (`.json`) — write the one canonical
-  **`altinity-sql-browser/portable-bundle`** interchange format: every saved
-  query (catalog order) plus every stored Dashboard. Uses the deterministic
-  canonical encoder and never mutates the workspace's identity or Dashboard
-  revision.
 - **Import queries…** — merge a file's queries into the current collection. When
   an incoming query's id collides with an existing one, a **conflict dialog**
   offers a default action plus per-row overrides — *use existing*, *copy* (import
   under a fresh id), *replace*, or *skip*; a byte-identical incoming query is
   reused automatically. The Dashboard is untouched (imported favorite flags never
-  add tiles).
+  add tiles). Read-only in Dashboard View (*Edit mode only*).
+- **Import dashboard…** — imports one Dashboard from a file as a **new**
+  Dashboard in the current workspace (a multi-Dashboard file asks which one),
+  bringing precisely its referenced queries through the same conflict dialog, and
+  opens it in Edit mode. Additive: existing Dashboards are never replaced or
+  merged into, so there is nothing to confirm. Available from every surface,
+  including Query, whenever a workspace is writable (*No workspace*).
 
-- **Import Dashboard…** — replaces the Dashboard on screen with one from a file
-  (confirming first, and importing only its referenced queries; a
-  multi-Dashboard file asks which one). On the empty-Dashboard placeholder it
-  creates the workspace's first Dashboard instead. Disabled on Query and in
-  Dashboard View.
-- **Export Dashboard…** (`.json`) — emits the exact Dashboard on screen plus
-  precisely its dependency-closure of queries. Available in both Dashboard View
-  and Edit; disabled on Query.
+- **Export workspace…** (`.json`) — write the one canonical
+  **`altinity-sql-browser/portable-bundle`** interchange format: every saved
+  query (catalog order) plus every stored Dashboard. Uses the deterministic
+  canonical encoder and never mutates the workspace's identity or Dashboard
+  revision.
+- **Export dashboard…** (`.json`) — emits one exact Dashboard plus precisely its
+  dependency-closure of queries. The Dashboard on screen exports in one click
+  (View as well as Edit), as does a workspace's only Dashboard from any surface;
+  otherwise a chooser lists each Dashboard with its tile count and an id fragment
+  so duplicate names stay distinguishable. Disabled only when the workspace holds
+  none (*No dashboards*).
 
 Below a separator, the two one-way Library downloads — **Download Library as
 Markdown** (`.md`, a `### heading` + fenced ` ```sql ` cookbook) and **Download

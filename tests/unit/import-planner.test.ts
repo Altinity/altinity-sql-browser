@@ -396,6 +396,9 @@ describe('planImportDashboard', () => {
     const plan = planImportDashboard(ws, buildBundle(), 'd1', [], counter('fresh'));
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('fresh-1');
+    // #463: the caller has to OPEN what it imported, and the bundle's id is not
+    // it — the plan reports the local id it minted.
+    expect(plan.importedDashboardId).toBe('fresh-1');
     expect(candidate.dashboards[0]!.revision).toBe(1);
     // The bundle's own query survives as a Library source; the member owns a copy.
     expect(ids(candidate.queries).slice(0, 1)).toEqual(['p1']);
@@ -429,6 +432,8 @@ describe('planImportDashboard', () => {
     expect(plan.diagnostics).toHaveLength(1);
     expect(plan.diagnostics[0].code).toBe('dashboard-import-invalid');
     expect(plan.diagnostics[0].message).toContain('p1');
+    // Nothing was committed, so there is nothing to open.
+    expect(plan.importedDashboardId).toBeUndefined();
   });
 
   it('reports a not-found diagnostic for an unknown sourceDashboardId', () => {
@@ -455,6 +460,7 @@ describe('planImportDashboard', () => {
     const plan = planImportDashboard(ws, badBundle, 'd1', [], counter());
     expect(plan.candidateWorkspace).toBeNull();
     expect(plan.diagnostics.some((d) => d.code === 'layout-orphan-placement')).toBe(true);
+    expect(plan.importedDashboardId).toBeUndefined();
   });
 });
 
@@ -510,6 +516,7 @@ describe('imports preserve the non-compatibility Dashboards', () => {
     // The imported document is LAST, under a freshly minted id…
     expect(dashboards.map((d) => d.id)).toEqual(['visible', 'hidden', 'new-1']);
     expect(dashboards[2].revision).toBe(1);
+    expect(plan.importedDashboardId).toBe('new-1');
     // …and both stored Dashboards are untouched.
     expect(dashboards[0]).toEqual(compat);
     expect(dashboards[1]).toEqual(hidden());
