@@ -1,0 +1,123 @@
+import { test, expect } from '@playwright/test';
+
+// #457 — a Dashboard variable's option SQL is edited in the MAIN editor, as a
+// dedicated tab, and not in a drawer of its own.
+//
+// This spec exists at the e2e level for a reason the unit suite cannot cover: the
+// whole claim is "the existing editing surface is REUSED". Proving that needs the
+// real tab strip, a real CodeMirror instance holding a real document, and the real
+// Save control — none of which `dashboard-tree.html` mounts, and none of which
+// happy-dom can render.
+
+const open = async (page) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/tests/e2e/variable-tab.html');
+  await page.waitForFunction(() => window.__ready === true);
+};
+
+const roleTab = (page, name) => page.locator('.upper-role-tabs .side-tab', { hasText: name });
+const treeRow = (page, key) => page.locator(`.dash-tree-row[data-key="${key}"]`);
+const tabNames = (page) => page.locator('.qtab .name');
+// BOTH CodeMirror instances are mounted (SQL + Spec JSON), so every editor
+// selector must name which one — a bare `.cm-content` is a strict-mode violation.
+const sqlEditor = (page) => page.locator('.cm-content[data-language="sql"]');
+const editorText = (page) => page.evaluate(() => window.__app.sqlEditor.getValue());
+
+/** Expand `dashboardId` and its Variables group, then click variable `name`.
+ *  Expansion is driven off which ROWS exist rather than off any attribute: the
+ *  chevron carries none, and the tree is fully repainted on every toggle. */
+const openVariable = async (page, dashboardId, name) => {
+  await roleTab(page, 'Dashboards').click();
+  const group = treeRow(page, `workspace:${dashboardId}:group:variables`);
+  if (!(await group.count())) await treeRow(page, `workspace:${dashboardId}`).locator('.chev').click();
+  const variable = treeRow(page, `workspace:${dashboardId}:variable:${name}`);
+  if (!(await variable.count())) await group.click();
+  await variable.click();
+};
+
+test('a variable row opens a real editor tab loaded with its committed SQL', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+
+  // The SHIPPED tab strip, beside the query tab that was already open.
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: zone']);
+  await expect(page.locator('.qtab').last()).toHaveClass(/active/);
+  // The SHIPPED CodeMirror instance holds the variable's stored option SQL.
+  await expect.poll(() => editorText(page)).toBe("SELECT 'eu', 'Europe'");
+  // It is the SQL editor that is live — a variable is an SQL document, and the
+  // Spec pane stays hidden for it.
+  await expect(sqlEditor(page)).toBeVisible();
+  await expect(page.locator('.spec-pane')).toBeHidden();
+});
+
+test('the same variable name in two Dashboards opens two independent tabs', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await openVariable(page, 'ops', 'zone');
+
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: zone', 'Variable: zone']);
+  expect(await page.evaluate(() => window.__variableTabs().map((t) => t.dashboardId)))
+    .toEqual(['sales', 'ops']);
+  // `ops` has no stored configuration, so its tab is blank — not `sales`'s SQL.
+  await expect.poll(() => editorText(page)).toBe('');
+});
+
+test('re-clicking a variable selects the tab it already has, keeping unsaved edits', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.type(' -- edited');
+
+  // A different tab first, so the re-click has to actually re-select.
+  await page.locator('.qtab').first().click();
+  await openVariable(page, 'sales', 'zone');
+
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: zone']);
+  await expect.poll(() => editorText(page)).toContain('-- edited');
+});
+
+test('Save writes the edited SQL to that variable, and nothing to the Library', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type("SELECT 'us', 'United States'");
+
+  await page.locator('.save-btn').click();
+
+  await expect.poll(() => page.evaluate(() => window.__storedSql('sales', 'zone')))
+    .toBe("SELECT 'us', 'United States'");
+  // Never a saved query: the Library is untouched and the tab has no link.
+  expect(await page.evaluate(() => window.__app.state.savedQueries.map((q) => q.id)))
+    .toEqual(['q-sales', 'q-ops']);
+  expect(await page.evaluate(() => window.__app.activeTab().savedId)).toBeNull();
+  // A successful save clears the tab's dirty marker.
+  await expect(page.locator('.qtab.active .dirty')).toHaveCount(0);
+});
+
+test('saving a blank document removes the configuration entirely', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.press('Backspace');
+
+  await page.locator('.save-btn').click();
+
+  // Back to direct input — not an empty string that would read as
+  // configured-but-broken later.
+  await expect.poll(() => page.evaluate(() => window.__storedSql('sales', 'zone'))).toBeNull();
+});
+
+test('typing marks the tab dirty, and Spec mode is refused with a variable-specific reason', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.type('x');
+
+  await expect(page.locator('.qtab.active .dirty')).toHaveCount(1);
+  // A variable document has no Spec to author, and the hovered title has to say
+  // so rather than telling the user to save a query they cannot save.
+  await expect(page.locator('.editor-mode-btn', { hasText: 'Spec' }))
+    .toHaveAttribute('title', 'A dashboard variable has no Spec.');
+});
