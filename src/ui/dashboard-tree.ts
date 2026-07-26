@@ -30,10 +30,7 @@ import {
   UNUSED_VARIABLE_STATUS, deriveDashboardTree,
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
-import {
-  commitVariableConfig, openVariableEditor,
-  type VariableEditorFactory, type VariableOptionQueryRunner,
-} from './variable-editor.js';
+import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import {
   clampKeyboardRow, readTreeUi, setDashboardExpanded, setGroupExpanded, setKeyboardRow,
   setTreeScroll, toggleDashboardExpanded, toggleGroupExpanded,
@@ -54,18 +51,20 @@ export interface DashboardTreeApp {
   mainSurface: MainSurfaceState;
   openDashboard(request: OpenDashboardRequest): void;
   openSavedQuery(queryId: string): void;
+  /** #457: open (or re-select) the main-editor tab that edits one variable's
+   *  option SQL. Replaced the drawer this tree used to mount — the tree now only
+   *  routes, exactly as it does for a saved query. */
+  openVariableTab(dashboardId: string, variableName: string): void;
   /** #447: the ONE write this otherwise read-only tree performs — deleting an
    *  orphaned variable's stored option SQL, through the same
    *  read-latest-at-dequeue primitive every other producer commits with. */
   mutateWorkspace: App['mutateWorkspace'];
-  /** #447: the injected option-SQL editor surface, threaded straight through to
-   *  `openVariableEditor` (see `ui/variable-editor.ts`). */
-  VariableEditor?: VariableEditorFactory;
-  /** #447 phase 2: the injected option-query runner, threaded straight through to
-   *  `openVariableEditor` — it is what the editor's Test action executes. Optional
-   *  for the same reason `VariableEditor` is: a narrow fixture need not carry one,
-   *  and the editor then simply offers no Test button. */
-  runOptionQuery?: VariableOptionQueryRunner;
+  /** #447 phase 2: asks a rendered Dashboard to rebuild from committed truth
+   *  after that delete, since a viewer session reads `variableConfigs` only at
+   *  construction. Declared here because the delete commits through
+   *  `commitVariableConfig`, which reports its commit — the tree never calls it
+   *  directly. `app.ts` always binds it (a no-op outside the Dashboard surface). */
+  onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
@@ -148,7 +147,7 @@ function runCommand(app: DashboardTreeApp, row: DashboardTreeRow, command: Dashb
   if (command.kind === 'toggle') { toggleRow(app, row); return; }
   if (command.kind === 'open-query') { app.openSavedQuery(command.queryId); return; }
   if (command.kind === 'open-variable') {
-    openVariableEditor(app, command.dashboardId, command.name);
+    app.openVariableTab(command.dashboardId, command.name);
     return;
   }
   app.openDashboard(command.request);
@@ -284,7 +283,7 @@ function buildRow(
 
 /** Route one primary press through the arbiter — except a row with NO double and
  *  NO Shift gesture (a group row, whose single action is expansion; a variable
- *  row, whose single action opens its editor), which has nothing to arbitrate
+ *  row, whose single action opens its tab), which has nothing to arbitrate
  *  against and would only feel slow if its action waited out the double-click
  *  window. */
 function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean): void {
@@ -317,7 +316,7 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  *
  * Like the menu button, it stops propagation and calls `cancelFor` rather than
  * going through the arbiter: clicking trash must NOT also open the variable's
- * editor, and it must cancel no OTHER row's pending click.
+ * tab, and it must cancel no OTHER row's pending click.
  */
 function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
   // `row.label` IS the variable's exact name by construction — the model sets a
@@ -348,7 +347,10 @@ function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardT
             // Removes ONLY this key from `variableConfigs` (both `sql` and
             // `lastKnownType` go with it). No panel query is touched — a
             // variable's name and type live in the panel SQL, not here.
-            onClick: () => commitVariableConfig(app, row.dashboardId, row.label, null),
+            // Fire-and-forget: the delete has no per-row UI to settle against —
+            // a successful commit reprojects the workspace and repaints the tree
+            // on its own, and an aborted one leaves nothing to undo.
+            onClick: () => { void commitVariableConfig(app, row.dashboardId, row.label, null); },
           },
           { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
         ],

@@ -521,18 +521,22 @@ itself.
 The Dashboards tree lists them under **Variables** as `name : Type`. Declaring one
 name with two different types shows a single row carrying both types, marked as an
 error, and blocks only the panels that require it; it clears itself once the panel
-SQL agrees. Clicking a row opens an SQL editor scoped to that variable, where you
-can give it optional Dashboard-local option SQL. Saving blank SQL removes that
-configuration and returns the variable to a direct input. If the last panel
-referencing a configured variable goes away its SQL is preserved as an `unused`
-row you can still edit, or delete with the trash icon.
+SQL agrees. Clicking a row switches to the Query surface and opens that variable's
+optional Dashboard-local **option SQL** in its own main-editor tab, titled
+`Variable: <name>` — the same editor, toolbar, Run action and results area every
+query uses. Clicking the same variable again returns to that tab, and the same
+variable name on two different Dashboards gets two separate tabs. Save writes only
+that variable's configuration; saving blank SQL removes it and returns the variable
+to a direct input. If the last panel referencing a configured variable goes away its
+SQL is preserved as an `unused` row you can still edit, or delete with the trash
+icon.
 
 Option SQL must be one embeddable read query returning exactly two `String`
 columns — value, then visible label, by POSITION rather than by column name — and
-may not reference Dashboard variables itself. Executing it, the strict column
-validation, and the single batched request that runs every configured variable's
-options at once arrive in the next phase of this work; until then a variable
-renders a direct input.
+may not reference Dashboard variables itself. A variable with option SQL renders a
+strict single-select; one without keeps the direct input inferred from its declared
+type. Every configured variable on a Dashboard is compiled into a single
+`UNION ALL` request per refresh, so ten of them still cost one round trip.
 
 ## Local install
 

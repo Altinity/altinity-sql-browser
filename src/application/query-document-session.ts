@@ -36,7 +36,7 @@
 
 import { evaluateSpecText } from '../core/spec-draft.js';
 import type { SpecValidationDiagnostic, SpecValidatorFn, QuerySpecValidationService } from '../core/spec-draft.js';
-import { savedForTab } from '../state.js';
+import { savedForTab, variableDoc } from '../state.js';
 import type { QueryTab, AppState } from '../state.js';
 
 // ── Construction deps ────────────────────────────────────────────────────────
@@ -189,6 +189,13 @@ export function createQueryDocumentSession(deps: QueryDocumentSessionDeps): Quer
   }
 
   function resolveEditorMode(tab: QueryTab, mode: 'sql' | 'spec'): EditorModeGate {
+    // #457: a variable document has no Spec to author — Save writes one
+    // Dashboard configuration key, and no `SavedQueryV2` exists to hang a Spec
+    // on. `savedForTab` already refused this tab (a variable has `savedId ===
+    // null`), but with a message that told the user to save a query they cannot.
+    if (mode === 'spec' && variableDoc(tab) !== null) {
+      return { ok: false, message: 'A dashboard variable has no Spec.' };
+    }
     if (mode === 'spec' && !savedForTab(deps.state, tab)) {
       return { ok: false, message: 'Save this query to create an editable Spec.' };
     }

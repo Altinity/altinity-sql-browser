@@ -30,7 +30,6 @@ import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
 import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV2, StoredWorkspaceV5 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
-import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
 import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
@@ -87,6 +86,38 @@ export type MutateWorkspace = <T = unknown>(
   transform: (latest: StoredWorkspaceV5 | null) =>
     WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
 ) => Promise<WorkspaceMutationOutcome<T>>;
+
+/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
+ *  to commit (or `null` to abort committing nothing), plus optional
+ *  operation-specific `data` the primitive threads back to the caller after the
+ *  commit resolves (e.g. the created query id a tab must link to). Returning the
+ *  whole object as `null` also aborts. */
+export interface WorkspaceMutationInput<T = unknown> {
+  candidate: StoredWorkspaceV5 | null;
+  data?: T;
+}
+
+/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
+ *  already projected the committed workspace, recorded its snapshot token, and
+ *  broadcast one invalidation; the caller only synchronizes its own surface. An
+ *  aborted transform (null / null candidate) commits nothing; a failed commit
+ *  carries the validation/persistence diagnostics. `data` rides through all
+ *  three outcomes (undefined when the queued op rejected before the transform
+ *  ran). */
+export type WorkspaceMutationOutcome<T = unknown> =
+  | { ok: true; workspace: StoredWorkspaceV5; dashboardRevision: number | null; data?: T }
+  | { ok: false; aborted: true; data?: T }
+  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
+
+/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
+ *  projected an externally committed workspace: the just-loaded workspace (or
+ *  `null` when the record was cleared) and whether the query collection changed
+ *  relative to the previous projection — the Dashboard route rebuilds its viewer
+ *  session on a query-only change even when the Dashboard document is identical. */
+export interface WorkspaceExternallyChangedInfo {
+  workspace: StoredWorkspaceV5 | null;
+  queriesChanged: boolean;
+}
 
 /** A saved-query CRUD op's async result once its candidate is strictly
  *  committed (validate-then-atomically-replace — see WorkspaceRepository.commit).
@@ -219,9 +250,34 @@ const asSavedEntry = (root: QueryRoot): SavedQueryV2 => root as SavedQueryV2;
 
 // ── State value types ───────────────────────────────────────────────────────
 
+/**
+ * WHICH application document a tab edits (#457).
+ *
+ * A tab is not always a query. A `dashboard-variable` tab edits ONE Dashboard
+ * variable's option SQL in the main editor — the same CodeMirror instance, tab
+ * strip, Run action and result area a query tab uses — but it is a distinct
+ * document kind, not a saved query:
+ *   - `savedId` is never used to represent it, and no `SavedQueryV2` is created;
+ *   - its identity is `(dashboardId, variableName)` exactly, so the same variable
+ *     name in two Dashboards is two different documents;
+ *   - Save writes `dashboard.variableConfigs[variableName]` and nothing else.
+ *
+ * A Dashboard id is unique within a workspace, NOT globally, so this binding is
+ * only meaningful against the workspace the tab was opened from — see
+ * `detachWorkspaceBoundTabs`, which resets these tabs on a workspace switch for
+ * the same reason it drops `savedId` links.
+ */
+export type TabDocument =
+  | { kind: 'query' }
+  | { kind: 'dashboard-variable'; dashboardId: string; variableName: string };
+
 /** One open query tab: the SQL document plus its complete authored Spec. */
 export interface QueryTab {
   id: string;
+  /** Which document this tab edits (#457). Always present on a tab built by
+   *  `newTabObj`; read through `variableDoc` rather than directly, because a
+   *  hand-built test fixture can still hand the app a tab without one. */
+  doc: TabDocument;
   name: string;
   sqlDraft: string;
   specVersion: number;
@@ -466,7 +522,7 @@ export const MOBILE_BREAKPOINT_PX = 768;
 export function newTabObj(id: string): QueryTab {
   const specParsed = { name: 'Untitled', favorite: false };
   return {
-    id, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
+    id, doc: { kind: 'query' }, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
     specText: serializeSpec(specParsed), specParsed, specDiagnostics: [],
     editorMode: 'sql', dirtySql: false, dirtySpec: false,
     result: null, lastSuccessfulResultColumns: [], savedId: null,
@@ -476,6 +532,51 @@ export function newTabObj(id: string): QueryTab {
 /** Overall tab dirty state is always the OR of the independent documents. */
 export const tabDirty = (tab: Partial<Pick<QueryTab, 'dirtySql' | 'dirtySpec'>> | null | undefined): boolean =>
   !!(tab && (tab.dirtySql || tab.dirtySpec));
+
+/**
+ * Does this tab have unsaved changes *to the document Save actually writes*
+ * (#457) — the ONE predicate the tab strip's dirty dot and the Save button both
+ * read, so they can never disagree.
+ *
+ * For a query tab that is `tabDirty`: SQL and Spec are both persisted.
+ *
+ * For a `dashboard-variable` tab it is `dirtySql` ALONE. A variable's Spec is
+ * never persisted — Save writes one `variableConfigs` key and creates no
+ * `SavedQueryV2` for a Spec to belong to — yet `dirtySpec` is still reachable on
+ * one: the result toolbar's panel-type picker calls `patchSpecDraft(…, { dirty:
+ * true })` for any tab. Counting that would strand the tab permanently dirty
+ * (nothing clears it, since the query path clears `dirtySpec` only via
+ * `setTabSpecDraft` on a committed entry) while the Save button correctly read
+ * "Saved" — a dot and a button contradicting each other with no action able to
+ * reconcile them.
+ */
+export const tabSaveDirty = (tab: QueryTab | null | undefined): boolean =>
+  (variableDoc(tab) !== null ? !!tab!.dirtySql : tabDirty(tab));
+
+/**
+ * This tab's variable binding, or `null` for an ordinary query tab (#457) — the
+ * ONE way the rest of the app asks "is this a variable document?".
+ *
+ * Optional-chained deliberately: `doc` is required on `QueryTab` and always set by
+ * `newTabObj`, but hand-built fixtures assert their way to a `QueryTab` without
+ * one, and a controller that read `tab.doc.kind` straight would throw on those
+ * rather than treat them as the plain query tabs they are.
+ */
+export const variableDoc = (
+  tab: Pick<QueryTab, 'doc'> | null | undefined,
+): Extract<TabDocument, { kind: 'dashboard-variable' }> | null =>
+  (tab?.doc?.kind === 'dashboard-variable' ? tab.doc : null);
+
+/** The open tab editing THIS variable, or `undefined`. Identity is the exact
+ *  `(dashboardId, variableName)` pair: re-opening a variable must select the tab
+ *  it already has, while the same name under a different Dashboard is a different
+ *  document and gets its own tab. */
+export const findVariableTab = (
+  tabs: readonly QueryTab[], dashboardId: string, variableName: string,
+): QueryTab | undefined => tabs.find((tab) => {
+  const doc = variableDoc(tab);
+  return doc !== null && doc.dashboardId === dashboardId && doc.variableName === variableName;
+});
 
 /** Replace a tab's complete parsed Spec draft and serialized text together. */
 export function setTabSpecDraft(
@@ -752,9 +853,28 @@ export function savedForTab(
 /** Detach every tab linked to the workspace being left. Saved-query ids are
  * scoped to their enclosing workspace, so carrying a link across a workspace
  * identity change could bind the tab's draft to an unrelated query that happens
- * to reuse the same id. Drafts and dirty flags deliberately remain untouched. */
+ * to reuse the same id. Drafts and dirty flags deliberately remain untouched.
+ *
+ * #457: a `dashboard-variable` tab is bound the same way and needs the same
+ * treatment for a sharper reason — its link is a DASHBOARD id, and its Save
+ * writes into whatever Dashboard that id resolves to. Dashboard ids are unique
+ * within a workspace, not globally (importing the same workspace JSON twice
+ * preserves them), so a variable tab surviving a workspace switch could commit
+ * option SQL into a Dashboard the user never opened. It has `savedId === null` by
+ * design, so the loop above never reached it. Demote it to a plain query tab: the
+ * draft survives as ordinary SQL, and no write can be addressed by a stale id. */
 export function detachWorkspaceBoundTabs(state: Pick<AppState, 'tabs'>): void {
   for (const tab of state.tabs.value) {
+    if (variableDoc(tab) !== null) {
+      tab.doc = { kind: 'query' };
+      tab.name = 'Untitled';
+      // The SPEC draft's name has to be renamed with it, not just the strip label.
+      // `openVariableTab` writes `Variable: <name>` into both, and `patchSpecDraft`
+      // re-derives `tab.name` FROM the Spec — so leaving the Spec alone would let
+      // the next panel-type pick silently restore the old title, and would keep a
+      // share link naming a variable that this tab is no longer bound to.
+      setTabSpecDraft(tab, { ...tab.specParsed, name: tab.name }, { dirty: tab.dirtySpec });
+    }
     if (!tab.savedId) continue;
     tab.savedId = null;
     tab.editorMode = 'sql';

@@ -121,6 +121,14 @@
 
     /** Drive the selected Dashboard/member the way the real controller would, so
      *  current-resource styling can be verified against real CSS. */
+    // #457: a variable row opens a main-editor TAB now. This fixture deliberately
+    // omits the workbench (see the header comment), so there is no tab strip to
+    // read — the tab MODEL is what it can prove, and the full click → tab → edit →
+    // Save loop lives in `variable-tab.html`, which mounts the whole app.
+    window.__variableTabs = () => app.state.tabs.value
+      .filter((tab) => tab.doc?.kind === 'dashboard-variable')
+      .map((tab) => ({ name: tab.name, sql: tab.sqlDraft, ...tab.doc }));
+
     window.__select = (dashboardId, member = null) => {
       app.mainSurface = dashboardId === null
         ? { kind: 'query' }

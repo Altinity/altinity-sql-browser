@@ -3,7 +3,9 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { activeTab, allocTabId, newTabObj, setTabSpecDraft, tabDirty } from '../state.js';
+import {
+  activeTab, allocTabId, findVariableTab, newTabObj, setTabSpecDraft, tabSaveDirty,
+} from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { queryToken } from '../workspace/workspace-sync.js';
 import { batch } from '@preact/signals-core';
@@ -51,7 +53,9 @@ export function renderTabs(app: TabsApp): void {
               : 'This query was deleted in another tab — Save will create a new one',
           }, t.externalState === 'conflict' ? '!' : '⌫')
         : null,
-      tabDirty(t) ? h('span', { class: 'dirty' }) : null,
+      // #457: `tabSaveDirty`, not `tabDirty` — the dot and the Save button must
+      // read the SAME predicate, and a variable tab's Spec is never saved.
+      tabSaveDirty(t) ? h('span', { class: 'dirty' }) : null,
       app.state.tabs.value.length > 1
         ? h('button', {
             class: 'close',
@@ -123,6 +127,71 @@ export function loadIntoNewTab(app: TabsApp, queryOrName: QueryOrName, sql = '')
   batch(() => {
     app.state.tabs.value = [...app.state.tabs.value, tab];
     app.state.activeTabId.value = id;
+  });
+  app.sqlEditor.focus();
+  return tab;
+}
+
+/** The tab-strip title for a variable document. Prefixed rather than bare so a
+ *  variable named like a query ("revenue") is never mistaken for one. Deliberately
+ *  module-private: the title is this module's business, and a second producer of it
+ *  is exactly the drift #457 removed. */
+const variableTabName = (variableName: string): string => 'Variable: ' + variableName;
+
+/**
+ * Open — or re-select — the tab that edits ONE Dashboard variable's option SQL
+ * (#457).
+ *
+ * Identity is the exact `(dashboardId, variableName)` pair, so re-opening the
+ * same variable selects the tab it already has instead of stacking duplicates,
+ * while the same variable name under a different Dashboard is a different
+ * document and gets its own tab. Every other open tab and unsaved draft is left
+ * exactly as it was — this appends, it never replaces.
+ *
+ * `sql` is committed truth at open time (`''` for a variable with no stored
+ * configuration yet); the tab is NOT dirty until the user types. `savedId` stays
+ * `null`: a variable is not a saved query, and Save writes `variableConfigs`.
+ */
+export function openVariableTab(
+  app: TabsApp, binding: { dashboardId: string; variableName: string }, sql: string,
+): QueryTab {
+  const existing = findVariableTab(app.state.tabs.value, binding.dashboardId, binding.variableName);
+  if (existing) {
+    // A CLEAN tab re-reads committed truth. Nothing reconciles a variable tab
+    // against a configuration changed elsewhere — it has no `savedId`, so the
+    // linked-tab classifier (#343) skips it entirely — and the tree's own trash
+    // affordance can delete the very configuration an open tab is showing. Without
+    // this, re-clicking the row returned a tab still displaying SQL that no longer
+    // exists, labelled "Saved", one ⌘S away from recreating it. An edited tab is
+    // never overwritten: the draft is the user's only copy.
+    if (!existing.dirtySql && existing.sqlDraft !== sql) {
+      existing.sqlDraft = sql;
+      // The editor syncs off the tabs signal, and selecting an ALREADY-active tab
+      // changes nothing on its own — so the list identity has to be poked or the
+      // editor keeps painting the stale document.
+      batch(() => {
+        app.state.tabs.value = [...app.state.tabs.value];
+        app.state.activeTabId.value = existing.id;
+      });
+      app.sqlEditor.focus();
+      return existing;
+    }
+    app.state.activeTabId.value = existing.id;
+    app.sqlEditor.focus();
+    return existing;
+  }
+  const tab = newTabObj(allocTabId(app.state));
+  tab.doc = { kind: 'dashboard-variable', ...binding };
+  tab.name = variableTabName(binding.variableName);
+  tab.sqlDraft = sql;
+  // Same treatment `loadIntoNewTab` gives an unsaved document: the Spec draft
+  // carries the tab's real name, so anything reading the Spec for a title (a
+  // share link, the result-source header) says what this document is rather than
+  // "Untitled".
+  setTabSpecDraft(tab, { ...tab.specParsed, name: tab.name });
+  batch(() => {
+    app.state.tabs.value = [...app.state.tabs.value, tab];
+    app.state.activeTabId.value = tab.id;
   });
   app.sqlEditor.focus();
   return tab;

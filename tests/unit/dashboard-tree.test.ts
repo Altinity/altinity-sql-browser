@@ -10,7 +10,6 @@ import {
 import type { MainSurfaceState } from '../../src/application/main-surface.js';
 import type { TreeWorkspace } from '../../src/application/dashboard-tree-model.js';
 import type { App } from '../../src/ui/app.types.js';
-import { closeVariableEditor } from '../../src/ui/variable-editor.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
@@ -52,6 +51,9 @@ const treeApp = (over: Partial<DashboardTreeApp> = {}) => {
   app.mainSurface = { kind: 'query' };
   app.openDashboard = vi.fn();
   app.openSavedQuery = vi.fn();
+  // #457: the tree ROUTES a variable row now — it no longer mounts an editor of
+  // its own — so what a click must produce is exactly this call.
+  app.openVariableTab = vi.fn();
   Object.assign(app, over);
   // #447: the tree's one write (deleting an orphaned variable's option SQL) goes
   // through `mutateWorkspace`. The fixture's version reads the SAME workspace the
@@ -91,12 +93,9 @@ const key = (list: HTMLElement, k: string, over: KeyboardEventInit = {}): void =
 };
 
 beforeEach(() => {
-  // A variable editor a test opened is registered per document, so close it before
-  // the DOM is cleared or it leaks into the next case.
-  closeVariableEditor({
-    document, currentWorkspace: null,
-    mutateWorkspace: (async () => ({ ok: false, aborted: true })) as App['mutateWorkspace'],
-  });
+  // #457: no per-document teardown any more. The variable DRAWER registered itself
+  // per document and leaked into the next case if left open; a variable row now
+  // just calls `app.openVariableTab`, which this fixture records.
   document.body.innerHTML = '';
 });
 
@@ -336,31 +335,28 @@ describe('renderDashboardTree — mouse gestures', () => {
     });
   });
 
-  // #447: a variable row opens its own editor, IMMEDIATELY — it has no double or
+  // #447/#457: a variable row opens its own tab, IMMEDIATELY — it has no double or
   // Shift gesture to arbitrate against, so waiting out the double-click window
   // would only make the tree feel slow.
-  it('a variable row click opens its option-SQL editor with no delay, and opens no query', () => {
+  it('a variable row click opens its variable tab with no delay, and opens no query', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
     click(rowFor(list, 'w1:sales:variable:country'));
-    expect(document.querySelector('.varedit-panel')).not.toBeNull();
-    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('country');
-    // The stored option SQL is what opens, not the declaring panel's query.
-    expect(document.querySelector<HTMLTextAreaElement>('.varedit-input')!.value)
-      .toBe('SELECT c, c FROM countries');
+    // Before `settle()`: the row must NOT wait out the double-click window.
+    expect(app.openVariableTab).toHaveBeenCalledExactlyOnceWith('sales', 'country');
     settle();
+    expect(app.openVariableTab).toHaveBeenCalledTimes(1);
     expect(app.openSavedQuery).not.toHaveBeenCalled();
     expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
-  it('an ORPHANED variable row still opens its editor', () => {
+  it('an ORPHANED variable row still opens its tab', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
     click(rowFor(list, 'w1:sales:variable:region'));
-    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('region');
-    expect(document.querySelector<HTMLTextAreaElement>('.varedit-input')!.value).toBe('SELECT r, r FROM regions');
+    expect(app.openVariableTab).toHaveBeenCalledExactlyOnceWith('sales', 'region');
   });
 
   it('an unresolved panel row cannot open a query but still navigates', () => {
@@ -607,16 +603,16 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
     expect(committed[0]!.dashboards[1]).toEqual(workspace().dashboards![1]);
   });
 
-  it('does NOT also open the variable editor', () => {
+  it('does NOT also open the variable tab', () => {
     vi.useFakeTimers();
-    const { list } = open();
+    const { app, list } = open();
     click(trash(list, 'w1:sales:variable:region')!);
     vi.advanceTimersByTime(400);
     // The trash button bypasses row activation entirely (like the action menu).
-    expect(document.querySelector('.varedit-panel')).toBeNull();
+    expect(app.openVariableTab).not.toHaveBeenCalled();
     click(confirmItems()[0]);
     vi.advanceTimersByTime(400);
-    expect(document.querySelector('.varedit-panel')).toBeNull();
+    expect(app.openVariableTab).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -735,9 +731,9 @@ describe('renderDashboardTree — keyboard', () => {
     expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
-  // #447: a variable row's primary action is its own editor, and Enter is the
+  // #447/#457: a variable row's primary action is its own tab, and Enter is the
   // keyboard equivalent — the row has no `…` menu to reach it through.
-  it('Enter on a variable row opens its option-SQL editor', () => {
+  it('Enter on a variable row opens its variable tab', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
@@ -745,7 +741,7 @@ describe('renderDashboardTree — keyboard', () => {
     key(list, 'ArrowDown'); // country
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:variable:country');
     key(list, 'Enter');
-    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('country');
+    expect(app.openVariableTab).toHaveBeenCalledExactlyOnceWith('sales', 'country');
     // Shift+Enter has no Edit action to run on a variable row.
     key(list, 'Enter', { shiftKey: true });
     expect(app.openDashboard).not.toHaveBeenCalled();

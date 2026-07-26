@@ -12,8 +12,10 @@ import type { EditorView } from '@codemirror/view';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
-import type { VariableEditorFactory, VariableOptionQueryRunner } from './variable-editor.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
+import type {
+  WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
+} from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
@@ -24,7 +26,6 @@ import type {
   DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
-import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -37,30 +38,18 @@ import type { QueryDocumentSession } from '../application/query-document-session
 import type { SavedQueryService } from '../application/saved-query-service.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
+// #457: the `mutateWorkspace` contract types are DECLARED in `state.ts`, beside
+// `MutateWorkspace` itself, and re-exported here so this file remains the one
+// place the App contract is read from. They used to be declared HERE and imported
+// by state.ts, which pointed the dependency the wrong way: `src/application/**`
+// may not import `src/ui/**` at all (`import type` included), so an
+// application-layer producer had no way to name what the primitive it commits
+// through resolves.
+export type {
+  WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
+} from '../state.js';
 
 type Json = Record<string, unknown>;
-
-/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
- *  to commit (or `null` to abort committing nothing), plus optional
- *  operation-specific `data` the primitive threads back to the caller after the
- *  commit resolves (e.g. the created query id a tab must link to). Returning the
- *  whole object as `null` also aborts. */
-export interface WorkspaceMutationInput<T = unknown> {
-  candidate: StoredWorkspaceV5 | null;
-  data?: T;
-}
-
-/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
- *  already projected the committed workspace, recorded its snapshot token, and
- *  broadcast one invalidation; the caller only synchronizes its own surface. An
- *  aborted transform (null / null candidate) commits nothing; a failed commit
- *  carries the validation/persistence diagnostics. `data` rides through all
- *  three outcomes (undefined when the queued op rejected before the transform
- *  ran). */
-export type WorkspaceMutationOutcome<T = unknown> =
-  | { ok: true; workspace: StoredWorkspaceV5; dashboardRevision: number | null; data?: T }
-  | { ok: false; aborted: true; data?: T }
-  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
 
 /** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
  *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
@@ -69,16 +58,6 @@ export interface WorkspaceChangedMessage {
   type: 'workspace-changed';
   sourceTabId: string;
   workspaceId: string;
-}
-
-/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
- *  projected an externally committed workspace: the just-loaded workspace (or
- *  `null` when the record was cleared) and whether the query collection changed
- *  relative to the previous projection — the Dashboard route rebuilds its viewer
- *  session on a query-only change even when the Dashboard document is identical. */
-export interface WorkspaceExternallyChangedInfo {
-  workspace: StoredWorkspaceV5 | null;
-  queriesChanged: boolean;
 }
 
 /** A schema entity reference — three real runtime shapes share this one loose
@@ -262,23 +241,11 @@ export interface App {
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   CodeViewer: CodeViewerFactory;
-  /**
-   * #447: the per-variable option-SQL editing surface the Dashboard tree's
-   * variable editor mounts (`ui/variable-editor.ts`). OPTIONAL, like `Chart`/
-   * `Dagre`: when no adapter is injected the editor mounts its own styled
-   * `<textarea>` (a read-only `CodeViewer` cannot take an edit, and an
-   * `EditorPort` is bound to the Workbench's active tab, so neither existing seam
-   * fits). Wiring a CodeMirror adapter onto it needs a `CreateAppEnv` field, an
-   * adapter under `src/editor/**` and a `main.ts` injection — none of which this
-   * phase owns.
-   */
-  VariableEditor?: VariableEditorFactory;
-  /** #447 phase 2: runs ONE variable's option query for the variable editor's
-   *  Test action, under the same bounded/read-only/positional transport the
-   *  refresh batch uses. Bound by app.ts; a narrow callback rather than the
-   *  `exec` + connection pair it composes, so neither the Dashboards tree's app
-   *  contract nor the editor module has to know about streaming or caps. */
-  runOptionQuery: VariableOptionQueryRunner;
+  // #457 removed `VariableEditor` and `runOptionQuery`: both existed only for the
+  // per-variable option-SQL DRAWER (a second SQL editing surface, with its own
+  // editor seam and its own Test transport). Option SQL is edited in the main
+  // editor as a `dashboard-variable` tab now, so it reuses `sqlEditor` and the
+  // ordinary Run action — there is nothing left for a second seam to inject.
   /** #313: the open-the-reference-pane action the CM6 adapter's hover button
    *  and F1 command invoke — bound by app.ts to ui/doc-pane.ts's
    *  `openDocEntry(app, target)` so the editor layer never imports UI
@@ -504,6 +471,12 @@ export interface App {
   showDashboardSurface(mode: DashboardSurfaceMode): void;
   /** #425 — open a saved query into a tab, switching back to Query mode first. */
   openSavedQuery(queryId: string): void;
+  /** #457 — open (or re-select) the main-editor tab that edits ONE Dashboard
+   *  variable's option SQL, switching back to Query mode first. A variable is
+   *  addressed by Dashboard id + exact name, which is the only identity it has:
+   *  it is not a saved query, and no `SavedQueryV2` is created for it. A name
+   *  that no longer resolves opens nothing. */
+  openVariableTab(dashboardId: string, variableName: string): void;
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV5 | null;

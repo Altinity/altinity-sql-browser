@@ -50,7 +50,7 @@
 
 import { h } from '../dom.js';
 import { Icon } from '../icons.js';
-import { savedForTab } from '../../state.js';
+import { savedForTab, variableDoc } from '../../state.js';
 import type { QueryTab as Tab, AppState as State } from '../../state.js';
 import { formatRows } from '../../core/format.js';
 import { effect } from '@preact/signals-core';
@@ -204,7 +204,15 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
     app.dom.specModeBtn!.setAttribute('aria-pressed', String(specMode));
     app.dom.specModeBtn!.classList.toggle('is-disabled', !linked);
     app.dom.specModeBtn!.setAttribute('aria-disabled', String(!linked));
-    app.dom.specModeBtn!.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
+    // #457: the hovered title has to match the refusal `resolveEditorMode` would
+    // give. A variable document is refused for a different reason than an unsaved
+    // query, and telling its user to "save this query" names an action that does
+    // not exist for them.
+    app.dom.specModeBtn!.title = linked
+      ? 'Edit saved-query Spec JSON'
+      : variableDoc(tab) !== null
+        ? 'A dashboard variable has no Spec.'
+        : 'Save this query to create an editable Spec.';
     // `tab.specDiagnostics`'s declared `SpecDiagnostic` (editor/spec-editor.
     // types.ts) doesn't carry `line`/`column` — but every diagnostic actually
     // stored there came from `evaluateSpecText`'s real `SpecValidationDiagnostic`

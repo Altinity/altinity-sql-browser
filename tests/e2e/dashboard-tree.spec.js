@@ -196,7 +196,7 @@ test.describe('Dashboard hierarchy tree', () => {
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
   });
 
-  test('a variable row opens its SQL editor immediately and never a query', async ({ page }) => {
+  test('a variable row opens its variable tab immediately and never a query', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     await treeRow(page, 'workspace:sales').locator('.chev').click();
@@ -209,7 +209,10 @@ test.describe('Dashboard hierarchy tree', () => {
     // A variable row acts on the FIRST click — there is no competing
     // double-click gesture on it, because there is no query to open.
     await treeRow(page, 'workspace:sales:variable:region').click();
-    await expect(page.locator('.varedit-panel')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.__variableTabs())).toEqual([
+      // `region` is a direct-input variable, so its tab opens blank.
+      { name: 'Variable: region', sql: '', kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'region' },
+    ]);
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 
@@ -225,7 +228,13 @@ test.describe('Dashboard hierarchy tree', () => {
     await page.keyboard.press('ArrowDown');
     await expect(treeRow(page, 'workspace:sales:variable:zone')).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(page.locator('.varedit-panel')).toBeVisible();
+    // `zone` carries Dashboard-local option SQL, so its tab opens ON that SQL.
+    await expect.poll(() => page.evaluate(() => window.__variableTabs())).toEqual([
+      {
+        name: 'Variable: zone', sql: "SELECT 'eu', 'Europe'",
+        kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone',
+      },
+    ]);
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 

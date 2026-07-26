@@ -263,6 +263,8 @@ than adapting it. The decisions that changed:
   `env` exactly like `Editor`/`SpecEditor`/`CodeViewer` rather than imported
   concretely. If a `src/ui/dashboard/` directory is ever created, that dormant rule
   activates and this decision has to be revisited deliberately.
+  *(Superseded by the #457 addendum below: the drawer and its editor seam are
+  deleted, so the tree reaches no editor port at all and this intent is unspent.)*
 
 - **Deliberately deferred, not decided here.** Terminology inside the surviving
   runtime still says "filter" (`ViewerFilterState`, `applyFilters`,
@@ -323,6 +325,54 @@ are worth recording because both contradict something the issue's own text impli
   already validates. Only the compound-type case is new — and it *adorns* the input
   rather than replacing it, because `param-serialize` binds an array literal typed
   there and removing the field would leave those panels permanently unfillable.
+
+## Addendum (#457, 2026-07-26): a variable's option SQL is a main-editor document
+
+Phase 1's per-variable option-SQL **drawer** is deleted. It was a second SQL
+editing surface: its own CodeMirror-shaped seam, its own textarea fallback, its own
+lifecycle, its own Test action and result view, in a panel narrower than the editor
+the application already has. Four decisions replace it.
+
+- **A tab is not always a query.** `QueryTab` gains
+  `doc: {kind:'query'} | {kind:'dashboard-variable', dashboardId, variableName}`.
+  A variable is *not* modelled as a saved query with a marker: `savedId` stays
+  `null`, no `SavedQueryV2` is created, and Save dispatches on the document kind
+  before it reads anything else. Identity is the exact `(dashboardId,
+  variableName)` pair, because that is a variable's only identity — it has no id
+  of its own, and the same name on two Dashboards is two unrelated documents.
+  Tabs are session state, never persisted, so this required no schema change.
+
+- **The write splits along the existing layer boundary.** The pure transform is
+  `workspace/workspace-dashboards.ts`'s `withVariableConfig`, beside
+  `findDashboard`/`replaceDashboard` and the exactly-one-match rule it depends on;
+  the `mutateWorkspace` plumbing is `application/dashboard-variable-config.ts`. The
+  async half resolves the full `WorkspaceMutationOutcome`, not a boolean: `aborted`
+  covers the transform declining, the route moving on mid-write, and a vanished
+  record — and one of those **keeps a durable write**, so collapsing them would
+  make the UI report a failure that did not happen.
+
+- **The Phase-3 editor-port intent is now fully spent, not partly.** The previous
+  addendum noted the Dashboard sidebar reaching an editor seam and passing
+  `check:arch` only because the tree lives in `src/ui/`. That seam is gone: the
+  tree routes to `app.openVariableTab` and mounts no editor at all. The dormant
+  `src/ui/dashboard/` rule no longer has anything here to catch.
+
+- **Losing Test is accepted, and its replacement is the ordinary Run action.**
+  Test locally validated a draft and then checked its result shape, the only place
+  the two-`String`-column rule is checkable (a combined `UNION ALL` reports one
+  merged column list for every branch). Keeping it would have meant re-inventing a
+  run-and-report surface inside the very editor this change deletes. A variable tab
+  runs through the main Run action instead; re-hosting the shape check on that
+  result is deferred, and the batch-failure diagnostic now points at running one
+  variable's SQL on its own rather than at a control that no longer exists.
+
+  One consequence worth recording: `onWorkspaceExternallyChanged` is what tells a
+  rendered Dashboard to re-read `variableConfigs` (a viewer session reads them once,
+  at construction). A variable-tab Save happens on the **Query** surface, where no
+  Dashboard is rendered and the hook is the no-op default — so phase 2's staleness
+  guarantee now rides on the surface rebuild that occurs when the user returns to
+  the Dashboard, not on that poke. The tree's orphan-delete still fires it for real,
+  because the tree is visible while a Dashboard is.
 
 ## Alternatives considered
 

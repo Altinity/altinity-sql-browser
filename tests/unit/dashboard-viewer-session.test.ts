@@ -1874,7 +1874,7 @@ describe('batched option execution (#447 phase 2)', () => {
     expect(state.lastRefreshOutcome).toBe('success');
   });
 
-  it('reports a wrong-shape response as a batch-level diagnostic pointing at Test', async () => {
+  it('reports a wrong-shape response as a batch-level diagnostic naming how to narrow it', async () => {
     const { session } = optionSession(
       { country: { sql: 'SELECT a FROM countries' } },
       (sql) => (isOptionCall(sql)
@@ -1886,7 +1886,10 @@ describe('batched option execution (#447 phase 2)', () => {
     const diagnostics = session.state.value.filterDiagnostics;
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].code).toBe('variable-option-batch-shape');
-    expect(diagnostics[0].message).toContain('Test');
+    // #457: a merged UNION ALL cannot say WHICH branch is wrong, so the message
+    // has to name the way to find out. It used to name the drawer's Test button;
+    // that drawer is gone, and it now points at running one variable on its own.
+    expect(diagnostics[0].message).toContain('run its SQL on its own');
     expect(session.state.value.filters[0].status).toBe('error');
   });
 
