@@ -207,6 +207,11 @@ interface WsOver {
   layout?: Record<string, unknown>;
   queries?: ReturnType<typeof savedQuery>[];
   title?: string;
+  /** #447 phase 2: Dashboard-local option SQL, keyed by exact variable name. The
+   *  variable itself is still declared by a `{name:Type}` placeholder in a panel
+   *  query — this only configures one that already exists (or, deliberately, an
+   *  orphan that does not). */
+  variableConfigs?: StoredWorkspaceV5['dashboards'][number]['variableConfigs'];
 }
 // #447: a Dashboard document no longer stores filter definitions — a variable is
 // declared by a `{name:Type}` placeholder in a PANEL tile's own query SQL, so a
@@ -218,6 +223,7 @@ const wsWith = (over: WsOver = {}) => ({
     documentVersion: 2 as const, id: over.id ?? 'd', title: over.title ?? 'My Dash', revision: 1,
     layout: over.layout ?? { type: 'flow', version: 1, preset: 'columns-2', items: {} },
     tiles: over.tiles ?? [],
+    ...(over.variableConfigs ? { variableConfigs: over.variableConfigs } : {}),
   }],
 });
 
@@ -3348,16 +3354,139 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     expect(qs(app.root, '.dash-config-diagnostic.is-error').textContent).toContain('missing');
   });
 
-  // #447 deleted the rest of this describe and the two #360 describes that
-  // followed it:
-  //  - 'rebuilds the filter bar when curated option CONTENT changes' and
-  //    'renders filterDiagnostics with severity-mapped classes' (#359) — there
-  //    is no option-source query, no `optionsRev` content, and no
-  //    option-merge diagnostic to render.
-  //  - 'curated field stays curated while its shared source is waiting (#360)'
-  //    and 'filter status vs. structural rebuild split (#360 follow-up)' — a
-  //    variable has no `sourceId`, no `waitingFor` and only the `idle` status,
-  //    so there is no curated/waiting/stale affordance left to gate.
+  // #447 phase 1 deleted the rest of this describe (the curated option-source
+  // cases) and both #360 describes. Phase 2 restores the two that have a meaning
+  // again under the VARIABLE model — option content arriving, and option
+  // diagnostics rendering — driven by a variable's own Dashboard-local option SQL
+  // rather than by a filter-role query discovered through a matching output
+  // column name. The #360 curated/waiting/stale affordances stay gone: a variable
+  // has no `sourceId` and no `waitingFor`.
+
+  it('renders the option batch failure as a severity-mapped diagnostic', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? { error: 'Code: 47. Unknown expression identifier' }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE c = {country:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { country: { sql: 'SELECT a, b FROM countries' } },
+      }),
+    });
+    await render(app);
+    const banners = [...app.root!.querySelectorAll('.dash-config-diagnostic.is-error')]
+      .map((n) => n.textContent ?? '');
+    expect(banners.join('|')).toContain('Variable options could not be loaded');
+  });
+
+  it('updates an option select IN PLACE when content changes, without rebuilding the bar', async () => {
+    let call = 0;
+    const { app } = dashApp({
+      responder: (sql) => {
+        if (!sql.includes('__variable_name')) return { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] };
+        call++;
+        // Same content on the first two runs (initial start + one refresh), then
+        // different content of the SAME length — the case a length-only or
+        // emptiness-only signature would miss.
+        const value = call === 3 ? 'es' : 'de';
+        const label = call === 3 ? 'Spain' : 'Germany';
+        return {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows: [['country', value, label]],
+        };
+      },
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE c = {country:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { country: { sql: 'SELECT a, b FROM countries' } },
+      }),
+    });
+    await render(app);
+    const select = qs(app.root, '.filter-select');
+    expect(select).not.toBeNull();
+    const input = select.querySelector('.var-input') as HTMLInputElement;
+    // Options arriving must NOT rebuild the bar: the batch lands asynchronously
+    // and could complete while the user is mid-keystroke in another field.
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    expect(qs(app.root, '.filter-select')).toBe(select);
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    expect(qs(app.root, '.filter-select')).toBe(select);
+    expect(select.querySelector('.var-input')).toBe(input);
+  });
+
+  it('renders a direct input for an unconfigured variable and a select for a configured one', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows: [['country', 'de', 'Germany']],
+        }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE c = {country:String} AND n = {note:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { country: { sql: 'SELECT a, b FROM countries' } },
+      }),
+    });
+    await render(app);
+    const fieldOf = (name: string): HTMLElement =>
+      app.root!.querySelector<HTMLElement>(`[data-field-key="${name}"]`)!;
+    expect(fieldOf('country').querySelector('.filter-select')).not.toBeNull();
+    expect(fieldOf('note').querySelector('.filter-select')).toBeNull();
+    expect(fieldOf('note').querySelector('.var-input')).not.toBeNull();
+  });
+
+  it('commits a select pick straight through to the session, rerunning its panels', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows: [['country', 'de', 'Germany']],
+        }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE c = {country:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { country: { sql: 'SELECT a, b FROM countries' } },
+      }),
+    });
+    await render(app);
+    const input = qs(app.root, '.filter-select .var-input') as HTMLInputElement;
+    // The panel is waiting on an unset required variable.
+    expect(qs(app.root, '.dash-tile')).not.toBeNull();
+    input.focus();
+    input.dispatchEvent(new Event('focus'));
+    const option = [...app.root!.querySelectorAll<HTMLElement>('.combo-option')]
+      .find((n) => (n.textContent ?? '').includes('Germany'))!;
+    option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await flush();
+    expect(input.value).toBe('Germany');
+  });
+
+  it('renders an unsupported-type note instead of a control for a container variable', async () => {
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE x IN {tags:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const note = qs(app.root, '.var-unsupported');
+    expect(note.textContent).toContain('Array(String)');
+  });
 });
 
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the

@@ -445,3 +445,239 @@ describe('createTextareaVariableEditor', () => {
     expect(host.querySelector('textarea')).toBeNull();
   });
 });
+
+// #447 phase 2: the Test action. It validates the DRAFT locally first (so nothing
+// is sent for a problem the app can already see), then runs this variable's query
+// alone and checks its result shape — the only place the "exactly two String
+// columns" rule is checkable, since a combined batch reports one merged column
+// list for every branch.
+describe('openVariableEditor — Test (#447 phase 2)', () => {
+  const testBtn = (): HTMLButtonElement =>
+    document.querySelector<HTMLButtonElement>('.varedit-test')!;
+  const result = (): HTMLElement | null =>
+    document.querySelector<HTMLElement>('.varedit-result');
+  const twoStringColumns = [{ name: 'v', type: 'String' }, { name: 'l', type: 'String' }];
+
+  /** Open the editor on `country` with an injected runner. */
+  function openWith(
+    runOptionQuery: VariableEditorApp['runOptionQuery'],
+    sql = 'SELECT a, b FROM countries',
+  ) {
+    const dash = dashboard({ variableConfigs: { country: { sql } } });
+    const { app } = makeApp({ currentWorkspace: workspace({ dashboards: [dash] }), runOptionQuery });
+    openVariableEditor(app, 'd', 'country');
+    return app;
+  }
+
+  it('offers no Test button when no runner is injected', () => {
+    const { app } = makeApp();
+    openVariableEditor(app, 'd', 'country');
+    expect(panel()).not.toBeNull();
+    expect(document.querySelector('.varedit-test')).toBeNull();
+  });
+
+  it('runs the draft nested exactly as a batch branch embeds it, and bounded', () => {
+    const runOptionQuery = vi.fn(async (_sql: string) => ({ columns: twoStringColumns, rows: [] as unknown[][], error: null }));
+    openWith(runOptionQuery, 'SELECT a, b FROM countries');
+    testBtn().click();
+    expect(runOptionQuery).toHaveBeenCalledWith(
+      'SELECT * FROM (\nSELECT a, b FROM countries\n) LIMIT 1001',
+    );
+  });
+
+  it('tests the CURRENT editor text, not the stored SQL', () => {
+    const runOptionQuery = vi.fn(async (_sql: string) => ({ columns: twoStringColumns, rows: [] as unknown[][], error: null }));
+    openWith(runOptionQuery, 'SELECT old, old FROM t');
+    input().value = 'SELECT fresh, fresh FROM t';
+    testBtn().click();
+    expect(runOptionQuery.mock.calls[0][0]).toContain('SELECT fresh, fresh FROM t');
+  });
+
+  it('reports a local rejection WITHOUT sending anything, listing every finding', async () => {
+    const runOptionQuery = vi.fn(async () => ({ columns: twoStringColumns, rows: [], error: null }));
+    openWith(runOptionQuery);
+    input().value = 'SHOW TABLES FORMAT JSON';
+    testBtn().click();
+    await settle();
+    expect(runOptionQuery).not.toHaveBeenCalled();
+    expect(result()!.className).toContain('is-error');
+    expect(result()!.textContent).toContain('must be a SELECT');
+    expect(result()!.textContent).toContain('FORMAT');
+  });
+
+  it('reports the no-cascading rejection without sending anything', async () => {
+    const runOptionQuery = vi.fn(async () => ({ columns: twoStringColumns, rows: [], error: null }));
+    openWith(runOptionQuery);
+    input().value = 'SELECT a, b FROM t WHERE x = {other:String}';
+    testBtn().click();
+    await settle();
+    expect(runOptionQuery).not.toHaveBeenCalled();
+    expect(result()!.textContent).toBe('Variable option queries cannot reference Dashboard variables yet.');
+  });
+
+  it('accepts two String columns and previews the options', async () => {
+    openWith(async () => ({
+      columns: twoStringColumns,
+      rows: [['de', 'Germany'], ['fr', 'France']],
+      error: null,
+    }));
+    testBtn().click();
+    await settle();
+    expect(result()!.className).toContain('is-ok');
+    expect(result()!.textContent).toContain('Valid — 2 options.');
+    expect(result()!.textContent).toContain('Germany');
+  });
+
+  it('says "1 option" for a single row', async () => {
+    openWith(async () => ({ columns: twoStringColumns, rows: [['de', 'Germany']], error: null }));
+    testBtn().click();
+    await settle();
+    expect(result()!.textContent).toContain('Valid — 1 option.');
+  });
+
+  it('treats zero rows as a pass with a caveat, not a failure', async () => {
+    openWith(async () => ({ columns: twoStringColumns, rows: [], error: null }));
+    testBtn().click();
+    await settle();
+    expect(result()!.className).toContain('is-ok');
+    expect(result()!.textContent).toContain('returned no options');
+  });
+
+  it('caps the preview and says how many more there are', async () => {
+    const rows = Array.from({ length: 9 }, (_, i) => [`v${i}`, `L${i}`]);
+    openWith(async () => ({ columns: twoStringColumns, rows, error: null }));
+    testBtn().click();
+    await settle();
+    expect(document.querySelectorAll('.varedit-result-row')).toHaveLength(5);
+    expect(result()!.textContent).toContain('+4 more');
+  });
+
+  it('rejects the wrong column count from the server response', async () => {
+    openWith(async () => ({
+      columns: [{ name: 'only', type: 'String' }], rows: [['x']], error: null,
+    }));
+    testBtn().click();
+    await settle();
+    expect(result()!.className).toContain('is-error');
+    expect(result()!.textContent).toContain('exactly two columns');
+  });
+
+  it('rejects a non-String column, naming the type', async () => {
+    openWith(async () => ({
+      columns: [{ name: 'v', type: 'UInt64' }, { name: 'l', type: 'String' }],
+      rows: [['1', 'one']],
+      error: null,
+    }));
+    testBtn().click();
+    await settle();
+    expect(result()!.textContent).toContain('UInt64');
+  });
+
+  it('reports a server error verbatim', async () => {
+    openWith(async () => ({ columns: [], rows: [], error: 'Code: 60. Unknown table' }));
+    testBtn().click();
+    await settle();
+    expect(result()!.className).toContain('is-error');
+    expect(result()!.textContent).toBe('Code: 60. Unknown table');
+  });
+
+  it('disables the button and shows progress while in flight, re-enabling after', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    openWith(async () => {
+      await gate;
+      return { columns: twoStringColumns, rows: [], error: null };
+    });
+    testBtn().click();
+    expect(testBtn().disabled).toBe(true);
+    expect(result()!.textContent).toContain('Running');
+    release!();
+    await settle();
+    expect(testBtn().disabled).toBe(false);
+  });
+
+  it('is a polite live region, so the verdict is announced', () => {
+    openWith(async () => ({ columns: twoStringColumns, rows: [], error: null }));
+    expect(result()!.getAttribute('aria-live')).toBe('polite');
+    // Hidden until there is something to say.
+    expect(result()!.style.display).toBe('none');
+  });
+
+  it('drops a response that arrives after the panel was closed', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const app = openWith(async () => {
+      await gate;
+      return { columns: twoStringColumns, rows: [['de', 'Germany']], error: null };
+    });
+    testBtn().click();
+    closeVariableEditor(app);
+    release!();
+    await settle();
+    // No panel to paint into, and nothing thrown.
+    expect(document.querySelector('.varedit-panel')).toBeNull();
+  });
+
+  it('cannot start a second Test while one is in flight', async () => {
+    // The disabled button is the whole concurrency control — which is why no
+    // generation counter is needed on top of the panel-identity guard.
+    let calls = 0;
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    openWith(async () => {
+      calls++;
+      await gate;
+      return { columns: twoStringColumns, rows: [['de', 'Germany']], error: null };
+    });
+    testBtn().click();
+    testBtn().click();
+    testBtn().click();
+    expect(calls).toBe(1);
+    release!();
+    await settle();
+    expect(result()!.textContent).toContain('Germany');
+    // Re-enabled, so a second Test is possible once the first has answered.
+    testBtn().click();
+    expect(calls).toBe(2);
+  });
+
+  it('drops a response whose panel was re-targeted to another variable', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const dash = dashboard({
+      variableConfigs: { country: { sql: 'SELECT a, b FROM c' }, city: { sql: 'SELECT a, b FROM d' } },
+    });
+    const { app } = makeApp({
+      currentWorkspace: workspace({
+        queries: [query('q1', 'SELECT {country:String} AS c, {city:String} AS t')],
+        dashboards: [dash],
+      }),
+      runOptionQuery: async () => {
+        await gate;
+        return { columns: twoStringColumns, rows: [['de', 'Germany']], error: null };
+      },
+    });
+    openVariableEditor(app, 'd', 'country');
+    testBtn().click();
+    openVariableEditor(app, 'd', 'city');   // re-target tears the old panel down
+    release!();
+    await settle();
+    expect(document.querySelector('.varedit-title-name')!.textContent).toBe('city');
+    expect(result()!.style.display).toBe('none');
+  });
+
+  it('still offers Test for an ORPHANED configuration', () => {
+    // An orphan stays fully editable until it is deleted, so it stays testable.
+    const dash = dashboard({
+      tiles: [],
+      variableConfigs: { gone: { sql: 'SELECT a, b FROM t', lastKnownType: 'String' } },
+    });
+    const runOptionQuery = vi.fn(async () => ({ columns: twoStringColumns, rows: [], error: null }));
+    const { app } = makeApp({
+      currentWorkspace: workspace({ dashboards: [dash] }), runOptionQuery,
+    });
+    openVariableEditor(app, 'd', 'gone');
+    testBtn().click();
+    expect(runOptionQuery).toHaveBeenCalled();
+  });
+});

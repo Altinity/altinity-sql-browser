@@ -63,6 +63,17 @@ export const VARIABLE_NAME_COLUMN = '__variable_name';
 /** The three columns every compiled branch projects, by position. */
 const BATCH_COLUMN_COUNT = 3;
 
+/** Rows fetched per variable: the cap plus one, so hitting the cap is
+ *  DETECTABLE rather than silently indistinguishable from "exactly that many". */
+const BRANCH_LIMIT = VARIABLE_OPTION_CAP + 1;
+
+/** Wrap already-normalized user SQL as a bounded subquery — the exact nesting
+ *  every branch and the editor's Test probe share, so testing one variable
+ *  exercises the same embedding the batch will use. `)` deliberately sits on its
+ *  own line: a user query ending in `-- note` would otherwise comment out
+ *  whatever followed it. */
+const nestBounded = (sql: string): string => `(\n${sql}\n) LIMIT ${BRANCH_LIMIT}`;
+
 const diagnostic = (code: string, message: string): VariableOptionDiagnostic => ({ code, message });
 
 // ── Local (no-server) validation ─────────────────────────────────────────────
@@ -206,17 +217,32 @@ export function compileVariableOptionBatch(
 ): VariableOptionBatch | null {
   const eligible = optionBatchVariables(variables);
   if (!eligible.length) return null;
-  const branchLimit = VARIABLE_OPTION_CAP + 1;
   const branches: VariableOptionBranch[] = eligible.map((variable) => ({
     name: variable.name,
     // `!`: `optionBatchVariables` admits only variables whose `sql` is non-null.
     sql: normalizeOptionSql(variable.sql!),
   }));
   const sql = branches.map((branch) =>
-    `SELECT ${sqlString(branch.name)} AS ${VARIABLE_NAME_COLUMN}, * FROM (\n${branch.sql}\n) LIMIT ${branchLimit}`)
+    `SELECT ${sqlString(branch.name)} AS ${VARIABLE_NAME_COLUMN}, * FROM ${nestBounded(branch.sql)}`)
     .join('\nUNION ALL\n');
-  return { sql, branches, rowLimit: branches.length * branchLimit + 1 };
+  return { sql, branches, rowLimit: branches.length * BRANCH_LIMIT + 1 };
 }
+
+/**
+ * The query the per-variable editor's Test action runs: ONE variable's option
+ * SQL, embedded exactly as a batch branch embeds it but without the branch tag.
+ *
+ * Sharing `nestBounded` with the compiler is the point — Test must not pass for
+ * SQL the batch would reject, and the nesting is the one transformation that can
+ * make an otherwise-valid query fail. Dropping the tag column keeps the response
+ * metadata describing the USER's own columns, which is what makes the "exactly
+ * two String columns" rule checkable here and nowhere else: in the combined batch
+ * `UNION ALL` reports one merged column list for every branch.
+ *
+ * Bounded like a branch, so Test cannot pull an unbounded result either.
+ */
+export const compileOptionProbe = (sql: string): string =>
+  `SELECT * FROM ${nestBounded(normalizeOptionSql(sql))}`;
 
 // ── The response reader ──────────────────────────────────────────────────────
 

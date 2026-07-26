@@ -29,13 +29,23 @@
 // of two named `AppState` keys, and adding a third is a state/preferences change
 // this phase does not own. The drawer takes its width from the stylesheet.
 //
-// Phase 2 owns Run/Test and the two-`String`-column option-result validation.
-// Nothing here executes SQL.
+// Phase 2 added Test: it validates the draft SQL locally first (statement shape,
+// no FORMAT/INTO OUTFILE, no `{name:Type}` — no request is sent for anything the
+// app can already see is wrong), then runs THIS variable's query alone and checks
+// its result shape. That is the only place the "exactly two String columns" rule
+// is checkable: in the combined refresh batch, `UNION ALL` reports one merged
+// column list for every branch, which is why a batch problem is reported as a
+// batch-level failure and this action is the way to find out which variable
+// caused it.
 
 import { h, withDocument } from './dom.js';
 import { buildDrawerChrome } from './drawer.js';
+import { Icon } from './icons.js';
 import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import type { DashboardVariable } from '../core/dashboard-variables.js';
+import {
+  compileOptionProbe, optionSqlDiagnostics, validateOptionColumns,
+} from '../core/variable-options.js';
 import { dashboardVariables, type TreeWorkspace } from '../application/dashboard-tree-model.js';
 import { findDashboard, replaceDashboard } from '../workspace/workspace-dashboards.js';
 import type { DashboardDocumentV2 } from '../generated/json-schema.types.js';
@@ -90,6 +100,24 @@ export const createTextareaVariableEditor: VariableEditorFactory = ({ parent, do
 
 // ── the app surface this module reads ───────────────────────────────────────
 
+/** One option-query execution, as the Test action needs it. Deliberately a plain
+ *  result rather than a `StreamResult`: this module never has to know about
+ *  streaming, caps or transports. */
+export interface VariableOptionQueryResult {
+  columns: { name: string; type: string }[];
+  rows: unknown[][];
+  /** The failure message, or `null` on success. */
+  error: string | null;
+}
+
+/** The injected seam Test runs through — ONE callback, wired once in `ui/app.ts`.
+ *  A narrow callback rather than the `exec` + connection pair it is built from,
+ *  because this module is reached through the Dashboards TREE: threading two more
+ *  members through `DashboardTreeApp` (and every fixture that builds one) would
+ *  buy nothing over a single function. Absent in a fixture that does not need it,
+ *  in which case Test is not offered at all. */
+export type VariableOptionQueryRunner = (sql: string) => Promise<VariableOptionQueryResult>;
+
 /** The narrow app slice this module needs — not the full `App` contract
  *  (app.types.ts); a real `App` satisfies it directly, and so does the tree's
  *  own `DashboardTreeApp`. */
@@ -102,6 +130,8 @@ export interface VariableEditorApp {
   mutateWorkspace: App['mutateWorkspace'];
   /** The injected editor surface; the built-in textarea when absent. */
   VariableEditor?: VariableEditorFactory;
+  /** The injected option-query runner. When absent, no Test button is rendered. */
+  runOptionQuery?: VariableOptionQueryRunner;
 }
 
 /**
@@ -238,6 +268,66 @@ export function openVariableEditor(app: VariableEditorApp, dashboardId: string, 
     // stays editable until it is deleted.
     const handle = factory({ parent: host, document: doc, text: variable.sql ?? '' });
 
+    // ── Test ────────────────────────────────────────────────────────────────
+    // A polite live region: Test is an explicit user action whose whole answer is
+    // text, so an assistive-tech user has to hear the verdict without re-reading
+    // the panel.
+    const result = h('div', {
+      class: 'varedit-result', 'aria-live': 'polite', style: { display: 'none' },
+    });
+    const showResult = (kind: 'ok' | 'error', ...content: unknown[]): void => {
+      result.className = 'varedit-result is-' + kind;
+      result.style.display = '';
+      result.replaceChildren(...content as never[]);
+    };
+    const runner = app.runOptionQuery;
+    // The button disables itself for the duration of a run, so there is only ever
+    // ONE Test in flight per panel and no generation counter is needed: the panel
+    // identity check below is the whole staleness guard. What it catches is a
+    // response arriving after this panel was closed or re-targeted to a different
+    // variable — either of which would otherwise paint a verdict for one variable
+    // into another variable's editor.
+    const runTest = async (run: VariableOptionQueryRunner): Promise<void> => {
+      const draft = handle.getText();
+      const local = optionSqlDiagnostics(draft);
+      if (local.length) {
+        // Nothing is sent for a problem the app can already see. Every finding is
+        // listed, not just the first, so one round of edits can fix them all.
+        showResult('error', ...local.map((d) => h('div', null, d.message)));
+        return;
+      }
+      testBtn.disabled = true;
+      showResult('ok', 'Running…');
+      const answer = await run(compileOptionProbe(draft));
+      // Dropped if this panel is gone or now shows a different variable.
+      if (editors.get(doc)?.panel !== panel) return;
+      testBtn.disabled = false;
+      if (answer.error !== null) {
+        showResult('error', answer.error);
+        return;
+      }
+      const shape = validateOptionColumns(answer.columns);
+      if (shape !== null) {
+        showResult('error', shape.message);
+        return;
+      }
+      const count = answer.rows.length;
+      // Zero rows is a legal result ("zero or more rows"), so it is reported as a
+      // pass with a caveat rather than as a failure.
+      showResult('ok',
+        h('div', { class: 'varedit-result-head' },
+          count === 0 ? 'Valid, but it returned no options.' : `Valid — ${count} option${count === 1 ? '' : 's'}.`),
+        ...answer.rows.slice(0, 5).map((row) => h('div', { class: 'varedit-result-row' },
+          h('code', null, String(row[0] ?? '')),
+          h('span', null, String(row[1] ?? '')))),
+        count > 5 ? h('div', { class: 'varedit-result-more' }, `+${count - 5} more`) : null);
+    };
+    const testBtn: HTMLButtonElement = h('button', {
+      class: 'varedit-test', type: 'button',
+      title: 'Run this variable’s option query and check its result shape',
+      onclick: () => { if (runner !== undefined) void runTest(runner); },
+    }, Icon.play(), 'Test');
+
     const note = STATUS_NOTES[variable.status];
     const body = h('div', { class: 'varedit-body' },
       // NOT `varedit-head`: that class belongs to `buildDrawerChrome`'s own header
@@ -251,7 +341,12 @@ export function openVariableEditor(app: VariableEditorApp, dashboardId: string, 
       h('p', { class: 'varedit-hint' },
         'One read query returning two String columns: value, then label. '
         + 'Leave it blank to type values directly instead.'),
+      result,
       h('div', { class: 'varedit-actions' },
+        // Offered only when a runner is injected — a surface that cannot execute
+        // must not show an action that would do nothing.
+        runner === undefined ? null : testBtn,
+        h('span', { class: 'varedit-actions-gap' }),
         h('button', { class: 'varedit-cancel', type: 'button', onclick: close }, 'Cancel'),
         h('button', {
           class: 'varedit-save', type: 'button',

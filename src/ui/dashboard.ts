@@ -54,6 +54,7 @@ import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from './filter-bar.js';
+import type { VariableFieldSpec } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
 import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
@@ -64,6 +65,7 @@ import type { DashboardChartInteractionController } from './dashboard-chart-inte
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerFilterState,
+  ViewerFilterOption,
 } from '../dashboard/application/dashboard-viewer-session.js';
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
@@ -868,19 +870,33 @@ export async function renderDashboard(
     const restoreFocusKey = openPopoverKey ?? focusedFieldKey;
     currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
-    // #447: every Dashboard variable renders the PLAIN field for its declared
-    // type. There is no curated branch left to gate — option-backed
-    // single-selects arrive in phase 2, driven by the variable's own option SQL
-    // rather than by a filter-role query discovered through a matching output
-    // column name.
+    // #447 phase 2: a variable renders either a direct input for its declared
+    // type, or — when it carries Dashboard-local option SQL — a strict
+    // single-select over whatever the refresh's ONE compiled option batch
+    // returned for it. `configured` (not the presence of `options`) decides
+    // which: it is known from the first publish, so a select never starts life
+    // as a text box and changes type once the query lands. `null` options mean
+    // direct input; `[]` means option-backed with nothing to offer yet.
+    const variables: Record<string, VariableFieldSpec> = {};
+    const optionsError = sview.filterDiagnostics.length ? sview.filterDiagnostics[0].message : null;
     for (const f of sview.filters) {
       draftValues[f.parameter] = valueString(f.value);
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
+      variables[f.parameter] = {
+        options: f.configured ? (f.options ?? []) : null,
+        optionsError: f.configured ? optionsError : null,
+      };
     }
     const onCommit = (name: string): void => {
       const id = idByParam.get(name);
       if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
+    };
+    // A select commits its value AND activation together, with no debounce — a
+    // pick (or the × clearing back to unset) is a complete, deliberate action.
+    const onCommitVariable = (name: string, value: string, active: boolean): void => {
+      const id = idByParam.get(name);
+      if (id) void session.applyFilter(id, value, active);
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     // #335: assemble the time-range option — one entry per resolved group,
@@ -912,7 +928,7 @@ export async function renderDashboard(
     };
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
-      { document: doc, timeRange, onApplyTimeRange,
+      { document: doc, timeRange, onApplyTimeRange, variables, onCommitVariable,
         onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
@@ -2078,11 +2094,16 @@ export async function renderDashboard(
   // silently skipping that cleanup.
   let lastEngineRendered: 'flow' | 'grafana-grid' | null = null;
   let barSig = '';
-  // #360: a SEPARATE signature from `barSig` — status/stale/waitingFor never
-  // participate in `barSig` (see the effect below), so a status-only change
-  // is detected here instead and applied to the EXISTING bar via
-  // `filterBarUpdateStatus` (no rebuild).
-  let statusSig = '';
+  // #447 phase 2: a SEPARATE signature from `barSig` — option content, the
+  // option-backed statuses and the batch verdict never participate in `barSig`
+  // (see the effect below), so a change to any of them is detected here instead
+  // and applied to the EXISTING bar via `setVariableOptions` (no rebuild, so
+  // in-progress typing elsewhere survives an asynchronously-arriving batch).
+  //
+  // This replaces #360's `statusSig`, which had been dead since phase 1 removed
+  // the option-provider layer: nothing produced a per-field status any more, so
+  // it was assigned once and never read again.
+  let lastOptionsSig = '';
   // #335: the wave `now` the time-range controls' closed labels were last
   // resolved against — a NON-rebuild publish whose wave `now` advanced
   // re-resolves those labels in place (a live relative range, no timers),
@@ -2121,15 +2142,18 @@ export async function renderDashboard(
       return;
     }
     lastMobile = mobileNow;
-    // Rebuild the shared filter bar only on a STRUCTURAL change (activation,
-    // committed value, curated option CONTENT arriving/changing via
-    // `optionsRev`, or a filter gaining/losing its source topology) — not on
-    // a bare status flip and not on tile progress ticks — so in-progress
-    // typing is never disturbed mid-wave. `status` is deliberately EXCLUDED
-    // from this signature: a pure status change only needs the existing DOM
-    // updated in place — see `statusSig` below — never a rebuild. That
-    // preserves the invariant that an unchanged republish never disturbs
-    // in-progress typing.
+    // Rebuild the shared filter bar only on a STRUCTURAL change (activation or
+    // committed value) — not on a bare status flip, not on tile progress ticks,
+    // and (#447 phase 2) NOT when an option list arrives. `status` and
+    // `optionsRev` are both deliberately EXCLUDED: they are updated in the
+    // existing DOM in place, never by a rebuild. That preserves the invariant
+    // that an unchanged republish never disturbs in-progress typing.
+    //
+    // Excluding `optionsRev` matters more than excluding `status`. A rebuild is
+    // triggered by a user COMMIT, which is inherently typing-ending; the option
+    // batch instead lands ASYNCHRONOUSLY and can complete while the user is
+    // mid-keystroke in an unrelated field, so rebuilding on it would discard
+    // that input and silently cancel any open popover.
     const sig = JSON.stringify(sview.filters.map((f) =>
       [f.id, f.active, sigValue(f.value)]));
     let rebuilt = false;
@@ -2138,6 +2162,25 @@ export async function renderDashboard(
       rebuildFilterBar(sview);
       rebuilt = true;
     }
+    // #447 phase 2: push fresh option rows (and the batch's unavailable state)
+    // into the selects the CURRENT bar already built. A rebuild above has just
+    // taken the newest options along with it, so this only runs when the bar
+    // survived — and only when option content or the batch verdict actually
+    // moved, so an unchanged republish touches nothing.
+    const optionsSig = JSON.stringify([
+      sview.filters.map((f) => [f.id, f.configured, f.optionsRev, f.status]),
+      sview.filterDiagnostics.map((d) => d.message),
+    ]);
+    if (!rebuilt && optionsSig !== lastOptionsSig) {
+      const batchError = sview.filterDiagnostics.length ? sview.filterDiagnostics[0].message : null;
+      const states: Record<string, { options: readonly ViewerFilterOption[]; error: string | null }> = {};
+      for (const f of sview.filters) {
+        if (!f.configured) continue;
+        states[f.parameter] = { options: f.options ?? [], error: batchError };
+      }
+      currentFilterBar?.setVariableOptions(states);
+    }
+    lastOptionsSig = optionsSig;
     // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
     // rebuilt every time-range control against this wave's `now` (assembled
     // into its `waveNowMs`); only a NON-rebuild publish whose wave `now`
@@ -2169,6 +2212,14 @@ export async function renderDashboard(
     filterDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
       ...sview.timeRangeDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
+      // #447 phase 2: the option batch's own failure. Rendered in the
+      // variables/filter-control area, as the issue requires — one banner for the
+      // whole Dashboard, because a single malformed branch makes the combined
+      // `UNION ALL` unrunnable and takes every option-backed control with it.
+      // Severity-mapped like the others so it never reads as unstyled text.
+      ...sview.filterDiagnostics.map((d) => h('div', {
+        class: 'dash-config-diagnostic is-' + (d.severity ?? 'error'),
+      }, d.message)),
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;

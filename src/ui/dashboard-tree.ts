@@ -30,7 +30,10 @@ import {
   UNUSED_VARIABLE_STATUS, deriveDashboardTree,
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
-import { commitVariableConfig, openVariableEditor, type VariableEditorFactory } from './variable-editor.js';
+import {
+  commitVariableConfig, openVariableEditor,
+  type VariableEditorFactory, type VariableOptionQueryRunner,
+} from './variable-editor.js';
 import {
   clampKeyboardRow, readTreeUi, setDashboardExpanded, setGroupExpanded, setKeyboardRow,
   setTreeScroll, toggleDashboardExpanded, toggleGroupExpanded,
@@ -58,6 +61,11 @@ export interface DashboardTreeApp {
   /** #447: the injected option-SQL editor surface, threaded straight through to
    *  `openVariableEditor` (see `ui/variable-editor.ts`). */
   VariableEditor?: VariableEditorFactory;
+  /** #447 phase 2: the injected option-query runner, threaded straight through to
+   *  `openVariableEditor` — it is what the editor's Test action executes. Optional
+   *  for the same reason `VariableEditor` is: a narrow fixture need not carry one,
+   *  and the editor then simply offers no Test button. */
+  runOptionQuery?: VariableOptionQueryRunner;
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
