@@ -28,8 +28,8 @@ import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from '.
 import type { DetachedGraphApp, SchemaLineageGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
 import type { DetachedView, DetachedViewApp, DetachedWindowLike, MountCtx } from './detached-view.js';
-import { buildFilterBar } from './filter-bar.js';
-import type { FilterBarApp } from './filter-bar.js';
+import { buildVariableBar } from './variable-bar.js';
+import type { VariableBarApp } from './variable-bar.js';
 import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
 import { panelExecution } from '../core/panel-execution.js';
 import type { AppDom, App, KeyboardOwner } from './app.types.js';
@@ -127,7 +127,7 @@ export type Result = ScriptResult | ScriptExportResult | QueryResult;
 // Not the full ~50-member `App` contract (app.types.ts) — tests/helpers/
 // fake-app.js's long-standing `makeApp()` stub (and panels.test.ts's own
 // further-narrowed fixture) satisfy this directly, matching the convention
-// filter-bar.ts/explain-graph.ts already established for
+// variable-bar.ts/explain-graph.ts already established for
 // their own narrow app surfaces. The three calls into panels.ts's registry
 // (which wants the literal `App`, since it's also Dashboard's shared
 // registry) cast at that one seam (`app as App`) — the real production
@@ -166,7 +166,7 @@ export interface ResultsApp {
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
   /** #276 Phase 5: no flat `App` delegates for the params-group members this
-   *  module (and, via the `as FilterBarApp` cast below, filter-bar.ts) needs —
+   *  module (and, via the `as VariableBarApp` cast below, variable-bar.ts) needs —
    *  `app.params.*` directly. */
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
   /** #276 Phase 5: no flat `App.savePref` delegate — `app.prefs.save(name,
@@ -719,7 +719,7 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
       // (fmt 'Table', rows > 0), so the gate stays in lockstep.
       if (r.rawText == null && r.rows.length > 0 && r.source) {
         toolbar.appendChild(h('button', {
-          class: 'res-act', title: 'Open this query in a new tab — change its filters and re-run',
+          class: 'res-act', title: 'Open this query in a new tab — change its variables and re-run',
           onclick: () => expandDataPane(app, r),
         }, Icon.expand(), h('span', null, 'Expand')));
       }
@@ -863,10 +863,10 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
  * detached view is a self-contained, re-runnable surface bound to the result's
  * captured `source` ({sql, tabId, rowLimit, title, description} — attached by
  * run() on a normal row-returning result): its Table/JSON/Panel switcher, sort,
- * column widths, and chart instance are local, but its `{name:Type}` filter row
+ * column widths, and chart instance are local, but its `{name:Type}` variable row
  * reads/writes the SAME shared `state.varValues`/`filterActive` stores as the
  * SQL Browser and dashboards (a value entered anywhere is offered everywhere).
- * A committed filter (or the Refresh button) re-runs ONLY this detached query —
+ * A committed variable (or the Refresh button) re-runs ONLY this detached query —
  * full streaming/cap/abort parity via the shared `app.exec.executeRead` seam, with
  * its own AbortController + generation guard so a newer/stale response can never
  * overwrite the current result and closing aborts in flight. The main workbench
@@ -894,7 +894,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
   // scope), and later edits in the live tab never leak in.
   const savedPanel = tabPanel(app.activeTab());
   // Analyze the captured source ONCE — its `{name:Type}` fields drive the
-  // filter row; the SQL is fixed for the life of this view.
+  // variable row; the SQL is fixed for the life of this view.
   const analysis: ParameterAnalysis = analyzeParameterizedSources([
     { id: 'detached', label: 'detached data', kind: 'tab', sql: source.sql, bindPolicy: 'row-returning' },
   ]);
@@ -984,7 +984,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
       // Refresh button (disabled by the aborted in-flight run) stays stuck.
       const settle = (msg: string): void => { running = false; if (refreshBtn) refreshBtn.disabled = false; setStatus(msg); };
 
-      // Re-run ONLY this detached query with the current shared filter values.
+      // Re-run ONLY this detached query with the current shared variable values.
       async function rerun(): Promise<void> {
         if (closed) return;
         const myGen = ++gen;
@@ -1060,10 +1060,10 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         }, Icon.copy(), h('span', null, 'Copy')));
 
       const pane = h('div', { class: 'results data-pane-view' }, toolbar);
-      // Filter row (#185): only when the source declares `{name:Type}` fields —
+      // Variable row (#185): only when the source declares `{name:Type}` fields —
       // omitted entirely otherwise (no empty toolbar). Committing a field or
       // clicking Refresh re-runs only this detached query.
-      let filterBarDispose: (() => void) | null = null;
+      let variableBarDispose: (() => void) | null = null;
       if (fields.length) {
         const getField = (name: string, mode: ValidationMode): PreparedFieldState => prepareParameterizedBatch(analysis, {
           values: app.state.varValues,
@@ -1072,15 +1072,15 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
           validationMode: mode,
         }).fields[name];
         // A committed field re-runs only this detached query (rerun ignores the
-        // param name buildFilterBar passes — a single source re-runs wholesale).
-        const filterBar = buildFilterBar(app as FilterBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query filters' });
-        filterBarDispose = filterBar.dispose;
+        // param name buildVariableBar passes — a single source re-runs wholesale).
+        const variableBar = buildVariableBar(app as VariableBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query variables' });
+        variableBarDispose = variableBar.dispose;
         refreshBtn = h('button', {
-          class: 'res-act detached-refresh', title: 'Re-run this query with the current filter values',
+          class: 'res-act detached-refresh', title: 'Re-run this query with the current variable values',
           onclick: () => rerun(),
         }, Icon.play(), h('span', null, 'Refresh'));
         statusEl = h('div', { class: 'detached-status', role: 'status' });
-        pane.appendChild(h('div', { class: 'detached-filter-row' }, filterBar.el, refreshBtn, statusEl));
+        pane.appendChild(h('div', { class: 'detached-variable-row' }, variableBar.el, refreshBtn, statusEl));
       }
       pane.appendChild(inner);
       body.appendChild(pane);
@@ -1102,7 +1102,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         closed = true;
         if (ac) ac.abort();
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
-        filterBarDispose?.();
+        variableBarDispose?.();
         if (!isTab) doc.removeEventListener('keydown', onKey, true);
       };
     },

@@ -1,6 +1,6 @@
 // The enum-valued `{name:Type}` variable control (#172) — a dropdown of
 // either the declared Enum8/Enum16 members (v1: workbench var-strip AND
-// dashboard filter bar, since the declaration travels with the tile SQL) or
+// dashboard variable bar, since the declaration travels with the tile SQL) or
 // the schema-cache-inferred members (v2: workbench only — a plain
 // `{s:String}` compared to a cached Enum column). This is the THIRD consumer
 // of the shared combobox primitive (combobox.js, #174 §1), after #169's date
@@ -81,7 +81,7 @@ export interface BuildEnumFieldOpts {
 }
 
 /** What `buildEnumField` returns — the field controller its caller (the
- *  workbench var-strip / dashboard filter bar) delegates its own DOM
+ *  workbench var-strip / dashboard variable bar) delegates its own DOM
  *  listeners to. */
 export interface EnumField {
   el: HTMLElement;

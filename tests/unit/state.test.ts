@@ -123,6 +123,44 @@ describe('variableDoc / findVariableTab', () => {
   });
 });
 
+// #459: every `KEYS` value is a PERSISTED localStorage key, so its literal
+// string is a compatibility contract with data already on users' machines —
+// not an implementation detail that may follow a source-level rename. Every
+// other test reaches these keys through the `KEYS` constant, which means a
+// rename of the string itself would leave the whole suite green while silently
+// orphaning real stored data. This test is the one place that pins the strings,
+// so changing one has to be a deliberate edit here plus a migration.
+//
+// `dashFilters` is the reason this exists: #459 renamed the Dashboard's
+// filter terminology to "variable" everywhere EXCEPT this key, whose value must
+// stay `asb:dashFilters` or every saved Dashboard variable value is discarded on
+// the next load. `filterActive` is the second documented exception — it names
+// the Workbench's optional-block activation, not a Dashboard variable.
+describe('KEYS — persisted localStorage key names (#459)', () => {
+  it('pins every persisted key string, including the two documented "filter" exceptions', () => {
+    expect(KEYS).toEqual({
+      theme: 'asb:theme',
+      sidebarPx: 'asb:sidebarPx',
+      editorPct: 'asb:editorPct',
+      sideSplitPct: 'asb:sideSplitPct',
+      cellDrawerPx: 'asb:cellDrawerPx',
+      docPanePx: 'asb:docPanePx',
+      sidePanel: 'asb:sidePanel',
+      saved: 'asb:saved',
+      history: 'asb:history',
+      libraryName: 'asb:libraryName',
+      resultRowLimit: 'asb:resultRowLimit',
+      varValues: 'asb:varValues',
+      filterActive: 'asb:filterActive',
+      dashLayout: 'asb:dashLayout',
+      dashCols: 'asb:dashCols',
+      varRecent: 'asb:varRecent',
+      varRecentDisabled: 'asb:varRecentDisabled',
+      dashFilters: 'asb:dashFilters',
+    });
+  });
+});
+
 describe('createState', () => {
   it('upgrades persisted saved queries at the localStorage startup ingress (#166)', () => {
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };

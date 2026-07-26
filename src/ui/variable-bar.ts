@@ -1,16 +1,16 @@
-// The shared `{name:Type}` filter bar: one field per parameter, driving the
+// The shared `{name:Type}` variable bar: one field per parameter, driving the
 // same `state.varValues`/`state.filterActive` machinery the SQL Browser
 // workbench uses. Extracted from the dashboard (#149 D3) when the detached Data
 // view (#185) became its second consumer (CLAUDE.md rule 5) — both the
-// dashboard's global filters and the detached view's per-query filter row build
-// the identical field controls with the identical debounce/commit semantics;
+// dashboard's global variables and the detached view's per-query variable row
+// build the identical field controls with the identical debounce/commit semantics;
 // only the row's owner (which surface, which document realm) and what a commit
 // re-runs differ, and those are injected. The field controls themselves are the
 // shared leaf builders (enum/relative-time/recent + the combobox primitive).
 //
 // #447 deleted the CURATED branch. A Dashboard filter used to be able to draw
 // its options from a saved "Filter"-role query, which this bar rendered as
-// either a strict single-select combobox (`filter-option-field.ts`) or a
+// either a strict single-select combobox (`variable-option-field.ts`) or a
 // multiselect dialog (`multi-select-field.ts`), with a per-field source status
 // affordance. A Dashboard's variables are now inferred from `{name:Type}`
 // placeholders in panel-owned queries, so the per-field SOURCE STATUS machine
@@ -38,7 +38,7 @@ import { buildEnumField } from './enum-field.js';
 import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildTimeRangeField } from './time-range-field.js';
-import { buildFilterOptionField } from './filter-option-field.js';
+import { buildVariableOptionField } from './variable-option-field.js';
 import { buildMultiSelectField } from './multi-select-field.js';
 import { Icon } from './icons.js';
 import type { KeyboardOwner } from './app.types.js';
@@ -51,7 +51,7 @@ import type { WorkbenchParameterSession } from '../application/workbench-paramet
  *  directly, and so does tests/helpers/fake-app.js's long-standing minimal
  *  `makeApp()` fixture — no cast needed on either side (same convention
  *  shortcuts.ts established for its own narrow `ShortcutsApp` contract). */
-export interface FilterBarApp {
+export interface VariableBarApp {
   document: Document;
   state: {
     varValues: Record<string, string>;
@@ -64,8 +64,8 @@ export interface FilterBarApp {
   wallNow(): number;
 }
 
-/** `buildFilterBar`'s options bag. */
-export interface BuildFilterBarOptions {
+/** `buildVariableBar`'s options bag. */
+export interface BuildVariableBarOptions {
   document?: Document;
   ariaLabel?: string;
   /** #335: one entry per resolved `DashboardTimeRangeGroup` — the shell
@@ -87,7 +87,7 @@ export interface BuildFilterBarOptions {
   }>;
   /** #335: fires when a time-range control commits both bounds (its Apply, or
    *  an immediate recents pick) — the caller (`dashboard.ts`) routes it to
-   *  `session.applyFilters` over the group's from/to variable names. Only
+   *  `session.applyVariables` over the group's from/to variable names. Only
    *  reached when `timeRange` built at least one control. */
   onApplyTimeRange?(group: DashboardTimeRangeGroup, from: string, to: string): void;
   onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
@@ -109,14 +109,14 @@ export interface BuildFilterBarOptions {
    *  lets the caller read the shared draft bag. */
   onCommitVariable?(name: string, value: string, active: boolean): void;
   /** Fires when a MULTI-select Apply commits. Separate from `onCommitVariable`
-   *  because the value is a real `string[]`: `FilterBarApp.state.varValues` is
+   *  because the value is a real `string[]`: `VariableBarApp.state.varValues` is
    *  deliberately still `Record<string, string>` (the Workbench var-strip owns
    *  and persists that same bag), so an array never round-trips through it. */
   onCommitVariableSelection?(name: string, values: string[], active: boolean): void;
 }
 
 /** One variable's fresh option rows, pushed into an already-built select by
- *  `FilterBarHandle.setVariableOptions` when a refresh's batch lands. */
+ *  `VariableBarHandle.setVariableOptions` when a refresh's batch lands. */
 export interface VariableOptionsUpdate {
   options: readonly VariableOption[];
   error: string | null;
@@ -157,7 +157,7 @@ export interface VariableFieldSpec {
 }
 
 /** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
- *  `ViewerFilterState`'s own fields, dashboard-viewer-session.ts), applied
+ *  `ViewerVariableState`'s own fields, dashboard-viewer-session.ts), applied
  *  through the returned `updateStatus` without rebuilding the bar.
  *
  *  #447: every field this bar builds is now a PLAIN direct input, and a plain
@@ -202,7 +202,7 @@ interface FieldHandle {
 // wrapper and (relative-time fields only) the live preview element
 // `applyFieldState`'s `descEl` points at — the shape every one of
 // `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` returns.
-interface FilterBarComboField extends ComboField {
+interface VariableBarComboField extends ComboField {
   el: HTMLElement;
   previewEl?: HTMLElement;
 }
@@ -210,48 +210,48 @@ interface FilterBarComboField extends ComboField {
 // `relative-time-field.js`/`recent-field.js` are unconverted — typed wrappers
 // over the exact signatures this module relies on (verified against the
 // wrapped function bodies), same convention `param-type.ts` uses for
-// `clickhouse-type.js`. Both return the same `FilterBarComboField` shape
+// `clickhouse-type.js`. Both return the same `VariableBarComboField` shape
 // `enum-field.ts`'s own (already-typed) `EnumField` documents.
 const buildRelativeTimeField = _buildRelativeTimeField as (opts: {
   document?: Document; name: string; type: string; value: string; baseTitle: string; wallNow: () => number;
   getRecents?: (text: string) => string[]; onClearRecent?: () => void;
   onValueInput: () => void; onCommit: () => void;
-}) => FilterBarComboField;
+}) => VariableBarComboField;
 
 const buildRecentField = _buildRecentField as (opts: {
   document?: Document; name: string; type: string; value: string; baseTitle: string;
   getRecents: (text: string) => string[]; onClearRecent?: () => void;
   onValueInput: () => void; onCommit: () => void;
-}) => FilterBarComboField;
+}) => VariableBarComboField;
 
 // #188's clear-all button and "N active" count affordances (#286) were both
 // removed from the Dashboard toolbar — clear-all by #294, the count by a
 // 2026-07-18 owner override reversing #294's own retained-count acceptance
 // criterion. Neither has a remaining UI consumer.
 
-// Idle time after the last keystroke in a filter field before it triggers a
+// Idle time after the last keystroke in a variable field before it triggers a
 // re-run (#149 D3) — longer than the FROM-scope column-load debounce
 // (codemirror-adapter.js) since this fires a real query, not a metadata fetch.
 // Enter/blur bypass this entirely for a fast explicit-commit path.
-export const FILTER_DEBOUNCE_MS = 500;
+export const VARIABLE_DEBOUNCE_MS = 500;
 
-/** `buildFilterBar`'s return value (#276 Phase 3b filter-bar dispose seam):
+/** `buildVariableBar`'s return value (#276 Phase 3b variable-bar dispose seam):
  *  `el` is the bar's root node; `dispose()` clears every field's pending
- *  debounce timer. A caller that rebuilds the bar (a filter-value merge
+ *  debounce timer. A caller that rebuilds the bar (a variable-value merge
  *  repaint) must dispose the previous bar first — and dispose on its own
  *  teardown — so an in-flight debounce never fires against a detached field
  *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave). */
-export interface FilterBarHandle {
+export interface VariableBarHandle {
   el: HTMLElement;
   /** Separately mountable compound time-range region. */
   timeEl: HTMLElement;
-  /** Separately mountable ordinary-filter region. */
+  /** Separately mountable ordinary-variable region. */
   ordinaryEl: HTMLElement;
   dispose(): void;
   /** Apply a per-key `FieldStatus` to whichever controls this SAME bar instance
    *  already built (the unified handle map, keyed by parameter name for a
    *  per-param field — #335) — a key this bar built nothing for is silently
-   *  ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
+   *  ignored. The caller (`dashboard.ts`'s `rebuildVariableBar`) uses this for a
    *  status-only change instead of tearing down and rebuilding the whole bar,
    *  which would blow away in-progress typing on every other field. */
   updateStatus(states: Record<string, FieldStatus>): void;
@@ -316,7 +316,7 @@ export interface FilterBarHandle {
 }
 
 /**
- * Build a filter bar: one field per `{name:Type}` parameter in `params` (the
+ * Build a variable bar: one field per `{name:Type}` parameter in `params` (the
  * shape from `fieldControls(analysis)`), sharing `app.state.varValues` /
  * `app.state.filterActive` / `app.state.varRecent` with every other surface.
  * Hidden entirely (no row, no spacing) when `params` is empty — same convention
@@ -330,24 +330,24 @@ export interface FilterBarHandle {
  * `options.document` is the realm nodes are built into (default `app.document`;
  * the detached Data view passes its child-tab document so the comboboxes anchor
  * in the right realm — #185). `options.ariaLabel`, when set, names the bar as a
- * labeled group for assistive tech (the detached view labels it "Query filters").
+ * labeled group for assistive tech (the detached view labels it "Query variables").
  *
  * Returns `{ el, dispose }` (#276 Phase 3b) rather than the bare root node —
- * see `FilterBarHandle`.
+ * see `VariableBarHandle`.
  */
-export function buildFilterBar(
-  app: FilterBarApp,
+export function buildVariableBar(
+  app: VariableBarApp,
   params: FieldControl[],
   onCommit: (name: string) => void,
   getField: (name: string, mode: ValidationMode) => PreparedFieldState,
-  options: BuildFilterBarOptions = {},
-): FilterBarHandle {
+  options: BuildVariableBarOptions = {},
+): VariableBarHandle {
   const document = options.document || app.document;
-  const attrs: Record<string, unknown> = { class: 'dash-filters' };
+  const attrs: Record<string, unknown> = { class: 'dash-variables' };
   if (options.ariaLabel) { attrs.role = 'group'; attrs['aria-label'] = options.ariaLabel; }
   if (!params.length) {
-    const timeEl = h('div', { class: 'dash-filter-time', style: { display: 'none' } });
-    const ordinaryEl = h('div', { class: 'dash-filter-ordinary', style: { display: 'none' } });
+    const timeEl = h('div', { class: 'dash-variable-time', style: { display: 'none' } });
+    const ordinaryEl = h('div', { class: 'dash-variable-ordinary', style: { display: 'none' } });
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }, timeEl, ordinaryEl),
       timeEl, ordinaryEl,
@@ -465,7 +465,7 @@ export function buildFilterBar(
 
   /** The strict single-select over one variable's batched option rows. */
   const buildOptionField = (p: FieldControl, spec: VariableFieldSpec): HTMLElement => {
-    const field = buildFilterOptionField({
+    const field = buildVariableOptionField({
       document,
       name: p.name,
       options: spec.options ?? [],
@@ -529,7 +529,7 @@ export function buildFilterBar(
     // suggestions). Every other caller passes nothing and keeps the exact
     // enum > date > text dispatch it had before.
     const ctl = fieldControlKind(p, null, { scalarControls: !!variables });
-    let combo: FilterBarComboField | null = null;
+    let combo: VariableBarComboField | null = null;
     let input: HTMLInputElement;
     const onValueInput = (): void => {
       app.state.varValues[p.name] = input.value;
@@ -543,7 +543,7 @@ export function buildFilterBar(
       // `!`: DOM's clearTimeout is a documented no-op on `null`/`undefined` —
       // the original .js called it unconditionally (`timer` starts `null`).
       clearTimeout(timer!);
-      timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
+      timer = setTimeout(commitNow, VARIABLE_DEBOUNCE_MS);
     };
     const onCommitHard = (): void => {
       applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo?.previewEl);
@@ -556,7 +556,7 @@ export function buildFilterBar(
     const onClearRecent = (): void => app.params.clearVarRecent(p.name);
     // A preset/recent pick is a deliberate, complete action (like Enter) —
     // run immediately, bypassing the debounce `onValueInput` just armed,
-    // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
+    // rather than waiting out VARIABLE_DEBOUNCE_MS for an explicit choice.
     const onPick = (): void => {
       applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo?.previewEl);
       if (timer != null) clearTimeout(timer);
@@ -638,19 +638,19 @@ export function buildFilterBar(
   const perParamFields = params.filter((p) => !suppressed.has(p.name))
     .map((p) => stampFieldKey(buildField(p), p.name));
 
-  // Compose: Time section, then a "Filters" section label (only when BOTH a
+  // Compose: Time section, then a "Variables" section label (only when BOTH a
   // Time section rendered AND at least one non-group field remains), then the
   // per-param fields. With no time-range groups `timeSection` is empty and no
-  // "Filters" label renders, so the child list is byte-identical to the
+  // "Variables" label renders, so the child list is byte-identical to the
   // pre-#335 `...params.map(...)` output.
   const timeEl = h('div', {
-    class: 'dash-filter-time',
+    class: 'dash-variable-time',
     style: timeRange.length ? undefined : { display: 'none' },
   }, ...timeSection);
   const ordinaryEl = h('div', {
-    class: 'dash-filter-ordinary',
+    class: 'dash-variable-ordinary',
     style: perParamFields.length ? undefined : { display: 'none' },
-  }, timeRange.length && perParamFields.length ? h('span', { class: 'flabel' }, 'Filters') : null,
+  }, timeRange.length && perParamFields.length ? h('span', { class: 'flabel' }, 'Variables') : null,
   ...perParamFields);
   const el = h('div', attrs, timeEl, ordinaryEl);
   return {
@@ -683,7 +683,7 @@ export function buildFilterBar(
     // #189-F2b, GENERALIZED (#335): read by the caller BEFORE disposing this
     // bar (a rebuild), to decide whether an outgoing popover's forced Cancel
     // deserves a refresh announcement AND which control's fresh trigger should
-    // receive focus — see `dashboard.ts`'s `rebuildFilterBar`.
+    // receive focus — see `dashboard.ts`'s `rebuildVariableBar`.
     openPopoverKey: () => {
       for (const [key, handle] of handles) if (handle.isOpen?.()) return key;
       return null;
@@ -701,14 +701,14 @@ export function buildFilterBar(
     // #425: resolve by the stamped DOM key. A parameter a time-range group OWNS
     // has no standalone field (it is suppressed from the per-param loop), so it
     // resolves to that group's compound control — otherwise navigating to a
-    // from/to variable would wrongly report "no such filter".
+    // from/to variable would wrongly report "no such variable".
     fieldElement: (key) => {
       const owning = timeRange.find((tr) =>
         tr.group.fromParameter === key || tr.group.toParameter === key);
       const stamped = owning ? `group:${owning.group.key}` : key;
       // Searched from `timeEl`/`ordinaryEl`, NOT from `el`: the caller mounts
       // those two regions separately (dashboard.ts splits the compound time
-      // controls into the primary toolbar and the ordinary fields into the filter
+      // controls into the primary toolbar and the ordinary fields into the variable
       // row), which re-parents them out of `el` and leaves it empty.
       // Matched by dataset read rather than an attribute selector: a parameter
       // name is user data and would need escaping to be selector-safe.

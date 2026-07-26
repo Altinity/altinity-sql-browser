@@ -309,13 +309,13 @@ describe('inferred variables (#447)', () => {
     // SQL, so it is a single-select that is still 'loading', while `top` is a
     // direct input and has nothing to load ('idle'). Both start with
     // `options: null`; only a completed batch replaces that.
-    expect(state.filters).toEqual([
+    expect(state.variableStates).toEqual([
       { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
       { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
     ]);
-    expect(state.resettableFilterIds).toEqual([]);
-    expect(state.activeFilterCount).toBe(0);
-    expect(state.filterDiagnostics).toEqual([]);
+    expect(state.resettableVariableIds).toEqual([]);
+    expect(state.activeVariableCount).toBe(0);
+    expect(state.optionDiagnostics).toEqual([]);
   });
 
   it('a conflicted variable gets no runtime and blocks ONLY the panels that declare it', async () => {
@@ -335,14 +335,14 @@ describe('inferred variables (#447)', () => {
     expect(state.variables[0].types).toEqual(['UInt64', 'String']);
     expect(state.variables[0].type).toBeNull();
     expect(state.variables[0].diagnostic).toContain('incompatible types');
-    expect(state.filters).toEqual([]); // never bindable, so never committable
+    expect(state.variableStates).toEqual([]); // never bindable, so never committable
     // The two panels that declare it have no value to bind; the third still runs.
     expect(state.tiles.map((t) => [t.tileId, t.status])).toEqual([
       ['num', 'unfilled'], ['str', 'unfilled'], ['free', 'ready'],
     ]);
     expect(calls.map((c) => c.sql)).toEqual(['SELECT 1 AS n']);
     // Committing it is impossible — there is no runtime to address.
-    await session.setFilter('p', 'x');
+    await session.setVariable('p', 'x');
     expect(calls.length).toBe(1);
   });
 
@@ -354,32 +354,32 @@ describe('inferred variables (#447)', () => {
       queries: [query('qnote', 'SELECT {owner:String}', { panel: { cfg: { type: 'text', content: 'hi' } } })],
     }));
     await session.start();
-    expect(session.state.value.filters.map((f) => f.id)).toEqual(['owner']);
+    expect(session.state.value.variableStates.map((f) => f.id)).toEqual(['owner']);
     // Text tiles contribute empty SQL to the EXECUTION analysis, so the name has
     // no field control and no target tile at all.
     expect(session.controls).toEqual([]);
     expect(calls.length).toBe(0);
-    await session.setFilter('owner', 'ada');
-    expect(session.state.value.filters[0]).toMatchObject({ value: 'ada', active: true });
+    await session.setVariable('owner', 'ada');
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'ada', active: true });
     expect(calls.length).toBe(0); // a wave over zero targets issues nothing
   });
 });
 
-// #303: `initialFilters` seeds each variable's runtime value/active from a
+// #303: `initialVariables` seeds each variable's runtime value/active from a
 // persisted bag (the shell's isolated per-dashboard store). #447 re-keyed it
 // from the (now gone) filter definition id to the VARIABLE NAME. These assert on
-// the session's initial `state.value.filters` BEFORE `start()` — the seed is
+// the session's initial `state.value.variableStates` BEFORE `start()` — the seed is
 // applied at construction time, no query execution required.
-describe('initialFilters seeding (#303)', () => {
+describe('initialVariables seeding (#303)', () => {
   const seededDoc = () => doc({ tiles: [tile('t1', 'q1'), tile('t2', 'q2')] });
   const seededQueries = () => [query('q1', 'SELECT {p1:String}'), query('q2', 'SELECT {p2:String}')];
   const byId = (session: ReturnType<typeof createDashboardViewerSession>, id: string) =>
-    session.state.value.filters.find((f) => f.id === id)!;
+    session.state.value.variableStates.find((f) => f.id === id)!;
 
   it('starts a seeded variable with its persisted value+active', () => {
     const session = createDashboardViewerSession(makeDeps({
       document: seededDoc(), queries: seededQueries(),
-      initialFilters: { p1: { value: 'seeded', active: true } },
+      initialVariables: { p1: { value: 'seeded', active: true } },
     }));
     expect(byId(session, 'p1')).toMatchObject({ value: 'seeded', active: true });
   });
@@ -387,20 +387,20 @@ describe('initialFilters seeding (#303)', () => {
   it('leaves an unseeded variable (absent from the map) UNSET', () => {
     const session = createDashboardViewerSession(makeDeps({
       document: seededDoc(), queries: seededQueries(),
-      initialFilters: { p1: { value: 'seeded', active: true } },
+      initialVariables: { p1: { value: 'seeded', active: true } },
     }));
     expect(byId(session, 'p2')).toMatchObject({ value: '', active: false });
   });
 
-  it('behaves identically when initialFilters is absent', () => {
+  it('behaves identically when initialVariables is absent', () => {
     const session = createDashboardViewerSession(makeDeps({ document: seededDoc(), queries: seededQueries() }));
     expect(byId(session, 'p1')).toMatchObject({ value: '', active: false });
     expect(byId(session, 'p2')).toMatchObject({ value: '', active: false });
   });
 
-  it('behaves identically when initialFilters is an empty map', () => {
+  it('behaves identically when initialVariables is an empty map', () => {
     const session = createDashboardViewerSession(makeDeps({
-      document: seededDoc(), queries: seededQueries(), initialFilters: {},
+      document: seededDoc(), queries: seededQueries(), initialVariables: {},
     }));
     expect(byId(session, 'p1')).toMatchObject({ value: '', active: false });
     expect(byId(session, 'p2')).toMatchObject({ value: '', active: false });
@@ -409,22 +409,22 @@ describe('initialFilters seeding (#303)', () => {
   it('falls back to the UNSET value when a seed entry has a nullish value', () => {
     const session = createDashboardViewerSession(makeDeps({
       document: seededDoc(), queries: seededQueries(),
-      initialFilters: { p1: { value: null, active: true } },
+      initialVariables: { p1: { value: null, active: true } },
     }));
     expect(byId(session, 'p1')).toMatchObject({ value: '', active: true });
   });
 
   it("a seed's explicit active:false wins over its own non-empty value", () => {
     const session = createDashboardViewerSession(makeDeps({
-      // A non-empty value would IMPLY activation via `setFilter`; the seed's
+      // A non-empty value would IMPLY activation via `setVariable`; the seed's
       // explicit `active` flag is authoritative and is never re-derived from it.
       document: seededDoc(), queries: seededQueries(),
-      initialFilters: { p1: { value: 'V', active: false } },
+      initialVariables: { p1: { value: 'V', active: false } },
     }));
     expect(byId(session, 'p1')).toMatchObject({ value: 'V', active: false });
-    expect(session.state.value.activeFilterCount).toBe(0);
+    expect(session.state.value.activeVariableCount).toBe(0);
     // The retained value still makes it "resettable" — there is something to clear.
-    expect(session.state.value.resettableFilterIds).toEqual(['p1']);
+    expect(session.state.value.resettableVariableIds).toEqual(['p1']);
   });
 });
 
@@ -437,7 +437,7 @@ describe('variables and the affected-panel planner', () => {
     query('qu', 'SELECT 1 AS n'),
   ];
 
-  it('setFilter runs only the affected panel wave', async () => {
+  it('setVariable runs only the affected panel wave', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({
       document: twoTileDoc(), exec, queries: twoTileQueries(),
@@ -446,37 +446,37 @@ describe('variables and the affected-panel planner', () => {
     // 'affected' is unfilled ({p} required, unset); only 'unaffected' ran.
     expect(calls.map((c) => c.sql)).toEqual(['SELECT 1 AS n']);
     const before = calls.length;
-    await session.setFilter('missing', 'x'); // unknown variable: no-op
+    await session.setVariable('missing', 'x'); // unknown variable: no-op
     expect(calls.length).toBe(before);
-    await session.setFilter('p', 'W');
+    await session.setVariable('p', 'W');
     // Only the tile that declares {p} re-ran.
     const added = calls.slice(before);
     expect(added.length).toBe(1);
     expect(added[0].params.param_p).toBe('W');
-    expect(session.state.value.activeFilterCount).toBe(1);
+    expect(session.state.value.activeVariableCount).toBe(1);
   });
 
-  it('clearFilter deactivates without discarding the value; reactivation restores it', async () => {
+  it('clearVariable deactivates without discarding the value; reactivation restores it', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({
       document: twoTileDoc(), exec, queries: twoTileQueries(),
     }));
     await session.start();
-    await session.setFilter('p', 'V');
-    expect(session.state.value.filters[0].active).toBe(true);
-    await session.clearFilter('p');
-    expect(session.state.value.filters[0].active).toBe(false);
-    expect(session.state.value.filters[0].value).toBe('V'); // value retained
-    expect(session.state.value.activeFilterCount).toBe(0);
+    await session.setVariable('p', 'V');
+    expect(session.state.value.variableStates[0].active).toBe(true);
+    await session.clearVariable('p');
+    expect(session.state.value.variableStates[0].active).toBe(false);
+    expect(session.state.value.variableStates[0].value).toBe('V'); // value retained
+    expect(session.state.value.activeVariableCount).toBe(0);
     // A retained-but-inactive value is still "resettable" — there is something
     // to clear even though nothing is bound.
-    expect(session.state.value.resettableFilterIds).toEqual(['p']);
-    await session.setFilter('p', session.state.value.filters[0].value); // reactivate
-    expect(session.state.value.filters[0].active).toBe(true);
-    await session.clearFilter('nope'); // unknown: no-op
+    expect(session.state.value.resettableVariableIds).toEqual(['p']);
+    await session.setVariable('p', session.state.value.variableStates[0].value); // reactivate
+    expect(session.state.value.variableStates[0].active).toBe(true);
+    await session.clearVariable('nope'); // unknown: no-op
   });
 
-  it('clearAllFilters resets every variable to UNSET, coalesced into ONE wave', async () => {
+  it('clearAllVariables resets every variable to UNSET, coalesced into ONE wave', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     // One wave == one `deps.wallNow()` read (#335's single-snapshot rule); two
     // sequential waves would take two.
@@ -489,18 +489,18 @@ describe('variables and the affected-panel planner', () => {
       queries: [query('qa', 'SELECT {p:String} AS n'), query('qb', 'SELECT {q:String} AS n')],
     }));
     await session.start();
-    await session.setFilter('p', 'X');
-    await session.setFilter('q', 'Y');
+    await session.setVariable('p', 'X');
+    await session.setVariable('q', 'Y');
     expect(calls.filter((c) => 'param_p' in c.params).length).toBe(1);
     expect(calls.filter((c) => 'param_q' in c.params).length).toBe(1);
     const readsBefore = wallReads.length;
 
-    await session.clearAllFilters();
+    await session.clearAllVariables();
     // Exactly ONE coalesced wave for BOTH resets.
     expect(wallReads.length - readsBefore).toBe(1);
-    expect(session.state.value.filters.map((f) => [f.value, f.active]))
+    expect(session.state.value.variableStates.map((f) => [f.value, f.active]))
       .toEqual([['', false], ['', false]]);
-    expect(session.state.value.resettableFilterIds).toEqual([]);
+    expect(session.state.value.resettableVariableIds).toEqual([]);
     // Both tiles were in that one wave: each re-gated to `unfilled` on its own
     // now-blank required parameter, and neither issued a request.
     expect(session.state.value.tiles.map((t) => t.status)).toEqual(['unfilled', 'unfilled']);
@@ -508,11 +508,11 @@ describe('variables and the affected-panel planner', () => {
 
     // A second clear-all with nothing left to clear issues no wave at all.
     const readsAfter = wallReads.length;
-    await session.clearAllFilters();
+    await session.clearAllVariables();
     expect(wallReads.length).toBe(readsAfter);
   });
 
-  it('resetFilters resets only the named variables in one wave, and no-ops when unchanged or destroyed', async () => {
+  it('resetVariables resets only the named variables in one wave, and no-ops when unchanged or destroyed', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const wallReads: number[] = [];
     let wall = 1_700_000_000_000;
@@ -523,28 +523,28 @@ describe('variables and the affected-panel planner', () => {
       queries: [query('qa', 'SELECT {from:String}'), query('qb', 'SELECT {region:String}')],
     }));
     await session.start();
-    await session.setFilter('from', '-7d');
-    await session.setFilter('region', 'west');
+    await session.setVariable('from', '-7d');
+    await session.setVariable('region', 'west');
     expect(session.state.value.tiles.map((t) => t.status)).toEqual(['ready', 'ready']);
-    expect(session.state.value.resettableFilterIds).toEqual(['from', 'region']);
+    expect(session.state.value.resettableVariableIds).toEqual(['from', 'region']);
     const readsBefore = wallReads.length;
     const callsBefore = calls.length;
 
-    await session.resetFilters(['region', 'unknown']);
+    await session.resetVariables(['region', 'unknown']);
     expect(wallReads.length - readsBefore).toBe(1); // exactly ONE wave
-    expect(session.state.value.filters.map((filter) => filter.value)).toEqual(['-7d', '']);
-    expect(session.state.value.resettableFilterIds).toEqual(['from']);
+    expect(session.state.value.variableStates.map((variable) => variable.value)).toEqual(['-7d', '']);
+    expect(session.state.value.resettableVariableIds).toEqual(['from']);
     // Only 'region''s target tile was in that wave — it re-gated to `unfilled`
     // on its now-blank required parameter, while 'from''s tile kept its result.
     expect(session.state.value.tiles.map((t) => t.status)).toEqual(['ready', 'unfilled']);
     expect(calls.length).toBe(callsBefore); // an unset parameter issues no request
 
     const unchanged = wallReads.length;
-    await session.resetFilters(['region']);
+    await session.resetVariables(['region']);
     expect(wallReads.length).toBe(unchanged); // nothing changed → no wave
     session.destroy();
-    await session.resetFilters(['from']);
-    expect(session.state.value.filters[0].value).toBe('-7d');
+    await session.resetVariables(['from']);
+    expect(session.state.value.variableStates[0].value).toBe('-7d');
     session.setTileSearch('ignored');
     expect(session.state.value.tileSearch).toBe('');
   });
@@ -604,8 +604,8 @@ describe('variables and the affected-panel planner', () => {
   });
 });
 
-describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {
-  it('exposes controls + a draft-aware field state, and applyFilter sets value AND active explicitly', async () => {
+describe('variable-bar bridge (controls / getVariableField / applyVariable)', () => {
+  it('exposes controls + a draft-aware field state, and applyVariable sets value AND active explicitly', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({
       document: doc({ tiles: [tile('t', 'q')] }),
@@ -614,21 +614,21 @@ describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {
     await session.start();
     expect(session.controls.map((c) => c.name)).toContain('p');
     // Draft-aware #170 validation: empty required → not ok; a value → ok.
-    expect(session.getFilterField('p', 'execute', { p: '' }, { p: false }).state).not.toBe('ok');
-    expect(session.getFilterField('p', 'execute', { p: 'x' }, { p: true }).state).toBe('ok');
-    // applyFilter(value, active=true) → the affected tile re-runs with the value bound.
+    expect(session.getVariableField('p', 'execute', { p: '' }, { p: false }).state).not.toBe('ok');
+    expect(session.getVariableField('p', 'execute', { p: 'x' }, { p: true }).state).toBe('ok');
+    // applyVariable(value, active=true) → the affected tile re-runs with the value bound.
     const before = calls.length;
-    await session.applyFilter('p', 'x', true);
+    await session.applyVariable('p', 'x', true);
     expect(calls.slice(before).find((c) => 'param_p' in c.params)?.params.param_p).toBe('x');
-    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: true });
-    // applyFilter(value, active=false) keeps the value but deactivates it.
-    await session.applyFilter('p', 'x', false);
-    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: false });
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'x', active: true });
+    // applyVariable(value, active=false) keeps the value but deactivates it.
+    await session.applyVariable('p', 'x', false);
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'x', active: false });
     // Unknown variable name and post-destroy are no-ops.
-    await session.applyFilter('nope', 'y', true);
+    await session.applyVariable('nope', 'y', true);
     session.destroy();
-    await session.applyFilter('p', 'z', true);
-    expect(session.state.value.filters[0].value).toBe('x');
+    await session.applyVariable('p', 'z', true);
+    expect(session.state.value.variableStates[0].value).toBe('x');
   });
 });
 
@@ -662,7 +662,7 @@ describe('per-tile control and lifecycle', () => {
     await session.start();
     const before = calls.length;
     tokenOk = false;
-    await session.applyFilter('p', 'x', true);
+    await session.applyVariable('p', 'x', true);
     expect(calls).toHaveLength(before);
   });
 
@@ -761,7 +761,7 @@ describe('per-tile control and lifecycle', () => {
       : { columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({ tiles: [tile('slow', 'qslow'), tile('fast', 'qfast')] });
     const session = createDashboardViewerSession(makeDeps({
-      document, exec, initialFilters: { p: { value: 'V', active: true } },
+      document, exec, initialVariables: { p: { value: 'V', active: true } },
       queries: [query('qslow', 'SELECT {p:String} AS n /* slow */'), query('qfast', 'SELECT 1 AS n')],
     }));
     const done = session.start();
@@ -772,9 +772,9 @@ describe('per-tile control and lifecycle', () => {
     const after = calls.length;
     await session.refresh();
     await session.refreshTile('slow');
-    await session.setFilter('p', 'Z');
-    await session.clearFilter('p');
-    await session.clearAllFilters();
+    await session.setVariable('p', 'Z');
+    await session.clearVariable('p');
+    await session.clearAllVariables();
     expect(calls.length).toBe(after); // nothing ran post-destroy
     expect(session.state.value.updatedAt).toBeNull();
   });
@@ -1092,16 +1092,16 @@ describe('flow layout (mobile normalization)', () => {
     expect(mobileLayout.rows[0].tiles[0].span).toBe(1);
     // A numeric value coerces to a string on the way to the pipeline; setting
     // null clears it.
-    await session.setFilter('p', 5);
-    expect(session.state.value.filters[0].active).toBe(true);
+    await session.setVariable('p', 5);
+    expect(session.state.value.variableStates[0].active).toBe(true);
     expect(calls.find((c) => 'param_p' in c.params)?.params.param_p).toBe('5');
-    await session.setFilter('p', null);
-    expect(session.state.value.filters[0].active).toBe(false);
+    await session.setVariable('p', null);
+    expect(session.state.value.variableStates[0].active).toBe(false);
     mobile = false;
   });
 });
 
-describe('applyFilters batch commit (#335)', () => {
+describe('applyVariables batch commit (#335)', () => {
   const bothDoc = () => doc({ tiles: [tile('ta', 'qa'), tile('tb', 'qb'), tile('tboth', 'qboth')] });
   const bothQueries = () => [
     query('qa', 'SELECT {p:String} AS n'),
@@ -1115,14 +1115,20 @@ describe('applyFilters batch commit (#335)', () => {
     await session.start();
     const base = calls.length;
     const snapshot = session.state.value;
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'nope', value: 'y', active: true },
+    const result = await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'nope', value: 'y', active: true },
     ]);
+    // #459: the rejection message is user-visible — the Dashboard shell announces
+    // it through `variableRefreshLiveEl`, so its wording is pinned here rather
+    // than left to a rename.
+    expect(result).toEqual({
+      ok: false, error: 'The variable batch contains an unknown or duplicate variable.',
+    });
     expect(calls.length).toBe(base); // no wave
     expect(session.state.value).toBe(snapshot); // no publish
-    expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
-    expect(session.state.value.filters[1]).toMatchObject({ value: '', active: false });
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: '', active: false });
+    expect(session.state.value.variableStates[1]).toMatchObject({ value: '', active: false });
   });
 
   it('is atomic: a duplicate id in the call mutates nothing and runs no wave', async () => {
@@ -1131,13 +1137,13 @@ describe('applyFilters batch commit (#335)', () => {
     await session.start();
     const base = calls.length;
     const snapshot = session.state.value;
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'p', value: 'z', active: true },
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'p', value: 'z', active: true },
     ]);
     expect(calls.length).toBe(base);
     expect(session.state.value).toBe(snapshot);
-    expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: '', active: false });
   });
 
   it('validates the complete typed batch before mutation and reports failure', async () => {
@@ -1148,12 +1154,12 @@ describe('applyFilters batch commit (#335)', () => {
     }));
     await session.start();
     const base = calls.length;
-    const result = await session.applyFilters([
-      { filterId: 'from', value: '1700000000', active: true },
-      { filterId: 'to', value: 'now-nope', active: true },
+    const result = await session.applyVariables([
+      { variableId: 'from', value: '1700000000', active: true },
+      { variableId: 'to', value: 'now-nope', active: true },
     ]);
     expect(result).toMatchObject({ ok: false });
-    expect(session.state.value.filters).toMatchObject([
+    expect(session.state.value.variableStates).toMatchObject([
       { value: '', active: false }, { value: '', active: false },
     ]);
     expect(calls).toHaveLength(base);
@@ -1170,11 +1176,11 @@ describe('applyFilters batch commit (#335)', () => {
       queries: [query('q', 'SELECT {orphan:String}', { panel: { cfg: { type: 'text', content: 'x' } } })],
     }));
     await session.start();
-    expect(await session.applyFilters([{ filterId: 'orphan', value: 'kept', active: false }]))
+    expect(await session.applyVariables([{ variableId: 'orphan', value: 'kept', active: false }]))
       .toEqual({ ok: true, changed: true });
-    expect(await session.applyFilters([{ filterId: 'orphan', value: 'bad', active: true }]))
-      .toEqual({ ok: false, error: 'orphan is not a valid filter value.' });
-    expect(session.state.value.filters[0]).toMatchObject({ value: 'kept', active: false });
+    expect(await session.applyVariables([{ variableId: 'orphan', value: 'bad', active: true }]))
+      .toEqual({ ok: false, error: 'orphan is not a valid variable value.' });
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'kept', active: false });
   });
 
   it('hardens an incomplete value through the same scoped execution pipeline', async () => {
@@ -1184,10 +1190,10 @@ describe('applyFilters batch commit (#335)', () => {
       exec, queries: [query('qi', 'SELECT {i:Int32}')],
     }));
     await session.start();
-    expect(await session.applyFilters([{ filterId: 'i', value: '-', active: true }]))
+    expect(await session.applyVariables([{ variableId: 'i', value: '-', active: true }]))
       .toMatchObject({ ok: false });
-    expect(session.state.value.filters[0]).toMatchObject({ value: '', active: false });
-    expect(await session.applyFilters([{ filterId: 'i', value: '-3', active: true }]))
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: '', active: false });
+    expect(await session.applyVariables([{ variableId: 'i', value: '-3', active: true }]))
       .toEqual({ ok: true, changed: true });
   });
 
@@ -1202,7 +1208,7 @@ describe('applyFilters batch commit (#335)', () => {
     const session = createDashboardViewerSession(makeDeps({
       document: doc({ tiles: [tile('t', 'q')] }),
       exec, connection: { ensureFreshToken: async () => tokenOk },
-      initialFilters: { p: { value: '1700000000', active: true } },
+      initialVariables: { p: { value: '1700000000', active: true } },
       queries: [query('q', 'SELECT {p:DateTime}')],
     }));
     await session.start();
@@ -1211,7 +1217,7 @@ describe('applyFilters batch commit (#335)', () => {
     await flush();
     expect(session.state.value.tiles[0].status).toBe('loading');
     tokenOk = false;
-    await session.applyFilters([{ filterId: 'p', value: '1800000000', active: true }]);
+    await session.applyVariables([{ variableId: 'p', value: '1800000000', active: true }]);
     expect(session.state.value.tiles[0].status).toBe('idle');
     release(); await old;
     expect(session.state.value.tiles[0].status).toBe('idle');
@@ -1222,13 +1228,13 @@ describe('applyFilters batch commit (#335)', () => {
     const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
     await session.start();
     const base = calls.length;
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'q', value: 'y', active: true },
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'q', value: 'y', active: true },
     ]);
     // Both bounds committed + active.
-    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: true });
-    expect(session.state.value.filters[1]).toMatchObject({ value: 'y', active: true });
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'x', active: true });
+    expect(session.state.value.variableStates[1]).toMatchObject({ value: 'y', active: true });
     const added = calls.slice(base);
     // Union of p's targets {ta, tboth} and q's targets {tb, tboth} = 3 tiles,
     // each run EXACTLY once — the tile consuming BOTH names never runs twice.
@@ -1244,15 +1250,15 @@ describe('applyFilters batch commit (#335)', () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
     await session.start();
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'q', value: 'y', active: true },
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'q', value: 'y', active: true },
     ]);
     const base = calls.length;
     const snapshot = session.state.value;
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'q', value: 'y', active: true },
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'q', value: 'y', active: true },
     ]);
     expect(calls.length).toBe(base); // no wave
     expect(session.state.value).toBe(snapshot); // no publish
@@ -1262,24 +1268,24 @@ describe('applyFilters batch commit (#335)', () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({ document: bothDoc(), exec, queries: bothQueries() }));
     await session.start();
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true },
-      { filterId: 'q', value: 'y', active: true },
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true },
+      { variableId: 'q', value: 'y', active: true },
     ]);
     const base = calls.length;
-    await session.applyFilters([
-      { filterId: 'p', value: 'x', active: true }, // identical — not in `changed`
-      { filterId: 'q', value: 'z', active: true }, // changed
+    await session.applyVariables([
+      { variableId: 'p', value: 'x', active: true }, // identical — not in `changed`
+      { variableId: 'q', value: 'z', active: true }, // changed
     ]);
     const added = calls.slice(base);
     // Only q's targets {tb, tboth} rerun; ta (p only) does NOT.
     expect(added.every((c) => 'param_q' in c.params)).toBe(true);
     expect(added.some((c) => 'param_p' in c.params && !('param_q' in c.params))).toBe(false);
     expect(added.length).toBe(2);
-    expect(session.state.value.filters[1].value).toBe('z');
+    expect(session.state.value.variableStates[1].value).toBe('z');
   });
 
-  it('a concurrent applyFilters wave is superseded by a newer commit (stale-wave guard) — the newer value wins', async () => {
+  it('a concurrent applyVariables wave is superseded by a newer commit (stale-wave guard) — the newer value wins', async () => {
     let releaseFirst!: () => void;
     const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let n = 0;
@@ -1294,13 +1300,13 @@ describe('applyFilters batch commit (#335)', () => {
       exec, queries: [query('q', 'SELECT {p:String} AS n')],
     }));
     await session.start();
-    const first = session.applyFilters([{ filterId: 'p', value: 'A', active: true }]);
+    const first = session.applyVariables([{ variableId: 'p', value: 'A', active: true }]);
     await flush();
-    const second = session.applyFilters([{ filterId: 'p', value: 'B', active: true }]);
+    const second = session.applyVariables([{ variableId: 'p', value: 'B', active: true }]);
     releaseFirst();
     await Promise.all([first, second]);
     // The superseded 'A' run's result is discarded; the tile reflects 'B'.
-    expect(session.state.value.filters[0].value).toBe('B');
+    expect(session.state.value.variableStates[0].value).toBe('B');
     expect(session.state.value.tiles[0].rows).toEqual([['B']]);
   });
 
@@ -1310,10 +1316,10 @@ describe('applyFilters batch commit (#335)', () => {
     await session.start();
     session.destroy();
     const base = calls.length;
-    expect(await session.applyFilters([{ filterId: 'p', value: 'x', active: true }]))
+    expect(await session.applyVariables([{ variableId: 'p', value: 'x', active: true }]))
       .toEqual({ ok: false, error: 'Dashboard is no longer active.' });
     expect(calls.length).toBe(base);
-    expect(session.state.value.filters[0].value).toBe('');
+    expect(session.state.value.variableStates[0].value).toBe('');
   });
 });
 
@@ -1343,7 +1349,7 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
   it('is null before the first wave', () => {
     const { exec } = makeExec();
     const session = createDashboardViewerSession(makeDeps({
-      document: splitDoc(), exec, queries: splitQueries(), initialFilters: splitSeed(),
+      document: splitDoc(), exec, queries: splitQueries(), initialVariables: splitSeed(),
     }));
     expect(session.state.value.waveWallNowMs).toBeNull();
   });
@@ -1352,7 +1358,7 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const { wallNow, calls: wallCalls } = incWall();
     const session = createDashboardViewerSession(makeDeps({
-      document: splitDoc(), exec, queries: splitQueries(), initialFilters: splitSeed(), wallNow,
+      document: splitDoc(), exec, queries: splitQueries(), initialVariables: splitSeed(), wallNow,
     }));
     await session.start();
     // Exactly ONE wall-clock read for the whole refresh — the fix.
@@ -1366,15 +1372,15 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
     expect(oneCall.params.param_ts1).toBe(twoCall.params.param_ts2);
   });
 
-  it('an applyFilters wave updates waveWallNowMs to its own fresh snapshot', async () => {
+  it('an applyVariables wave updates waveWallNowMs to its own fresh snapshot', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const { wallNow } = incWall();
     const session = createDashboardViewerSession(makeDeps({
-      document: splitDoc(), exec, queries: splitQueries(), initialFilters: splitSeed(), wallNow,
+      document: splitDoc(), exec, queries: splitQueries(), initialVariables: splitSeed(), wallNow,
     }));
     await session.start();
     const afterRefresh = session.state.value.waveWallNowMs!;
-    await session.applyFilters([{ filterId: 'ts1', value: '-1h', active: true }]);
+    await session.applyVariables([{ variableId: 'ts1', value: '-1h', active: true }]);
     const afterApply = session.state.value.waveWallNowMs!;
     expect(afterApply).toBeGreaterThan(afterRefresh);
   });
@@ -1383,7 +1389,7 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const { wallNow } = incWall();
     const session = createDashboardViewerSession(makeDeps({
-      document: splitDoc(), exec, queries: splitQueries(), initialFilters: splitSeed(), wallNow,
+      document: splitDoc(), exec, queries: splitQueries(), initialVariables: splitSeed(), wallNow,
     }));
     await session.start();
     const afterStart = session.state.value.waveWallNowMs!;
@@ -1413,10 +1419,10 @@ describe('waveWallNowMs single wave snapshot (#335)', () => {
     await session.start();
     const base = calls.length;
     const readsBefore = wallCalls.length;
-    await session.applyFilters([{ filterId: 'anchor', value: '-1h', active: true }]);
+    await session.applyVariables([{ variableId: 'anchor', value: '-1h', active: true }]);
     const added = calls.slice(base);
     expect(added.length).toBe(2);
-    // One wall read for the commit (plus the batch-validation read applyFilters
+    // One wall read for the commit (plus the batch-validation read applyVariables
     // takes before mutating anything).
     expect(wallCalls.length - readsBefore).toBe(2);
     expect(added[0].params.param_anchor).toBe(added[1].params.param_anchor);
@@ -1436,7 +1442,7 @@ describe('timeRangeGroups resolution (#335)', () => {
     }));
     expect(session.timeRangeGroups.length).toBe(1);
     expect(session.timeRangeGroups[0]).toMatchObject({
-      fromFilterId: 'from', toFilterId: 'to', fromParameter: 'from', toParameter: 'to',
+      fromVariableId: 'from', toVariableId: 'to', fromParameter: 'from', toParameter: 'to',
       tileIds: ['t'],
     });
   });
@@ -1451,7 +1457,7 @@ describe('timeRangeGroups resolution (#335)', () => {
       ],
     }));
     expect(session.timeRangeGroups).toEqual([
-      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['absent'] }),
+      expect.objectContaining({ fromVariableId: 'from', toVariableId: 'to', tileIds: ['absent'] }),
     ]);
     expect(session.state.value.timeRangeDiagnostics).toEqual([]);
   });
@@ -1475,7 +1481,7 @@ describe('timeRangeGroups resolution (#335)', () => {
     }));
     expect(session.timeRangeGroups).toHaveLength(1);
     expect(session.timeRangeGroups[0]).toMatchObject({
-      fromFilterId: 'from', toFilterId: 'to', tileIds: ['a', 'b'],
+      fromVariableId: 'from', toVariableId: 'to', tileIds: ['a', 'b'],
     });
     expect(session.state.value.timeRangeDiagnostics).toEqual([]);
   });
@@ -1508,7 +1514,7 @@ describe('timeRangeGroups resolution (#335)', () => {
     expect(session.timeRangeGroups).toEqual([]);
     expect(session.state.value.timeRangeDiagnostics).toEqual([
       expect.objectContaining({
-        code: 'time-range-filter-unresolved', resource: 't',
+        code: 'time-range-variable-unresolved', resource: 't',
         path: ['dashboard', 'tiles', 0, 'queryId'],
       }),
     ]);
@@ -1545,7 +1551,7 @@ describe('timeRangeGroups resolution (#335)', () => {
     }));
     await session.start();
     const groups = session.timeRangeGroups;
-    await session.applyFilters([{ filterId: 'from', value: '-1d', active: true }]);
+    await session.applyVariables([{ variableId: 'from', value: '-1d', active: true }]);
     expect(session.timeRangeGroups).toBe(groups); // same reference — never recomputed
   });
 });
@@ -1617,14 +1623,14 @@ describe('batched option execution (#447 phase 2)', () => {
         : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    const byId = new Map(session.state.value.variableStates.map((f) => [f.id, f]));
     expect(byId.get('country')!.options).toEqual([
       { value: 'de', label: 'Germany' }, { value: 'fr', label: 'France' },
     ]);
     expect(byId.get('city')!.options).toEqual([{ value: 'ber', label: 'Berlin' }]);
     expect(byId.get('country')!.status).toBe('ready');
     expect(byId.get('city')!.status).toBe('ready');
-    expect(session.state.value.filterDiagnostics).toEqual([]);
+    expect(session.state.value.optionDiagnostics).toEqual([]);
   });
 
   it('issues NO request when no variable is configured', async () => {
@@ -1635,10 +1641,10 @@ describe('batched option execution (#447 phase 2)', () => {
     // required variables are unset so the tile waits rather than executing.
     expect(calls).toHaveLength(0);
     expect(session.state.value.tiles[0].status).toBe('unfilled');
-    for (const filter of session.state.value.filters) {
-      expect(filter.configured).toBe(false);
-      expect(filter.status).toBe('idle');
-      expect(filter.options).toBeNull();
+    for (const variable of session.state.value.variableStates) {
+      expect(variable.configured).toBe(false);
+      expect(variable.status).toBe('idle');
+      expect(variable.options).toBeNull();
     }
   });
 
@@ -1653,14 +1659,14 @@ describe('batched option execution (#447 phase 2)', () => {
     );
     await session.start();
     expect(optionCalls()).toHaveLength(0);
-    const country = session.state.value.filters.find((f) => f.id === 'country')!;
+    const country = session.state.value.variableStates.find((f) => f.id === 'country')!;
     expect(country.configured).toBe(true);
     expect(country.status).toBe('error');
     expect(country.optionsError).toBe('Variable option queries cannot reference Dashboard variables yet.');
     expect(country.options).toBeNull();
     // Per-variable, NOT a Dashboard-wide banner: no batch ran, so nothing failed
     // at batch level.
-    expect(session.state.value.filterDiagnostics).toEqual([]);
+    expect(session.state.value.optionDiagnostics).toEqual([]);
   });
 
   it('reports every local problem with the SQL on the control at once', async () => {
@@ -1669,7 +1675,7 @@ describe('batched option execution (#447 phase 2)', () => {
       () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const error = session.state.value.filters.find((f) => f.id === 'country')!.optionsError!;
+    const error = session.state.value.variableStates.find((f) => f.id === 'country')!.optionsError!;
     expect(error).toContain('must be a SELECT');
     expect(error).toContain('FORMAT');
   });
@@ -1687,7 +1693,7 @@ describe('batched option execution (#447 phase 2)', () => {
     await session.start();
     // One branch only, and the healthy variable is unaffected by the broken one.
     expect(optionCalls()[0].sql).not.toContain('UNION ALL');
-    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    const byId = new Map(session.state.value.variableStates.map((f) => [f.id, f]));
     expect(byId.get('country')!.status).toBe('ready');
     expect(byId.get('country')!.optionsError).toBeNull();
     expect(byId.get('city')!.status).toBe('error');
@@ -1703,7 +1709,7 @@ describe('batched option execution (#447 phase 2)', () => {
       (sql) => (isOptionCall(sql) ? { error: 'boom' } : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    const byId = new Map(session.state.value.variableStates.map((f) => [f.id, f]));
     expect(byId.get('country')!.optionsError).toContain('boom');
     // Replacing this with the batch message would be both vaguer and untrue: this
     // variable was never in the batch.
@@ -1717,7 +1723,7 @@ describe('batched option execution (#447 phase 2)', () => {
     );
     await session.start();
     expect(optionCalls()).toHaveLength(0);
-    expect(session.state.value.filters.find((f) => f.id === 'country')!.optionsError)
+    expect(session.state.value.variableStates.find((f) => f.id === 'country')!.optionsError)
       .toContain('optional /*[');
   });
 
@@ -1727,7 +1733,7 @@ describe('batched option execution (#447 phase 2)', () => {
       (sql) => (isOptionCall(sql) ? { error: 'Code: 47.' } : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    expect(session.state.value.filterDiagnostics[0].message).toContain('Test');
+    expect(session.state.value.optionDiagnostics[0].message).toContain('Test');
   });
 
   it('warns when a variable\'s option list was truncated at the cap', async () => {
@@ -1738,14 +1744,14 @@ describe('batched option execution (#447 phase 2)', () => {
       (sql) => (isOptionCall(sql) ? optionRows(...rows) : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const diagnostics = session.state.value.filterDiagnostics;
+    const diagnostics = session.state.value.optionDiagnostics;
     expect(diagnostics).toHaveLength(1);
     // A warning, not an error: the options it DID return are usable — the only
     // dishonest option is letting a truncated list look complete.
     expect(diagnostics[0].severity).toBe('warning');
     expect(diagnostics[0].message).toContain('country');
-    expect(session.state.value.filters[0].status).toBe('ready');
-    expect(session.state.value.filters[0].options).toHaveLength(1000);
+    expect(session.state.value.variableStates[0].status).toBe('ready');
+    expect(session.state.value.variableStates[0].options).toHaveLength(1000);
   });
 
   it('excludes conflicted and orphaned variables from the batch', async () => {
@@ -1786,11 +1792,11 @@ describe('batched option execution (#447 phase 2)', () => {
         : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const country = session.state.value.filters.find((f) => f.id === 'country')!;
+    const country = session.state.value.variableStates.find((f) => f.id === 'country')!;
     expect(country.options).toHaveLength(2);
     expect(country.value).toBe('');
     expect(country.active).toBe(false);
-    expect(session.state.value.activeFilterCount).toBe(0);
+    expect(session.state.value.activeVariableCount).toBe(0);
   });
 
   it('leaves a panel WAITING while its required variable is unset, then runs it on commit', async () => {
@@ -1806,7 +1812,7 @@ describe('batched option execution (#447 phase 2)', () => {
     expect(tileState().status).toBe('unfilled');
     expect(tileState().unfilled).toEqual(['country']);
     expect(calls.filter((c) => !isOptionCall(c.sql))).toHaveLength(0);
-    await session.applyFilter('country', 'de', true);
+    await session.applyVariable('country', 'de', true);
     expect(tileState().status).toBe('ready');
   });
 
@@ -1821,10 +1827,10 @@ describe('batched option execution (#447 phase 2)', () => {
     );
     await session.start();
     expect(optionCalls()).toHaveLength(1);
-    await session.applyFilter('country', 'de', true);
-    await session.setFilter('country', 'fr');
-    await session.clearFilter('country');
-    await session.clearAllFilters();
+    await session.applyVariable('country', 'de', true);
+    await session.setVariable('country', 'fr');
+    await session.clearVariable('country');
+    await session.clearAllVariables();
     expect(optionCalls()).toHaveLength(1);
   });
 
@@ -1843,12 +1849,12 @@ describe('batched option execution (#447 phase 2)', () => {
       },
     );
     await session.start();
-    const rev1 = session.state.value.filters[0].optionsRev;
+    const rev1 = session.state.value.variableStates[0].optionsRev;
     expect(rev1).toBe(1);
     await session.refresh();
-    expect(session.state.value.filters[0].optionsRev).toBe(rev1); // unchanged content
+    expect(session.state.value.variableStates[0].optionsRev).toBe(rev1); // unchanged content
     await session.refresh();
-    expect(session.state.value.filters[0].optionsRev).toBe(rev1 + 1);
+    expect(session.state.value.variableStates[0].optionsRev).toBe(rev1 + 1);
     expect(optionCalls()).toHaveLength(3);
   });
 
@@ -1861,7 +1867,7 @@ describe('batched option execution (#447 phase 2)', () => {
     );
     await session.start();
     const state = session.state.value;
-    expect(state.filterDiagnostics).toEqual([{
+    expect(state.optionDiagnostics).toEqual([{
       severity: 'error',
       code: 'variable-options-batch-failed',
       message: 'Variable options could not be loaded: Code: 47. Unknown expression identifier '
@@ -1869,7 +1875,7 @@ describe('batched option execution (#447 phase 2)', () => {
     }]);
     // Every option-backed control goes unavailable together — there is no
     // automatic fall-back to N separate per-variable queries in this issue.
-    for (const filter of state.filters) expect(filter.status).toBe('error');
+    for (const variable of state.variableStates) expect(variable.status).toBe('error');
     // The tiles themselves still ran: an options failure is not a tile failure.
     expect(state.tiles[0].status).not.toBe('error');
     expect(state.lastRefreshOutcome).toBe('success');
@@ -1884,14 +1890,14 @@ describe('batched option execution (#447 phase 2)', () => {
         : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    const diagnostics = session.state.value.filterDiagnostics;
+    const diagnostics = session.state.value.optionDiagnostics;
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].code).toBe('variable-option-batch-shape');
     // #457: a merged UNION ALL cannot say WHICH branch is wrong, so the message
     // has to name the way to find out. It used to name the drawer's Test button;
     // that drawer is gone, and it now points at running one variable on its own.
     expect(diagnostics[0].message).toContain('run its SQL on its own');
-    expect(session.state.value.filters[0].status).toBe('error');
+    expect(session.state.value.variableStates[0].status).toBe('error');
   });
 
   it('keeps a committed value through a batch failure', async () => {
@@ -1905,10 +1911,10 @@ describe('batched option execution (#447 phase 2)', () => {
       document: doc({ tiles: [tile('t1', 'q1')], variableConfigs: { country: { sql: 'SELECT a, b FROM t' } } }),
       exec,
       queries: [query('q1', 'SELECT 1 WHERE c = {country:String}')],
-      initialFilters: { country: { value: 'de', active: true } },
+      initialVariables: { country: { value: 'de', active: true } },
     }));
     await session.start();
-    const country = session.state.value.filters[0];
+    const country = session.state.value.variableStates[0];
     expect(country.value).toBe('de');
     expect(country.active).toBe(true);
     expect(country.status).toBe('error');
@@ -1925,13 +1931,13 @@ describe('batched option execution (#447 phase 2)', () => {
       },
     );
     await session.start();
-    expect(session.state.value.filterDiagnostics).toHaveLength(1);
+    expect(session.state.value.optionDiagnostics).toHaveLength(1);
     await session.refresh();
     // Replaced wholesale, never appended to — a failure must not outlive the
     // wave that hit it.
-    expect(session.state.value.filterDiagnostics).toEqual([]);
-    expect(session.state.value.filters[0].status).toBe('ready');
-    expect(session.state.value.filters[0].options).toEqual([{ value: 'de', label: 'Germany' }]);
+    expect(session.state.value.optionDiagnostics).toEqual([]);
+    expect(session.state.value.variableStates[0].status).toBe('ready');
+    expect(session.state.value.variableStates[0].options).toEqual([{ value: 'de', label: 'Germany' }]);
   });
 
   it('gives a configured variable whose query returned nothing an empty list, not an error', async () => {
@@ -1940,9 +1946,9 @@ describe('batched option execution (#447 phase 2)', () => {
       (sql) => (isOptionCall(sql) ? optionRows() : { columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
-    expect(session.state.value.filters[0].options).toEqual([]);
-    expect(session.state.value.filters[0].status).toBe('ready');
-    expect(session.state.value.filterDiagnostics).toEqual([]);
+    expect(session.state.value.variableStates[0].options).toEqual([]);
+    expect(session.state.value.variableStates[0].status).toBe('ready');
+    expect(session.state.value.optionDiagnostics).toEqual([]);
   });
 
   // An `Array(scalar T)` variable binds a SELECTION: several option rows combine
@@ -1950,13 +1956,13 @@ describe('batched option execution (#447 phase 2)', () => {
   describe('Array(scalar T) variables bind a selection', () => {
     const MULTI_SQL = 'SELECT 1 WHERE u IN {user:Array(String)}';
     /** A session whose one panel declares `user : Array(String)`. */
-    const multiSession = (responder: Responder, initialFilters?: Record<string, { value: unknown; active: boolean }>) => {
+    const multiSession = (responder: Responder, initialVariables?: Record<string, { value: unknown; active: boolean }>) => {
       const { exec, calls } = makeExec(responder);
       const session = createDashboardViewerSession(makeDeps({
         document: doc({ tiles: [tile('t1', 'q1')], variableConfigs: { user: { sql: 'SELECT a, b FROM users' } } }),
         exec,
         queries: [query('q1', MULTI_SQL)],
-        ...(initialFilters ? { initialFilters } : {}),
+        ...(initialVariables ? { initialVariables } : {}),
       }));
       return { session, calls, optionCalls: () => calls.filter((c) => isOptionCall(c.sql)) };
     };
@@ -1967,7 +1973,7 @@ describe('batched option execution (#447 phase 2)', () => {
       const { session, optionCalls } = multiSession(usersRespond(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']));
       await session.start();
       expect(optionCalls()).toHaveLength(1);
-      const f = session.state.value.filters[0];
+      const f = session.state.value.variableStates[0];
       expect(f.configured).toBe(true);
       expect(f.status).toBe('ready');
       expect(f.optionsError).toBeNull();
@@ -1977,12 +1983,12 @@ describe('batched option execution (#447 phase 2)', () => {
     it('binds a committed selection as a real ClickHouse array literal', async () => {
       const { session, calls } = multiSession(usersRespond(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']));
       await session.start();
-      await session.applyFilter('user', ['ada', 'bo'], true);
+      await session.applyVariable('user', ['ada', 'bo'], true);
       const tileCall = calls.filter((c) => !isOptionCall(c.sql)).at(-1)!;
       // Escaped and bracketed by the shared typed serializer — never joined.
       expect(tileCall.params?.param_user).toBe("['ada','bo']");
-      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
     });
 
     it('reduces an EMPTY selection to unset rather than binding a literal []', async () => {
@@ -1991,28 +1997,28 @@ describe('batched option execution (#447 phase 2)', () => {
       // an unset variable's panels must wait instead.
       const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
       await session.start();
-      await session.applyFilter('user', [], false);
-      expect(session.state.value.filters[0].value).toBe('');
-      expect(session.state.value.filters[0].active).toBe(false);
+      await session.applyVariable('user', [], false);
+      expect(session.state.value.variableStates[0].value).toBe('');
+      expect(session.state.value.variableStates[0].active).toBe(false);
     });
 
-    it('setFilter derives activation from the selection length', async () => {
+    it('setVariable derives activation from the selection length', async () => {
       const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
       await session.start();
-      await session.setFilter('user', ['ada']);
-      expect(session.state.value.filters[0].active).toBe(true);
-      await session.setFilter('user', []);
-      expect(session.state.value.filters[0].value).toBe('');
-      expect(session.state.value.filters[0].active).toBe(false);
+      await session.setVariable('user', ['ada']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
+      await session.setVariable('user', []);
+      expect(session.state.value.variableStates[0].value).toBe('');
+      expect(session.state.value.variableStates[0].active).toBe(false);
     });
 
     it('copies a committed selection, so a caller cannot mutate bound state', async () => {
       const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
       await session.start();
       const mine = ['ada'];
-      await session.applyFilter('user', mine, true);
+      await session.applyVariable('user', mine, true);
       mine.push('bo');
-      expect(session.state.value.filters[0].value).toEqual(['ada']);
+      expect(session.state.value.variableStates[0].value).toEqual(['ada']);
     });
 
     it('restores a persisted selection, and derives its activation from it', async () => {
@@ -2021,8 +2027,8 @@ describe('batched option execution (#447 phase 2)', () => {
         { user: { value: ['ada', 'bo'], active: true } },
       );
       await session.start();
-      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
     });
 
     it('degrades a persisted SCALAR seed on a selection variable to unset', async () => {
@@ -2033,8 +2039,8 @@ describe('batched option execution (#447 phase 2)', () => {
         { user: { value: 'ada', active: true } },
       );
       await session.start();
-      expect(session.state.value.filters[0].value).toBe('');
-      expect(session.state.value.filters[0].active).toBe(false);
+      expect(session.state.value.variableStates[0].value).toBe('');
+      expect(session.state.value.variableStates[0].active).toBe(false);
     });
 
     it('leaves a surviving selection completely alone when only the option ORDER changed', async () => {
@@ -2048,14 +2054,14 @@ describe('batched option execution (#447 phase 2)', () => {
           : optionRows(['user', 'bo', 'Bo'], ['user', 'ada', 'Ada']);
       });
       await session.start();
-      await session.applyFilter('user', ['ada', 'bo'], true);
+      await session.applyVariable('user', ['ada', 'bo'], true);
       const before = calls.filter((c) => !isOptionCall(c.sql)).length;
       await session.refresh();
       // The bound literal is UNCHANGED. Adopting the new option order would make
       // the persisted value differ from the one that produced the results on
       // screen — silently, since this path deliberately runs no wave.
-      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
       // One refresh wave for the tile, and no EXTRA reconciliation wave.
       expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
     });
@@ -2077,23 +2083,23 @@ describe('batched option execution (#447 phase 2)', () => {
       await session.start();
       const before = calls.filter((c) => !isOptionCall(c.sql)).length;
       await session.refresh();
-      expect(session.state.value.filters[0].value).toEqual(['way-past-the-cap']);
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toEqual(['way-past-the-cap']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
       // No reconciliation wave — nothing was decided about the selection.
       expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
       // The incompleteness is reported, not hidden.
-      expect(session.state.value.filterDiagnostics.map((d) => d.code))
+      expect(session.state.value.optionDiagnostics.map((d) => d.code))
         .toContain('variable-options-truncated');
       // And PUBLISHED per variable, so the control can apply the same rule — the
       // session's preservation is undone if the control's Apply then
       // canonicalizes the off-list value away against the same partial list.
-      expect(session.state.value.filters[0].optionsTruncated).toBe(true);
+      expect(session.state.value.variableStates[0].optionsTruncated).toBe(true);
     });
 
     it('publishes optionsTruncated false for a complete list', async () => {
       const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
       await session.start();
-      expect(session.state.value.filters[0].optionsTruncated).toBe(false);
+      expect(session.state.value.variableStates[0].optionsTruncated).toBe(false);
     });
 
     it('drops a selected value the refresh removed, and re-runs the affected panels ONCE', async () => {
@@ -2106,11 +2112,11 @@ describe('batched option execution (#447 phase 2)', () => {
           : optionRows(['user', 'ada', 'Ada']);
       });
       await session.start();
-      await session.applyFilter('user', ['ada', 'bo'], true);
+      await session.applyVariable('user', ['ada', 'bo'], true);
       const before = calls.filter((c) => !isOptionCall(c.sql)).length;
       await session.refresh();
-      expect(session.state.value.filters[0].value).toEqual(['ada']);
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toEqual(['ada']);
+      expect(session.state.value.variableStates[0].active).toBe(true);
       // The refresh's own wave PLUS exactly one reconciled wave.
       expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 2);
     });
@@ -2123,10 +2129,10 @@ describe('batched option execution (#447 phase 2)', () => {
         return call === 1 ? optionRows(['user', 'ada', 'Ada']) : optionRows(['user', 'zed', 'Zed']);
       });
       await session.start();
-      await session.applyFilter('user', ['ada'], true);
+      await session.applyVariable('user', ['ada'], true);
       await session.refresh();
-      expect(session.state.value.filters[0].value).toBe('');
-      expect(session.state.value.filters[0].active).toBe(false);
+      expect(session.state.value.variableStates[0].value).toBe('');
+      expect(session.state.value.variableStates[0].active).toBe(false);
     });
 
     it('never reconciles a SCALAR variable off its committed value', async () => {
@@ -2142,10 +2148,10 @@ describe('batched option execution (#447 phase 2)', () => {
         },
       );
       await session.start();
-      await session.applyFilter('country', 'de', true);
+      await session.applyVariable('country', 'de', true);
       await session.refresh();
-      expect(session.state.value.filters[0].value).toBe('de');
-      expect(session.state.value.filters[0].active).toBe(true);
+      expect(session.state.value.variableStates[0].value).toBe('de');
+      expect(session.state.value.variableStates[0].active).toBe(true);
     });
   });
 
@@ -2160,7 +2166,7 @@ describe('batched option execution (#447 phase 2)', () => {
     );
     await session.start();
     expect(optionCalls()).toHaveLength(0);
-    const f = session.state.value.filters.find((x) => x.parameter === 'tags')!;
+    const f = session.state.value.variableStates.find((x) => x.parameter === 'tags')!;
     expect(f.status).toBe('error');
     expect(f.optionsError).toContain('no option list');
   });
@@ -2189,7 +2195,7 @@ describe('batched option execution (#447 phase 2)', () => {
     await started;
     await flush();
     expect(optionCalls()).toHaveLength(0);
-    expect(session.state.value.filters[0].options).toBeNull();
+    expect(session.state.value.variableStates[0].options).toBeNull();
   });
 
   it('drops an IN-FLIGHT options response that a destroy superseded', async () => {
@@ -2214,8 +2220,8 @@ describe('batched option execution (#447 phase 2)', () => {
     await started;
     await flush();
     // The response arrived after teardown and was discarded.
-    expect(session.state.value.filters[0].options).toBeNull();
-    expect(session.state.value.filters[0].status).toBe('loading');
+    expect(session.state.value.variableStates[0].options).toBeNull();
+    expect(session.state.value.variableStates[0].status).toBe('loading');
   });
 
   it('drops an in-flight options response that a LATER refresh superseded', async () => {
@@ -2235,11 +2241,11 @@ describe('batched option execution (#447 phase 2)', () => {
     await flush();
     // A second wave overtakes the first and completes.
     await session.refresh();
-    expect(session.state.value.filters[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
+    expect(session.state.value.variableStates[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
     // Now let the stale one answer: it must not overwrite the newer options.
     release!();
     await first;
     await flush();
-    expect(session.state.value.filters[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
+    expect(session.state.value.variableStates[0].options).toEqual([{ value: 'fresh', label: 'Fresh' }]);
   });
 });

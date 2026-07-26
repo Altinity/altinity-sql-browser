@@ -567,7 +567,7 @@ export function prepareParameterizedBatch(
           // silently goes blank (falls back to the field's base title,
           // hiding that anything's wrong at all) — surface a generic reason
           // instead (#170 review). This is the single spot both the var-strip
-          // and the dashboard filter bar's field affordance read from.
+          // and the dashboard variable bar's field affordance read from.
           note(p.name, 'invalid', verdict.reason || 'Incomplete value');
           continue;
         }
@@ -658,7 +658,7 @@ export function mergedSourceSql(source: PreparedSource, fallback: string = ''): 
 }
 
 /** One `fieldControls` entry — the ordered control list a variables strip /
- *  dashboard filter bar renders from an analysis. */
+ *  dashboard variable bar renders from an analysis. */
 export interface FieldControl {
   name: string;
   type: string;
@@ -667,7 +667,7 @@ export interface FieldControl {
 }
 
 /**
- * The ordered control list a variables strip / dashboard filter bar renders
+ * The ordered control list a variables strip / dashboard variable bar renders
  * from an analysis (#165): one entry per field with at least one *bound*
  * declaration (a param confined to DDL — e.g. a parameterized view — is never
  * substituted, so it gets no input), in first-appearance order. `type` is the
@@ -737,7 +737,7 @@ export const BOOL_CONTROL_OPTIONS: string[] = ['true', 'false'];
 
 /**
  * Which control a `fieldControls` entry renders — the enum > date-like >
- * plain-text priority the workbench var-strip and the dashboard filter bar
+ * plain-text priority the workbench var-strip and the dashboard variable bar
  * previously each duplicated. `inferredEnumOptions` is the workbench's
  * optional #172 v2 tier (a schema-cache-inferred member list for a
  * String-typed param); the declared type's own Enum members always win over

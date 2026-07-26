@@ -18,7 +18,7 @@
 // `varRecent`/`varRecentDisabled`) stays a LIVE `AppState` field, never a
 // snapshot — the session receives accessor closures (mirrors
 // `dashboard-session.ts`'s own `DashboardSessionDeps` convention), and
-// `filter-bar.ts`/`dashboard.ts`/`results.ts` keep mutating `app.state.*`
+// `variable-bar.ts`/`dashboard.ts`/`results.ts` keep mutating `app.state.*`
 // directly (through the SAME live objects these accessors read), so they
 // keep observing this session's own reads without any consumer edit.
 //
@@ -82,7 +82,7 @@ export interface WorkbenchParameterSessionHooks {
 /** Live accessors onto `app.state` — read fresh on every call (never a
  *  snapshot), mirroring `dashboard-session.ts`'s own `DashboardSessionDeps`
  *  convention. `varValues`/`filterActive` are mutated IN PLACE by their
- *  consumers (renderVarStrip's `onValueInput`, filter-bar.ts, dashboard.ts) —
+ *  consumers (renderVarStrip's `onValueInput`, variable-bar.ts, dashboard.ts) —
  *  no setter needed. `varRecent` is reassigned wholesale (a new `RecentMap`
  *  replaces the old one), hence `setVarRecent`. */
 export interface WorkbenchParameterSessionDeps {
