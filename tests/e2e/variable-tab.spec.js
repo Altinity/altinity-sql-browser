@@ -89,7 +89,7 @@ test('Save writes the edited SQL to that variable, and nothing to the Library', 
     .toBe("SELECT 'us', 'United States'");
   // Never a saved query: the Library is untouched and the tab has no link.
   expect(await page.evaluate(() => window.__app.state.savedQueries.map((q) => q.id)))
-    .toEqual(['q-sales', 'q-ops']);
+    .toEqual(['q-sales', 'q-ops', 'q-long']);
   expect(await page.evaluate(() => window.__app.activeTab().savedId)).toBeNull();
   // A successful save clears the tab's dirty marker.
   await expect(page.locator('.qtab.active .dirty')).toHaveCount(0);
@@ -120,4 +120,38 @@ test('typing marks the tab dirty, and Spec mode is refused with a variable-speci
   // so rather than telling the user to save a query they cannot save.
   await expect(page.locator('.editor-mode-btn', { hasText: 'Spec' }))
     .toHaveAttribute('title', 'A dashboard variable has no Spec.');
+});
+
+test('a long variable name never widens the tab strip or scrolls the page', async ({ page }) => {
+  // `Variable: is_initial_query` (the issue's own example) is a far longer tab
+  // title than any query tab normally carries, and a tab strip whose children are
+  // pinned `flex-shrink: 0` would push its host wider — a failure happy-dom cannot
+  // observe at all, and one this repo has already shipped once on a toolbar row.
+  await open(page);
+  await openVariable(page, 'long', 'is_initial_query');
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: is_initial_query']);
+
+  for (const width of [1280, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    const box = await page.evaluate(() => {
+      const strip = document.querySelector('.qtabs-inner');
+      const name = document.querySelector('.qtab:last-child .name');
+      return {
+        stripWidth: strip.getBoundingClientRect().width,
+        hostWidth: strip.parentElement.getBoundingClientRect().width,
+        bodyScroll: document.body.scrollWidth,
+        bodyClient: document.body.clientWidth,
+        textOverflow: getComputedStyle(name).textOverflow,
+      };
+    });
+    // The strip stays inside the column it lives in — at 360px the tabs shrink to
+    // fit rather than the strip growing.
+    expect(box.stripWidth, `strip overflows its host at ${width}px`)
+      .toBeLessThanOrEqual(box.hostWidth + 1);
+    // …and the page itself never gains a horizontal scrollbar because of it.
+    expect(box.bodyScroll, `page scrolls horizontally at ${width}px`)
+      .toBeLessThanOrEqual(box.bodyClient + 1);
+    // Whatever cannot fit is ellipsized, never clipped bare.
+    expect(box.textOverflow).toBe('ellipsis');
+  }
 });

@@ -61,10 +61,14 @@
       queries: [
         query('q-sales', 'Sales', 'SELECT 1 AS v WHERE z = {zone:String}'),
         query('q-ops', 'Ops', 'SELECT 2 AS v WHERE z = {zone:String}'),
+        // The issue's own example name — long enough to prove the tab strip
+        // ellipsizes rather than widening, which happy-dom cannot observe.
+        query('q-long', 'Long', 'SELECT 3 AS v WHERE q = {is_initial_query:String}'),
       ],
       dashboards: [
         dash('sales', 'Sales', { variableConfigs: { zone: { sql: "SELECT 'eu', 'Europe'" } } }),
         dash('ops', 'Ops'),
+        dash('long', 'Long'),
       ],
     };
 
