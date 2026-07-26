@@ -166,6 +166,33 @@ test('pressing the action never starts a tile drag or reorders the Dashboard', a
   expect(await surface(page)).toBe('dashboard');
 });
 
+// A touch device matches neither `:hover` nor `:focus-visible`, so a hover-revealed
+// action would be permanently invisible there — and on a phone this action is the
+// only way into the query behind a tile. `@media (hover: none)` is what prevents
+// that, and it needs real touch emulation to evaluate: a 360px desktop viewport
+// still reports `hover: hover`.
+test.describe('touch', () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test('the action is permanently visible where there is no hover and no keyboard', async ({ page, browserName }) => {
+    test.skip(browserName === 'firefox', 'isMobile emulation is unsupported on Firefox');
+    await open(page, { width: 390, height: 844 });
+    await openDashboard(page, 'sales');
+
+    const action = tileAction(page, 'Live KPIs');
+    // No hover, no focus — and still visible.
+    expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
+    await expect.poll(() => action.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+    // The tap itself is chromium-only: WebKit's mobile emulation hit-tests a tap to
+    // the root element, which is a Playwright emulation limit rather than anything
+    // about this button (its click path is covered on both engines above).
+    test.skip(browserName !== 'chromium', 'tap emulation is chromium-only here');
+    await action.tap();
+    await expect.poll(() => surface(page)).toBe('query');
+    expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-sales', active: true });
+  });
+});
+
 test('on a phone the bottom nav is the route off a Dashboard, and offers only Editor', async ({ page }) => {
   // #471 removed the toolbar's `< Query` button. A Dashboard with no tiles has no
   // per-tile action either, so the mobile rules stop hiding the bottom nav here —
