@@ -115,6 +115,17 @@ export interface BuildFilterBarOptions {
   onCommitVariableSelection?(name: string, values: string[], active: boolean): void;
 }
 
+/** One variable's fresh option rows, pushed into an already-built select by
+ *  `FilterBarHandle.setVariableOptions` when a refresh's batch lands. */
+export interface VariableOptionsUpdate {
+  options: readonly VariableOption[];
+  error: string | null;
+  /** The server cut this variable's branch off at the cap, so `options` is a
+   *  PREFIX. Only a multi-select reads it — to keep committed values the list
+   *  does not contain, rather than canonicalizing them away. */
+  incomplete?: boolean;
+}
+
 /** #447 phase 2: how ONE Dashboard variable's control differs from a plain
  *  direct-input field. */
 export interface VariableFieldSpec {
@@ -137,6 +148,12 @@ export interface VariableFieldSpec {
    *  commits one value the user just picked from what IS shown, so an empty
    *  list simply offers nothing to pick. */
   loading?: boolean;
+  /** `options` is a PREFIX — the server cut this variable's branch off at the
+   *  cap. A multi-select then preserves committed values the list does not
+   *  contain instead of canonicalizing them away, matching the session's own
+   *  refusal to reconcile against an incomplete list. Ignored by every other
+   *  control branch. */
+  optionsIncomplete?: boolean;
 }
 
 /** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
@@ -171,7 +188,7 @@ interface FieldHandle {
    *  options IN PLACE, so a refresh's option batch landing mid-session never
    *  rebuilds the bar — which would blow away in-progress typing in every other
    *  field and silently cancel any open popover. */
-  setOptions?(next: readonly VariableOption[], error: string | null): void;
+  setOptions?(next: readonly VariableOption[], error: string | null, incomplete?: boolean): void;
   /** Present on the popover-bearing controls (today: time-range); every fold
    *  over the map that needs one uses optional chaining so a handle without
    *  them is simply skipped. */
@@ -247,7 +264,7 @@ export interface FilterBarHandle {
    *  inherently typing-ending; an options batch lands asynchronously and could
    *  arrive while the user is mid-keystroke in an unrelated field, so rebuilding
    *  on it would discard that input and silently cancel any open popover. */
-  setVariableOptions(states: Record<string, { options: readonly VariableOption[]; error: string | null }>): void;
+  setVariableOptions(states: Record<string, VariableOptionsUpdate>): void;
   /** #189, #189-F2b, GENERALIZED (#335): the opaque KEY of a popover-bearing
    *  control built by THIS bar instance that currently has its popover open,
    *  or `null` when none does (including a bar that built no such control at
@@ -416,6 +433,7 @@ export function buildFilterBar(
       selected: spec.selection ?? [],
       active: !!app.state.filterActive[p.name],
       loading: !!spec.loading,
+      incomplete: !!spec.optionsIncomplete,
       title: p.name + ': ' + p.type,
       // Apply is a complete, deliberate action, so it bypasses the keystroke
       // debounce entirely — same reasoning as the single-select's own commit.
@@ -433,8 +451,8 @@ export function buildFilterBar(
       // Like the single-select: no transient per-field status of its own, its
       // only failure mode being the batch's, which arrives through `setOptions`.
       updateStatus: () => {},
-      setOptions: (next, error) => {
-        field.setOptions(next);
+      setOptions: (next, error, incomplete) => {
+        field.setOptions(next, incomplete);
         field.setUnavailable(error);
       },
       isOpen: field.isOpen,
@@ -659,7 +677,7 @@ export function buildFilterBar(
     setVariableOptions: (states) => {
       for (const [key, handle] of handles) {
         const s = states[key];
-        if (s) handle.setOptions?.(s.options, s.error);
+        if (s) handle.setOptions?.(s.options, s.error, s.incomplete);
       }
     },
     // #189-F2b, GENERALIZED (#335): read by the caller BEFORE disposing this

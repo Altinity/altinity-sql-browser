@@ -310,8 +310,8 @@ describe('inferred variables (#447)', () => {
     // direct input and has nothing to load ('idle'). Both start with
     // `options: null`; only a completed batch replaces that.
     expect(state.filters).toEqual([
-      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0 },
-      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0 },
+      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
+      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
     ]);
     expect(state.resettableFilterIds).toEqual([]);
     expect(state.activeFilterCount).toBe(0);
@@ -2084,6 +2084,16 @@ describe('batched option execution (#447 phase 2)', () => {
       // The incompleteness is reported, not hidden.
       expect(session.state.value.filterDiagnostics.map((d) => d.code))
         .toContain('variable-options-truncated');
+      // And PUBLISHED per variable, so the control can apply the same rule — the
+      // session's preservation is undone if the control's Apply then
+      // canonicalizes the off-list value away against the same partial list.
+      expect(session.state.value.filters[0].optionsTruncated).toBe(true);
+    });
+
+    it('publishes optionsTruncated false for a complete list', async () => {
+      const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
+      await session.start();
+      expect(session.state.value.filters[0].optionsTruncated).toBe(false);
     });
 
     it('drops a selected value the refresh removed, and re-runs the affected panels ONCE', async () => {

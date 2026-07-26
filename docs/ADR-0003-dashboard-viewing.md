@@ -466,6 +466,19 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
     off-list committed value verbatim; a selection gets the same benefit of the
     doubt.
 
+    **Incompleteness is published, not private.** The session declining to prune
+    is undone if the CONTROL's own Apply then canonicalizes the same value away
+    against the same partial list — `canonicalizeSelection` drops everything the
+    list does not offer, so a no-change Apply committed `([], false)` and a
+    single visible pick silently dropped the rest. So `optionsTruncated` rides on
+    `ViewerFilterState` down to the control, whose Apply keeps draft values the
+    list does not contain, appended in committed order. They are invisible — no
+    row exists for them — so the user cannot have deselected one, and the list is
+    known to be a prefix, so it cannot be called stale. **Clear** still removes
+    them: it empties the whole draft, which is the explicit "remove everything".
+    With a COMPLETE list the rule does not apply at all — an off-list value has
+    genuinely gone, and the session has already reconciled it out.
+
 - **A latent bug fell out.** `dashboard-viewer-session.ts` marked every `Array(T)`
   variable with valid option SQL as `status: 'error'` via a branch commented
   "unreachable" — true only for the types that genuinely cannot be option-backed.

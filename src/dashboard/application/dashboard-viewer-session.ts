@@ -149,6 +149,14 @@ export interface ViewerFilterState {
   /** Bumped only when this variable's option CONTENT actually changes, so a
    *  consumer can tell a genuine refresh from an unchanged republish. */
   optionsRev: number;
+  /** The server cut this variable's option branch off at the cap, so the list is
+   *  a PREFIX and a committed value may legitimately live past its end.
+   *
+   *  Published rather than kept private because "incomplete" has to reach the
+   *  CONTROL, not just this layer: the session declining to prune an off-list
+   *  value is undone if the control's own Apply then canonicalizes it away
+   *  against the same partial list. Both ends need the same fact. */
+  optionsTruncated: boolean;
 }
 
 /** The Dashboard's per-render layout view (#291) — a discriminated union over
@@ -675,6 +683,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       optionsError: localError,
       options: null,
       optionsRev: 0,
+      optionsTruncated: false,
     };
     return { def: { id: name, parameter: name }, state, multiple };
   });
@@ -969,6 +978,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     filter.state.options = options;
     filter.state.status = 'ready';
     filter.state.optionsError = null;
+    filter.state.optionsTruncated = incomplete;
     if (changed) filter.state.optionsRev += 1;
     if (!Array.isArray(filter.state.value)) return null;
     // A list the server cut off at the cap is not evidence that anything was

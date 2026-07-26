@@ -54,7 +54,7 @@ import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from './filter-bar.js';
-import type { VariableFieldSpec } from './filter-bar.js';
+import type { VariableFieldSpec, VariableOptionsUpdate } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
 import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
@@ -901,6 +901,10 @@ export async function renderDashboard(
         // long enough to open a multi-select and Apply against a list that has
         // not arrived, which would clear a restored selection.
         loading: f.status === 'loading',
+        // The list is a PREFIX: a committed value may be valid and simply live
+        // past the cap. The session already declines to prune one; the control
+        // must decline too, or its own Apply undoes that one layer up.
+        optionsIncomplete: f.optionsTruncated,
         ...(selection === null ? {} : { selection }),
       };
     }
@@ -2201,13 +2205,19 @@ export async function renderDashboard(
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
+    // `optionsTruncated` is part of the signature, not just the payload: it
+    // changes how the control COMMITS (whether an off-list value is preserved),
+    // so a flip must reach it even in the contrived case where the option
+    // content it accompanies is byte-identical.
     const optionsSig = JSON.stringify(sview.filters.map((f) =>
-      [f.id, f.configured, f.optionsRev, f.status, f.optionsError]));
+      [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
     if (!rebuilt && optionsSig !== lastOptionsSig) {
-      const states: Record<string, { options: readonly ViewerFilterOption[]; error: string | null }> = {};
+      const states: Record<string, VariableOptionsUpdate> = {};
       for (const f of sview.filters) {
         if (!f.configured) continue;
-        states[f.parameter] = { options: f.options ?? [], error: f.optionsError };
+        states[f.parameter] = {
+          options: f.options ?? [], error: f.optionsError, incomplete: f.optionsTruncated,
+        };
       }
       currentFilterBar?.setVariableOptions(states);
     }

@@ -306,6 +306,90 @@ describe('Clear / Cancel / Apply', () => {
   });
 });
 
+// The server caps each option branch, so a returned list can be a PREFIX and a
+// committed value may be valid yet absent from it. The session already declines
+// to prune one; without the same rule here, the control's own Apply would undo
+// that preservation one layer up.
+describe('an INCOMPLETE option list', () => {
+  const partial = { options: OPTIONS, selected: ['gone-past-the-cap'], active: true, incomplete: true };
+
+  it('shows an off-list committed value verbatim', () => {
+    expect(build(partial).trigger.textContent).toBe('gone-past-the-cap');
+  });
+
+  it('a no-change Apply commits nothing', () => {
+    const { onApply, trigger } = build(partial);
+    trigger.click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it('picking a visible value KEEPS the off-list one', () => {
+    const { onApply, trigger } = build(partial);
+    trigger.click();
+    check(boxes()[1], true);
+    btn('.ms-btn-primary').click();
+    // Visible picks canonicalize by option order; the invisible value the user
+    // could not have deselected is appended, in committed order.
+    expect(onApply).toHaveBeenCalledWith(['fr', 'gone-past-the-cap'], true);
+  });
+
+  it('keeps SEVERAL off-list values, in committed order', () => {
+    const { onApply, trigger } = build({
+      ...partial, selected: ['zz-past', 'de', 'aa-past'],
+    });
+    trigger.click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).not.toHaveBeenCalled(); // still a no-op
+    trigger.click(); // Apply closed it; re-open to make a real change
+    check(boxes()[1], true);
+    btn('.ms-btn-primary').click();
+    expect(onApply).toHaveBeenCalledWith(['de', 'fr', 'zz-past', 'aa-past'], true);
+  });
+
+  it('Clear still removes them — it is the explicit "remove everything"', () => {
+    const { onApply, trigger } = build(partial);
+    trigger.click();
+    btn('.ms-btn-clear').click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).toHaveBeenCalledWith([], false);
+  });
+
+  it('does NOT preserve off-list values once the list is complete', () => {
+    // A complete list means the value genuinely went away, and the session has
+    // already reconciled it out — keeping it here would resurrect it.
+    const { onApply, trigger } = build({ ...partial, incomplete: false });
+    trigger.click();
+    check(boxes()[1], true);
+    btn('.ms-btn-primary').click();
+    expect(onApply).toHaveBeenCalledWith(['fr'], true);
+  });
+
+  it('setOptions can turn the flag on and off with the list', () => {
+    const { field, onApply, trigger } = build({
+      options: OPTIONS, selected: ['past-the-cap'], active: true, incomplete: false,
+    });
+    // A later refresh comes back truncated: the value is preserved from then on.
+    field.setOptions(OPTIONS, true);
+    trigger.click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).not.toHaveBeenCalled();
+    // And a complete refresh drops it again.
+    field.setOptions(OPTIONS, false);
+    trigger.click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).toHaveBeenCalledWith([], false);
+  });
+
+  it('defaults to complete when setOptions omits the flag', () => {
+    const { field, onApply, trigger } = build(partial);
+    field.setOptions(OPTIONS);
+    trigger.click();
+    btn('.ms-btn-primary').click();
+    expect(onApply).toHaveBeenCalledWith([], false);
+  });
+});
+
 describe('setOptions', () => {
   it('swaps the list and re-renders the committed label', () => {
     const { field, trigger } = build({ selected: ['de'], active: true });

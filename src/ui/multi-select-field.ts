@@ -62,6 +62,11 @@ export interface MultiSelectFieldOpts {
    *  would canonicalize a restored selection against nothing and commit a clear.
    *  Cleared by the first `setOptions`. */
   loading?: boolean;
+  /** `options` is a PREFIX — the server cut this variable's branch off at the
+   *  cap. A committed value missing from it may be perfectly valid and simply
+   *  live past the end, so Apply preserves such values instead of canonicalizing
+   *  them away. See `applyBtn`'s handler. */
+  incomplete?: boolean;
   /** The trigger's resting `title` — `name: Type`, from the bar. */
   title?: string;
   onApply(next: string[], active: boolean): void;
@@ -71,10 +76,11 @@ export interface MultiSelectFieldOpts {
 /** `buildMultiSelectField`'s return value. */
 export interface MultiSelectFieldHandle {
   el: HTMLElement;
-  /** Swap the option list in place when a refresh's batch lands. An OPEN
+  /** Swap the option list in place when a refresh's batch lands, and say whether
+   *  that list is a PREFIX (the server cut the branch off at the cap). An OPEN
    *  popover is closed as a Cancel first — its draft was built against the
    *  previous generation and must never be applied against this one. */
-  setOptions(next: readonly VariableOption[]): void;
+  setOptions(next: readonly VariableOption[], incomplete?: boolean): void;
   /** The batch-level failure affordance: `null` clears it. */
   setUnavailable(reason: string | null): void;
   /** Whether the popover is currently open — a caller reads this to decide
@@ -98,6 +104,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   let options: readonly VariableOption[] = opts.options;
   let unavailable: string | null = null;
   let loading = !!opts.loading;
+  let incomplete = !!opts.incomplete;
   // The currently-open popover's own close() — non-null iff the popover is open
   // (`isOpen()` reads this directly rather than tracking a second flag).
   let closeCurrent: ((closeOpts?: { skipFocus?: boolean }) => void) | null = null;
@@ -231,9 +238,42 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       syncSelectAll();
     });
     cancelBtn.addEventListener('click', () => handle.close());
+    /**
+     * The values a set of selections COMMITS to.
+     *
+     * Whatever the option list offers is canonicalized by option order — that is
+     * the list the user is looking at and manipulating.
+     *
+     * When the list is a PREFIX (`incomplete`), values it does not contain are
+     * KEPT, appended in their committed order. Such a value is invisible: there
+     * is no row for it, so the user cannot have deselected it, and — because the
+     * list is known to be cut off — it may be perfectly valid rather than stale.
+     * Dropping it would silently delete a filter the user never touched, which is
+     * exactly what the session refuses to do when it declines to reconcile
+     * against a truncated list. Both ends have to agree or the preservation is
+     * undone here.
+     *
+     * Clear still removes them: it empties the whole draft, off-list values
+     * included, which is the explicit "remove everything" action.
+     *
+     * With a COMPLETE list this is plain canonicalization — an off-list value has
+     * genuinely gone away, and the session has already reconciled it out.
+     */
+    const commitOf = (values: readonly string[]): string[] => {
+      const visible = canonicalizeSelection(values, options);
+      if (!incomplete) return visible;
+      const offered = new Set(options.map((o) => o.value));
+      const seen = new Set(visible);
+      const kept: string[] = [];
+      for (const v of values) {
+        if (!offered.has(v) && !seen.has(v)) { seen.add(v); kept.push(v); }
+      }
+      return [...visible, ...kept];
+    };
+
     applyBtn.addEventListener('click', () => {
-      const canonical = canonicalizeSelection([...draft], options);
-      const prevCanonical = canonicalizeSelection(selected, options);
+      const canonical = commitOf([...draft]);
+      const prevCanonical = commitOf(selected);
       const activeNext = canonical.length > 0;
       // A no-op Apply (same canonical selection AND same active flag) closes
       // silently — `onApply` fires exactly once otherwise.
@@ -280,8 +320,9 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   return {
     el: control,
     isOpen: () => closeCurrent !== null,
-    setOptions: (next) => {
+    setOptions: (next, nextIncomplete = false) => {
       options = next;
+      incomplete = nextIncomplete;
       // The batch has answered for this variable, so the control becomes
       // operable — this is the ONLY thing that clears `loading`, which is what
       // guarantees an Apply can never canonicalize against a list that simply

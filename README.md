@@ -554,8 +554,10 @@ Which control a configured variable renders follows from its declared type:
   (*Loading options…*) until its list arrives, a refresh only ever **removes**
   values that are genuinely gone — keeping the order you committed, since the
   array binds positionally — and if the option list came back truncated at the
-  1,000 cap, nothing is removed at all. If every selected value disappears, the
-  variable returns to unset.
+  1,000 cap, nothing is removed at all: a selected value may simply live past the
+  cap, so it survives both the refresh *and* your next Apply. **Clear** removes
+  everything, including values the list is too short to show. If every selected
+  value disappears from a complete list, the variable returns to unset.
 
 A variable with **no** option SQL keeps the direct input inferred from its declared
 type. `Tuple`, `Map`, `Nested` and nested `Array(Array(…))` have no inferable

@@ -42,9 +42,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   preserves the committed ORDER: the array binds as an ordered ClickHouse literal
   and panel SQL may read it positionally, so re-sorting it to match a new option
   order would change what panels bind without re-running them. A label-only or
-  option-order-only change therefore does nothing at all, and if the option list
-  came back **truncated** at the 1,000 cap, nothing is pruned — a selected value
-  may simply live past the cap. New options are never auto-selected.
+  option-order-only change therefore does nothing at all. If the option list came
+  back **truncated** at the 1,000 cap, nothing is pruned at either end — a
+  selected value may simply live past the cap, so the refresh leaves it alone
+  *and* **Apply keeps it** rather than dropping it for being absent from a list
+  that is known to be a prefix. (**Clear** still removes everything, and with a
+  complete list an absent value is genuinely gone and does get dropped.) New
+  options are never auto-selected.
 
   Eligibility is one pure predicate (`multiSelectElementType`) shared by the option
   batch and the control dispatch, so a type whose option SQL ran can never be one
