@@ -33,10 +33,9 @@ export function dashboardDependencyQueryIds(dashboard: unknown): string[] {
   for (const tile of tiles) {
     if (isObject(tile)) add(tile.queryId);
   }
-  const filters = Array.isArray(dashboard.filters) ? dashboard.filters : [];
-  for (const filter of filters) {
-    if (isObject(filter)) add(filter.sourceQueryId);
-  }
+  // #447: a tile reference is the whole closure. A curated filter used to add its
+  // option-source query here; a variable's option SQL lives on the Dashboard
+  // document itself, so it travels with the document and references no query.
   return out;
 }
 

@@ -25,7 +25,7 @@ import {
 } from '../layouts/grafana-grid-layout.js';
 import type { QueryResolver } from './dashboard-query-resolver.js';
 import type {
-  DashboardDocumentV1, DashboardLayoutDocumentV1, DashboardTileV1,
+  DashboardDocumentV2, DashboardLayoutDocumentV1, DashboardTileV1,
 } from '../../generated/json-schema.types.js';
 
 /** A tile-local patch for `update-tile` — an RFC 7396 merge patch over the
@@ -51,7 +51,7 @@ export interface ApplyCommandContext {
 }
 
 export type ApplyCommandResult =
-  | { ok: true; dashboard: DashboardDocumentV1; value: unknown }
+  | { ok: true; dashboard: DashboardDocumentV2; value: unknown }
   | { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -113,7 +113,7 @@ function mergeTilePresentation(existing: unknown, patch: unknown): unknown {
  *  `fallback` is regenerated as one centralized post-step (#291;
  *  `change-layout` is excluded — it manages `fallback` itself). */
 export function applyCommand(
-  draft: DashboardDocumentV1, command: DashboardCommand, ctx: ApplyCommandContext,
+  draft: DashboardDocumentV2, command: DashboardCommand, ctx: ApplyCommandContext,
 ): ApplyCommandResult {
   const dashboard = cloneJson(draft);
   const result = applyCommandToClone(dashboard, command, ctx);
@@ -124,7 +124,7 @@ export function applyCommand(
 }
 
 function applyCommandToClone(
-  dashboard: DashboardDocumentV1, command: DashboardCommand, ctx: ApplyCommandContext,
+  dashboard: DashboardDocumentV2, command: DashboardCommand, ctx: ApplyCommandContext,
 ): ApplyCommandResult {
   const tiles = dashboard.tiles as unknown[];
 

@@ -35,12 +35,12 @@ describe('expansion', () => {
   });
 
   it('toggles a group by Dashboard id PLUS group name, never by position', () => {
-    const opened = toggleGroupExpanded(EMPTY_TREE_UI, 'd1', 'filters');
-    expect(opened.expandedGroups.has(groupStateKey('d1', 'filters'))).toBe(true);
+    const opened = toggleGroupExpanded(EMPTY_TREE_UI, 'd1', 'variables');
+    expect(opened.expandedGroups.has(groupStateKey('d1', 'variables'))).toBe(true);
     // The two groups of one Dashboard, and the same group of two Dashboards, are
     // all distinct keys.
     expect(opened.expandedGroups.has(groupStateKey('d1', 'panels'))).toBe(false);
-    expect(opened.expandedGroups.has(groupStateKey('d2', 'filters'))).toBe(false);
+    expect(opened.expandedGroups.has(groupStateKey('d2', 'variables'))).toBe(false);
   });
 
   it('sets expansion explicitly for the keyboard, without toggling', () => {
@@ -65,7 +65,7 @@ describe('groupStateKey', () => {
   it('escapes the Dashboard id so two ids cannot share a group key', () => {
     // `a:panels` as a Dashboard id would otherwise collide with Dashboard `a`'s
     // Panels group.
-    expect(groupStateKey('a:panels', 'filters')).not.toBe(groupStateKey('a', 'panels'));
+    expect(groupStateKey('a:panels', 'variables')).not.toBe(groupStateKey('a', 'panels'));
     expect(groupStateKey('a', 'panels')).toBe('a:panels');
   });
 });
@@ -128,12 +128,12 @@ describe('pruneTreeUi', () => {
     let state = EMPTY_TREE_UI;
     for (const id of ['keep', 'gone']) {
       state = toggleDashboardExpanded(state, id);
-      state = toggleGroupExpanded(state, id, 'filters');
+      state = toggleGroupExpanded(state, id, 'variables');
       state = toggleGroupExpanded(state, id, 'panels');
     }
     const pruned = pruneTreeUi(state, ['keep']);
     expect([...pruned.expandedDashboardIds]).toEqual(['keep']);
-    expect([...pruned.expandedGroups]).toEqual([groupStateKey('keep', 'filters'), groupStateKey('keep', 'panels')]);
+    expect([...pruned.expandedGroups]).toEqual([groupStateKey('keep', 'variables'), groupStateKey('keep', 'panels')]);
   });
 
   it('returns the SAME state when nothing needed pruning', () => {

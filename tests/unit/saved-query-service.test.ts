@@ -29,7 +29,7 @@ type StateSlice = Pick<AppState,
 function makeState(over: Partial<StateSlice> = {}): StateSlice {
   return {
     savedQueries: over.savedQueries ?? [],
-    resultView: over.resultView ?? signal<'table' | 'json' | 'panel' | 'filter'>('table'),
+    resultView: over.resultView ?? signal<'table' | 'json' | 'panel'>('table'),
     libraryDirty: over.libraryDirty ?? signal(false),
     history: over.history ?? [],
     libraryName: over.libraryName ?? signal('Lib'),

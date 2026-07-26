@@ -6,13 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { assertValidExampleBundle } from '../../examples/mjs/example-bundle.mjs';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
-import { filterExecution } from '../../src/core/filter-execution.js';
-import { effectiveDashboardRole } from '../../src/core/result-choice.js';
-import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
-import { migrateStoredWorkspaceV3ToV4 } from '../../src/workspace/stored-workspace-ownership.js';
+import { migrateStoredWorkspaceV3ToV5 } from '../../src/workspace/stored-workspace-ownership.js';
 import { validateStoredWorkspaceDocument } from '../../src/workspace/stored-workspace.js';
 import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
-import { mergeDashboardFilterHelpers } from '../../src/core/dashboard-filters.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -24,21 +20,17 @@ function decodeExample(text, name) {
 }
 
 describe('schema artifacts and examples', () => {
-  // #427 — the shipped bundles ARE the migration's acceptance test. Each becomes a
-  // V3 workspace, is migrated, and must come out with no diagnostics at all.
-  //
-  // `clickhouse-operations.json` is the case that matters: one filter-role query
-  // ("Grafana port filters") supplies SIX option columns and SIX curated filters
-  // reference it. Cloning it per filter produced six identical sources, so every
-  // helper column had six providers and `mergeDashboardFilterHelpers` rejected all
-  // of them (`filter-duplicate-provider`) — every filter on the dashboard errored,
-  // and the query ran six times per load. One copy per DASHBOARD is why it works.
-  it('migrates every shipped example bundle to a valid V4 workspace', () => {
+  // #427/#447 — the shipped bundles ARE the migration's acceptance test. Each
+  // becomes a V3 workspace, is migrated straight to V5 (#447 dropped the V4
+  // curated-filter-owned intermediate — see stored-workspace-ownership.js),
+  // and must come out with no diagnostics at all, with every original query
+  // still present as a Library entry.
+  it('migrates every shipped example bundle to a valid V5 workspace', () => {
     const examples = resolve(root, 'examples');
     const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
     for (const name of names) {
       const bundle = decodeExample(readFileSync(resolve(examples, name), 'utf8'), name);
-      const migrated = migrateStoredWorkspaceV3ToV4({
+      const migrated = migrateStoredWorkspaceV3ToV5({
         storageVersion: 3, id: 'w', key: 'w', name: 'W',
         queries: bundle.queries, dashboards: bundle.dashboards,
       });
@@ -48,42 +40,7 @@ describe('schema artifacts and examples', () => {
       for (const query of bundle.queries) {
         expect(index.libraryQueryIds.has(query.id), name + ': ' + query.id).toBe(true);
       }
-      // …and no curated filter shares a copy across Dashboards.
-      for (const dashboard of migrated.dashboards) {
-        for (const filter of dashboard.filters) {
-          if (!filter.sourceQueryId) continue;
-          const owners = index.ownersByQueryId.get(filter.sourceQueryId);
-          expect(owners.every((owner) => owner.dashboardId === dashboard.id), name).toBe(true);
-        }
-      }
     }
-  });
-
-  it('gives clickhouse-operations ONE filter-source copy, with no duplicate providers', () => {
-    const bundle = decodeExample(
-      readFileSync(resolve(root, 'examples/clickhouse-operations.json'), 'utf8'), 'operations',
-    );
-    const migrated = migrateStoredWorkspaceV3ToV4({
-      storageVersion: 3, id: 'w', key: 'w', name: 'W',
-      queries: bundle.queries, dashboards: bundle.dashboards,
-    });
-    const [dashboard] = migrated.dashboards;
-    const sources = dashboard.filters.map((filter) => filter.sourceQueryId).filter(Boolean);
-    expect(sources.length).toBe(6);
-    expect(new Set(sources).size).toBe(1);
-    // The runtime consequence: ONE provider for that source, so each of its helper
-    // columns has exactly one provider and the merge reports no duplicate.
-    const source = migrated.queries.find((query) => query.id === sources[0]);
-    const helpers = ['user', 'query_kind', 'exception_code', 'query_hash', 'metric', 'is_initial_query']
-      .map((columnName) => ({ name: columnName, options: [{ value: 'x', label: 'x' }] }));
-    const merged = mergeDashboardFilterHelpers({
-      providers: [{ sourceId: source.id, sourceName: 'Grafana port filters', helpers }],
-      controls: helpers.map((helper) => ({ name: helper.name, type: 'String', optional: false })),
-    });
-    expect(merged.diagnostics.filter((d) => d.code === 'filter-duplicate-provider')).toEqual([]);
-    expect(Object.keys(merged.fields).sort()).toEqual(
-      ['exception_code', 'is_initial_query', 'metric', 'query_hash', 'query_kind', 'user'],
-    );
   });
 
   it('keeps generated schema artifacts deterministic and current', () => {
@@ -92,7 +49,21 @@ describe('schema artifacts and examples', () => {
     })).not.toThrow();
   });
 
-  it('keeps every checked-in JSON example on portable bundle v1 with explicit Dashboard v1 documents', () => {
+  // Checked against the RAW committed JSON, not the `decodeExample` result:
+  // `decodePortableBundleJson` now migrates a v1 bundle straight to v2 on
+  // decode (#447 dropped every Dashboard's curated `filters` in that
+  // migration), so the decoded value no longer carries `version: 1` /
+  // `documentVersion: 1` / `filters` to assert against. Decode SUCCESS for
+  // every example is already covered by the "migrates every shipped example
+  // bundle" test above; this test is specifically about the shape the files
+  // are still committed in.
+  // clickhouse-operations.json moved to portable-bundle v2 / Dashboard v2 ahead
+  // of the other checked-in examples (#458 follow-up): its authored Dashboard
+  // dropped the curated `filters` array in favor of inferred Variables. The
+  // rest stay pinned to v1 until phase 3's broader example rewrite.
+  const V2_EXAMPLES = new Set(['clickhouse-operations.json']);
+
+  it('keeps every checked-in JSON example on its pinned portable bundle version with explicit Dashboard documents', () => {
     const examples = resolve(root, 'examples');
     const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
     expect(names.filter((name) => !name.startsWith('iceberg'))).toEqual([
@@ -100,21 +71,31 @@ describe('schema artifacts and examples', () => {
     ]);
     for (const name of names) {
       const text = readFileSync(resolve(examples, name), 'utf8');
-      const bundle = decodeExample(text, name);
-      expect(bundle.format, name).toBe('altinity-sql-browser/portable-bundle');
-      expect(bundle.version, name).toBe(1);
-      expect(bundle.queries.length, name).toBeGreaterThan(0);
-      expect(() => assertValidExampleBundle(bundle), name).not.toThrow();
-      for (const dashboard of bundle.dashboards) {
-        expect(dashboard.documentVersion, name).toBe(1);
+      const raw = JSON.parse(text);
+      const expectedVersion = V2_EXAMPLES.has(name) ? 2 : 1;
+      expect(raw.format, name).toBe('altinity-sql-browser/portable-bundle');
+      expect(raw.version, name).toBe(expectedVersion);
+      expect(raw.queries.length, name).toBeGreaterThan(0);
+      expect(() => assertValidExampleBundle(raw), name).not.toThrow();
+      for (const dashboard of raw.dashboards) {
+        expect(dashboard.documentVersion, name).toBe(expectedVersion);
         expect(['flow', 'grafana-grid'], name).toContain(dashboard.layout.type);
         expect(dashboard.tiles.length, name).toBeGreaterThan(0);
         const tileIds = new Set(dashboard.tiles.map((tile) => tile.id));
-        const queryIds = new Set(bundle.queries.map((query) => query.id));
+        const queryIds = new Set(raw.queries.map((query) => query.id));
         for (const tile of dashboard.tiles) expect(queryIds.has(tile.queryId), `${name}:${tile.id}`).toBe(true);
-        for (const filter of dashboard.filters) {
-          if (filter.sourceQueryId) expect(queryIds.has(filter.sourceQueryId), `${name}:${filter.id}`).toBe(true);
-          for (const target of filter.targets || []) expect(tileIds.has(target), `${name}:${filter.id}`).toBe(true);
+        if (expectedVersion === 1) {
+          for (const filter of dashboard.filters) {
+            // `sourceQueryId` is deliberately NOT checked against `queryIds`: the
+            // removed Filter role (#447) is what made that id meaningful, and
+            // decode drops the whole `filters` array on migration regardless, so
+            // a stale reference here is inert legacy data, not a defect.
+            for (const target of filter.targets || []) expect(tileIds.has(target), `${name}:${filter.id}`).toBe(true);
+          }
+        } else {
+          // v2 Dashboards carry no `filters` array at all — Variables are
+          // inferred from the {name:Type} placeholders in tiled queries.
+          expect(dashboard.filters, name).toBeUndefined();
         }
         if (dashboard.layout.type === 'grafana-grid') {
           expect(dashboard.layout.fallback?.type, name).toBe('flow');
@@ -127,37 +108,6 @@ describe('schema artifacts and examples', () => {
     expect(() => execFileSync(process.execPath, ['examples/mjs/normalize-examples.mjs', '--check'], {
       cwd: root, stdio: 'pipe',
     })).not.toThrow();
-  });
-
-  it('keeps every flagship dimensional filter on one inferred multiselect Array(T) contract', () => {
-    const expected = {
-      'ontime-charts.json': { carrier: 'Array(String)', origin: 'Array(String)' },
-      'shop-charts.json': { country: 'Array(String)', category: 'Array(String)' },
-      'clickhouse-operations.json': {
-        user: 'Array(String)', query_kind: 'Array(String)',
-        exception_code: 'Array(Int32)', query_hash: 'Array(UInt64)',
-      },
-    };
-    for (const [name, contracts] of Object.entries(expected)) {
-      const bundle = decodeExample(readFileSync(resolve(root, 'examples', name), 'utf8'), name);
-      const dashboard = bundle.dashboards[0];
-      const queryById = new Map(bundle.queries.map((query) => [query.id, query]));
-      for (const [parameter, type] of Object.entries(contracts)) {
-        const filter = dashboard.filters.find((item) => item.parameter === parameter);
-        expect(filter?.sourceQueryId, `${name}:${parameter}`).toBeTruthy();
-        expect(filter?.selection, `${name}:${parameter}`).toBeUndefined();
-        const targetIds = filter.targets || dashboard.tiles.map((tile) => tile.id);
-        const sources = targetIds.map((tileId) => {
-          const tile = dashboard.tiles.find((item) => item.id === tileId);
-          const query = tile && queryById.get(tile.queryId);
-          return query ? { id: tileId, sql: query.sql, bindPolicy: 'row-returning' } : null;
-        }).filter(Boolean);
-        const analysis = analyzeParameterizedSources(sources);
-        const declarations = analysis.fields[parameter]?.declarations.filter((item) => item.bound) || [];
-        expect(declarations.length, `${name}:${parameter}`).toBeGreaterThan(0);
-        expect([...new Set(declarations.map((item) => item.type))], `${name}:${parameter}`).toEqual([type]);
-      }
-    }
   });
 
   it('keeps authored analytical chart encodings pinned to result schema keys', () => {
@@ -177,17 +127,6 @@ describe('schema artifacts and examples', () => {
     const bundle = decodeExample(template, 'ice_meta_drilldown.json.tmpl');
     expect(bundle.dashboards).toHaveLength(1);
     expect(bundle.dashboards[0].tiles.length).toBeGreaterThan(0);
-  });
-
-  it('every Filter-role example query is a valid Filter source', () => {
-    const examples = resolve(root, 'examples');
-    for (const name of readdirSync(examples).filter((item) => item.endsWith('.json'))) {
-      const bundle = decodeExample(readFileSync(resolve(examples, name), 'utf8'), name);
-      for (const query of bundle.queries) {
-        if (effectiveDashboardRole(query.spec) !== 'filter') continue;
-        expect(filterExecution(query.sql).diagnostics, name + ':' + query.id).toEqual([]);
-      }
-    }
   });
 
   it('validates every JSON Spec example used by the authoring documentation', () => {

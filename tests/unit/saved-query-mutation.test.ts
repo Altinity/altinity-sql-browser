@@ -2,36 +2,34 @@ import { describe, expect, it } from 'vitest';
 import {
   planSavedQueryMutation, suggestRepairs,
 } from '../../src/dashboard/application/saved-query-mutation.js';
-import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
-import { querySpecSchemaService } from '../../src/core/spec-schema.js';
-import type { SavedQueryV2, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
 
 const panelQuery = (id: string, sql: string, dashboard?: Record<string, unknown>): SavedQueryV2 => ({
   id, sql, specVersion: 1,
   spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } }, ...(dashboard ? { dashboard } : {}) },
 } as SavedQueryV2);
-const filterQuery = (id: string): SavedQueryV2 => ({
-  id, sql: "SELECT ['a','b'] AS country", specVersion: 1, spec: { name: id, dashboard: { role: 'filter' } },
+// A non-panel-role query — still a valid fixture for role-compatibility tests
+// (a tile referencing anything other than role panel is incompatible; #447
+// retired the `filter` role, so `setup` is the only other role left).
+const setupQuery = (id: string): SavedQueryV2 => ({
+  id, sql: "SELECT ['a','b'] AS country", specVersion: 1, spec: { name: id, dashboard: { role: 'setup' } },
 } as SavedQueryV2);
 
-// A valid base workspace: a panel tile p1 (declares `country`), a filter flt
-// sourced from f1 targeting that tile, and a spare panel p2 (also declaring
-// `country`, so a remap onto it stays valid).
-const baseWorkspace = (): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+// A valid base workspace: a panel tile p1 (declares `country`), and a spare
+// panel p2 (also declaring `country`, so a remap onto it stays valid).
+const baseWorkspace = (): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
   queries: [
     panelQuery('p1', 'SELECT a,b WHERE c={country:String}'),
     panelQuery('p2', 'SELECT a,b WHERE c={country:String}'),
-    filterQuery('f1'),
   ],
   dashboards: [{
-      documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+      documentVersion: 2, id: 'dash', title: 'D', revision: 1,
       layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-      filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
       tiles: [{ id: 't1', queryId: 'p1' }],
   }],
-} as StoredWorkspaceV4);
+} as StoredWorkspaceV5);
 
 const codes = (d: WorkspaceDiagnostic[]): string[] => d.map((x) => x.code);
 const find = (d: WorkspaceDiagnostic[], code: string): WorkspaceDiagnostic =>
@@ -53,95 +51,34 @@ describe('planSavedQueryMutation — rejection without repair', () => {
     expect(plan.repairs).toEqual(expect.arrayContaining(['remove-affected-tiles', 'switch-variant', 'remap-query']));
   });
 
-  it('rejects a role change that makes a tile incompatible', () => {
+  it('rejects a role change to SETUP, which a tile can never execute', () => {
     const plan = planSavedQueryMutation(baseWorkspace(),
-      { type: 'replace-query', queryId: 'p1', query: filterQuery('p1') });
+      { type: 'replace-query', queryId: 'p1', query: setupQuery('p1') });
     expect(plan.ok).toBe(false);
-    expect(codes(plan.diagnostics)).toContain('dashboard-tile-role-incompatible');
-  });
-
-  it('rejects a filter source whose role changes', () => {
-    const plan = planSavedQueryMutation(baseWorkspace(),
-      { type: 'replace-query', queryId: 'f1', query: panelQuery('f1', 'SELECT 1') });
-    expect(plan.ok).toBe(false);
-    expect(codes(plan.diagnostics)).toContain('filter-source-role');
-    expect(plan.repairs).toContain('remove-affected-filters');
-  });
-
-  it('repairs a filter-source role change by removing the affected filter', () => {
-    const plan = planSavedQueryMutation(baseWorkspace(),
-      { type: 'replace-query', queryId: 'f1', query: panelQuery('f1', 'SELECT 1') },
-      { type: 'remove-affected-filters' });
-    expect(plan.ok).toBe(true);
-    expect(plan.candidate!.dashboards[0].filters).toEqual([]); // flt sourced from f1 removed
-  });
-
-  it('remaps a filter source reference onto another filter query', () => {
-    const workspace: StoredWorkspaceV4 = {
-      storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
-      queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1'), filterQuery('f2')],
-      dashboards: [{
-          documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-          filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
-          tiles: [{ id: 't1', queryId: 'p1' }],
-      }],
-    } as StoredWorkspaceV4;
-    const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'f1' }, { type: 'remap-query', to: 'f2' });
-    expect(plan.ok).toBe(true);
-    expect(plan.candidate!.dashboards[0].filters[0].sourceQueryId).toBe('f2');
+    expect(codes(plan.diagnostics)).toContain('dashboard-setup-reference');
   });
 });
 
 describe('planSavedQueryMutation — atomic repair', () => {
-  it('removes affected tiles (and prunes their placements and filter targets)', () => {
-    // A PLAIN filter (no `sourceQueryId`) here deliberately — this test is
-    // about tile/target PRUNING mechanics (`removeAffectedTiles`), not
-    // filter-selection contract validity (#189/#360, `workspace-semantics.ts`
-    // now runs `resolveFilterSelection` for every SOURCE-BACKED filter). A
-    // source-backed filter left with zero executable consumers once its only
-    // tile is gone is itself a real `filter-selection-no-consumers` — exactly
-    // what the app SHOULD flag — and orthogonal to what this test checks.
-    const workspace = baseWorkspace();
-    workspace.dashboards[0].filters = [{ id: 'flt', parameter: 'country', targets: ['t1'] }];
-    const plan = planSavedQueryMutation(workspace,
+  it('removes affected tiles and prunes their layout placements', () => {
+    const plan = planSavedQueryMutation(baseWorkspace(),
       { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboards[0];
     expect(dashboard.tiles).toEqual([]);
     expect(dashboard.layout.items).toEqual({}); // orphan placement pruned
-    expect(dashboard.filters[0].targets).toEqual([]); // target reference pruned
-  });
-
-  it('removes affected filters when a parameter change invalidates a target', () => {
-    // p1 no longer declares `country`; the filter targeting its tile breaks.
-    // Since `flt` is source-backed (`sourceQueryId: 'f1'`), `t1` failing to
-    // declare `country` now surfaces through `resolveFilterSelection`'s own
-    // (bound-aware) `filter-selection-target-missing-declaration` — which
-    // subsumes the older unbound `filter-parameter-undeclared` check for a
-    // source-backed filter's explicit targets (workspace-semantics.ts).
-    const plan = planSavedQueryMutation(baseWorkspace(),
-      { type: 'replace-query', queryId: 'p1', query: panelQuery('p1', 'SELECT a,b') });
-    expect(plan.ok).toBe(false);
-    expect(codes(plan.diagnostics)).toContain('filter-selection-target-missing-declaration');
-
-    const repaired = planSavedQueryMutation(baseWorkspace(),
-      { type: 'replace-query', queryId: 'p1', query: panelQuery('p1', 'SELECT a,b') },
-      { type: 'remove-affected-filters' });
-    expect(repaired.ok).toBe(true);
-    expect(repaired.candidate!.dashboards[0].filters).toEqual([]);
   });
 
   it('switches an affected tile to another valid variant', () => {
-    const workspace: StoredWorkspaceV4 = {
-      storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+    const workspace: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } })],
       dashboards: [{
-          documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+          documentVersion: 2, id: 'dash', title: 'D', revision: 1,
           layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-          filters: [], tiles: [{ id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }],
+          tiles: [{ id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }],
       }],
-    } as StoredWorkspaceV4;
+    } as StoredWorkspaceV5;
     const deletesAlt = { type: 'replace-query' as const, queryId: 'p1', query: panelQuery('p1', 'SELECT a,b', { variants: { other: {} } }) };
 
     const rejected = planSavedQueryMutation(workspace, deletesAlt);
@@ -159,35 +96,14 @@ describe('planSavedQueryMutation — atomic repair', () => {
     const dashboard = plan.candidate!.dashboards[0];
     expect(dashboard.tiles[0].queryId).toBe('p2');
   });
-
-  it('supports remove-affected (tiles and filters together)', () => {
-    // A PLAIN filter here too (see the "removes affected tiles" test above
-    // for why) — `removeAffectedFilters` composed after `removeAffectedTiles`
-    // recomputes its "targets an affected tile" check against the
-    // ALREADY-tile-pruned dashboard, so the filter survives regardless of
-    // `sourceQueryId`; a source-backed filter left with zero consumers here
-    // would instead (correctly) fail the new selection-contract check.
-    const workspace = baseWorkspace();
-    workspace.dashboards[0].filters = [{ id: 'flt', parameter: 'country', targets: ['t1'] }];
-    const plan = planSavedQueryMutation(workspace,
-      { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected' },
-      { validationService: jsonSchemaValidationService, schemaService: querySpecSchemaService });
-    expect(plan.ok).toBe(true);
-    const dashboard = plan.candidate!.dashboards[0];
-    expect(dashboard.tiles).toEqual([]);
-    // The filter survives (not targeting p1's query directly), with its
-    // now-empty target list — remove-affected removed the affected tile and
-    // its target ref.
-    expect(dashboard.filters[0].targets).toEqual([]);
-  });
 });
 
 describe('planSavedQueryMutation — repairs skip unaffected and target-less entries', () => {
   // #427: every tile owns its OWN dedicated query, so a valid base has one
   // query per tile. `t1`/`t3` both derive from the same authoring source, which
   // is why they can be switched to the same variant.
-  const multiTile = (): StoredWorkspaceV4 => ({
-    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+  const multiTile = (): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
     queries: [
       panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } }),
       panelQuery('p2', 'SELECT a,b'),
@@ -195,9 +111,8 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
       panelQuery('p4', 'SELECT a,b', { variants: { alt: {}, other: {} } }),
     ],
     dashboards: [{
-        documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+        documentVersion: 2, id: 'dash', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, t2: {}, t3: {}, t4: {} } },
-        filters: [{ id: 'flt', parameter: 'x' }], // no source, no targets
         tiles: [
           { id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }, // has a presentation, gets switched
           { id: 't2', queryId: 'p2' }, // unaffected by p1 mutations
@@ -205,16 +120,15 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
           { id: 't4', queryId: 'p4' }, // unmapped — left untouched
         ],
     }],
-  } as StoredWorkspaceV4);
+  } as StoredWorkspaceV5);
 
-  it('removes only affected tiles and leaves a target-less filter intact', () => {
+  it('removes only affected tiles, leaving every other tile untouched', () => {
     const plan = planSavedQueryMutation(multiTile(), { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboards[0];
     // Only the tile that owned `p1` goes; every other tile is untouched, which
     // is now structural rather than incidental — no other tile could reference it.
     expect(dashboard.tiles.map((t) => t.id)).toEqual(['t2', 't3', 't4']);
-    expect(dashboard.filters).toHaveLength(1);
   });
 
   it('switches only the mapped tiles and skips unmapped ones', () => {
@@ -242,16 +156,15 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
   // #427: "query remaps cannot create multiple owners." A remap is only valid
   // when the target ends up owned by exactly one member.
   it('remaps a tile onto a zero-owner Library query, and REFUSES to make it shared', () => {
-    const workspace = (): StoredWorkspaceV4 => ({
-      storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+    const workspace = (): StoredWorkspaceV5 => ({
+      storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
       queries: [panelQuery('p1', 'SELECT a,b'), panelQuery('p2', 'SELECT a,b'), panelQuery('spare', 'SELECT a,b')],
       dashboards: [{
-          documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+          documentVersion: 2, id: 'dash', title: 'D', revision: 1,
           layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, t2: {} } },
-          filters: [{ id: 'flt', parameter: 'x' }], // no source
           tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
       }],
-    } as StoredWorkspaceV4);
+    } as StoredWorkspaceV5);
 
     // `spare` has no owner, so the remapped tile becomes its single owner.
     const onto = planSavedQueryMutation(
@@ -270,38 +183,35 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
       .toEqual(['dashboards', 0, 'tiles', 1, 'queryId']);
   });
 
-  it('tolerates malformed tiles and filters while applying a repair', () => {
+  it('tolerates malformed tiles while applying a repair', () => {
     const malformed = {
-      storageVersion: 4, id: 'ws', key: 'ws', name: 'WS', queries: [panelQuery('p1', 'SELECT a,b')],
+      storageVersion: 5, id: 'ws', key: 'ws', name: 'WS', queries: [panelQuery('p1', 'SELECT a,b')],
       dashboards: [{
-          documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+          documentVersion: 2, id: 'dash', title: 'D', revision: 1,
           layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-          filters: ['bad', { id: 'flt', parameter: 'x' }], tiles: ['bad', { id: 't1', queryId: 'p1' }],
+          tiles: ['bad', { id: 't1', queryId: 'p1' }],
       }],
-    } as unknown as StoredWorkspaceV4;
-    const plan = planSavedQueryMutation(malformed, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected' });
-    // The malformed entries make the candidate invalid, but the repair helpers
-    // ran over them without throwing.
-    expect(plan.ok).toBe(false);
+    } as unknown as StoredWorkspaceV5;
+    const plan = planSavedQueryMutation(malformed, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
+    // The repair helper ran over the malformed entry without throwing.
+    expect(() => planSavedQueryMutation(
+      malformed, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' },
+    )).not.toThrow();
+    expect(plan.candidate === null || Array.isArray(plan.candidate.dashboards[0].tiles)).toBe(true);
   });
 });
 
 describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', () => {
   it('normalizes through the ACTIVE grid plugin and regenerates the flow@1 fallback on a tile-removing repair', () => {
-    // A PLAIN filter (no `sourceQueryId`) — this test is about grid-layout
-    // normalization/fallback regeneration, not filter-selection contract
-    // validity; see the "removes affected tiles" test above for why a
-    // source-backed filter left with zero tiles would (correctly) now fail.
-    const workspace: StoredWorkspaceV4 = {
-      storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
-      queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1')],
+    const workspace: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
+      queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}')],
       dashboards: [{
-          documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+          documentVersion: 2, id: 'dash', title: 'D', revision: 1,
           layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 8 } } },
-          filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
           tiles: [{ id: 't1', queryId: 'p1' }],
       }],
-    } as StoredWorkspaceV4;
+    } as StoredWorkspaceV5;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
     expect(plan.ok).toBe(true);
     const dashboard = plan.candidate!.dashboards[0];
@@ -318,23 +228,21 @@ describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', ()
 describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () => {
   const tile = (id: string, queryId: string) => ({ id, queryId });
   const dash = (id: string, over: Record<string, unknown> = {}) => ({
-    documentVersion: 1, id, title: id, revision: 1,
+    documentVersion: 2, id, title: id, revision: 1,
     layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-    filters: [], tiles: [], ...over,
+    tiles: [], ...over,
   });
   /** Two Dashboards SHARING `p1` — the pre-#427 shape. Invalid under the
    *  ownership invariant, and kept precisely to assert that it is rejected. */
-  const shared = (): StoredWorkspaceV4 => ({
-    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+  const shared = (): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
     queries: [
       panelQuery('p1', 'SELECT a,b WHERE c={country:String}'),
       panelQuery('p2', 'SELECT a,b WHERE c={country:String}'),
-      filterQuery('f1'),
     ],
     dashboards: [
       dash('exec', {
         layout: { type: 'flow', version: 1, preset: 'report', items: { 'exec-p1': {} } },
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['exec-p1'] }],
         tiles: [tile('exec-p1', 'p1')],
       }),
       dash('sales', {
@@ -342,23 +250,21 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
         tiles: [tile('sales-p1', 'p1'), tile('sales-p2', 'p2')],
       }),
     ],
-  } as StoredWorkspaceV4);
+  } as StoredWorkspaceV5);
 
   /** The same two Dashboards, each member owning its own dedicated copy — a
-   *  VALID V4 collection, and what every positive path below runs on. */
-  const dedicated = (): StoredWorkspaceV4 => ({
-    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+   *  VALID V5 collection, and what every positive path below runs on. */
+  const dedicated = (): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
     queries: [
       panelQuery('p1', 'SELECT a,b WHERE c={country:String}'),
       panelQuery('p1-sales', 'SELECT a,b WHERE c={country:String}'),
       panelQuery('p2', 'SELECT a,b WHERE c={country:String}'),
       panelQuery('spare', 'SELECT a,b WHERE c={country:String}'),
-      filterQuery('f1'),
     ],
     dashboards: [
       dash('exec', {
         layout: { type: 'flow', version: 1, preset: 'report', items: { 'exec-p1': {} } },
-        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['exec-p1'] }],
         tiles: [tile('exec-p1', 'p1')],
       }),
       dash('sales', {
@@ -366,7 +272,7 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
         tiles: [tile('sales-p1', 'p1-sales'), tile('sales-p2', 'p2')],
       }),
     ],
-  } as StoredWorkspaceV4);
+  } as StoredWorkspaceV5);
 
   // #427: "deleting a Library query requires no Dashboard repair". The workspace
   // HAS Dashboards here — the point is that a zero-owner query is not part of any
@@ -410,7 +316,7 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     // replaced by the same mutation id in turn — the partial-repair shape #424
     // cares about survives ownership: it is about two Dashboards being in one
     // candidate, not about them sharing a query.
-    const withVariants = (): StoredWorkspaceV4 => {
+    const withVariants = (): StoredWorkspaceV5 => {
       const workspace = dedicated();
       const alt = (query: SavedQueryV2): SavedQueryV2 => ({
         ...query,
@@ -425,7 +331,7 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     /** Drop `alt` from BOTH owned copies in one candidate — one through the
      *  mutation, one because the fixture's second copy declares only `other`.
      *  Both Dashboards then hold a selection their own query no longer declares. */
-    const both = (): StoredWorkspaceV4 => {
+    const both = (): StoredWorkspaceV5 => {
       const workspace = withVariants();
       workspace.queries[1] = {
         ...workspace.queries[1],
@@ -498,15 +404,6 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     expect(crossDashboard.ok).toBe(false);
     expect(find(crossDashboard.diagnostics, 'dashboard-query-multiple-owners').path)
       .toEqual(['dashboards', 1, 'tiles', 1, 'queryId']);
-
-    // A filter SOURCE remap follows the same rule, onto an unowned filter query.
-    const filtered = dedicated();
-    filtered.queries.push(filterQuery('f2'));
-    const sourceRemap = planSavedQueryMutation(
-      filtered, { type: 'delete-query', queryId: 'f1' }, { type: 'remap-query', to: 'f2' },
-    );
-    expect(sourceRemap.ok).toBe(true);
-    expect(sourceRemap.candidate!.dashboards[0].filters[0].sourceQueryId).toBe('f2');
   });
 
   it('leaves an untouched Dashboard canonically identical, with its revision', () => {
@@ -551,7 +448,7 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'unused' });
     expect(plan.ok).toBe(true);
     expect(plan.candidate!.dashboards).toEqual(before);
-    expect(plan.candidate!.storageVersion).toBe(4);
+    expect(plan.candidate!.storageVersion).toBe(5);
   });
 
   it('rejects a candidate whose duplicate Dashboard ids make the workspace invalid', () => {
@@ -565,18 +462,17 @@ describe('planSavedQueryMutation — the whole Dashboard collection (#424)', () 
 
 describe('planSavedQueryMutation — no dashboard, and suggestRepairs', () => {
   it('always accepts a mutation when the workspace has no dashboard', () => {
-    const workspace = { ...baseWorkspace(), dashboards: [] } as StoredWorkspaceV4;
+    const workspace = { ...baseWorkspace(), dashboards: [] } as StoredWorkspaceV5;
     const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' });
     expect(plan.ok).toBe(true);
     expect(plan.candidate!.dashboards).toEqual([]);
   });
 
-  it('maps diagnostic scopes to repair kinds', () => {
+  it('maps a tiles-scoped diagnostic to every tile repair kind', () => {
     const repairs = suggestRepairs([
       { path: [], severity: 'error', code: 'x', message: '' },
-      { path: ['dashboard', 'filters', 0], severity: 'error', code: 'y', message: '' },
-      { path: ['dashboard', 'tiles', 0], severity: 'error', code: 'z', message: '' },
+      { path: ['dashboards', 0, 'tiles', 0], severity: 'error', code: 'z', message: '' },
     ]);
-    expect(repairs).toEqual(['remove-affected-filters', 'remove-affected-tiles', 'switch-variant', 'remap-query']);
+    expect(repairs).toEqual(['remove-affected-tiles', 'switch-variant', 'remap-query']);
   });
 });

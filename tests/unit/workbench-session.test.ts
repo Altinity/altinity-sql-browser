@@ -13,7 +13,6 @@ import type {
 } from '../../src/application/query-execution-service.js';
 import type { StreamResult } from '../../src/core/stream.js';
 import type { PreparedSource, PreparedStatement, BoundParamSnapshot } from '../../src/core/param-pipeline.js';
-import type { FilterSourcePreparation } from '../../src/core/filter-execution.js';
 
 // ── Small deferred helper (mirrors the pattern query-execution-service.test.ts
 // uses for scripting async runQuery behaviors, adapted to a single promise a
@@ -50,18 +49,8 @@ function boundParam(name: string): BoundParamSnapshot {
   };
 }
 
-// #360 Workbench parity: `hooks.prepareFilterPreview` stands in for the real
-// `WorkbenchParameterSession.prepareFilterPreview` (unit-tested against the
-// real shared pipeline in workbench-parameter-session.test.ts) — this fake
-// only needs to hand back whatever `FilterSourcePreparation` shape a given
-// test wants run()'s Filter branch to react to.
-function filterPreparation(over: Partial<FilterSourcePreparation> = {}): FilterSourcePreparation {
-  return {
-    readiness: 'runnable', diagnostics: [], dependsOn: [], missing: [], invalid: [], errors: [],
-    error: null, execSql: 'SELECT 1', params: {}, format: 'Filter', rowLimit: 2, boundParams: [],
-    ...over,
-  };
-}
+// #447 deleted the `filterPreparation` fake: `hooks.prepareFilterPreview` and
+// the whole Filter-role run path it stood in for are gone.
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -105,7 +94,6 @@ function makeHooks(over: Partial<WorkbenchHooks> = {}): WorkbenchHooks {
     recordHistory: vi.fn(),
     recordBoundParams: vi.fn(),
     prepareTabSource: vi.fn(() => preparedSource()),
-    prepareFilterPreview: vi.fn((sql: string) => filterPreparation({ execSql: sql })),
     varGateBlocked: vi.fn(() => false),
     execStatementSql: vi.fn((stmt: string) => stmt),
     sessionParamsFor: vi.fn(() => ({})),
@@ -169,105 +157,10 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
   });
 
-  it('Filter role: an error-readiness preparation sets an error result and never executes', async () => {
-    const h = makeHarness({
-      tab: { sqlDraft: 'SELECT 1; SELECT 2;', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } },
-      hooks: {
-        prepareFilterPreview: vi.fn(() => filterPreparation({
-          readiness: 'error', error: 'Filter SQL must contain exactly one statement.',
-        })),
-      },
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
-    expect((h.tab.result as { error: string } | null)?.error).toMatch(/exactly one statement/);
-    expect(h.tab.filterPreview).toEqual({ status: 'error', error: expect.stringContaining('exactly one statement') });
-    expect(h.state.resultView.value).toBe('filter');
-    expect(h.hooks.renderResults).toHaveBeenCalled();
-  });
-
-  it('Filter role: a waiting-readiness preparation blocks execution WITHOUT the generic var-gate firing (#360)', async () => {
-    const h = makeHarness({
-      tab: { sqlDraft: 'SELECT {from:DateTime} AS x', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } },
-      hooks: {
-        prepareFilterPreview: vi.fn(() => filterPreparation({ readiness: 'waiting', missing: ['from'] })),
-        varGateBlocked: vi.fn(() => true), // would block a non-Filter tab — proves it's never even consulted here
-      },
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
-    expect(h.tab.filterPreview).toEqual({ status: 'waiting', missing: ['from'] });
-    expect(h.hooks.varGateBlocked).not.toHaveBeenCalled();
-    expect(h.hooks.renderResults).toHaveBeenCalled();
-  });
-
-  it('Filter role: an error-readiness preparation from an invalid committed value blocks execution (#360)', async () => {
-    const h = makeHarness({
-      tab: { sqlDraft: 'SELECT {year:UInt16} AS x', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } },
-      hooks: {
-        prepareFilterPreview: vi.fn(() => filterPreparation({
-          readiness: 'error', error: 'Invalid value for: year', invalid: ['year'],
-        })),
-      },
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
-    expect(h.tab.filterPreview).toEqual({ status: 'error', error: 'Invalid value for: year' });
-  });
-
-  it('Filter role: a runnable preparation executes with its own prepared params/execSql and records boundParams (#360)', async () => {
-    const h = makeHarness({
-      tab: { sqlDraft: 'SELECT {from:DateTime} AS x', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } },
-      hooks: {
-        prepareFilterPreview: vi.fn(() => filterPreparation({
-          execSql: 'SELECT {from:DateTime} AS x',
-          params: { param_from: '2024-01-01 00:00:00' },
-          boundParams: [boundParam('from')],
-        })),
-      },
-    });
-    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
-      Object.assign(result, { columns: [{ name: 'x', type: 'DateTime' }], rows: [['2024-01-01 00:00:00']] });
-      return result;
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
-    expect(req.sql).toBe('SELECT {from:DateTime} AS x');
-    expect(req.params).toEqual({ param_from: '2024-01-01 00:00:00' });
-    expect(h.tab.filterPreview).toMatchObject({ status: 'success' });
-    expect(h.hooks.recordBoundParams).toHaveBeenCalledWith([boundParam('from')]);
-  });
-
-  it('Filter role: a valid Filter SQL runs to a successful preview', async () => {
-    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1 AS x', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } } });
-    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
-      Object.assign(result, { columns: [{ name: 'x', type: 'UInt8' }], rows: [[1]] });
-      return result;
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    expect(h.execFakes.executeRead).toHaveBeenCalledTimes(1);
-    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
-    expect(req.format).toBe('Filter');
-    expect(req.rowLimit).toBe(2);
-    expect(h.tab.filterPreview).toMatchObject({ status: 'success' });
-    expect(h.state.running.value).toBe(false);
-  });
-
-  it('Filter role: a failed Filter execution records the error preview', async () => {
-    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } } });
-    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
-      result.error = 'boom';
-      return result;
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.run();
-    expect(h.tab.filterPreview).toEqual({ status: 'error', error: 'boom' });
-  });
+  // #447 deleted the six `Filter role:` run() cases (error/waiting/invalid-value
+  // readiness, the runnable execute-with-prepared-params path, the successful
+  // preview, and the failed-execution preview): the session has no Filter-role
+  // run/preview branch and a tab carries no `filterPreview`.
 
   it('blocks (no exec call) when the var gate is blocked', async () => {
     const h = makeHarness({ hooks: { varGateBlocked: vi.fn(() => true) } });
@@ -676,20 +569,8 @@ describe('createWorkbenchSession: runEntry()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
   });
 
-  it('a Filter-role tab always runs (never scripts), even with multiple statements', async () => {
-    const h = makeHarness({
-      tab: { sqlDraft: 'SELECT 1; SELECT 2;', specParsed: { name: 'f', favorite: false, dashboard: { role: 'filter' } } },
-      hooks: {
-        prepareFilterPreview: vi.fn(() => filterPreparation({
-          readiness: 'error', error: 'Filter SQL must contain exactly one statement.',
-        })),
-      },
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.runEntry();
-    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
-    expect(h.state.resultView.value).toBe('filter'); // the static multi-statement Filter error path
-  });
+  // #447 deleted the "a Filter-role tab always runs (never scripts)" case:
+  // runEntry() has no Filter-role exemption from script dispatch left.
 
   it('on mobile, jumps the bottom nav to Results', async () => {
     const h = makeHarness({ state: { isMobile: signal(true) }, tab: { sqlDraft: 'SELECT 1' } });

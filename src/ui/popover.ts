@@ -1,8 +1,10 @@
-// #335: the generic anchored-dialog chrome, extracted from
-// `multi-select-field.ts`'s `openPopover()` so a SECOND consumer (the
-// time-range popover, a later wave) reuses it instead of copying it — the
-// CLAUDE.md rule-5 "extract a shared primitive at the second consumer"
-// precedent (`EditorPort`/`GraphSurface`/`Drawer`). It owns ONLY the generic
+// #335: the generic anchored-dialog chrome, extracted at its SECOND consumer
+// (the time-range popover) from the curated multiselect filter field's own
+// `openPopover()` — the CLAUDE.md rule-5 "extract a shared primitive at the
+// second consumer" precedent (`EditorPort`/`GraphSurface`/`Drawer`). #447
+// deleted that first consumer along with the curated filter model, leaving the
+// time-range control as the sole caller; the primitive stays because the
+// generic chrome it owns is the reusable part. It owns ONLY the generic
 // modal-popover chrome; everything content-specific stays with the caller.
 //
 // OWNS:
@@ -29,7 +31,7 @@
 // synchronously; a subscriber that rebuilds the surrounding UI can run inside
 // that very call stack, and it must observe this popover as ALREADY closed
 // (`isOpen()` false) — never mistake an ordinary commit for a force-cancelled
-// outgoing popover. See `multi-select-field.ts`'s Apply handler.
+// outgoing popover. See `time-range-field.ts`'s Apply handler.
 
 import { h, fixedAnchor, attachBackdropClose } from './dom.js';
 import type { FixedAnchorOptions } from './dom.js';
@@ -47,7 +49,7 @@ export interface AnchoredDialogOptions {
   /** Pre-built content, appended into the dialog. The primitive never inspects
    *  it beyond the Tab trap's `input, button` query. */
   content: HTMLElement;
-  /** The dialog element's class (e.g. `'ms-popover'` | `'trf-popover'`). */
+  /** The dialog element's class (e.g. `'trf-popover'`). */
   dialogClassName: string;
   /** The overlay/backdrop element's class — defaults to `'ms-overlay'`. */
   overlayClassName?: string;

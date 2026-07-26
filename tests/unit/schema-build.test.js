@@ -25,16 +25,21 @@ describe('multi-schema build', () => {
       'schemas/dashboard-layout-flow-v1.schema.json',
       'schemas/dashboard-layout-grafana-grid-v1.schema.json',
       'schemas/dashboard-v1.schema.json',
+      'schemas/dashboard-v2.schema.json',
       'schemas/stored-workspace-v2.schema.json',
       'schemas/stored-workspace-v3.schema.json',
       'schemas/stored-workspace-v4.schema.json',
+      'schemas/stored-workspace-v5.schema.json',
       'schemas/portable-bundle-v1.schema.json',
+      'schemas/portable-bundle-v2.schema.json',
     ]);
     const KINDS = [
       ['query-spec', 1], ['saved-query', 2], ['library', 2],
       ['dashboard-layout-flow', 1], ['dashboard-layout-grafana-grid', 1],
-      ['dashboard', 1], ['stored-workspace', 2], ['stored-workspace', 3],
-      ['stored-workspace', 4], ['portable-bundle', 1],
+      ['dashboard', 1], ['dashboard', 2],
+      ['stored-workspace', 2], ['stored-workspace', 3],
+      ['stored-workspace', 4], ['stored-workspace', 5],
+      ['portable-bundle', 1], ['portable-bundle', 2],
     ];
     const records = await loadRecords();
     expect(records.map(({ schema }) => [schema['x-altinity-kind'], schema['x-altinity-version']]))
@@ -54,10 +59,13 @@ describe('multi-schema build', () => {
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v3.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v4.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v5.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json',
     ]);
     const ajv = new Ajv2020({ strict: true, allErrors: true });
     addFormats(ajv);
@@ -186,8 +194,9 @@ describe('multi-schema build', () => {
   it('emits the committed TypeScript artifact with pinned names, openness, and closedness', async () => {
     expect(SCHEMA_MANIFEST.map((entry) => entry.typeExport)).toEqual([
       'QuerySpecV1', 'SavedQueryV2', 'LibraryV2',
-      'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1',
-      'StoredWorkspaceV2', 'StoredWorkspaceV3', 'StoredWorkspaceV4', 'PortableBundleV1',
+      'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1', 'DashboardDocumentV2',
+      'StoredWorkspaceV2', 'StoredWorkspaceV3', 'StoredWorkspaceV4', 'StoredWorkspaceV5',
+      'PortableBundleV1', 'PortableBundleV2',
     ]);
     const sources = await generatedSources();
     const types = Object.entries(sources).find(([path]) => path.endsWith('json-schema.types.ts'))[1];

@@ -46,11 +46,26 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateGrafanaGridLayoutV1',
     typeExport: 'GrafanaGridLayoutV1',
   },
+  // dashboard v1 stays registered read-only (#447): stored-workspace v2/v3/v4
+  // and portable-bundle-v1 all $ref it, so the codec still validates persisted
+  // and imported v1 Dashboards through it before migrating them to v2. It also
+  // remains the OWNER of the tile/presentation/layout $defs — dashboard-v2
+  // cross-$refs those rather than redeclaring them, because the emitter claims
+  // generated type names once across the whole manifest. Every WRITE uses v2.
   {
     path: 'schemas/dashboard-v1.schema.json',
     schemaExport: 'dashboardV1Schema',
     validatorExport: 'validateDashboardV1',
     typeExport: 'DashboardDocumentV1',
+  },
+  // dashboard v2 (#447): curated filter definitions are removed and the only
+  // persisted variable state is Dashboard-local option SQL keyed by exact
+  // inferred variable name.
+  {
+    path: 'schemas/dashboard-v2.schema.json',
+    schemaExport: 'dashboardV2Schema',
+    validatorExport: 'validateDashboardV2',
+    typeExport: 'DashboardDocumentV2',
   },
   // stored-workspace v2 stays registered read-only (#424): the codec still
   // decodes persisted v2 records through this validator before migrating them
@@ -71,6 +86,9 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateStoredWorkspaceV3',
     typeExport: 'StoredWorkspaceV3',
   },
+  // stored-workspace v4 stays registered read-only for the same reason (#447):
+  // the codec decodes persisted v4 records through this validator before the
+  // migration that drops each Dashboard's curated `filters`. Every WRITE uses v5.
   {
     path: 'schemas/stored-workspace-v4.schema.json',
     schemaExport: 'storedWorkspaceV4Schema',
@@ -78,10 +96,24 @@ export const SCHEMA_MANIFEST = [
     typeExport: 'StoredWorkspaceV4',
   },
   {
+    path: 'schemas/stored-workspace-v5.schema.json',
+    schemaExport: 'storedWorkspaceV5Schema',
+    validatorExport: 'validateStoredWorkspaceV5',
+    typeExport: 'StoredWorkspaceV5',
+  },
+  // portable-bundle v1 stays registered read-only (#447) so bundles exported
+  // before the Dashboard document reached v2 still import. Every EXPORT uses v2.
+  {
     path: 'schemas/portable-bundle-v1.schema.json',
     schemaExport: 'portableBundleV1Schema',
     validatorExport: 'validatePortableBundleV1',
     typeExport: 'PortableBundleV1',
+  },
+  {
+    path: 'schemas/portable-bundle-v2.schema.json',
+    schemaExport: 'portableBundleV2Schema',
+    validatorExport: 'validatePortableBundleV2',
+    typeExport: 'PortableBundleV2',
   },
 ];
 

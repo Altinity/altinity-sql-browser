@@ -9,7 +9,6 @@ describe('PORTABLE_LIMITS', () => {
       maxQueries: 5224,
       maxDashboards: 32,
       maxTilesPerDashboard: 100,
-      maxFiltersPerDashboard: 32,
       maxLayoutItemsPerDashboard: 100,
       maxVariantsPerQuery: 32,
       maxIdLength: 256,
@@ -19,10 +18,17 @@ describe('PORTABLE_LIMITS', () => {
       maxSqlLength: 1048576,
       maxSerializedQuerySpecBytes: 1048576,
       maxSerializedLayoutConfigBytes: 262144,
-      maxSerializedFilterDefaultBytes: 65536,
     });
     // Pinned decision (#283): the Phase-2 repository is IndexedDB-backed, so
     // the decoded-JSON cap stays at 10 MiB exactly as specced in #280.
     expect(PORTABLE_LIMITS.maxDecodedJsonBytes).toBe(20 * 1024 * 1024);
+    // #447 deleted `maxFiltersPerDashboard`/`maxSerializedFilterDefaultBytes` (a
+    // Dashboard has no persisted filters left to bound) but deliberately did NOT
+    // lower `maxQueries` to the newly-derived 1000 + 32 x 100 = 4200: 5224 is now
+    // a COMPATIBILITY CEILING for records that already migrated under #427, and
+    // tightening it would fail their validation on open with no repair path.
+    expect(PORTABLE_LIMITS.maxQueries).toBe(5224);
+    expect(PORTABLE_LIMITS).not.toHaveProperty('maxFiltersPerDashboard');
+    expect(PORTABLE_LIMITS).not.toHaveProperty('maxSerializedFilterDefaultBytes');
   });
 });

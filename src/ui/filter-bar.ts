@@ -7,6 +7,16 @@
 // only the row's owner (which surface, which document realm) and what a commit
 // re-runs differ, and those are injected. The field controls themselves are the
 // shared leaf builders (enum/relative-time/recent + the combobox primitive).
+//
+// #447 deleted the CURATED branch. A Dashboard filter used to be able to draw
+// its options from a saved "Filter"-role query, which this bar rendered as
+// either a strict single-select combobox (`filter-option-field.ts`) or a
+// multiselect dialog (`multi-select-field.ts`), with a per-field source status
+// affordance. A Dashboard's variables are now inferred from `{name:Type}`
+// placeholders in panel-owned queries and every field is a plain direct input,
+// so only the plain branch below survives — including the compound `#335`
+// time-range control, which is a presentation of two plain bounds, not a
+// curated field.
 
 import { h } from './dom.js';
 import { fieldControlKind } from '../core/param-pipeline.js';
@@ -21,9 +31,6 @@ import { buildRecentField as _buildRecentField } from './recent-field.js';
 import { buildEnumField } from './enum-field.js';
 import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
-import { buildFilterOptionField } from './filter-option-field.js';
-import type { FilterFieldOption } from './filter-option-field.js';
-import { buildMultiSelectField } from './multi-select-field.js';
 import { buildTimeRangeField } from './time-range-field.js';
 import type { KeyboardOwner } from './app.types.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
@@ -47,35 +54,18 @@ export interface FilterBarApp {
   wallNow(): number;
 }
 
-/** `buildFilterBar`'s options bag — `curatedFields` stays `unknown`-valued
- *  here (matching `dashboard.ts`'s own pinned wrapper type for this
- *  still-unconverted module): each entry is read through `CuratedFieldConfig`
- *  below, only once its param is confirmed curated. */
+/** `buildFilterBar`'s options bag. */
 export interface BuildFilterBarOptions {
   document?: Document;
   ariaLabel?: string;
-  curatedFields?: Record<string, unknown>;
-  /** #189: fires when a curated field commits an ARRAY value — a MULTIPLE-mode
-   *  field's Apply, or a single-select-on-`Array(...)`-contract field's pick/
-   *  clear (wrapped to `[value]`/`[]` at the commit seam, never inside
-   *  `filter-option-field.ts`). The plain `onCommit(name)` seam reads the
-   *  scalar draft bag (`app.state.varValues`, `Record<string,string>`), which
-   *  cannot hold an array — this is the parallel seam for the two curated
-   *  shapes whose committed value is one. The caller (`dashboard.ts`) wires
-   *  this straight to `session.applyFilter(id, next, active)`. Left
-   *  undefined by a caller that never builds an array-committing curated
-   *  field (an older/simpler fixture, or a bar with no curated fields at
-   *  all) — `curated.selection` is never present then either, so the seam is
-   *  simply never reached. */
-  onApplyCurated?(name: string, next: string[], active: boolean): void;
   /** #335: one entry per resolved `DashboardTimeRangeGroup` — the shell
    *  (`dashboard.ts`) assembles these from `session.timeRangeGroups` +
-   *  `sview.filters` + `sview.waveWallNowMs`, and this bar renders one compound
-   *  `buildTimeRangeField` control per entry in a "Time" section AHEAD of the
-   *  per-param fields (the pair's own two individual fields are then SUPPRESSED
-   *  from the per-param loop — the compound control represents them). Left
-   *  undefined/empty by a caller with no groups (every workbench/detached
-   *  caller, or a dashboard whose filters form no date-like pair): the bar
+   *  the viewer view's fields + its `waveWallNowMs`, and this bar renders one
+   *  compound `buildTimeRangeField` control per entry in a "Time" section AHEAD
+   *  of the per-param fields (the pair's own two individual fields are then
+   *  SUPPRESSED from the per-param loop — the compound control represents them).
+   *  Left undefined/empty by a caller with no groups (every workbench/detached
+   *  caller, or a dashboard whose variables form no date-like pair): the bar
    *  then renders byte-identical DOM to the pre-#335 no-time-range path. */
   timeRange?: Array<{
     group: DashboardTimeRangeGroup;
@@ -87,157 +77,47 @@ export interface BuildFilterBarOptions {
   }>;
   /** #335: fires when a time-range control commits both bounds (its Apply, or
    *  an immediate recents pick) — the caller (`dashboard.ts`) routes it to
-   *  `session.applyFilters` over the group's from/to filter ids. Only reached
-   *  when `timeRange` built at least one control. */
+   *  `session.applyFilters` over the group's from/to variable names. Only
+   *  reached when `timeRange` built at least one control. */
   onApplyTimeRange?(group: DashboardTimeRangeGroup, from: string, to: string): void;
   onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
 }
 
-/** #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
- *  fields (dashboard-viewer-session.ts) — but WHETHER a filter is curated at
- *  all is `dashboard.ts`'s `rebuildFilterBar` gating on `f.sourceId != null`
- *  (topology, set once at construction), never on this transient status.
- *  Status is execution state, not topology: a source-backed filter starts
- *  `status: 'idle'` before its source has even run, so gating curation on
- *  status instead would render it as a bare, enabled plain-text control
- *  until the source settled. These three fields are only the AFFORDANCE this
- *  already-curated field
- *  shows — all optional so a caller that never supplies them (an older/
- *  simpler fixture) renders exactly like today's plain 'ready' combobox. */
-export interface CuratedFieldStatus {
+/** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
+ *  `ViewerFilterState`'s own fields, dashboard-viewer-session.ts), applied
+ *  through the returned `updateStatus` without rebuilding the bar.
+ *
+ *  #447: every field this bar builds is now a PLAIN direct input, and a plain
+ *  field has no source to be waiting on — so no per-param field consumes a
+ *  status any more. The seam itself is kept because the handle map is the one
+ *  place a LATER, non-rebuild affordance change can land (the compound
+ *  time-range control registers a handle too, and answers with a documented
+ *  no-op), and because `dashboard.ts` still publishes a status map per wave. */
+export interface FieldStatus {
   status?: string;
   stale?: boolean;
   waitingFor?: string[];
 }
 
-/** One curated Dashboard Filter field's config (#160) — the shape
- *  `options.curatedFields[name]` carries, structurally read from the
- *  otherwise-`unknown` bag above. */
-interface CuratedFieldConfig extends CuratedFieldStatus {
-  options: FilterFieldOption[];
-  /** #189: the published selection contract (`ViewerFilterState.selection`)
-   *  — absent for the pre-#189 plain scalar single-select curated field.
-   *  `mode: 'multiple'` builds `buildMultiSelectField` instead of the
-   *  combobox-based `buildFilterOptionField`; `mode: 'single'` with
-   *  `array: true` keeps `buildFilterOptionField` but wraps its scalar
-   *  commit into `[value]`/`[]` (see `wrapsArray` below). */
-  selection?: { mode: 'single' | 'multiple'; array: boolean };
-  /** #189: the committed value/active this filter published — read instead
-   *  of `app.state.varValues`/`filterActive` for the two ARRAY-valued
-   *  curated shapes (that scalar draft bag cannot hold an array); unused for
-   *  the plain scalar single-select shape, which keeps reading the draft bag
-   *  exactly as before. */
-  value?: unknown;
-  active?: boolean;
-}
-
-/** A built curated field's retained handle (#360) — referenced by its
- *  `FieldHandle` adapter in `buildFilterBar`'s unified handle map (#335) so a
- *  LATER status-only change can update this exact field's affordance in place
- *  (`applyFieldStatus`, via the returned `updateStatus`) without rebuilding
- *  the whole input — the
- *  rebuild would otherwise blow away in-progress typing on every other field
- *  in the bar and drop this field's own combobox/focus state. `baseTitle`/
- *  `basePlaceholder` are this field's non-status tooltip/placeholder
- *  (`applyFieldStatus` restores them once a status stops overriding either);
- *  `noteEl` is the "Waiting for: …" node, present in the DOM only while
- *  `status === 'waiting'` (created/removed on demand, not just hidden, so a
- *  caller that queries for it gets exactly the DOM it expects). */
-interface CuratedFieldHandle {
-  input: HTMLInputElement;
-  label: HTMLElement;
-  baseTitle: string;
-  basePlaceholder: string;
-  noteEl: HTMLElement | null;
-}
-
 /** #335 handle-map unification: the ONE contract every retained field control
- *  in the bar is addressed through — replacing the two pre-#335 parallel maps
- *  (`curatedHandles` + `multiSelectFields`) plus the new time-range controls
- *  with a single `Map<string, FieldHandle>` keyed by an OPAQUE string: a
- *  parameter name for a per-param field, `group:${group.key}` for a time-range
- *  control (a ClickHouse parameter name can never contain `:`, so the two
- *  key-spaces never collide). `buildMultiSelectField`/`buildTimeRangeField`
- *  already return this shape directly; the data-bag curated scalar field is
- *  wrapped in a small adapter. `el` is present only for controls that
- *  participate in the popover focus-restore dance (multiselect + time-range) —
- *  the curated scalar adapter omits it, so `focusedFieldKey` skips it exactly
- *  as the pre-#335 `focusedMultiSelectParam` did. `refreshLabel` is carried
- *  only by time-range handles (folded by `refreshTimeRangeLabels`). */
+ *  in the bar is addressed through — a single `Map<string, FieldHandle>` keyed
+ *  by an OPAQUE string: a parameter name for a per-param field,
+ *  `group:${group.key}` for a time-range control (a ClickHouse parameter name
+ *  can never contain `:`, so the two key-spaces never collide).
+ *  `buildTimeRangeField` already returns this shape directly. `el` is present
+ *  only for controls that participate in the popover focus-restore dance
+ *  (today: the time-range control). `refreshLabel` is carried only by
+ *  time-range handles (folded by `refreshTimeRangeLabels`). */
 interface FieldHandle {
   el?: HTMLElement;
-  updateStatus(s: CuratedFieldStatus): void;
-  /** Present on the popover-bearing controls (multiselect + time-range); the
-   *  curated scalar adapter omits them (it has no popover, no focusable
-   *  trigger a rebuild restores, and nothing to tear down), so every fold over
-   *  the map that needs one uses optional chaining. */
+  updateStatus(s: FieldStatus): void;
+  /** Present on the popover-bearing controls (today: time-range); every fold
+   *  over the map that needs one uses optional chaining so a handle without
+   *  them is simply skipped. */
   isOpen?(): boolean;
   focusTrigger?(): void;
   dispose?(): void;
   refreshLabel?(nowMs: number): void;
-}
-
-/**
- * Applies a curated field's status affordance to its already-built DOM
- * (#360) — the SAME class/disabled/note logic `buildFilterBar`
- * used to inline once per field build, factored out so both the initial
- * build (a fresh rebuild must show the right affordance immediately) and a
- * later `updateStatus` call (no rebuild) share one recipe. See
- * `CuratedFieldStatus`'s header comment for why status, not topology, drives
- * this; see the module header's `buildFilterBar` doc for the full
- * ready/waiting/error/stale mapping.
- */
-function applyFieldStatus(handle: CuratedFieldHandle, s: CuratedFieldStatus): void {
-  const status = s.status ?? 'ready';
-  const isWaiting = status === 'waiting';
-  const isError = status === 'source-error' || status === 'helper-error' || status === 'missing-helper';
-  // 'idle' (never yet run) and 'loading' (mid-flight) both read as "pending" —
-  // the same is-stale/disabled affordance as a superseded-but-not-yet-stale
-  // `stale: true` read, since none of the three is an actionable answer yet.
-  const isStale = !isWaiting && !isError && (status === 'loading' || status === 'idle' || !!s.stale);
-  const waitingNote = isWaiting ? `Waiting for: ${(s.waitingFor ?? []).join(', ')}` : '';
-  const { input, label } = handle;
-
-  input.classList.remove('is-waiting', 'is-error', 'is-stale');
-  label.classList.remove('is-waiting', 'is-error', 'is-stale');
-  // #189 review (F4, coordinator ruling — REVERTED from an earlier #189
-  // attempt that left an error status enabled): this is `buildFilterOptionField`'s
-  // STRICT single-select curated combobox (#160) — blur/Enter reverts any
-  // text that isn't a real option (its own #160 contract), so leaving it
-  // enabled while erroring was a dishonest affordance: it LOOKS editable but
-  // silently discards everything typed. `buildMultiSelectField`'s own
-  // error-mode fallback has a real free-text commit path and stays enabled
-  // (see that module's header comment) — but generalizing that policy to
-  // THIS strict single-select control is a separate product decision (#160's
-  // contract), not a side effect of #189. Disabled again on every error
-  // status, same as `isWaiting`/`isStale`.
-  const disabled = isWaiting || isError || isStale;
-  input.disabled = disabled;
-  if (disabled) input.setAttribute('aria-disabled', 'true');
-  else input.removeAttribute('aria-disabled');
-  if (isWaiting) { input.classList.add('is-waiting'); label.classList.add('is-waiting'); }
-  else if (isError) { input.classList.add('is-error'); label.classList.add('is-error'); }
-  else if (isStale) { input.classList.add('is-stale'); label.classList.add('is-stale'); }
-
-  // Title/placeholder: the waiting note takes over both while waiting;
-  // otherwise they revert to the field's own non-status text. `is-invalid`
-  // (applied once at build time from the validated batch, unrelated to this
-  // status) owns the title instead whenever it's set — a status update never
-  // steps on the invalid-reason tooltip.
-  if (!input.classList.contains('is-invalid')) input.title = isWaiting ? waitingNote : handle.baseTitle;
-  input.placeholder = isWaiting ? waitingNote : handle.basePlaceholder;
-
-  if (isWaiting) {
-    if (!handle.noteEl) {
-      handle.noteEl = h('span', { class: 'var-field-note' }, waitingNote);
-      label.appendChild(handle.noteEl);
-    } else {
-      handle.noteEl.textContent = waitingNote;
-    }
-  } else if (handle.noteEl) {
-    handle.noteEl.remove();
-    handle.noteEl = null;
-  }
 }
 
 // A combobox-based field controller's DOM wiring surface, PLUS the `el`
@@ -282,17 +162,7 @@ export const FILTER_DEBOUNCE_MS = 500;
  *  debounce timer. A caller that rebuilds the bar (a filter-value merge
  *  repaint) must dispose the previous bar first — and dispose on its own
  *  teardown — so an in-flight debounce never fires against a detached field
- *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave).
- *
- *  #360: `updateStatus` applies a per-param `CuratedFieldStatus`
- *  update to whichever curated fields this SAME bar instance already built
- *  (the unified handle map, keyed by parameter name for a per-param field —
- *  #335) — a param this bar never curated (absent from `curatedFields` at
- *  build time, or a plain field) is silently ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
- *  status-only change (e.g. `loading` → `ready`, no value/active/options
- *  change) instead of tearing down and rebuilding the whole bar — preserving
- *  in-progress typing on every OTHER field, and this field's own combobox/
- *  focus state, neither of which a status flip should ever disturb. */
+ *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave). */
 export interface FilterBarHandle {
   el: HTMLElement;
   /** Separately mountable compound time-range region. */
@@ -300,28 +170,33 @@ export interface FilterBarHandle {
   /** Separately mountable ordinary-filter region. */
   ordinaryEl: HTMLElement;
   dispose(): void;
-  updateStatus(states: Record<string, CuratedFieldStatus>): void;
+  /** Apply a per-key `FieldStatus` to whichever controls this SAME bar instance
+   *  already built (the unified handle map, keyed by parameter name for a
+   *  per-param field — #335) — a key this bar built nothing for is silently
+   *  ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
+   *  status-only change instead of tearing down and rebuilding the whole bar,
+   *  which would blow away in-progress typing on every other field. */
+  updateStatus(states: Record<string, FieldStatus>): void;
   /** #189, #189-F2b, GENERALIZED (#335): the opaque KEY of a popover-bearing
    *  control built by THIS bar instance that currently has its popover open,
    *  or `null` when none does (including a bar that built no such control at
-   *  all — the empty-`params` bar too). The key is the parameter name for a
-   *  curated MULTISELECT field, `group:${group.key}` for a time-range control.
+   *  all — the empty-`params` bar too). The key is `group:${group.key}` for a
+   *  time-range control.
    *  The caller (`dashboard.ts`) reads this BEFORE disposing an outgoing bar
    *  (a rebuild always disposes the old bar outright) to decide whether a
    *  refresh announcement is owed — disposing a control while its popover is
-   *  open silently Cancels it (no commit, see multi-select-field.ts /
-   *  time-range-field.ts), so without an announcement the user's open popover
-   *  would simply vanish — and to move focus to that same key's trigger on the
-   *  freshly-built bar (`focusFieldTrigger` below) rather than leaving focus
-   *  stranded at `<body>`. */
+   *  open silently Cancels it (no commit, see time-range-field.ts), so without
+   *  an announcement the user's open popover would simply vanish — and to move
+   *  focus to that same key's trigger on the freshly-built bar
+   *  (`focusFieldTrigger` below) rather than leaving focus stranded at
+   *  `<body>`. */
   openPopoverKey(): string | null;
   /** Maintainer merge-gate fix (#189), GENERALIZED (#335): the opaque KEY of a
    *  field control built by THIS bar instance whose own root (`FieldHandle.el`
-   *  — a multiselect's trigger/error input, or a time-range control's trigger)
-   *  currently HOLDS FOCUS, popover open or not — or `null` when none does.
-   *  Distinct from `openPopoverKey` above: an ordinary Apply closes its own
-   *  popover BEFORE calling its commit callback (multi-select-field.ts /
-   *  time-range-field.ts, the shared `openAnchoredDialog` contract), so by the
+   *  — a time-range control's trigger) currently HOLDS FOCUS, popover open or
+   *  not — or `null` when none does. Distinct from `openPopoverKey` above: an
+   *  ordinary Apply closes its own popover BEFORE calling its commit callback
+   *  (time-range-field.ts, the shared `openAnchoredDialog` contract), so by the
    *  time a synchronous commit-triggered rebuild reaches this bar,
    *  `openPopoverKey()` already reads `null` even though focus still sits on
    *  that field's (about-to-be-detached) trigger — this is the only remaining
@@ -332,11 +207,11 @@ export interface FilterBarHandle {
    *  popover-bearing control) is never disturbed. */
   focusedFieldKey(): string | null;
   /** #189-F2b, GENERALIZED (#335): focuses the keyed control's trigger (a
-   *  multiselect's trigger/error-mode input, or a time-range control's
-   *  trigger) — a no-op when this bar built no such control for that key. Used
-   *  by `dashboard.ts` right after building a FRESH bar, for whichever key
-   *  `openPopoverKey()` (or, absent that, `focusedFieldKey()`) reported on the
-   *  OUTGOING bar just before disposing it. */
+   *  time-range control's trigger) — a no-op when this bar built no such
+   *  control for that key. Used by `dashboard.ts` right after building a FRESH
+   *  bar, for whichever key `openPopoverKey()` (or, absent that,
+   *  `focusedFieldKey()`) reported on the OUTGOING bar just before disposing
+   *  it. */
   focusFieldTrigger(key: string): void;
   /** #425 — the field ROOT this bar built for `key`, for navigation that has to
    *  scroll to and highlight a control rather than just focus it. `key` is a
@@ -396,19 +271,16 @@ export function buildFilterBar(
   }
   const timerClears: Array<() => void> = [];
   // #335 handle-map unification: ONE map (see `FieldHandle`) keyed by the
-  // opaque control key — a parameter name for a per-param field (curated
-  // scalar, multiselect, or plain), `group:${group.key}` for a time-range
-  // control — replacing the pre-#335 parallel `curatedHandles` +
-  // `multiSelectFields` maps. `updateStatus`/`dispose`/`openPopoverKey`/
-  // `focusedFieldKey`/`focusFieldTrigger`/`refreshTimeRangeLabels` all fold
-  // over this one map.
+  // opaque control key — a parameter name for a per-param field,
+  // `group:${group.key}` for a time-range control.
+  // `updateStatus`/`dispose`/`openPopoverKey`/`focusedFieldKey`/
+  // `focusFieldTrigger`/`refreshTimeRangeLabels` all fold over this one map.
   const handles = new Map<string, FieldHandle>();
   // #425: the DOM counterpart of the `handles` key, stamped on every field's own
   // root so navigation can FIND a field it was asked to focus. `handles` alone
-  // isn't enough: a curated scalar registers no `el` (its adapter carries only
-  // `updateStatus`), and a plain field has no handle entry at all — yet either
-  // can be a curated Dashboard filter a caller navigates to. Applied at the one
-  // composition point below rather than in each of the four build branches.
+  // isn't enough: a plain field has no handle entry at all, yet it is still a
+  // Dashboard variable a caller navigates to. Applied at the one composition
+  // point below rather than in each build branch.
   const stampFieldKey = (el: HTMLElement, key: string): HTMLElement => {
     el.dataset.fieldKey = key;
     return el;
@@ -433,102 +305,6 @@ export function buildFilterBar(
     const baseTitle = p.name + ': ' + p.type
       + (p.optional ? ' — optional: blank leaves its filter block out' : '')
       + (conflictNote ? ' — ' + conflictNote : '');
-    const curated = options.curatedFields?.[p.name] as CuratedFieldConfig | undefined;
-    if (curated) {
-      // #189: a MULTIPLE-mode curated field is an entirely different control
-      // (`buildMultiSelectField`, not the combobox-based
-      // `buildFilterOptionField`) — built and returned here directly. Every
-      // OTHER curated shape (no `selection` contract at all — the pre-#189
-      // default — or `mode: 'single'`) falls through to the existing
-      // single-select field below unchanged.
-      if (curated.selection?.mode === 'multiple') {
-        // #189 F1: a raw STRING is the error-mode fallback commit
-        // (`onFallbackCommit` below, round-tripped back through
-        // `ViewerFilterState.value`/`curated.value`) awaiting reconciliation
-        // — passed through AS a string rather than dropped to `[]`, so
-        // `buildMultiSelectField`'s own trigger/error-input text can still
-        // show the just-committed text instead of it silently vanishing.
-        // Every other shape (a real array, or absent/null) keeps the
-        // pre-#189-F1 array-or-empty normalization.
-        const committed: readonly string[] | string = Array.isArray(curated.value)
-          ? curated.value as string[]
-          : typeof curated.value === 'string' ? curated.value : [];
-        const msField = buildMultiSelectField({
-          document, name: p.name, label: p.name, required: !p.optional,
-          value: committed, active: !!curated.active, options: curated.options,
-          status: { status: curated.status, stale: curated.stale, waitingFor: curated.waitingFor },
-          onApply: (next, active) => options.onApplyCurated?.(p.name, next, active),
-          // Error-mode plain-input fallback (#189, same posture #360 already
-          // established for the single-select curated field): writes straight
-          // through the SAME plain-commit seam a non-curated field uses, so a
-          // helper-query failure degrades to an ordinary, usable free-text
-          // input rather than losing the field.
-          onFallbackCommit: (raw, active) => {
-            app.state.varValues[p.name] = raw;
-            app.state.filterActive[p.name] = active;
-            app.params.saveVarValues();
-            app.params.saveFilterActive();
-            onCommit(p.name);
-          },
-          onKeyboardOwnerChange: options.onKeyboardOwnerChange,
-        });
-        // #335: a multiselect handle already satisfies `FieldHandle` directly.
-        handles.set(p.name, msField);
-        return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
-          h('span', { class: 'var-name' }, p.name), msField.el);
-      }
-      // #189: a single-select curated field over an Array(...) consumer
-      // contract (`selection.array === true`, effective `mode: 'single'`)
-      // stays this SAME combobox control — it just commits a WRAPPED
-      // `[value]`/`[]` instead of a bare scalar (the wrap lives at this
-      // commit seam, never inside filter-option-field.ts itself).
-      const wrapsArray = curated.selection?.mode === 'single' && curated.selection.array === true;
-      const field = buildFilterOptionField({
-        document, name: p.name, options: curated.options,
-        value: app.state.varValues[p.name] ?? '', active: !!app.state.filterActive[p.name],
-        inactiveLabel: p.optional ? 'All' : 'Not set',
-        onValueChange: (value, active) => {
-          app.state.varValues[p.name] = value;
-          app.state.filterActive[p.name] = active;
-          app.params.saveVarValues();
-          app.params.saveFilterActive();
-        },
-        onCommit: (value, active) => {
-          if (wrapsArray) options.onApplyCurated?.(p.name, active ? [value] : [], active);
-          else onCommit(p.name);
-        },
-      });
-      // #345: a curated field is always the 'enum' width band (short option
-      // labels) regardless of the declared param type behind it.
-      applyFieldWidth(field.input, p.type, true);
-      if (conflictNote) field.input.classList.add('is-conflict');
-      // Same shared invalid-field affordance the plain-text branch gets below
-      // (#170/var-field.js) — a curated field's committed value can still be
-      // invalid against the prepared batch (e.g. a type conflict across
-      // favorites), and without this it silently showed none of the
-      // is-invalid class/tooltip/aria-invalid a plain filter field would.
-      // Uses `baseTitle` (not a status-derived title) as the non-invalid
-      // fallback — `applyFieldStatus` below layers the status-derived title
-      // back on top when the field isn't currently `is-invalid`.
-      applyFieldState(field.input, getField(p.name, 'execute'), baseTitle);
-      const label = h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
-        h('span', { class: 'var-name' }, p.name), field.el);
-      const handle: CuratedFieldHandle = {
-        input: field.input, label, baseTitle, basePlaceholder: field.input.placeholder, noteEl: null,
-      };
-      // #360: apply the CURRENT status immediately at build time
-      // (a fresh rebuild shows the right affordance right away) and retain
-      // the handle so a LATER status-only change updates this same field in
-      // place via `updateStatus`, never a rebuild.
-      applyFieldStatus(handle, { status: curated.status, stale: curated.stale, waitingFor: curated.waitingFor });
-      // #335: the data-bag curated scalar handle wrapped in a minimal
-      // `FieldHandle` adapter — only `updateStatus` (re-runs `applyFieldStatus`
-      // in place) is meaningful. No popover, no `el` (so `focusedFieldKey`
-      // skips it, exactly as the pre-#335 code did), nothing to dispose — the
-      // optional `isOpen`/`focusTrigger`/`dispose` are simply absent.
-      handles.set(p.name, { updateStatus: (s) => applyFieldStatus(handle, s) });
-      return label;
-    }
     const commitNow = (): void => {
       if (timer == null) return;
       clearTimeout(timer);
@@ -537,9 +313,8 @@ export function buildFilterBar(
     };
     // The shared control-kind priority (fieldControlKind, review F8): #172
     // enum members (v1 only here — the declaration travels with the tile SQL;
-    // v2 schema-cache inference is workbench-only, and #160's curated
-    // `filter:` query is the Dashboard's no-declaration alternative) > #169
-    // date-like preset combobox + live preview > plain text with recents.
+    // v2 schema-cache inference is workbench-only) > #169 date-like preset
+    // combobox + live preview > plain text with recents.
     // The field stays free-text in every case; D3's debounce/Enter/blur
     // commit semantics are unchanged either way.
     const ctl = fieldControlKind(p);
@@ -565,8 +340,7 @@ export function buildFilterBar(
     };
     // #171: live-filtered recents for this field (type + typed text), read
     // fresh on every open/keystroke (never a snapshot — see recent-field.js's
-    // header comment). (#160's curated-param opt-out hook: nothing to check
-    // yet — no curated param exists before #160 lands.)
+    // header comment).
     const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, p.name, p.type, text);
     const onClearRecent = (): void => app.params.clearVarRecent(p.name);
     // A preset/recent pick is a deliberate, complete action (like Enter) —
@@ -645,16 +419,15 @@ export function buildFilterBar(
     dispose: () => {
       timerClears.forEach((clear) => clear());
       // Disposing a control WHILE its popover is open is that control's own
-      // Cancel (no commit callback, see multi-select-field.ts /
-      // time-range-field.ts) — a bar rebuild/teardown always tears every open
-      // popover down this way. The curated scalar adapter has no `dispose`.
+      // Cancel (no commit callback, see time-range-field.ts) — a bar rebuild/
+      // teardown always tears every open popover down this way. A plain field
+      // registers no handle and so has nothing to dispose beyond its timer.
       for (const handle of handles.values()) handle.dispose?.();
     },
     updateStatus: (states) => {
       // #335: one loop over the unified map. A per-param field's key IS its
-      // parameter name, so `states[key]` finds its status; a time-range
-      // control's key is `group:…` (never a parameter name), so it never
-      // matches a status entry — and its `updateStatus` is a no-op regardless.
+      // parameter name, so `states[key]` would find its status; a time-range
+      // control's key is `group:…` (never a parameter name).
       for (const [key, handle] of handles) {
         const s = states[key];
         if (s) handle.updateStatus(s);
@@ -668,11 +441,9 @@ export function buildFilterBar(
       for (const [key, handle] of handles) if (handle.isOpen?.()) return key;
       return null;
     },
-    // `.el` is each popover-bearing control's own root (a multiselect's
-    // trigger/error-input node, a time-range control's trigger wrapper), so
-    // `.contains(activeElement)` catches focus on it regardless of popover
-    // state. The curated scalar adapter has no `el` and is skipped (its focus
-    // was never a rebuild restore target pre-#335 either).
+    // `.el` is each popover-bearing control's own root (a time-range control's
+    // trigger wrapper), so `.contains(activeElement)` catches focus on it
+    // regardless of popover state.
     focusedFieldKey: () => {
       const active = document.activeElement;
       if (!active) return null;
@@ -683,7 +454,7 @@ export function buildFilterBar(
     // #425: resolve by the stamped DOM key. A parameter a time-range group OWNS
     // has no standalone field (it is suppressed from the per-param loop), so it
     // resolves to that group's compound control — otherwise navigating to a
-    // from/to filter would wrongly report "no such filter".
+    // from/to variable would wrongly report "no such filter".
     fieldElement: (key) => {
       const owning = timeRange.find((tr) =>
         tr.group.fromParameter === key || tr.group.toParameter === key);

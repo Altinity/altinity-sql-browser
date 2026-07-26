@@ -175,11 +175,11 @@ export interface DashboardSizeHints {
  */
 export interface QueryDashboardPresentationV1 {
   /**
-   * Dashboard role (Panel, Filter, or Setup)
+   * Dashboard role (Panel or Setup)
    *
-   * How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.
+   * How the saved query participates in a dashboard. panel (the default) creates a visualization tile. setup is reserved for serialized Dashboard setup execution. The removed filter role (#447) returned one row whose columns supplied option lists for same-named parameters; a Dashboard variable's options are now Dashboard-local SQL stored under the variable name, so no saved query has an option-supplying role. A stored document still carrying role filter fails validation and is reported unsupported rather than migrated — the experimental representation has no production legacy to preserve.
    */
-  role?: "panel" | "filter" | "setup";
+  role?: "panel" | "setup";
   /**
    * Default presentation variant
    *
@@ -952,6 +952,79 @@ export interface DashboardDocumentV1 {
   tiles: DashboardTileV1[];
 }
 
+// dashboard v2 — https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json
+
+/**
+ * Dashboard variable configuration
+ *
+ * Dashboard-local option SQL for one inferred variable. The variable's name and ClickHouse type are NOT stored here — they come from the panel query placeholders that declare it.
+ */
+export interface DashboardVariableConfigV1 {
+  /**
+   * Option SQL
+   *
+   * One embeddable read query returning exactly two String columns: value, then visible label. Column position defines meaning; column names do not. Empty SQL is not stored — saving blank SQL removes the configuration and returns the variable to direct input. Parameterised option SQL is rejected: option queries cannot reference Dashboard variables.
+   */
+  sql: string;
+  /**
+   * Last known variable type
+   *
+   * Informational only, so an orphaned configuration can still display a type after its last panel declaration disappears. A newly inferred declaration always wins over this value; nothing executable ever reads it.
+   */
+  lastKnownType?: string;
+}
+
+/**
+ * Altinity SQL Browser Dashboard document v2
+ *
+ * One explicit Dashboard aggregate: tile instances, semantic tile order, layout, optional Dashboard-local variable option SQL, and persistence revision. Supersedes dashboard-v1 by REMOVING curated filter definitions (#447): a Dashboard's variables are no longer persisted objects but are inferred from the {name:Type} placeholders in the queries its panel tiles own, matched by exact case-sensitive name. The only persisted variable state is `variableConfigs` — optional option-list SQL stored under a variable name. Filter identities, labels, option-source query references, explicit panel targets, default values, and selection modes are all gone; the authoritative variable name and type come from the panel query placeholders alone. Runtime values and result caches are never persisted here. Unknown future documentVersion values fail closed.
+ */
+export interface DashboardDocumentV2 {
+  /**
+   * Dashboard document version
+   *
+   * Dashboard document contract version; always 2 for this contract.
+   */
+  documentVersion: 2;
+  /**
+   * Dashboard identifier
+   *
+   * Stable application-managed Dashboard identity.
+   */
+  id: string;
+  /**
+   * Dashboard title
+   *
+   * User-visible Dashboard title.
+   */
+  title: string;
+  /**
+   * Dashboard description
+   *
+   * Optional authoring note shown with the Dashboard.
+   */
+  description?: string;
+  /**
+   * Persistence revision
+   *
+   * Incremented once for each successfully committed Dashboard document mutation. Validation, preview, and export never increment it. Starts at 1.
+   */
+  revision: number;
+  layout: DashboardLayoutDocumentV1;
+  /**
+   * Tiles
+   *
+   * Tile instances in canonical semantic order: execution planning, DOM and keyboard traversal, fallback rendering, print/export, and serialization all follow this order. Required even when empty.
+   */
+  tiles: DashboardTileV1[];
+  /**
+   * Variable option SQL
+   *
+   * Optional Dashboard-local option-list SQL keyed by EXACT inferred variable name. A key with no matching {name:Type} declaration in any panel-owned query is an orphaned configuration: its SQL is preserved and shown, but never executed. Absent or empty means every variable uses a direct-input control inferred from its declared ClickHouse type. The property bound matches dashboard-v1's former filter bound, so a Dashboard cannot store more configured variables than it could once store filters.
+   */
+  variableConfigs?: Record<string, DashboardVariableConfigV1>;
+}
+
 // stored-workspace v2 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json
 
 /**
@@ -1090,6 +1163,52 @@ export interface StoredWorkspaceV4 {
   dashboards: DashboardDocumentV1[];
 }
 
+// stored-workspace v5 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v5.schema.json
+
+/**
+ * Altinity SQL Browser stored workspace v5
+ *
+ * One independently addressable browser-persistence aggregate with immutable application and URL identities, an ordered saved-query collection, and an ordered collection of Dashboard documents. Supersedes stored-workspace-v4 by carrying dashboard-v2 documents (#447): curated filter definitions are gone, so the only Dashboard members that own a dedicated saved-query copy are panel tiles. The version exists so an older build fails closed on a record whose Dashboards it would misread, and so the one-time V4 migration — which drops `dashboards[].filters` and leaves each formerly filter-owned query copy in place, where having no owner makes it a Library query — has a boundary to run at. v4, v3 and v2 records remain readable and migrate deterministically on read, EXCEPT that a record containing a saved query with the removed Dashboard role `filter` is rejected as unsupported and must be recreated: the role is no longer in the query-spec contract, so such a record fails validation before migration can reach it. Internal persistence contract; portable interchange uses portable-bundle-v2 instead.
+ */
+export interface StoredWorkspaceV5 {
+  /**
+   * Storage version
+   *
+   * Stored-workspace contract version; always 5 for this contract. Unknown future versions fail closed.
+   */
+  storageVersion: 5;
+  /**
+   * Workspace identifier
+   *
+   * Stable generated application identity. Two workspaces with the same display name still have distinct IDs.
+   */
+  id: string;
+  /**
+   * Workspace URL key
+   *
+   * Stable lowercase ASCII identity used by workspace URLs. It is immutable after creation and unique case-insensitively within the local repository.
+   */
+  key: string;
+  /**
+   * Workspace name
+   *
+   * Mutable user-visible workspace name. Renaming it does not change the workspace ID, URL key, or any Dashboard title.
+   */
+  name: string;
+  /**
+   * Saved queries
+   *
+   * The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Holds both Library queries (referenced by no Dashboard member) and the dedicated copies panel tiles own. The bound stays at v4's 5224 even though removing filters lowers the derived worst case to 1000 + 32 x 100: a v4 record already at 5224 must keep decoding, so this is a compatibility ceiling rather than a recomputed maximum. Required even when empty.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboards
+   *
+   * This workspace's Dashboard documents in canonical workspace Dashboard order: [] for none, one entry for the current common case, several once multi-Dashboard selection ships. Dashboard IDs are unique within the workspace; tile and layout placement IDs stay Dashboard-local. Required even when empty.
+   */
+  dashboards: DashboardDocumentV2[];
+}
+
 // portable-bundle v1 — https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json
 
 /**
@@ -1136,4 +1255,52 @@ export interface PortableBundleV1 {
    * Bundled Dashboard documents. The v1 Workbench manages at most one Dashboard; multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.
    */
   dashboards: DashboardDocumentV1[];
+}
+
+// portable-bundle v2 — https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json
+
+/**
+ * Altinity SQL Browser portable bundle v2
+ *
+ * The one canonical portable interchange format: saved queries plus zero or more Dashboard documents. Supersedes portable-bundle-v1 solely to carry dashboard-v2 documents (#447), because v1 pins dashboard-v1, which requires the removed `filters` array and closes its property set. All newly written importable/exportable JSON uses this format; portable-bundle-v1 stays registered read-only so existing bundles still import, and legacy Library v1/v2 files remain readable through compatibility decoders.
+ */
+export interface PortableBundleV2 {
+  /**
+   * Schema identifier
+   *
+   * Optional schema hint for editors, agents, and third-party tools.
+   */
+  $schema?: "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json";
+  /** Format identifier */
+  format: "altinity-sql-browser/portable-bundle";
+  /**
+   * Bundle format version
+   *
+   * Portable bundle contract version; always 2 for this contract. Unknown future versions fail closed.
+   */
+  version: 2;
+  /**
+   * Export timestamp
+   *
+   * RFC 3339 timestamp indicating when this portable bundle was created.
+   */
+  exportedAt: string;
+  /**
+   * Bundle metadata
+   *
+   * Optional human-readable bundle name and description.
+   */
+  metadata?: { name?: string; description?: string; };
+  /**
+   * Saved queries
+   *
+   * Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty. The bound tracks the stored-workspace capacity so a migrated workspace stays exportable; an older build rejects a bundle above its own bound.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboard documents
+   *
+   * Bundled Dashboard documents. Multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.
+   */
+  dashboards: DashboardDocumentV2[];
 }

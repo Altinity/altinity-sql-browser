@@ -1,6 +1,6 @@
 // Portable-bundle export builders (#280/#287 "Canonical output ordering",
 // "Portable dependency closure"). Pure structural assembly only — callers
-// pass the returned PortableBundleV1 to `encodePortableBundleJson`
+// pass the returned PortableBundleV2 to `encodePortableBundleJson`
 // (portable-bundle-codec.ts) for validation/canonical encoding; this module
 // never encodes or validates itself so it stays independently unit-testable.
 //
@@ -21,19 +21,19 @@
 import { cloneJson } from '../../core/saved-query.js';
 import { dashboardDependencyQueryIds } from './bundle-order.js';
 import {
-  CURRENT_PORTABLE_BUNDLE_VERSION, PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V1_SCHEMA_ID,
+  CURRENT_PORTABLE_BUNDLE_VERSION, PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V2_SCHEMA_ID,
 } from './portable-bundle-codec.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../generated/json-schema.types.js';
 
 function bundleEnvelope(
-  nowISO: string, queries: SavedQueryV2[], dashboards: DashboardDocumentV1[],
-): PortableBundleV1 {
+  nowISO: string, queries: SavedQueryV2[], dashboards: DashboardDocumentV2[],
+): PortableBundleV2 {
   return {
-    $schema: PORTABLE_BUNDLE_V1_SCHEMA_ID as PortableBundleV1['$schema'],
-    format: PORTABLE_BUNDLE_FORMAT as PortableBundleV1['format'],
-    version: CURRENT_PORTABLE_BUNDLE_VERSION as PortableBundleV1['version'],
+    $schema: PORTABLE_BUNDLE_V2_SCHEMA_ID as PortableBundleV2['$schema'],
+    format: PORTABLE_BUNDLE_FORMAT as PortableBundleV2['format'],
+    version: CURRENT_PORTABLE_BUNDLE_VERSION as PortableBundleV2['version'],
     exportedAt: nowISO,
     queries,
     dashboards,
@@ -47,8 +47,8 @@ function bundleEnvelope(
  *  appear. Deep-clones both the Dashboard and every emitted query — the
  *  input `dashboard` (and its `revision`) is left byte-for-byte unchanged. */
 export function buildDashboardExportBundle(
-  dashboard: DashboardDocumentV1, queries: readonly SavedQueryV2[], nowISO: string,
-): PortableBundleV1 {
+  dashboard: DashboardDocumentV2, queries: readonly SavedQueryV2[], nowISO: string,
+): PortableBundleV2 {
   const byId = new Map<string, SavedQueryV2>();
   for (const query of queries) {
     if (!byId.has(query.id)) byId.set(query.id, query);
@@ -68,8 +68,8 @@ export function buildDashboardExportBundle(
  *  resource — the input `workspace` (including each Dashboard `revision`) is
  *  left byte-for-byte unchanged. */
 export function buildWorkspaceExportBundle(
-  workspace: StoredWorkspaceV4, nowISO: string,
-): PortableBundleV1 {
+  workspace: StoredWorkspaceV5, nowISO: string,
+): PortableBundleV2 {
   const queries = cloneJson(workspace.queries);
   const dashboards = cloneJson(workspace.dashboards);
   return bundleEnvelope(nowISO, queries, dashboards);

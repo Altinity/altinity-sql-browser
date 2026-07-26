@@ -23,7 +23,7 @@ import type { SaveStr } from '../state.js';
 import { KEYS } from '../state.js';
 
 /** The true-preference subset of state.ts's own `KEYS` map — every OTHER key
- *  there (saved/history/libraryName/varValues/filterActive/filterCurated/
+ *  there (saved/history/libraryName/varValues/filterActive/
  *  varRecent/varRecentDisabled) is a domain record with its own dedicated
  *  `save*` method on `App` (`saveJSON`/`saveVarValues`/`saveFilterActive`/…),
  *  untouched by this service. */

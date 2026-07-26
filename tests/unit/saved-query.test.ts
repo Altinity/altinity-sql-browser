@@ -16,7 +16,7 @@ describe('saved-query model', () => {
     interface DashboardFixture extends QueryDashboardPresentationV1 {
       future: { values: number[] };
     }
-    const query = v2({ dashboard: { role: 'filter', future: { values: [1] } }, panel: { cfg: { type: 'line' } } });
+    const query = v2({ dashboard: { role: 'setup', future: { values: [1] } }, panel: { cfg: { type: 'line' } } });
     const changed = patchQueryDashboard(query, { role: 'panel', future2: { ok: true } });
     expect(changed.spec.dashboard).toEqual({ role: 'panel', future: { values: [1] }, future2: { ok: true } });
     (changed.spec.dashboard as DashboardFixture).future.values.push(2);

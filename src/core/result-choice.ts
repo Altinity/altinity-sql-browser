@@ -21,14 +21,10 @@ export interface PanelResultChoice {
   panelType: PickablePanelType;
   label: string;
 }
-/** One Dashboard-role option in the Result-choice picker (currently only Filter). */
-export interface RoleResultChoice {
-  id: string;
-  kind: 'role';
-  role: 'filter';
-  label: string;
-}
-export type ResultChoice = PanelResultChoice | RoleResultChoice;
+/** #447 removed `RoleResultChoice` (and the `DASHBOARD_ROLE_RESULT_CHOICES`
+ *  list whose single entry was `role:filter`): the picker offers a FLAT list of
+ *  real panel visualisations only, so every choice is a panel choice. */
+export type ResultChoice = PanelResultChoice;
 
 export const PANEL_RESULT_CHOICES: readonly PanelResultChoice[] = Object.freeze([
   { id: 'panel:kpi', kind: 'panel', panelType: 'kpi', label: 'KPI' },
@@ -36,10 +32,6 @@ export const PANEL_RESULT_CHOICES: readonly PanelResultChoice[] = Object.freeze(
     ({ id: `panel:${value}`, kind: 'panel', panelType: value, label })),
   { id: 'panel:logs', kind: 'panel', panelType: 'logs', label: 'Logs' },
   { id: 'panel:text', kind: 'panel', panelType: 'text', label: 'Text' },
-]);
-
-export const DASHBOARD_ROLE_RESULT_CHOICES: readonly RoleResultChoice[] = Object.freeze([
-  { id: 'role:filter', kind: 'role', role: 'filter', label: 'Filter' },
 ]);
 
 // The panel types the picker actually offers as options. `table` is
@@ -54,20 +46,11 @@ export function effectiveDashboardRole(spec: QuerySpecV1 | null | undefined): st
   return typeof role === 'string' && role ? role : 'panel';
 }
 
-// The transient preview a role owns on initial Library launch — never a
-// persisted `spec.view` (Filter has none to persist; #244). `null` defers to
-// the query's persisted view / the caller's other fallbacks.
-export function rolePreviewView(spec: QuerySpecV1 | null | undefined): string | null {
-  switch (effectiveDashboardRole(spec)) {
-    case 'filter':
-      return 'filter';
-    default:
-      return null;
-  }
-}
+// #447 removed `rolePreviewView`: the Filter role was the only role that owned
+// a transient launch preview (#244), so no role has one left and every Library
+// launch defers to the query's own persisted view.
 
 export function resultChoiceForSpec(spec: QuerySpecV1 | null | undefined): string {
-  if (effectiveDashboardRole(spec) === 'filter') return 'role:filter';
   const type = spec?.panel?.cfg?.type;
   // A pickable explicit type selects its own option; anything else (table, an
   // absent panel, or an unknown/future type) resolves to `panel:auto`. The
@@ -80,8 +63,10 @@ export function applyResultChoice(query: unknown, choice: ResultChoice | null | 
   // No-op passthrough: the caller gets back exactly the query root it passed
   // (real callers hold a QueryRoot; `query` stays `unknown` because this is
   // the same untrusted-ingress boundary the patchQuery* helpers guard).
-  if (!choice || (choice.kind !== 'panel' && choice.kind !== 'role')) return query as QueryRoot;
-  if (choice.kind === 'role') return patchQueryDashboard(query, { role: choice.role });
+  // #447: no `choice.kind !== 'panel'` arm any more — `ResultChoice` has a
+  // single member, so the only non-choice a caller can pass is null/undefined
+  // (the picker's own "no matching option" miss).
+  if (!choice) return query as QueryRoot;
   let next = query;
   // Flip a non-panel role back to the implicit default while PRESERVING any
   // other dashboard sub-fields (forward-compat) — clearing the object would

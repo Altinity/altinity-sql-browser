@@ -1146,39 +1146,10 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: var(--ring);
 }
 
-.filter-preview { display: flex; flex-direction: column; gap: 10px; padding: 12px; overflow: auto; }
-/* The `example` cell hosts a live combobox, not truncatable text — opt it out of
-   the grid's cell cursor/pointer affordance. */
-.filter-preview table.res-table td.cell.filter-example { cursor: default; }
-.filter-preview-diagnostic { color: var(--fg-mute); font-size: var(--text-body); }
-.filter-preview-diagnostic.is-warning { color: var(--warn-fg); }
-.filter-preview-diagnostic.is-error, .filter-preview-message.is-error { color: var(--error-fg); }
-.filter-preview-message { padding: 24px; color: var(--fg-mute); }
-.filter-preview-message.is-waiting { color: var(--warn-fg); }
-/* Curated Filter field (#160, filter-option-field.js): the strict single-select
-   is the same `.var-combo`/`.var-input`/`.var-combo-list` control every other
-   combobox field uses — it only adds an inline clear (×) button for its "All"/
-   inactive state, so the input reserves room on the right and the button sits
-   over that gap (the `.var-combo` wrapper is already position:relative). The
-   extra 18px of padding-right (26px here vs the plain field's 8px) would
-   otherwise eat straight into the SAME `--var-input-ch` content width every
-   other field gets (#345 review finding: measured live, an 11-character
-   curated label left under 3px of margin at the nominal 14ch enum band) — so
-   this rule widens the box by that same 18px, keeping this field's actual
-   TEXT room equal to a plain field at the same width category. */
-.filter-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
-.var-combo-clear-inline {
-  position: absolute; top: 0; right: 3px; height: 24px;
-  width: 20px; border-radius: var(--r-xs); padding: 0;
-  border: none; background: transparent; color: var(--fg-faint); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
-.var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
-
-/* Dashboard/Filter role diagnostics (#160) — the "role" banner above the tile
-   grid (unknown/setup role, or a Filter source with no Panel consumer) and the
-   per-source Filter-provider diagnostics above it share one styled surface so
-   neither reads as unstyled fallback text next to the polished tile grid. */
+/* Dashboard configuration diagnostics — the banner above the tile grid
+   (an unknown/setup role, an unresolved presentation, an unresolvable time-range
+   pair) gets one styled surface so it never reads as unstyled fallback text next
+   to the polished tile grid. */
 .dash-filter-diagnostics { display: flex; flex-direction: column; gap: 8px; }
 .dash-config-diagnostic {
   margin: 10px 20px 0; padding: 10px 14px;
@@ -1201,17 +1172,6 @@ h1, h2, h3, h4, h5, h6 {
   font-family: var(--ui); font-size: var(--text-label); font-weight: var(--fw-medium); cursor: pointer; opacity: .85;
 }
 .dash-config-diagnostic button:hover { opacity: 1; background: var(--bg-hover); }
-
-/* The tab-strip / saved-history "Filter" role badge (#160) — a small tinted
-   chip, deliberately NOT bordered like a sibling tab or list-row action button,
-   so it never reads as a second open tab next to the real tab it decorates. */
-.query-role-badge {
-  height: 18px; padding: 0 7px; border-radius: var(--r-pill); border: none;
-  background: color-mix(in oklab, var(--accent) 16%, transparent);
-  color: var(--accent-text); font-family: var(--ui); font-size: var(--text-micro); font-weight: var(--fw-semibold); letter-spacing: .02em;
-  cursor: pointer; flex-shrink: 0;
-}
-.query-role-badge:hover { background: color-mix(in oklab, var(--accent) 26%, transparent); }
 
 /* ------------ json view ------------ */
 /* height:100% (not flex:1) — .res-body is a relatively-positioned block, not a
@@ -1675,13 +1635,54 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row.is-current:focus-visible {
   box-shadow: inset 2px 0 0 var(--accent), var(--ring-nav);
 }
-/* A broken reference: the row stays, its label stays readable, and only the
-   operation needing the missing query is withheld. */
-.dash-tree-row.is-invalid .label { color: var(--warn-fg); font-style: italic; }
+/* A broken reference or a type conflict (#447 severity 'error'): the row stays,
+   its label stays readable, and only the operation needing what is missing is
+   withheld. Italic is the non-colour half of the signal. */
+.dash-tree-row.is-invalid .label { color: var(--error-fg); font-style: italic; }
+/* An unused (orphaned) variable configuration — severity 'warning'. Upright, not
+   italic, and in the warn hue: the Dashboard works, some stored SQL simply is not
+   being executed. */
+.dash-tree-row.is-warning .label { color: var(--warn-fg); }
+/* The status-marker slot. Severity picks the hue — but the two states also differ
+   in GLYPH (shield vs. eye-off) and in accessible label ("Type conflict" /
+   "Broken reference" vs. "Unused"), so hue is never the only difference. */
 .dash-tree-warn {
   display: flex; flex-shrink: 0;
-  color: var(--warn-fg);
+  color: var(--error-fg);
 }
+.dash-tree-warn-mild { color: var(--warn-fg); }
+/* #447: the WORD, next to the name, for an unused variable — a pill so it reads
+   as a state rather than as part of the name. */
+.dash-tree-status {
+  flex-shrink: 0;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-bd);
+  border-radius: var(--r-pill);
+  padding: 0 6px;
+}
+/* #447: the orphan-only delete affordance. Unlike the action-menu button it is
+   ALWAYS visible — it is the only way to remove stored SQL nothing references, and
+   a hover-only affordance would hide the row's whole point. */
+.dash-tree-del-btn {
+  width: 18px; height: 18px; padding: 0;
+  border: none; background: transparent;
+  color: var(--fg-faint); cursor: pointer;
+  border-radius: var(--r-xs); flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dash-tree-del-btn:hover { color: var(--error-fg); background: var(--bg-hover); }
+/* The delete CONFIRMATION, built from the shared menu primitive (ui/menu.ts) and
+   anchored on the trash button. Wider than the action menu because its heading is
+   a sentence stating what is lost. */
+.dash-tree-confirm { min-width: 268px; }
+.dash-tree-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
+.dash-tree-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
+.dash-tree-confirm-cancel { color: var(--fg-mute); }
 .dash-tree-menu-btn {
   width: 18px; height: 18px; padding: 0;
   border: none; background: transparent;
@@ -1702,6 +1703,86 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-menu .is-disabled {
   opacity: .45; cursor: default; pointer-events: none;
 }
+
+/* ------------ Per-variable option-SQL editor (#447) ------------
+   buildDrawerChrome's NON-modal chrome under its own 'varedit' prefix, like the
+   documentation pane (.docs-*): fixed to the right edge, no backdrop, no focus
+   trap. Its width is a stylesheet constant rather than a persisted preference —
+   the drawer is deliberately not resizable (see ui/variable-editor.ts). */
+.varedit-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;
+  height: 100%;
+  width: min(520px, 92vw);
+  background: var(--bg-editor);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-drawer);
+  display: flex; flex-direction: column;
+}
+.varedit-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.varedit-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.varedit-title-text {
+  font-size: var(--text-label); font-weight: var(--fw-semibold);
+  text-transform: uppercase; letter-spacing: .03em; color: var(--fg-faint);
+}
+.varedit-title-name {
+  font-family: var(--mono); font-size: var(--text-headline); color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.varedit-close {
+  border: none; background: transparent; color: var(--fg-mute); cursor: pointer;
+  border-radius: var(--r-xs); width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.varedit-close:hover { background: var(--bg-hover); color: var(--fg); }
+.varedit-body {
+  flex: 1; min-height: 0; overflow: auto; padding: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+/* The identity read-out: name and inferred type are NOT fields here — editing
+   either means editing the panel SQL that declares them. */
+.varedit-ident { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.varedit-name { font-family: var(--mono); font-size: var(--text-headline); color: var(--fg); }
+.varedit-type {
+  font-family: var(--mono); font-size: var(--text-micro);
+  padding: 2px 7px; border-radius: var(--r-pill);
+  background: var(--bg-chip); color: var(--fg-mute);
+}
+.varedit-note {
+  margin: 0;
+  font-size: var(--text-label); line-height: var(--lh-body);
+  color: var(--warn-fg);
+  background: var(--warn-bg); border: 1px solid var(--warn-bd);
+  border-radius: var(--r-sm); padding: 7px 9px;
+}
+.varedit-field-label {
+  font-size: var(--text-label); font-weight: var(--fw-semibold);
+  text-transform: uppercase; letter-spacing: .03em; color: var(--fg-faint);
+}
+.varedit-sql {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  overflow: hidden; display: flex; min-height: 160px;
+}
+/* The default (no injected editor adapter) option-SQL surface. */
+.varedit-input {
+  flex: 1; min-width: 0; resize: vertical;
+  border: none; background: var(--bg-input); color: var(--fg);
+  padding: 8px 10px;
+  font-family: var(--mono); font-size: var(--text-label); line-height: var(--lh-data);
+}
+.varedit-input:focus-visible { outline: none; box-shadow: var(--ring); }
+.varedit-hint { margin: 0; font-size: var(--text-label); line-height: var(--lh-body); color: var(--fg-mute); }
+.varedit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.varedit-cancel, .varedit-save {
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  cursor: pointer; border-radius: var(--r-sm); padding: 5px 11px;
+  font: inherit; font-size: var(--text-body);
+}
+.varedit-save { background: var(--accent); border-color: var(--accent); color: #fff; }
+.varedit-cancel:hover { background: var(--bg-hover); }
+.varedit-save:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
 
 .tree-row {
   display: flex; align-items: center; gap: 6px;
@@ -1894,9 +1975,7 @@ body.detached-tab .graph-overlay-panel {
    at build time, by whichever field-family builder created the input
    (`applyFieldWidth`, var-field.ts — filter-width.ts resolves the ch count
    from the declared type). Falls back to the generic string band (16ch) for
-   any input this custom property was never set on (the Filter drawer's
-   read-only preview cell, filter-preview.ts, which has no declared
-   ClickHouse type to key off). */
+   any input this custom property was never set on. */
 .var-input {
   height: 24px; width: calc(var(--var-input-ch, 16) * 1ch); padding: 0 8px;
   background: var(--bg-input); color: var(--fg);
@@ -2017,65 +2096,14 @@ body.detached-tab .graph-overlay-panel {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-/* Multiselect Dashboard Filter control (#189, multi-select-field.ts) — a
-   dedicated dialog popover rather than the single-select combobox
-   (.var-combo/.var-combo-list) forced into multiselect ARIA roles. The
-   trigger reuses .var-input's sizing/border so it sits flush with every
-   other filter field; the popover is its own `position:fixed` panel, same
-   escape-the-scrolling-strip trick as .var-combo-list/.file-menu. */
-.ms-field { grid-column: 2; display: inline-flex; }
-.ms-trigger {
-  display: inline-flex; align-items: center;
-  width: calc(var(--var-input-ch, 16) * 1ch); max-width: 220px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-align: left; cursor: pointer;
-}
-.ms-trigger:hover:not(:disabled) { border-color: var(--accent); }
-.ms-trigger:disabled { cursor: default; }
-.ms-trigger.is-waiting { border-style: dashed; }
-.ms-trigger.is-stale { opacity: 0.55; font-style: italic; }
-.ms-field .var-input.is-error { width: calc(var(--var-input-ch, 16) * 1ch); }
-.ms-popover {
-  position: fixed; z-index: 70; width: 260px; max-width: calc(100vw - 24px);
-  display: flex; flex-direction: column; gap: 6px; padding: 8px;
-  background: var(--bg-editor); border: 1px solid var(--border);
-  border-radius: var(--r-md); box-shadow: var(--shadow-popover);
-  font-size: var(--text-body); font-family: var(--mono);
-}
+/* The shared anchored-dialog backdrop (popover.ts's default `overlayClassName`).
+   #447 deleted the curated multiselect filter control this `.ms-` prefix came
+   from, along with every other `.ms-*` rule; this one survives because the
+   primitive still defaults to the name and the time-range popover mounts it. */
 .ms-overlay { position: fixed; inset: 0; z-index: 60; }
-.ms-search {
-  height: 24px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
-  border: 1px solid var(--border); border-radius: var(--r-sm); font: inherit;
-}
-.ms-search:focus {
-  outline: none; border-color: var(--accent);
-  box-shadow: var(--ring);
-}
-.ms-select-all {
-  display: flex; align-items: center; gap: 6px; cursor: pointer;
-  padding: 2px 4px; color: var(--fg-mute); font-size: var(--text-label);
-  border-bottom: 1px solid var(--border-faint);
-}
-.ms-select-all-cb, .ms-option input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
-.ms-options { display: flex; flex-direction: column; max-height: 220px; overflow-y: auto; gap: 1px; }
-.ms-option {
-  display: flex; align-items: center; gap: 6px; padding: 5px 4px;
-  border-radius: var(--r-sm); cursor: pointer; color: var(--fg);
-}
-.ms-option:hover { background: var(--bg-hover); }
-.ms-option[hidden] { display: none; }
-.ms-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ms-footer { display: flex; justify-content: flex-end; gap: 6px; padding-top: 4px; border-top: 1px solid var(--border-faint); }
-.ms-btn {
-  height: 24px; padding: 0 10px; border-radius: var(--r-sm); cursor: pointer;
-  font: inherit; font-size: var(--text-label);
-  border: 1px solid var(--border); background: transparent; color: var(--fg);
-}
-.ms-btn:hover { background: var(--bg-hover); }
-.ms-btn-clear { margin-right: auto; }
 /* Compound time-range control (#335, time-range-field.ts) — the SECOND
    consumer of the #364 dialog-popover pattern (openAnchoredDialog). The
-   trigger reuses .var-input's sizing/border like .ms-trigger; the popover is
+   trigger reuses .var-input's sizing/border; the popover is
    its own `position:fixed` two-column panel (staged From/To editors on the
    left, a contextual recents/constants column on the right). All colours come
    from the shared theme tokens so light + dark both work; D2 (filter-bar +
@@ -2141,19 +2169,21 @@ body.detached-tab .graph-overlay-panel {
   border: 1px solid var(--border); background: transparent; color: var(--fg);
 }
 .trf-btn:hover { background: var(--bg-hover); }
-/* Shared primary-action state model for both filter popovers (#386 follow-up).
-   This block follows BOTH generic button hover rules so neutral hover chrome
-   can never wash an enabled Apply button into a disabled-looking surface. */
-.ms-btn-primary, .trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
-.ms-btn-primary:hover:not(:disabled), .trf-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
-.ms-btn-primary:focus-visible, .trf-btn-primary:focus-visible {
+/* Primary-action state model for the time-range popover's Apply (#386
+   follow-up; #447 dropped the `.ms-btn-primary` half — the curated multiselect
+   filter popover it also covered is gone). This block follows the generic
+   `.trf-btn` hover rule above so neutral hover chrome can never wash an enabled
+   Apply button into a disabled-looking surface. */
+.trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
+.trf-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
+.trf-btn-primary:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
   box-shadow: 0 0 0 2px var(--bg-editor);
 }
-.ms-btn-primary:active:not(:disabled), .trf-btn-primary:active:not(:disabled) {
+.trf-btn-primary:active:not(:disabled) {
   background: var(--accent-dim); transform: translateY(1px);
 }
-.ms-btn-primary:disabled, .trf-btn-primary:disabled {
+.trf-btn-primary:disabled {
   border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
   cursor: not-allowed; opacity: 1;
 }
@@ -3150,7 +3180,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-refresh .spin { color: var(--accent); }
 /* #437: a wave that leaves a tile in `error` status — the visible "Refresh
    failed" text and the refresh icon both tint with the shared error color,
-   matching `.kpi-diagnostic.is-error` / `.filter-preview-message.is-error`. */
+   matching `.kpi-diagnostic.is-error`. */
 .dash-freshness.is-error .dash-updated,
 .dash-freshness.is-error .dash-refresh { color: var(--error-fg); }
 .dash-btn {

@@ -305,6 +305,11 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // is gated, and carving its markup out into unlisted files would silently
       // move the sidebar back out of this gate's view.
       'src/ui/sidebar-upper.ts', 'src/ui/dashboard-tree.ts',
+      // #447 carved the per-variable option-SQL drawer out of the tree's own
+      // markup — same reason as the two above: an unlisted render module is a
+      // module this gate cannot see, and its editing surface is exactly the kind
+      // of control that shipped as user-agent chrome before.
+      'src/ui/variable-editor.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
     const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));

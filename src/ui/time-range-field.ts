@@ -3,9 +3,9 @@
 // From/To editors (relative expressions or absolute datetimes), a live
 // resolved preview per bound, a contextual per-field constants column, a
 // group-scoped "Recently used" list, and an explicit Apply that commits both
-// bounds atomically. It is the SECOND consumer of the #364 dialog-popover
-// pattern, so it borrows the same primitives multi-select-field.ts does rather
-// than reinventing them:
+// bounds atomically. It was the SECOND consumer of the #364 dialog-popover
+// pattern (the first, the curated multiselect filter field, went with #447), so
+// it borrows shared primitives rather than reinventing them:
 //   - `popover.ts`'s `openAnchoredDialog` (#335) owns ALL the generic dialog
 //     chrome (overlay/backdrop, the ARIA dialog/aria-modal/aria-expanded
 //     lifecycle, Escape, the Tab focus trap, placement + viewport clamp, and
@@ -20,7 +20,7 @@
 //   - `relative-time-field.ts`'s `TIME_RANGE_CONSTANTS` + `filterTokenList`
 //     own the per-field constants data and its type-to-filter behavior.
 //
-// State ownership mirrors multi-select-field.ts: the COMMITTED
+// State ownership: the COMMITTED
 // `fromValue`/`toValue`/`active` are frozen at construction — a caller wanting
 // a later committed-value change reflected calls `buildTimeRangeField` again
 // (the same convention `buildFilterBar` uses). `refreshLabel(nowMs)`
@@ -34,8 +34,7 @@
 // whether from the Apply button or a recents pick), so a synchronous rebuild
 // reacting to that commit always observes this popover as already closed.
 //
-// FOCUS/RESTING-STATE ADAPTATION vs multi-select-field.ts: the multiselect
-// popover focuses its search input on open. This one focuses the From input
+// FOCUS/RESTING STATE: this popover focuses the From input
 // on open (a11y: focus enters the modal) but its RIGHT COLUMN opens on
 // "Recently used" — the pinned design's resting state — because the right
 // column is contextual on a field being *active*, and the single programmatic
@@ -103,9 +102,9 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
   const suffix = idSafe(group.key);
 
   // The currently-open popover's own close() — non-null iff open (isOpen()
-  // reads this directly). `skipFocus` rides through to the primitive for
-  // parity with multi-select-field.ts (no forced-error close exists here, so
-  // it is always the default trigger-refocus in practice).
+  // reads this directly). `skipFocus` rides through to the primitive, which
+  // supports it; no forced-error close exists here, so it is always the default
+  // trigger-refocus in practice.
   let closeCurrent: ((closeOpts?: { skipFocus?: boolean }) => void) | null = null;
 
   const trigger = h('button', {
@@ -316,8 +315,8 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
 
     cancelBtn.addEventListener('click', () => handle.close());
     // Apply is only reachable enabled (a real browser never fires click on a
-    // disabled button; the disabled attr is the gate — see the multiselect
-    // precedent, whose Apply handler is likewise unguarded).
+    // disabled button; the disabled attr is the gate), so this handler is
+    // deliberately unguarded.
     applyBtn.addEventListener('click', () => {
       const fromT = fromInput.value.trim() === fromSeed.trim() ? fromValue.trim() : fromInput.value.trim();
       const toT = toInput.value.trim() === toSeed.trim() ? toValue.trim() : toInput.value.trim();

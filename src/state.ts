@@ -28,7 +28,7 @@ import {
 } from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
-import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV4 } from './generated/json-schema.types.js';
+import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV2, StoredWorkspaceV5 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
 import type { WorkspaceMutationInput, WorkspaceMutationOutcome } from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
@@ -62,7 +62,7 @@ export type SaveJSON = (key: string, value: unknown) => void;
 export type SaveStr = (key: string, value: string) => void;
 
 // ── Read-before-write mutation seam (#287 W4 / #343) ───────────────────────
-// The saved-query CRUD ops below persist through the StoredWorkspaceV4
+// The saved-query CRUD ops below persist through the StoredWorkspaceV5
 // aggregate (IndexedDB), never the flat `asb:saved` localStorage key. #343:
 // they no longer take a raw `commit(candidate)` callback that would let them
 // build a whole candidate from stale in-memory `AppState` and clobber a change
@@ -84,7 +84,7 @@ export type SaveStr = (key: string, value: string) => void;
  *  committed workspace (or `null` when nothing is persisted yet) and returns the
  *  complete candidate to commit — or `null` to abort committing nothing. */
 export type MutateWorkspace = <T = unknown>(
-  transform: (latest: StoredWorkspaceV4 | null) =>
+  transform: (latest: StoredWorkspaceV5 | null) =>
     WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
 ) => Promise<WorkspaceMutationOutcome<T>>;
 
@@ -126,10 +126,10 @@ const asSpecDiagnostics = (diagnostics: readonly WorkspaceDiagnostic[]): SpecDia
  *  a candidate from a stale in-memory projection (#343). Pure. */
 function baselineWorkspace(
   state: Pick<AppState, 'libraryName' | 'workspaceId' | 'workspaceKey' | 'dashboard' | 'savedQueries'>,
-  latest: StoredWorkspaceV4 | null,
-): StoredWorkspaceV4 {
+  latest: StoredWorkspaceV5 | null,
+): StoredWorkspaceV5 {
   return latest ?? {
-    storageVersion: 4, id: state.workspaceId, key: state.workspaceKey, name: state.libraryName.value,
+    storageVersion: 5, id: state.workspaceId, key: state.workspaceKey, name: state.libraryName.value,
     // Nothing is persisted yet, so the compatibility Dashboard is the ONLY
     // Dashboard there can be — no hidden entry is lost by this fallback.
     queries: state.savedQueries, dashboards: state.dashboard ? [state.dashboard] : [],
@@ -141,10 +141,10 @@ function baselineWorkspace(
  *  explicitly changes it — the base Dashboard COLLECTION byte-for-byte (#424:
  *  a saved-query mutation never touches a Dashboard it did not target). Pure. */
 const candidateFrom = (
-  base: StoredWorkspaceV4, queries: SavedQueryV2[],
-  dashboards: DashboardDocumentV1[] = base.dashboards,
-): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: base.id, key: base.key, name: base.name, queries, dashboards,
+  base: StoredWorkspaceV5, queries: SavedQueryV2[],
+  dashboards: DashboardDocumentV2[] = base.dashboards,
+): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: base.id, key: base.key, name: base.name, queries, dashboards,
 });
 
 /** The committed entry, re-read from the just-committed canonical `queries`
@@ -235,8 +235,6 @@ export interface QueryTab {
   dirtySpec: boolean;
   /** Opaque run-result holder — owned and shaped by ui/results.js. */
   result: Record<string, unknown> | null;
-  /** Opaque Filter-role preview result — owned by ui/results.js (#244). */
-  filterPreview: Record<string, unknown> | null;
   /** Snapshot of the last successful run's column descriptors (`{name, type}`
    *  spreads — see app.js's post-run assignment); read by the Spec completion
    *  adapter's dynamic sources. */
@@ -317,7 +315,7 @@ export interface AppState {
   bannerDismissedFor: Signal<string | null>;
   serverVersion: string | null;
   running: Signal<boolean>;
-  resultView: Signal<'table' | 'json' | 'panel' | 'filter'>;
+  resultView: Signal<'table' | 'json' | 'panel'>;
   exporting: Signal<boolean>;
   detachedView: Signal<number>;
   hasSelection: Signal<boolean>;
@@ -325,7 +323,6 @@ export interface AppState {
   resultSort: ResultSort;
   varValues: Record<string, string>;
   filterActive: Record<string, boolean>;
-  filterCurated: Record<string, unknown>;
   varRecent: RecentMap;
   varRecentDisabled: boolean;
   /** 'saved' | 'history' at every write site; typed string because the
@@ -352,7 +349,7 @@ export interface AppState {
    * workspace id. A plain Map, NOT a signal: see
    * `application/dashboard-tree-ui-state.ts` for why observing it would lose the
    * search caret and repaint on every scroll frame. Session only; never
-   * persisted, never part of `StoredWorkspaceV4`.
+   * persisted, never part of `StoredWorkspaceV5`.
    */
   dashboardTreeUi: Map<string, DashboardTreeUiState>;
   savedQueries: SavedQueryV2[];
@@ -361,14 +358,14 @@ export interface AppState {
   history: HistoryEntry[];
   libraryName: Signal<string>;
   libraryDirty: Signal<boolean>;
-  /** #287 W4: the current committed StoredWorkspaceV4's Dashboard document —
+  /** #287 W4: the current committed StoredWorkspaceV5's Dashboard document —
    *  the Workbench NEVER mutates this (that's the /dashboard route's job); it
    *  is only carried through, unchanged, in every saved-query CRUD commit
    *  candidate. `null` until the boot projection (app.ts's
    *  `loadWorkspaceOnBoot`) resolves the aggregate, or when the workspace
    *  genuinely has no Dashboard yet. */
-  dashboard: DashboardDocumentV1 | null;
-  /** #287 W4: the current committed StoredWorkspaceV4's id, carried forward
+  dashboard: DashboardDocumentV2 | null;
+  /** #287 W4: the current committed StoredWorkspaceV5's id, carried forward
    *  unchanged by every saved-query CRUD commit candidate. `createState`
    *  mints a session-local placeholder synchronously (never blank — the
    *  stored-workspace schema requires a non-empty id), so a CRUD op run
@@ -428,7 +425,6 @@ export const KEYS = {
   resultRowLimit: 'asb:resultRowLimit',
   varValues: 'asb:varValues',
   filterActive: 'asb:filterActive',
-  filterCurated: 'asb:filterCurated',
   dashLayout: 'asb:dashLayout',
   dashCols: 'asb:dashCols',
   varRecent: 'asb:varRecent',
@@ -473,7 +469,7 @@ export function newTabObj(id: string): QueryTab {
     id, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
     specText: serializeSpec(specParsed), specParsed, specDiagnostics: [],
     editorMode: 'sql', dirtySql: false, dirtySpec: false,
-    result: null, filterPreview: null, lastSuccessfulResultColumns: [], savedId: null,
+    result: null, lastSuccessfulResultColumns: [], savedId: null,
   };
 }
 
@@ -557,7 +553,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // Run state (signals): `running` flips the Run button + results pane via
     // effects; `resultView` is the active Table/JSON/Chart tab. Via `.value`.
     running: signal(false),
-    resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
+    resultView: signal<'table' | 'json' | 'panel'>('table'),
     // True while a streaming Export (issue #87) is in flight — separate from
     // `running` (the grid run) so an export and a grid run never clobber each
     // other's button/cancel state.
@@ -594,14 +590,10 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // pre-#165 persisted values keep working on first load.
     // The `as` trusts the localStorage shape verbatim — no decoder exists today.
     filterActive: read.loadJSON(KEYS.filterActive, {}) as Record<string, boolean>,
-    // Last-known curated Dashboard Filter fields (#234), keyed by param name —
-    // the merged `{options, sourceType, …}` bundle each Filter favorite last
-    // produced. Seeded synchronously at the top of renderDashboard so a curated
-    // field paints as the searchable-combobox shape immediately (with
-    // possibly-stale options) instead of flashing a plain text input for one
-    // frame; the live Filter wave replaces it silently on completion.
-    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
-    filterCurated: read.loadJSON(KEYS.filterCurated, {}) as Record<string, unknown>,
+    // #447 removed `filterCurated` (the last-known curated Dashboard Filter
+    // option bundles, #234): there are no curated filters to seed any more — a
+    // Dashboard variable's field is a plain `{name:Type}` input, so nothing
+    // needs a stale-options paint ahead of the first wave.
     // Per-variable MRU recent-value history (#171): recorded from a
     // successful statement's `boundParams` (#173's immutable snapshots) —
     // never from a keystroke — keyed by variable name and shared/persisted
@@ -639,7 +631,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     libraryDirty: signal(false),
     // The synchronous constructor has no persisted workspace to project yet:
     // `dashboard` starts null and app.ts's async `loadWorkspaceOnBoot` fills it
-    // after resolving the explicit or last-used StoredWorkspaceV4.
+    // after resolving the explicit or last-used StoredWorkspaceV5.
     // `workspaceId` is minted here rather than left blank because the persisted
     // schema requires a non-empty id. A save attempted before boot projection
     // completes (or by a fixture that never runs it) can therefore still commit
@@ -831,7 +823,7 @@ export interface LinkedTabReconcileSummary {
  *  erase the orphan/detach distinction. Pure over the tab objects. */
 export function reconcileLinkedTabsToLatest(
   state: Pick<AppState, 'tabs'>,
-  latest: StoredWorkspaceV4 | null,
+  latest: StoredWorkspaceV5 | null,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): LinkedTabReconcileSummary {
   const tabs = state.tabs.value;

@@ -19,7 +19,6 @@ import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
 import { normalizeSqlRouteSearch, parseSqlRoute } from './core/sql-route.js';
-import { rolePreviewView } from './core/result-choice.js';
 import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
 import type { State } from './ui/app.types.js';
@@ -48,7 +47,7 @@ export interface BootstrapApp {
    *  main.ts's own `string | null` sentinel (`null` means "no callback
    *  error"), so this contract states what's actually passed here. */
   showLogin(msg?: string | null): void;
-  /** Resolve the explicit or last-used StoredWorkspaceV4 and project it onto
+  /** Resolve the explicit or last-used StoredWorkspaceV5 and project it onto
    *  `app.state` before the first `renderApp()` — see
    *  `App.loadWorkspaceOnBoot`'s own doc comment (app.types.ts). The real
    *  return value is never read here (`Promise<unknown>` is enough for
@@ -173,23 +172,22 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       t0.name = queryName(shared);
       t0.specVersion = shared.specVersion;
       setTabSpecDraft(t0, cloneJson(shared.spec));
-      // Restore the initial result view with the same role-aware precedence as
-      // Library activation (#244): a role-owned transient preview (Filter)
-      // wins over the persisted view, regardless of whether the share carries
-      // SQL to run — a SQL-bearing share never auto-runs here, so this only
-      // pre-selects the drawer the recipient lands on before they click Run.
-      const rolePreview = rolePreviewView(shared.spec);
-      const launchView = rolePreview || queryView(shared);
+      // Restore the initial result view the share carries, regardless of whether
+      // it also carries SQL to run — a SQL-bearing share never auto-runs here,
+      // so this only pre-selects the drawer the recipient lands on before they
+      // click Run. (#447 dropped the role-owned transient preview that used to
+      // take precedence here: the Filter role was its only owner.)
+      const launchView = queryView(shared);
       // Normalize a legacy `view: 'chart'` (pre-Panel shares) to 'panel', then
       // validate against the resultView union before assigning (#266): the v2
       // tagged decode passes `spec.view` through verbatim, so a crafted share
       // link could otherwise set `resultView` to an arbitrary string. Mirrors
-      // ui/saved-history.ts's `rolePreview || SAVED_VIEWS.has(...)` guard — a
-      // role-owned Filter preview wins, a persisted table/json/panel restores,
-      // and any other value silently falls back to the default view. `as`:
-      // that check is the runtime proof `normalized` is a resultView member.
+      // ui/saved-history.ts's own `SAVED_VIEWS.has(...)` guard — a persisted
+      // table/json/panel restores, and any other value silently falls back to
+      // the default view. `as`: that check is the runtime proof `normalized` is
+      // a resultView member.
       const normalized = launchView === 'chart' ? 'panel' : launchView;
-      if (rolePreview || SAVED_VIEWS.has(normalized ?? '')) app.state.resultView.value = normalized as ResultView;
+      if (SAVED_VIEWS.has(normalized ?? '')) app.state.resultView.value = normalized as ResultView;
       // A queryless panel with no role/persisted view (no SQL to run) still
       // needs the Panel drawer open, or the recipient lands on an empty Table
       // view and sees nothing.

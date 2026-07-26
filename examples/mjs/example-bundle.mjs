@@ -10,7 +10,12 @@ import { writeFileSync } from 'node:fs';
 
 export const PORTABLE_BUNDLE_SCHEMA =
   'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json';
+export const PORTABLE_BUNDLE_SCHEMA_V2 =
+  'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json';
 export const PORTABLE_BUNDLE_FORMAT = 'altinity-sql-browser/portable-bundle';
+
+const SCHEMA_BY_VERSION = { 1: PORTABLE_BUNDLE_SCHEMA, 2: PORTABLE_BUNDLE_SCHEMA_V2 };
+const DASHBOARD_VERSION_BY_BUNDLE_VERSION = { 1: 1, 2: 2 };
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -74,9 +79,7 @@ export function buildDashboard({
   description,
   queries,
   tileQueryIds,
-  sourceByParameter = {},
   preset = 'columns-2',
-  filters: authoredFilters,
   grid,
   flowPlacements = {},
   revision = 1,
@@ -110,13 +113,10 @@ export function buildDashboard({
     }
   }
 
-  const inferredFilters = parameterNames.map((parameter) => ({
-    id: `filter-${parameter}`,
-    parameter,
-    ...(sourceByParameter[parameter] ? { sourceQueryId: sourceByParameter[parameter] } : {}),
-  }));
-
-  const filters = authoredFilters === undefined ? inferredFilters : clone(authoredFilters);
+  // One Dashboard-level filter widget per SQL parameter found across the
+  // tiled queries — a plain `parameter`-keyed control (no option-supplying
+  // source; the removed Filter role's option-provider wiring is #447 history).
+  const filters = parameterNames.map((parameter) => ({ id: `filter-${parameter}`, parameter }));
   const layout = grid
     ? {
         type: 'grafana-grid',
@@ -143,12 +143,8 @@ export function buildDashboard({
 
 function normalizeQueriesForDashboards(queries, dashboards) {
   const tileQueryIds = new Set();
-  const filterSourceIds = new Set();
   for (const dashboard of dashboards) {
     for (const tile of dashboard.tiles || []) tileQueryIds.add(tile.queryId);
-    for (const filter of dashboard.filters || []) {
-      if (filter.sourceQueryId) filterSourceIds.add(filter.sourceQueryId);
-    }
   }
 
   return queries.map((raw) => {
@@ -163,9 +159,6 @@ function normalizeQueriesForDashboards(queries, dashboards) {
         role: 'panel',
         sizeHints: isObject(dashboard.sizeHints) ? dashboard.sizeHints : sizeHintsFor(query),
       };
-    } else if (filterSourceIds.has(query.id) || dashboard.role === 'filter') {
-      query.spec.favorite = false;
-      query.spec.dashboard = { ...dashboard, role: 'filter' };
     } else {
       query.spec.favorite = false;
       if (Object.keys(dashboard).length) query.spec.dashboard = dashboard;
@@ -176,9 +169,15 @@ function normalizeQueriesForDashboards(queries, dashboards) {
 
 export function assertValidExampleBundle(document) {
   if (!isObject(document)) throw new Error('Example bundle must be an object');
-  if (document.$schema !== PORTABLE_BUNDLE_SCHEMA) throw new Error('Example bundle has the wrong $schema');
-  if (document.format !== PORTABLE_BUNDLE_FORMAT || document.version !== 1) {
-    throw new Error('Example bundle must use portable-bundle v1');
+  const bundleVersion = document.version;
+  if (bundleVersion !== 1 && bundleVersion !== 2) {
+    throw new Error('Example bundle must use portable-bundle v1 or v2');
+  }
+  if (document.format !== PORTABLE_BUNDLE_FORMAT) {
+    throw new Error('Example bundle must use portable-bundle v1 or v2');
+  }
+  if (document.$schema !== SCHEMA_BY_VERSION[bundleVersion]) {
+    throw new Error('Example bundle has the wrong $schema for its version');
   }
   if (typeof document.exportedAt !== 'string' || !document.exportedAt) {
     throw new Error('Example bundle exportedAt is required');
@@ -202,15 +201,22 @@ export function assertValidExampleBundle(document) {
     }
   }
 
+  const dashboardVersion = DASHBOARD_VERSION_BY_BUNDLE_VERSION[bundleVersion];
   const dashboardIds = new Set();
   for (const dashboard of document.dashboards) {
-    if (!isObject(dashboard) || dashboard.documentVersion !== 1 || !dashboard.id) {
-      throw new Error('Every example dashboard must use documentVersion 1 and a non-empty id');
+    if (!isObject(dashboard) || dashboard.documentVersion !== dashboardVersion || !dashboard.id) {
+      throw new Error(`Every example dashboard must use documentVersion ${dashboardVersion} and a non-empty id`);
     }
     if (dashboardIds.has(dashboard.id)) throw new Error(`Duplicate dashboard id ${JSON.stringify(dashboard.id)}`);
     dashboardIds.add(dashboard.id);
-    if (!Array.isArray(dashboard.tiles) || !Array.isArray(dashboard.filters)) {
-      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} requires tiles and filters arrays`);
+    if (!Array.isArray(dashboard.tiles)) {
+      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} requires a tiles array`);
+    }
+    if (dashboardVersion === 1 && !Array.isArray(dashboard.filters)) {
+      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} requires a filters array`);
+    }
+    if (dashboardVersion === 2 && dashboard.filters !== undefined) {
+      throw new Error(`Dashboard ${JSON.stringify(dashboard.id)} must not carry the removed filters array (#447)`);
     }
     const layout = dashboard.layout;
     const supportedLayout = layout?.version === 1
@@ -231,21 +237,28 @@ export function assertValidExampleBundle(document) {
         throw new Error(`Dashboard tile ${JSON.stringify(tile.id)} must reference a Panel query`);
       }
     }
-    for (const filter of dashboard.filters) {
-      if (filter.sourceQueryId && !queryIds.has(filter.sourceQueryId)) {
-        throw new Error(`Filter ${JSON.stringify(filter.id)} references unknown source query`);
+    // #447 removed the Filter role, so no shipped filter entry may name a source
+    // query any more. The check is kept — and tightened to "must not be present"
+    // — rather than dropped: `decodePortableBundleJson` does discard every
+    // Dashboard's `filters` on migration, which would make a dangling id
+    // harmless at runtime, but a committed example carrying a reference to a
+    // query it no longer contains is still wrong, and silence here is exactly
+    // how it would survive into phase 3's rewrite.
+    for (const filter of dashboard.filters ?? []) {
+      if (filter.sourceQueryId !== undefined) {
+        throw new Error(`Dashboard filter ${JSON.stringify(filter.id)} names a source query; the Filter role was removed in #447`);
       }
     }
   }
   return document;
 }
 
-export function serializeExampleBundle({ exportedAt, metadata, queries, dashboards }) {
+export function serializeExampleBundle({ exportedAt, metadata, queries, dashboards, version = 1 }) {
   const normalizedQueries = normalizeQueriesForDashboards(queries, dashboards);
   const document = {
-    $schema: PORTABLE_BUNDLE_SCHEMA,
+    $schema: SCHEMA_BY_VERSION[version],
     format: PORTABLE_BUNDLE_FORMAT,
-    version: 1,
+    version,
     exportedAt,
     ...(metadata ? { metadata } : {}),
     queries: normalizedQueries,

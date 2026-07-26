@@ -103,16 +103,30 @@ describe('applySpecEvaluation', () => {
     expect(result.diagnostics.some((d) => d.severity === 'error')).toBe(true);
   });
 
-  it('evaluates against sql/tab context (a Filter-role Spec depends on the linked SQL)', () => {
-    const { deps, tab } = makeDeps();
-    tab.sqlDraft = ''; // newTabObj's own default — a Filter-role Spec blocks on empty source SQL
-    const spec = { name: 'F', favorite: false, dashboard: { role: 'filter' } };
+  // #447 re-fixtured this case. It used to prove the `{sql, tab}` context reaches
+  // the validators through the Filter role's own SQL-dependent rule (the one
+  // validator that read `context.sql`) — that rule went with the role, so the
+  // proof now comes from a registered validator that reports what it was handed.
+  it('threads {sql, tab} context through to the registered validators', () => {
+    const specValidators = createSpecValidatorRegistry([{
+      path: ['name'],
+      validate: ({ context }) => [{
+        path: ['name'], code: 'saw-context', severity: 'warning',
+        message: `sql=${String(context.sql)} sameTab=${String(context.tab === seenTab)}`,
+      }],
+    }]);
+    const { deps, tab } = makeDeps({ specValidators });
+    const seenTab = tab;
+    tab.sqlDraft = 'SELECT 1';
+    const spec = { name: 'F', favorite: false };
     const result = createQueryDocumentSession(deps).applySpecEvaluation(tab, JSON.stringify(spec));
-    // Same verdict `evaluateSpecText` itself would give for this SQL/spec pair
-    // — proves `{sql: tab.sqlDraft, tab}` context is actually threaded through.
-    const direct = evaluateSpecText(JSON.stringify(spec), deps.specValidators, { sql: tab.sqlDraft, tab });
+    expect(result.diagnostics).toEqual([expect.objectContaining({
+      code: 'saw-context', message: 'sql=SELECT 1 sameTab=true',
+    })]);
+    // Byte-identical to the verdict `evaluateSpecText` itself gives for the same
+    // spec + explicit context — the session adds nothing and drops nothing.
+    const direct = evaluateSpecText(JSON.stringify(spec), specValidators, { sql: tab.sqlDraft, tab });
     expect(result.diagnostics).toEqual(direct.diagnostics);
-    expect(result.diagnostics.some((d) => d.code === 'filter-sql-empty')).toBe(true);
   });
 });
 
@@ -281,7 +295,7 @@ describe('resolveEditorMode', () => {
     tab.sqlDraft = 'SELECT 1';
     const state = {
       tabs: signal([tab]), savedQueries: [] as AppState['savedQueries'],
-      resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'), libraryDirty: signal(false),
+      resultView: signal<'table' | 'json' | 'panel'>('table'), libraryDirty: signal(false),
       libraryName: signal('Lib'), workspaceId: 'w1', workspaceKey: 'lib',
       dashboard: null as AppState['dashboard'],
     };

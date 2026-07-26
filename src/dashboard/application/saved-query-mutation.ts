@@ -1,19 +1,18 @@
 // Saved-query mutations must preserve workspace validity (#280 "Saved-query
 // mutations must preserve workspace validity"). Deleting a query, changing its
-// Dashboard role, changing a filter source's role, deleting a selected
-// variant, changing parameter declarations used by filters, or changing a base
-// panel's type/structure can all invalidate Dashboard references. This pure
-// planner constructs and validates a COMPLETE candidate workspace for any such
-// mutation and rejects an invalidating one unless the caller supplies an atomic
-// repair that produces a valid candidate. The repair + mutation apply to ONE
-// candidate workspace, which the caller then commits atomically through the
-// Phase-2 repository. Cancelling a mutation is simply not committing the plan.
+// Dashboard role, deleting a selected variant, or changing a base panel's
+// type/structure can all invalidate Dashboard references. This pure planner
+// constructs and validates a COMPLETE candidate workspace for any such mutation
+// and rejects an invalidating one unless the caller supplies an atomic repair
+// that produces a valid candidate. The repair + mutation apply to ONE candidate
+// workspace, which the caller then commits atomically through the Phase-2
+// repository. Cancelling a mutation is simply not committing the plan.
 //
 // Every listed mutation reduces to deleting a query or replacing one query with
-// a new version (role/variant/parameter/panel edits are all a replace), so the
-// mutation surface is two kinds. Repairs mirror the #280 examples: remove the
-// affected tiles, remove the affected filter definitions, switch tiles to
-// another variant, or remap references to another query.
+// a new version (role/variant/panel edits are all a replace), so the mutation
+// surface is two kinds. Repairs mirror the #280 examples, minus the filter one
+// #447 removed: remove the affected tiles, switch tiles to another variant, or
+// remap references to another query.
 
 import { cloneJson } from '../../core/saved-query.js';
 import { canonicalEqual, DASHBOARD_DOCUMENT_SHAPE } from '../model/canonical-json.js';
@@ -25,7 +24,7 @@ import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../generated/json-schema.types.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -36,13 +35,11 @@ export type SavedQueryMutation =
   | { type: 'replace-query'; queryId: string; query: SavedQueryV2 };
 
 export type SavedQueryRepairKind =
-  | 'remove-affected-tiles' | 'remove-affected-filters' | 'remove-affected'
+  | 'remove-affected-tiles'
   | 'switch-variant' | 'remap-query';
 
 export type SavedQueryRepair =
   | { type: 'remove-affected-tiles' }
-  | { type: 'remove-affected-filters' }
-  | { type: 'remove-affected' }
   | { type: 'switch-variant'; tileVariants: Record<string, string> }
   | { type: 'remap-query'; to: string };
 
@@ -52,7 +49,7 @@ export type SavedQueryRepair =
  *  can offer. */
 export interface SavedQueryMutationPlan {
   ok: boolean;
-  candidate: StoredWorkspaceV4 | null;
+  candidate: StoredWorkspaceV5 | null;
   diagnostics: WorkspaceDiagnostic[];
   repairs: SavedQueryRepairKind[];
 }
@@ -69,39 +66,24 @@ function applyQueryMutation(queries: readonly SavedQueryV2[], mutation: SavedQue
   return queries.map((query) => (isObject(query) && query.id === mutation.queryId ? mutation.query : query));
 }
 
-/** Tile IDs whose tile references the affected query. */
-function affectedTileIds(dashboard: DashboardDocumentV1, affectedId: string): Set<string> {
-  const ids = new Set<string>();
-  for (const tile of dashboard.tiles) {
-    if (isObject(tile) && tile.queryId === affectedId && typeof tile.id === 'string') ids.add(tile.id);
-  }
-  return ids;
-}
-
-function removeAffectedTiles(dashboard: DashboardDocumentV1, affectedId: string): DashboardDocumentV1 {
-  const removed = affectedTileIds(dashboard, affectedId);
+/** Drop every tile that renders the affected query.
+ *
+ * There is no companion filter repair any more. A curated filter could be broken
+ * by a query mutation in two ways — it referenced the query as its option source,
+ * or it explicitly targeted a tile that was about to disappear — so the repair
+ * menu offered removing the affected filters as well. A variable is inferred from
+ * the panel SQL that declares it and targets nothing, so removing the tiles is
+ * the whole repair: any variable that existed only because of those queries stops
+ * being inferred, and its stored option SQL (if any) becomes a visible orphan the
+ * user can keep or delete. */
+function removeAffectedTiles(dashboard: DashboardDocumentV2, affectedId: string): DashboardDocumentV2 {
   const tiles = dashboard.tiles.filter((tile) => !(isObject(tile) && tile.queryId === affectedId));
-  const filters = dashboard.filters.map((filter) => {
-    if (!isObject(filter) || !Array.isArray(filter.targets)) return filter;
-    return { ...filter, targets: filter.targets.filter((target) => !removed.has(target as string)) };
-  });
-  return { ...dashboard, tiles, filters };
-}
-
-function removeAffectedFilters(dashboard: DashboardDocumentV1, affectedId: string): DashboardDocumentV1 {
-  const targeted = affectedTileIds(dashboard, affectedId);
-  const filters = dashboard.filters.filter((filter) => {
-    if (!isObject(filter)) return true;
-    if (filter.sourceQueryId === affectedId) return false;
-    if (Array.isArray(filter.targets) && filter.targets.some((target) => targeted.has(target as string))) return false;
-    return true;
-  });
-  return { ...dashboard, filters };
+  return { ...dashboard, tiles };
 }
 
 function switchVariants(
-  dashboard: DashboardDocumentV1, affectedId: string, tileVariants: Record<string, string>,
-): DashboardDocumentV1 {
+  dashboard: DashboardDocumentV2, affectedId: string, tileVariants: Record<string, string>,
+): DashboardDocumentV2 {
   const tiles = dashboard.tiles.map((tile) => {
     if (!isObject(tile) || tile.queryId !== affectedId || typeof tile.id !== 'string') return tile;
     const variant = tileVariants[tile.id];
@@ -111,32 +93,28 @@ function switchVariants(
   return { ...dashboard, tiles };
 }
 
-function remapQuery(dashboard: DashboardDocumentV1, affectedId: string, to: string): DashboardDocumentV1 {
+function remapQuery(dashboard: DashboardDocumentV2, affectedId: string, to: string): DashboardDocumentV2 {
   const tiles = dashboard.tiles.map((tile) =>
     (isObject(tile) && tile.queryId === affectedId ? { ...tile, queryId: to } : tile));
-  const filters = dashboard.filters.map((filter) =>
-    (isObject(filter) && filter.sourceQueryId === affectedId ? { ...filter, sourceQueryId: to } : filter));
-  return { ...dashboard, tiles, filters };
+  return { ...dashboard, tiles };
 }
 
-function applyRepair(dashboard: DashboardDocumentV1, affectedId: string, repair: SavedQueryRepair): DashboardDocumentV1 {
+function applyRepair(dashboard: DashboardDocumentV2, affectedId: string, repair: SavedQueryRepair): DashboardDocumentV2 {
   switch (repair.type) {
     case 'remove-affected-tiles': return removeAffectedTiles(dashboard, affectedId);
-    case 'remove-affected-filters': return removeAffectedFilters(dashboard, affectedId);
-    case 'remove-affected': return removeAffectedFilters(removeAffectedTiles(dashboard, affectedId), affectedId);
     case 'switch-variant': return switchVariants(dashboard, affectedId, repair.tileVariants);
     default: return remapQuery(dashboard, affectedId, repair.to);
   }
 }
 
-/** The repairs applicable to a set of diagnostics: a `filters`-scoped
- *  diagnostic offers filter removal; a `tiles`-scoped one offers tile removal,
- *  a variant switch, or a remap. */
+/** The repairs applicable to a set of diagnostics. A `tiles`-scoped diagnostic
+ *  offers tile removal, a variant switch, or a remap; there is no other member
+ *  collection left to repair, because a variable is inferred rather than stored
+ *  and so cannot itself hold a reference a mutation could break. */
 export function suggestRepairs(diagnostics: readonly WorkspaceDiagnostic[]): SavedQueryRepairKind[] {
   const repairs = new Set<SavedQueryRepairKind>();
   for (const diagnostic of diagnostics) {
-    if (diagnostic.path.includes('filters')) repairs.add('remove-affected-filters');
-    else if (diagnostic.path.includes('tiles')) {
+    if (diagnostic.path.includes('tiles')) {
       repairs.add('remove-affected-tiles');
       repairs.add('switch-variant');
       repairs.add('remap-query');
@@ -146,7 +124,7 @@ export function suggestRepairs(diagnostics: readonly WorkspaceDiagnostic[]): Sav
 }
 
 function validateWorkspace(
-  candidate: StoredWorkspaceV4, options: SavedQueryMutationOptions,
+  candidate: StoredWorkspaceV5, options: SavedQueryMutationOptions,
 ): WorkspaceDiagnostic[] {
   const codecOptions = options.validationService ? { validationService: options.validationService } : {};
   const structural = validateStoredWorkspaceDocument(candidate, codecOptions);
@@ -166,8 +144,8 @@ function validateWorkspace(
  *  re-normalized or fallback-regenerated as a side effect of another
  *  Dashboard's repair. */
 function repairedDashboard(
-  dashboard: DashboardDocumentV1, affectedId: string, repair: SavedQueryRepair | undefined,
-): DashboardDocumentV1 {
+  dashboard: DashboardDocumentV2, affectedId: string, repair: SavedQueryRepair | undefined,
+): DashboardDocumentV2 {
   const clone = cloneJson(dashboard);
   if (!repair) return clone;
   const repaired = applyRepair(clone, affectedId, repair);
@@ -200,15 +178,15 @@ function repairedDashboard(
  *  rewrite an unrelated Dashboard's tile. A per-Dashboard repair map is the
  *  natural extension once a UI can actually address more than one Dashboard. */
 export function planSavedQueryMutation(
-  workspace: StoredWorkspaceV4, mutation: SavedQueryMutation,
+  workspace: StoredWorkspaceV5, mutation: SavedQueryMutation,
   repair?: SavedQueryRepair, options: SavedQueryMutationOptions = {},
 ): SavedQueryMutationPlan {
   const queries = applyQueryMutation(workspace.queries, mutation);
   const dashboards = workspace.dashboards.map(
     (dashboard) => repairedDashboard(dashboard, mutation.queryId, repair),
   );
-  const candidate: StoredWorkspaceV4 = {
-    storageVersion: 4, id: workspace.id, key: workspace.key, name: workspace.name,
+  const candidate: StoredWorkspaceV5 = {
+    storageVersion: 5, id: workspace.id, key: workspace.key, name: workspace.name,
     queries: cloneJson(queries), dashboards,
   };
   const diagnostics = validateWorkspace(candidate, options);

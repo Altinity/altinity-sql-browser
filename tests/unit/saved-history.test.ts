@@ -7,9 +7,7 @@ import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import { setTabSpecDraft, toggleFavorite, deleteSaved } from '../../src/state.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { AppState, HistoryEntry } from '../../src/state.js';
-
-type ResultView = AppState['resultView']['value'];
+import type { HistoryEntry } from '../../src/state.js';
 
 const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
 // #287 W4: toggleFavorite/renameSaved/deleteSaved's onclick handlers are now
@@ -130,86 +128,27 @@ describe('renderSavedHistory', () => {
     expect(app.state.resultView.value).toBe('panel');
   });
 
-  it('saved: opens a Filter badge directly in Spec at the role', () => {
-    const app = makeApp();
-    app.state.sidePanel.value = 'saved';
-    setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
-    const loaded = app.activeTab();
-    app.specEditor.revealOffset = vi.fn();
-    loaded.specText = '{"dashboard":{"role":"filter"}}';
-    (app.actions.loadIntoNewTab as ReturnType<typeof vi.fn>).mockReturnValue(loaded);
-    renderSavedHistory(app);
-    click(qs(savedList(app), '.query-role-badge'));
-    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
-    expect(app.actions.setEditorMode).toHaveBeenCalledWith('spec');
-    expect(app.specEditor.revealOffset).toHaveBeenCalledWith(loaded.specText.indexOf('"role"'));
-    expect(app.actions.run).not.toHaveBeenCalled();
-  });
-
-  it.each(['table', 'json', 'panel'] as ResultView[])(
-    'saved: a Filter-role query always launches into the Filter preview, independent of the current result view (was %s) (#244)',
-    (previousView) => {
-      const app = makeApp();
-      app.state.sidePanel.value = 'saved';
-      app.state.resultView.value = previousView;
-      setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
-      renderSavedHistory(app);
-      click(qs(savedList(app), '.saved-row'));
-      expect(app.actions.run).toHaveBeenCalledWith({ view: 'filter' });
-    },
-  );
-
-  it('saved: Filter role takes precedence over a dormant persisted spec.view and Panel config, without touching either (#244)', () => {
-    const app = makeApp();
-    app.state.sidePanel.value = 'saved';
-    setSaved(app, [
-      { id: 'f1', name: 'No persisted view', sql: 'SELECT 1', dashboard: { role: 'filter' } },
-      {
-        id: 'f2', name: 'Dormant Panel view', sql: 'SELECT 1',
-        dashboard: { role: 'filter' }, view: 'panel', panel: { cfg: { type: 'kpi' } },
-      },
-    ]);
-    renderSavedHistory(app);
-    const rows = qsa(savedList(app), '.saved-row');
-    click(rows[0]);
-    expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' });
-    click(rows[1]);
-    expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' }); // role wins, not 'panel'
-    // launch never mutates the saved entry — dormant view/panel survive untouched
-    const dormant = app.state.savedQueries.find((q) => q.id === 'f2')!;
-    expect(dormant.spec.view).toBe('panel');
-    expect(dormant.spec.panel).toEqual({ cfg: { type: 'kpi' } });
-    expect(dormant.spec.dashboard).toEqual({ role: 'filter' }); // no spec.view:'filter' persisted
-    expect(app.saveJSON).not.toHaveBeenCalled();
-  });
-
-  it('saved: a Filter-role query that cannot auto-run still opens the Filter drawer instead of a dormant Panel view or nothing (#244)', () => {
-    // A Filter-role entry with empty/DDL/multi-statement SQL can't auto-run
-    // (isAutoRunnable is false) — e.g. one hand-authored, imported, or loaded
-    // from localStorage without the SQL-shape validation the Spec editor
-    // enforces. The role must still win the launch view: `SAVED_VIEWS`
-    // deliberately excludes 'filter' (it's never persisted), so this only
-    // opens correctly if the role bypasses that persisted-view check.
+  // #447 coverage restoration (worker 3): the non-auto-runnable-WITH-a-remembered-
+  // view arm of `open()` used to be reached only by the deleted #244 case (a
+  // Filter-role entry with DDL SQL). It is still live #166 behaviour for any
+  // effectful/queryless entry carrying a persisted table/json/panel view, so it
+  // keeps a case of its own rather than losing its only exercise.
+  it('saved: an effectful query with a remembered view restores that view without running', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     app.state.resultView.value = 'table';
-    setSaved(app, [
-      { id: 'f1', name: 'Empty Filter', sql: '', dashboard: { role: 'filter' } },
-      {
-        id: 'f2', name: 'DDL Filter with dormant Panel', sql: 'CREATE TABLE t (a Int8)',
-        dashboard: { role: 'filter' }, view: 'panel', panel: { cfg: { type: 'kpi' } },
-      },
-    ]);
+    setSaved(app, [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false, view: 'json' }]);
     renderSavedHistory(app);
-    const rows = qsa(savedList(app), '.saved-row');
-    click(rows[0]);
-    expect(app.actions.run).not.toHaveBeenCalled(); // not auto-runnable
-    expect(app.state.resultView.value).toBe('filter');
-    app.state.resultView.value = 'table'; // reset before the second row
-    click(rows[1]);
+    click(qs(savedList(app), '.saved-row'));
     expect(app.actions.run).not.toHaveBeenCalled();
-    expect(app.state.resultView.value).toBe('filter'); // role wins, not the dormant 'panel'
+    expect(app.state.resultView.value).toBe('json');
   });
+
+  // #447 deleted four Library-launch cases whose subject was the Filter role:
+  // the `.query-role-badge` "open the role in Spec" badge, and the three #244
+  // "a Filter-role query always launches into the Filter preview" cases (role
+  // beats the current view / a dormant persisted view / a non-auto-runnable
+  // entry). There is no `filter` role and no Filter result view left.
 
   it('saved: live count + star toggles favorite and re-sorts favorites first', async () => {
     const app = makeApp();
@@ -240,9 +179,9 @@ describe('renderSavedHistory', () => {
       { id: 'b', name: 'Plain', sql: '2', favorite: false },
     ]);
     app.state.dashboard = {
-      documentVersion: 1, id: 'd', title: 'D', revision: 1,
+      documentVersion: 2, id: 'd', title: 'D', revision: 1,
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      filters: [], tiles: [],
+      tiles: [],
     };
     renderSavedHistory(app);
     const rows = qsa(savedList(app), '.saved-row');
@@ -265,15 +204,13 @@ describe('renderSavedHistory', () => {
     setSaved(app, [
       { id: 'lib', name: 'Library one', sql: '1' },
       { id: 'owned-panel', name: 'Owned panel', sql: '2' },
-      { id: 'owned-filter', name: 'Owned filter', sql: '3' },
     ]);
     app.currentWorkspace = {
-      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      storageVersion: 5, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries,
       dashboards: [{
-        documentVersion: 1, id: 'd', title: 'D', revision: 1,
+        documentVersion: 2, id: 'd', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'owned-filter' }],
         tiles: [{ id: 't1', queryId: 'owned-panel' }],
       }],
     };
@@ -283,7 +220,7 @@ describe('renderSavedHistory', () => {
     expect(qs(savedTabsRow(app), '.side-count').textContent).toBe('· 1');
     // Every stored query is still there — the list is a projection, not a filter
     // on the workspace.
-    expect(app.state.savedQueries).toHaveLength(3);
+    expect(app.state.savedQueries).toHaveLength(2);
   });
 
   it('saved: shows the empty state when every query is owned, not a search box', () => {
@@ -291,12 +228,12 @@ describe('renderSavedHistory', () => {
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 'owned', name: 'Owned', sql: '1' }]);
     app.currentWorkspace = {
-      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      storageVersion: 5, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries,
       dashboards: [{
-        documentVersion: 1, id: 'd', title: 'D', revision: 1,
+        documentVersion: 2, id: 'd', title: 'D', revision: 1,
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        filters: [], tiles: [{ id: 't1', queryId: 'owned' }],
+        tiles: [{ id: 't1', queryId: 'owned' }],
       }],
     };
     renderSavedHistory(app);
@@ -313,12 +250,12 @@ describe('renderSavedHistory', () => {
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 'a', name: 'A', sql: '1', favorite: false }]);
     const dashboard = (id: string) => ({
-      documentVersion: 1 as const, id, title: id, revision: 1,
+      documentVersion: 2 as const, id, title: id, revision: 1,
       layout: { type: 'flow' as const, version: 1 as const, preset: 'report' as const, items: {} },
-      filters: [], tiles: [],
+      tiles: [],
     });
     app.currentWorkspace = {
-      storageVersion: 4, id: 'w', key: 'w', name: 'W',
+      storageVersion: 5, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
     };
     app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
@@ -400,7 +337,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     // The latest committed workspace no longer contains s1 — the patch aborts.
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 4, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
+      const input = await transform({ storageVersion: 5, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull(); // the planner found no target and aborted
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
@@ -419,7 +356,7 @@ describe('renderSavedHistory', () => {
   it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
     const app = makeApp();
     app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
-      const input = await transform({ storageVersion: 4, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
+      const input = await transform({ storageVersion: 5, id: 'w1', key: 'l', name: 'L', queries: [], dashboards: [] });
       expect(input).toBeNull();
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];

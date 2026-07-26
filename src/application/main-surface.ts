@@ -5,8 +5,8 @@
 // target.
 //
 // Deliberately session state, never persisted workspace content:
-// `StoredWorkspaceV4` carries no `activeDashboardId`/`defaultDashboardId`, and
-// a Dashboard is identified ONLY by its stable `DashboardDocumentV1.id` —
+// `StoredWorkspaceV5` carries no `activeDashboardId`/`defaultDashboardId`, and
+// a Dashboard is identified ONLY by its stable `DashboardDocumentV2.id` —
 // never by its position in `dashboards[]`. Sign-out and a workspace switch
 // therefore clear or re-validate the selection rather than migrating it.
 //
@@ -17,14 +17,15 @@
 
 import { findDashboardStrict, type WorkspaceDashboards } from '../workspace/workspace-dashboards.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { DashboardDocumentV1 } from '../generated/json-schema.types.js';
+import type { DashboardDocumentV2 } from '../generated/json-schema.types.js';
 
 /** Where a caller wants navigation to land INSIDE the opened Dashboard. A tile
  *  is addressed by its Dashboard-local TILE id (never the saved-query id it
- *  renders); a curated filter by its filter-definition id. */
+ *  renders); a variable by its EXACT inferred name, which is the only identity a
+ *  variable has (#447 — there is no filter id any more). */
 export type DashboardFocusTarget =
   | { kind: 'tile'; id: string }
-  | { kind: 'filter'; id: string };
+  | { kind: 'variable'; id: string };
 
 /** View is a presentation choice over the same live document, not an
  *  authorization boundary (ADR-0003). */
@@ -141,16 +142,22 @@ export function reconcileMainSurface(
  *  cross-resolve. The one definition of "this member exists", shared by open-time
  *  validation and post-commit reconciliation. */
 function presentMember(
-  dashboard: DashboardDocumentV1, member: DashboardFocusTarget | null,
+  dashboard: DashboardDocumentV2, member: DashboardFocusTarget | null,
 ): DashboardFocusTarget | null {
   if (member === null) return null;
-  const members = member.kind === 'tile' ? dashboard.tiles : dashboard.filters;
-  return members.some((entry) => entry.id === member.id) ? member : null;
+  // A VARIABLE is always retained. Whether a variable still exists is decided by
+  // inference over the workspace's panel queries, which this pure surface model
+  // deliberately does not hold — it sees one Dashboard document, and a variable
+  // with no stored option SQL leaves no trace in that document at all. Retaining
+  // the name is the safe direction: a name that no longer resolves focuses
+  // nothing, whereas dropping it on every commit would lose a live focus.
+  if (member.kind === 'variable') return member;
+  return dashboard.tiles.some((entry) => entry.id === member.id) ? member : null;
 }
 
 /** Keep only the member references the committed document still contains. */
 function retainMember(
-  surface: Extract<MainSurfaceState, { kind: 'dashboard' }>, dashboard: DashboardDocumentV1,
+  surface: Extract<MainSurfaceState, { kind: 'dashboard' }>, dashboard: DashboardDocumentV2,
 ): MainSurfaceState {
   const present = (member: DashboardFocusTarget | null): DashboardFocusTarget | null =>
     presentMember(dashboard, member);

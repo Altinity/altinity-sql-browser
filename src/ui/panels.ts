@@ -21,7 +21,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart as renderChartUntyped } from './chart-render.js';
-import { patchSpecDraft, setTabSpecDraft, tabPanel } from '../state.js';
+import { patchSpecDraft, tabPanel } from '../state.js';
 import type { PanelSpec, QuerySpecDraft, ResultSort } from '../state.js';
 import type { App, Tab } from './app.types.js';
 import { patchQueryPanel } from '../core/saved-query.js';
@@ -35,9 +35,7 @@ import {
 import type { Column, ChartFamilyType, LogsShape, PanelResolution, KpiResult } from '../core/panel-cfg.js';
 import { CHART_TYPES as CHART_TYPES_UNTYPED, schemaKey as schemaKeyUntyped } from '../core/chart-data.js';
 import { renderKpiPanel as renderKpiPanelUntyped } from './kpi-panel.js';
-import {
-  applyResultChoice, DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES, resultChoiceForSpec,
-} from '../core/result-choice.js';
+import { applyResultChoice, PANEL_RESULT_CHOICES, resultChoiceForSpec } from '../core/result-choice.js';
 import type { ResultChoice } from '../core/result-choice.js';
 import type { FieldConfig, PanelCfg } from '../generated/json-schema.types.js';
 
@@ -518,40 +516,43 @@ function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload): vo
   hooks.rerender();
 }
 
-/** Compact panel-type selector for the main results toolbar. When Table/JSON
- * is active it shows a neutral `Panel…` prompt; choosing a type both configures
- * the panel and activates its view. This keeps Table/JSON one-click views while
- * removing the redundant fixed Panel button and the old full-width picker row. */
+/** Compact panel-visualisation selector for the main results toolbar. Choosing a
+ * type both configures the panel and activates its view. This keeps Table/JSON
+ * one-click views while removing the redundant fixed Panel button and the old
+ * full-width picker row.
+ *
+ * #447 FLATTENED it: the options are now one ungrouped list of real panel
+ * visualisations. The `Dashboard role` optgroup (whose single entry was the
+ * removed Filter role), the `Panel` optgroup heading it was paired against, and
+ * every category heading went with it, leaving a flat list of real
+ * visualisations. On Table/JSON the select holds the disabled empty-state
+ * placeholder, so the closed control still reads as something rather than a bare
+ * caret, while the selection stays empty — which is what makes picking the
+ * query's CURRENT type a genuine `change` that switches the view back to its
+ * preview. */
 export function renderPanelTypePicker(app: App, r: PanelResult | null, hooks: PanelHooks): HTMLSelectElement {
   const { hasGrid, columns, saved, resolved, rescueLogs } = panelContext(app, r);
   const select = h('select', {
-    class: 'result-panel-select' + (['panel', 'filter'].includes(app.state.resultView.value) ? ' active' : ''),
+    class: 'result-panel-select' + (app.state.resultView.value === 'panel' ? ' active' : ''),
     'aria-label': 'Result presentation',
-    title: 'Choose a panel visualization or Dashboard role',
+    title: 'Choose a panel visualization',
     onchange: (e: Event) => {
       const target = e.target as HTMLSelectElement;
       const selectedId = target.value.includes(':') ? target.value : `panel:${target.value}`;
-      const choice = [...PANEL_RESULT_CHOICES, ...DASHBOARD_ROLE_RESULT_CHOICES]
-        .find((item) => item.id === selectedId);
+      const choice = PANEL_RESULT_CHOICES.find((item) => item.id === selectedId);
       if (!choice) return;
       const tab = app.activeTab();
       const apply = (spec: QuerySpecDraft | null): QuerySpecDraft => {
-        let query: unknown = { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec };
-        if (choice.kind === 'panel') {
-          const base = saved && !resolved.rederived
-            ? saved
-            : { cfg: resolved.cfg, key: hasGrid && isChartFamily(resolved.cfg.type) ? schemaKey(columns) : null };
-          query = patchQueryPanel(query, { cfg: base.cfg, key: base.key ?? undefined });
-        }
+        const base = saved && !resolved.rederived
+          ? saved
+          : { cfg: resolved.cfg, key: hasGrid && isChartFamily(resolved.cfg.type) ? schemaKey(columns) : null };
+        const query = patchQueryPanel(
+          { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
+          { cfg: base.cfg, key: base.key ?? undefined },
+        );
         return applyResultChoice(query, choice, columns).spec;
       };
-      let result: { ok: boolean; invalidTab: Tab | null };
-      if (choice.kind === 'role' && !tab.specDiagnostics?.some((item) => item.code === 'invalid-json')) {
-        setTabSpecDraft(tab, apply(tab.specParsed), { dirty: true, validationService: app.specValidators });
-        result = { ok: true, invalidTab: null };
-      } else {
-        result = patchSpecDraft(tab, apply, { dirty: true, validationService: app.specValidators });
-      }
+      const result = patchSpecDraft(tab, apply, { dirty: true, validationService: app.specValidators });
       if (!result.ok) {
         // `!`: same invariant as writePanel above — invalidTab is always this `tab`.
         app.activateInvalidSpecDraft(result.invalidTab!);
@@ -559,32 +560,35 @@ export function renderPanelTypePicker(app: App, r: PanelResult | null, hooks: Pa
       }
       app.queryDoc.revalidateSpecDrafts();
       app.specEditor.syncFromState();
-      app.state.resultView.value = choice.kind === 'role' ? 'filter' : 'panel';
+      app.state.resultView.value = 'panel';
       hooks.markDirty();
       hooks.rerender();
     },
   });
-  // A disabled placeholder shown whenever the drawer is on Table/JSON (not a
-  // preview). Selecting it is impossible, so picking ANY real entry — even the
-  // query's current type/role — is a genuine `change` that switches the view to
-  // that preview. Without it, `select.value` would already equal the current
-  // choice and re-picking it would fire no event (the view would never switch).
-  const prompt = h('option', { value: '' }, 'Preview…');
-  prompt.disabled = true;
-  select.appendChild(prompt);
-  const panelGroup = h('optgroup', { label: 'Panel' });
+  // The empty-state label. #447 removed the `Dashboard role` category and the
+  // `Filter` option, and with them the old `Preview…` wording — but a
+  // placeholder is not a category heading, it is what the CLOSED control reads
+  // while no panel view is showing. Dropping it entirely left `value = ''`
+  // matching no option at all, so the select rendered as a bare caret with no
+  // text. Kept, reworded, and still disabled: it labels a state, it is not a
+  // choice, and it preserves the empty selection that makes re-picking the
+  // query's current type a genuine `change`.
+  const placeholder = h('option', { value: '' }, 'Visualise…');
+  placeholder.disabled = true;
+  select.appendChild(placeholder);
+  // `(auto)` stands in for a query with no explicit pickable panel type (the
+  // Table arm, an absent panel, or an unknown/future type) so the picker has
+  // something to display instead of going blank while the Panel view is open.
+  // Disabled: it names the derived state, it is not a choice.
   if (resultChoiceForSpec(app.activeTab().specParsed) === 'panel:auto') {
     const auto = h('option', { value: 'panel:auto' }, '(auto)');
     auto.disabled = true;
-    panelGroup.appendChild(auto);
+    select.appendChild(auto);
   }
-  for (const option of PANEL_RESULT_CHOICES) panelGroup.appendChild(h('option', { value: option.id }, option.label));
-  const roleGroup = h('optgroup', { label: 'Dashboard role' });
-  for (const option of DASHBOARD_ROLE_RESULT_CHOICES) roleGroup.appendChild(h('option', { value: option.id }, option.label));
-  select.append(panelGroup, roleGroup);
-  // Reflect the current choice only while a preview is showing; on Table/JSON
-  // the placeholder is selected so any pick is a real change (see above).
-  select.value = ['panel', 'filter'].includes(app.state.resultView.value)
+  for (const option of PANEL_RESULT_CHOICES) select.appendChild(h('option', { value: option.id }, option.label));
+  // Reflect the current choice only while the Panel view is showing; on
+  // Table/JSON nothing is selected so any pick is a real change (see above).
+  select.value = app.state.resultView.value === 'panel'
     ? resultChoiceForSpec(app.activeTab().specParsed)
     : '';
   return select;

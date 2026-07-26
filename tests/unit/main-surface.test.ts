@@ -5,24 +5,25 @@ import {
   withoutPendingFocus,
   type DashboardFocusTarget, type MainSurfaceState,
 } from '../../src/application/main-surface.js';
-import type { DashboardDocumentV1, StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
-const dash = (id: string): DashboardDocumentV1 => ({
-  documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-  filters: [], tiles: [],
+const dash = (id: string): DashboardDocumentV2 => ({
+  documentVersion: 2, id, title: id.toUpperCase(), revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [],
 });
-/** A Dashboard that actually CONTAINS members, for the #426 retention rules. */
-const dashWith = (id: string, tileIds: string[], filterIds: string[]): DashboardDocumentV1 => ({
+/** A Dashboard that actually CONTAINS tile members, for the #426 retention
+ *  rules. A `variable` focus target is never validated against the document —
+ *  #447 removed the stored filter/variable collection a Dashboard used to
+ *  carry, so there is nothing left to construct a fixture "with a variable". */
+const dashWith = (id: string, tileIds: string[]): DashboardDocumentV2 => ({
   ...dash(id),
   tiles: tileIds.map((tileId) => ({ id: tileId, queryId: 'q-' + tileId })),
-  filters: filterIds.map((filterId) => ({ id: filterId, parameter: 'p_' + filterId })),
 });
-const ws = (ids: string[]): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: ids.map(dash),
+const ws = (ids: string[]): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: ids.map(dash),
 });
-const wsOf = (...dashboards: DashboardDocumentV1[]): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
+const wsOf = (...dashboards: DashboardDocumentV2[]): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards,
 });
 const onDashboard = (
   dashboardId: string, mode: 'view' | 'edit' = 'edit',
@@ -45,7 +46,7 @@ describe('resolveOpenDashboard', () => {
   // retained) and that a delivery is owed (consumed once). One request sets both.
   it('sets BOTH the current member and the owed delivery from one focus request', () => {
     const focus = { kind: 'tile', id: 't1' } as const;
-    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'], [])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
+    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
       status: 'ok',
       surface: {
         kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: focus, pendingFocus: focus,
@@ -57,7 +58,7 @@ describe('resolveOpenDashboard', () => {
   // REQUEST has to survive so the delivery path can report the miss.
   it('does not mark a member the Dashboard lacks, but still owes the delivery', () => {
     const focus = { kind: 'tile', id: 'gone' } as const;
-    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'], [])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
+    expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
       status: 'ok',
       surface: {
         kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: focus,
@@ -114,49 +115,43 @@ describe('reconcileMainSurface', () => {
 
   // #426 — the Dashboard surviving is not enough: the member it points at may
   // have been removed, and the tree paints current-resource styling from it.
-  it('retains a current member the committed document still contains', () => {
+  it('retains a current TILE member the committed document still contains', () => {
     const surface = onDashboard('d', 'edit', { kind: 'tile', id: 't1' });
-    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t0', 't1'], [])))).toBe(surface);
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t0', 't1'])))).toBe(surface);
   });
 
-  it('retains a current FILTER member by filter id', () => {
-    const surface = onDashboard('d', 'edit', { kind: 'filter', id: 'f1' });
-    expect(reconcileMainSurface(surface, wsOf(dashWith('d', [], ['f1'])))).toBe(surface);
+  // #447: a VARIABLE is inferred from panel query placeholders, which this pure
+  // surface model does not hold — so a variable focus target is retained
+  // unconditionally, regardless of what the committed document contains.
+  it('always retains a current VARIABLE member — there is nothing to validate it against', () => {
+    const surface = onDashboard('d', 'edit', { kind: 'variable', id: 'country' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', [])))).toBe(surface);
   });
 
-  it('clears a current member whose tile was removed, keeping the Dashboard open', () => {
+  it('clears a current TILE member whose tile was removed, keeping the Dashboard open', () => {
     const surface = onDashboard('d', 'edit', { kind: 'tile', id: 'gone' });
-    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'], [])))).toEqual({
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'])))).toEqual({
       kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
     });
   });
 
-  it('clears a current member whose FILTER was removed', () => {
-    const surface = onDashboard('d', 'view', { kind: 'filter', id: 'gone' });
-    expect(reconcileMainSurface(surface, wsOf(dashWith('d', [], ['f1'])))).toEqual({
-      kind: 'dashboard', dashboardId: 'd', mode: 'view', currentMember: null, pendingFocus: null,
-    });
-  });
-
-  // A tile id and a filter id could collide; a member is resolved against its
-  // OWN collection, never "either list contains this id".
-  it('does not resolve a tile member against the filter list, or vice versa', () => {
+  // A variable member is retained unconditionally, so it is never resolved
+  // against the tile collection — even when its id happens to match a tile id.
+  it('does not resolve a tile member by consulting any other collection, and a variable never needs one', () => {
     const tileSurface = onDashboard('d', 'edit', { kind: 'tile', id: 'x' });
-    expect(reconcileMainSurface(tileSurface, wsOf(dashWith('d', [], ['x'])))).toEqual({
+    expect(reconcileMainSurface(tileSurface, wsOf(dashWith('d', [])))).toEqual({
       kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
     });
-    const filterSurface = onDashboard('d', 'edit', { kind: 'filter', id: 'x' });
-    expect(reconcileMainSurface(filterSurface, wsOf(dashWith('d', ['x'], [])))).toEqual({
-      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
-    });
+    const variableSurface = onDashboard('d', 'edit', { kind: 'variable', id: 'x' });
+    expect(reconcileMainSurface(variableSurface, wsOf(dashWith('d', ['x'])))).toBe(variableSurface);
   });
 
   // The two fields are independent: a still-valid current member must survive
   // even when the owed delivery has to be dropped.
   it('clears the two member fields INDEPENDENTLY', () => {
     const current = { kind: 'tile', id: 't1' } as const;
-    const surface = onDashboard('d', 'edit', current, { kind: 'filter', id: 'gone' });
-    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'], [])))).toEqual({
+    const surface = onDashboard('d', 'edit', current, { kind: 'tile', id: 'gone' });
+    expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'])))).toEqual({
       kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: current, pendingFocus: null,
     });
   });
@@ -196,7 +191,7 @@ describe('withoutPendingFocus', () => {
   // also cleared `currentMember`, the tree would stop marking the member the
   // instant its focus ring was delivered.
   it('drops the consumed delivery and RETAINS the current member', () => {
-    const member = { kind: 'filter', id: 'f1' } as const;
+    const member = { kind: 'variable', id: 'country' } as const;
     const surface = onDashboard('a', 'edit', member, member);
     expect(withoutPendingFocus(surface)).toEqual({
       kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null,
@@ -223,9 +218,9 @@ describe('withCurrentMember', () => {
 
   it('replaces a previously current member', () => {
     const surface = onDashboard('a', 'view', { kind: 'tile', id: 'old' });
-    expect(withCurrentMember(surface, { kind: 'filter', id: 'new' })).toEqual({
+    expect(withCurrentMember(surface, { kind: 'variable', id: 'new' })).toEqual({
       kind: 'dashboard', dashboardId: 'a', mode: 'view',
-      currentMember: { kind: 'filter', id: 'new' }, pendingFocus: null,
+      currentMember: { kind: 'variable', id: 'new' }, pendingFocus: null,
     });
   });
 
