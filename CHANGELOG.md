@@ -29,21 +29,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the panels that declare that variable. Duplicate values collapse to the first
   row's label.
 
-  The per-variable editor gains **Test**: it checks the draft locally first — one
-  statement, `SELECT`/`WITH` only, no `FORMAT`/`INTO OUTFILE`, no `{name:Type}`
-  placeholders, no optional blocks — and sends nothing for a problem it can already
-  see. Then it runs that one variable's query and validates its result shape, which
-  is the only place the two-`String`-column rule is checkable: a combined
-  `UNION ALL` reports one merged column list for every branch. That is why a
-  combined-query problem is reported as a **batch-level failure** (every
+  A combined-query problem is reported as a **batch-level failure** (every
   option-backed control unavailable, one banner, no automatic fall-back to N
-  separate queries) with Test named as the way to find the branch at fault.
+  separate queries), because `UNION ALL` reports one merged column list for every
+  branch and so cannot say which one is at fault. Narrowing it down means running
+  a single variable's SQL on its own, which its own editor tab does (#457).
 
   Cascading option queries are rejected outright, and `Array`/`Tuple`/`Map`/
   `Nested` variables are marked as having no inferred control — they keep their
   text input, since a literal typed there still binds.
 
 ### Changed
+- **Dashboard variable option SQL is edited in the main editor, as its own tab**
+  (#457). Clicking a variable in the Dashboards tree switches to Query and opens
+  a dedicated **`Variable: <name>`** tab on that variable's committed option SQL
+  (blank when it has none), reusing the editor, tab strip, toolbar, Run action
+  and result area every query already uses. Re-clicking the same variable selects
+  the tab it already has; the same variable name in two Dashboards opens two
+  independent tabs, because a variable is identified by its Dashboard **and** its
+  exact name. Open tabs and unsaved drafts are never disturbed.
+
+  Save writes only `variableConfigs[<name>]` on that Dashboard — never a Library
+  entry, a History row, a favourite or a panel — and blank or whitespace-only SQL
+  removes the configuration, returning the variable to direct input. A Save whose
+  Dashboard no longer resolves (deleted meanwhile, or an ambiguous id) commits
+  nothing and keeps the draft, rather than guessing a target.
+
+  This replaces the right-side **option-SQL drawer** introduced in #447 phase 1.
+  The application already had a complete SQL editing surface; a second one in a
+  narrow drawer duplicated that machinery, shrank the working area and ran its own
+  editor lifecycle. The drawer, its editor seam, its textarea fallback and its
+  drawer-local **Test** action are all gone — running a variable's SQL is now the
+  ordinary Run action. Re-hosting Test's two-`String`-column check on that Run is
+  tracked separately.
+
 - **One File menu for the whole application** (#452). Query, Dashboard Edit,
   Dashboard View, the empty-Dashboard placeholder and the Dashboard
   workspace-not-found fallback now render the *same* File menu — same rows, same
@@ -103,7 +122,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   execution, still editable, and deletable through a trailing trash icon that
   asks for confirmation because SQL will be lost. An UNconfigured variable that
   loses its last reference simply disappears. A variable row has exactly two
-  operations: click to open its SQL editor, and (orphans only) delete. There is
+  operations: click to open its option SQL, and (orphans only) delete. There is
   no overflow menu.
 
   Because the tree group was renamed, a Dashboard whose Filters group was
