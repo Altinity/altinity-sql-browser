@@ -40,6 +40,12 @@
       "path": "../dashboard-v1.schema.json"
     },
     {
+      "kind": "dashboard",
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v2.schema.json",
+      "path": "../dashboard-v2.schema.json"
+    },
+    {
       "kind": "stored-workspace",
       "version": 2,
       "id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v2.schema.json",
@@ -58,10 +64,22 @@
       "path": "../stored-workspace-v4.schema.json"
     },
     {
+      "kind": "stored-workspace",
+      "version": 5,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v5.schema.json",
+      "path": "../stored-workspace-v5.schema.json"
+    },
+    {
       "kind": "portable-bundle",
       "version": 1,
       "id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
       "path": "../portable-bundle-v1.schema.json"
+    },
+    {
+      "kind": "portable-bundle",
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
+      "path": "../portable-bundle-v2.schema.json"
     }
   ]
 }
