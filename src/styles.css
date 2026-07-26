@@ -686,13 +686,15 @@ h1, h2, h3, h4, h5, h6 {
 /* File dropdown */
 .fm-overlay { position: fixed; inset: 0; z-index: 60; }
 .file-menu {
-  /* #452: 252px fitted the old short labels. "Download Library as Markdown"
-     alone consumed the whole 202px label box, wrapping its `.md` onto a line of
-     its own. Sized so the longest label plus its extension share one line. */
-  z-index: 61; width: 288px; padding-bottom: 4px;
+  z-index: 61; width: 252px; padding-bottom: 4px;
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: var(--r-md); box-shadow: var(--shadow-popover); overflow: hidden;
 }
+/* #452: the application File menu only. Scoped rather than widening `.file-menu`
+   itself, which the Dashboard tree's row menu and the style picker also mount —
+   252px still fits their short labels. "Download Library as Markdown" alone
+   consumed the whole 202px label box, wrapping its `.md` onto a line of its own. */
+.app-file-menu { width: 288px; }
 .fm-item {
   width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 7px 12px;
   border: none; background: transparent; color: var(--fg); font-family: inherit;
@@ -703,8 +705,8 @@ h1, h2, h3, h4, h5, h6 {
    menu's vocabulary must not change with the work surface, only its reachability.
    Same treatment as `.dash-tree-menu .is-disabled`. The `:hover` override is
    required: `.fm-item:hover` above still matches a disabled <button>. */
-.fm-item:disabled { opacity: .45; cursor: default; }
-.fm-item:disabled:hover { background: transparent; }
+.fm-item[aria-disabled="true"] { opacity: .45; cursor: default; }
+.fm-item[aria-disabled="true"]:hover { background: transparent; }
 /* Why a row is unavailable — its own line inside the row, indented to the label.
    Not `.fm-meta` (a monospace slot sized for `.json`/`.md`) and not beside the
    label: at 252px, "Download Library as Markdown" + "No Library queries" clipped

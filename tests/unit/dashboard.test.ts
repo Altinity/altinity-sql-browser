@@ -4135,8 +4135,7 @@ function modeApp(opts: {
 const fileBtn = (root: ParentNode | null): HTMLButtonElement =>
   qs<HTMLButtonElement>(root, '.hd-file-btn:not(.dash-style-btn)');
 const openFileMenuBtn = (root: ParentNode | null): void => { fileBtn(root).click(); };
-const fileMenuEl = (): HTMLElement | null =>
-  qsa<HTMLElement>(document, '.file-menu').find((el) => !el.classList.contains('dash-style-menu')) ?? null;
+const fileMenuEl = (): HTMLElement | null => qs<HTMLElement>(document, '.app-file-menu');
 const menuItems = (): string[] =>
   qsa(fileMenuEl(), '.fm-label').map((b) => b.textContent || '');
 const menuRow = (label: string): HTMLButtonElement =>
@@ -4449,8 +4448,8 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     const { app } = editApp();
     await render(app);
     openFileMenuBtn(app.root);
-    expect(menuRow('Import Dashboard…').disabled).toBe(false);
-    expect(menuRow('Export Dashboard…').disabled).toBe(false);
+    expect(menuRow('Import Dashboard…').getAttribute('aria-disabled')).toBeNull();
+    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
   });
 
   it('the trigger toggles, Escape closes and restores aria, the overlay closes', async () => {
@@ -4488,11 +4487,10 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     // The row is still THERE, in position — View disables, it does not remove.
     expect(menuItems()).toContain('Import Dashboard…');
     const importRow = menuRow('Import Dashboard…');
-    expect(importRow.disabled).toBe(true);
     expect(importRow.getAttribute('aria-disabled')).toBe('true');
     expect(importRow.querySelector('.fm-reason')!.textContent).toBe('Edit mode only');
     // Export is safe in View: it reads.
-    expect(menuRow('Export Dashboard…').disabled).toBe(false);
+    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
   });
 
   it('the empty-Dashboard placeholder still renders the shared menu', async () => {

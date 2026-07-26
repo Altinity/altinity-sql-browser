@@ -57,7 +57,7 @@ import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-oper
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
-  findDashboardStrict, replaceDashboard, withCompatibilityDashboard,
+  findDashboardStrict, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type {
   DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
@@ -218,13 +218,13 @@ export function openFileMenu(
     dashboardCount: app.currentWorkspace ? app.currentWorkspace.dashboards.length : 0,
   });
 
-  const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
-  const openWorkspaceInput = pickerInput(app, (f) => onOpenWorkspaceFile(app, f));
+  const importQueriesInput = pickerInput(app, 'import-queries', (f) => onImportQueriesFile(app, f));
+  const openWorkspaceInput = pickerInput(app, 'import-workspace', (f) => onOpenWorkspaceFile(app, f));
   // #452 review I4: the Dashboard picker is a menu-parented row like the other
   // two now. It used to be body-mounted by `triggerImportDashboard` and removed
   // only on `change`, so a CANCELLED native chooser leaked a hidden input onto
   // the page across every surface switch.
-  const importDashboardInput = pickerInput(app, (f) => onImportDashboardFile(
+  const importDashboardInput = pickerInput(app, 'import-dashboard', (f) => onImportDashboardFile(
     app, f, model.importDashboardTarget!,
   ));
 
@@ -254,8 +254,10 @@ export function openFileMenu(
   rows.push({ kind: 'sep' });
   rows.push({ kind: 'custom', node: h('div', { class: 'fm-count' }, model.footer) });
 
+  // `.app-file-menu` is the File menu's own selector — `.file-menu` is the
+  // shared dropdown chrome the Dashboard tree menu and style picker also mount.
   const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows, onClose,
-    onKeyboardOwnerChange: keyboardOwnerChannel(app) });
+    menuClass: 'app-file-menu', onKeyboardOwnerChange: keyboardOwnerChannel(app) });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
   // own) — they're display:none inputs `.click()`-triggered by the three Import
   // items above. Parent them to the mounted menu so they're torn down with it on
@@ -271,9 +273,13 @@ export function openFileMenu(
 
 // ── file pickers + bundle decode ────────────────────────────────────────────
 
-function pickerInput(app: App, onPick: (file: File) => void): HTMLInputElement {
+/** `owner` names the row whose click triggers this input — the menu parents
+ *  several, and addressing them by append order made a test's target depend on
+ *  how many pickers happened to precede it. */
+function pickerInput(app: App, owner: FileMenuActionId, onPick: (file: File) => void): HTMLInputElement {
   return h('input', {
-    type: 'file', accept: '.json,application/json', style: { display: 'none' },
+    type: 'file', accept: '.json,application/json', 'data-picker': owner,
+    style: { display: 'none' },
     onchange: (e: Event) => {
       const target = e.target as HTMLInputElement;
       const f = target.files && target.files[0];
@@ -630,18 +636,13 @@ function onImportDashboardFile(app: App, file: File, target: DashboardImportTarg
   readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle, target));
 }
 
-/** #452 — programmatically run the "Import Dashboard…" flow against an EXPLICIT
- *  target: open a file picker, then the same transactional import the menu row
- *  runs. Exported for callers with no menu of their own to ride along with; the
- *  input self-removes on `change` OR when the surface tears the overlays down.
- *  On success `commitWorkspace` → `afterLibraryChange` repaints the active
- *  surface (the Dashboard route re-renders itself). */
-export function triggerImportDashboard(app: App, target: DashboardImportTarget): void {
-  const input = pickerInput(app, (f) => onImportDashboardFile(app, f, target));
-  input.addEventListener('change', () => input.remove(), { once: true });
-  app.document.body.appendChild(input);
-  input.click();
-}
+// #452 removed `triggerImportDashboard`. It existed so the Dashboard's own File
+// menu could start this flow with no menu of its own to hang a picker on, and it
+// body-mounted an input removed only on `change` — so a CANCELLED file chooser
+// leaked it onto the page for the rest of the session. With one shared menu the
+// row owns a menu-parented picker that is torn down on close either way, and
+// keeping a second entry point would have left two implementations of one
+// operation.
 
 function startImportDashboard(
   app: App, bundle: PortableBundleV1, target: DashboardImportTarget,
@@ -701,15 +702,20 @@ function doImportDashboard(
     // offers it for an EMPTY collection, where the compatibility slot is the
     // correct (and only) destination.
     //
-    // A stale `exact` target needs no pre-check here: `planImportDashboard`
-    // re-resolves it against the dequeue-time baseline and fails closed with
-    // `dashboard-import-target-stale`, which `planBuild` toasts and aborts on —
-    // no commit, and the user can retry.
-    const targetId = target.kind === 'exact' ? target.dashboardId : null;
+    // Neither target needs a pre-check here — both are re-validated against the
+    // DEQUEUE-TIME baseline inside the planner and fail closed, which
+    // `planBuild` toasts and aborts on (no commit, and the user can retry):
+    // an `exact` target that was removed or became ambiguous, and a
+    // `create-first` whose collection stopped being empty while the file
+    // chooser / picker / conflict dialog was open. Checking the count here
+    // instead would only re-read the same open-time snapshot the caller
+    // already used.
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
         (base, revalidated) => planImportDashboard(
-          base, bundle, dashboardId, revalidated, 'copy', app.genId, {}, targetId,
+          base, bundle, dashboardId, revalidated, 'copy', app.genId, {},
+          target.kind === 'exact' ? target.dashboardId : null,
+          target.kind === 'create-first',
         )),
       'Imported dashboard',
     );

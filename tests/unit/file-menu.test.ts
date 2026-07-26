@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   libraryControls, renderLibraryTitle, openFileMenu,
-  triggerImportDashboard, exportDashboardAction, disposeFileMenuOverlays,
+  exportDashboardAction, disposeFileMenuOverlays,
 } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
@@ -114,24 +114,31 @@ const reasonOf = (label: string): string | null =>
   row(label).querySelector('.fm-reason')?.textContent ?? null;
 
 // #452: the menu parents THREE hidden pickers (Import queries, Import workspace,
-// Import Dashboard). Addressed by the row that triggers each rather than by
-// append index, so adding a fourth cannot silently repoint an existing spec.
-const PICKER_INDEX: Record<string, number> = {
-  'Import queries…': 0, 'Import workspace…': 1, 'Import Dashboard…': 2,
+// Import Dashboard), each tagged with the row that triggers it. Addressed by
+// that tag, never by append order, so adding a fourth picker cannot silently
+// repoint an existing spec at the wrong input.
+const PICKER_OWNER: Record<string, string> = {
+  'Import queries…': 'import-queries',
+  'Import workspace…': 'import-workspace',
+  'Import Dashboard…': 'import-dashboard',
 };
 const picker = (label: string): HTMLInputElement =>
-  document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[PICKER_INDEX[label]];
+  document.querySelector<HTMLInputElement>(`.file-menu input[data-picker="${PICKER_OWNER[label]}"]`)!;
 const pickFile = (input: HTMLInputElement, name = 'file.json'): void => {
   Object.defineProperty(input, 'files', { configurable: true, value: [{ name }] });
   input.dispatchEvent(new Event('change', { bubbles: true }));
 };
-/** Drive Import Dashboard through `triggerImportDashboard`'s body-mounted input
- *  (the no-menu entry point), against an explicit target. */
+/** Drive Import Dashboard the way a user does: open the shared menu on a
+ *  Dashboard context that ENABLES the row, grab its menu-parented picker, click
+ *  the row, then pick a file. #452 removed the old body-mounted no-menu entry
+ *  point, so this is the only path. */
 const pickDashboardImport = (
   app: App, target: DashboardImportTarget = { kind: 'create-first' }, name = 'file.json',
 ): void => {
-  triggerImportDashboard(app, target);
-  const input = [...document.querySelectorAll<HTMLInputElement>('input[type=file]')].pop()!;
+  const context = target.kind === 'exact' ? dashEdit(target.dashboardId) : dashEdit(null);
+  openFileMenu(app, context);
+  const input = picker('Import Dashboard…');
+  click(row('Import Dashboard…'));
   pickFile(input, name);
 };
 
@@ -311,29 +318,29 @@ describe('file menu availability (#452)', () => {
     openOn({ surface: 'query' });
     expect(menuLabels()).toEqual(ROWS); // still there, still in position
     for (const label of ['Import Dashboard…', 'Export Dashboard…']) {
-      expect(row(label).disabled).toBe(true);
       expect(row(label).getAttribute('aria-disabled')).toBe('true');
+      expect(row(label).disabled).toBe(false); // announced, not removed from the a11y tree
       expect(reasonOf(label)).toBe('Open a dashboard');
     }
   });
 
   it('Dashboard Edit enables both Dashboard rows', () => {
     openOn(dashEdit('d1'));
-    expect(row('Import Dashboard…').disabled).toBe(false);
-    expect(row('Export Dashboard…').disabled).toBe(false);
+    expect(row('Import Dashboard…').getAttribute('aria-disabled')).toBeNull();
+    expect(row('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
     expect(reasonOf('Import Dashboard…')).toBeNull();
   });
 
   it('Dashboard View exports but refuses both active-workspace imports', () => {
     openOn(dashView('d1'));
-    expect(row('Export Dashboard…').disabled).toBe(false);
+    expect(row('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
     expect(reasonOf('Import Dashboard…')).toBe('Edit mode only');
     expect(reasonOf('Import queries…')).toBe('Edit mode only');
   });
 
   it('the empty Dashboard placeholder imports and cannot export', () => {
     openOn(dashEdit(null));
-    expect(row('Import Dashboard…').disabled).toBe(false);
+    expect(row('Import Dashboard…').getAttribute('aria-disabled')).toBeNull();
     expect(reasonOf('Export Dashboard…')).toBe('No dashboard');
   });
 
@@ -353,32 +360,40 @@ describe('file menu availability (#452)', () => {
     expect(reasonOf('Export workspace…')).toBe('No workspace');
     expect(reasonOf('Import Dashboard…')).toBe('No workspace');
     // New/Import workspace need nothing at all — they stay reachable.
-    expect(row('New workspace…').disabled).toBe(false);
-    expect(row('Import workspace…').disabled).toBe(false);
+    expect(row('New workspace…').getAttribute('aria-disabled')).toBeNull();
+    expect(row('Import workspace…').getAttribute('aria-disabled')).toBeNull();
   });
 
   it('an empty Library disables both downloads', () => {
     openOn({ surface: 'query' });
     for (const label of ['Download Library as Markdown', 'Download Library as SQL']) {
-      expect(row(label).disabled).toBe(true);
+      expect(row(label).getAttribute('aria-disabled')).toBe('true');
       expect(reasonOf(label)).toBe('No Library queries');
       expect(row(label).querySelector('.fm-meta')!.textContent).toMatch(/^\.(md|sql)$/);
     }
   });
 
-  // Issue: "Disabled rows … are skipped by keyboard activation".
-  it('a disabled row is skipped by the arrow-key order and does nothing when clicked', async () => {
+  // Issue: "disabled rows are announced but cannot activate". Announcement
+  // requires the row to STAY reachable — a native `disabled` button is dropped
+  // from the accessibility tree, so the reason would never be read out.
+  it('a disabled row is reachable and announced, but activating it does nothing', async () => {
     const app = openOn({ surface: 'query' });
     await flush();
-    // Import queries… (index 3) is enabled; the next TWO rows are the disabled
-    // Dashboard pair, so ArrowDown from it must land on a download row.
+    const importDash = row('Import Dashboard…');
+    // Reachable: arrowing from the row above lands ON it, not past it.
     row('Import queries…').focus();
     key(document, 'ArrowDown');
-    expect(document.activeElement).not.toBe(row('Import Dashboard…'));
-    expect(document.activeElement).not.toBe(row('Export Dashboard…'));
+    expect(document.activeElement).toBe(importDash);
+    // Announced: exposed to AT as a disabled menuitem carrying its reason.
+    expect(importDash.getAttribute('role')).toBe('menuitem');
+    expect(importDash.getAttribute('aria-disabled')).toBe('true');
+    expect(importDash.disabled).toBe(false);
+    expect(reasonOf('Import Dashboard…')).toBe('Open a dashboard');
+    // …but inert: no handler at all, so the menu does not even close.
     click(row('Export Dashboard…'));
+    await flush();
     expect(app.downloadFile).not.toHaveBeenCalled();
-    expect(document.querySelector('.file-menu')).not.toBeNull(); // did not even close
+    expect(document.querySelector('.file-menu')).not.toBeNull();
   });
 });
 
@@ -610,7 +625,7 @@ describe('Export', () => {
     openFileMenu(app);
     expect(document.querySelector('.fm-count')!.textContent).toBe('0 Library queries · 1 dashboard');
     // Disabled up front, not clickable-then-refused: the projection is empty.
-    expect(row('Download Library as Markdown').disabled).toBe(true);
+    expect(row('Download Library as Markdown').getAttribute('aria-disabled')).toBe('true');
     expect(reasonOf('Download Library as Markdown')).toBe('No Library queries');
     click(row('Download Library as Markdown'));
     expect(app.downloadFile).not.toHaveBeenCalled();
@@ -823,6 +838,36 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     expect(saved.dashboards[1].title).toBe('Incoming');
   });
 
+  // The other half of issue test 10, and the one the open-time count CANNOT
+  // cover: `create-first` writes the compatibility slot, which REPLACES entry 0
+  // on a non-empty collection. The menu decides it is safe when it opens; the
+  // commit lands after a file chooser / picker / conflict dialog, and a second
+  // tab (or the placeholder's own Create button) can seat a Dashboard in that
+  // window. The planner re-checks at dequeue time and fails closed.
+  it('a create-first import aborts if the collection stopped being empty before the commit', async () => {
+    const empty: StoredWorkspaceV4 = {
+      storageVersion: 4, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+    };
+    const repo = statefulWorkspaceRepo(empty);
+    const app = withActiveId(mountOn(dashEdit(null), {
+      currentWorkspace: empty,
+      FileReader: fakeReader(bundleText({ dashboards: [dashboardDoc({ id: 'src', title: 'Incoming' })] })),
+      workspace: repo,
+    }));
+    openFileMenu(app, dashEdit(null));
+    const input = picker('Import Dashboard…');
+    click(row('Import Dashboard…'));
+    // A Dashboard appears while the native file chooser is still open.
+    const seated = dashboardDoc({ id: 'seated', title: 'Seated first' });
+    await repo.commit({ ...empty, dashboards: [seated] });
+    pickFile(input);
+    await flush();
+    expect(toast()).toMatch(/gained a dashboard/);
+    const saved = await loadActiveWorkspace(app);
+    // The Dashboard that arrived in the window is intact, and nothing imported.
+    expect(saved.dashboards.map((d) => d.title)).toEqual(['Seated first']);
+  });
+
   // Issue test 11.
   it('a target removed while the import dialog is open fails closed with a diagnostic and no commit', async () => {
     const target = dashboardDoc({ id: 'doomed', title: 'Doomed' });
@@ -853,20 +898,19 @@ describe('Import Dashboard', () => {
   // #452: every entry point takes an EXPLICIT target. `create-first` is the
   // empty-collection case — it commits through the compatibility slot, which is
   // the only correct destination when there is nothing to overwrite.
-  it('triggerImportDashboard appends a hidden file input to the body and clicks it; a single-dashboard file imports directly, minting a fresh id/revision, and the input self-removes on change', async () => {
+  it('the menu row opens a hidden picker; a single-dashboard file imports directly, minting a fresh id/revision', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
-    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
-    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
-    triggerImportDashboard(app, { kind: 'create-first' });
-    const input = [...document.querySelectorAll<HTMLInputElement>('input[type=file]')].pop()!;
-    expect(input.parentElement).toBe(document.body);
+    const app = mountOn(dashEdit(null), { FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
+    openFileMenu(app, dashEdit(null));
+    const input = picker('Import Dashboard…');
     expect(input.style.display).toBe('none');
-    expect(clickSpy).toHaveBeenCalled();
-    clickSpy.mockRestore();
+    input.click = vi.fn();
+    click(row('Import Dashboard…'));
+    expect(input.click).toHaveBeenCalled();
     pickFile(input);
     await flush();
-    expect(input.isConnected).toBe(false); // self-removed once the change fired
+    // create-first has nothing to discard, so no confirm gate.
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.dashboard).not.toBeNull();
     expect(app.state.dashboard!.id).not.toBe('src-d'); // mode 'copy' mints a fresh id
@@ -1178,6 +1222,70 @@ describe('surface overlay disposal', () => {
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
   });
+
+  // Issue test 13. The pickers are menu-PARENTED, so they go with the menu
+  // whether or not the user ever picked a file — the case that used to leak,
+  // when `triggerImportDashboard` body-mounted an input removed only on
+  // `change` and the user cancelled the native chooser.
+  it('repeated picker use and surface switching leave nothing mounted', () => {
+    const app = mountOn(dashEdit('d1'));
+    const mounted = () => ({
+      inputs: document.querySelectorAll('input[type=file]').length,
+      menus: document.querySelectorAll('.file-menu').length,
+      overlays: document.querySelectorAll('.fm-overlay').length,
+      dialogs: document.querySelectorAll('.fm-dialog-backdrop').length,
+    });
+    // Open each import row in turn and CANCEL the chooser every time (no
+    // `change` ever fires), across both surface contexts.
+    for (const context of [dashEdit('d1'), { surface: 'query' } as FileMenuSurfaceContext, dashEdit('d1')]) {
+      for (const label of ['Import queries…', 'Import workspace…', 'Import Dashboard…']) {
+        openFileMenu(app, context);
+        const target = row(label);
+        if (target.getAttribute('aria-disabled') !== 'true') click(target);
+        else disposeFileMenuOverlays(app); // disabled row: close the menu directly
+      }
+    }
+    disposeFileMenuOverlays(app);
+    expect(mounted()).toEqual({ inputs: 0, menus: 0, overlays: 0, dialogs: 0 });
+  });
+});
+
+// Issue test 12: the SAME trigger contract on both surfaces, including the
+// focus restoration neither surface asserted before.
+describe('trigger contract (#452)', () => {
+  it.each([
+    ['Query', undefined],
+    ['Dashboard Edit', dashEdit('d1')],
+  ] as [string, FileMenuSurfaceContext | undefined][])(
+    '%s: click toggles, Escape closes, and both restore focus to the trigger',
+    async (_name, context) => {
+      const app = context ? mountOn(context) : mount();
+      const btn = app.dom.fileBtn!;
+      // click opens
+      click(btn);
+      expect(document.querySelector('.file-menu')).not.toBeNull();
+      expect(btn.getAttribute('aria-expanded')).toBe('true');
+      // clicking the trigger again closes AND restores focus
+      await flush();
+      click(btn);
+      expect(document.querySelector('.file-menu')).toBeNull();
+      expect(btn.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(btn);
+      // Escape closes AND restores focus
+      click(btn);
+      await flush();
+      key(document, 'Escape');
+      expect(document.querySelector('.file-menu')).toBeNull();
+      expect(document.activeElement).toBe(btn);
+      // outside click closes
+      click(btn);
+      click(document.querySelector('.fm-overlay')!);
+      expect(document.querySelector('.file-menu')).toBeNull();
+      // and the trigger still reopens afterwards — the handle was released
+      click(btn);
+      expect(document.querySelector('.file-menu')).not.toBeNull();
+    },
+  );
 });
 
 describe('decode failures', () => {

@@ -14,9 +14,9 @@
 // Re-calling `openMenu` on a trigger that already has an open menu is a
 // no-op — it returns the SAME handle rather than stacking a second menu. A
 // caller that wants an explicit open/close TOGGLE on its trigger button (the
-// Dashboard File button) tracks that itself via the returned handle, calling
-// `handle.close()` directly rather than a second `openMenu` — `openMenu`
-// itself only ever opens (or returns the existing open handle).
+// File button, the Dashboard style picker) tracks that itself via the returned
+// handle, calling `handle.close()` directly rather than a second `openMenu` —
+// `openMenu` itself only ever opens (or returns the existing open handle).
 //
 // Pure-DOM, no globals: the `Document` and the trigger element are both
 // passed in (matching every other render module's injected-`document`
@@ -106,14 +106,22 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       if (row.focusable) focusable.push(focusTargetOf(row.node));
       return row.node;
     }
-    // #426: a row can be present-but-unavailable (a broken member's query-open).
-    // `disabled` has to be SEMANTIC, not just a CSS class: assistive technology
-    // would otherwise announce an enabled action, and keyboard activation would
-    // silently do nothing. Such a row is also kept out of the roving-focus order.
+    // #426: a row can be present-but-unavailable (a broken member's query-open),
+    // and unavailability has to be SEMANTIC, not just a CSS class.
+    //
+    // #452 changed HOW: `aria-disabled` alone, not the native `disabled`
+    // attribute. Native `disabled` removes the button from the accessibility
+    // tree's interactive order entirely, so a screen-reader or keyboard user
+    // never learns the row exists — and under #452 the disabled state IS the
+    // message ("Export Dashboard… — Open a dashboard" is how the menu explains
+    // itself on the Query surface). The row therefore stays in the roving-focus
+    // order and is announced; only activation is removed (no `onclick`), which
+    // is the ARIA menu pattern and matches the issue's "announced but cannot
+    // activate".
     const btn = h('button', {
       class: row.extraClass ? `fm-item ${row.extraClass}` : 'fm-item',
       role: 'menuitem',
-      ...(row.disabled ? { disabled: true, 'aria-disabled': 'true' } : {}),
+      ...(row.disabled ? { 'aria-disabled': 'true' } : {}),
       onclick: row.disabled ? undefined : () => { close(); row.onClick(); },
     },
       row.leading ? h('span', { class: 'fm-leading' }, row.leading) : null,
@@ -126,7 +134,8 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       // on the first one. A reason is prose and does not fit beside a label in a
       // 252px menu — it clipped mid-word when it shared the line.
       row.reason ? h('span', { class: 'fm-reason' }, row.reason) : null);
-    if (!row.disabled) focusable.push(btn);
+    // Disabled rows stay in the order on purpose — see the comment above.
+    focusable.push(btn);
     return btn;
   };
 

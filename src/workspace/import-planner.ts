@@ -389,6 +389,18 @@ function invalidatedDashboardPlan(
  *  commits nothing rather than retargeting the compatibility slot: the caller
  *  named a Dashboard, and writing a different one would destroy an entry the
  *  import never mentioned. */
+/** #452: a "create the first Dashboard" import that is no longer the first —
+ *  the collection gained an entry between the caller's decision and this commit.
+ *  Distinct code from `dashboard-import-target-stale` because nothing was
+ *  targeted: the destination stopped being empty. */
+function staleCreateFirstPlan(sourceDashboardId: string): PortableBundleImportPlan {
+  return invalidPlan(
+    [diagnostic(['dashboards'], 'dashboard-import-collection-not-empty',
+      'This workspace gained a dashboard before the import completed — nothing was imported, try again')],
+    {}, sourceDashboardId,
+  );
+}
+
 function staleImportTargetPlan(
   sourceDashboardId: string, targetDashboardId: string, queryMappings: IdMapping,
 ): PortableBundleImportPlan {
@@ -431,13 +443,28 @@ export function planImportQueries(
  *  concurrently) falls back to the compatibility slot rather than dropping the
  *  import. A `mode: 'replace'` id that collides with another stored Dashboard is
  *  diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule rather
- *  than silently overwriting an unrelated Dashboard. */
+ *  than silently overwriting an unrelated Dashboard.
+ *
+ *  #452: `requireEmptyCollection` is for the "create the workspace's FIRST
+ *  Dashboard" caller (the empty-Dashboard placeholder). It has no id to address
+ *  — the document does not exist yet — so it necessarily writes the
+ *  compatibility slot, and that slot REPLACES entry 0 on a non-empty collection.
+ *  The caller decides it is safe from a count read when its menu opened, but the
+ *  commit lands later: a file chooser, a picker dialog, a conflict dialog or a
+ *  second tab can all seat a Dashboard in between. Re-checking here — at dequeue
+ *  time, against the same baseline every other target is validated against — is
+ *  what stops that window from silently destroying a Dashboard the import never
+ *  named. Fails closed, exactly like a stale explicit target. */
 export function planImportDashboard(
   workspace: StoredWorkspaceV4, bundle: PortableBundleV1, sourceDashboardId: string,
   decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
   targetDashboardId: string | null = null,
+  requireEmptyCollection = false,
 ): PortableBundleImportPlan {
+  if (requireEmptyCollection && workspace.dashboards.length > 0) {
+    return staleCreateFirstPlan(sourceDashboardId);
+  }
   const source = bundle.dashboards.find((dashboard) => dashboard.id === sourceDashboardId);
   if (!source) return dashboardNotFoundPlan(sourceDashboardId, {});
 
