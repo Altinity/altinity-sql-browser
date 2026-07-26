@@ -30,7 +30,8 @@ import { splitStatements as _splitStatements, isRowReturning as _isRowReturning 
 import { scanParamDeclarations } from './param-scan.js';
 import type { ParamDeclaration } from './param-scan.js';
 import {
-  parseParamType, conflictingTypes, enumValues, isCompoundParamType, typeLexKind,
+  parseParamType, conflictingTypes, enumValues, isCompoundParamType, multiSelectElementType,
+  typeLexKind,
 } from './param-type.js';
 import type { ParsedParamType } from './param-type.js';
 import { serializeParamValue as _serializeParamValue } from './param-serialize.js';
@@ -693,10 +694,11 @@ export function fieldControls(analysis: ParameterAnalysis): FieldControl[] {
 }
 
 /** `fieldControlKind`'s return shape — which control a `fieldControls` entry
- *  renders, and (for `'enum'`) the member list to offer. `'unsupported'` is
- *  reachable only under the scalar-controls policy (see `fieldControlKind`). */
+ *  renders, and (for `'enum'`) the member list to offer. `'multi'` and
+ *  `'unsupported'` are reachable only under the scalar-controls policy (see
+ *  `fieldControlKind`). */
 export interface FieldControlKindResult {
-  kind: 'enum' | 'date' | 'text' | 'unsupported';
+  kind: 'enum' | 'date' | 'text' | 'multi' | 'unsupported';
   enumOptions: string[] | null;
 }
 
@@ -713,7 +715,14 @@ export interface FieldControlKindOptions {
    *     text, because ClickHouse's Bool accept-set is not enumerable —
    *     `yes`/`no`/`on`/`off`/`1`/`0` all work — so the list is a hint, not a
    *     constraint;
-   *   - a COMPOUND type (`Array`/`Tuple`/`Map`/`Nested`) resolves to
+   *   - an `Array` of a SCALAR resolves to `'multi'`: several option rows
+   *     combine into one bound array, which is exactly what the restored #189
+   *     multi-select does. This says the TYPE can be multi-selected, not that
+   *     this variable has an option list to select from — the bar pairs the
+   *     verdict with the option spec one layer up, because only the bar knows
+   *     whether option SQL was configured;
+   *   - every OTHER compound type (`Tuple`/`Map`/`Nested`, and a nested
+   *     `Array(Array(T))` the serializer rejects outright) resolves to
    *     `'unsupported'`: there is no single-scalar control for a container, and
    *     saying so is better than rendering a box that cannot produce a valid
    *     value. The value pipeline itself still handles these types fine, which is
@@ -750,6 +759,11 @@ export function fieldControlKind(
   if (options.scalarControls) {
     // Checked AFTER enum/date so the priority order stays single-sourced: a
     // declaration is only ever compound when neither of those claimed it.
+    // `multi` is tried FIRST among the container shapes — it is the narrower
+    // rule, and `multiSelectElementType` is the one predicate the option batch
+    // (`core/variable-options.js`) filters on, so a type that gets a select can
+    // never be one whose option SQL was skipped.
+    if (multiSelectElementType(field.type)) return { kind: 'multi', enumOptions: null };
     if (isCompoundParamType(field.type)) return { kind: 'unsupported', enumOptions: null };
     if (typeLexKind(field.type) === 'bool') return { kind: 'enum', enumOptions: BOOL_CONTROL_OPTIONS };
   }

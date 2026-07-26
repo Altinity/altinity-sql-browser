@@ -533,10 +533,36 @@ icon.
 
 Option SQL must be one embeddable read query returning exactly two `String`
 columns — value, then visible label, by POSITION rather than by column name — and
-may not reference Dashboard variables itself. A variable with option SQL renders a
-strict single-select; one without keeps the direct input inferred from its declared
-type. Every configured variable on a Dashboard is compiled into a single
-`UNION ALL` request per refresh, so ten of them still cost one round trip.
+may not reference Dashboard variables itself. Every configured variable on a
+Dashboard is compiled into a single `UNION ALL` request per refresh, so ten of them
+still cost one round trip.
+
+Which control a configured variable renders follows from its declared type:
+
+- a **scalar** gets a strict single-select over those options;
+- an **`Array` of a scalar** (`Array(String)`, `Array(UInt64)`, …) gets a
+  **searchable multi-select**: a closed trigger reading `Not set` / the single
+  option's label / `N selected`, and a popover with a search box, a tri-state
+  **Select visible** scoped to whatever the search currently shows, per-option
+  checkboxes, and **Clear / Cancel / Apply**. Nothing commits until Apply, which
+  re-runs only the panels declaring that variable; Cancel, Escape and clicking
+  outside discard the draft. The selection binds as a real ClickHouse array
+  literal, so quotes, backslashes, Unicode and big integers are all escaped by the
+  same typed serializer everything else uses. Selections persist across a reload.
+
+  Your selection is never changed behind your back: the control stays inert
+  (*Loading options…*) until its list arrives, a refresh only ever **removes**
+  values that are genuinely gone — keeping the order you committed, since the
+  array binds positionally — and if the option list came back truncated at the
+  1,000 cap, nothing is removed at all: a selected value may simply live past the
+  cap, so it survives both the refresh *and* your next Apply. **Clear** removes
+  everything, including values the list is too short to show. If every selected
+  value disappears from a complete list, the variable returns to unset.
+
+A variable with **no** option SQL keeps the direct input inferred from its declared
+type. `Tuple`, `Map`, `Nested` and nested `Array(Array(…))` have no inferable
+control at all and always keep a free-text field, where a hand-typed literal such
+as `['a','b']` still binds.
 
 ## Local install
 

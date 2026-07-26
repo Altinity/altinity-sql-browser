@@ -168,11 +168,25 @@ describe('optionBatchVariables', () => {
     expect(optionBatchVariables([variable({ name: 'bad', sql: 'SELECT a, b FROM t; SELECT 1, 2' })])).toEqual([]);
   });
 
-  it('excludes a CONTAINER-typed variable, which can never render an option select', () => {
-    // A two-String-column list cannot supply an Array/Tuple/Map/Nested value, so
-    // running its option SQL is work for a control that never appears — and a
-    // broken one could fail the combined query and take other variables down.
-    for (const type of ['Array(String)', 'Tuple(String, String)', 'Map(String, String)']) {
+  it('INCLUDES an Array-of-scalar variable — it backs the multi-select', () => {
+    // The option rows are the same two String columns; the array-ness is about
+    // how several of them combine into one bound value, not about the row shape.
+    for (const type of ['Array(String)', 'Array(UInt64)', 'Array(LowCardinality(String))', 'Nullable(Array(Int32))']) {
+      expect(optionBatchVariables([
+        variable({ name: 'tags', type, types: [type], sql: 'SELECT a, b FROM t' }),
+      ])).toHaveLength(1);
+    }
+  });
+
+  it('excludes a container with no flat element list, which can never render a select', () => {
+    // A two-String-column list cannot supply a Tuple/Map/Nested value, nor a
+    // nested array (which `param-serialize` rejects outright), so running its
+    // option SQL is work for a control that never appears — and a broken one
+    // could fail the combined query and take other variables down.
+    for (const type of [
+      'Tuple(String, String)', 'Map(String, String)', 'Nested(a String)',
+      'Array(Array(String))', 'Array(Tuple(String, UInt8))',
+    ]) {
       expect(optionBatchVariables([
         variable({ name: 'tags', type, types: [type], sql: 'SELECT a, b FROM t' }),
       ])).toEqual([]);

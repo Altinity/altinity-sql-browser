@@ -8,6 +8,7 @@ import type {
 import type {
   DashboardDocumentV2, DashboardTileV1, SavedQueryV2,
 } from '../../src/generated/json-schema.types.js';
+import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -309,8 +310,8 @@ describe('inferred variables (#447)', () => {
     // direct input and has nothing to load ('idle'). Both start with
     // `options: null`; only a completed batch replaces that.
     expect(state.filters).toEqual([
-      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0 },
-      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0 },
+      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
+      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0, optionsTruncated: false },
     ]);
     expect(state.resettableFilterIds).toEqual([]);
     expect(state.activeFilterCount).toBe(0);
@@ -1942,6 +1943,226 @@ describe('batched option execution (#447 phase 2)', () => {
     expect(session.state.value.filters[0].options).toEqual([]);
     expect(session.state.value.filters[0].status).toBe('ready');
     expect(session.state.value.filterDiagnostics).toEqual([]);
+  });
+
+  // An `Array(scalar T)` variable binds a SELECTION: several option rows combine
+  // into one array, which `param-serialize` turns into a ClickHouse literal.
+  describe('Array(scalar T) variables bind a selection', () => {
+    const MULTI_SQL = 'SELECT 1 WHERE u IN {user:Array(String)}';
+    /** A session whose one panel declares `user : Array(String)`. */
+    const multiSession = (responder: Responder, initialFilters?: Record<string, { value: unknown; active: boolean }>) => {
+      const { exec, calls } = makeExec(responder);
+      const session = createDashboardViewerSession(makeDeps({
+        document: doc({ tiles: [tile('t1', 'q1')], variableConfigs: { user: { sql: 'SELECT a, b FROM users' } } }),
+        exec,
+        queries: [query('q1', MULTI_SQL)],
+        ...(initialFilters ? { initialFilters } : {}),
+      }));
+      return { session, calls, optionCalls: () => calls.filter((c) => isOptionCall(c.sql)) };
+    };
+    const usersRespond = (...triples: [string, string, string][]): Responder =>
+      (sql) => (isOptionCall(sql) ? optionRows(...triples) : { columns: [{ name: 'n' }], rows: [[1]] });
+
+    it('runs its option SQL and offers the list — it is no longer excluded as a container', async () => {
+      const { session, optionCalls } = multiSession(usersRespond(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']));
+      await session.start();
+      expect(optionCalls()).toHaveLength(1);
+      const f = session.state.value.filters[0];
+      expect(f.configured).toBe(true);
+      expect(f.status).toBe('ready');
+      expect(f.optionsError).toBeNull();
+      expect(f.options).toEqual([{ value: 'ada', label: 'Ada' }, { value: 'bo', label: 'Bo' }]);
+    });
+
+    it('binds a committed selection as a real ClickHouse array literal', async () => {
+      const { session, calls } = multiSession(usersRespond(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']));
+      await session.start();
+      await session.applyFilter('user', ['ada', 'bo'], true);
+      const tileCall = calls.filter((c) => !isOptionCall(c.sql)).at(-1)!;
+      // Escaped and bracketed by the shared typed serializer — never joined.
+      expect(tileCall.params?.param_user).toBe("['ada','bo']");
+      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.filters[0].active).toBe(true);
+    });
+
+    it('reduces an EMPTY selection to unset rather than binding a literal []', async () => {
+      // A present `[]` is a real value to `emptyValue()`, so binding it would run
+      // every panel as `IN []` — nothing returned, but LOOKING filtered — where
+      // an unset variable's panels must wait instead.
+      const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
+      await session.start();
+      await session.applyFilter('user', [], false);
+      expect(session.state.value.filters[0].value).toBe('');
+      expect(session.state.value.filters[0].active).toBe(false);
+    });
+
+    it('setFilter derives activation from the selection length', async () => {
+      const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
+      await session.start();
+      await session.setFilter('user', ['ada']);
+      expect(session.state.value.filters[0].active).toBe(true);
+      await session.setFilter('user', []);
+      expect(session.state.value.filters[0].value).toBe('');
+      expect(session.state.value.filters[0].active).toBe(false);
+    });
+
+    it('copies a committed selection, so a caller cannot mutate bound state', async () => {
+      const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
+      await session.start();
+      const mine = ['ada'];
+      await session.applyFilter('user', mine, true);
+      mine.push('bo');
+      expect(session.state.value.filters[0].value).toEqual(['ada']);
+    });
+
+    it('restores a persisted selection, and derives its activation from it', async () => {
+      const { session } = multiSession(
+        usersRespond(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']),
+        { user: { value: ['ada', 'bo'], active: true } },
+      );
+      await session.start();
+      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.filters[0].active).toBe(true);
+    });
+
+    it('degrades a persisted SCALAR seed on a selection variable to unset', async () => {
+      // The wrong shape would reach the serializer as a `structural` error and
+      // block every panel declaring the name.
+      const { session } = multiSession(
+        usersRespond(['user', 'ada', 'Ada']),
+        { user: { value: 'ada', active: true } },
+      );
+      await session.start();
+      expect(session.state.value.filters[0].value).toBe('');
+      expect(session.state.value.filters[0].active).toBe(false);
+    });
+
+    it('leaves a surviving selection completely alone when only the option ORDER changed', async () => {
+      let call = 0;
+      const { session, calls } = multiSession((sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        call++;
+        // Same members, new ORDER.
+        return call === 1
+          ? optionRows(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo'])
+          : optionRows(['user', 'bo', 'Bo'], ['user', 'ada', 'Ada']);
+      });
+      await session.start();
+      await session.applyFilter('user', ['ada', 'bo'], true);
+      const before = calls.filter((c) => !isOptionCall(c.sql)).length;
+      await session.refresh();
+      // The bound literal is UNCHANGED. Adopting the new option order would make
+      // the persisted value differ from the one that produced the results on
+      // screen — silently, since this path deliberately runs no wave.
+      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
+      expect(session.state.value.filters[0].active).toBe(true);
+      // One refresh wave for the tile, and no EXTRA reconciliation wave.
+      expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
+    });
+
+    it('never prunes a selection against a list the server CUT OFF at the cap', async () => {
+      // A value can simply live past row 1,000. Pruning against a truncated list
+      // would delete a valid selection, re-run the panels, and persist the
+      // shortened array — the single-select keeps an off-list value verbatim, and
+      // a selection gets the same benefit of the doubt. The warning still fires.
+      const capped = (extra: [string, string, string][]) => {
+        const rows: [string, string, string][] = [];
+        for (let i = 0; i < VARIABLE_OPTION_CAP + 1; i++) rows.push(['user', `u${i}`, `U${i}`]);
+        return optionRows(...rows, ...extra);
+      };
+      const { session, calls } = multiSession(
+        (sql) => (isOptionCall(sql) ? capped([]) : { columns: [{ name: 'n' }], rows: [[1]] }),
+        { user: { value: ['way-past-the-cap'], active: true } },
+      );
+      await session.start();
+      const before = calls.filter((c) => !isOptionCall(c.sql)).length;
+      await session.refresh();
+      expect(session.state.value.filters[0].value).toEqual(['way-past-the-cap']);
+      expect(session.state.value.filters[0].active).toBe(true);
+      // No reconciliation wave — nothing was decided about the selection.
+      expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
+      // The incompleteness is reported, not hidden.
+      expect(session.state.value.filterDiagnostics.map((d) => d.code))
+        .toContain('variable-options-truncated');
+      // And PUBLISHED per variable, so the control can apply the same rule — the
+      // session's preservation is undone if the control's Apply then
+      // canonicalizes the off-list value away against the same partial list.
+      expect(session.state.value.filters[0].optionsTruncated).toBe(true);
+    });
+
+    it('publishes optionsTruncated false for a complete list', async () => {
+      const { session } = multiSession(usersRespond(['user', 'ada', 'Ada']));
+      await session.start();
+      expect(session.state.value.filters[0].optionsTruncated).toBe(false);
+    });
+
+    it('drops a selected value the refresh removed, and re-runs the affected panels ONCE', async () => {
+      let call = 0;
+      const { session, calls } = multiSession((sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        call++;
+        return call === 1
+          ? optionRows(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo'])
+          : optionRows(['user', 'ada', 'Ada']);
+      });
+      await session.start();
+      await session.applyFilter('user', ['ada', 'bo'], true);
+      const before = calls.filter((c) => !isOptionCall(c.sql)).length;
+      await session.refresh();
+      expect(session.state.value.filters[0].value).toEqual(['ada']);
+      expect(session.state.value.filters[0].active).toBe(true);
+      // The refresh's own wave PLUS exactly one reconciled wave.
+      expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 2);
+    });
+
+    it('deactivates when EVERY selected value disappeared', async () => {
+      let call = 0;
+      const { session } = multiSession((sql) => {
+        if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+        call++;
+        return call === 1 ? optionRows(['user', 'ada', 'Ada']) : optionRows(['user', 'zed', 'Zed']);
+      });
+      await session.start();
+      await session.applyFilter('user', ['ada'], true);
+      await session.refresh();
+      expect(session.state.value.filters[0].value).toBe('');
+      expect(session.state.value.filters[0].active).toBe(false);
+    });
+
+    it('never reconciles a SCALAR variable off its committed value', async () => {
+      // A scalar's off-list value is shown verbatim and stays bound — an option
+      // refresh does not get to silently drop what the panels are already using.
+      let call = 0;
+      const { session } = optionSession(
+        { country: { sql: 'SELECT a, b FROM countries' } },
+        (sql) => {
+          if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
+          call++;
+          return call === 1 ? optionRows(['country', 'de', 'Germany']) : optionRows(['country', 'fr', 'France']);
+        },
+      );
+      await session.start();
+      await session.applyFilter('country', 'de', true);
+      await session.refresh();
+      expect(session.state.value.filters[0].value).toBe('de');
+      expect(session.state.value.filters[0].active).toBe(true);
+    });
+  });
+
+  it('explains a configured variable whose TYPE has no option list', async () => {
+    // A `Map`/`Tuple`/`Nested`/nested-`Array` variable someone configured anyway:
+    // its SQL is fine, but nothing can render a list for it, so it is kept out of
+    // the batch and its control says the configuration is deliberately not running.
+    const { session, optionCalls } = optionSession(
+      { tags: { sql: 'SELECT a, b FROM t' } },
+      (sql) => (isOptionCall(sql) ? optionRows() : { columns: [{ name: 'n' }], rows: [[1]] }),
+      'SELECT 1 WHERE m = {tags:Map(String, String)}',
+    );
+    await session.start();
+    expect(optionCalls()).toHaveLength(0);
+    const f = session.state.value.filters.find((x) => x.parameter === 'tags')!;
+    expect(f.status).toBe('error');
+    expect(f.optionsError).toContain('no option list');
   });
 
   it('does not re-run the batch for a single-tile refresh', async () => {

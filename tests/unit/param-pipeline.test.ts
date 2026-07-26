@@ -730,13 +730,30 @@ describe('fieldControlKind (shared control priority — review F1/F8)', () => {
         .toEqual(['true', 'false']);
     });
 
-    it('reports a compound type as unsupported', () => {
-      for (const type of ['Array(String)', 'Tuple(String, String)', 'Map(String, String)', 'Nested(a String)']) {
+    it('reports an Array of a scalar as multi', () => {
+      // The narrower container rule, tried first: several option rows combine
+      // into one bound array. This is a statement about the TYPE — whether the
+      // variable actually HAS an option list is the filter bar's pairing.
+      for (const type of ['Array(String)', 'Array(UInt64)', 'Array(LowCardinality(String))']) {
+        expect(fieldControlKind({ type }, null, scalar)).toEqual({ kind: 'multi', enumOptions: null });
+      }
+      expect(fieldControlKind({ type: 'Nullable(Array(String))' }, null, scalar).kind).toBe('multi');
+    });
+
+    it('reports every other compound type as unsupported', () => {
+      for (const type of ['Tuple(String, String)', 'Map(String, String)', 'Nested(a String)']) {
         expect(fieldControlKind({ type }, null, scalar)).toEqual({ kind: 'unsupported', enumOptions: null });
       }
-      // Wrapped, and nested one level deeper.
-      expect(fieldControlKind({ type: 'Nullable(Array(String))' }, null, scalar).kind).toBe('unsupported');
+      // A nested array has no serializable form, so it stays unsupported rather
+      // than becoming a multi-select that could never bind.
       expect(fieldControlKind({ type: 'Array(Array(UInt8))' }, null, scalar).kind).toBe('unsupported');
+      expect(fieldControlKind({ type: 'Array(Tuple(String, UInt8))' }, null, scalar).kind).toBe('unsupported');
+    });
+
+    it('never reports multi or unsupported without the policy', () => {
+      // The workbench var-strip passes no options bag and keeps its text field.
+      expect(fieldControlKind({ type: 'Array(String)' })).toEqual({ kind: 'text', enumOptions: null });
+      expect(fieldControlKind({ type: 'Map(String, String)' })).toEqual({ kind: 'text', enumOptions: null });
     });
 
     it('leaves the enum/date priority ahead of the policy', () => {
@@ -747,10 +764,12 @@ describe('fieldControlKind (shared control priority — review F1/F8)', () => {
       expect(fieldControlKind({ type: 'String' }, ['x'], scalar)).toEqual({ kind: 'enum', enumOptions: ['x'] });
     });
 
-    it('keeps a conflicted compound field on text, never unsupported', () => {
+    it('keeps a conflicted compound field on text, never multi or unsupported', () => {
       // A conflict means no single authoritative declaration to judge, so the
       // #173 degrade-to-text rule still wins outright.
       expect(fieldControlKind({ type: 'Array(String)', conflict: ['Array(String)', 'String'] }, null, scalar))
+        .toEqual({ kind: 'text', enumOptions: null });
+      expect(fieldControlKind({ type: 'Map(String, String)', conflict: ['Map(String, String)', 'String'] }, null, scalar))
         .toEqual({ kind: 'text', enumOptions: null });
     });
 

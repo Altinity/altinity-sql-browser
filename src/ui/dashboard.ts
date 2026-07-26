@@ -54,7 +54,7 @@ import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from './filter-bar.js';
-import type { VariableFieldSpec } from './filter-bar.js';
+import type { VariableFieldSpec, VariableOptionsUpdate } from './filter-bar.js';
 import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { pushRecentRange } from '../core/time-range.js';
 import { formatChartTimeLabel, formatChartTimeRange } from '../core/time-range.js';
@@ -879,7 +879,14 @@ export async function renderDashboard(
     // direct input; `[]` means option-backed with nothing to offer yet.
     const variables: Record<string, VariableFieldSpec> = {};
     for (const f of sview.filters) {
-      draftValues[f.parameter] = valueString(f.value);
+      // An `Array(scalar T)` variable's committed value is a real `string[]`.
+      // It must NOT be flattened into the shared scalar draft bag — `String()`
+      // would turn `['a','b']` into `"a,b"`, a value nothing can round-trip —
+      // so it travels on the spec instead and its draft slot stays unset. That
+      // bag is `Record<string, string>` precisely so the Workbench var-strip,
+      // which shares its shape, can never be handed an array.
+      const selection = Array.isArray(f.value) ? f.value.filter((v): v is string => typeof v === 'string') : null;
+      draftValues[f.parameter] = selection === null ? valueString(f.value) : '';
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
       variables[f.parameter] = {
@@ -888,6 +895,17 @@ export async function renderDashboard(
         // whose option SQL was rejected locally has a specific problem, and the
         // batch failure is only its reason when it was actually in that batch.
         optionsError: f.optionsError,
+        // The batch has not answered for this variable yet. `renderDashboard`
+        // mounts the whole surface BEFORE awaiting `session.start()`, so a
+        // configured variable is interactive for the entire option request —
+        // long enough to open a multi-select and Apply against a list that has
+        // not arrived, which would clear a restored selection.
+        loading: f.status === 'loading',
+        // The list is a PREFIX: a committed value may be valid and simply live
+        // past the cap. The session already declines to prune one; the control
+        // must decline too, or its own Apply undoes that one layer up.
+        optionsIncomplete: f.optionsTruncated,
+        ...(selection === null ? {} : { selection }),
       };
     }
     const onCommit = (name: string): void => {
@@ -899,6 +917,14 @@ export async function renderDashboard(
     const onCommitVariable = (name: string, value: string, active: boolean): void => {
       const id = idByParam.get(name);
       if (id) void session.applyFilter(id, value, active);
+    };
+    // The multi-select's Apply. Same "complete, deliberate action" semantics as
+    // the single-select above; the only difference is that the value is a real
+    // array, which `applyFilter` already accepts (`value: unknown`) and the
+    // session reduces to unset when it is empty.
+    const onCommitVariableSelection = (name: string, values: string[], active: boolean): void => {
+      const id = idByParam.get(name);
+      if (id) void session.applyFilter(id, values, active);
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     // #335: assemble the time-range option — one entry per resolved group,
@@ -931,6 +957,7 @@ export async function renderDashboard(
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
       { document: doc, timeRange, onApplyTimeRange, variables, onCommitVariable,
+        onCommitVariableSelection,
         onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
@@ -2115,11 +2142,20 @@ export async function renderDashboard(
   let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
   // #303: the committed-filter bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
-  // #447: a variable's committed value is a SCALAR string — the array shape the
-  // #189 multiselect persisted is gone, so there is nothing to narrow here.
+  // A multi-select variable's committed value is a real `string[]` and is
+  // persisted as one — `dashboard-filter-store.ts` has round-tripped arrays
+  // since #189 (`value: string | string[]`, with an array-aware coerce that
+  // drops non-string elements rather than stringifying them), so a selection
+  // survives a reload without ever becoming the joined `"a,b"` that
+  // `valueString`'s `String()` fallback would produce.
   const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
     const bag: DashboardFilterBag = {};
-    for (const f of filters) bag[f.id] = { value: valueString(f.value), active: f.active };
+    for (const f of filters) {
+      bag[f.id] = {
+        value: Array.isArray(f.value) ? f.value.map(valueString) : valueString(f.value),
+        active: f.active,
+      };
+    }
     return bag;
   };
   // #303: a SEPARATE signature from `barSig` above — that one also flips when
@@ -2169,13 +2205,19 @@ export async function renderDashboard(
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
+    // `optionsTruncated` is part of the signature, not just the payload: it
+    // changes how the control COMMITS (whether an off-list value is preserved),
+    // so a flip must reach it even in the contrived case where the option
+    // content it accompanies is byte-identical.
     const optionsSig = JSON.stringify(sview.filters.map((f) =>
-      [f.id, f.configured, f.optionsRev, f.status, f.optionsError]));
+      [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
     if (!rebuilt && optionsSig !== lastOptionsSig) {
-      const states: Record<string, { options: readonly ViewerFilterOption[]; error: string | null }> = {};
+      const states: Record<string, VariableOptionsUpdate> = {};
       for (const f of sview.filters) {
         if (!f.configured) continue;
-        states[f.parameter] = { options: f.options ?? [], error: f.optionsError };
+        states[f.parameter] = {
+          options: f.options ?? [], error: f.optionsError, incomplete: f.optionsTruncated,
+        };
       }
       currentFilterBar?.setVariableOptions(states);
     }

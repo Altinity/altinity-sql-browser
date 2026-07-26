@@ -8,6 +8,7 @@ import {
   isSupportedTimeRangeParamType,
   dateTimeTimeZone,
   isCompoundParamType,
+  multiSelectElementType,
 } from '../../src/core/param-type.js';
 
 // #447 phase 2: named so a single-scalar surface can say "no control for this"
@@ -49,6 +50,62 @@ describe('isCompoundParamType', () => {
   it('accepts an already-parsed type', () => {
     expect(isCompoundParamType(parseParamType('Array(UInt8)'))).toBe(true);
     expect(isCompoundParamType(parseParamType('String'))).toBe(false);
+  });
+});
+
+// The single eligibility decision behind the restored Array(T) multi-select:
+// the option batch and the control dispatch both filter on THIS, so a type that
+// gets a select can never be one whose option SQL was skipped.
+describe('multiSelectElementType', () => {
+  it('yields the element type for an Array of a scalar', () => {
+    expect(multiSelectElementType('Array(String)')?.base).toBe('String');
+    expect(multiSelectElementType('Array(UInt64)')?.base).toBe('UInt64');
+    expect(multiSelectElementType('Array(Int32)')?.base).toBe('Int32');
+    expect(multiSelectElementType("Array(Enum8('a' = 1))")?.base).toBe('Enum8');
+  });
+
+  it('sees through the value-transparent wrappers, on the array AND its element', () => {
+    // `parseParamType` unwraps Nullable/LowCardinality recursively, so the
+    // element handed back is already the EFFECTIVE scalar the serializer lexes.
+    expect(multiSelectElementType('Nullable(Array(String))')?.base).toBe('String');
+    expect(multiSelectElementType('Array(LowCardinality(String))')?.base).toBe('String');
+    expect(multiSelectElementType('Array(Nullable(UInt64))')?.base).toBe('UInt64');
+  });
+
+  it('is null for a scalar — there is nothing to multi-select', () => {
+    for (const type of ['String', 'UInt64', 'Date', 'DateTime64(3)', 'Bool', "Enum8('a' = 1)"]) {
+      expect(multiSelectElementType(type)).toBeNull();
+    }
+    expect(multiSelectElementType('')).toBeNull();
+  });
+
+  it('is null for a container with no flat element list', () => {
+    for (const type of ['Tuple(String, UInt8)', 'Map(String, UInt64)', 'Nested(a String)']) {
+      expect(multiSelectElementType(type)).toBeNull();
+    }
+  });
+
+  it('is null for a nested array, which the serializer rejects outright', () => {
+    // `param-serialize.js` refuses both nested array VALUES and nested `Array`
+    // DECLARATIONS, so a control that produced one could never bind.
+    expect(multiSelectElementType('Array(Array(String))')).toBeNull();
+    expect(multiSelectElementType('Array(Nullable(Array(String)))')).toBeNull();
+  });
+
+  it('is null for an Array of a non-array container', () => {
+    expect(multiSelectElementType('Array(Tuple(String, UInt8))')).toBeNull();
+    expect(multiSelectElementType('Array(Map(String, UInt64))')).toBeNull();
+  });
+
+  it('is null for an Array the shared parser cannot read', () => {
+    // Degrades to an opaque scalar whose `base` is the whole text, so `isArray`
+    // is false and there is no `elem` to offer.
+    expect(multiSelectElementType('Array(')).toBeNull();
+  });
+
+  it('accepts an already-parsed type', () => {
+    expect(multiSelectElementType(parseParamType('Array(UInt8)'))?.base).toBe('UInt8');
+    expect(multiSelectElementType(parseParamType('String'))).toBeNull();
   });
 });
 

@@ -2061,11 +2061,72 @@ body.detached-tab .graph-overlay-panel {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-/* The shared anchored-dialog backdrop (popover.ts's default `overlayClassName`).
-   #447 deleted the curated multiselect filter control this `.ms-` prefix came
-   from, along with every other `.ms-*` rule; this one survives because the
-   primitive still defaults to the name and the time-range popover mounts it. */
+/* Searchable multiselect Dashboard variable control (#189, multi-select-field.ts)
+   — a dedicated dialog popover rather than the single-select combobox
+   (.var-combo/.var-combo-list) forced into multiselect ARIA roles. The trigger
+   reuses .var-input's sizing/border so it sits flush with every other filter
+   field; the popover is its own `position:fixed` panel, the same
+   escape-the-scrolling-strip trick as .var-combo-list/.file-menu.
+   #447 deleted this block with the curated filter model; it came back with the
+   control, minus the per-field source-status rules (.is-waiting/.is-stale) that
+   belonged to the Filter-source machine rather than to the control. */
+.ms-field { grid-column: 2; display: inline-flex; }
+.ms-trigger {
+  display: inline-flex; align-items: center;
+  width: calc(var(--var-input-ch, 16) * 1ch); max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left; cursor: pointer;
+}
+.ms-trigger:hover { border-color: var(--accent); }
+/* The two inert states. The trigger carries `.var-input` too, so
+   `.var-input.is-error` above already paints the failure — only the affordance
+   differs: both stay `aria-disabled`, never `disabled`, so the reason in `title`
+   remains reachable by keyboard and screen reader, and the cursor says the
+   popover will not open. `.is-loading` is the in-flight option batch, dimmed and
+   italic like every other pending read in the app. */
+.ms-trigger.is-error, .ms-trigger.is-loading { cursor: default; }
+.ms-trigger.is-loading { opacity: .55; font-style: italic; }
+.ms-popover {
+  position: fixed; z-index: 70; width: 260px; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--bg-editor); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-popover);
+  font-size: var(--text-body); font-family: var(--mono);
+}
+/* The shared anchored-dialog backdrop (popover.ts's default `overlayClassName`),
+   mounted by this control and by the time-range popover alike. */
 .ms-overlay { position: fixed; inset: 0; z-index: 60; }
+.ms-search {
+  height: 24px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--r-sm); font: inherit;
+}
+.ms-search:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.ms-select-all {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 2px 4px; color: var(--fg-mute); font-size: var(--text-label);
+  border-bottom: 1px solid var(--border-faint);
+}
+.ms-select-all-cb, .ms-option input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.ms-options { display: flex; flex-direction: column; max-height: 220px; overflow-y: auto; gap: 1px; }
+.ms-option {
+  display: flex; align-items: center; gap: 6px; padding: 5px 4px;
+  border-radius: var(--r-sm); cursor: pointer; color: var(--fg);
+}
+.ms-option:hover { background: var(--bg-hover); }
+.ms-option[hidden] { display: none; }
+.ms-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-footer { display: flex; justify-content: flex-end; gap: 6px; padding-top: 4px; border-top: 1px solid var(--border-faint); }
+.ms-btn {
+  height: 24px; padding: 0 10px; border-radius: var(--r-sm); cursor: pointer;
+  font: inherit; font-size: var(--text-label);
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+}
+.ms-btn:hover { background: var(--bg-hover); }
+.ms-btn-clear { margin-right: auto; }
+.ms-live { /* sr-only announcer; .sr-only above carries the positioning */ }
 /* Compound time-range control (#335, time-range-field.ts) — the SECOND
    consumer of the #364 dialog-popover pattern (openAnchoredDialog). The
    trigger reuses .var-input's sizing/border; the popover is
@@ -2134,21 +2195,22 @@ body.detached-tab .graph-overlay-panel {
   border: 1px solid var(--border); background: transparent; color: var(--fg);
 }
 .trf-btn:hover { background: var(--bg-hover); }
-/* Primary-action state model for the time-range popover's Apply (#386
-   follow-up; #447 dropped the `.ms-btn-primary` half — the curated multiselect
-   filter popover it also covered is gone). This block follows the generic
-   `.trf-btn` hover rule above so neutral hover chrome can never wash an enabled
-   Apply button into a disabled-looking surface. */
-.trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
-.trf-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
-.trf-btn-primary:focus-visible {
+/* Primary-action state model for BOTH filter popovers' Apply (#386 follow-up):
+   the multiselect's and the time-range control's. One selector list, never two
+   parallel blocks — the two buttons are the same affordance and must never
+   drift apart. This block follows the generic `.trf-btn`/`.ms-btn` hover rules
+   above so neutral hover chrome can never wash an enabled Apply button into a
+   disabled-looking surface. */
+.ms-btn-primary, .trf-btn-primary { border: none; background: var(--accent); color: #fff; font-weight: var(--fw-semibold); }
+.ms-btn-primary:hover:not(:disabled), .trf-btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
+.ms-btn-primary:focus-visible, .trf-btn-primary:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
   box-shadow: 0 0 0 2px var(--bg-editor);
 }
-.trf-btn-primary:active:not(:disabled) {
+.ms-btn-primary:active:not(:disabled), .trf-btn-primary:active:not(:disabled) {
   background: var(--accent-dim); transform: translateY(1px);
 }
-.trf-btn-primary:disabled {
+.ms-btn-primary:disabled, .trf-btn-primary:disabled {
   border: 1px solid var(--border); background: var(--bg-input); color: var(--fg-faint);
   cursor: not-allowed; opacity: 1;
 }

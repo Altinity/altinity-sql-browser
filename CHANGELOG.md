@@ -10,6 +10,59 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **An `Array(T)` Dashboard variable with option SQL is a searchable
+  multi-select** (#468). `Array(T)` is the type multi-select exists for, but #447
+  phase 1 removed the curated model's multiselect control as an owner decision and
+  phase 2 classified every container as having no inferred control — so a variable
+  like `user : Array(String)`, with a perfectly good option query configured,
+  rendered a free-text box and never ran that query. The #189/PR-#364 control is
+  back, now driven by the variable's own Dashboard-local option SQL.
+
+  The closed trigger reads **`Not set`**, the single option's **label**, or
+  **`N selected`**. The popover offers a labelled search over both labels and
+  values, a tri-state **Select visible** scoped to whatever the search currently
+  shows (hidden rows are never touched), per-option checkboxes, and **Clear /
+  Cancel / Apply**. Nothing commits until Apply, which canonicalizes by option
+  order, fires at most once, and re-runs only the panels declaring that variable —
+  a no-op Apply issues nothing. Cancel, Escape and clicking outside discard the
+  draft and return focus to the trigger.
+
+  Selections stay **real arrays** end to end — through viewer state, the
+  per-Dashboard store, and the existing typed `Array(T)` serializer, which binds
+  `param_user=['ada','bo']` with quotes, backslashes, Unicode and big integers all
+  escaped, never a joined `"ada,bo"`. An **empty** selection is unset (the panels
+  wait) rather than a literal `[]`, which would return nothing while looking
+  filtered. Selections survive a reload.
+
+  A committed selection is **never silently changed**. While the option batch is
+  in flight the control is inert (`Loading options…`) — the Dashboard is mounted
+  before the request finishes, so an Apply against a list that had not arrived
+  would otherwise clear a restored selection. An automatic refresh only ever
+  **removes** values that are genuinely gone, in **one** coalesced wave, and
+  preserves the committed ORDER: the array binds as an ordered ClickHouse literal
+  and panel SQL may read it positionally, so re-sorting it to match a new option
+  order would change what panels bind without re-running them. A label-only or
+  option-order-only change therefore does nothing at all. If the option list came
+  back **truncated** at the 1,000 cap, nothing is pruned at either end — a
+  selected value may simply live past the cap, so the refresh leaves it alone
+  *and* **Apply keeps it** rather than dropping it for being absent from a list
+  that is known to be a prefix. (**Clear** still removes everything, and with a
+  complete list an absent value is genuinely gone and does get dropped.) New
+  options are never auto-selected.
+
+  Eligibility is one pure predicate (`multiSelectElementType`) shared by the option
+  batch and the control dispatch, so a type whose option SQL ran can never be one
+  the bar refuses to render a select for. `Tuple`, `Map`, `Nested` and nested
+  `Array(Array(…))` are unchanged: no option query, no select, and the same
+  free-text field plus marker as before. An `Array(scalar T)` with **no** option SQL
+  also keeps that field, but its marker now names the fix ("add option SQL to pick
+  from a list") instead of calling a controllable type uncontrollable.
+
+  **Fixes a latent bug:** every `Array(T)` variable with valid option SQL was
+  silently marked `status: 'error'` by a branch commented "unreachable via
+  `optionBatchVariables`' own rule" — which was wrong, and invisible only because
+  the select it would have applied to never rendered.
+
 - **Dashboard variables can offer a list of values, and every list on a Dashboard
   loads in one request** (#447, phase 2). A variable (inferred from the
   `{name:Type}` placeholders in its panels' SQL) may carry optional
@@ -37,7 +90,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
   Cascading option queries are rejected outright, and `Array`/`Tuple`/`Map`/
   `Nested` variables are marked as having no inferred control — they keep their
-  text input, since a literal typed there still binds.
+  text input, since a literal typed there still binds. (**Narrowed by #468
+  above**, in this same unreleased set: an `Array` of a scalar WITH option SQL now
+  renders a multi-select. The marker survives for every other container, and for
+  an `Array(scalar T)` nobody has configured.)
 
 ### Changed
 - **Dashboard variable option SQL is edited in the main editor, as its own tab**

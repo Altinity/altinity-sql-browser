@@ -4,6 +4,7 @@ import {
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../../src/core/dashboard.js';
 import { KEYS } from '../../src/state.js';
+import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
 import * as storage from '../../src/core/storage.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
@@ -3515,6 +3516,147 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     await render(app);
     const note = qs(app.root, '.var-unsupported');
     expect(note.textContent).toContain('Array(String)');
+  });
+
+  it('renders an Array(String) variable WITH option SQL as the multi-select, and binds its selection', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows: [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']],
+        }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+      }),
+    });
+    await render(app);
+    const panelRuns = () => calls.filter((c) => !c.sql.includes('__variable_name'));
+    // Unset, so the panel waits — and the control is the multiselect, not a text
+    // box with the no-inferred-control marker.
+    expect(panelRuns()).toHaveLength(0);
+    expect(app.root!.querySelector('.var-unsupported')).toBeNull();
+    const trigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(trigger.textContent).toBe('Not set');
+
+    trigger.click();
+    const boxes = [...document.querySelectorAll<HTMLInputElement>('.ms-option input[type="checkbox"]')];
+    expect(boxes).toHaveLength(2);
+    for (const cb of boxes) { cb.checked = true; cb.dispatchEvent(new Event('change')); }
+    (document.querySelector('.ms-btn-primary') as HTMLButtonElement).click();
+    await flush();
+
+    // The Apply reached the session and ran the panel bound to a real ClickHouse
+    // array literal — never the joined string `ada,bo`.
+    expect(panelRuns()).toHaveLength(1);
+    expect(panelRuns()[0].params.param_user).toBe("['ada','bo']");
+    expect(qs(app.root, '.ms-trigger').textContent).toBe('2 selected');
+  });
+
+  it('cannot clear a restored selection by Applying before the option batch answers', async () => {
+    // `renderDashboard` mounts the whole surface BEFORE awaiting `session.start()`,
+    // so a configured variable is on screen for the entire option request — long
+    // enough to open a multi-select and press Apply. With no loading guard the
+    // draft and the restored selection both canonicalize against the empty list
+    // that has not arrived, and the no-change Apply commits a CLEAR.
+    let resolveOptions!: (value: ExecResp) => void;
+    const pendingOptions = new Promise<ExecResp>((resolve) => { resolveOptions = resolve; });
+    // A persisted selection to restore, through the REAL default store that
+    // `renderDashboard` reads `KEYS.dashFilters` from (never the ambient one).
+    const stored = new Map<string, string>([[KEYS.dashFilters, JSON.stringify({
+      d: { user: { value: ['ada', 'bo'], active: true } },
+    })]]);
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => stored.get(k) ?? null,
+      setItem: (k: string, v: unknown) => { stored.set(k, String(v)); },
+    });
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? pendingOptions
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+      }),
+    });
+    const rendering = render(app);
+    // Flush microtasks up to (but not past) the in-flight option request.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+    const trigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(trigger.textContent).toBe('Loading options…');
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
+
+    resolveOptions({
+      columns: [
+        { name: '__variable_name', type: 'String' },
+        { name: 'v', type: 'String' },
+        { name: 'l', type: 'String' },
+      ],
+      rows: [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']],
+    });
+    await rendering;
+    await flush();
+    // The restored selection is intact, and the control is operable now.
+    expect(qs(app.root, '.ms-trigger').textContent).toBe('2 selected');
+    expect(qs(app.root, '.ms-trigger').getAttribute('aria-disabled')).toBe('false');
+    vi.unstubAllGlobals();
+  });
+
+  it('a no-change Apply against a TRUNCATED list keeps the off-list selection', () => {
+    // End to end: the server caps the option branch, so a committed value can be
+    // valid and simply live past the cap. The session declines to prune it — and
+    // the control must decline too, or its own Apply canonicalizes it away
+    // against the same partial list and undoes that one layer up.
+    const stored = new Map<string, string>([[KEYS.dashFilters, JSON.stringify({
+      d: { user: { value: ['way-past-the-cap'], active: true } },
+    })]]);
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => stored.get(k) ?? null,
+      setItem: (k: string, v: unknown) => { stored.set(k, String(v)); },
+    });
+    const rows: unknown[][] = [];
+    for (let i = 0; i < VARIABLE_OPTION_CAP + 1; i++) rows.push(['user', `u${i}`, `U${i}`]);
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows,
+        }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+      }),
+    });
+    return render(app).then(async () => {
+      const panelRuns = () => calls.filter((c) => !c.sql.includes('__variable_name'));
+      const before = panelRuns().length;
+      // Shown verbatim: there is no option row for it.
+      expect(qs(app.root, '.ms-trigger').textContent).toBe('way-past-the-cap');
+      qs<HTMLButtonElement>(app.root, '.ms-trigger').click();
+      (document.querySelector('.ms-btn-primary') as HTMLButtonElement).click();
+      await flush();
+      // Nothing committed, nothing re-run, and the binding is untouched.
+      expect(qs(app.root, '.ms-trigger').textContent).toBe('way-past-the-cap');
+      expect(panelRuns()).toHaveLength(before);
+      expect(panelRuns().at(-1)!.params.param_user).toBe("['way-past-the-cap']");
+      vi.unstubAllGlobals();
+    });
   });
 });
 
