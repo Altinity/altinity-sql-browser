@@ -1,19 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-  assignDedicatedOwnership, deriveOwnedQueryId, migrateStoredWorkspaceV3ToV4,
+  assignDedicatedOwnership, deriveOwnedQueryId, dropCuratedFilters, migrateStoredWorkspaceV3ToV5,
   OWNED_QUERY_ID_PREFIX,
 } from '../../src/workspace/stored-workspace-ownership.js';
-import { buildQueryOwnershipIndex, ownersAreValid } from '../../src/dashboard/model/query-ownership.js';
-import { queryContentKey } from '../../src/core/saved-query.js';
+import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
 import type {
-  DashboardDocumentV1, QuerySpecV1, SavedQueryV2, StoredWorkspaceV3,
+  DashboardDocumentV1, DashboardDocumentV2, QuerySpecV1, SavedQueryV2, StoredWorkspaceV3,
 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string, spec: Partial<QuerySpecV1> = {}): SavedQueryV2 => ({
   id, sql: `SELECT ${id}`, specVersion: 1, spec: { name: id.toUpperCase(), ...spec } as QuerySpecV1,
 });
 
-const dash = (id: string, over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
+/** Legacy Dashboard document v1 (curated filters) — the shape a stored V3
+ *  record (and the pre-#447 half of the migration pipeline) still carries. */
+const dashV1 = (id: string, over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id, title: id.toUpperCase(), revision: 1,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [], ...over,
@@ -30,9 +31,7 @@ const ownedIds = (workspace: { queries: readonly SavedQueryV2[] }): string[] =>
   workspace.queries.map((q) => q.id).filter((id) => id.startsWith(OWNED_QUERY_ID_PREFIX));
 
 describe('deriveOwnedQueryId', () => {
-  const member = {
-    sourceQueryId: 'p1', dashboardId: 'exec', role: 'panel' as const, memberId: 't1',
-  };
+  const member = { sourceQueryId: 'p1', dashboardId: 'exec', memberId: 't1' };
 
   it('is a pure function of the member, stable across calls', () => {
     const first = deriveOwnedQueryId(member, new Set());
@@ -48,10 +47,9 @@ describe('deriveOwnedQueryId', () => {
       deriveOwnedQueryId(member, new Set()),
       deriveOwnedQueryId({ ...member, sourceQueryId: 'p2' }, new Set()),
       deriveOwnedQueryId({ ...member, dashboardId: 'sales' }, new Set()),
-      deriveOwnedQueryId({ ...member, role: 'filter' }, new Set()),
       deriveOwnedQueryId({ ...member, memberId: 't2' }, new Set()),
     ]);
-    expect(ids.size).toBe(5);
+    expect(ids.size).toBe(4);
   });
 
   it('cannot be forged by an id containing the separator', () => {
@@ -69,14 +67,47 @@ describe('deriveOwnedQueryId', () => {
   });
 });
 
-describe('migrateStoredWorkspaceV3ToV4', () => {
+describe('dropCuratedFilters', () => {
+  it('removes filters and bumps documentVersion to 2, preserving everything else', () => {
+    const dashboard = dashV1('d1', {
+      title: 'Analytics', revision: 4, description: 'kept',
+      tiles: [{ id: 't1', queryId: 'p1' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      filters: [{ id: 'flt', parameter: 'country' }],
+    });
+    const result = dropCuratedFilters(dashboard);
+    expect(result).toEqual({
+      documentVersion: 2, id: 'd1', title: 'Analytics', revision: 4, description: 'kept',
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      tiles: [{ id: 't1', queryId: 'p1' }],
+    });
+    expect(result).not.toHaveProperty('filters');
+  });
+
+  it('never mutates its input', () => {
+    const dashboard = dashV1('d1', { filters: [{ id: 'flt', parameter: 'p' }] });
+    const before = JSON.parse(JSON.stringify(dashboard));
+    dropCuratedFilters(dashboard);
+    expect(dashboard).toEqual(before);
+  });
+
+  it('drops filters even when there are none to drop', () => {
+    const dashboard = dashV1('d1', { filters: [] });
+    expect(dropCuratedFilters(dashboard)).toEqual({
+      documentVersion: 2, id: 'd1', title: 'D1', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [],
+    });
+  });
+});
+
+describe('migrateStoredWorkspaceV3ToV5', () => {
   it('gives one dedicated copy to every member and keeps every original in the Library', () => {
     // The pre-#427 shape the favourite star produced: one Library query, tiled.
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [query('p1', { favorite: true })],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
     ));
-    expect(migrated.storageVersion).toBe(4);
+    expect(migrated.storageVersion).toBe(5);
     expect(migrated.queries).toHaveLength(2);
     // The original is untouched, favourite included — it is a Library
     // preference now, and it belongs to the source, not the copy.
@@ -96,9 +127,9 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     // The real shape of `examples/iceberg-catalog-dashboard.json`: every query
     // referenced by exactly one tile. A "skip when there is only one owner"
     // shortcut would leave this workspace with an EMPTY Library.
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [query('a'), query('b')],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'a' }, { id: 't2', queryId: 'b' }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 'a' }, { id: 't2', queryId: 'b' }] })],
     ));
     expect(migrated.queries).toHaveLength(4);
     expect([...buildQueryOwnershipIndex(migrated).libraryQueryIds]).toEqual(['a', 'b']);
@@ -106,11 +137,11 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
   });
 
   it('splits a query shared by two Dashboards into two independent copies', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [query('p1')],
       [
-        dash('exec', { tiles: [{ id: 'exec-t', queryId: 'p1' }] }),
-        dash('sales', { tiles: [{ id: 'sales-t', queryId: 'p1' }] }),
+        dashV1('exec', { tiles: [{ id: 'exec-t', queryId: 'p1' }] }),
+        dashV1('sales', { tiles: [{ id: 'sales-t', queryId: 'p1' }] }),
       ],
     ));
     const [exec, sales] = migrated.dashboards;
@@ -121,97 +152,6 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     }
   });
 
-  it('splits a panel and a curated filter that shared one query, giving each its ROLE', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('shared')],
-      [dash('d1', {
-        tiles: [{ id: 't1', queryId: 'shared' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'shared' }],
-      })],
-    ));
-    const [dashboard] = migrated.dashboards;
-    const panelCopy = migrated.queries.find((q) => q.id === dashboard.tiles[0].queryId)!;
-    const filterCopy = migrated.queries.find((q) => q.id === dashboard.filters[0].sourceQueryId)!;
-    expect(panelCopy.spec.dashboard).toEqual({ role: 'panel' });
-    expect(filterCopy.spec.dashboard).toEqual({ role: 'filter' });
-    expect(panelCopy.id).not.toBe(filterCopy.id);
-  });
-
-  // The shape that broke `examples/clickhouse-operations.json`: ONE filter-role
-  // query whose row supplies six option columns, referenced by six curated
-  // filters. One copy per FILTER would re-create the #359 bug — six identical
-  // sources executed six times, every helper column then rejected as a duplicate
-  // provider, so every filter on the Dashboard errors — and would force the option
-  // list to be edited six times.
-  it('gives a Dashboard ONE copy of a filter source its filters share', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('gco', { dashboard: { role: 'filter' } })],
-      [dash('ops', {
-        filters: [
-          { id: 'f-user', parameter: 'user', sourceQueryId: 'gco' },
-          { id: 'f-kind', parameter: 'query_kind', sourceQueryId: 'gco' },
-          { id: 'f-code', parameter: 'exception_code', sourceQueryId: 'gco' },
-        ],
-      })],
-    ));
-    // One clone, not three — and every filter points at it.
-    expect(migrated.queries).toHaveLength(2);
-    const copyId = migrated.queries[1].id;
-    expect(migrated.dashboards[0].filters.map((f) => f.sourceQueryId))
-      .toEqual([copyId, copyId, copyId]);
-    // The original stays a Library query; the copy has three filter owners, which
-    // `ownersAreValid` accepts precisely because they are all in one Dashboard.
-    const index = buildQueryOwnershipIndex(migrated);
-    expect([...index.libraryQueryIds]).toEqual(['gco']);
-    expect(index.ownersByQueryId.get(copyId)).toHaveLength(3);
-    expect(ownersAreValid(index.ownersByQueryId.get(copyId)!)).toBe(true);
-  });
-
-  it('gives each Dashboard its OWN copy of a shared filter source', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('gco', { dashboard: { role: 'filter' } })],
-      [
-        dash('ops', { filters: [{ id: 'f1', parameter: 'user', sourceQueryId: 'gco' }] }),
-        dash('sales', { filters: [{ id: 'f2', parameter: 'user', sourceQueryId: 'gco' }] }),
-      ],
-    ));
-    expect(migrated.queries).toHaveLength(3);
-    const [ops, sales] = migrated.dashboards;
-    expect(ops.filters[0].sourceQueryId).not.toBe(sales.filters[0].sourceQueryId);
-    // Editing one Dashboard's option list cannot reach the other's.
-    expect(ownersAreValid(
-      buildQueryOwnershipIndex(migrated).ownersByQueryId.get(ops.filters[0].sourceQueryId!)!,
-    )).toBe(true);
-  });
-
-  it('a panel and a filter sharing one query still get SEPARATE copies', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('both')],
-      [dash('d1', {
-        tiles: [{ id: 't1', queryId: 'both' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'both' }],
-      })],
-    ));
-    expect(migrated.queries).toHaveLength(3);
-    const [d1] = migrated.dashboards;
-    expect(d1.tiles[0].queryId).not.toBe(d1.filters[0].sourceQueryId);
-  });
-
-  it('re-running the transform reuses the Dashboard copy rather than minting another', () => {
-    const once = migrateStoredWorkspaceV3ToV4(v3(
-      [query('gco', { dashboard: { role: 'filter' } })],
-      [dash('ops', {
-        filters: [
-          { id: 'f-user', parameter: 'user', sourceQueryId: 'gco' },
-          { id: 'f-kind', parameter: 'query_kind', sourceQueryId: 'gco' },
-        ],
-      })],
-    ));
-    const again = assignDedicatedOwnership({ queries: once.queries, dashboards: once.dashboards });
-    expect(again.clonedCount).toBe(0);
-    expect(again.dashboards).toEqual(once.dashboards);
-  });
-
   it('preserves SQL, spec version, presentation, variants and unknown fields on the copy', () => {
     const source = query('rich', {
       description: 'kept',
@@ -220,8 +160,8 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
       dashboard: { role: 'panel', variants: { small: { view: 'table' } } },
       futureThing: { nested: [1, 2] },
     } as unknown as Partial<QuerySpecV1>);
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [source], [dash('d1', { tiles: [{ id: 't1', queryId: 'rich' }] })],
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
+      [source], [dashV1('d1', { tiles: [{ id: 't1', queryId: 'rich' }] })],
     ));
     const clone = migrated.queries[1];
     expect(clone.sql).toBe('SELECT rich');
@@ -233,16 +173,16 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     expect((clone.spec as Record<string, unknown>).futureThing).toEqual({ nested: [1, 2] });
   });
 
-  it('preserves member ids, order, layout and revisions, and never mutates its input', () => {
+  it('preserves member ids, order, layout and revisions, drops filters, and never mutates its input', () => {
     const source = v3(
       [query('a'), query('b')],
       [
-        dash('second', {
+        dashV1('second', {
           revision: 9,
           tiles: [{ id: 't-b', queryId: 'b' }],
           layout: { type: 'flow', version: 1, preset: 'columns-2', items: { 't-b': {} } },
         }),
-        dash('first', {
+        dashV1('first', {
           revision: 4,
           tiles: [{ id: 't-a', queryId: 'a' }],
           filters: [{ id: 'flt', parameter: 'p' }],
@@ -250,13 +190,15 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
       ],
     );
     const before = JSON.parse(JSON.stringify(source));
-    const migrated = migrateStoredWorkspaceV3ToV4(source);
+    const migrated = migrateStoredWorkspaceV3ToV5(source);
     // Dashboard order and identity, member ids, layout and revisions: untouched.
     expect(migrated.dashboards.map((d) => d.id)).toEqual(['second', 'first']);
     expect(migrated.dashboards.map((d) => d.revision)).toEqual([9, 4]);
     expect(migrated.dashboards[0].tiles[0].id).toBe('t-b');
     expect(migrated.dashboards[0].layout).toEqual(before.dashboards[0].layout);
-    expect(migrated.dashboards[1].filters).toEqual([{ id: 'flt', parameter: 'p' }]);
+    // #447: filters are gone and every Dashboard is document v2.
+    expect(migrated.dashboards[1]).not.toHaveProperty('filters');
+    expect(migrated.dashboards.map((d) => d.documentVersion)).toEqual([2, 2]);
     // Workspace identity too.
     expect(migrated.id).toBe('w1');
     expect(migrated.key).toBe('workspace');
@@ -265,12 +207,9 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
   });
 
   it('is idempotent: a second pass over its own output clones nothing', () => {
-    const once = migrateStoredWorkspaceV3ToV4(v3(
-      [query('p1'), query('f1', { dashboard: { role: 'filter' } })],
-      [dash('d1', {
-        tiles: [{ id: 't1', queryId: 'p1' }],
-        filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'f1' }],
-      })],
+    const once = migrateStoredWorkspaceV3ToV5(v3(
+      [query('p1'), query('lib')],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
     ));
     // By CONTENT, not merely by version: re-running the transform recognizes the
     // copies it minted as already dedicated.
@@ -280,98 +219,39 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     expect(again.dashboards).toEqual(once.dashboards);
   });
 
-  it('leaves a plain filter alone — it owns nothing', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('p1')],
-      [dash('d1', {
-        filters: [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }],
-      })],
-    ));
-    expect(migrated.queries).toHaveLength(1);
-    expect(migrated.dashboards[0].filters).toEqual([
-      { id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' },
-    ]);
-  });
-
-  // #427 requires a fixture for EVERY source-less filter shape the app supports
-  // today, before the migration is finalized. These are the real ones, taken from
-  // the shipped bundles: 4 From/To pairs, a free-text `search`, and 2 `catalog`
-  // selectors across `clickhouse-operations`, `ontime-charts`, `shop-charts`,
-  // `iceberg-dba-dashboard` and `iceberg-catalog-dashboard` — 11 in all. None has
-  // an option list, so none has a lossless source query to derive, and #427
-  // forbids inventing SQL or dropping the filter. They migrate untouched.
-  it('migrates every shipped source-less filter shape without inventing a source', () => {
-    const shapes = [
-      // A From/To time-range pair — `core/time-range.ts` only pairs filters with
-      // NO source, so a curated one could never form a range.
-      { id: 'ops-from', parameter: 'from' },
-      { id: 'ops-to', parameter: 'to' },
-      // A free-text search box.
-      { id: 'ops-search', parameter: 'search' },
-      // A scalar selector with a default and an active flag.
-      { id: 'filter-catalog', parameter: 'catalog', defaultValue: 'main', defaultActive: true },
-      // A labelled one with explicit targets.
-      { id: 'shop-from', parameter: 'from', label: 'From', targets: ['t1'] },
-    ];
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('p1')],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'p1' }], filters: shapes })],
-    ));
-    // Every filter comes through byte-identical, and only the TILE was cloned.
-    expect(migrated.dashboards[0].filters).toEqual(shapes);
-    expect(migrated.queries).toHaveLength(2);
-    expect(ownedIds(migrated)).toHaveLength(1);
-  });
-
-  it('leaves a DANGLING reference alone rather than inventing a query for it', () => {
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [], [dash('d1', {
-        tiles: [{ id: 't1', queryId: 'gone' }],
-        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'also-gone' }],
-      })],
+  it('leaves a DANGLING tile reference alone rather than inventing a query for it', () => {
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
+      [], [dashV1('d1', { tiles: [{ id: 't1', queryId: 'gone' }] })],
     ));
     expect(migrated.queries).toEqual([]);
     expect(migrated.dashboards[0].tiles[0].queryId).toBe('gone');
-    expect(migrated.dashboards[0].filters[0].sourceQueryId).toBe('also-gone');
   });
 
   it('refuses to clone a SETUP-role source, leaving the reference to be diagnosed', () => {
     // #427 rejects setup owners. Cloning one into a panel role would hide the
     // error behind an invented member.
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [query('s1', { dashboard: { role: 'setup' } })],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 's1' }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 's1' }] })],
     ));
     expect(migrated.queries).toHaveLength(1);
     expect(migrated.dashboards[0].tiles[0].queryId).toBe('s1');
   });
 
-  it('coerces a role-mismatched source to the OWNER role on the copy', () => {
-    // A filter-role query behind a tile is invalid today, so such a workspace
-    // cannot be opened at all. The copy takes the owner's role, which repairs it
-    // while the original keeps its own role in the Library.
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [query('f1', { dashboard: { role: 'filter' } })],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'f1' }] })],
-    ));
-    expect(migrated.queries[0].spec.dashboard).toEqual({ role: 'filter' });
-    expect(migrated.queries[1].spec.dashboard).toEqual({ role: 'panel' });
-  });
-
   it('escalates a derived id that collides with a query already in the collection', () => {
     const collision = deriveOwnedQueryId(
-      { sourceQueryId: 'p1', dashboardId: 'd1', role: 'panel', memberId: 't1' }, new Set(),
+      { sourceQueryId: 'p1', dashboardId: 'd1', memberId: 't1' }, new Set(),
     );
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       // A query already sitting on the id the derivation would pick.
       [query('p1'), query(collision)],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
     ));
     expect(migrated.dashboards[0].tiles[0].queryId).toBe(`${collision}-2`);
     // Deterministic, so a second decode of the same record agrees.
-    expect(migrateStoredWorkspaceV3ToV4(v3(
+    expect(migrateStoredWorkspaceV3ToV5(v3(
       [query('p1'), query(collision)],
-      [dash('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: 'p1' }] })],
     ))).toEqual(migrated);
   });
 
@@ -379,14 +259,14 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     // The marker (not content) is what makes recognition local and idempotent.
     const source = query('lib');
     const ownedId = deriveOwnedQueryId(
-      { sourceQueryId: 'lib', dashboardId: 'd1', role: 'panel', memberId: 't1' }, new Set(),
+      { sourceQueryId: 'lib', dashboardId: 'd1', memberId: 't1' }, new Set(),
     );
     const existingCopy = {
       ...source, id: ownedId, spec: { ...source.spec, dashboard: { role: 'panel' } },
     } as SavedQueryV2;
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [source, existingCopy],
-      [dash('d1', { tiles: [{ id: 't1', queryId: ownedId }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: ownedId }] })],
     ));
     expect(migrated.queries).toHaveLength(2);
     expect(migrated.dashboards[0].tiles[0].queryId).toBe(ownedId);
@@ -397,8 +277,8 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     // the Library: content identity is not evidence that a query is a copy.
     const source = query('dup-a');
     const twin = { ...source, id: 'dup-b' } as SavedQueryV2;
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [source, twin], [dash('d1', { tiles: [{ id: 't1', queryId: 'dup-b' }] })],
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
+      [source, twin], [dashV1('d1', { tiles: [{ id: 't1', queryId: 'dup-b' }] })],
     ));
     expect(migrated.queries).toHaveLength(3);
     expect([...buildQueryOwnershipIndex(migrated).libraryQueryIds]).toEqual(['dup-a', 'dup-b']);
@@ -412,9 +292,9 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     } as SavedQueryV2;
     // Marked, but referenced by TWO tiles — two panel owners is never a dedicated
     // copy, so both references must be re-homed.
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
+    const migrated = migrateStoredWorkspaceV3ToV5(v3(
       [source, copy],
-      [dash('d1', { tiles: [{ id: 't1', queryId: copy.id }, { id: 't2', queryId: copy.id }] })],
+      [dashV1('d1', { tiles: [{ id: 't1', queryId: copy.id }, { id: 't2', queryId: copy.id }] })],
     ));
     expect(migrated.queries).toHaveLength(4);
     const [t1, t2] = migrated.dashboards[0].tiles;
@@ -422,36 +302,27 @@ describe('migrateStoredWorkspaceV3ToV4', () => {
     expect(t1.queryId).not.toBe(copy.id);
   });
 
-  it('does not treat a marked copy as dedicated when the member role differs', () => {
-    // The copy carries role `panel`, but the member referencing it is a FILTER, so
-    // it is not what a dedicated copy for that member looks like — leaving it would
-    // strand a role-mismatched reference the workspace cannot open.
-    const source = query('lib', { dashboard: { role: 'filter' } });
-    const marked = `${OWNED_QUERY_ID_PREFIX}deadbeef`;
-    const copy = {
-      ...source, id: marked, spec: { ...source.spec, dashboard: { role: 'panel' } },
-    } as SavedQueryV2;
-    const migrated = migrateStoredWorkspaceV3ToV4(v3(
-      [source, copy],
-      [dash('d1', { filters: [{ id: 'f1', parameter: 'p', sourceQueryId: marked }] })],
-    ));
-    expect(migrated.queries).toHaveLength(3);
-    expect(migrated.dashboards[0].filters[0].sourceQueryId).not.toBe(marked);
-  });
-
-  it('migrates an empty workspace to an empty V4 workspace', () => {
-    expect(migrateStoredWorkspaceV3ToV4(v3([], []))).toEqual({
-      storageVersion: 4, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [],
+  it('migrates an empty workspace to an empty V5 workspace', () => {
+    expect(migrateStoredWorkspaceV3ToV5(v3([], []))).toEqual({
+      storageVersion: 5, id: 'w1', key: 'workspace', name: 'W', queries: [], dashboards: [],
     });
   });
 });
 
 describe('assignDedicatedOwnership — scope', () => {
+  // assignDedicatedOwnership runs AFTER curated filters are dropped, so it only
+  // ever walks document v2 Dashboards (#447).
+  const dashV2 = (id: string, over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+    documentVersion: 2, id, title: id.toUpperCase(), revision: 1,
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    tiles: [], ...over,
+  } as DashboardDocumentV2);
+
   const workspace = () => ({
     queries: [query('p1'), query('p2')],
     dashboards: [
-      dash('target', { tiles: [{ id: 't1', queryId: 'p1' }] }),
-      dash('other', { revision: 12, tiles: [{ id: 't2', queryId: 'p2' }] }),
+      dashV2('target', { tiles: [{ id: 't1', queryId: 'p1' }] }),
+      dashV2('other', { revision: 12, tiles: [{ id: 't2', queryId: 'p2' }] }),
     ],
   });
 
@@ -472,8 +343,8 @@ describe('assignDedicatedOwnership — scope', () => {
     const input = {
       queries: [query('p2')],
       dashboards: [
-        dash('target', { tiles: [{ id: 't1', queryId: 'p2' }] }),
-        dash('other', { tiles: [{ id: 't2', queryId: 'p2' }] }),
+        dashV2('target', { tiles: [{ id: 't1', queryId: 'p2' }] }),
+        dashV2('other', { tiles: [{ id: 't2', queryId: 'p2' }] }),
       ],
     };
     const result = assignDedicatedOwnership({ ...input, scope: new Set(['target']) });

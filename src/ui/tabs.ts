@@ -7,12 +7,10 @@ import { activeTab, allocTabId, newTabObj, setTabSpecDraft, tabDirty } from '../
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { queryToken } from '../workspace/workspace-sync.js';
 import { batch } from '@preact/signals-core';
-import { effectiveDashboardRole } from '../core/result-choice.js';
-import type { AppDom, ActionsRegistry } from './app.types.js';
+import type { AppDom } from './app.types.js';
 import type { AppState, QueryTab } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
-import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). `state` is the real
@@ -24,33 +22,16 @@ import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 export interface TabsApp {
   dom: Pick<AppDom, 'qtabsInner'>;
   state: AppState;
-  actions: Pick<ActionsRegistry, 'setEditorMode'>;
-  specEditor: Pick<SpecEditorPort, 'revealOffset'>;
+  /** #447 narrowed this: `actions.setEditorMode` + `specEditor.revealOffset`
+   *  were read ONLY by the removed Filter-role badge. */
   sqlEditor: Pick<EditorPort, 'focus'>;
 }
 
-/** The shape `onOpen()` (filterRoleBadge's caller) must hand back — only
- *  `specText` is read here, to locate the `"role"` key to reveal. */
-export type FilterRoleTarget = Pick<QueryTab, 'specText'>;
-
-/**
- * The "Filter" role badge shown next to a tab name (tabs.js) or a Library row
- * (saved-history.js) — the one shared button both surfaces need so the label,
- * tooltip, and click affordance can't drift between them (CLAUDE.md rule 5:
- * extract on a second consumer). `onOpen()` does whatever surface-specific
- * work gets a tab active + its spec text, then this reveals the role field.
- */
-export function filterRoleBadge(app: TabsApp, onOpen: () => FilterRoleTarget): HTMLElement {
-  return h('button', {
-    class: 'query-role-badge', title: 'Open Filter role in Spec',
-    onclick: (event: Event) => {
-      event.stopPropagation();
-      const tab = onOpen();
-      app.actions.setEditorMode('spec');
-      app.specEditor.revealOffset(tab.specText.indexOf('"role"'));
-    },
-  }, 'Filter');
-}
+// #447 removed `filterRoleBadge` (and its `FilterRoleTarget`): it was the shared
+// "Filter" role badge painted next to a tab name here and next to a Library row
+// in saved-history.ts, and the only role it ever announced was the Filter role
+// the option-provider model owned. `role`'s schema enum is `["panel","setup"]`
+// now, and neither of those gets a badge, so nothing renders it.
 
 /** Paint the tab strip into app.dom.qtabsInner. */
 export function renderTabs(app: TabsApp): void {
@@ -60,9 +41,6 @@ export function renderTabs(app: TabsApp): void {
     const isActive = t.id === app.state.activeTabId.value;
     return h('div', { class: 'qtab' + (isActive ? ' active' : ''), onclick: () => selectTab(app, t.id) },
       h('span', { class: 'name' }, t.name),
-      effectiveDashboardRole(t.specParsed) === 'filter'
-        ? filterRoleBadge(app, () => { selectTab(app, t.id); return t; })
-        : null,
       // #343: a visible marker when this tab's linked saved query changed
       // ('conflict') or was deleted ('deleted') in another browser tab.
       t.externalState

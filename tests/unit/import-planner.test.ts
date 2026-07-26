@@ -7,10 +7,10 @@ import type {
   IdMapping, QueryConflict, QueryDecision,
 } from '../../src/workspace/import-planner.js';
 import type {
-  DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV1, DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
 import { buildDashboardExportBundle } from '../../src/dashboard/model/dashboard-export.js';
-import { migrateStoredWorkspaceV3ToV4 } from '../../src/workspace/stored-workspace-ownership.js';
+import { migrateStoredWorkspaceV3ToV5 } from '../../src/workspace/stored-workspace-ownership.js';
 import { buildQueryOwnershipIndex } from '../../src/dashboard/model/query-ownership.js';
 
 // --- fixtures ----------------------------------------------------------------
@@ -20,28 +20,32 @@ const panelQuery = (id: string, name = id): SavedQueryV2 => ({
   spec: { name, panel: { cfg: { type: 'bar', x: 0, y: [1] } } },
 });
 
-const filterQuery = (id: string, name = id): SavedQueryV2 => ({
-  id, sql: 'SELECT 1', specVersion: 1,
-  spec: { name, dashboard: { role: 'filter' } },
-});
-
 const setupQuery = (id: string, name = id): SavedQueryV2 => ({
   id, sql: 'SELECT 1', specVersion: 1,
   spec: { name, dashboard: { role: 'setup' } },
 });
 
-const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
+// Legacy Dashboard document v1 (curated filters) — used only to build the
+// pre-migration StoredWorkspaceV3 fixture for the export round-trip below.
+const dashboardDocV1 = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [], ...over,
 });
 
-const workspace = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
-  storageVersion: 4, id: 'w1', key: 'workspace', name: 'Workspace', queries: [], dashboards: [], ...over,
+// Current Dashboard document v2 (#447 — no curated filters).
+const dashboardDoc = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+  documentVersion: 2, id: 'd1', title: 'D', revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  tiles: [], ...over,
 });
 
-const bundle = (over: Partial<PortableBundleV1> = {}): PortableBundleV1 => ({
-  format: 'altinity-sql-browser/portable-bundle', version: 1,
+const workspace = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
+  storageVersion: 5, id: 'w1', key: 'workspace', name: 'Workspace', queries: [], dashboards: [], ...over,
+});
+
+const bundle = (over: Partial<PortableBundleV2> = {}): PortableBundleV2 => ({
+  format: 'altinity-sql-browser/portable-bundle', version: 2,
   exportedAt: '2026-07-17T00:00:00.000Z', queries: [], dashboards: [], ...over,
 });
 
@@ -58,15 +62,13 @@ const ids = (queries: readonly SavedQueryV2[]): string[] => queries.map((q) => q
 describe('listBundleDashboards', () => {
   it('preserves bundle.dashboards ARRAY ORDER (no re-sort)', () => {
     const zeta = dashboardDoc({
-      id: 'zeta', title: 'Zeta', tiles: [{ id: 't1', queryId: 'p1' }], filters: [],
+      id: 'zeta', title: 'Zeta', tiles: [{ id: 't1', queryId: 'p1' }],
     });
-    const alpha = dashboardDoc({
-      id: 'alpha', title: 'Alpha', filters: [{ id: 'f1', parameter: 'p' }],
-    });
+    const alpha = dashboardDoc({ id: 'alpha', title: 'Alpha' });
     const summaries = listBundleDashboards(bundle({ dashboards: [zeta, alpha] }));
     expect(summaries).toEqual([
-      { id: 'zeta', title: 'Zeta', tileCount: 1, filterCount: 0 },
-      { id: 'alpha', title: 'Alpha', tileCount: 0, filterCount: 1 },
+      { id: 'zeta', title: 'Zeta', tileCount: 1 },
+      { id: 'alpha', title: 'Alpha', tileCount: 0 },
     ]);
   });
 
@@ -180,39 +182,31 @@ describe('buildQueryIdMapping', () => {
 
 // --- rewriteDashboardReferences ------------------------------------------------
 
+// #447: a panel tile is the only kind of Dashboard member left, so there is no
+// filter.sourceQueryId reference to rewrite any more.
 describe('rewriteDashboardReferences', () => {
   const dashboard = dashboardDoc({
     tiles: [{ id: 't1', queryId: 'p1' }],
-    filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }, { id: 'flt2', parameter: 'q' }],
     layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
   });
 
-  it('rewrites BOTH tile.queryId and filter.sourceQueryId via an IdMapping', () => {
-    const mapping: IdMapping = {
-      p1: { targetId: 'p1-copy', action: 'copy' },
-      f1: { targetId: 'f1-copy', action: 'copy' },
-    };
+  it('rewrites tile.queryId via an IdMapping', () => {
+    const mapping: IdMapping = { p1: { targetId: 'p1-copy', action: 'copy' } };
     const result = rewriteDashboardReferences(dashboard, mapping);
     expect(result.invalidated).toBe(false);
     expect(result.missingRequiredIds).toEqual([]);
     expect(result.dashboard.tiles[0].queryId).toBe('p1-copy');
-    expect(result.dashboard.filters[0].sourceQueryId).toBe('f1-copy');
-    expect(result.dashboard.filters[1].sourceQueryId).toBeUndefined(); // no sourceQueryId — untouched
   });
 
   it('rewrites via a plain Map<string,string|null> too', () => {
-    const mapping = new Map<string, string | null>([['p1', 'p2'], ['f1', 'f2']]);
+    const mapping = new Map<string, string | null>([['p1', 'p2']]);
     const result = rewriteDashboardReferences(dashboard, mapping);
     expect(result.invalidated).toBe(false);
     expect(result.dashboard.tiles[0].queryId).toBe('p2');
-    expect(result.dashboard.filters[0].sourceQueryId).toBe('f2');
   });
 
   it('invalidates when a required reference maps to null (skipped)', () => {
-    const mapping: IdMapping = {
-      p1: { targetId: null, action: 'skip' },
-      f1: { targetId: 'f1', action: 'use-existing' },
-    };
+    const mapping: IdMapping = { p1: { targetId: null, action: 'skip' } };
     const result = rewriteDashboardReferences(dashboard, mapping);
     expect(result.invalidated).toBe(true);
     expect(result.missingRequiredIds).toEqual(['p1']);
@@ -221,21 +215,21 @@ describe('rewriteDashboardReferences', () => {
   });
 
   it('invalidates when a required reference has no mapping entry at all (Map variant, too)', () => {
-    const mapping = new Map<string, string | null>([['f1', 'f1']]); // p1 absent
+    const mapping = new Map<string, string | null>(); // p1 absent
     const result = rewriteDashboardReferences(dashboard, mapping);
     expect(result.invalidated).toBe(true);
     expect(result.missingRequiredIds).toEqual(['p1']);
   });
 
   it('invalidates when a required reference has no IdMapping (Record) entry at all', () => {
-    const mapping: IdMapping = { f1: { targetId: 'f1', action: 'use-existing' } }; // p1 absent
+    const mapping: IdMapping = {}; // p1 absent
     const result = rewriteDashboardReferences(dashboard, mapping);
     expect(result.invalidated).toBe(true);
     expect(result.missingRequiredIds).toEqual(['p1']);
   });
 
   it('never mutates the input dashboard (deep clone)', () => {
-    const mapping: IdMapping = { p1: { targetId: 'p2', action: 'copy' }, f1: { targetId: 'f1', action: 'use-existing' } };
+    const mapping: IdMapping = { p1: { targetId: 'p2', action: 'copy' } };
     const result = rewriteDashboardReferences(dashboard, mapping);
     result.dashboard.tiles[0].queryId = 'mutated';
     expect(dashboard.tiles[0].queryId).toBe('p1');
@@ -314,15 +308,13 @@ describe('planImportQueries', () => {
     expect(plan.candidateWorkspace!.queries[0].spec.name).toBe('new name');
   });
 
-  it.each([
-    ['filter', filterQuery('p1')],
-    ['setup', setupQuery('p1')],
-  ])('keeps the tile when a tiled panel is replaced with a %s query, and diagnoses the role', (_role, replacement) => {
+  it('keeps the tile when a tiled panel is replaced with a setup query, and diagnoses the role', () => {
     // #427: the import no longer silently removes the tile to make the role
     // change fit. The candidate is REJECTED with the role diagnostic instead, so
     // the reference and the Dashboard survive for an explicit repair.
     const current = panelQuery('p1');
     current.spec.favorite = true;
+    const replacement = setupQuery('p1');
     replacement.spec.favorite = true;
     const dash = dashboardDoc({ revision: 7, tiles: [{ id: 't1', queryId: 'p1' }] });
     const plan = planImportQueries(
@@ -363,26 +355,21 @@ describe('planImportQueries', () => {
 // --- planImportDashboard --------------------------------------------------------
 
 describe('planImportDashboard', () => {
-  // t1's query (p1) declares `{p:String}` so the source-backed filter `flt1`
-  // (`sourceQueryId: 'f1'`) has a valid selection-contract consumer — #189/
-  // #360's `resolveFilterSelection`, now run by `validateDashboardSemantics`
-  // for every source-backed filter, would otherwise flag zero consumers.
-  // This suite is about ID-rewriting through import, not filter contracts.
+  // #447: this suite is about ID-rewriting through import — there is no filter
+  // contract left to satisfy, so the bundled Dashboard carries only a tile.
   const buildBundle = () => bundle({
-    queries: [{ ...panelQuery('p1', 'incoming p1'), sql: 'SELECT {p:String}' }, filterQuery('f1', 'incoming f1')],
+    queries: [panelQuery('p1', 'incoming p1')],
     dashboards: [dashboardDoc({
       id: 'd1', revision: 5,
       tiles: [{ id: 't1', queryId: 'p1' }],
-      filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }],
       layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     })],
   });
 
-  it('copy mode rewrites BOTH tile.queryId and filter.sourceQueryId, mints a fresh Dashboard id, and resets revision to 1', () => {
-    const ws = workspace({ queries: [panelQuery('p1', 'existing p1'), filterQuery('f1', 'existing f1')] });
+  it('copy mode rewrites tile.queryId, mints a fresh Dashboard id, and resets revision to 1', () => {
+    const ws = workspace({ queries: [panelQuery('p1', 'existing p1')] });
     const decisions: QueryDecision[] = [
       { sourceId: 'p1', action: 'copy', targetId: 'p1-copy' },
-      { sourceId: 'f1', action: 'copy', targetId: 'f1-copy' },
     ];
     const genId = counter('new-dash');
     const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, 'copy', genId);
@@ -390,40 +377,33 @@ describe('planImportDashboard', () => {
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('new-dash-1');
     expect(candidate.dashboards[0]!.revision).toBe(1);
-    // The decisions resolve the references to `p1-copy`/`f1-copy`; #427 then
-    // gives the tile and the filter their OWN dedicated copies of those, which
-    // remain in the catalog as Library sources.
+    // The decision resolves the reference to `p1-copy`; #427 then gives the
+    // tile its OWN dedicated copy of that, which remains in the catalog as a
+    // Library source.
     expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1-copy');
-    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1-copy');
-    expect(candidate.dashboards[0]!.tiles[0].queryId)
-      .not.toBe(candidate.dashboards[0]!.filters[0].sourceQueryId);
-    // existing catalog entries keep their position; copies and the owned copies
-    // are appended, in filter-before-tile walk order.
-    expect(ids(candidate.queries).slice(0, 4)).toEqual(['p1', 'f1', 'p1-copy', 'f1-copy']);
-    expect(candidate.queries).toHaveLength(6);
+    // existing catalog entries keep their position; the copy and the owned
+    // copy are appended.
+    expect(ids(candidate.queries).slice(0, 2)).toEqual(['p1', 'p1-copy']);
+    expect(candidate.queries).toHaveLength(3);
     expect(plan.sourceDashboardId).toBe('d1');
   });
 
   it('replace mode keeps the imported Dashboard id and revision', () => {
-    const ws = workspace(); // no existing queries — both incoming ids are non-conflicting
+    const ws = workspace(); // no existing queries — the incoming id is non-conflicting
     const plan = planImportDashboard(ws, buildBundle(), 'd1', [], 'replace', counter());
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('d1');
     expect(candidate.dashboards[0]!.revision).toBe(5);
-    // The bundle's own queries land as Library sources; the members own copies.
-    expect(ids(candidate.queries).slice(0, 2)).toEqual(['p1', 'f1']);
+    // The bundle's own query survives as a Library source; the member owns a copy.
+    expect(ids(candidate.queries).slice(0, 1)).toEqual(['p1']);
     expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1');
-    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1');
     // Member ids are untouched, so #426's tree state survives an import.
     expect(candidate.dashboards[0]!.tiles[0].id).toBe('t1');
-    expect(candidate.dashboards[0]!.filters[0].id).toBe('flt1');
   });
 
   it('invalidates when skipping a required Dashboard dependency (candidate null, missingRequiredIds populated)', () => {
-    const ws = workspace({ queries: [panelQuery('p1', 'existing p1'), filterQuery('f1', 'existing f1')] });
-    const decisions: QueryDecision[] = [
-      { sourceId: 'p1', action: 'skip' }, { sourceId: 'f1', action: 'use-existing' },
-    ];
+    const ws = workspace({ queries: [panelQuery('p1', 'existing p1')] });
+    const decisions: QueryDecision[] = [{ sourceId: 'p1', action: 'skip' }];
     const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, 'copy', counter());
     expect(plan.candidateWorkspace).toBeNull();
     expect(plan.diagnostics).toHaveLength(1);
@@ -462,12 +442,12 @@ describe('planImportDashboard', () => {
 // touch any other stored Dashboard. Every fixture above holds at most one, so
 // these cover the collection explicitly.
 describe('imports preserve the non-compatibility Dashboards', () => {
-  const hidden = (): DashboardDocumentV1 => dashboardDoc({
+  const hidden = (): DashboardDocumentV2 => dashboardDoc({
     id: 'hidden', title: 'Hidden', revision: 12,
     tiles: [{ id: 'h1', queryId: 'a' }],
     layout: { type: 'flow', version: 1, preset: 'columns-2', items: { h1: {} } },
   });
-  const twoDashboards = (compat: DashboardDocumentV1) =>
+  const twoDashboards = (compat: DashboardDocumentV2) =>
     workspace({ queries: [panelQuery('a')], dashboards: [compat, hidden()] });
 
   it('planImportQueries leaves every Dashboard alone when nothing is favorited', () => {
@@ -592,19 +572,15 @@ describe('imports preserve the non-compatibility Dashboards', () => {
 // the flow that regressed twice while implementing ownership, so it is pinned end
 // to end: a REAL exported bundle, re-imported, must clone nothing and leave no
 // junk behind. `buildDashboardExportBundle` ships only the dependency closure —
-// the owned copies, never their Library sources — so recognizing a copy cannot
+// the owned copy, never its Library source — so recognizing a copy cannot
 // depend on its Library twin travelling with it.
 describe('a Dashboard export round trip', () => {
-  const migrated = (): StoredWorkspaceV4 => migrateStoredWorkspaceV3ToV4({
+  const migrated = (): StoredWorkspaceV5 => migrateStoredWorkspaceV3ToV5({
     storageVersion: 3, id: 'w', key: 'w', name: 'W',
-    queries: [
-      { ...panelQuery('p1'), sql: 'SELECT {p:String}' } as SavedQueryV2,
-      filterQuery('f1'),
-    ],
-    dashboards: [dashboardDoc({
+    queries: [panelQuery('p1')],
+    dashboards: [dashboardDocV1({
       id: 'd1', revision: 4,
       tiles: [{ id: 't1', queryId: 'p1' }],
-      filters: [{ id: 'flt', parameter: 'p', sourceQueryId: 'f1' }],
       layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     })],
   });
@@ -614,19 +590,18 @@ describe('a Dashboard export round trip', () => {
     const exported = buildDashboardExportBundle(
       source.dashboards[0], source.queries, '2026-07-25T00:00:00.000Z',
     );
-    // The bundle carries ONLY the owned copies.
+    // The bundle carries ONLY the owned copy.
     expect(exported.queries.map((query) => query.id))
-      .toEqual([source.dashboards[0].tiles[0].queryId, source.dashboards[0].filters[0].sourceQueryId]);
+      .toEqual([source.dashboards[0].tiles[0].queryId]);
 
     const plan = planReplaceWorkspace(workspace(), exported, [], counter());
     const candidate = plan.candidateWorkspace!;
     expect(plan.diagnostics).toEqual([]);
-    // Two queries in, two queries out — no second generation of copies, and no
+    // One query in, one query out — no second generation of copies, and no
     // orphaned Library entries with duplicate names.
     expect(candidate.queries.map((query) => query.id)).toEqual(exported.queries.map((query) => query.id));
     expect(candidate.dashboards[0].tiles[0].queryId).toBe(source.dashboards[0].tiles[0].queryId);
-    expect(candidate.dashboards[0].filters[0].sourceQueryId).toBe(source.dashboards[0].filters[0].sourceQueryId);
-    // Every copy still has exactly its one owner, and nothing is in the Library.
+    // The copy still has exactly its one owner, and nothing is in the Library.
     const index = buildQueryOwnershipIndex(candidate);
     expect(index.libraryQueryIds.size).toBe(0);
     for (const owners of index.ownersByQueryId.values()) expect(owners).toHaveLength(1);
@@ -677,28 +652,22 @@ describe('planReplaceWorkspace', () => {
 
   it('replaces queries AND every bundled Dashboard atomically, including standalone queries', () => {
     const ws = workspace();
-    // t1's query (p1) declares `{p:String}` — see `buildBundle`'s own comment
-    // above for why a source-backed filter needs a valid consumer here.
     const bundleWithDashboard = bundle({
-      queries: [
-        { ...panelQuery('p1'), sql: 'SELECT {p:String}' }, filterQuery('f1'), panelQuery('standalone'),
-      ],
+      queries: [panelQuery('p1'), panelQuery('standalone')],
       dashboards: [dashboardDoc({
         id: 'd1', revision: 2,
         tiles: [{ id: 't1', queryId: 'p1' }],
-        filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }],
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
       })],
     });
     const plan = planReplaceWorkspace(ws, bundleWithDashboard, [], counter());
     const candidate = plan.candidateWorkspace!;
-    // #427: the bundle's own queries survive as Library sources, and the tile and
-    // the curated filter each gain a DEDICATED copy with a derived id. The
-    // Dashboard keeps its id, revision and member ids.
-    expect(ids(candidate.queries).slice(0, 3)).toEqual(['p1', 'f1', 'standalone']);
-    expect(candidate.queries).toHaveLength(5);
+    // #427: the bundle's own query survives as a Library source, and the tile
+    // gains a DEDICATED copy with a derived id. The Dashboard keeps its id,
+    // revision and member ids.
+    expect(ids(candidate.queries).slice(0, 2)).toEqual(['p1', 'standalone']);
+    expect(candidate.queries).toHaveLength(3);
     expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1');
-    expect(candidate.dashboards[0]!.filters[0].sourceQueryId).not.toBe('f1');
     expect(candidate.dashboards[0]!.tiles[0].id).toBe('t1');
     expect(candidate.dashboards[0]!.id).toBe('d1');
     expect(candidate.dashboards[0]!.revision).toBe(2);
@@ -710,7 +679,7 @@ describe('planReplaceWorkspace', () => {
   // bundle order — instead of collapsing a multi-Dashboard bundle to one.
   it('imports EVERY bundled Dashboard, preserving bundle order and per-Dashboard ids', () => {
     const bundleWithTwo = bundle({
-      queries: [{ ...panelQuery('p1'), sql: 'SELECT {p:String}' }],
+      queries: [panelQuery('p1')],
       dashboards: [
         dashboardDoc({
           id: 'exec', title: 'Executive', revision: 3,
@@ -741,9 +710,9 @@ describe('planReplaceWorkspace', () => {
   });
 
   it('applies query-id remaps inside EVERY imported Dashboard', () => {
-    const ws = workspace({ queries: [{ ...panelQuery('p1', 'existing'), sql: 'SELECT {p:String}' }] });
+    const ws = workspace({ queries: [panelQuery('p1', 'existing')] });
     const bundleWithTwo = bundle({
-      queries: [{ ...panelQuery('p1', 'incoming'), sql: 'SELECT {p:String}' }],
+      queries: [panelQuery('p1', 'incoming')],
       dashboards: [
         dashboardDoc({ id: 'a', tiles: [{ id: 'ta', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'report', items: { ta: {} } } }),
         dashboardDoc({ id: 'b', tiles: [{ id: 'tb', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'report', items: { tb: {} } } }),
@@ -770,7 +739,7 @@ describe('planReplaceWorkspace', () => {
   });
 
   it('does not derive favorite tiles when the bundle carries its own Dashboards', () => {
-    const favorite = { ...panelQuery('p1'), sql: 'SELECT {p:String}' };
+    const favorite = panelQuery('p1');
     favorite.spec.favorite = true;
     const plan = planReplaceWorkspace(workspace(), bundle({
       queries: [favorite],

@@ -48,7 +48,7 @@ import type { QueryDocumentSession } from '../../src/application/query-document-
 import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import { resolveCompatibilityDashboard } from '../../src/workspace/workspace-dashboards.js';
 import { QUERY_SURFACE } from '../../src/application/main-surface.js';
-import type { StoredWorkspaceV4 } from '../../src/generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
 } from '../../src/application/saved-query-service.js';
@@ -109,7 +109,7 @@ export function memWorkspaceStore(initial: readonly WorkspaceStoreRecord[] = [])
  *  counts the same way it used to assert on the retired `save: SaveJSON`
  *  spy — `vi.fn(impl)` still delegates to the real implementation. */
 export function fakeWorkspaceCommit() {
-  return vi.fn(async (candidate: StoredWorkspaceV4) => (
+  return vi.fn(async (candidate: StoredWorkspaceV5) => (
     createWorkspaceRepository({ store: memWorkspaceStore() }).create(candidate)
   ));
 }
@@ -128,11 +128,11 @@ export function fakeMutateWorkspace(
   state: Pick<AppState, 'savedQueries' | 'dashboard' | 'workspaceId' | 'workspaceKey' | 'libraryName' | 'libraryDirty'>,
   opts: {
     commit?: WorkspaceRepository['commit'];
-    loadById?: (id: string) => Promise<StoredWorkspaceV4 | null>;
+    loadById?: (id: string) => Promise<StoredWorkspaceV5 | null>;
   } = {},
 ): MutateWorkspace & { commit: ReturnType<typeof vi.fn>; loadById: ReturnType<typeof vi.fn> } {
-  let current: StoredWorkspaceV4 | null = null;
-  const commit = vi.fn(opts.commit ?? (async (candidate: StoredWorkspaceV4) => (
+  let current: StoredWorkspaceV5 | null = null;
+  const commit = vi.fn(opts.commit ?? (async (candidate: StoredWorkspaceV5) => (
     createWorkspaceRepository({ store: memWorkspaceStore() }).create(candidate)
   )));
   const loadById = vi.fn(opts.loadById ?? (async () => current));
@@ -170,7 +170,7 @@ export function fakeMutateWorkspace(
  *  transform actually observed the first commit's effect. No schema
  *  validation (unlike `fakeWorkspaceCommit`'s real-repository-backed spy) —
  *  just enough state to make read-after-write hold. */
-export function statefulWorkspaceRepo(initial: StoredWorkspaceV4 | null = null): WorkspaceRepository {
+export function statefulWorkspaceRepo(initial: StoredWorkspaceV5 | null = null): WorkspaceRepository {
   let current = initial;
   return {
     list: async () => ({
@@ -320,10 +320,6 @@ const paramsDefaults: WorkbenchParameterSession = {
   prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabSource: vi.fn(() => ({ id: 'tab', statements: [], missing: [], invalid: [], errors: [], runnable: true })),
-  prepareFilterPreview: vi.fn(() => ({
-    readiness: 'runnable' as const, diagnostics: [], dependsOn: [], missing: [], invalid: [], errors: [],
-    error: null, execSql: '', params: {}, format: 'Filter' as const, rowLimit: 2, boundParams: [],
-  })),
   execStatementSql: vi.fn((stmt: string) => stmt),
   varGateBlocked: vi.fn(() => false),
   hardenVar: vi.fn(),
@@ -606,7 +602,7 @@ const appDefaults: App = {
 export type MakeAppOverrides = AppOverrides;
 type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
   /** Partial like the rest (#286 Phase 4) — Dashboard mutations read a
-   *  StoredWorkspaceV4 through `workspace.loadById`; a test overrides only
+   *  StoredWorkspaceV5 through `workspace.loadById`; a test overrides only
    *  the repository methods it drives. */
   workspace?: Partial<WorkspaceRepository>;
   dom?: Partial<AppDom>;
@@ -669,7 +665,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // #287 W5 / #343 §2: the one state-backed projection both `applyCommittedWorkspace`
   // and the `mutateWorkspace` success path share (mirrors app.ts, where the
   // primitive projects exactly once so callers no longer do).
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV4): void => {
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => {
     state.savedQueries = workspace.queries;
     // #343: mirror app.ts's own projection — detach any open tab whose linked
     // saved query is absent from the committed collection (deleted elsewhere).

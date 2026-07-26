@@ -1,35 +1,32 @@
-// Dashboard query OWNERSHIP (#427). Every Dashboard panel or curated filter
-// owns a dedicated saved-query copy; a query no Dashboard member references is a
-// Library query. This module is the one definition of that partition.
+// Dashboard query OWNERSHIP (#427). Every Dashboard panel tile owns a dedicated
+// saved-query copy; a query no Dashboard member references is a Library query.
+// This module is the one definition of that partition.
 //
-// Ownership is DERIVED, never stored: the only inputs are
-// `dashboards[].tiles[].queryId` and `dashboards[].filters[].sourceQueryId`.
-// #427 forbids reverse ownership fields on `SavedQueryV2`/`QuerySpecV1`, because
-// a stored back-pointer is a second source of truth that can disagree with the
-// references it mirrors — and the references are what execution actually reads.
+// Ownership is DERIVED, never stored: the only input is
+// `dashboards[].tiles[].queryId`. #427 forbids reverse ownership fields on
+// `SavedQueryV2`/`QuerySpecV1`, because a stored back-pointer is a second source
+// of truth that can disagree with the references it mirrors — and the references
+// are what execution actually reads.
 //
 // Rules:
 //   zero owners      -> Library query
 //   exactly one      -> Dashboard-owned query
-//   several          -> valid ONLY as one Dashboard's shared filter source
-//                       (see `ownersAreValid`); anything else is invalid
+//   several          -> always invalid
 //
-// The "several" case is not a loophole, it is how a filter-role query works. Such
-// a query returns ONE row whose columns each supply the options for the parameter
-// of the same name, so a single source legitimately serves many curated filters —
-// `examples/clickhouse-operations.json` has one that serves six. Giving each of
-// those filters its own copy would re-create the #359 bug (N copies of one query
-// executed N times, every helper column then reported as a duplicate provider by
-// `core/dashboard-filters.ts`, so every filter errors) and would force the user to
-// edit the option list N times. So a filter source is owned by a DASHBOARD, shared
-// by that Dashboard's curated filters; a panel query is owned by exactly one tile.
+// #447 removed the one legitimate multi-owner shape. A curated filter used to
+// reference an option-source query, and because one such source supplied the
+// options for several filters of the same Dashboard, it was owned by the
+// DASHBOARD rather than by a single member. Variables are inferred from panel
+// query placeholders and their optional option SQL is stored on the Dashboard
+// document itself, so no non-tile member references a query any more and the
+// "several owners" case has no valid form left.
 //
 // A reference to an id that no query in the collection carries is still an
 // OWNER here — this module reports what the document says. Missing references
-// stay a separate cross-resource diagnostic (`dashboard-tile-query-missing` /
-// `filter-source-missing` in `workspace-semantics.ts`), so a dangling id
-// deliberately lands in `ownersByQueryId` while joining NEITHER the Library nor
-// the owned partition: both of those describe queries that exist.
+// stay a separate cross-resource diagnostic (`dashboard-tile-query-missing` in
+// `workspace-semantics.ts`), so a dangling id deliberately lands in
+// `ownersByQueryId` while joining NEITHER the Library nor the owned partition:
+// both of those describe queries that exist.
 //
 // Pure — no DOM, no persistence, no signals, no injected services.
 
@@ -39,13 +36,7 @@ import type { SavedQueryV2 } from '../../generated/json-schema.types.js';
 /** Which Dashboard member owns a query, addressed the way #430 requires:
  *  by Dashboard id plus the member's own Dashboard-local id, never by query id
  *  and never by array position. */
-export type DashboardQueryOwner =
-  | { kind: 'panel'; dashboardId: string; tileId: string }
-  | { kind: 'filter'; dashboardId: string; filterId: string };
-
-/** The Dashboard role a clone is minted for. `setup`-role queries can never be
- *  Dashboard members (#427), so it is not a valid owner role. */
-export type DashboardOwnerRole = 'panel' | 'filter';
+export type DashboardQueryOwner = { kind: 'panel'; dashboardId: string; tileId: string };
 
 export interface QueryOwnershipIndex {
   /** Every referenced query id -> its owners, in document order. Includes ids
@@ -58,7 +49,7 @@ export interface QueryOwnershipIndex {
 }
 
 // ── Input shapes ────────────────────────────────────────────────────────────
-// Structural, so both `StoredWorkspaceV4` and any later stored-workspace
+// Structural, so both `StoredWorkspaceV5` and any later stored-workspace
 // version satisfy them without this module tracking the storage version. The
 // codec validates structure before any semantic layer runs, so these are the
 // narrowest shapes ownership actually reads — not a loosened re-declaration of
@@ -69,39 +60,14 @@ export interface OwnershipTile {
   queryId: string;
 }
 
-export interface OwnershipFilter {
-  id: string;
-  /** Absent on a plain filter (a free-text/date control with no option list),
-   *  which owns nothing. Only a CURATED filter has a source query. */
-  sourceQueryId?: string;
-}
-
 export interface OwnershipDashboard {
   id: string;
   tiles: readonly OwnershipTile[];
-  filters: readonly OwnershipFilter[];
 }
 
 export interface OwnershipWorkspace {
   queries: readonly SavedQueryV2[];
   dashboards: readonly OwnershipDashboard[];
-}
-
-/**
- * Does this owner set satisfy the ownership invariant?
- *
- *  - zero or one owner: always fine;
- *  - several owners: only when every one of them is a curated FILTER of the SAME
- *    Dashboard — the multi-parameter option source described in the module header.
- *
- * Everything else is the sharing #427 removes: two tiles on one query, a panel and
- * a filter on one query, or members of different Dashboards entangled through one.
- */
-export function ownersAreValid(owners: readonly DashboardQueryOwner[]): boolean {
-  if (owners.length < 2) return true;
-  const [first] = owners;
-  if (first.kind !== 'filter') return false;
-  return owners.every((owner) => owner.kind === 'filter' && owner.dashboardId === first.dashboardId);
 }
 
 /** Thrown by `ownerOfQuery` for a query with more than one owner. #427 requires
@@ -124,11 +90,10 @@ export class MultipleOwnersError extends Error {
 /**
  * Index the whole workspace's ownership in one pass.
  *
- * Owner order is the document's own: Dashboards in collection order, and within
- * each Dashboard its FILTERS before its TILES. That is the same order #427's
- * migration walks members in, so `owners[0]` is the same member both here and
- * there — which is what lets validation report "every owner after the first"
- * deterministically.
+ * Owner order is the document's own: Dashboards in collection order, tiles in
+ * tile order. That is the same order the migration walks members in, so
+ * `owners[0]` is the same member both here and there — which is what lets
+ * validation report "every owner after the first" deterministically.
  */
 export function buildQueryOwnershipIndex(workspace: OwnershipWorkspace): QueryOwnershipIndex {
   const ownersByQueryId = new Map<string, DashboardQueryOwner[]>();
@@ -138,11 +103,6 @@ export function buildQueryOwnershipIndex(workspace: OwnershipWorkspace): QueryOw
     else ownersByQueryId.set(queryId, [owner]);
   };
   for (const dashboard of workspace.dashboards) {
-    for (const filter of dashboard.filters) {
-      // A plain filter has no source query and therefore owns nothing.
-      if (filter.sourceQueryId === undefined) continue;
-      own(filter.sourceQueryId, { kind: 'filter', dashboardId: dashboard.id, filterId: filter.id });
-    }
     for (const tile of dashboard.tiles) {
       own(tile.queryId, { kind: 'panel', dashboardId: dashboard.id, tileId: tile.id });
     }
@@ -177,11 +137,7 @@ export function ownersOfQuery(
  *  Throws `MultipleOwnersError` when the workspace is in the invalid
  *  more-than-one-owner state rather than choosing one (#427). Exported for
  *  #428/#429, whose assignment and delete paths act on a single member.
- *
- *  It throws for a VALID shared filter source too: such a query has no single
- *  member owner, so there is nothing honest to return. Callers that may meet one —
- *  or that hold an unvalidated workspace — use `ownersOfQuery` with
- *  `ownersAreValid`. */
+ *  Callers that may hold an unvalidated workspace use `ownersOfQuery`. */
 export function ownerOfQuery(
   workspace: OwnershipWorkspace, queryId: string,
 ): DashboardQueryOwner | null {
@@ -198,9 +154,9 @@ export function ownerOfQuery(
  * description, panel/presentation data, variants, size hints, time ranges and
  * unknown Spec fields — with exactly two deliberate differences:
  *
- *  - `spec.dashboard.role` is set to the owner's role, because a panel owner
- *    requires role `panel` and a filter owner role `filter`; sibling
- *    `spec.dashboard` fields are retained.
+ *  - `spec.dashboard.role` is set to `panel`, the only role a Dashboard member
+ *    can have now that curated filters are gone; sibling `spec.dashboard`
+ *    fields are retained.
  *  - `spec.favorite` is REMOVED. After #427 a favourite is a Library
  *    preference with no membership meaning, so carrying one onto a copy that is
  *    absent from the Library would express nothing at all.
@@ -211,9 +167,8 @@ export function ownerOfQuery(
 export function cloneQueryForDashboardOwner(input: {
   source: SavedQueryV2;
   newId: string;
-  role: DashboardOwnerRole;
 }): SavedQueryV2 {
-  const roled = patchQueryDashboard(input.source, { role: input.role });
+  const roled = patchQueryDashboard(input.source, { role: 'panel' });
   const cleared = patchQuerySpec(roled, { favorite: undefined });
   return {
     ...cloneJson(input.source),

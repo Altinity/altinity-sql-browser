@@ -5,23 +5,23 @@ import { createQueryResolver } from '../../src/dashboard/application/dashboard-q
 import { flowLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
 import { grafanaGridLayoutPlugin } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import type { DashboardLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
-import type { DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string, dashboard?: Record<string, unknown>) => ({
   id, sql: 'SELECT 1', specVersion: 1, spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } }, ...(dashboard ? { dashboard } : {}) },
 });
 
-const draft = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
-  documentVersion: 1, id: 'd', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
-} as DashboardDocumentV1);
+const draft = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+  documentVersion: 2, id: 'd', title: 'D', revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [], ...over,
+} as DashboardDocumentV2);
 
 const makeCtx = (queries: unknown[], plugin: DashboardLayoutPlugin = flowLayoutPlugin): ApplyCommandContext => {
   let n = 0;
   return { resolver: createQueryResolver(queries), genTileId: () => `tile-${++n}`, plugin };
 };
 
-const run = (d: DashboardDocumentV1, command: DashboardCommand, queries: unknown[], plugin?: DashboardLayoutPlugin) =>
+const run = (d: DashboardDocumentV2, command: DashboardCommand, queries: unknown[], plugin?: DashboardLayoutPlugin) =>
   applyCommand(d, command, makeCtx(queries, plugin));
 
 describe('applyCommand — add-query / add-query-instance', () => {
@@ -169,7 +169,7 @@ describe('applyCommand — update-placement / change-layout', () => {
   });
 });
 
-const gridDraft = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => draft({
+const gridDraft = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => draft({
   layout: { type: 'grafana-grid', version: 1, items: {} } as never, ...over,
 });
 

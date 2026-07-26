@@ -10,12 +10,12 @@ import {
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
-import type { DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2 } from '../../src/generated/json-schema.types.js';
 
 const gridLayout = (items: Record<string, Record<string, unknown>> = {}) => ({ type: 'grafana-grid', version: 1, items });
-const doc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
-  documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: gridLayout(), filters: [], tiles: [], ...over,
-} as DashboardDocumentV1);
+const doc = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
+  documentVersion: 2, id: 'd', title: 'D', revision: 1, layout: gridLayout(), tiles: [], ...over,
+} as DashboardDocumentV2);
 
 describe('constants', () => {
   it('exposes the grid default placement and max column count', () => {

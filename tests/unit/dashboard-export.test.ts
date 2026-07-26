@@ -4,34 +4,31 @@ import {
 } from '../../src/dashboard/model/dashboard-export.js';
 import { canonicalEqual } from '../../src/dashboard/model/canonical-json.js';
 import type {
-  DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV4,
+  DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
 
 const query = (id: string): SavedQueryV2 => ({
   id, sql: `SELECT '${id}'`, specVersion: 1, spec: { name: id },
 });
 
-const dashboard = (
-  id: string, tileQueryIds: string[], filterSourceIds: string[] = [],
-): DashboardDocumentV1 => ({
-  documentVersion: 1, id, title: `Dashboard ${id}`, revision: 3,
+// #447: a panel tile is the only kind of Dashboard member left, so the
+// dependency closure is tile query ids only — there is no filter source.
+const dashboard = (id: string, tileQueryIds: string[]): DashboardDocumentV2 => ({
+  documentVersion: 2, id, title: `Dashboard ${id}`, revision: 3,
   layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   tiles: tileQueryIds.map((queryId, index) => ({
     id: `${id}-t${index}`, queryId, presentation: { kind: 'table' },
-  } as unknown as DashboardDocumentV1['tiles'][number])),
-  filters: filterSourceIds.map((sourceQueryId, index) => ({
-    id: `${id}-f${index}`, parameter: `p${index}`, sourceQueryId,
-  } as unknown as DashboardDocumentV1['filters'][number])),
+  } as unknown as DashboardDocumentV2['tiles'][number])),
 });
 
 describe('buildDashboardExportBundle', () => {
-  it('emits the dependency closure (tiles then filter sources, each once), excluding unrelated queries', () => {
-    const dash = dashboard('d1', ['q3', 'q1', 'q3'], ['q1', 'q9']);
+  it('emits the dependency closure (tile query ids, each once), excluding unrelated queries', () => {
+    const dash = dashboard('d1', ['q3', 'q1', 'q3', 'q9']);
     const queries = [query('q1'), query('q2'), query('q3'), query('q9'), query('unrelated')];
     const bundle = buildDashboardExportBundle(dash, queries, '2020-01-01T00:00:00Z');
 
     expect(bundle.format).toBe('altinity-sql-browser/portable-bundle');
-    expect(bundle.version).toBe(1);
+    expect(bundle.version).toBe(2);
     expect(bundle.exportedAt).toBe('2020-01-01T00:00:00Z');
     expect(bundle.queries.map((q) => q.id)).toEqual(['q3', 'q1', 'q9']);
     expect(bundle.dashboards).toHaveLength(1);
@@ -62,8 +59,8 @@ describe('buildDashboardExportBundle', () => {
     expect(bundle.dashboards[0]).not.toBe(dash);
     expect(bundle.queries[0]).not.toBe(queries[0]);
 
-    (bundle.dashboards[0] as DashboardDocumentV1).title = 'mutated';
-    (bundle.dashboards[0] as DashboardDocumentV1).revision = 999;
+    (bundle.dashboards[0] as DashboardDocumentV2).title = 'mutated';
+    (bundle.dashboards[0] as DashboardDocumentV2).revision = 999;
     (bundle.queries[0] as SavedQueryV2).sql = 'DROP TABLE x';
 
     expect(dash.title).toBe('Dashboard d1');
@@ -85,12 +82,12 @@ describe('buildDashboardExportBundle', () => {
 });
 
 describe('buildWorkspaceExportBundle', () => {
-  const workspaceFixture = (over: Partial<StoredWorkspaceV4> = {}): StoredWorkspaceV4 => ({
-    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+  const workspaceFixture = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q2'), query('q1'), query('q3')],
     dashboards: [dashboard('d1', ['q1'])],
     ...over,
-  } as StoredWorkspaceV4);
+  } as StoredWorkspaceV5);
 
   it('emits every query in catalog order, not reordered by Dashboard tile usage', () => {
     const ws = workspaceFixture();
@@ -110,7 +107,7 @@ describe('buildWorkspaceExportBundle', () => {
   it('sets format/version/exportedAt fields', () => {
     const bundle = buildWorkspaceExportBundle(workspaceFixture(), '2021-06-15T12:00:00Z');
     expect(bundle.format).toBe('altinity-sql-browser/portable-bundle');
-    expect(bundle.version).toBe(1);
+    expect(bundle.version).toBe(2);
     expect(bundle.exportedAt).toBe('2021-06-15T12:00:00Z');
   });
 
@@ -133,8 +130,8 @@ describe('buildWorkspaceExportBundle', () => {
     expect(bundle.dashboards[1]).not.toBe(ws.dashboards[1]);
 
     (bundle.queries[0] as SavedQueryV2).sql = 'DROP TABLE x';
-    (bundle.dashboards[0] as DashboardDocumentV1).revision = 999;
-    (bundle.dashboards[1] as DashboardDocumentV1).revision = 999;
+    (bundle.dashboards[0] as DashboardDocumentV2).revision = 999;
+    (bundle.dashboards[1] as DashboardDocumentV2).revision = 999;
 
     expect(ws.queries[0]?.sql).toBe("SELECT 'q2'");
     expect(ws.dashboards[0]?.revision).toBe(3);
@@ -160,12 +157,13 @@ describe('buildWorkspaceExportBundle', () => {
 // from the Dashboard dependency closure).
 describe('canonical consistency between the two export bundles (#341)', () => {
   const nowISO = '2020-01-01T00:00:00Z';
-  // A workspace whose Dashboard depends on q1 (tile) + q2 (filter source), plus
-  // an unrelated q3 that only the Workbench export carries.
-  const ws: StoredWorkspaceV4 = {
-    storageVersion: 4, id: 'ws', key: 'ws', name: 'WS',
+  // A workspace whose Dashboard depends on q1 and q2 (both tiles now that
+  // curated filters are gone, #447), plus an unrelated q3 that only the
+  // Workbench export carries.
+  const ws: StoredWorkspaceV5 = {
+    storageVersion: 5, id: 'ws', key: 'ws', name: 'WS',
     queries: [query('q3'), query('q1'), query('q2')], // deliberately not tile order
-    dashboards: [dashboard('d1', ['q1'], ['q2'])],
+    dashboards: [dashboard('d1', ['q1', 'q2'])],
   };
 
   it('the Dashboard document is canonically identical in both bundles', () => {

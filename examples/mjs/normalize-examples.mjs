@@ -94,7 +94,6 @@ function normalizeDocument(name, document, config) {
     description: config.description,
     queries,
     tileQueryIds: selectedIds,
-    sourceByParameter: config.sourceByParameter,
     preset: config.preset,
   })] : [];
 

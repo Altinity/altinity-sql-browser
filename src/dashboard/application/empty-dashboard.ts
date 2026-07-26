@@ -3,13 +3,13 @@
 // same valid document when a workspace legitimately has no Dashboard yet.
 
 import { deriveFlowFallback } from '../layouts/grafana-grid-layout.js';
-import type { DashboardDocumentV1 } from '../../generated/json-schema.types.js';
+import type { DashboardDocumentV2 } from '../../generated/json-schema.types.js';
 
-export function createEmptyDashboard(id: string): DashboardDocumentV1 {
+export function createEmptyDashboard(id: string): DashboardDocumentV2 {
   const layout = { type: 'grafana-grid' as const, version: 1 as const, items: {} };
   return {
-    documentVersion: 1, id, title: 'Dashboard', revision: 1,
+    documentVersion: 2, id, title: 'Dashboard', revision: 1,
     layout: { ...layout, fallback: deriveFlowFallback(layout, []) },
-    filters: [], tiles: [],
+    tiles: [],
   };
 }

@@ -79,16 +79,8 @@
 
     const savedQuery = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec: { name: id, ...spec } });
     const document_ = {
-      documentVersion: 1, id: 'd', title: 'D', revision: 1,
+      documentVersion: 2, id: 'd', title: 'D', revision: 1,
       layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
-      filters: [
-        // The date-like pair — both start committed + active, so the compound
-        // trigger renders a resolved range immediately.
-        { id: 'f-from', parameter: 'from', label: 'from', defaultValue: '-1d', defaultActive: true },
-        { id: 'f-to', parameter: 'to', label: 'to', defaultValue: 'now', defaultActive: true },
-        // A non-group filter that keeps its own individual field.
-        { id: 'f-service', parameter: 'service', label: 'service' },
-      ],
       tiles: [
         { id: 't-a', queryId: 'qa' },
         { id: 't-b', queryId: 'qb' },
@@ -105,6 +97,15 @@
         savedQuery('qc', 'SELECT count() AS c FROM logs WHERE service = {service:String} /* tile-c */'),
       ],
       exec,
+      // #447: the variables `from`, `to` and `service` are INFERRED from the tile
+      // SQL above — there is no filter array to author. A persisted default is
+      // gone too, so the committed seed (which is what makes the compound trigger
+      // render a resolved range immediately) arrives through `initialFilters`,
+      // keyed by exact variable NAME rather than by a filter id.
+      initialFilters: {
+        from: { value: '-1d', active: true },
+        to: { value: 'now', active: true },
+      },
       connection: { ensureFreshToken: async () => true },
       now: () => (perf += 5),
       wallNow: () => WALL,

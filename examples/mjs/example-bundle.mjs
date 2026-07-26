@@ -74,9 +74,7 @@ export function buildDashboard({
   description,
   queries,
   tileQueryIds,
-  sourceByParameter = {},
   preset = 'columns-2',
-  filters: authoredFilters,
   grid,
   flowPlacements = {},
   revision = 1,
@@ -110,13 +108,10 @@ export function buildDashboard({
     }
   }
 
-  const inferredFilters = parameterNames.map((parameter) => ({
-    id: `filter-${parameter}`,
-    parameter,
-    ...(sourceByParameter[parameter] ? { sourceQueryId: sourceByParameter[parameter] } : {}),
-  }));
-
-  const filters = authoredFilters === undefined ? inferredFilters : clone(authoredFilters);
+  // One Dashboard-level filter widget per SQL parameter found across the
+  // tiled queries — a plain `parameter`-keyed control (no option-supplying
+  // source; the removed Filter role's option-provider wiring is #447 history).
+  const filters = parameterNames.map((parameter) => ({ id: `filter-${parameter}`, parameter }));
   const layout = grid
     ? {
         type: 'grafana-grid',
@@ -143,12 +138,8 @@ export function buildDashboard({
 
 function normalizeQueriesForDashboards(queries, dashboards) {
   const tileQueryIds = new Set();
-  const filterSourceIds = new Set();
   for (const dashboard of dashboards) {
     for (const tile of dashboard.tiles || []) tileQueryIds.add(tile.queryId);
-    for (const filter of dashboard.filters || []) {
-      if (filter.sourceQueryId) filterSourceIds.add(filter.sourceQueryId);
-    }
   }
 
   return queries.map((raw) => {
@@ -163,9 +154,6 @@ function normalizeQueriesForDashboards(queries, dashboards) {
         role: 'panel',
         sizeHints: isObject(dashboard.sizeHints) ? dashboard.sizeHints : sizeHintsFor(query),
       };
-    } else if (filterSourceIds.has(query.id) || dashboard.role === 'filter') {
-      query.spec.favorite = false;
-      query.spec.dashboard = { ...dashboard, role: 'filter' };
     } else {
       query.spec.favorite = false;
       if (Object.keys(dashboard).length) query.spec.dashboard = dashboard;
@@ -231,9 +219,16 @@ export function assertValidExampleBundle(document) {
         throw new Error(`Dashboard tile ${JSON.stringify(tile.id)} must reference a Panel query`);
       }
     }
-    for (const filter of dashboard.filters) {
-      if (filter.sourceQueryId && !queryIds.has(filter.sourceQueryId)) {
-        throw new Error(`Filter ${JSON.stringify(filter.id)} references unknown source query`);
+    // #447 removed the Filter role, so no shipped filter entry may name a source
+    // query any more. The check is kept — and tightened to "must not be present"
+    // — rather than dropped: `decodePortableBundleJson` does discard every
+    // Dashboard's `filters` on migration, which would make a dangling id
+    // harmless at runtime, but a committed example carrying a reference to a
+    // query it no longer contains is still wrong, and silence here is exactly
+    // how it would survive into phase 3's rewrite.
+    for (const filter of dashboard.filters ?? []) {
+      if (filter.sourceQueryId !== undefined) {
+        throw new Error(`Dashboard filter ${JSON.stringify(filter.id)} names a source query; the Filter role was removed in #447`);
       }
     }
   }

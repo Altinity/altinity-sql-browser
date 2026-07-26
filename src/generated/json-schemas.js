@@ -304,17 +304,16 @@ export const querySpecV1Schema = {
       "type": "object",
       "properties": {
         "role": {
-          "title": "Dashboard role (Panel, Filter, or Setup)",
-          "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.",
+          "title": "Dashboard role (Panel or Setup)",
+          "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. setup is reserved for serialized Dashboard setup execution. The removed filter role (#447) returned one row whose columns supplied option lists for same-named parameters; a Dashboard variable's options are now Dashboard-local SQL stored under the variable name, so no saved query has an option-supplying role. A stored document still carrying role filter fails validation and is reported unsupported rather than migrated — the experimental representation has no production legacy to preserve.",
           "type": "string",
           "enum": [
             "panel",
-            "filter",
             "setup"
           ],
           "default": "panel",
           "examples": [
-            "filter"
+            "setup"
           ]
         },
         "defaultVariant": {

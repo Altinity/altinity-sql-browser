@@ -73,19 +73,8 @@ describe('renderTabs', () => {
     close.dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
   });
-  it('opens a Filter tab badge directly in Spec at the role', () => {
-    const app = makeApp();
-    const tab = app.activeTab();
-    app.specEditor.revealOffset = vi.fn();
-    // `!`: a freshly-built tab's specParsed is always non-null (newTabObj sets
-    // a real parsed draft) — see QueryTab.specParsed's invariant (state.ts).
-    tab.specParsed!.dashboard = { role: 'filter' };
-    tab.specText = '{"dashboard":{"role":"filter"}}';
-    renderTabs(app);
-    qs(app.dom.qtabsInner, '.query-role-badge').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.actions.setEditorMode).toHaveBeenCalledWith('spec');
-    expect(app.specEditor.revealOffset).toHaveBeenCalledWith(tab.specText.indexOf('"role"'));
-  });
+  // #447 deleted the Filter tab badge case: `filter` is no longer a
+  // saved-query role, so no tab can carry one.
 });
 
 // tabs.js is now pure state-mutation over the tab signals; the repaint on a tab

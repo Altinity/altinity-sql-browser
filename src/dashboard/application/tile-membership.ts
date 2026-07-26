@@ -19,36 +19,37 @@
 
 import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
-import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
+import type { DashboardDocumentV2, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
 export interface TileRemovalResult {
-  dashboard: DashboardDocumentV1;
+  dashboard: DashboardDocumentV2;
   queries: SavedQueryV2[];
   queryId: string;
 }
 
-/** Remove ONE Dashboard tile. Filter target cleanup, layout normalization and
- * grid fallback regeneration are part of the same pure transform; revision
- * ownership remains with the commit caller.
+/** Remove ONE Dashboard tile. Layout normalization and grid fallback
+ * regeneration are part of the same pure transform; revision ownership remains
+ * with the commit caller.
+ *
+ * There is no longer any per-member reference to scrub alongside the tile.
+ * Curated filters used to carry an explicit `targets` list naming tile ids, so
+ * removing a tile had to prune every filter that pointed at it; a variable binds
+ * by NAME to whichever panel queries declare it, so dropping a tile simply stops
+ * that query from declaring anything and the binding disappears on its own.
  *
  * `queries` is returned unchanged — the tile's query is NOT deleted here, and
  * #427 removed the `spec.favorite` write-back this used to perform. Removing the
  * owned query too is one atomic operation, and it belongs to #429's trash
  * action, which knows it is deleting a member rather than clearing a flag. */
 export function removeTileMembership(
-  dashboard: DashboardDocumentV1,
+  dashboard: DashboardDocumentV2,
   queries: SavedQueryV2[],
   tileId: string,
 ): TileRemovalResult | null {
   const removedTile = dashboard.tiles.find((tile) => tile.id === tileId);
   if (!removedTile) return null;
   const tiles = dashboard.tiles.filter((tile) => tile.id !== tileId);
-  const filters = dashboard.filters.map((filter) => (
-    filter.targets
-      ? { ...filter, targets: filter.targets.filter((target) => target !== tileId) }
-      : filter
-  ));
-  const next = { ...dashboard, tiles, filters };
+  const next = { ...dashboard, tiles };
   const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
   regenerateGridFallback(normalized.layout, normalized.tiles);
   return { dashboard: normalized, queries, queryId: removedTile.queryId };

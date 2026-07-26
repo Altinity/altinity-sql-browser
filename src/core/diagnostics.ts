@@ -1,11 +1,10 @@
-// The one shared diagnostic-object factory (#236). Every Dashboard/Filter-role
-// module that reports problems builds the same `{severity, code, message,
-// ...extra}` shape — the Filter SQL contract (filter-execution.js), the option
-// bundle reader (filter-options.js), and the provider merge (dashboard-filters.js)
-// — so they compose this one helper instead of each hand-rolling the literal.
-// `extra` folds in the per-diagnostic context a caller carries (`helperName`,
-// `sourceId`, `optionIndex`, or the Filter contract's fixed
-// `path: ['dashboard', 'role']`).
+// The one shared diagnostic-object factory (#236). Every Dashboard module that
+// reports problems builds the same `{severity, code, message, ...extra}` shape,
+// so they compose this one helper instead of each hand-rolling the literal.
+// `extra` folds in the per-diagnostic context a caller carries (e.g. a `path`,
+// a `tileId`, or a source identifier). (#447 removed the three original
+// callers — the Filter SQL contract, the option-bundle reader, and the curated
+// provider merge — along with the option-provider model itself.)
 
 /** The three severities every diagnostic carries. */
 export type DiagnosticSeverity = 'error' | 'warning' | 'info';

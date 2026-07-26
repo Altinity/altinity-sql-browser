@@ -46,7 +46,7 @@ import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import { selectedDashboardId } from '../application/main-surface.js';
-import type { PortableBundleV1, SavedQueryV2, StoredWorkspaceV4 } from '../generated/json-schema.types.js';
+import type { PortableBundleV2, SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
@@ -222,7 +222,7 @@ const isUnrecognizedBundleFormat = (diagnostics: readonly WorkspaceDiagnostic[])
  *  `normalizeLegacyLibraryToBundle` (legacy Library → an in-memory bundle with
  *  `dashboards: []`). Any other failure (or a failed fallback) toasts the
  *  first diagnostic and aborts — never a partial import. */
-function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV1) => void): void {
+function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV2) => void): void {
   const reader = new (app.FileReader || globalThis.FileReader)();
   reader.onload = () => {
     const text = String(reader.result);
@@ -256,9 +256,9 @@ function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV
  *  Dashboard) with the live projection folded back into its compatibility slot.
  *  Falling back to `state.dashboard` alone would silently truncate a
  *  multi-Dashboard workspace on the degraded Export path. */
-function currentWorkspace(app: App): StoredWorkspaceV4 {
-  const envelope: StoredWorkspaceV4 = {
-    storageVersion: 4,
+function currentWorkspace(app: App): StoredWorkspaceV5 {
+  const envelope: StoredWorkspaceV5 = {
+    storageVersion: 5,
     id: app.state.workspaceId,
     key: app.state.workspaceKey,
     name: app.state.libraryName.value,
@@ -295,7 +295,7 @@ function afterLibraryChange(app: App): void {
  *  (schema/persistence failure) toasts the first diagnostic. Never a partial
  *  write either way. */
 async function commitWorkspace(
-  app: App, build: (latest: StoredWorkspaceV4 | null) => StoredWorkspaceV4 | null,
+  app: App, build: (latest: StoredWorkspaceV5 | null) => StoredWorkspaceV5 | null,
   successMsg?: string | (() => string),
 ): Promise<boolean> {
   const result = await app.mutateWorkspace((latest) => {
@@ -327,7 +327,7 @@ async function commitWorkspace(
  *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
  *  import and decide against the workspace as it now is. */
 function revalidateDecisions(
-  base: StoredWorkspaceV4, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  base: StoredWorkspaceV5, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
 ): QueryDecision[] | null {
   const conflicts = detectQueryConflicts(base.queries, incoming);
   const decided = new Set(decisions.map((decision) => decision.sourceId));
@@ -346,8 +346,8 @@ function revalidateDecisions(
  *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
 function planBuild(
   app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
-  run: (base: StoredWorkspaceV4, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
-): (latest: StoredWorkspaceV4 | null) => StoredWorkspaceV4 | null {
+  run: (base: StoredWorkspaceV5, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV5 | null) => StoredWorkspaceV5 | null {
   return (latest) => {
     const base = latest ?? currentWorkspace(app);
     const revalidated = revalidateDecisions(base, incoming, decisions);
@@ -465,7 +465,7 @@ function openDashboardPicker(
     class: 'fm-item', onclick: () => { handle.close(); onPick(d.id); },
   },
     h('span', { class: 'fm-label' }, d.title),
-    h('span', { class: 'fm-meta' }, `${d.tileCount} ${d.tileCount === 1 ? 'tile' : 'tiles'} · ${d.filterCount} ${d.filterCount === 1 ? 'filter' : 'filters'}`)));
+    h('span', { class: 'fm-meta' }, `${d.tileCount} ${d.tileCount === 1 ? 'tile' : 'tiles'}`)));
   const handle = openDialogShell(app, title, [
     h('div', { class: 'fm-dialog-body fm-picker-list' }, rows),
     h('div', { class: 'fm-dialog-actions' },
@@ -520,7 +520,7 @@ function onImportQueriesFile(app: App, file: File): void {
   readBundleFile(app, file, (bundle) => startImportQueries(app, bundle));
 }
 
-function startImportQueries(app: App, bundle: PortableBundleV1): void {
+function startImportQueries(app: App, bundle: PortableBundleV2): void {
   // The conflict dialog is shown against this snapshot — unavoidable, since it
   // needs SOMETHING to detect conflicts against before the user decides. The
   // commit below re-plans against the LATEST committed baseline right before
@@ -564,7 +564,7 @@ export function triggerImportDashboard(app: App): void {
   input.click();
 }
 
-function startImportDashboard(app: App, bundle: PortableBundleV1): void {
+function startImportDashboard(app: App, bundle: PortableBundleV2): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
   if (dashboards.length === 1) { runImportDashboard(app, bundle, dashboards[0].id); return; }
@@ -573,7 +573,7 @@ function startImportDashboard(app: App, bundle: PortableBundleV1): void {
   });
 }
 
-function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
+function runImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: string): void {
   // The UI exposes one Dashboard, so importing one REPLACES the Dashboard on
   // screen (its tiles/layout/filters) — #424: the COMPATIBILITY entry only;
   // any other stored Dashboard is preserved. Confirm first when that would
@@ -594,7 +594,7 @@ function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: str
   doImportDashboard(app, bundle, dashboardId);
 }
 
-function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
+function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: string): void {
   // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit split
   // as `startImportQueries` above (#341/#344).
   const workspace = currentWorkspace(app);
@@ -632,12 +632,12 @@ function onOpenWorkspaceFile(app: App, file: File): void {
  *  keeping it would mean silently discarding the rest of a multi-Dashboard
  *  bundle. Import Dashboard (which imports exactly one into the CURRENT
  *  workspace) keeps its own picker. */
-function startOpenWorkspace(app: App, bundle: PortableBundleV1): void {
+function startOpenWorkspace(app: App, bundle: PortableBundleV2): void {
   void importWorkspace(app, bundle);
 }
 
 async function importWorkspace(
-  app: App, bundle: PortableBundleV1,
+  app: App, bundle: PortableBundleV2,
 ): Promise<void> {
   await app.serializeWrite(async () => {
     const listed = await app.workspace.list();
@@ -672,7 +672,7 @@ async function importWorkspace(
 
 // ── actions: Export ──────────────────────────────────────────────────────────
 
-function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: string): void {
+function downloadEncodedBundle(app: App, bundle: PortableBundleV2, baseName: string): void {
   const encoded = encodePortableBundleJson({ queries: bundle.queries, dashboards: bundle.dashboards, nowISO: bundle.exportedAt });
   if (!encoded.ok) { flashToast('✕ ' + first(encoded.diagnostics, 'Could not export'), { document: app.document }); return; }
   app.downloadFile(fileBase(baseName) + '.json', 'application/json', encoded.value);
@@ -686,7 +686,7 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
  *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
  *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
  *  export never becomes a silent no-op on an unhandled rejection. */
-async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV4 | null> {
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV5 | null> {
   try {
     await app.flushWorkspaceWrites();
     const result = await app.workspace.loadById(app.state.workspaceId);

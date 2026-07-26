@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeLegacyLibraryToBundle } from '../../src/dashboard/model/legacy-bundle.js';
 import { LIBRARY_FORMAT } from '../../src/core/library-codec.js';
-import { PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V1_SCHEMA_ID } from '../../src/dashboard/model/portable-bundle-codec.js';
+import { PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V2_SCHEMA_ID } from '../../src/dashboard/model/portable-bundle-codec.js';
 
 const query = (id = 'q', spec: Record<string, unknown> = {}): Record<string, unknown> =>
   ({ id, sql: 'SELECT 1', specVersion: 1, spec });
@@ -17,8 +17,11 @@ describe('normalizeLegacyLibraryToBundle', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.format).toBe(PORTABLE_BUNDLE_FORMAT);
-    expect(result.value.$schema).toBe(PORTABLE_BUNDLE_V1_SCHEMA_ID);
-    expect(result.value.version).toBe(1);
+    // #447: normalizeLegacyLibraryToBundle always wraps into the CURRENT (v2)
+    // portable-bundle envelope — there is never any Dashboard content to carry
+    // over a legacy version boundary for (dashboards is always []).
+    expect(result.value.$schema).toBe(PORTABLE_BUNDLE_V2_SCHEMA_ID);
+    expect(result.value.version).toBe(2);
     expect(result.value.exportedAt).toBe('2026-07-14T00:00:00.000Z');
     expect(result.value.dashboards).toEqual([]);
     expect(result.value.queries).toHaveLength(1);

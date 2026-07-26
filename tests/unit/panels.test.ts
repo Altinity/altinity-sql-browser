@@ -5,7 +5,7 @@ import { resolvePanel } from '../../src/core/panel-cfg.js';
 import { newResult as newResultUntyped } from '../../src/core/stream.js';
 import { makeApp } from '../helpers/fake-app.js';
 import type { FakeChart } from '../helpers/fake-app.js';
-import { DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES } from '../../src/core/result-choice.js';
+import { PANEL_RESULT_CHOICES } from '../../src/core/result-choice.js';
 import type { App, Tab } from '../../src/ui/app.types.js';
 import type { PanelCfg } from '../../src/generated/json-schema.types.js';
 import type { Column } from '../../src/core/panel-cfg.js';
@@ -121,7 +121,7 @@ const selectRole = (app: TestApp, index: number, value: string): void => {
 };
 
 interface StateOverride {
-  resultView?: 'table' | 'json' | 'panel' | 'filter';
+  resultView?: 'table' | 'json' | 'panel';
   running?: boolean;
 }
 
@@ -203,9 +203,16 @@ describe('Panel drawer tab', () => {
     const app = panelApp(chartResult());
     renderResults(app);
     const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
+    // #447: a FLAT list of real visualisations — the disabled empty-state
+    // placeholder, the derived `(auto)` entry, then every panel choice. No
+    // `Dashboard role` category and no `Filter` option.
     expect([...sel.options].map((o) => o.value)).toEqual([
-      '', 'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
+      '', 'panel:auto', ...PANEL_RESULT_CHOICES.map((option) => option.id),
     ]);
+    expect([...sel.options].filter((option) => option.disabled).map((option) => option.textContent))
+      .toEqual(['Visualise…', '(auto)']);
+    expect([...sel.options].map((option) => option.textContent)).not.toContain('Filter');
+    expect(sel.querySelector('optgroup')).toBeNull();
     expect([...sel.options].map((o) => o.value)).not.toContain('table');
     expect(sel.value).toBe('panel:auto'); // reflects the current choice while the panel preview shows
     expect(region(app).querySelectorAll('.result-view-tab')).toHaveLength(2); // Table + JSON; no fixed Panel button
@@ -225,22 +232,9 @@ describe('Panel drawer tab', () => {
     expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
     expect(region(app).querySelector('.chart-view')).not.toBeNull();
   });
-  it('selects Filter as a role, preserves Panel configuration, and never runs SQL', () => {
-    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], future: true });
-    app.activeTab().specParsed!.dashboard = { role: 'panel', future: { keep: true } };
-    renderResults(app);
-    pickType(app, 'role:filter');
-    expect(app.activeTab().specParsed!.dashboard).toEqual({ role: 'filter', future: { keep: true } });
-    expect(app.activeTab().panelCfg).toMatchObject({ type: 'line', future: true });
-    expect(app.state.resultView.value).toBe('filter');
-    expect(app.activeTab().dirtySpec).toBe(true);
-    expect(app.actions.run).not.toHaveBeenCalled();
-    renderResults(app);
-    expect(region(app).textContent).toContain('Run the query to preview Filter options.');
-  });
-  it('switches a Filter query back to Panel without rewriting unrelated Spec fields', () => {
+  it('switches a non-panel-role query back to Panel without rewriting unrelated Spec fields', () => {
     const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] });
-    app.activeTab().specParsed!.dashboard = { role: 'filter', future: 1 };
+    app.activeTab().specParsed!.dashboard = { role: 'setup', future: 1 };
     app.activeTab().specParsed!.keep = true;
     renderResults(app);
     pickType(app, 'pie');
@@ -274,12 +268,12 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().specParsed).toBe(before);
     expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
   });
-  it('role selection tolerates unrelated Spec diagnostics', () => {
+  it('a panel pick tolerates unrelated Spec diagnostics', () => {
     const app = panelApp(chartResult());
     app.activeTab().specDiagnostics = [{ code: 'warning-only', message: 'warning' }];
     renderResults(app);
-    pickType(app, 'role:filter');
-    expect(app.activeTab().specParsed!.dashboard?.role).toBe('filter');
+    pickType(app, 'pie');
+    expect((app.activeTab().panelCfg as PanelCfg).type).toBe('pie');
   });
   it('a panel control merges into a linked dirty valid Spec draft', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });

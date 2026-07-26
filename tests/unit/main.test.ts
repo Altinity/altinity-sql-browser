@@ -36,7 +36,7 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
     token: null as string | null,
     state: {
       tabs: signal([newTabObj('t1')]),
-      resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
+      resultView: signal<'table' | 'json' | 'panel'>('table'),
     },
     conn: {
       basePath: '/sql',
@@ -322,26 +322,30 @@ describe('bootstrap', () => {
     return fakeEnv({ location: asLocation({ href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash }) });
   };
 
-  it('opens Filter for a v2 share carrying Filter-role SQL, before any run is possible (#244)', async () => {
-    const app = fakeApp();
-    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } } });
-    await bootstrap(app, env);
-    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
-    expect(app.state.resultView.value).toBe('filter');
-  });
-
-  it('Filter role wins over a dormant persisted view:"panel" carried in a share (#244)', async () => {
+  // #447 replaced the two "#244 Filter role wins over the persisted view" cases:
+  // no role owns a transient launch preview any more, so a share's own persisted
+  // view is the only thing that selects the drawer — even alongside a non-panel
+  // role, and even when that role would once have overridden it.
+  it('restores the persisted view of a shared query that also carries a non-panel role', async () => {
     const app = fakeApp();
     const panelCfg = { cfg: { type: 'kpi' } };
     const env = v2Env({
       sql: 'SELECT 1',
-      spec: { name: 'Shared query', favorite: false, view: 'panel', dashboard: { role: 'filter' }, panel: panelCfg },
+      spec: { name: 'Shared query', favorite: false, view: 'panel', dashboard: { role: 'setup' }, panel: panelCfg },
     });
     await bootstrap(app, env);
-    expect(app.state.resultView.value).toBe('filter');
-    // dormant Panel state and the persisted view survive untouched in the tab's Spec.
-    expect(app.state.tabs.value[0].specParsed?.view).toBe('panel');
+    expect(app.state.resultView.value).toBe('panel');
+    // The role and the dormant Panel state survive untouched in the tab's Spec.
+    expect(app.state.tabs.value[0].specParsed?.dashboard).toEqual({ role: 'setup' });
     expect(app.state.tabs.value[0].specParsed?.panel).toEqual(panelCfg);
+  });
+
+  it('leaves the default view alone for a share carrying a non-panel role and NO persisted view', async () => {
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'setup' } } });
+    await bootstrap(app, env);
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
+    expect(app.state.resultView.value).toBe('table'); // fakeApp()'s untouched default
   });
 
   it('restores a SQL-bearing shared Panel query\'s persisted view:"panel" (no role)', async () => {
@@ -366,14 +370,14 @@ describe('bootstrap', () => {
     expect(app.state.resultView.value).toBe('table'); // fakeApp()'s untouched default
   });
 
-  it('restores Filter for a Filter-role share stashed through the OAuth round-trip (#244)', async () => {
+  it('restores a stashed share\'s persisted view through the OAuth round-trip', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' }) });
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({
-      sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } },
+      sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false, view: 'json' },
     }));
     await bootstrap(app, env);
-    expect(app.state.resultView.value).toBe('filter');
+    expect(app.state.resultView.value).toBe('json');
   });
 
   it('maps a legacy persisted view:"chart" through the Panel compatibility path in a share', async () => {
@@ -392,13 +396,6 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1'); // the share still seeds
     expect(app.state.resultView.value).toBe('table'); // but the bogus view is dropped
-  });
-
-  it('never persists a transient view:"filter" into the restored tab Spec (#244)', async () => {
-    const app = fakeApp();
-    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } } });
-    await bootstrap(app, env);
-    expect(app.state.tabs.value[0].specParsed?.view).toBeUndefined();
   });
 
   it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {

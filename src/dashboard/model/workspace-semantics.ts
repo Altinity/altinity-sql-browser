@@ -13,16 +13,9 @@ import { diagnostic, sortDiagnostics } from './workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from './workspace-diagnostics.js';
 import { jsonSchemaValidationService, SPEC_CODECS } from '../../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../../core/json-schema-validation.js';
-import { scanParamDeclarations } from '../../core/param-scan.js';
-import { analyzeParameterizedSources } from '../../core/param-pipeline.js';
-import type { ParameterAnalysis, ParameterizedSourceInput } from '../../core/param-pipeline.js';
-import { resolveFilterSelection } from '../../core/filter-selection.js';
-import type { FilterSelectionFilterDef, FilterSelectionDiagnostic } from '../../core/filter-selection.js';
 import { hasSameTimeRangeParameter } from '../../core/query-time-range.js';
-import { resolvePresentation } from './presentation-resolver.js';
-import { buildQueryOwnershipIndex, ownersAreValid } from './query-ownership.js';
-import type { DashboardQueryOwner } from './query-ownership.js';
-import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
+import { buildQueryOwnershipIndex } from './query-ownership.js';
+import type { DashboardDocumentV2, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
 export const FLOW_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json';
@@ -55,6 +48,10 @@ export const isSupportedLayout = (type: unknown, version: unknown): boolean =>
  *  (#291's "do not widen the fallback slot"). */
 export const isFlowLayout = (type: unknown, version: unknown): boolean =>
   type === 'flow' && version === 1;
+
+/** The Dashboard document version this build writes and semantically validates
+ *  (#447 raised it from 1 when curated filters were removed). */
+export const CURRENT_DASHBOARD_DOCUMENT_VERSION = 2;
 
 type Path = (string | number)[];
 
@@ -93,37 +90,6 @@ const patchRendererType = (patch: unknown): string | undefined => {
   return typeof patch.cfg.type === 'string' ? patch.cfg.type : undefined;
 };
 
-const normalizeParamType = (type: string): string => type.replace(/\s+/g, ' ').trim();
-
-// Every `resolveFilterSelection` diagnostic code, mapped to its exact
-// dashboard JSON path per the maintainer's #189/#360 merge-gate contract:
-// mode-table codes point at the `selection.mode` the caller asked for;
-// per-target codes point at the OFFENDING `targets[j]` entry (found by
-// matching the diagnostic's own `sourceId` extra field — the target tile id
-// — against the filter's raw `targets` array; `filters[i].targets` itself
-// when no exact index match is found, which should not happen in practice
-// since every per-target diagnostic's `sourceId` IS one of `targets`); every
-// other code (no-consumers, mixed-arity, type/array-element conflict, nested
-// array — the contract/agreement diagnostics, which are never about one
-// single target) points at `filters[i].parameter`. Codes/messages are kept
-// verbatim from the resolver — this only ever chooses WHERE to report them.
-const SELECTION_MODE_TABLE_CODES = new Set([
-  'filter-selection-mode-requires-array', 'filter-selection-unknown-mode',
-]);
-const SELECTION_TARGET_CODES = new Set([
-  'filter-selection-target-not-executable', 'filter-selection-target-missing-declaration',
-]);
-
-function selectionDiagnosticPath(filterPath: Path, rawTargets: unknown, diag: FilterSelectionDiagnostic): Path {
-  if (SELECTION_MODE_TABLE_CODES.has(diag.code)) return [...filterPath, 'selection', 'mode'];
-  if (SELECTION_TARGET_CODES.has(diag.code)) {
-    const targetId = typeof diag.sourceId === 'string' ? diag.sourceId : undefined;
-    const index = targetId !== undefined && Array.isArray(rawTargets) ? rawTargets.indexOf(targetId) : -1;
-    return index >= 0 ? [...filterPath, 'targets', index] : [...filterPath, 'targets'];
-  }
-  return [...filterPath, 'parameter'];
-}
-
 // --- fail-closed version pre-scans ------------------------------------------
 // Unknown future resource versions fail closed with ONE precise diagnostic.
 // The codecs run these before structural schema validation and suppress the
@@ -143,13 +109,26 @@ export function unsupportedSpecVersionDiagnostics(
   return out;
 }
 
-/** Dashboards whose integer `documentVersion` is not the supported version 1. */
+/**
+ * Dashboards whose integer `documentVersion` is not the one the CALLER's branch
+ * expects.
+ *
+ * The expected version is a parameter rather than a constant because #447 gave
+ * the Dashboard document a second version while the containers that carry it
+ * stayed readable at their older versions: a stored-workspace v2/v3/v4 record
+ * and a portable-bundle v1 file each legitimately hold document v1, and are
+ * migrated forward AFTER their own structural pass. Hardcoding the current
+ * version here would reject every legacy record before its migration could
+ * ever run.
+ */
 export function unsupportedDashboardVersionDiagnostics(
   dashboards: readonly unknown[], path: Path = ['dashboards'],
+  supported: number = CURRENT_DASHBOARD_DOCUMENT_VERSION,
 ): WorkspaceDiagnostic[] {
   const out: WorkspaceDiagnostic[] = [];
   for (const [index, dashboard] of dashboards.entries()) {
-    if (!isObject(dashboard) || !Number.isInteger(dashboard.documentVersion) || dashboard.documentVersion === 1) continue;
+    if (!isObject(dashboard) || !Number.isInteger(dashboard.documentVersion)
+      || dashboard.documentVersion === supported) continue;
     out.push(diagnostic([...path, index, 'documentVersion'], 'dashboard-version-unsupported',
       `Unsupported Dashboard document version ${JSON.stringify(dashboard.documentVersion)}`, stringId(dashboard.id)));
   }
@@ -262,8 +241,11 @@ export function validateDashboardSemantics(dashboard: unknown, {
 }: DashboardSemanticsOptions = {}): WorkspaceDiagnostic[] {
   if (!isObject(dashboard)) return [];
   const dashboardId = stringId(dashboard.id);
-  if (dashboard.documentVersion !== 1) {
-    // Unknown future versions fail closed before any other rule runs.
+  if (dashboard.documentVersion !== CURRENT_DASHBOARD_DOCUMENT_VERSION) {
+    // Unknown versions fail closed before any other rule runs. A legacy
+    // document reaches this validator only AFTER its container's migration has
+    // brought it to the current version, so "not current" is genuinely
+    // unsupported here rather than merely old.
     return [diagnostic([...path, 'documentVersion'], 'dashboard-version-unsupported',
       `Unsupported Dashboard document version ${JSON.stringify(dashboard.documentVersion)}`, dashboardId)];
   }
@@ -278,9 +260,6 @@ export function validateDashboardSemantics(dashboard: unknown, {
     const id = stringId(query.id);
     if (id !== undefined && !queriesById.has(id)) queriesById.set(id, query);
   }
-  const declarationsFor = (query: unknown): { name: string; type: string }[] =>
-    (isObject(query) && typeof query.sql === 'string' ? scanParamDeclarations(query.sql) : []);
-
   // --- tiles ---------------------------------------------------------------
   const tiles = asArray(dashboard.tiles);
   if (tiles.length > PORTABLE_LIMITS.maxTilesPerDashboard) {
@@ -288,35 +267,10 @@ export function validateDashboardSemantics(dashboard: unknown, {
       `tiles contains ${tiles.length} items; the maximum is ${PORTABLE_LIMITS.maxTilesPerDashboard}`);
   }
   const tilesById = new Map<string, TileEntry>();
-  const tileQueryIds = new Set<string>();
-  // #189/#360 selection-contract validation (the `filters` block below) needs
-  // the SAME executable-tile-id set and tile-side `ParameterAnalysis` the
-  // Dashboard viewer session builds (`dashboard-viewer-session.ts`, the
-  // `isRunnableTileRuntime` predicate and its `analysis` construction) so a
-  // filter's curated-helper contract is diagnosed identically here (at
-  // authoring/import time) and there (at open time). A tile is "executable"
-  // statically when its `queryId` resolves to a real query and
-  // `resolvePresentation` — the SAME RFC 7396 presentation resolver the
-  // session, authoring, and import flows all share — resolves it to a
-  // non-text panel. `resolvePresentation` is called here WITHOUT
-  // `resultColumns`, exactly as the session's own construction-time call
-  // does (result-column role validation needs a live result, unavailable at
-  // authoring/import time) — so this is not an approximation of the
-  // session's check, it is the identical structural check, at the identical
-  // (query-only) information level. `tileParamInputs` mirrors every tile
-  // (empty SQL for a non-executable one) so `analyzeParameterizedSources`
-  // records the same per-field declaration bookkeeping the session's own
-  // `analysis` does — a filter's `{name:Type}` field `analysis.fields[name]`
-  // needs every tile's declaration, not just the executable ones, to gather
-  // consumers correctly (`gatherExecutableConsumers` itself filters by
-  // `executableTileIds`).
-  const executableTileIds = new Set<string>();
-  const tileParamInputs: ParameterizedSourceInput[] = [];
   for (const [index, tile] of tiles.entries()) {
     if (!isObject(tile)) continue;
     const tileId = stringId(tile.id);
     const queryId = stringId(tile.queryId);
-    if (queryId !== undefined) tileQueryIds.add(queryId);
     if (tileId !== undefined) {
       if (tilesById.has(tileId)) {
         emit([...path, 'tiles', index, 'id'], 'dashboard-duplicate-tile-id',
@@ -328,29 +282,16 @@ export function validateDashboardSemantics(dashboard: unknown, {
       emit([...path, 'tiles', index, 'queryId'], 'dashboard-tile-query-missing',
         `Tile references unknown saved query ${JSON.stringify(queryId)}`);
     }
-    let tileSql = '';
     if (query !== undefined) {
       const role = queryDashboardRole(query);
       if (role === 'setup') {
         emit([...path, 'tiles', index, 'queryId'], 'dashboard-setup-reference',
-          `Tile references Setup-role query ${JSON.stringify(queryId)}; Dashboard v1 never executes Setup queries`);
+          `Tile references Setup-role query ${JSON.stringify(queryId)}; a Dashboard never executes Setup queries`);
       } else if (role !== 'panel') {
         emit([...path, 'tiles', index, 'queryId'], 'dashboard-tile-role-incompatible',
           `Tile references ${JSON.stringify(role)}-role query ${JSON.stringify(queryId)}; tiles require role panel`);
       }
-      // Executability does not itself gate on `role` — neither does the
-      // session's own `isRunnableTileRuntime` (it only checks query/isText/
-      // presentationError) — a role-incompatible tile already gets its own
-      // diagnostic above regardless of whether it also resolves a panel.
-      const resolved = resolvePresentation({ query, tile, path: [...path, 'tiles', index] });
-      const resolvedType = resolved.ok && isObject(resolved.panel.cfg) && typeof resolved.panel.cfg.type === 'string'
-        ? resolved.panel.cfg.type : undefined;
-      if (resolved.ok && resolvedType !== 'text') {
-        tileSql = isObject(query) && typeof query.sql === 'string' ? query.sql : '';
-        if (tileId !== undefined) executableTileIds.add(tileId);
-      }
     }
-    if (tileId !== undefined) tileParamInputs.push({ id: tileId, kind: 'tile', sql: tileSql, bindPolicy: 'row-returning' });
     const presentation = isObject(tile.presentation) ? tile.presentation : undefined;
     if (!presentation) continue;
     if (typeof presentation.variant === 'string' && query !== undefined) {
@@ -370,7 +311,6 @@ export function validateDashboardSemantics(dashboard: unknown, {
       }
     }
   }
-  const tileAnalysis: ParameterAnalysis = analyzeParameterizedSources(tileParamInputs);
 
   // --- layout --------------------------------------------------------------
   const layout = isObject(dashboard.layout) ? dashboard.layout : undefined;
@@ -459,184 +399,48 @@ export function validateDashboardSemantics(dashboard: unknown, {
     }
   }
 
-  // --- filters ---------------------------------------------------------------
-  const filters = asArray(dashboard.filters);
-  if (filters.length > PORTABLE_LIMITS.maxFiltersPerDashboard) {
-    emit([...path, 'filters'], 'limit-filter-count',
-      `filters contains ${filters.length} items; the maximum is ${PORTABLE_LIMITS.maxFiltersPerDashboard}`);
-  }
-  const filterFirstIndexById = new Map<string, number>();
-  for (const [index, filter] of filters.entries()) {
-    if (!isObject(filter)) continue;
-    const filterPath: Path = [...path, 'filters', index];
-    const filterId = stringId(filter.id);
-    if (filterId !== undefined) {
-      if (filterFirstIndexById.has(filterId)) {
-        emit([...filterPath, 'id'], 'dashboard-duplicate-filter-id',
-          `Filter id ${JSON.stringify(filterId)} duplicates filters[${filterFirstIndexById.get(filterId)}].id`);
-      } else filterFirstIndexById.set(filterId, index);
-    }
-    const sourceQueryId = stringId(filter.sourceQueryId);
-    if (sourceQueryId !== undefined) {
-      const source = queriesById.get(sourceQueryId);
-      if (source === undefined) {
-        emit([...filterPath, 'sourceQueryId'], 'filter-source-missing',
-          `Filter references unknown source query ${JSON.stringify(sourceQueryId)}`);
-      } else {
-        const role = queryDashboardRole(source);
-        if (role === 'setup') {
-          emit([...filterPath, 'sourceQueryId'], 'dashboard-setup-reference',
-            `Filter references Setup-role query ${JSON.stringify(sourceQueryId)}; Dashboard v1 never executes Setup queries`);
-        } else if (role !== 'filter') {
-          emit([...filterPath, 'sourceQueryId'], 'filter-source-role',
-            `Filter source query ${JSON.stringify(sourceQueryId)} has role ${JSON.stringify(role)}; sources require role filter`);
-        }
-        if (tileQueryIds.has(sourceQueryId)) {
-          emit([...filterPath, 'sourceQueryId'], 'filter-source-is-tile',
-            `Filter source query ${JSON.stringify(sourceQueryId)} also creates a tile; filter sources never create tiles`);
-        }
-      }
-    }
-    const parameter = typeof filter.parameter === 'string' ? filter.parameter : undefined;
-    if (Array.isArray(filter.targets)) {
-      // Absent targets resolve to every compatible panel tile; explicit
-      // targets must each exist. A PLAIN filter (no `sourceQueryId`) also
-      // requires each target to declare the parameter compatibly, checked
-      // right here (unbound `declarationsFor`, structural only — plain
-      // filters never get a `resolveFilterSelection` contract, per #189: only
-      // a source-backed filter's curated helper needs a resolved contract).
-      // A SOURCE-BACKED filter's target/parameter compatibility is instead
-      // fully covered below by `resolveFilterSelection` — the bound-aware
-      // (`analysis`'s `bindPolicy`-derived declarations), SAME shared
-      // "executable consumer" definition the viewer session itself uses — so
-      // running this cruder check too would duplicate `filter-target-missing`'s
-      // siblings under different codes for the same targets; it is skipped
-      // for a source-backed filter (existence itself, `filter-target-missing`,
-      // still applies to every filter — target existence is not part of the
-      // parameter-contract question `resolveFilterSelection` answers).
-      const declaredTypes = new Map<string, string>();
-      for (const [targetIndex, target] of filter.targets.entries()) {
-        const targetId = stringId(target);
-        const tileEntry = targetId === undefined ? undefined : tilesById.get(targetId);
-        if (tileEntry === undefined) {
-          emit([...filterPath, 'targets', targetIndex], 'filter-target-missing',
-            `Filter target ${JSON.stringify(target)} references no tile`);
-          continue;
-        }
-        if (sourceQueryId !== undefined) continue;
-        if (parameter === undefined || tileEntry.queryId === undefined) continue;
-        const targetQuery = queriesById.get(tileEntry.queryId);
-        if (targetQuery === undefined) continue; // already reported at the tile
-        const declared = declarationsFor(targetQuery).find((entry) => entry.name === parameter);
-        if (!declared) {
-          emit([...filterPath, 'targets', targetIndex], 'filter-parameter-undeclared',
-            `Target tile ${JSON.stringify(targetId)}'s query does not declare parameter ${JSON.stringify(parameter)}`);
-        } else declaredTypes.set(tileEntry.queryId, normalizeParamType(declared.type));
-      }
-      if (sourceQueryId === undefined && new Set(declaredTypes.values()).size > 1) {
-        emit([...filterPath, 'parameter'], 'filter-parameter-type-conflict',
-          `Parameter ${JSON.stringify(parameter)} is declared with conflicting types across filter targets: ${[...new Set(declaredTypes.values())].sort().join(', ')}`);
-      }
-    }
-    // #189/#360: a SOURCE-BACKED filter's selection contract — run the SAME
-    // resolver the viewer session uses (`resolveFilterSelection`, over the
-    // SAME shared "executable consumer" definition, `core/filter-selection.ts`)
-    // so an invalid contract is diagnosed at whole-workspace authoring/import
-    // time, not only after opening the viewer. Plain filters (no
-    // `sourceQueryId`) stay out of contract validation entirely, exactly as
-    // the session does (it never resolves a selection for them either).
-    if (sourceQueryId !== undefined && parameter !== undefined) {
-      const rawTargets: unknown = filter.targets;
-      const targets = Array.isArray(rawTargets)
-        ? rawTargets.map(stringId).filter((id): id is string => id !== undefined)
-        : undefined;
-      const filterSelectionDef: FilterSelectionFilterDef = { id: filterId ?? '', parameter, targets };
-      if (isObject(filter.selection)) {
-        filterSelectionDef.selection = {
-          mode: typeof filter.selection.mode === 'string' ? filter.selection.mode : undefined,
-        };
-      }
-      const resolution = resolveFilterSelection(filterSelectionDef, tileAnalysis, executableTileIds);
-      for (const diag of resolution.diagnostics) {
-        out.push({
-          path: selectionDiagnosticPath(filterPath, rawTargets, diag),
-          severity: 'error', code: diag.code, message: diag.message,
-          ...(dashboardId === undefined ? {} : { resource: dashboardId }),
-        });
-      }
-    }
-    if (Object.hasOwn(filter, 'defaultValue')) {
-      const defaultBytes = utf8ByteLength(canonicalJson(filter.defaultValue));
-      if (defaultBytes > PORTABLE_LIMITS.maxSerializedFilterDefaultBytes) {
-        emit([...filterPath, 'defaultValue'], 'limit-filter-default-bytes',
-          `Serialized default value is ${defaultBytes} UTF-8 bytes; the maximum is ${PORTABLE_LIMITS.maxSerializedFilterDefaultBytes}`);
-      }
-    }
-  }
 
   return sortDiagnostics(out);
 }
 
 /**
  * #427 — the Dashboard query OWNERSHIP invariant: no saved query is shared by two
- * panel tiles, by a panel and a filter, or by members of different Dashboards.
- * Reported at EVERY owner after the first, so the diagnostics name the references
- * that would have to change rather than the one that got there first.
+ * panel tiles, or by tiles of different Dashboards. Reported at EVERY owner after
+ * the first, so the diagnostics name the references that would have to change
+ * rather than the one that got there first.
  *
- * ONE shared shape is valid, and deliberately so: a filter-role query returns a
- * single row whose columns each supply the options for the parameter of the same
- * name, so one source serves many curated filters of the SAME Dashboard (six, in
- * `examples/clickhouse-operations.json`). Splitting those into a copy per filter
- * re-creates the #359 bug — N copies executed N times, every helper column then
- * rejected as a duplicate provider, so every filter on the Dashboard errors. See
- * `ownersAreValid`.
+ * #447 removed the one shape that used to be a legitimate exception. A curated
+ * filter referenced an option-source query, and one such source supplied the
+ * options for several filters of the same Dashboard, so it was owned per
+ * DASHBOARD. Variables carry their optional option SQL on the Dashboard document
+ * itself, so a tile is now the only kind of member that references a query and
+ * "shared" is unconditionally invalid.
  *
  * Deliberately NOT part of `validateDashboardCollectionSemantics`: that validator
  * also guards portable bundles, and #427 requires a readable legacy bundle with
  * shared references to be NORMALIZED on import rather than rejected. This rule is
- * therefore whole-workspace only, invoked by the V4 stored-workspace validator —
- * the boundary the migration has already made single-owner.
+ * therefore whole-workspace only, invoked by the current stored-workspace
+ * validator — the boundary the migration has already made single-owner.
  *
  * The document has passed structural schema validation before this runs, which is
  * what lets it take a typed workspace instead of narrowing defensively.
  */
 export function validateDashboardQueryOwnership(
-  workspace: { queries: readonly SavedQueryV2[]; dashboards: readonly DashboardDocumentV1[] },
+  workspace: { queries: readonly SavedQueryV2[]; dashboards: readonly DashboardDocumentV2[] },
   path: Path = ['dashboards'],
 ): WorkspaceDiagnostic[] {
   const out: WorkspaceDiagnostic[] = [];
   const { ownersByQueryId } = buildQueryOwnershipIndex(workspace);
-  const share = (
-    queryId: string, memberPath: Path, dashboardId: string, memberLabel: string, owners: number,
-  ): void => {
-    out.push(diagnostic(memberPath, 'dashboard-query-multiple-owners',
-      `Query ${JSON.stringify(queryId)} is owned by ${owners} Dashboard members; ${memberLabel} must reference its own dedicated copy`,
-      dashboardId));
-  };
-  /** Skip a member whose query's ownership is legitimate: unshared, or the shared
-   *  filter source of this one Dashboard. */
-  const shared = (owners: readonly DashboardQueryOwner[]): boolean =>
-    owners.length > 1 && !ownersAreValid(owners);
   for (const [dashboardIndex, dashboard] of workspace.dashboards.entries()) {
-    const at = (...rest: Path): Path => [...path, dashboardIndex, ...rest];
-    for (const [filterIndex, filter] of dashboard.filters.entries()) {
-      if (filter.sourceQueryId === undefined) continue;
-      const owners = ownersByQueryId.get(filter.sourceQueryId) ?? [];
-      if (!shared(owners)) continue;
-      const first = owners[0];
-      if (first.kind === 'filter' && first.filterId === filter.id
-        && first.dashboardId === dashboard.id) continue;
-      share(filter.sourceQueryId, at('filters', filterIndex, 'sourceQueryId'), dashboard.id,
-        `filter ${JSON.stringify(filter.id)}`, owners.length);
-    }
     for (const [tileIndex, tile] of dashboard.tiles.entries()) {
       const owners = ownersByQueryId.get(tile.queryId) ?? [];
-      if (!shared(owners)) continue;
+      if (owners.length < 2) continue;
       const first = owners[0];
-      if (first.kind === 'panel' && first.tileId === tile.id
-        && first.dashboardId === dashboard.id) continue;
-      share(tile.queryId, at('tiles', tileIndex, 'queryId'), dashboard.id,
-        `tile ${JSON.stringify(tile.id)}`, owners.length);
+      if (first.tileId === tile.id && first.dashboardId === dashboard.id) continue;
+      out.push(diagnostic([...path, dashboardIndex, 'tiles', tileIndex, 'queryId'],
+        'dashboard-query-multiple-owners',
+        `Query ${JSON.stringify(tile.queryId)} is owned by ${owners.length} Dashboard members; tile ${JSON.stringify(tile.id)} must reference its own dedicated copy`,
+        dashboard.id));
     }
   }
   return sortDiagnostics(out);

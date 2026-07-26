@@ -34,7 +34,7 @@ describe('pure Spec completion', () => {
       .toEqual(['role', 'defaultVariant', 'variants', 'sizeHints']);
     expect(complete({
       rootValue: { dashboard: { role: '' } }, path: ['dashboard', 'role'], positionKind: 'property-value',
-    }).map((item) => item.insert)).toEqual(['"panel"', '"filter"', '"setup"']);
+    }).map((item) => item.insert)).toEqual(['"panel"', '"setup"']);
     expect(complete({ rootValue: { dashboard: { sizeHints: {} } }, path: ['dashboard', 'sizeHints'] }).map((item) => item.label))
       .toEqual(['preferred', 'minimum']);
   });

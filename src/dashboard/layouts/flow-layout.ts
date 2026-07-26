@@ -17,7 +17,7 @@ import { isFlowLayout } from '../model/workspace-semantics.js';
 import { cloneJson } from '../../core/saved-query.js';
 import { partitionKpiBands } from '../../core/dashboard.js';
 import type {
-  DashboardDocumentV1, FlowHeightV1, FlowPresetV1, FlowTilePlacementV1,
+  DashboardDocumentV2, FlowHeightV1, FlowPresetV1, FlowTilePlacementV1,
 } from '../../generated/json-schema.types.js';
 
 /** The flow@1 default placement (#280): span 1, medium height. */
@@ -37,7 +37,7 @@ export interface DashboardLayoutPlugin {
   readonly type: string;
   readonly version: number;
   /** Return a normalized COPY of the document (input never mutated). */
-  normalize(dashboard: DashboardDocumentV1): DashboardDocumentV1;
+  normalize(dashboard: DashboardDocumentV2): DashboardDocumentV2;
   /** Diagnostics for one placement object (empty when valid). */
   validatePlacement(placement: unknown, path?: Path): WorkspaceDiagnostic[];
 }
@@ -78,7 +78,7 @@ export function deriveFlowPlacement(sizeHints: unknown): FlowTilePlacementV1 | u
   return { span, height: 'medium' };
 }
 
-function normalize(dashboard: DashboardDocumentV1): DashboardDocumentV1 {
+function normalize(dashboard: DashboardDocumentV2): DashboardDocumentV2 {
   const next = cloneJson(dashboard);
   const tileIds = new Set<string>();
   for (const tile of Array.isArray(next.tiles) ? next.tiles : []) {

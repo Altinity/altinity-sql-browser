@@ -24,7 +24,7 @@ test.describe('Dashboard compound time-range control', () => {
   test('renders one resolved-range trigger, suppresses the pair’s own fields, keeps the non-group field', async ({ page }) => {
     // The from/to pair resolved into exactly one date-like group.
     expect(await page.evaluate(() => window.__groups()))
-      .toEqual([{ key: 'f-from\u0000f-to', from: 'from', to: 'to' }]);
+      .toEqual([{ key: 'from\u0000to', from: 'from', to: 'to' }]);
 
     const trigger = page.locator('.trf-trigger');
     await expect(trigger).toBeVisible();
