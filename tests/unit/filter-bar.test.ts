@@ -617,26 +617,30 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     // container-typed variable already had a free-text field, and param-serialize
     // binds an array literal typed into it — taking it away leaves those panels
     // permanently unfilled with no way to fill them.
-    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Map(String, String)}', {
       variables: { tags: { options: null } },
     });
     const field = fieldFor(bar, 'tags');
     expect(field.querySelector('.var-input')).not.toBeNull();
     const note = field.querySelector('.var-unsupported')!;
-    expect(note.textContent).toContain('Array(String)');
+    expect(note.textContent).toContain('Map(String, String)');
     expect(note.getAttribute('aria-label')).toContain('no inferred control');
     expect(note.getAttribute('title')).toContain('container type');
   });
 
   it('the unsupported verdict wins over a configured option list', () => {
-    // If the value cannot bind, the fact that someone configured options for it
-    // does not make it usable.
-    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
-      variables: { tags: { options: OPTIONS } },
-    });
-    expect(fieldFor(bar, 'tags').querySelector('.filter-select')).toBeNull();
-    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
-    expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+    // A container with no flat element list cannot be supplied by a value/label
+    // list, so configuring options for one does not make it usable. Unchanged
+    // for every container EXCEPT `Array(scalar T)` — see the multi-select tests.
+    for (const type of ['Map(String, String)', 'Tuple(String, String)', 'Array(Array(String))']) {
+      const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
+        variables: { tags: { options: OPTIONS } },
+      });
+      expect(fieldFor(bar, 'tags').querySelector('.filter-select')).toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+    }
   });
 
   it('reports unsupported for a container even with no entry in the variables map', () => {
@@ -646,9 +650,124 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
   });
 
   it('never reports unsupported without the variables map — the workbench keeps its text field', () => {
-    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}');
+    for (const type of ['Array(String)', 'Map(String, String)']) {
+      const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`);
+      expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).toBeNull();
+      expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+    }
+  });
+
+  it('marks an Array(scalar) with NO option SQL as having no option list, and keeps its input', () => {
+    // Its type IS controllable — configuring option SQL turns it into the
+    // multi-select — so the marker names that fix instead of calling the type
+    // uncontrollable. The free-text input stays either way: a hand-typed
+    // `['a','b']` still binds.
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: null } },
+    });
+    const field = fieldFor(bar, 'tags');
+    expect(field.querySelector('.var-input')).not.toBeNull();
+    expect(field.querySelector('.ms-trigger')).toBeNull();
+    const note = field.querySelector('.var-unsupported')!;
+    expect(note.textContent).toContain('Array(String)');
+    expect(note.getAttribute('aria-label')).toContain('no option list');
+    expect(note.getAttribute('title')).toContain('Add option SQL');
+    // Never the misleading container wording.
+    expect(note.getAttribute('title')).not.toContain('container type');
+  });
+
+  it('renders an Array(scalar) WITH options as the multi-select, not a text field', () => {
+    for (const type of ['Array(String)', 'Array(UInt64)', 'Array(LowCardinality(String))']) {
+      const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
+        variables: { tags: { options: OPTIONS } },
+      });
+      const field = fieldFor(bar, 'tags');
+      const trigger = field.querySelector('.ms-trigger')!;
+      expect(trigger).not.toBeNull();
+      expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+      expect(trigger.textContent).toBe('Not set');
+      // It REPLACES the plain input and the single-select, rather than adorning.
+      expect(field.querySelector('.var-unsupported')).toBeNull();
+      expect(field.querySelector('.filter-select')).toBeNull();
+      expect(field.querySelector('input.var-input')).toBeNull();
+    }
+  });
+
+  it('renders the multi-select even when the option list came back empty', () => {
+    // `[]` means option-backed with no rows — meaningfully different from the
+    // `null` that means "no option SQL configured".
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: [] } },
+    });
+    expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).not.toBeNull();
     expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).toBeNull();
-    expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+  });
+
+  it('takes the committed selection from the spec, and leaves varValues untouched', () => {
+    // An array must never enter `state.varValues` — that bag is the shared
+    // `Record<string, string>` the Workbench var-strip also owns and persists,
+    // so a selection travels on the spec instead. The bar reads `filterActive`
+    // for activation, which is a plain boolean and stays in the shared bag.
+    const { app, bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: OPTIONS, selection: ['de', 'fr'] } },
+    });
+    expect(app.state.varValues.tags).toBeUndefined();
+    // Inactive at build time, so the trigger reads unset however long the
+    // selection is — activation is authoritative, never a value sentinel.
+    expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')!.textContent).toBe('Not set');
+    // The draft it opens with IS that selection, though.
+    fieldFor(bar, 'tags').querySelector<HTMLButtonElement>('.ms-trigger')!.click();
+    const checked = [...document.querySelectorAll<HTMLInputElement>('.ms-option input[type="checkbox"]')]
+      .map((cb) => cb.checked);
+    expect(checked).toEqual([true, true]);
+  });
+
+  it('commits a multi-select Apply through onCommitVariableSelection, not the scalar bag', () => {
+    const onCommitVariableSelection = vi.fn();
+    const { app, bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: OPTIONS } },
+      onCommitVariableSelection,
+    });
+    const trigger = fieldFor(bar, 'tags').querySelector<HTMLButtonElement>('.ms-trigger')!;
+    trigger.click();
+    const dialog = document.querySelector('.ms-popover')!;
+    const boxes = dialog.querySelectorAll<HTMLInputElement>('.ms-option input[type="checkbox"]');
+    boxes[0].checked = true;
+    boxes[0].dispatchEvent(new Event('change'));
+    (dialog.querySelector('.ms-btn-primary') as HTMLButtonElement).click();
+    expect(onCommitVariableSelection).toHaveBeenCalledWith('tags', ['de'], true);
+    expect(app.state.filterActive.tags).toBe(true);
+    // The array never touches the shared scalar bag.
+    expect(app.state.varValues.tags).toBeUndefined();
+  });
+
+  it('routes setVariableOptions and dispose through the multi-select handle', () => {
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: OPTIONS } },
+    });
+    const trigger = fieldFor(bar, 'tags').querySelector<HTMLButtonElement>('.ms-trigger')!;
+    trigger.click();
+    expect(bar.openPopoverKey()).toBe('tags');
+    // A fresh generation cancels the draft it could not be applied against.
+    bar.setVariableOptions({ tags: { options: [{ value: 'es', label: 'Spain' }], error: null } });
+    expect(bar.openPopoverKey()).toBeNull();
+    trigger.click();
+    expect([...document.querySelectorAll('.ms-option-label')].map((n) => n.textContent)).toEqual(['Spain']);
+  });
+
+  it('renders a multi-select unavailable when the batch failed', () => {
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: OPTIONS, optionsError: 'Variable options could not be loaded.' } },
+    });
+    const trigger = fieldFor(bar, 'tags').querySelector<HTMLButtonElement>('.ms-trigger')!;
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    expect(trigger.getAttribute('aria-invalid')).toBe('true');
+    expect(trigger.title).toContain('could not be loaded');
+    // Never actually `disabled` — the reason must stay reachable.
+    expect(trigger.disabled).toBe(false);
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
   });
 
   it('offers true/false suggestions for a Bool variable, and only under the map', () => {

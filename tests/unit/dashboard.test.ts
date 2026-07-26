@@ -3516,6 +3516,47 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     const note = qs(app.root, '.var-unsupported');
     expect(note.textContent).toContain('Array(String)');
   });
+
+  it('renders an Array(String) variable WITH option SQL as the multi-select, and binds its selection', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? {
+          columns: [
+            { name: '__variable_name', type: 'String' },
+            { name: 'v', type: 'String' },
+            { name: 'l', type: 'String' },
+          ],
+          rows: [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']],
+        }
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+      }),
+    });
+    await render(app);
+    const panelRuns = () => calls.filter((c) => !c.sql.includes('__variable_name'));
+    // Unset, so the panel waits — and the control is the multiselect, not a text
+    // box with the no-inferred-control marker.
+    expect(panelRuns()).toHaveLength(0);
+    expect(app.root!.querySelector('.var-unsupported')).toBeNull();
+    const trigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(trigger.textContent).toBe('Not set');
+
+    trigger.click();
+    const boxes = [...document.querySelectorAll<HTMLInputElement>('.ms-option input[type="checkbox"]')];
+    expect(boxes).toHaveLength(2);
+    for (const cb of boxes) { cb.checked = true; cb.dispatchEvent(new Event('change')); }
+    (document.querySelector('.ms-btn-primary') as HTMLButtonElement).click();
+    await flush();
+
+    // The Apply reached the session and ran the panel bound to a real ClickHouse
+    // array literal — never the joined string `ada,bo`.
+    expect(panelRuns()).toHaveLength(1);
+    expect(panelRuns()[0].params.param_user).toBe("['ada','bo']");
+    expect(qs(app.root, '.ms-trigger').textContent).toBe('2 selected');
+  });
 });
 
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the

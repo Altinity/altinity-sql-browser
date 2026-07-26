@@ -229,6 +229,30 @@ export function isCompoundParamType(type: string | ParsedParamType): boolean {
 }
 
 /**
+ * The ELEMENT type when `type` is an `Array` of a single SCALAR — the one
+ * container shape a Dashboard can offer a multi-select for — else `null`.
+ *
+ * This is the single eligibility decision behind the restored `Array(T)`
+ * multi-select: `core/variable-options.js` consults it to admit a variable's
+ * option SQL into the batch, and `param-pipeline.js`'s `fieldControlKind`
+ * consults it to choose the control. One predicate, so "we ran the option SQL"
+ * and "we rendered a select" can never disagree.
+ *
+ * `null` for a scalar (nothing to multi-select), for `Tuple`/`Map`/`Nested`
+ * (no element list to pick from), and for a nested `Array(Array(T))` — the last
+ * because `param-serialize.js` rejects nested array VALUES and nested `Array`
+ * DECLARATIONS outright, so a control that produced one could never bind.
+ *
+ * Wrappers are already unwrapped by `parseParamType`, so `Nullable(Array(
+ * LowCardinality(String)))` yields the `String` element. Pure.
+ */
+export function multiSelectElementType(type: string | ParsedParamType): ParsedParamType | null {
+  const t = typeof type === 'string' ? parseParamType(type) : type;
+  if (!t.isArray || !t.elem) return null;
+  return t.elem.isArray || isCompoundParamType(t.elem) ? null : t.elem;
+}
+
+/**
  * The lexical family of a parsed (or raw) type, deciding how the typed
  * serializer emits an array *element* of that type:
  *   - `'int'`   — unquoted integer token (Int8…Int256, UInt8…UInt256);

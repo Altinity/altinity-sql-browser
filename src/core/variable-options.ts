@@ -34,7 +34,7 @@ import { detectSqlFormat, detectSqlOutfile, sqlString, stripTrailingTrivia } fro
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
 import { hasOptionalBlocks } from './optional-blocks.js';
-import { isCompoundParamType } from './param-type.js';
+import { isCompoundParamType, multiSelectElementType } from './param-type.js';
 import type { DashboardVariable } from './dashboard-variables.types.js';
 import type {
   VariableOption, VariableOptionBatch, VariableOptionBranch, VariableOptionDiagnostic,
@@ -213,10 +213,29 @@ const isRunnableOptionSql = (sql: string | null): boolean =>
   sql !== null && optionSqlDiagnostics(sql).length === 0;
 
 /**
+ * Whether a variable's declared TYPE can be backed by an option list at all.
+ *
+ * A scalar takes the single-select; an `Array` of a scalar takes the restored
+ * multi-select, where the SAME two-String-column option rows are the pool a user
+ * picks several values from — the array-ness is about how selections are
+ * COMBINED into one bound value, never about the row shape, so nothing in the
+ * compiler or the reader varies with it.
+ *
+ * Every other container (`Tuple`/`Map`/`Nested`, and a nested
+ * `Array(Array(T))`) still renders no select: a flat value/label list cannot
+ * supply one of those, so running its option SQL would be work for a control
+ * that never appears — and a broken one could fail the combined query and take
+ * every OTHER variable's options down with it. Same rule, same reason, as
+ * conflicted and orphaned.
+ */
+const optionEligibleType = (type: string): boolean =>
+  !isCompoundParamType(type) || multiSelectElementType(type) !== null;
+
+/**
  * The variables that belong in a refresh's option batch: inferred,
  * type-consistent (`status === 'active'`, which excludes both a CONFLICTED name
- * and an ORPHANED configuration), configured with non-empty option SQL, and
- * locally acceptable.
+ * and an ORPHANED configuration), of an option-backable type, configured with
+ * non-empty option SQL, and locally acceptable.
  *
  * Order is the caller's — `inferDashboardVariables`' inference order — and every
  * consumer follows it, so the compiled branch order is the Variables order.
@@ -225,12 +244,7 @@ export const optionBatchVariables = (
   variables: readonly DashboardVariable[],
 ): DashboardVariable[] => variables.filter(
   (variable) => variable.status === 'active'
-    // A CONTAINER-typed variable renders no option select (a two-String-column
-    // list cannot supply an `Array`/`Tuple`/`Map`/`Nested` value), so running its
-    // option SQL would be work for a control that never appears — and, worse, a
-    // broken one could fail the combined query and take every OTHER variable's
-    // options down with it. Same rule, same reason, as conflicted and orphaned.
-    && !isCompoundParamType(variable.type ?? '')
+    && optionEligibleType(variable.type ?? '')
     && isRunnableOptionSql(variable.sql),
 );
 

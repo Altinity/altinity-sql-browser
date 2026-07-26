@@ -13,10 +13,16 @@
 // either a strict single-select combobox (`filter-option-field.ts`) or a
 // multiselect dialog (`multi-select-field.ts`), with a per-field source status
 // affordance. A Dashboard's variables are now inferred from `{name:Type}`
-// placeholders in panel-owned queries and every field is a plain direct input,
-// so only the plain branch below survives — including the compound `#335`
-// time-range control, which is a presentation of two plain bounds, not a
-// curated field.
+// placeholders in panel-owned queries, so the per-field SOURCE STATUS machine
+// and everything that fed it are gone for good.
+//
+// The two option-backed CONTROLS came back, now driven by a variable's own
+// Dashboard-local option SQL rather than by a Filter-role query: a scalar
+// variable gets the strict single-select, and an `Array(scalar T)` variable
+// gets the searchable multiselect (restored from #189). Which one — or neither
+// — is one decision, `fieldControlKind`'s: it classifies the TYPE, and this
+// module pairs that verdict with whether option SQL was actually configured,
+// because only the bar can see the spec.
 
 import { h } from './dom.js';
 import { fieldControlKind } from '../core/param-pipeline.js';
@@ -33,6 +39,7 @@ import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildTimeRangeField } from './time-range-field.js';
 import { buildFilterOptionField } from './filter-option-field.js';
+import { buildMultiSelectField } from './multi-select-field.js';
 import { Icon } from './icons.js';
 import type { KeyboardOwner } from './app.types.js';
 import type { VariableOption } from '../core/variable-options.types.js';
@@ -101,6 +108,11 @@ export interface BuildFilterBarOptions {
    *  complete, deliberate action), where `onCommit` only names the parameter and
    *  lets the caller read the shared draft bag. */
   onCommitVariable?(name: string, value: string, active: boolean): void;
+  /** Fires when a MULTI-select Apply commits. Separate from `onCommitVariable`
+   *  because the value is a real `string[]`: `FilterBarApp.state.varValues` is
+   *  deliberately still `Record<string, string>` (the Workbench var-strip owns
+   *  and persists that same bag), so an array never round-trips through it. */
+  onCommitVariableSelection?(name: string, values: string[], active: boolean): void;
 }
 
 /** #447 phase 2: how ONE Dashboard variable's control differs from a plain
@@ -113,6 +125,11 @@ export interface VariableFieldSpec {
   options: readonly VariableOption[] | null;
   /** Non-null when the option batch failed: the select renders unavailable. */
   optionsError?: string | null;
+  /** The committed SELECTION for a variable rendered as a multi-select
+   *  (`Array(scalar T)` with options). Empty means unset. Carried here rather
+   *  than in `app.state.varValues` on purpose — see
+   *  `onCommitVariableSelection`. Ignored by every other control branch. */
+  selection?: readonly string[];
 }
 
 /** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
@@ -346,25 +363,79 @@ export function buildFilterBar(
   const specOf = (name: string): VariableFieldSpec | undefined =>
     (variables ? variables[name] : undefined);
 
-  /** The marker shown beside a variable whose declared type is a CONTAINER
-   *  (`Array`/`Tuple`/`Map`/`Nested`): there is no inferred single-scalar control
-   *  for it, and no option list can back it.
+  /** The marker shown beside a variable the Dashboard cannot infer a control for.
    *
-   *  It ADORNS the plain field rather than replacing it. Removing the input
-   *  outright would make an existing Dashboard strictly less capable — a
+   *  Two reasons reach it, and they say different things:
+   *   - a CONTAINER with no flat element list (`Tuple`/`Map`/`Nested`, or a
+   *     nested `Array(Array(T))` the serializer rejects outright) can never have
+   *     a control inferred, whatever the author does;
+   *   - an `Array(scalar T)` with no option SQL has no LIST to pick from yet.
+   *     Its type is perfectly controllable — configuring option SQL turns it
+   *     into the multiselect — so saying "container type" would be misleading
+   *     advice. It names the fix instead.
+   *
+   *  Either way it ADORNS the plain field rather than replacing it. Removing the
+   *  input outright would make an existing Dashboard strictly less capable — a
    *  container-typed variable already rendered a free-text field, and
    *  `param-serialize.ts` binds an array literal typed into it perfectly well, so
    *  taking it away would leave those panels permanently `unfilled` with no way to
    *  fill them. The marker says the Dashboard cannot infer a control; it does not
    *  claim the value is unusable. */
-  const unsupportedMarker = (p: FieldControl, type: string): HTMLElement =>
+  const unsupportedMarker = (p: FieldControl, type: string, listable = false): HTMLElement =>
     h('span', {
       class: 'var-unsupported',
       role: 'img',
-      'aria-label': `${p.name} has no inferred control: ${type} is a container type — type a literal value`,
-      title: `A Dashboard cannot infer a control for ${type}, which is a container type. `
-        + 'Type a literal value directly.',
+      'aria-label': listable
+        ? `${p.name} has no option list: add option SQL to pick from a list, or type a literal value`
+        : `${p.name} has no inferred control: ${type} is a container type — type a literal value`,
+      title: listable
+        ? `A Dashboard has no option list for ${type}. Add option SQL to this variable to pick `
+          + 'values from a list, or type a literal value directly.'
+        : `A Dashboard cannot infer a control for ${type}, which is a container type. `
+          + 'Type a literal value directly.',
     }, Icon.eyeOff(), type);
+
+  /** The searchable multiselect over one `Array(scalar T)` variable's batched
+   *  option rows (#189, restored). Its committed value is a real `string[]`, so
+   *  — unlike every other branch here — it never touches `app.state.varValues`:
+   *  that bag is `Record<string, string>` and is shared with the Workbench's own
+   *  variables strip. The selection arrives on the spec and leaves on
+   *  `onCommitVariableSelection`. */
+  const buildMultiField = (p: FieldControl, spec: VariableFieldSpec): HTMLElement => {
+    const field = buildMultiSelectField({
+      document,
+      name: p.name,
+      options: spec.options ?? [],
+      selected: spec.selection ?? [],
+      active: !!app.state.filterActive[p.name],
+      title: p.name + ': ' + p.type,
+      // Apply is a complete, deliberate action, so it bypasses the keystroke
+      // debounce entirely — same reasoning as the single-select's own commit.
+      // Activation travels with the value: a non-empty selection is active, and
+      // Clear-then-Apply returns the variable to unset.
+      onApply: (values, active) => {
+        app.state.filterActive[p.name] = active;
+        options.onCommitVariableSelection?.(p.name, values, active);
+      },
+      onKeyboardOwnerChange: options.onKeyboardOwnerChange,
+    });
+    if (spec.optionsError != null) field.setUnavailable(spec.optionsError);
+    handles.set(p.name, {
+      el: field.el,
+      // Like the single-select: no transient per-field status of its own, its
+      // only failure mode being the batch's, which arrives through `setOptions`.
+      updateStatus: () => {},
+      setOptions: (next, error) => {
+        field.setOptions(next);
+        field.setUnavailable(error);
+      },
+      isOpen: field.isOpen,
+      focusTrigger: field.focusTrigger,
+      dispose: field.dispose,
+    });
+    return h('label', { class: 'var-field' },
+      h('span', { class: 'var-name' }, p.name), field.el);
+  };
 
   /** The strict single-select over one variable's batched option rows. */
   const buildOptionField = (p: FieldControl, spec: VariableFieldSpec): HTMLElement => {
@@ -513,17 +584,28 @@ export function buildFilterBar(
   // #447 phase 2 adds two variable-only branches ahead of the plain one; with no
   // `variables` map every param still reaches `buildParamField` unchanged.
   const buildField = (p: FieldControl): HTMLElement => {
-    // The container verdict comes from the SAME shared decision `buildParamField`
+    // The type verdict comes from the SAME shared decision `buildParamField`
     // consults, rather than being passed in by the caller — one decision point, so
     // the control a Dashboard renders and the policy that classified its type can
-    // never disagree. It wins over an option list: a two-String-column list cannot
-    // supply a container value, so offering a select for one would be a lie.
-    if (fieldControlKind(p, null, { scalarControls: !!variables }).kind === 'unsupported') {
+    // never disagree. `multiSelectElementType`, which produces `'multi'` here, is
+    // also the predicate `core/variable-options.js` filters the option batch on,
+    // so a type that gets a select can never be one whose option SQL was skipped.
+    const kind = fieldControlKind(p, null, { scalarControls: !!variables }).kind;
+    // A container with no flat element list: no control is inferable at all.
+    if (kind === 'unsupported') {
       const field = buildParamField(p);
       field.appendChild(unsupportedMarker(p, p.type));
       return field;
     }
     const spec = specOf(p.name);
+    if (kind === 'multi') {
+      // The type CAN be multi-selected; whether there is anything to select from
+      // is the spec's answer, which only this layer can see.
+      if (spec && spec.options !== null) return buildMultiField(p, spec);
+      const field = buildParamField(p);
+      field.appendChild(unsupportedMarker(p, p.type, true));
+      return field;
+    }
     if (spec && spec.options !== null) return buildOptionField(p, spec);
     return buildParamField(p);
   };

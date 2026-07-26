@@ -2,9 +2,10 @@
 
 - **Status:** Accepted; detached-snapshot decision superseded by #407 on
   2026-07-23; surface lifecycle amended by #425 and surface NAVIGATION amended by
-  #426, both 2026-07-25 (see the addenda)
-- **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25
-- **Context tracking:** roadmap #68; #288, #302, #406, #407, #425
+  #426, both 2026-07-25; the #447 phase-2 compound-type exclusion narrowed by #468
+  on 2026-07-26 (see the addenda)
+- **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25, 2026-07-26
+- **Context tracking:** roadmap #68; #288, #302, #406, #407, #425, #447, #457, #468
 
 ## Context
 
@@ -325,6 +326,9 @@ are worth recording because both contradict something the issue's own text impli
   already validates. Only the compound-type case is new — and it *adorns* the input
   rather than replacing it, because `param-serialize` binds an array literal typed
   there and removing the field would leave those panels permanently unfillable.
+  **Narrowed by the addendum below:** an `Array` of a scalar WITH option SQL now
+  renders a multi-select instead; the adornment survives for every other container
+  and for an `Array(scalar T)` nobody has configured.
 
 ## Addendum (#457, 2026-07-26): a variable's option SQL is a main-editor document
 
@@ -373,6 +377,72 @@ the application already has. Four decisions replace it.
   guarantee now rides on the surface rebuild that occurs when the user returns to
   the Dashboard, not on that poke. The tree's orphan-delete still fires it for real,
   because the tree is visible while a Dashboard is.
+
+## Addendum (#468, 2026-07-26): an `Array(scalar T)` variable binds a selection
+
+#447 phase 1 removed the curated filter model wholesale, and its non-goals listed
+"multiselect or Array-valued variable controls". Phase 2 then classified every
+container type as having no inferred control. That left the one type multi-select
+exists for — `Array(T)` — as a free-text box, even with a working option list
+configured. This addendum records the deliberate reversal for the narrow case, and
+restores the #189/PR-#364 control on top of the inferred-variable model.
+
+- **One predicate decides eligibility, and both consumers read it.**
+  `multiSelectElementType` (`core/param-type.ts`) answers "is this an `Array` of a
+  single scalar, and what is the element type" for `core/variable-options.ts`'s
+  batch filter AND for `fieldControlKind`'s control choice. A type whose option SQL
+  ran can therefore never be one the bar refuses to render a select for, which is
+  the same invariant `filter-bar.ts` already stated for the container verdict.
+  `Tuple`/`Map`/`Nested` have no flat element list; `Array(Array(T))` is rejected by
+  `param-serialize` outright. All four keep the adorned text field.
+
+- **`fieldControlKind` classifies the TYPE; the bar pairs it with the spec.** The
+  pure function has no way to know whether option SQL was configured, and giving it
+  one would mean passing UI state into a parameter-analysis helper. `'multi'` means
+  "this type can be multi-selected"; `filter-bar.ts` combines that with
+  `spec.options !== null`, and an `Array(scalar T)` with no options falls back to
+  the same adorned input as before — with wording that names the fix ("add option
+  SQL") instead of calling a controllable type uncontrollable.
+
+- **A selection is a real `string[]`, never a stringified literal.**
+  `param-serialize.ts` already builds the ClickHouse literal from a JS array, with
+  escaping, big integers and empty-string elements covered and tested. Committing a
+  pre-serialized string instead would put literal construction in the UI, and would
+  make the committed value unparseable back into a selection for the popover to
+  re-open on. `dashboard-filter-store.ts` never lost its `string | string[]`
+  support, so persistence needed no change at all.
+
+- **The string boundary is `state.varValues`, and it is enforced by its TYPE.**
+  Arrays travel: viewer session → `ViewerFilterState.value` (already `unknown`) →
+  `VariableFieldSpec.selection` → the control → `onCommitVariableSelection` → back.
+  They never enter `FilterBarApp.state.varValues`, which stays
+  `Record<string, string>` because the Workbench var-strip owns and persists that
+  same bag under `asb:varValues`. Widening it would NOT have been a safeguard —
+  TypeScript's property assignability is covariant even for mutable properties, so
+  a widened type would still accept the real `AppState` while letting an array
+  through. Keeping it narrow is the enforcement.
+
+- **An empty selection is unset, not `[]`.** `param-pipeline`'s `emptyValue()`
+  treats a present `[]` as a genuine value, so binding one would run every panel as
+  `… IN []` — returning nothing while LOOKING filtered — where a variable's unset
+  contract is that its panels wait. `commitValue` reduces it to `UNSET_VALUE`, so
+  there is exactly one unset form. This deliberately narrows #189, which could
+  express an "active empty array"; with no defaults and no dormant values, no
+  control here can author one.
+
+- **Reconciliation returns names; `refresh` runs one wave.** `applyOptions` reports
+  which variables a fresh option list actually changed the bound SET for (a pure
+  reorder or a label-only change reports nothing), `runOptionBatch` collects them,
+  and `refresh` runs a single `commitAndRerun` over the union AFTER both the option
+  request and the tile pool have settled. Re-running inside `runOptionBatch` would
+  supersede tiles mid-refresh and make the outcome classifier judge tiles that are
+  already re-running. One coalesced wave is structural, not a flag to remember.
+
+- **A latent bug fell out.** `dashboard-viewer-session.ts` marked every `Array(T)`
+  variable with valid option SQL as `status: 'error'` via a branch commented
+  "unreachable" — true only for the types that genuinely cannot be option-backed.
+  Admitting `Array(scalar T)` into the batch made the comment honest, and the
+  message now says what is actually wrong.
 
 ## Alternatives considered
 

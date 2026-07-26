@@ -879,7 +879,14 @@ export async function renderDashboard(
     // direct input; `[]` means option-backed with nothing to offer yet.
     const variables: Record<string, VariableFieldSpec> = {};
     for (const f of sview.filters) {
-      draftValues[f.parameter] = valueString(f.value);
+      // An `Array(scalar T)` variable's committed value is a real `string[]`.
+      // It must NOT be flattened into the shared scalar draft bag — `String()`
+      // would turn `['a','b']` into `"a,b"`, a value nothing can round-trip —
+      // so it travels on the spec instead and its draft slot stays unset. That
+      // bag is `Record<string, string>` precisely so the Workbench var-strip,
+      // which shares its shape, can never be handed an array.
+      const selection = Array.isArray(f.value) ? f.value.filter((v): v is string => typeof v === 'string') : null;
+      draftValues[f.parameter] = selection === null ? valueString(f.value) : '';
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
       variables[f.parameter] = {
@@ -888,6 +895,7 @@ export async function renderDashboard(
         // whose option SQL was rejected locally has a specific problem, and the
         // batch failure is only its reason when it was actually in that batch.
         optionsError: f.optionsError,
+        ...(selection === null ? {} : { selection }),
       };
     }
     const onCommit = (name: string): void => {
@@ -899,6 +907,14 @@ export async function renderDashboard(
     const onCommitVariable = (name: string, value: string, active: boolean): void => {
       const id = idByParam.get(name);
       if (id) void session.applyFilter(id, value, active);
+    };
+    // The multi-select's Apply. Same "complete, deliberate action" semantics as
+    // the single-select above; the only difference is that the value is a real
+    // array, which `applyFilter` already accepts (`value: unknown`) and the
+    // session reduces to unset when it is empty.
+    const onCommitVariableSelection = (name: string, values: string[], active: boolean): void => {
+      const id = idByParam.get(name);
+      if (id) void session.applyFilter(id, values, active);
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     // #335: assemble the time-range option — one entry per resolved group,
@@ -931,6 +947,7 @@ export async function renderDashboard(
     const bar = buildFilterBar(
       filterBarApp, session.controls, onCommit, getField,
       { document: doc, timeRange, onApplyTimeRange, variables, onCommitVariable,
+        onCommitVariableSelection,
         onKeyboardOwnerChange: keyboardOwnerChannel(app) },
     );
     timeFilterHost.replaceChildren(bar.timeEl);
@@ -2115,11 +2132,20 @@ export async function renderDashboard(
   let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
   // #303: the committed-filter bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
-  // #447: a variable's committed value is a SCALAR string — the array shape the
-  // #189 multiselect persisted is gone, so there is nothing to narrow here.
+  // A multi-select variable's committed value is a real `string[]` and is
+  // persisted as one — `dashboard-filter-store.ts` has round-tripped arrays
+  // since #189 (`value: string | string[]`, with an array-aware coerce that
+  // drops non-string elements rather than stringifying them), so a selection
+  // survives a reload without ever becoming the joined `"a,b"` that
+  // `valueString`'s `String()` fallback would produce.
   const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
     const bag: DashboardFilterBag = {};
-    for (const f of filters) bag[f.id] = { value: valueString(f.value), active: f.active };
+    for (const f of filters) {
+      bag[f.id] = {
+        value: Array.isArray(f.value) ? f.value.map(valueString) : valueString(f.value),
+        active: f.active,
+      };
+    }
     return bag;
   };
   // #303: a SEPARATE signature from `barSig` above — that one also flips when
