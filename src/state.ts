@@ -30,9 +30,6 @@ import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
 import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV2, StoredWorkspaceV5 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
-import type {
-  WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
-} from './ui/app.types.js';
 import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
 import { queryToken, reconcileLinkedTabs } from './workspace/workspace-sync.js';
 import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
@@ -90,12 +87,37 @@ export type MutateWorkspace = <T = unknown>(
     WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
 ) => Promise<WorkspaceMutationOutcome<T>>;
 
-// Re-exported so a `src/application/**` producer can NAME what `mutateWorkspace`
-// resolves without importing `src/ui/**` (forbidden outright, `import type`
-// included — build/check-boundaries.mjs). state.ts already owns `MutateWorkspace`
-// itself, so the contract's two halves stay in one place instead of the outcome
-// union being redeclared, and drifting, per consumer.
-export type { WorkspaceMutationInput, WorkspaceMutationOutcome, WorkspaceExternallyChangedInfo };
+/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
+ *  to commit (or `null` to abort committing nothing), plus optional
+ *  operation-specific `data` the primitive threads back to the caller after the
+ *  commit resolves (e.g. the created query id a tab must link to). Returning the
+ *  whole object as `null` also aborts. */
+export interface WorkspaceMutationInput<T = unknown> {
+  candidate: StoredWorkspaceV5 | null;
+  data?: T;
+}
+
+/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
+ *  already projected the committed workspace, recorded its snapshot token, and
+ *  broadcast one invalidation; the caller only synchronizes its own surface. An
+ *  aborted transform (null / null candidate) commits nothing; a failed commit
+ *  carries the validation/persistence diagnostics. `data` rides through all
+ *  three outcomes (undefined when the queued op rejected before the transform
+ *  ran). */
+export type WorkspaceMutationOutcome<T = unknown> =
+  | { ok: true; workspace: StoredWorkspaceV5; dashboardRevision: number | null; data?: T }
+  | { ok: false; aborted: true; data?: T }
+  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
+
+/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
+ *  projected an externally committed workspace: the just-loaded workspace (or
+ *  `null` when the record was cleared) and whether the query collection changed
+ *  relative to the previous projection — the Dashboard route rebuilds its viewer
+ *  session on a query-only change even when the Dashboard document is identical. */
+export interface WorkspaceExternallyChangedInfo {
+  workspace: StoredWorkspaceV5 | null;
+  queriesChanged: boolean;
+}
 
 /** A saved-query CRUD op's async result once its candidate is strictly
  *  committed (validate-then-atomically-replace — see WorkspaceRepository.commit).

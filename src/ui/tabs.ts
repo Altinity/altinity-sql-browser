@@ -129,8 +129,10 @@ export function loadIntoNewTab(app: TabsApp, queryOrName: QueryOrName, sql = '')
 }
 
 /** The tab-strip title for a variable document. Prefixed rather than bare so a
- *  variable named like a query ("revenue") is never mistaken for one. */
-export const variableTabName = (variableName: string): string => 'Variable: ' + variableName;
+ *  variable named like a query ("revenue") is never mistaken for one. Deliberately
+ *  module-private: the title is this module's business, and a second producer of it
+ *  is exactly the drift #457 removed. */
+const variableTabName = (variableName: string): string => 'Variable: ' + variableName;
 
 /**
  * Open — or re-select — the tab that edits ONE Dashboard variable's option SQL
@@ -147,17 +149,17 @@ export const variableTabName = (variableName: string): string => 'Variable: ' + 
  * `null`: a variable is not a saved query, and Save writes `variableConfigs`.
  */
 export function openVariableTab(
-  app: TabsApp, doc: { dashboardId: string; variableName: string }, sql: string,
+  app: TabsApp, binding: { dashboardId: string; variableName: string }, sql: string,
 ): QueryTab {
-  const existing = findVariableTab(app.state.tabs.value, doc.dashboardId, doc.variableName);
+  const existing = findVariableTab(app.state.tabs.value, binding.dashboardId, binding.variableName);
   if (existing) {
     app.state.activeTabId.value = existing.id;
     app.sqlEditor.focus();
     return existing;
   }
   const tab = newTabObj(allocTabId(app.state));
-  tab.doc = { kind: 'dashboard-variable', ...doc };
-  tab.name = variableTabName(doc.variableName);
+  tab.doc = { kind: 'dashboard-variable', ...binding };
+  tab.name = variableTabName(binding.variableName);
   tab.sqlDraft = sql;
   // Same treatment `loadIntoNewTab` gives an unsaved document: the Spec draft
   // carries the tab's real name, so anything reading the Spec for a title (a

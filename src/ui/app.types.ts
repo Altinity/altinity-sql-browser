@@ -13,6 +13,9 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
+import type {
+  WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
+} from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
@@ -23,7 +26,6 @@ import type {
   DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
-import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -36,30 +38,18 @@ import type { QueryDocumentSession } from '../application/query-document-session
 import type { SavedQueryService } from '../application/saved-query-service.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
+// #457: the `mutateWorkspace` contract types are DECLARED in `state.ts`, beside
+// `MutateWorkspace` itself, and re-exported here so this file remains the one
+// place the App contract is read from. They used to be declared HERE and imported
+// by state.ts, which pointed the dependency the wrong way: `src/application/**`
+// may not import `src/ui/**` at all (`import type` included), so an
+// application-layer producer had no way to name what the primitive it commits
+// through resolves.
+export type {
+  WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
+} from '../state.js';
 
 type Json = Record<string, unknown>;
-
-/** What a `mutateWorkspace` transform returns (#343 §1): the complete candidate
- *  to commit (or `null` to abort committing nothing), plus optional
- *  operation-specific `data` the primitive threads back to the caller after the
- *  commit resolves (e.g. the created query id a tab must link to). Returning the
- *  whole object as `null` also aborts. */
-export interface WorkspaceMutationInput<T = unknown> {
-  candidate: StoredWorkspaceV5 | null;
-  data?: T;
-}
-
-/** What `mutateWorkspace` resolves (#343 §1/§2). On success the primitive has
- *  already projected the committed workspace, recorded its snapshot token, and
- *  broadcast one invalidation; the caller only synchronizes its own surface. An
- *  aborted transform (null / null candidate) commits nothing; a failed commit
- *  carries the validation/persistence diagnostics. `data` rides through all
- *  three outcomes (undefined when the queued op rejected before the transform
- *  ran). */
-export type WorkspaceMutationOutcome<T = unknown> =
-  | { ok: true; workspace: StoredWorkspaceV5; dashboardRevision: number | null; data?: T }
-  | { ok: false; aborted: true; data?: T }
-  | { ok: false; aborted?: false; diagnostics: WorkspaceDiagnostic[]; data?: T };
 
 /** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
  *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
@@ -68,16 +58,6 @@ export interface WorkspaceChangedMessage {
   type: 'workspace-changed';
   sourceTabId: string;
   workspaceId: string;
-}
-
-/** What `onWorkspaceExternallyChanged` (#343 step 4) receives once a refresh has
- *  projected an externally committed workspace: the just-loaded workspace (or
- *  `null` when the record was cleared) and whether the query collection changed
- *  relative to the previous projection — the Dashboard route rebuilds its viewer
- *  session on a query-only change even when the Dashboard document is identical. */
-export interface WorkspaceExternallyChangedInfo {
-  workspace: StoredWorkspaceV5 | null;
-  queriesChanged: boolean;
 }
 
 /** A schema entity reference — three real runtime shapes share this one loose
