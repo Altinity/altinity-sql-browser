@@ -293,7 +293,8 @@ export function compileVariableOptionBatch(
 // own columns, which is the only place the "exactly two String columns" rule is
 // checkable (a combined `UNION ALL` reports one merged column list for every
 // branch). Deleting that drawer left them with no caller in `src/`. Re-hosting the
-// check on the variable tab's Run is deferred; see the follow-up issue.
+// check on the variable tab's Run is deferred to #465, which names the commit they
+// can be recovered from.
 
 // ── The response reader ──────────────────────────────────────────────────────
 

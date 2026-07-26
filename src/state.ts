@@ -534,6 +534,26 @@ export const tabDirty = (tab: Partial<Pick<QueryTab, 'dirtySql' | 'dirtySpec'>> 
   !!(tab && (tab.dirtySql || tab.dirtySpec));
 
 /**
+ * Does this tab have unsaved changes *to the document Save actually writes*
+ * (#457) — the ONE predicate the tab strip's dirty dot and the Save button both
+ * read, so they can never disagree.
+ *
+ * For a query tab that is `tabDirty`: SQL and Spec are both persisted.
+ *
+ * For a `dashboard-variable` tab it is `dirtySql` ALONE. A variable's Spec is
+ * never persisted — Save writes one `variableConfigs` key and creates no
+ * `SavedQueryV2` for a Spec to belong to — yet `dirtySpec` is still reachable on
+ * one: the result toolbar's panel-type picker calls `patchSpecDraft(…, { dirty:
+ * true })` for any tab. Counting that would strand the tab permanently dirty
+ * (nothing clears it, since the query path clears `dirtySpec` only via
+ * `setTabSpecDraft` on a committed entry) while the Save button correctly read
+ * "Saved" — a dot and a button contradicting each other with no action able to
+ * reconcile them.
+ */
+export const tabSaveDirty = (tab: QueryTab | null | undefined): boolean =>
+  (variableDoc(tab) !== null ? !!tab!.dirtySql : tabDirty(tab));
+
+/**
  * This tab's variable binding, or `null` for an ordinary query tab (#457) — the
  * ONE way the rest of the app asks "is this a variable document?".
  *
@@ -848,6 +868,12 @@ export function detachWorkspaceBoundTabs(state: Pick<AppState, 'tabs'>): void {
     if (variableDoc(tab) !== null) {
       tab.doc = { kind: 'query' };
       tab.name = 'Untitled';
+      // The SPEC draft's name has to be renamed with it, not just the strip label.
+      // `openVariableTab` writes `Variable: <name>` into both, and `patchSpecDraft`
+      // re-derives `tab.name` FROM the Spec — so leaving the Spec alone would let
+      // the next panel-type pick silently restore the old title, and would keep a
+      // share link naming a variable that this tab is no longer bound to.
+      setTabSpecDraft(tab, { ...tab.specParsed, name: tab.name }, { dirty: tab.dirtySpec });
     }
     if (!tab.savedId) continue;
     tab.savedId = null;

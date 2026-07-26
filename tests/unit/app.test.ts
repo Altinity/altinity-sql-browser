@@ -6779,6 +6779,8 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
       // and `variableConfigs` itself goes once it would be empty.
       expect('variableConfigs' in latest!.dashboards[0]).toBe(false);
       expect(app.activeTab().dirtySql).toBe(false);
+      // Removal says so, rather than reporting a save that stored nothing.
+      expect(qs(document, '.share-toast').textContent).toBe('Option SQL removed');
     });
 
     it('leaves every OTHER variable configuration on the Dashboard alone', async () => {
@@ -6811,6 +6813,8 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
       // The user's edit is the only copy — it must survive a refused write.
       expect(app.activeTab().dirtySql).toBe(true);
       expect(app.activeTab().sqlDraft).toBe('SELECT z, z FROM zones');
+      expect(qs(document, '.share-toast').textContent)
+        .toBe('This dashboard is no longer available — nothing was saved');
     });
 
     it('never writes into a DIFFERENT Dashboard that reuses the same id', async () => {
@@ -6819,6 +6823,7 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
       const app = await variableApp(ws([dashboard('sales', 'q1', {
         variableConfigs: { zone: { sql: 'ORIGINAL' } },
       })]));
+      app.renderApp(); // the Save-as-new popover anchors on a mounted Save button
       app.openVariableTab('sales', 'zone');
       app.activeTab().sqlDraft = 'HIJACK';
 
@@ -6828,8 +6833,23 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
         dashboards: [dashboard('sales')],
       });
 
-      // The switch demoted it to a plain query tab, draft intact.
-      expect(variableDoc(app.state.tabs.value.find((t) => t.sqlDraft === 'HIJACK')!)).toBeNull();
+      // The switch demoted it to a plain query tab, draft intact…
+      const demoted = app.state.tabs.value.find((tab) => tab.sqlDraft === 'HIJACK')!;
+      expect(variableDoc(demoted)).toBeNull();
+      // …including its SPEC name, which `patchSpecDraft` re-derives `tab.name`
+      // from, and which a share link reads.
+      expect(demoted.name).toBe('Untitled');
+      expect((demoted.specParsed as { name?: string }).name).toBe('Untitled');
+
+      // …and Saving it now cannot reach the other workspace's identically-named
+      // Dashboard: it is an ordinary unsaved query, so Save opens the create
+      // popover rather than writing any variable configuration.
+      app.state.activeTabId.value = demoted.id;
+      await app.actions.save();
+      expect(app.dom.savePopover).toBeTruthy(); // the create flow, not a variable write
+
+      expect(app.currentWorkspace!.id).toBe('w2');
+      expect(app.currentWorkspace!.dashboards[0].variableConfigs).toBeUndefined();
     });
 
     it('does not repaint or toast over a surface the user navigated to mid-save', async () => {
@@ -6850,7 +6870,13 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
 
       const latest = await loadActiveWorkspace(app);
       expect(latest!.dashboards[0].variableConfigs!.zone.sql).toBe('SELECT z, z FROM zones');
+      // Not repainted or toasted over…
       expect(document.querySelector('.share-toast')).toBeNull();
+      // …but the write IS durable, so the tab must stop claiming unsaved work.
+      // Gating the flag behind the staleness bracket (the linked-save path clears
+      // it inside the service, BEFORE its own bracket) left a committed tab
+      // permanently dirty with nothing able to clear it.
+      expect(app.activeTab().dirtySql).toBe(false);
     });
 
     it('surfaces a rejected commit, and keeps the draft dirty', async () => {

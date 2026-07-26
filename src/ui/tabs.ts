@@ -3,7 +3,9 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { activeTab, allocTabId, findVariableTab, newTabObj, setTabSpecDraft, tabDirty } from '../state.js';
+import {
+  activeTab, allocTabId, findVariableTab, newTabObj, setTabSpecDraft, tabSaveDirty,
+} from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { queryToken } from '../workspace/workspace-sync.js';
 import { batch } from '@preact/signals-core';
@@ -51,7 +53,9 @@ export function renderTabs(app: TabsApp): void {
               : 'This query was deleted in another tab — Save will create a new one',
           }, t.externalState === 'conflict' ? '!' : '⌫')
         : null,
-      tabDirty(t) ? h('span', { class: 'dirty' }) : null,
+      // #457: `tabSaveDirty`, not `tabDirty` — the dot and the Save button must
+      // read the SAME predicate, and a variable tab's Spec is never saved.
+      tabSaveDirty(t) ? h('span', { class: 'dirty' }) : null,
       app.state.tabs.value.length > 1
         ? h('button', {
             class: 'close',
@@ -153,6 +157,25 @@ export function openVariableTab(
 ): QueryTab {
   const existing = findVariableTab(app.state.tabs.value, binding.dashboardId, binding.variableName);
   if (existing) {
+    // A CLEAN tab re-reads committed truth. Nothing reconciles a variable tab
+    // against a configuration changed elsewhere — it has no `savedId`, so the
+    // linked-tab classifier (#343) skips it entirely — and the tree's own trash
+    // affordance can delete the very configuration an open tab is showing. Without
+    // this, re-clicking the row returned a tab still displaying SQL that no longer
+    // exists, labelled "Saved", one ⌘S away from recreating it. An edited tab is
+    // never overwritten: the draft is the user's only copy.
+    if (!existing.dirtySql && existing.sqlDraft !== sql) {
+      existing.sqlDraft = sql;
+      // The editor syncs off the tabs signal, and selecting an ALREADY-active tab
+      // changes nothing on its own — so the list identity has to be poked or the
+      // editor keeps painting the stale document.
+      batch(() => {
+        app.state.tabs.value = [...app.state.tabs.value];
+        app.state.activeTabId.value = existing.id;
+      });
+      app.sqlEditor.focus();
+      return existing;
+    }
     app.state.activeTabId.value = existing.id;
     app.sqlEditor.focus();
     return existing;

@@ -8,7 +8,7 @@ import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
-  savedForTab, tabPanel, variableDoc,
+  savedForTab, tabPanel, tabSaveDirty, variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
   adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
@@ -1311,6 +1311,23 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.updateSaveBtn = () => {
     if (!app.dom.saveBtn) return;
     const tab = app.activeTab();
+    // #457: the DOCUMENT KIND is checked first, exactly as `saveActiveQuery`
+    // checks it — a variable tab has no saved query behind it, so "saved" is
+    // simply "not dirty", no Spec can block it, and the conflict state below
+    // (a linked-saved-query concept) cannot apply to it. Ordering the two the
+    // same way in both places is what stops the button ever describing an
+    // action the Save action would not take.
+    if (variableDoc(tab) !== null) {
+      const stored = !tabSaveDirty(tab);
+      app.dom.saveBtn.classList.remove('conflict');
+      app.dom.saveBtn.classList.toggle('saved', stored);
+      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, stored ? 'Saved' : 'Save'));
+      app.dom.saveBtn.disabled = false;
+      app.dom.saveBtn.title = stored
+        ? 'Saved — edit to re-save (⌘S)'
+        : 'Save this variable’s option SQL (⌘S)';
+      return;
+    }
     // #343: a tab whose linked saved query changed in another tab must not be
     // silently re-saved. The Save button becomes "Resolve conflict" and opens
     // the two-action chooser instead of committing.
@@ -1323,18 +1340,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       return;
     }
     app.dom.saveBtn.classList.remove('conflict');
-    // #457: a variable tab has no saved query behind it, so "saved" is simply
-    // "not dirty", and no Spec can ever block its Save.
-    if (variableDoc(tab) !== null) {
-      const stored = !tab.dirtySql;
-      app.dom.saveBtn.classList.toggle('saved', stored);
-      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, stored ? 'Saved' : 'Save'));
-      app.dom.saveBtn.disabled = false;
-      app.dom.saveBtn.title = stored
-        ? 'Saved — edit to re-save (⌘S)'
-        : 'Save this variable’s option SQL (⌘S)';
-      return;
-    }
     const entry = savedForTab(app.state, tab);
     const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
     const blocked = !!entry && specBlocked(tab);
@@ -1471,11 +1476,25 @@ export function createApp(env: CreateAppEnv = {}): App {
     const outcome = await commitVariableConfig(app, binding.dashboardId, binding.variableName, sql === null
       ? null
       : { sql, ...(type === null ? {} : { lastKnownType: type }) });
-    // Same staleness bracket every other async save uses: a navigation that began
-    // mid-write must not be repainted or toasted over.
-    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return null;
+    // TAB-side state is applied on a real commit REGARDLESS of staleness, and
+    // before the bracket — the write is durable, so the tab must stop claiming
+    // unsaved work whether or not this caller still owns the renderer. The linked
+    // saved-query path has the same shape: `commitSavedQuery` clears `dirtySql`
+    // inside the service (state.ts), and only the DOM cascade after it sits behind
+    // `commitLinkedQuery`'s bracket. Gating the flag too left a committed tab
+    // permanently dirty whenever the user navigated mid-write — a dirty dot and a
+    // "Save" button for content already on disk, with nothing able to clear them.
     if (outcome.ok) {
       tab.dirtySql = false;
+      // `dirtySpec` is not part of a variable document (see `tabSaveDirty`), but
+      // the result toolbar's panel-type picker can still set it. Clearing it here
+      // keeps a saved variable tab from carrying a flag nothing else ever resets.
+      tab.dirtySpec = false;
+    }
+    // Same staleness bracket every other async save uses: a navigation that began
+    // mid-write must not be REPAINTED or TOASTED over.
+    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return null;
+    if (outcome.ok) {
       app.actions.rerenderTabs();
       app.updateSaveBtn();
       flashToast(sql === null ? 'Option SQL removed' : 'Saved', { document: doc });

@@ -207,9 +207,9 @@ export interface DashboardViewState {
    *  with the ONE compiled option request — which, per the issue, is a
    *  batch-level failure rather than a per-variable one: a single malformed
    *  branch makes the whole `UNION ALL` unrunnable, so every option-backed
-   *  control goes unavailable together and the per-variable editor's Test action
-   *  is the path to finding out which branch is at fault. Empty when the batch
-   *  succeeded, or when there was nothing to run. */
+   *  control goes unavailable together and running ONE variable's SQL on its own
+   *  — in its main-editor tab (#457) — is the path to finding out which branch is
+   *  at fault. Empty when the batch succeeded, or when there was nothing to run. */
   filterDiagnostics: Diagnostic[];
   /** Persistent saved-query time-range resolution diagnostics. */
   timeRangeDiagnostics: WorkspaceDiagnostic[];
@@ -903,7 +903,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    * A failure is BATCH-level by design: every option-backed control goes
    * unavailable together and one diagnostic is published for the Dashboard. There
    * is deliberately no automatic fall-back to N separate per-variable queries —
-   * the per-variable editor's Test action is the diagnostic path.
+   * opening ONE variable in its own main-editor tab and running it there (#457)
+   * is the diagnostic path.
    */
   async function runOptionBatch(generation: number): Promise<void> {
     if (optionBatch === null) return;

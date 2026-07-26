@@ -191,12 +191,18 @@ describe('openVariableTab', () => {
     expect(app.sqlEditor.focus).toHaveBeenCalled();
   });
 
-  it('is NOT a saved query: no savedId, and nothing is added to the Library', () => {
+  it('is NOT a saved query: no savedId, and the Library is left exactly as it was', () => {
     const app = makeApp();
+    // Seeded, so "the Library did not change" is a real assertion rather than one
+    // that holds trivially on a fresh fixture.
+    app.state.savedQueries = [sq({ id: 's1', name: 'Existing', sql: 'SELECT 1' })] as never;
+    const before = app.state.savedQueries;
+
     const tab = openVariableTab(app, bind('sales', 'zone'), 'Z');
 
     expect(tab.savedId).toBeNull();
-    expect(app.state.savedQueries).toEqual([]);
+    expect(app.state.savedQueries).toBe(before);
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['s1']);
   });
 
   it('opens blank for a variable with no stored configuration, and is not dirty', () => {
@@ -235,6 +241,48 @@ describe('openVariableTab', () => {
     expect(app.state.tabs.value.filter((t) => variableDoc(t) !== null)).toHaveLength(1);
     expect(app.state.activeTabId.value).toBe(first.id);
     expect(app.sqlEditor.focus).toHaveBeenCalled();
+  });
+
+  it('re-opening a CLEAN tab adopts committed truth, so a stale document is never kept', () => {
+    // Nothing reconciles a variable tab against a configuration changed elsewhere
+    // (no `savedId`, so #343's classifier skips it), and the tree's trash can
+    // delete the very configuration an open tab is showing. Re-clicking the row
+    // used to return a tab still displaying SQL that no longer exists, labelled
+    // "Saved", one Save away from recreating it.
+    const app = makeApp();
+    const first = openVariableTab(app, bind('sales', 'zone'), 'SELECT old');
+    expect(first.dirtySql).toBe(false);
+
+    const again = openVariableTab(app, bind('sales', 'zone'), '');
+
+    expect(again).toBe(first);
+    expect(again.sqlDraft).toBe('');
+    expect(app.state.tabs.value.filter((t) => variableDoc(t) !== null)).toHaveLength(1);
+  });
+
+  it('re-opening a DIRTY tab never overwrites the draft — it is the only copy', () => {
+    const app = makeApp();
+    const first = openVariableTab(app, bind('sales', 'zone'), 'SELECT old');
+    first.sqlDraft = 'SELECT mine';
+    first.dirtySql = true;
+
+    const again = openVariableTab(app, bind('sales', 'zone'), 'SELECT changed elsewhere');
+
+    expect(again.sqlDraft).toBe('SELECT mine');
+    expect(again.dirtySql).toBe(true);
+  });
+
+  it('re-opening a clean tab whose SQL is UNCHANGED leaves it entirely alone', () => {
+    const app = makeApp();
+    const first = openVariableTab(app, bind('sales', 'zone'), 'SELECT same');
+    const before = app.state.tabs.value;
+
+    const again = openVariableTab(app, bind('sales', 'zone'), 'SELECT same');
+
+    expect(again).toBe(first);
+    expect(again.sqlDraft).toBe('SELECT same');
+    // No pointless list-identity churn when there is nothing to adopt.
+    expect(app.state.tabs.value).toBe(before);
   });
 
   it('gives the same variable NAME in two Dashboards two distinct tabs', () => {

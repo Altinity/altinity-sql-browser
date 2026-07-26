@@ -61,7 +61,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   editor lifecycle. The drawer, its editor seam, its textarea fallback and its
   drawer-local **Test** action are all gone — running a variable's SQL is now the
   ordinary Run action. Re-hosting Test's two-`String`-column check on that Run is
-  tracked separately.
+  tracked in #465.
 
 - **One File menu for the whole application** (#452). Query, Dashboard Edit,
   Dashboard View, the empty-Dashboard placeholder and the Dashboard
