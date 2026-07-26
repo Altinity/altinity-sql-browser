@@ -749,7 +749,7 @@ export async function renderDashboard(
   const ordinaryTimeIds = new Set(session.timeRangeGroups.flatMap((group) =>
     [group.fromVariableId, group.toVariableId]));
   const ordinaryVariableIds = session.state.value.variableStates
-    .filter((filter) => !ordinaryTimeIds.has(filter.id)).map((filter) => filter.id);
+    .filter((variable) => !ordinaryTimeIds.has(variable.id)).map((variable) => variable.id);
   const clearVariablesBtn = h('button', {
     class: 'dash-clear-variables', type: 'button', disabled: true,
     onclick: () => { void session.resetVariables(ordinaryVariableIds); },

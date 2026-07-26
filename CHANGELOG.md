@@ -125,10 +125,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   **Saved Dashboard variable values are untouched.** The localStorage key stays
   `asb:dashFilters`, keeping its historical name deliberately: renaming it would
   have discarded every committed value on the next load. `asb:filterActive` and
-  its helpers keep their names too — they are the Workbench's optional-block
-  activation, not Dashboard variables. Both exceptions are documented where they
-  live, and a new test pins every persisted key string so a future rename cannot
-  orphan real data while the suite stays green.
+  its helpers keep their names too — what they denote is activation of a
+  parameter's optional `/*[ … ]*/` filter block, a live SQL-filter concept that
+  predates the curated Dashboard model and outlived it, and that key is persisted
+  as well. (The shared variable-bar port also exposes that name to its Dashboard
+  caller, where nothing is persisted behind it; that leaky abstraction is #478,
+  deliberately not folded into a rename.) Both exceptions are documented where
+  they live, and a new test pins every persisted key string so a future rename
+  cannot orphan real data while the suite stays green.
 
 - **Dashboard variable option SQL is edited in the main editor, as its own tab**
   (#457). Clicking a variable in the Dashboards tree switches to Query and opens
