@@ -1,7 +1,7 @@
 {
-  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
     "name": "ClickHouse Operations",
@@ -2705,7 +2705,7 @@
   ],
   "dashboards": [
     {
-      "documentVersion": 1,
+      "documentVersion": 2,
       "id": "clickhouse-operations",
       "title": "ClickHouse Operations",
       "description": "Operator-first server overview, resources, background work, and investigation views.",
@@ -2851,103 +2851,6 @@
           }
         }
       },
-      "filters": [
-        {
-          "id": "ops-from",
-          "parameter": "from",
-          "label": "From",
-          "defaultValue": "-1h",
-          "defaultActive": true,
-          "targets": [
-            "tile-gco-029-running-queries",
-            "tile-gco-040-queries-started",
-            "tile-gco-055-connections",
-            "tile-gco-041-cpus-loaded",
-            "tile-gco-053-memory",
-            "tile-gco-058-io-util",
-            "tile-gco-046-network",
-            "tile-gco-047-merges",
-            "tile-gco-048-mutations",
-            "tile-gco-064-replicated-checks",
-            "tile-gco-099-error-log",
-            "tile-gco-025-query-hash",
-            "tile-gco-030-query-hash-details",
-            "tile-ops-recent-server-logs"
-          ]
-        },
-        {
-          "id": "ops-to",
-          "parameter": "to",
-          "label": "To",
-          "defaultValue": "now",
-          "defaultActive": true,
-          "targets": [
-            "tile-gco-029-running-queries",
-            "tile-gco-040-queries-started",
-            "tile-gco-055-connections",
-            "tile-gco-041-cpus-loaded",
-            "tile-gco-053-memory",
-            "tile-gco-058-io-util",
-            "tile-gco-046-network",
-            "tile-gco-047-merges",
-            "tile-gco-048-mutations",
-            "tile-gco-064-replicated-checks",
-            "tile-gco-099-error-log",
-            "tile-gco-025-query-hash",
-            "tile-gco-030-query-hash-details",
-            "tile-ops-recent-server-logs"
-          ]
-        },
-        {
-          "id": "ops-user",
-          "parameter": "user",
-          "label": "user",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-query_kind",
-          "parameter": "query_kind",
-          "label": "query kind",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-exception_code",
-          "parameter": "exception_code",
-          "label": "exception code",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-query_hash",
-          "parameter": "query_hash",
-          "label": "query hash",
-          "defaultValue": [],
-          "defaultActive": false
-        },
-        {
-          "id": "ops-metric",
-          "parameter": "metric",
-          "label": "Metric",
-          "defaultValue": "count",
-          "defaultActive": true
-        },
-        {
-          "id": "ops-initial",
-          "parameter": "is_initial_query",
-          "label": "Initial query",
-          "defaultValue": 1,
-          "defaultActive": false
-        },
-        {
-          "id": "ops-search",
-          "parameter": "search",
-          "label": "Log search",
-          "defaultValue": "",
-          "defaultActive": false
-        }
-      ],
       "tiles": [
         {
           "id": "tile-gco-kpi-overview",

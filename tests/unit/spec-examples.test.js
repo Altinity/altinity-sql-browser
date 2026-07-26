@@ -57,7 +57,13 @@ describe('schema artifacts and examples', () => {
   // every example is already covered by the "migrates every shipped example
   // bundle" test above; this test is specifically about the shape the files
   // are still committed in.
-  it('keeps every checked-in JSON example on portable bundle v1 with explicit Dashboard v1 documents', () => {
+  // clickhouse-operations.json moved to portable-bundle v2 / Dashboard v2 ahead
+  // of the other checked-in examples (#458 follow-up): its authored Dashboard
+  // dropped the curated `filters` array in favor of inferred Variables. The
+  // rest stay pinned to v1 until phase 3's broader example rewrite.
+  const V2_EXAMPLES = new Set(['clickhouse-operations.json']);
+
+  it('keeps every checked-in JSON example on its pinned portable bundle version with explicit Dashboard documents', () => {
     const examples = resolve(root, 'examples');
     const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
     expect(names.filter((name) => !name.startsWith('iceberg'))).toEqual([
@@ -66,23 +72,30 @@ describe('schema artifacts and examples', () => {
     for (const name of names) {
       const text = readFileSync(resolve(examples, name), 'utf8');
       const raw = JSON.parse(text);
+      const expectedVersion = V2_EXAMPLES.has(name) ? 2 : 1;
       expect(raw.format, name).toBe('altinity-sql-browser/portable-bundle');
-      expect(raw.version, name).toBe(1);
+      expect(raw.version, name).toBe(expectedVersion);
       expect(raw.queries.length, name).toBeGreaterThan(0);
       expect(() => assertValidExampleBundle(raw), name).not.toThrow();
       for (const dashboard of raw.dashboards) {
-        expect(dashboard.documentVersion, name).toBe(1);
+        expect(dashboard.documentVersion, name).toBe(expectedVersion);
         expect(['flow', 'grafana-grid'], name).toContain(dashboard.layout.type);
         expect(dashboard.tiles.length, name).toBeGreaterThan(0);
         const tileIds = new Set(dashboard.tiles.map((tile) => tile.id));
         const queryIds = new Set(raw.queries.map((query) => query.id));
         for (const tile of dashboard.tiles) expect(queryIds.has(tile.queryId), `${name}:${tile.id}`).toBe(true);
-        for (const filter of dashboard.filters) {
-          // `sourceQueryId` is deliberately NOT checked against `queryIds`: the
-          // removed Filter role (#447) is what made that id meaningful, and
-          // decode drops the whole `filters` array on migration regardless, so
-          // a stale reference here is inert legacy data, not a defect.
-          for (const target of filter.targets || []) expect(tileIds.has(target), `${name}:${filter.id}`).toBe(true);
+        if (expectedVersion === 1) {
+          for (const filter of dashboard.filters) {
+            // `sourceQueryId` is deliberately NOT checked against `queryIds`: the
+            // removed Filter role (#447) is what made that id meaningful, and
+            // decode drops the whole `filters` array on migration regardless, so
+            // a stale reference here is inert legacy data, not a defect.
+            for (const target of filter.targets || []) expect(tileIds.has(target), `${name}:${filter.id}`).toBe(true);
+          }
+        } else {
+          // v2 Dashboards carry no `filters` array at all — Variables are
+          // inferred from the {name:Type} placeholders in tiled queries.
+          expect(dashboard.filters, name).toBeUndefined();
         }
         if (dashboard.layout.type === 'grafana-grid') {
           expect(dashboard.layout.fallback?.type, name).toBe('flow');

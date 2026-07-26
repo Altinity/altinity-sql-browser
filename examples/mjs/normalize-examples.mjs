@@ -24,7 +24,7 @@ const CONFIG = {
     description: 'Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset.',
   },
   'clickhouse-operations.json': {
-    id: 'clickhouse-operations', title: 'ClickHouse Operations', authoredDashboard: true,
+    id: 'clickhouse-operations', title: 'ClickHouse Operations', authoredDashboard: true, version: 2,
     description: 'Operator-first server overview, resources, background work, and investigation views.',
   },
   'ontime-charts.json': {
@@ -102,6 +102,7 @@ function normalizeDocument(name, document, config) {
     metadata: { name: config.title, description: config.description },
     queries,
     dashboards,
+    version: config.version ?? 1,
   });
 }
 
