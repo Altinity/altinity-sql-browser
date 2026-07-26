@@ -1,12 +1,21 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { userShortName } from '../core/format.js';
-import { buildWorkspaceTitle, libraryControls } from './file-menu.js';
+import { libraryControls, QUERY_FILE_MENU } from './file-menu.js';
+import type { FileMenuSurfaceContext } from './file-menu.js';
 import type { App } from './app.types.js';
 
 export interface AppHeaderOptions {
-  /** Surface-scoped File menu. Workbench uses its workspace/query menu. */
-  fileButton?: HTMLButtonElement;
+  /**
+   * What the calling surface rendered, for the ONE shared File menu (#452).
+   *
+   * This is CONTEXT, never a replacement control: the header always builds the
+   * same File menu, and the context only decides which of its fixed rows are
+   * enabled. The predecessor of this field was `fileButton`, which let a surface
+   * substitute a menu of its own — which is exactly how the File word came to
+   * mean two different things in the same application.
+   */
+  fileMenu?: FileMenuSurfaceContext;
   /** Dashboard View is the only read-only workspace-title presentation. */
   workspaceTitleEditable?: boolean;
 }
@@ -40,10 +49,9 @@ export function buildAppHeader(app: App, options: AppHeaderOptions = {}): HTMLEl
   app.dom.userBtn = h('button', {
     class: 'hd-btn user-btn', title: app.conn.email(), onclick: () => app.actions.openUserMenu(),
   }, h('span', { class: 'user-short' }, userShortName(app.conn.email())), Icon.chevDown());
-  const workspaceControls = options.fileButton
-    ? [options.fileButton, buildWorkspaceTitle(app, options.workspaceTitleEditable !== false)]
-    : libraryControls(app);
-  app.dom.fileBtn = workspaceControls[0];
+  const workspaceControls = libraryControls(
+    app, options.fileMenu ?? QUERY_FILE_MENU, options.workspaceTitleEditable !== false,
+  );
   return h('div', {
     class: `app-header${app.sqlRoute.surface === 'dashboard' ? ' dashboard-app-header' : ''}`,
   },

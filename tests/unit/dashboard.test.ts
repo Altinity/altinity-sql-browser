@@ -3621,18 +3621,21 @@ function modeApp(opts: {
   return { ...built, app };
 }
 
-const openFileMenuBtn = (root: ParentNode | null): void => {
-  qs<HTMLButtonElement>(root, '.dash-file-btn').click();
-};
-// #331: item labels are read via `.fm-label` (not the full `.dash-fm-item`
-// textContent, which now also carries an icon + optional `.fm-meta`).
+// #452: the Dashboard renders the ONE shared header File control — there is no
+// `.dash-file-btn` and no `.dash-file-menu` any more. Scope reads by the trigger,
+// because `.file-menu` also matches the layout picker's dropdown.
+const fileBtn = (root: ParentNode | null): HTMLButtonElement =>
+  qs<HTMLButtonElement>(root, '.hd-file-btn:not(.dash-style-btn)');
+const openFileMenuBtn = (root: ParentNode | null): void => { fileBtn(root).click(); };
+const fileMenuEl = (): HTMLElement | null => qs<HTMLElement>(document, '.app-file-menu');
 const menuItems = (): string[] =>
-  qsa(document, '.dash-file-menu .fm-label').map((b) => b.textContent || '');
-const menuSections = (): string[] =>
-  qsa(document, '.dash-file-menu .fm-section').map((b) => b.textContent || '');
+  qsa(fileMenuEl(), '.fm-label').map((b) => b.textContent || '');
+const menuRow = (label: string): HTMLButtonElement =>
+  qsa<HTMLButtonElement>(fileMenuEl(), '.fm-item')
+    .find((b) => b.querySelector('.fm-label')?.textContent === label)!;
 
 describe('renderDashboard — unified live modes (#407)', () => {
-  afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
+  afterEach(() => { qsa(document, '.file-menu, .fm-overlay').forEach((n) => n.remove()); });
 
   it('edit mode renders the live workspace with authoring controls', async () => {
     const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
@@ -3832,7 +3835,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
       .toEqual(['View', 'Edit']);
     expect(qs(header, '.lib-name-text').textContent).toBe('W');
     expect(qs(app.root, '.dash-tile-count')).not.toBeNull();
-    expect(qs(header, '.dash-file-btn')).not.toBeNull();
+    expect(fileBtn(header)).not.toBeNull();
     expect(qs(app.root, '.dash-layout-wrap')).not.toBeNull();
     const style = qs<HTMLButtonElement>(app.root, '.dash-style-btn');
     expect(style.classList.contains('hd-file-btn')).toBe(true);
@@ -3895,8 +3898,12 @@ describe('renderDashboard — unified live modes (#407)', () => {
   });
 });
 
-describe('renderDashboard — Dashboard header File menu (#302)', () => {
-  afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
+// #452: the Dashboard no longer builds a File menu of its own. What it owes the
+// shared control is CONTEXT — the exact Dashboard it rendered, and the mode. The
+// menu's row set and availability rules are covered in file-menu-model.test.ts
+// and file-menu.test.ts; these specs pin the wiring.
+describe('renderDashboard — the shared header File control (#452)', () => {
+  afterEach(() => { qsa(document, '.file-menu, .fm-overlay').forEach((n) => n.remove()); });
 
   const editApp = () => modeApp({
     workspace: wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -3906,8 +3913,7 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
   it('the trigger uses the shared downward-chevron treatment, never a right-pointing arrow', async () => {
     const { app } = editApp();
     await render(app);
-    const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
-    const path = qs<SVGPathElement>(btn, 'svg path').getAttribute('d');
+    const path = qs<SVGPathElement>(fileBtn(app.root), 'svg path').getAttribute('d');
     // Icon.chevDown()'s path — distinct from Icon.arrow()'s right-pointing
     // 'M2 6h7.5M7 3.5L9.5 6 7 8.5' (icons.ts), which the old trigger used and
     // wrongly suggested navigation rather than a dropdown.
@@ -3915,58 +3921,87 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(path).not.toBe('M2 6h7.5M7 3.5L9.5 6 7 8.5');
   });
 
-  it('edit mode opens Export / Import with sections and supports toggle + Escape close', async () => {
+  it('renders the one shared menu — full row set, no Dashboard-only classes or headings', async () => {
     const { app } = editApp();
-    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn() };
     await render(app);
-    const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
     openFileMenuBtn(app.root);
-    expect(btn.getAttribute('aria-expanded')).toBe('true');
-    expect(menuSections()).toEqual(['Export', 'Import']);
-    expect(menuItems()).toEqual(['Export Dashboard…', 'Import Dashboard…']);
-    expect(qs(document, '.dash-file-menu .fm-meta').textContent).toBe('.json');
-    // arrow-key navigation between items
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-    // Escape closes + restores aria
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(menuItems()).toEqual([
+      'New workspace…', 'Import workspace…', 'Export workspace…',
+      'Import queries…', 'Import Dashboard…', 'Export Dashboard…',
+      'Download Library as Markdown', 'Download Library as SQL',
+    ]);
+    expect(qsa(fileMenuEl(), '.fm-section')).toHaveLength(0);
     expect(document.querySelector('.dash-file-menu')).toBeNull();
-    expect(btn.getAttribute('aria-expanded')).toBe('false');
-    // re-open then click the toggle again closes it
-    openFileMenuBtn(app.root);
-    btn.click();
-    expect(document.querySelector('.dash-file-menu')).toBeNull();
+    expect(document.querySelector('.dash-fm-item')).toBeNull();
+    expect(document.querySelector('.dash-file-btn')).toBeNull();
   });
 
-  it('Export / Import items call their actions; overlay click closes the menu', async () => {
+  it('Dashboard Edit enables both Dashboard rows against the rendered document', async () => {
     const { app } = editApp();
-    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn() };
     await render(app);
     openFileMenuBtn(app.root);
-    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[0].click();
-    expect(app.actions.exportDashboard).toHaveBeenCalledOnce();
+    expect(menuRow('Import Dashboard…').getAttribute('aria-disabled')).toBeNull();
+    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('the trigger toggles, Escape closes and restores aria, the overlay closes', async () => {
+    const { app } = editApp();
+    await render(app);
+    const btn = fileBtn(app.root);
     openFileMenuBtn(app.root);
-    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[1].click();
-    expect(app.actions.importDashboard).toHaveBeenCalledOnce();
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(fileMenuEl()).toBeNull();
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    // re-open, then click the trigger again to close
+    openFileMenuBtn(app.root);
+    btn.click();
+    expect(fileMenuEl()).toBeNull();
+    // re-open, then dismiss by clicking the backdrop
     openFileMenuBtn(app.root);
     qs<HTMLButtonElement>(document, '.fm-overlay').click();
-    expect(document.querySelector('.dash-file-menu')).toBeNull();
+    expect(fileMenuEl()).toBeNull();
   });
 
   it('editable current-workspace mode includes the File button (#347)', async () => {
     const { app } = editApp();
     await render(app);
-    expect(qs(app.root, '.dash-file-btn')).not.toBeNull();
+    expect(fileBtn(app.root)).not.toBeNull();
   });
 
-  it('live view mode keeps the shared File word but offers export only', async () => {
+  it('live view keeps every row, disabling the mutating Dashboard one with its reason', async () => {
     const workspace = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace, mode: 'view' });
     await render(app);
-    qs<HTMLButtonElement>(app.root, '.dash-file-btn').click();
-    const labels = qsa(document, '.dash-file-menu .fm-label').map((el) => el.textContent);
-    expect(labels).toContain('Export Dashboard…');
-    expect(labels).not.toContain('Import Dashboard…');
+    openFileMenuBtn(app.root);
+    // The row is still THERE, in position — View disables, it does not remove.
+    expect(menuItems()).toContain('Import Dashboard…');
+    const importRow = menuRow('Import Dashboard…');
+    expect(importRow.getAttribute('aria-disabled')).toBe('true');
+    expect(importRow.querySelector('.fm-reason')!.textContent).toBe('Edit mode only');
+    // Export is safe in View: it reads.
+    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('the empty-Dashboard placeholder still renders the shared menu', async () => {
+    const empty = { ...wsWith(), dashboards: [] };
+    const { app } = modeApp({ workspace: empty, mode: 'edit' });
+    await render(app);
+    expect(qs(app.root, '.dash-empty')).not.toBeNull();
+    openFileMenuBtn(app.root);
+    expect(menuItems()).toHaveLength(8);
+    expect(menuRow('Export Dashboard…').querySelector('.fm-reason')!.textContent).toBe('No dashboard');
+  });
+
+  it('the workspace-not-found fallback renders the shared menu with no workspace', async () => {
+    const { app } = modeApp({ workspace: null, mode: 'view' });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).not.toBeNull();
+    openFileMenuBtn(app.root);
+    expect(menuItems()).toHaveLength(8);
+    expect(menuRow('Export workspace…').querySelector('.fm-reason')!.textContent).toBe('No workspace');
   });
 
   it('live view shows the workspace name without exposing Rename', async () => {
@@ -3984,7 +4019,7 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     await render(app);
     openFileMenuBtn(app.root);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-    expect(document.querySelector('.dash-file-menu')).toBeTruthy(); // still open
+    expect(fileMenuEl()).toBeTruthy(); // still open
   });
 });
 

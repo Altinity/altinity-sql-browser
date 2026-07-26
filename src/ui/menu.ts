@@ -14,9 +14,9 @@
 // Re-calling `openMenu` on a trigger that already has an open menu is a
 // no-op — it returns the SAME handle rather than stacking a second menu. A
 // caller that wants an explicit open/close TOGGLE on its trigger button (the
-// Dashboard File button) tracks that itself via the returned handle, calling
-// `handle.close()` directly rather than a second `openMenu` — `openMenu`
-// itself only ever opens (or returns the existing open handle).
+// File button, the Dashboard style picker) tracks that itself via the returned
+// handle, calling `handle.close()` directly rather than a second `openMenu` —
+// `openMenu` itself only ever opens (or returns the existing open handle).
 //
 // Pure-DOM, no globals: the `Document` and the trigger element are both
 // passed in (matching every other render module's injected-`document`
@@ -29,7 +29,10 @@ import type { KeyboardOwner } from './app.types.js';
  *  - `item` — an actionable `.fm-item` row: icon + label + optional meta text
  *    (e.g. a file extension), invoking `onClick` after the menu closes.
  *    `extraClass` adds a caller-specific marker class alongside `.fm-item`
- *    (e.g. `dash-fm-item`).
+ *    (e.g. `dash-style-item`). A `disabled` row may carry a `reason`, rendered
+ *    as its own `.fm-reason` span next to the label — NOT folded into `meta`,
+ *    which is a monospace extension slot too narrow for prose, and not a
+ *    `title` tooltip, which a disabled button does not surface.
  *  - `section` — a `.fm-section` heading.
  *  - `sep` — a `.fm-sep` divider.
  *  - `custom` — an arbitrary caller-built node spliced in as-is. `focusable:
@@ -37,7 +40,7 @@ import type { KeyboardOwner } from './app.types.js';
  *    focus target is the row's own first focusable descendant (an `<input>`/
  *    `<button>`/etc.), or the node itself when it can take focus directly. */
 export type MenuRow =
-  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
+  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; reason?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
   | { kind: 'section'; label: string }
   | { kind: 'sep' }
   | { kind: 'custom'; node: HTMLElement; focusable?: boolean };
@@ -51,7 +54,7 @@ export interface MenuOptions {
   trigger: HTMLElement;
   rows: readonly MenuRow[];
   /** Extra class(es) appended to the mounted `.file-menu` element (e.g.
-   *  `dash-file-menu` for the Dashboard's width override). */
+   *  `dash-style-menu` for the Dashboard style picker's width override). */
   menuClass?: string;
   /** Called once the menu is fully torn down, however it closed (Escape,
    *  overlay click, an item's own click, or an explicit `handle.close()`) —
@@ -103,22 +106,36 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       if (row.focusable) focusable.push(focusTargetOf(row.node));
       return row.node;
     }
-    // #426: a row can be present-but-unavailable (a broken member's query-open).
-    // `disabled` has to be SEMANTIC, not just a CSS class: assistive technology
-    // would otherwise announce an enabled action, and keyboard activation would
-    // silently do nothing. Such a row is also kept out of the roving-focus order.
+    // #426: a row can be present-but-unavailable (a broken member's query-open),
+    // and unavailability has to be SEMANTIC, not just a CSS class.
+    //
+    // #452 changed HOW: `aria-disabled` alone, not the native `disabled`
+    // attribute. Native `disabled` removes the button from the accessibility
+    // tree's interactive order entirely, so a screen-reader or keyboard user
+    // never learns the row exists — and under #452 the disabled state IS the
+    // message ("Export Dashboard… — Open a dashboard" is how the menu explains
+    // itself on the Query surface). The row therefore stays in the roving-focus
+    // order and is announced; only activation is removed (no `onclick`), which
+    // is the ARIA menu pattern and matches the issue's "announced but cannot
+    // activate".
     const btn = h('button', {
       class: row.extraClass ? `fm-item ${row.extraClass}` : 'fm-item',
       role: 'menuitem',
-      ...(row.disabled ? { disabled: true, 'aria-disabled': 'true' } : {}),
+      ...(row.disabled ? { 'aria-disabled': 'true' } : {}),
       onclick: row.disabled ? undefined : () => { close(); row.onClick(); },
     },
       row.leading ? h('span', { class: 'fm-leading' }, row.leading) : null,
       row.icon ? h('span', { class: 'fm-icon' }, row.icon) : null,
       h('span', { class: 'fm-label' }, row.label),
       row.trailing ? h('span', { class: 'fm-trailing' }, row.trailing) : null,
-      row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null);
-    if (!row.disabled) focusable.push(btn);
+      row.meta ? h('span', { class: 'fm-meta' }, row.meta) : null,
+      // LAST in the DOM on purpose: `.fm-reason` wraps onto its own line inside
+      // the row (`flex-basis: 100%`), so it must follow everything that belongs
+      // on the first one. A reason is prose and does not fit beside a label in a
+      // 252px menu — it clipped mid-word when it shared the line.
+      row.reason ? h('span', { class: 'fm-reason' }, row.reason) : null);
+    // Disabled rows stay in the order on purpose — see the comment above.
+    focusable.push(btn);
     return btn;
   };
 

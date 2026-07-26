@@ -858,8 +858,6 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       insertCreate: vi.fn(),
       openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
-      exportDashboard: vi.fn(),
-      importDashboard: vi.fn(),
       openUserMenu: vi.fn(),
       insertAtCursor: vi.fn(),
       replaceEditor: vi.fn(),

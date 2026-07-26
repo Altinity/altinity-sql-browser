@@ -453,10 +453,18 @@ succeeds. Implicit startup reopens the last successfully used workspace.
 
 The header **File ▾** menu carries the active name, an unsaved-changes dot
 (changes since the last export or import), and these resource-oriented
-operations:
+operations.
 
-The first four rows are one unlabeled primary-workspace-action group, in this
-order (#342):
+**One File menu, everywhere (#452).** Query, Dashboard Edit, Dashboard View and
+the empty-Dashboard placeholder all render the *same* rows in the same order.
+Context changes only whether a row is **enabled** — a row never disappears or
+moves, and an unavailable one is dimmed, marked `aria-disabled`, skipped by
+keyboard activation, and labelled with a short reason (*Open a dashboard*, *Edit
+mode only*, *No dashboard*, *No workspace*, *No Library queries*). Dashboard
+operations always act on the **exact** Dashboard on screen and never fall back to
+the first one in the collection.
+
+The first six rows are one unlabeled primary-action group, in this order:
 
 - **New workspace…** — creates and activates a new empty, default-named
   workspace without deleting the previous one. Open editor tabs are unaffected.
@@ -475,21 +483,25 @@ order (#342):
   reused automatically. The Dashboard is untouched (imported favorite flags never
   add tiles).
 
-Below a separator, **Share / Publish** — **Download Markdown** (`.md`, a
-`### heading` + fenced ` ```sql ` cookbook) and **Download SQL** (`.sql`,
-`/* name + description */` comment blocks, `;`-delimited). Both are **one-way**
-— lossy by design (no ids or Spec metadata), so the portable bundle stays the
-canonical round-trip format. **Variable history** (the recent-values toggle +
-clear-all) follows below its own separator.
+- **Import Dashboard…** — replaces the Dashboard on screen with one from a file
+  (confirming first, and importing only its referenced queries; a
+  multi-Dashboard file asks which one). On the empty-Dashboard placeholder it
+  creates the workspace's first Dashboard instead. Disabled on Query and in
+  Dashboard View.
+- **Export Dashboard…** (`.json`) — emits the exact Dashboard on screen plus
+  precisely its dependency-closure of queries. Available in both Dashboard View
+  and Edit; disabled on Query.
 
-The standalone Dashboard has its own **File ▾** menu (#302) for **Import
-Dashboard…** / **Export Dashboard…** — importing replaces the current
-Dashboard with one from a file (confirms first when a Dashboard already
-exists, importing only its referenced queries; a multi-Dashboard file asks
-which one), and exporting emits the selected Dashboard plus exactly its
-dependency-closure of queries. Legacy Library v1/v2 files remain
-**importable** everywhere (decoded to an in-memory bundle); no new
-Library-only JSON is written. See the [schema
+Below a separator, the two one-way Library downloads — **Download Library as
+Markdown** (`.md`, a `### heading` + fenced ` ```sql ` cookbook) and **Download
+Library as SQL** (`.sql`, `/* name + description */` comment blocks,
+`;`-delimited). Both are lossy by design (no ids or Spec metadata), so the
+portable bundle stays the canonical round-trip format. They cover the **Library**
+projection — the queries no Dashboard owns — which is also what the footer counts
+(`N Library queries · M dashboards`).
+
+Legacy Library v1/v2 files remain **importable** everywhere (decoded to an
+in-memory bundle); no new Library-only JSON is written. See the [schema
 contracts](docs/library-json-schema.md). Imported SQL is never run
 automatically.
 

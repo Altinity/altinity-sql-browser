@@ -1,7 +1,17 @@
-// The header "File ▾" menu (#287 W5): resource-oriented portable-bundle
-// workspace operations — New workspace / Import queries / Import Dashboard /
-// Import workspace / Export Dashboard / Export workspace — plus the kept
-// "Open as dashboard" (#149), and the one-way Markdown/SQL "share"
+// The ONE application "File ▾" menu (#452). Every work surface — Query,
+// Dashboard Edit, Dashboard View, the empty-Dashboard placeholder, the
+// Dashboard workspace-not-found fallback — renders THIS control, with the same
+// rows in the same order. #452 removed the Dashboard's separate menu
+// (`buildDashboardFileMenu`) and the `AppHeaderOptions.fileButton` seam that let
+// a surface substitute its own: the File word must not change meaning when the
+// user changes work surface. Surfaces now supply CONTEXT only
+// (`FileMenuSurfaceContext`), which the pure `core/file-menu-model.ts` turns
+// into enabled/disabled rows — it can enable or disable an item, never remove or
+// reorder one.
+//
+// Resource-oriented portable-bundle workspace operations — New workspace /
+// Import queries / Import Dashboard / Import workspace / Export Dashboard /
+// Export workspace — plus the one-way Markdown/SQL Library
 // downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
 // #406 makes workspace import additive: local identity is reminted, the
 // generated key is made unique, and the previously active record is untouched.
@@ -22,7 +32,11 @@
 import { h, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { closeOpenMenus, openMenu } from './menu.js';
-import type { MenuRow } from './menu.js';
+import type { MenuHandle, MenuRow } from './menu.js';
+import { fileMenuModel } from '../core/file-menu-model.js';
+import type {
+  DashboardExportTarget, DashboardImportTarget, FileMenuActionId, FileMenuSurface,
+} from '../core/file-menu-model.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
 import { buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
@@ -43,10 +57,11 @@ import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-oper
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
-  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboardStrict, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import { selectedDashboardId } from '../application/main-surface.js';
-import type { PortableBundleV2, SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
+import type {
+  DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
+} from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
@@ -62,15 +77,38 @@ function keyboardOwnerChannel(app: Pick<App, 'acquireKeyboardOwner'>): (owner: A
   };
 }
 
-/** Build the header File button + editable workspace title; returns the nodes
- *  to splice into the app header (after the connection chip). */
-export function libraryControls(app: App): HTMLElement[] {
-  app.dom.fileBtn = h('button', {
-    class: 'hd-file-btn', title: 'File — workspace and dashboard import/export',
+/**
+ * What the surface currently on screen rendered — the ONLY thing a surface
+ * contributes to the File menu (#452). `workspaceMissing` is the Dashboard
+ * workspace-not-found fallback saying so directly: that surface exists BECAUSE
+ * no aggregate resolved, which the route status alone does not always report.
+ */
+export type FileMenuSurfaceContext = FileMenuSurface & { readonly workspaceMissing?: boolean };
+
+/** The Query surface's context — the default when a caller supplies none. */
+export const QUERY_FILE_MENU: FileMenuSurfaceContext = Object.freeze({ surface: 'query' as const });
+
+/** Build the header File button + workspace title; returns the nodes to splice
+ *  into the app header (after the connection chip). One control, every surface:
+ *  `context` changes which rows are ENABLED, never which rows exist. */
+export function libraryControls(
+  app: App, context: FileMenuSurfaceContext = QUERY_FILE_MENU, titleEditable = true,
+): HTMLElement[] {
+  // #452: one trigger contract everywhere. The Workbench button used to only
+  // ever OPEN (re-clicking it was a no-op) while the Dashboard's toggled — the
+  // same header control behaving differently per surface. The toggle wins: it is
+  // the reversible one, and it restores focus to the trigger on close.
+  let handle: MenuHandle | null = null;
+  const btn = h('button', {
+    class: 'hd-file-btn', title: 'File',
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    onclick: () => openFileMenu(app),
-  }, h('span', null, 'File'), Icon.chevDown());
-  return [app.dom.fileBtn, buildWorkspaceTitle(app, true)];
+    onclick: () => {
+      if (handle) { handle.close(); btn.focus(); return; }
+      handle = openFileMenu(app, context, () => { handle = null; });
+    },
+  }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
+  app.dom.fileBtn = btn;
+  return [btn, buildWorkspaceTitle(app, titleEditable)];
 }
 
 /** Build the shared header workspace identity in editable or read-only form. */
@@ -127,11 +165,31 @@ export function renderLibraryTitle(app: App): void {
      state.libraryDirty.value ? h('span', { class: 'lib-dirty', title: 'Changes since the last export or import' }) : null));
 }
 
-/** Open the File dropdown anchored under the File button (Esc / outside-click
- *  close; #331 area 2 — built on the shared `openMenu` primitive, which is
- *  itself idempotent per trigger, so re-opening while already open is a
- *  no-op). */
-export function openFileMenu(app: App): void {
+/** Each row's icon — presentation, so it stays here rather than in the pure
+ *  model. Exhaustive over `FileMenuActionId`, so a new action cannot be added
+ *  without choosing one. */
+const ROW_ICONS: Record<FileMenuActionId, () => Node> = {
+  'new-workspace': () => Icon.plus(),
+  'import-workspace': () => Icon.folderOpen(),
+  'export-workspace': () => Icon.download(),
+  'import-queries': () => Icon.upload(),
+  'import-dashboard': () => Icon.upload(),
+  'export-dashboard': () => Icon.download(),
+  'download-md': () => Icon.download(),
+  'download-sql': () => Icon.download(),
+};
+
+/**
+ * Open the File dropdown anchored under the File button (Esc / outside-click
+ * close; #331 area 2 — built on the shared `openMenu` primitive, which is itself
+ * idempotent per trigger, so re-opening while already open is a no-op).
+ *
+ * Returns the handle so `libraryControls` can implement its click-to-close
+ * toggle, or `null` when a menu was already mounted on this trigger.
+ */
+export function openFileMenu(
+  app: App, context: FileMenuSurfaceContext = QUERY_FILE_MENU, onClose?: () => void,
+): MenuHandle | null {
   const doc = app.document;
   // Re-entrancy guard: `openMenu` itself dedups per trigger, but the picker
   // setup + `handle.el.appendChild(...)` below run BEFORE that call, so a
@@ -139,60 +197,89 @@ export function openFileMenu(app: App): void {
   // up) would splice two orphaned hidden inputs into the live menu. The
   // trigger's `aria-expanded` — set to 'true' by `openMenu` on open and back
   // to 'false' on close — is the authoritative open-state flag to bail on.
-  if (app.dom.fileBtn!.getAttribute('aria-expanded') === 'true') return;
+  if (app.dom.fileBtn!.getAttribute('aria-expanded') === 'true') return null;
   // #427: the LIBRARY projection, matching the sidebar count, the workspace
   // picker's count and the document exports below. Counting the raw collection
-  // would roughly double for every migrated workspace, and — worse — the `empty`
-  // gate would enable "Download Markdown/SQL" on a workspace whose every query is
-  // owned, which then toasts "Nothing to save".
+  // would roughly double for every migrated workspace, and — worse — the count
+  // would enable "Download Library as Markdown/SQL" on a workspace whose every
+  // query is owned, which then toasts "Nothing to save".
   const list = libraryEntries(app);
-  const empty = list.length === 0;
+  // #452: recomputed on every open, so the same header control reflects current
+  // state after a surface change without its rows moving. Only the SURFACE half
+  // of the context is fixed when the header was built — the surface is what
+  // knows which document it actually rendered.
+  const model = fileMenuModel({
+    surface: context,
+    // Not `app.currentWorkspace !== null`: that is also null on the legacy
+    // no-aggregate path, where export/import deliberately fall back to the
+    // `state`-derived workspace and must stay available.
+    hasWorkspace: app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true,
+    libraryQueryCount: list.length,
+    dashboardCount: app.currentWorkspace ? app.currentWorkspace.dashboards.length : 0,
+  });
 
-  // #302: the Workbench File menu owns workspace + query-collection operations
-  // ONLY. Dashboard navigation moved to the header "Dashboard →" control
-  // (`libraryControls`), and Dashboard import/export moved to the Dashboard
-  // page's own File menu — none of them appear here anymore.
-  const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
-  const openWorkspaceInput = pickerInput(app, (f) => onOpenWorkspaceFile(app, f));
+  const importQueriesInput = pickerInput(app, 'import-queries', (f) => onImportQueriesFile(app, f));
+  const openWorkspaceInput = pickerInput(app, 'import-workspace', (f) => onOpenWorkspaceFile(app, f));
+  // #452 review I4: the Dashboard picker is a menu-parented row like the other
+  // two now. It used to be body-mounted by `triggerImportDashboard` and removed
+  // only on `change`, so a CANCELLED native chooser leaked a hidden input onto
+  // the page across every surface switch.
+  const importDashboardInput = pickerInput(app, 'import-dashboard', (f) => onImportDashboardFile(
+    app, f, model.importDashboardTarget!,
+  ));
 
-  const countRow = h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace');
+  // `model.*Target` is non-null exactly when its row is enabled (asserted in
+  // file-menu-model.test.ts), and a disabled row has no click handler at all —
+  // so these assertions can never fire.
+  const RUN: Record<FileMenuActionId, () => void> = {
+    'new-workspace': () => newWorkspaceAction(app),
+    'import-workspace': () => openWorkspaceInput.click(),
+    'export-workspace': () => { void exportWorkspaceAction(app); },
+    'import-queries': () => importQueriesInput.click(),
+    'import-dashboard': () => importDashboardInput.click(),
+    'export-dashboard': () => { void exportDashboardAction(app, model.exportDashboardTarget!); },
+    'download-md': () => downloadAction(app, 'md'),
+    'download-sql': () => downloadAction(app, 'sql'),
+  };
 
-  // #342: the first four rows are one unlabeled primary-workspace-action
-  // group (no heading) in this exact order, followed by Share / Publish —
-  // the query-count footer stays last.
-  const rows: MenuRow[] = [
-    { kind: 'item', icon: Icon.plus(), label: 'New workspace…', onClick: () => newWorkspaceAction(app) },
-    { kind: 'item', icon: Icon.folderOpen(), label: 'Import workspace…', onClick: () => openWorkspaceInput.click() },
-    { kind: 'item', icon: Icon.download(), label: 'Export workspace…', meta: '.json', onClick: () => exportWorkspaceAction(app) },
-    { kind: 'item', icon: Icon.upload(), label: 'Import queries…', onClick: () => importQueriesInput.click() },
-    { kind: 'sep' },
-    { kind: 'section', label: 'Share / Publish' },
-    { kind: 'item', icon: Icon.download(), label: 'Download Markdown', meta: '.md', onClick: () => downloadAction(app, 'md') },
-    { kind: 'item', icon: Icon.download(), label: 'Download SQL', meta: '.sql', onClick: () => downloadAction(app, 'sql') },
-    { kind: 'custom', node: countRow },
-  ];
+  // One ordering authority: the pure model. This loop only paints it.
+  const rows: MenuRow[] = [];
+  for (const item of model.items) {
+    if (item.separatorBefore) rows.push({ kind: 'sep' });
+    rows.push({
+      kind: 'item', icon: ROW_ICONS[item.id](), label: item.label, meta: item.meta,
+      reason: item.reason, disabled: !item.enabled, onClick: RUN[item.id],
+    });
+  }
+  rows.push({ kind: 'sep' });
+  rows.push({ kind: 'custom', node: h('div', { class: 'fm-count' }, model.footer) });
 
-  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows,
-    onKeyboardOwnerChange: keyboardOwnerChannel(app) });
+  // `.app-file-menu` is the File menu's own selector — `.file-menu` is the
+  // shared dropdown chrome the Dashboard tree menu and style picker also mount.
+  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows, onClose,
+    menuClass: 'app-file-menu', onKeyboardOwnerChange: keyboardOwnerChannel(app) });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
-  // own) — they're display:none inputs `.click()`-triggered by the Import
-  // queries / Import workspace items above. Parent them to the mounted menu
-  // so they're torn down with it on close (no leak) and `picker(i)`-style
-  // lookups (`.file-menu input[type=file]`) keep finding them. The item click
-  // closes the menu (detaching these) BEFORE running its onClick, so the
-  // `.click()` fires on a now-detached input — which is fine: a programmatic
+  // own) — they're display:none inputs `.click()`-triggered by the three Import
+  // items above. Parent them to the mounted menu so they're torn down with it on
+  // close, whether or not the user actually picked a file (#452 review I4). The
+  // item click closes the menu (detaching these) BEFORE running its onClick, so
+  // the `.click()` fires on a now-detached input — which is fine: a programmatic
   // `.click()` opens the native file chooser whether or not the input is in
   // the document (the standard detached-input pattern), and it still runs
   // synchronously inside the original user gesture.
-  handle.el.appendChild(importQueriesInput);
-  handle.el.appendChild(openWorkspaceInput);
+  handle.el.append(importQueriesInput, openWorkspaceInput, importDashboardInput);
+  return handle;
 }
 
 // ── file pickers + bundle decode ────────────────────────────────────────────
 
-function pickerInput(app: App, onPick: (file: File) => void): HTMLInputElement {
+/** `owner` names the row whose click triggers this input — the menu parents
+ *  several, and addressing them by append order made a test's target depend on
+ *  how many pickers happened to precede it. */
+function pickerInput(app: App, owner: FileMenuActionId, onPick: (file: File) => void): HTMLInputElement {
   return h('input', {
-    type: 'file', accept: '.json,application/json', style: { display: 'none' },
+    type: 'file', accept: '.json,application/json', 'data-picker': owner,
+    style: { display: 'none' },
     onchange: (e: Event) => {
       const target = e.target as HTMLInputElement;
       const f = target.files && target.files[0];
@@ -545,56 +632,56 @@ function startImportQueries(app: App, bundle: PortableBundleV2): void {
 
 // ── actions: Import Dashboard ────────────────────────────────────────────────
 
-function onImportDashboardFile(app: App, file: File): void {
-  readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle));
+function onImportDashboardFile(app: App, file: File, target: DashboardImportTarget): void {
+  readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle, target));
 }
 
-/** #302 — programmatically trigger the "Import Dashboard…" flow (used by the
- *  Dashboard page's own File menu via `app.actions.importDashboard`): open a
- *  file picker, then run the same transactional import as the Workbench used to.
- *  On success `commitWorkspace` → `afterLibraryChange` repaints the active surface
- *  (the Dashboard route re-renders itself). */
-export function triggerImportDashboard(app: App): void {
-  const input = pickerInput(app, (f) => onImportDashboardFile(app, f));
-  // Self-remove once a selection fires so repeated imports don't leak hidden
-  // inputs onto the page (the Workbench menu's own pickers are cleaned up with
-  // the menu; this one has no menu to ride along with).
-  input.addEventListener('change', () => input.remove(), { once: true });
-  app.document.body.appendChild(input);
-  input.click();
-}
+// #452 removed `triggerImportDashboard`. It existed so the Dashboard's own File
+// menu could start this flow with no menu of its own to hang a picker on, and it
+// body-mounted an input removed only on `change` — so a CANCELLED file chooser
+// leaked it onto the page for the rest of the session. With one shared menu the
+// row owns a menu-parented picker that is torn down on close either way, and
+// keeping a second entry point would have left two implementations of one
+// operation.
 
-function startImportDashboard(app: App, bundle: PortableBundleV2): void {
+function startImportDashboard(
+  app: App, bundle: PortableBundleV2, target: DashboardImportTarget,
+): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
-  if (dashboards.length === 1) { runImportDashboard(app, bundle, dashboards[0].id); return; }
+  if (dashboards.length === 1) { runImportDashboard(app, bundle, dashboards[0].id, target); return; }
   openDashboardPicker(app, 'Import which dashboard?', dashboards, (id) => {
-    runImportDashboard(app, bundle, id);
+    runImportDashboard(app, bundle, id, target);
   });
 }
 
-function runImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: string): void {
-  // The UI exposes one Dashboard, so importing one REPLACES the Dashboard on
-  // screen (its tiles/layout/filters) — #424: the COMPATIBILITY entry only;
-  // any other stored Dashboard is preserved. Confirm first when that would
-  // discard an existing Dashboard — unlike additive New/Import workspace, this
-  // gates a destructive commit (#287; flagged in review — silent, unrecoverable
-  // loss).
-  if (app.state.dashboard) {
+function runImportDashboard(
+  app: App, bundle: PortableBundleV2, dashboardId: string, target: DashboardImportTarget,
+): void {
+  // Importing REPLACES the target Dashboard (its tiles/layout/filters). Confirm
+  // first, because that discards an existing Dashboard — unlike additive
+  // New/Import workspace, this gates a destructive commit (#287; flagged in
+  // review — silent, unrecoverable loss).
+  // #452: keyed on the TARGET, not on `app.state.dashboard`. `create-first`
+  // targets an empty collection, so there is nothing to discard and nothing to
+  // confirm; an `exact` target always names a Dashboard that will be replaced.
+  if (target.kind === 'exact') {
     openConfirm(app, {
       title: 'Import and replace current Dashboard?',
       body: ['This replaces your current Dashboard (its tiles, layout, and filters) with the imported one. ',
         'Its saved queries are kept and merged. Open editor tabs are unaffected. ',
         'Export your Dashboard first if you want to keep it.'],
       confirmLabel: 'Import Dashboard',
-      onConfirm: () => doImportDashboard(app, bundle, dashboardId),
+      onConfirm: () => doImportDashboard(app, bundle, dashboardId, target),
     });
     return;
   }
-  doImportDashboard(app, bundle, dashboardId);
+  doImportDashboard(app, bundle, dashboardId, target);
 }
 
-function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: string): void {
+function doImportDashboard(
+  app: App, bundle: PortableBundleV2, dashboardId: string, target: DashboardImportTarget,
+): void {
   // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit split
   // as `startImportQueries` above (#341/#344).
   const workspace = currentWorkspace(app);
@@ -603,17 +690,32 @@ function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: stri
   const closureQueries = bundle.queries.filter((q) => closureIds.has(q.id));
   withQueryDecisions(app, workspace.queries, closureQueries, (decisions) => {
     // 'copy' mints a fresh Dashboard id/revision for the imported Dashboard,
-    // which then REPLACES the workspace's compatibility Dashboard — the one the
-    // UI shows (#280 "Import Dashboard replaces the current Dashboard", scoped
-    // to the compatibility slot by #424). The confirm above gates the
-    // destructive case.
-    // #425: replace the SELECTED Dashboard, not the compatibility slot — an
-    // import invoked from Dashboard #2's own File menu must not overwrite #1.
-    const targetId = selectedDashboardId(app.mainSurface);
+    // which then REPLACES the target (#280 "Import Dashboard replaces the
+    // current Dashboard"). The confirm above gates the destructive case.
+    //
+    // #452: the target arrives EXPLICITLY from the File menu instead of being
+    // re-read here from `selectedDashboardId(app.mainSurface)`. That read was
+    // the compatibility fallback this issue removes: invoked with the Query
+    // surface selected it returned `null`, and `planImportDashboard` then wrote
+    // the collection's FIRST entry — overwriting a Dashboard the user never
+    // named. `create-first` passes `null` deliberately, and the model only ever
+    // offers it for an EMPTY collection, where the compatibility slot is the
+    // correct (and only) destination.
+    //
+    // Neither target needs a pre-check here — both are re-validated against the
+    // DEQUEUE-TIME baseline inside the planner and fail closed, which
+    // `planBuild` toasts and aborts on (no commit, and the user can retry):
+    // an `exact` target that was removed or became ambiguous, and a
+    // `create-first` whose collection stopped being empty while the file
+    // chooser / picker / conflict dialog was open. Checking the count here
+    // instead would only re-read the same open-time snapshot the caller
+    // already used.
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
         (base, revalidated) => planImportDashboard(
-          base, bundle, dashboardId, revalidated, 'copy', app.genId, {}, targetId,
+          base, bundle, dashboardId, revalidated, 'copy', app.genId, {},
+          target.kind === 'exact' ? target.dashboardId : null,
+          target.kind === 'create-first',
         )),
       'Imported dashboard',
     );
@@ -696,21 +798,47 @@ async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV5 | null
   }
 }
 
-export async function exportDashboardAction(app: App): Promise<void> {
+/** The target as committed truth holds it — `null` when it was removed, or when
+ *  the id became ambiguous (never resolved by a guess). */
+function committedDashboard(
+  ws: StoredWorkspaceV5, target: DashboardExportTarget,
+): DashboardDocumentV2 | null {
+  const lookup = findDashboardStrict(ws, target.dashboardId);
+  return lookup.status === 'ok' ? lookup.dashboard : null;
+}
+
+/** The degraded (no readable aggregate) fallback: the live projection, but only
+ *  if it IS the requested Dashboard. */
+function degradedDashboard(
+  app: App, target: DashboardExportTarget,
+): DashboardDocumentV2 | null {
+  const live = app.state.dashboard;
+  return live && live.id === target.dashboardId ? live : null;
+}
+
+/**
+ * Export ONE exactly-identified Dashboard's dependency closure as a bundle.
+ *
+ * #452: the id arrives explicitly. The old
+ * `selectedDashboardId(app.mainSurface)` read fell back to the compatibility
+ * Dashboard whenever the selection was `null` — so exporting from Query mode
+ * silently downloaded the collection's FIRST entry. The target type has no
+ * "unspecified" case, which is what makes that unrepresentable rather than
+ * merely guarded.
+ *
+ * `flushAndLoadCommitted` returning `null` is NOT a stale target: it is the
+ * legacy/no-aggregate install, or an IndexedDB read that rejected
+ * (blocked/quota/private mode). #341 deliberately keeps exporting from `state`
+ * there rather than becoming a silent no-op — but only when `state` is holding
+ * the very Dashboard that was asked for, so the degraded path still cannot
+ * retarget.
+ */
+export async function exportDashboardAction(
+  app: App, target: DashboardExportTarget,
+): Promise<void> {
   const ws = await flushAndLoadCommitted(app);
-  // #302: invoked from the Dashboard page's File menu (via
-  // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
-  // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
-  // #425: export the SELECTED Dashboard. Reading the compatibility slot here
-  // would export the collection's FIRST entry from a different Dashboard's own
-  // File menu — wrong the moment a non-first Dashboard can be open.
-  const selectedId = selectedDashboardId(app.mainSurface);
-  const dashboard = ws
-    ? (selectedId === null
-      ? resolveCompatibilityDashboard(ws).dashboard
-      : findDashboard(ws, selectedId))
-    : app.state.dashboard;
-  if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
+  const dashboard = ws ? committedDashboard(ws, target) : degradedDashboard(app, target);
+  if (!dashboard) { flashToast('✕ That dashboard is no longer available', { document: app.document }); return; }
   const queryList = ws ? ws.queries : app.state.savedQueries;
   const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
@@ -733,9 +861,12 @@ function libraryEntries(app: App): SavedQueryV2[] {
   return libraryQueries({ queries: app.state.savedQueries, dashboards: workspace.dashboards });
 }
 
+/** #452: no empty-Library guard here any more. The row is DISABLED when the
+ *  projection is empty ("No Library queries"), so the old "Nothing to save"
+ *  toast was unreachable — and telling the user after the click was always worse
+ *  than showing them before it. */
 function downloadAction(app: App, fmt: 'md' | 'sql'): void {
   const qs = libraryEntries(app);
-  if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName.value) + '.md', 'text/markdown', buildMarkdownDoc(qs));
   else app.downloadFile(fileBase(app.state.libraryName.value) + '.sql', 'application/sql', buildSqlDoc(qs));
   flashToast('Saved ' + queries(qs.length) + ' → .' + fmt, { document: app.document });

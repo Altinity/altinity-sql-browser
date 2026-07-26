@@ -59,9 +59,6 @@
     import { openMenu } from '/src/ui/menu.js';
     import { Icon } from '/src/ui/icons.js';
 
-    const dashboardFileButton = document.createElement('button');
-    dashboardFileButton.className = 'hd-file-btn dash-file-btn';
-    dashboardFileButton.textContent = 'File';
     const tileCount = document.createElement('span');
     tileCount.className = 'dash-chip dash-tile-count';
     tileCount.textContent = '6 tiles';
@@ -88,7 +85,7 @@
       styleHandle = openMenu({
         document,
         trigger: styleButton,
-        menuClass: 'dash-file-menu dash-style-menu',
+        menuClass: 'dash-style-menu',
         rows: styles.map(([value, label]) => ({
           kind: 'item',
           label,
@@ -156,8 +153,10 @@
       editingLibrary: false,
     };
     document.querySelector('#shared-header').replaceWith(
+      // #452: the header builds the ONE shared File control itself; a surface
+      // supplies only context. `dashboardId` is the exact Dashboard on screen.
       buildAppHeader(headerApp, {
-        fileButton: dashboardFileButton,
+        fileMenu: { surface: 'dashboard', mode: 'edit', dashboardId: 'd1' },
         workspaceTitleEditable: true,
       }),
     );

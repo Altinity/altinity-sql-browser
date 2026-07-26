@@ -511,7 +511,10 @@ describe('renderDashboardTree — action menu', () => {
     // Disabled SEMANTICALLY, not merely greyed out: assistive technology would
     // otherwise announce an enabled action, and keyboard activation would silently
     // do nothing.
-    expect(disabled.disabled).toBe(true);
+    // #452: `aria-disabled`, not the native attribute — a natively disabled
+    // button is dropped from the accessibility tree, so the row would never be
+    // announced. It stays reachable and inert instead.
+    expect(disabled.disabled).toBe(false);
     expect(disabled.getAttribute('aria-disabled')).toBe('true');
     // Clicking it does nothing at all.
     click(disabled);
