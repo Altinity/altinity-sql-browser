@@ -668,7 +668,7 @@ function runImportDashboard(
   if (target.kind === 'exact') {
     openConfirm(app, {
       title: 'Import and replace current Dashboard?',
-      body: ['This replaces your current Dashboard (its tiles, layout, and filters) with the imported one. ',
+      body: ['This replaces your current Dashboard (its tiles, layout, and variables) with the imported one. ',
         'Its saved queries are kept and merged. Open editor tabs are unaffected. ',
         'Export your Dashboard first if you want to keep it.'],
       confirmLabel: 'Import Dashboard',

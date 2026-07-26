@@ -35,7 +35,7 @@ export interface BuildRecentFieldOpts {
 }
 
 /** What `buildRecentField` returns — the field controller its caller (the
- *  workbench var-strip / dashboard filter bar) delegates its own DOM
+ *  workbench var-strip / dashboard variable bar) delegates its own DOM
  *  listeners to. */
 export interface RecentField {
   el: HTMLElement;

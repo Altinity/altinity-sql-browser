@@ -80,7 +80,7 @@ export interface TimeRangeFieldHandle {
   /** The control's root, a `.var-field.is-time-range` wrapper hosting the
    *  trigger — dropped straight into the bar's "Time" section by the caller. */
   el: HTMLElement;
-  /** Present for handle uniformity with the other filter controls. A plain
+  /** Present for handle uniformity with the other variable controls. A plain
    *  (non-source-backed) time-range control has no transport status to show,
    *  so this is a documented no-op. */
   updateStatus(s: unknown): void;

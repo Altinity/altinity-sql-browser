@@ -128,7 +128,7 @@ describe('authored time-range metadata defensive shapes', () => {
     expect(result.diagnostics).toEqual([expect.objectContaining({ code: 'time-range-contract-invalid' })]);
   });
 
-  it('ignores malformed extension values before filter resolution', () => {
+  it('ignores malformed extension values before variable resolution', () => {
     const base = {
       variables: [] as TimeRangeVariable[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
       variableTargetTileIds: new Map<string, ReadonlySet<string>>(),

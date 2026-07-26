@@ -109,8 +109,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `ui/variable-option-field.ts`, `core/filter-width.ts` → `core/variable-width.ts`,
   `dashboard/model/dashboard-filter-store.ts` → `dashboard-variable-store.ts`), and
   the `.dash-filter*`/`.dash-clear-filters`/`.detached-filter-row`/`.filter-select`
-  CSS family. `.ms-overlay` — the last trace of the deleted multi-select control's
-  prefix — became `.popover-overlay`.
+  CSS family. `.ms-overlay` became `.popover-overlay` — not because the `ms-`
+  prefix is gone (#468 restored the multi-select control, and its own fourteen
+  `ms-*` classes are very much alive) but because that one class was never the
+  multi-select's: it is the default backdrop class of the *shared* anchored-dialog
+  primitive `ui/popover.ts`, which the time-range control uses too. It now says
+  what it belongs to.
 
   The visible vocabulary moved with it: the variable row's section label reads
   **Variables** rather than **Filters**, and the Dashboard, time-range,

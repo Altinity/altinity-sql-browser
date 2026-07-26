@@ -206,7 +206,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     }
     // Local case-insensitive substring filter over label AND value — hidden
     // (filtered-out) rows are never touched by select-visible below.
-    function applyVariable(): void {
+    function applySearchFilter(): void {
       const q = searchText.trim().toLowerCase();
       let visible = 0;
       for (const row of rows) {
@@ -217,7 +217,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       liveEl.textContent = `${visible} of ${rows.length} options`;
       syncSelectAll();
     }
-    searchInput.addEventListener('input', () => { searchText = searchInput.value; applyVariable(); });
+    searchInput.addEventListener('input', () => { searchText = searchInput.value; applySearchFilter(); });
     selectAllCb.addEventListener('change', () => {
       const checked = selectAllCb.checked;
       for (const row of rows) {
@@ -312,7 +312,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     });
     closeCurrent = (closeOpts) => handle.close(closeOpts);
 
-    applyVariable(); // seeds the live-region count and the select-visible tri-state
+    applySearchFilter(); // seeds the live-region count and the select-visible tri-state
   }
 
   render();

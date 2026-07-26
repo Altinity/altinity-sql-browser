@@ -1115,10 +1115,16 @@ describe('applyVariables batch commit (#335)', () => {
     await session.start();
     const base = calls.length;
     const snapshot = session.state.value;
-    await session.applyVariables([
+    const result = await session.applyVariables([
       { variableId: 'p', value: 'x', active: true },
       { variableId: 'nope', value: 'y', active: true },
     ]);
+    // #459: the rejection message is user-visible — the Dashboard shell announces
+    // it through `variableRefreshLiveEl`, so its wording is pinned here rather
+    // than left to a rename.
+    expect(result).toEqual({
+      ok: false, error: 'The variable batch contains an unknown or duplicate variable.',
+    });
     expect(calls.length).toBe(base); // no wave
     expect(session.state.value).toBe(snapshot); // no publish
     expect(session.state.value.variableStates[0]).toMatchObject({ value: '', active: false });

@@ -316,7 +316,7 @@ export interface VariableBarHandle {
 }
 
 /**
-  * Build a variable bar: one field per `{name:Type}` parameter in `params` (the
+ * Build a variable bar: one field per `{name:Type}` parameter in `params` (the
  * shape from `fieldControls(analysis)`), sharing `app.state.varValues` /
  * `app.state.filterActive` / `app.state.varRecent` with every other surface.
  * Hidden entirely (no row, no spacing) when `params` is empty — same convention

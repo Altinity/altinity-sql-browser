@@ -538,7 +538,7 @@ export async function renderDashboard(
   // (see `settleCommand`) — the route rebuilds once the queue drains.
   let needsRebuild = false;
 
-  // Merge explicit + synthesized implicit filters for the viewer.
+  // No pre-processing of the document's variables for the viewer.
   // #447: the document needs no pre-processing before the session sees it. This
   // used to synthesize a filter definition per undeclared `{name:Type}` panel
   // parameter, and to attach an option source by matching a filter-role query's

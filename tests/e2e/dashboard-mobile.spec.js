@@ -263,6 +263,9 @@ test.describe('Dashboard mobile layout', () => {
   test('desktop: variables stay on one row and Clear all remains reachable', async ({ page }) => {
     await openAt(page, 1100, 800);
     await expect(page.locator('.dash-clear-variables')).toBeVisible();
+    // These two selectors deliberately keep their pre-#459 names: they assert the
+    // ABSENCE of markup the curated-filter layer used to render (a count chip and
+    // its host), so they have to name what was removed.
     await expect(page.locator('.dash-filter-count')).toHaveCount(0);
     await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
 

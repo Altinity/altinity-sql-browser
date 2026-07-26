@@ -3068,7 +3068,7 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     await flush();
   };
 
-  it('renders one compound control for the from/to pair, suppressing the two individual fields, with Time/Filters labels', async () => {
+  it('renders one compound control for the from/to pair, suppressing the two individual fields, with Time/Variables labels', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [paired(PAIR + ' AND r = {region:String}')],
@@ -3763,7 +3763,7 @@ describe('renderDashboard — isolated per-dashboard variable persistence (#303)
     expect(app.saveJSON).not.toHaveBeenCalledWith(KEYS.filterActive, expect.anything());
   });
 
-  it('does not write again on a later publish that carries no filter change (e.g. a layout switch)', async () => {
+  it('does not write again on a later publish that carries no variable change (e.g. a layout switch)', async () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = dashApp({
       workspace: filterWs({ layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} } }),
@@ -5116,7 +5116,7 @@ describe('renderDashboard — navigation focus (#425)', () => {
     expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
   });
 
-  it('skips a late filter focus once the user has already interacted', async () => {
+  it('skips a late variable focus once the user has already interacted', async () => {
     const { app } = focusApp(wsWith({
       queries: [q('q1', 'SELECT k FROM a WHERE region = {region:String}')],
       tiles: [{ id: 't1', queryId: 'q1' }],

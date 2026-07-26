@@ -21,7 +21,7 @@ const paramsFor = (sql: string): FieldControl[] =>
   fieldControls(analyzeParameterizedSources([{ id: 't', kind: 'tab', sql, bindPolicy: 'row-returning' }]));
 const okField = (): PreparedFieldState => ({ state: 'ok' });
 
-describe('buildVariableBar (shared filter row)', () => {
+describe('buildVariableBar (shared variable row)', () => {
   it('is a labeled group and builds a field per param when ariaLabel + document are given', () => {
     const app = makeApp();
     const bar = buildVariableBar(

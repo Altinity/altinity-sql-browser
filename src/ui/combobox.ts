@@ -21,7 +21,7 @@
 // Positioning: the listbox is `position: fixed` (see styles.css), anchored
 // under the input via `fixedAnchor` (dom.js) at open time — the same trick
 // the File/user menus already use to escape an ancestor's `overflow`
-// clipping (the var-strip / dashboard filter bar both scroll horizontally).
+// clipping (the var-strip / dashboard variable bar both scroll horizontally).
 // Repositioning only happens on open/refresh, not continuously on scroll —
 // a known, minor v1 limitation (documented, not silently ignored).
 
@@ -89,7 +89,7 @@ export const idSafe = (name: unknown): string => String(name).replace(/[^\w-]/g,
  * Standard DOM wiring for a combobox-based field controller (the object
  * `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` return): the
  * exact focus/input/keydown/blur/composition listener set the workbench
- * var-strip and the dashboard filter bar previously copy-pasted per control
+ * var-strip and the dashboard variable bar previously copy-pasted per control
  * kind (review F8). The field's own hooks run FIRST (they delegate to the
  * combobox — see relative-time-field.js's header on why one listener beats
  * two racing ones); a keydown the combobox consumed (nav/escape/option

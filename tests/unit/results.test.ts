@@ -850,7 +850,7 @@ describe('expandDataPane', () => {
     expect(win.document.title).toBe('Filtered'); // browser tab title matches
   });
 
-  it('omits the filter row (and description) when the source has no params / empty description', () => {
+  it('omits the variable row (and description) when the source has no params / empty description', () => {
     const app = makeApp();
     expandDataPane(app, tableResult()); // plain SELECT, description ''
     const overlay = qs(document, '.graph-overlay');
@@ -866,7 +866,7 @@ describe('expandDataPane', () => {
     expect(qs(document, '.graph-overlay .stat').textContent).toContain('2 rows (capped)');
   });
 
-  it('renders the shared filter row for a parameterized source and issues NO query on open', () => {
+  it('renders the shared variable row for a parameterized source and issues NO query on open', () => {
     const app = makeApp();
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');

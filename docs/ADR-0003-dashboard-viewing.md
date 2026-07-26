@@ -498,7 +498,7 @@ Dashboard variable was renamed: `ViewerFilterState`/`ViewerFilterStatus`/
 `resetFilters`/`getFilterField` → the `…Variable(s)` forms,
 `DashboardViewState.filters` → `.variableStates`, `.filterDiagnostics` →
 `.optionDiagnostics`, `DashboardTimeRangeGroup`/`TimeRangePairCandidate`'s
-`fromFilterId`/`toFilterId` → `from`/`toVariableId`, `ui/filter-bar.ts` →
+`fromFilterId`/`toFilterId` → `fromVariableId`/`toVariableId`, `ui/filter-bar.ts` →
 `ui/variable-bar.ts`, `ui/filter-option-field.ts` → `ui/variable-option-field.ts`,
 `core/filter-width.ts` → `core/variable-width.ts`,
 `dashboard/model/dashboard-filter-store.ts` → `dashboard-variable-store.ts`, and

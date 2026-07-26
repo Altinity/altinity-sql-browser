@@ -31,7 +31,7 @@ describe('readDashboardVariableBag', () => {
     expect(readDashboardVariableBag({ d1: null }, 'd1')).toEqual({});
   });
 
-  it('drops junk per-filter entries (non-object) while keeping healthy siblings', () => {
+  it('drops junk per-variable entries (non-object) while keeping healthy siblings', () => {
     const all = { d1: { f1: { value: 'x', active: true }, f2: 'junk', f3: 42, f4: ['j'], f5: null } };
     expect(readDashboardVariableBag(all, 'd1')).toEqual({ f1: { value: 'x', active: true } });
   });

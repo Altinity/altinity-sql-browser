@@ -137,7 +137,7 @@ export interface BuildRelativeTimeFieldOpts {
 }
 
 /** What `buildRelativeTimeField` returns — the field controller its caller
- *  (the workbench var-strip / dashboard filter bar) delegates its own DOM
+ *  (the workbench var-strip / dashboard variable bar) delegates its own DOM
  *  listeners to. `previewEl` is the extra field `applyFieldState` (var-
  *  field.js) points `aria-describedby` at. */
 export interface RelativeTimeField {
@@ -170,7 +170,7 @@ export function buildRelativeTimeField({
   const liveEl = h('div', { class: 'sr-only', id: liveId, 'aria-live': 'polite' });
   // Review finding #4: this is the "real element" `applyFieldState` (var-
   // field.js) points `aria-describedby` at — a stable id, shared by both the
-  // workbench var-strip and the dashboard filter bar (both build fields
+  // workbench var-strip and the dashboard variable bar (both build fields
   // through this one module).
   const previewEl = h('div', { class: 'var-combo-preview', id: previewId });
 
