@@ -258,7 +258,10 @@ describe('renderSavedHistory', () => {
       storageVersion: 5, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries, dashboards: [dashboard('first'), dashboard('second')],
     };
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'second', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
     await flush();

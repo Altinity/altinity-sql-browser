@@ -387,8 +387,9 @@ asserted rather than reviewed.
 - **Error / Disabled:** semantic text/background/border tokens for errors; opacity and cursor changes for disabled controls.
 
 ### Navigation
-- Table, JSON, panel types, query tabs, schema/library modes, and dashboard layout choices share one quiet tab/segmented-control vocabulary. Inactive items use muted text on transparent or subtle surfaces; active items gain ink, a tonal surface, a structural border, or the accent. Mobile replaces the split workspace with a bottom navigation for Tables, Editor, and Results at `768px` and below.
-- The Dashboard surface toolbar (`[Back to query] · title · [View | Edit]`) is the **same** toolbar as the filter row stacked beneath it — one gap, one height, one padding — so the two read as one sticky top bar rather than two competing bands. Only the title differs, and only by weight.
+- Table, JSON, panel types, query tabs, schema/library modes, and dashboard layout choices share one quiet tab/segmented-control vocabulary. Inactive items use muted text on transparent or subtle surfaces; active items gain ink, a tonal surface, a structural border, or the accent. Mobile replaces the split workspace with a bottom navigation for Tables, Editor, and Results at `768px` and below; on the Dashboard surface that bar keeps only **Editor**, as the route back to the Workbench.
+- The Dashboard surface toolbar (`[layout · tile count · search · filters] … [freshness] · [View | Edit]`) is the **same** toolbar as the filter row stacked beneath it — one gap, one height, one padding — so the two read as one sticky top bar rather than two competing bands.
+- Leaving a Dashboard is a **per-tile** act, not a global one: each query-backed tile carries a quiet `Open in Workbench` icon in its own chrome, subtle until the tile is hovered or the icon focused, always shown where there is no hover. There is no Dashboard-level back button — an action that names its document beats generic back-navigation holding primary toolbar space.
 
 ### Data Table
 - Sticky headers and row numbers preserve context during two-axis scrolling.

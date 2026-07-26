@@ -96,6 +96,45 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   an `Array(scalar T)` nobody has configured.)
 
 ### Changed
+- **A Dashboard tile opens its own query in the Workbench; the Dashboard-level
+  `< Query` button is gone** (#471). Every query-backed tile carries an
+  **Open in Workbench** icon action in its own chrome, in both View and Edit mode
+  and in both layout engines. It opens *that tile's* query document in the main SQL
+  editor — or selects the tab already showing it — and leaves the Dashboard's
+  filters, layout, scroll position and View/Edit state untouched.
+
+  Identity is the tile's own query id, never the displayed name. A Dashboard tile
+  references a dedicated saved-query copy that exactly one member owns (#427), so
+  two Dashboards holding same-**named** copies open two separate tabs, re-opening
+  one selects the tab it already has, and **Save from that tab updates the
+  Dashboard's copy** rather than a same-named Library query. The compact
+  collision *badges* that make two same-named tabs tellable apart remain #464.
+
+  The action is deliberately not edit-mode-only — inspecting the query behind a
+  tile is a View-mode act first. It is subtle until the tile is hovered or the
+  button is focused, always visible on touch, and pressing it never starts a tile
+  drag, resize, selection or chart gesture. A **queryless** tile (a `text` panel)
+  and a tile whose query id no longer resolves show no action at all, rather than a
+  disabled control or one pointing at an unrelated document.
+
+  The removed `< Query` button named no document — it was ordinary back-navigation
+  occupying primary toolbar space. Two follow-on consequences: a Grid-Tiles **KPI**
+  tile's chrome overlay now reveals and accepts clicks in View mode too (it had no
+  View-mode control before), and because the mobile rules hide the sidebar for a
+  full-bleed Dashboard, **the bottom nav no longer hides itself on the Dashboard
+  surface** — it shows only **Editor**, which returns to the Workbench. Without
+  that, a phone looking at a Dashboard with no tiles would have had no route back
+  at all.
+
+  **Returning with Back now lands on the Dashboard you left, where you left it.**
+  The URL deliberately carries no Dashboard id, and opening a query tears the
+  Dashboard down, so Back used to rebuild the *first* Dashboard in the workspace at
+  the top of the page — tolerable while a global back button existed, and not
+  tolerable once per-tile actions are the way out. Each Dashboard history entry now
+  remembers its own id, current member and scroll offset, so several Back steps
+  across several Dashboards each return correctly; a remembered Dashboard that has
+  since been deleted falls back to the Workbench rather than to some other one.
+
 - **The Dashboard runtime now says "variable" everywhere it meant "variable"**
   (#459). #447 replaced curated Dashboard filters with inferred variables but left
   the surviving code calling them filters, so the source read as if a model it had

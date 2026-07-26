@@ -558,6 +558,104 @@ unchanged. Three decisions are worth recording.
   one would have made the inconsistency worse, not smaller — the Dashboards tree
   has said "Variables" since #447 phase 1.
 
+## Addendum (#471, 2026-07-26): leaving a Dashboard is a per-tile act
+
+The `Back to query` control the #426 addendum above restored is removed. It named
+no document: generic back-navigation in the primary toolbar, which left the user to
+find the corresponding query in the Workbench themselves. Every query-backed tile
+carries its own `Open in Workbench` action instead. Four decisions are worth
+recording.
+
+- **The tile's `queryId` IS the provenance the feature needs — no new tab model.**
+  #471 asks for tab identity by "stable document origin, such as `dashboardId +
+  dashboardQueryId`", and #464 proposes a `QueryTabOrigin` union. Neither is
+  required here, because the #427 addendum above already made ownership a
+  reference: a panel tile points at a dedicated saved-query copy that exactly one
+  member owns, so that copy's id already IS a per-Dashboard document identity.
+  `loadIntoNewTab` has always deduplicated on `savedId` and `commitSavedQuery`
+  resolves its write target by id, so "re-opening selects the existing tab", "two
+  same-named copies are two tabs" and "Save targets the Dashboard copy" all hold by
+  construction. What #464 still owns is the *visible* half — the collision badges
+  and full-origin tooltips that make two identically-named tabs tellable apart. A
+  `TabDocument` arm for this would have been a second, redundant identity next to
+  `savedId`, which is exactly the "second source of truth" #427 refused.
+
+- **The action is not edit-mode chrome.** The grip, delete and resize handle are all
+  `!readOnly`-gated and built only in Edit mode. This one is built unconditionally,
+  like the heading: inspecting the query behind a tile is a View-mode act first, and
+  the issue requires both modes. That had one consequence nothing else forced — a
+  Grid-Tiles KPI tile's head is an absolutely-positioned, `pointer-events: none`
+  overlay whose reveal rules were scoped `:not(.is-view)`, correct while every
+  control inside it was edit-only. View mode now reveals it and the action opts back
+  into pointer events.
+
+- **Nothing to open means no control, not a disabled one.** A `text` panel is
+  queryless by capability (`isQuerylessPanel`, the same predicate Save and share
+  already use) and an unresolvable `queryId` belongs to a tile already rendering its
+  own missing-query error. Both render no action. A disabled button would have
+  advertised an affordance that can never work, and pointing it at the Dashboard's
+  first query would have opened someone else's document.
+
+- **A flow KPI band member reaches its action through the card, not the host.** Flow
+  renders a KPI tile into a `.dash-kpi-member` host that carries no tile chrome of any
+  kind — no head, no delete, no grip, no resize — and is `display: contents`, so it
+  generates no box at all; that is also why the drag code derives its rect from the
+  host's children. Absolutely positioning the action against it put the button in the
+  Dashboard toolbar in a real browser, which happy-dom could not see. It is therefore
+  anchored INSIDE the member's first card, the same reach-through the `.is-nav-target`
+  ring and the `.dash-drop-target` outline already need for this host — which leaves
+  the drag geometry untouched, because the button sits inside one of the very child
+  boxes those rects are derived from. `renderKpiInto` replaces that card on every
+  publish, so the attachment is re-applied with each repaint rather than once.
+  (Giving the band a full chrome surface — it still has no delete affordance — remains
+  #475.)
+
+**Back is now a supported way home, which needed a per-entry memory.** #471's
+acceptance criteria lean on ordinary history navigation precisely because the global
+control is gone — and that exposed a hole #425 had left tolerable: the URL carries no
+Dashboard id (by design, above), the Dashboard DOM is disposed when the Workbench
+takes the work area, and `adoptRouteMainSurface` had nothing to consult once the
+session said "query". It resolved the *compatibility* Dashboard, so Back out of a tile
+opened the collection's FIRST Dashboard, at the top of the page, however many
+Dashboards the user had moved through.
+
+The fix keeps the URL exactly as it was and puts the missing facts in
+`history.state` instead — `{dash: {workspaceKey, dashboardId, currentMember,
+scrollTop}}`, written onto the entry being LEFT (and onto a Dashboard entry as it is
+created). Three properties made that the right home rather than a session-wide "last
+Dashboard" memo:
+
+- it is **per entry**, so several Back steps across several Dashboards each restore
+  their own — a single memo can only ever be right about the most recent one;
+- it is **invisible**, so shareable URLs are untouched and #425's "the URL is derived
+  from the session surface, never the other way round" still holds;
+- it is **discardable**: an entry that carries none (a fresh load, or one written
+  before this existed) simply falls back to the old behaviour.
+
+It is validated like any other selection — `restoreDashboardSurface` runs the snapshot
+through `reconcileMainSurface`, so a remembered Dashboard that has since been deleted
+lands on **Query** rather than retargeting to a different one, and the snapshot is
+rejected outright when its `workspaceKey` does not match (a Dashboard id is unique per
+workspace, not globally — the #457 addendum's rule).
+
+The offset rides in `MainSurfaceState` as `pendingScrollTop`, a second one-shot
+delivery beside `pendingFocus` and consumed with it, so no later repaint can yank a
+page the user has since scrolled. Applying it is not a single write: at mount the grid
+host is still empty (tiles arrive with the first publish, and grafana-grid's per-tile
+px heights with them), so an offset written then clamps silently to `0`. It is
+re-attempted after each publish until one sticks — which happy-dom cannot observe at
+all, since it stores whatever was assigned.
+
+The mobile consequence is recorded here too, because it reverses part of the #425
+addendum. #426 had restored the back button specifically because the mobile rules
+drop the sidebar *and* the bottom nav for a full-bleed Dashboard, and a per-tile
+action cannot rescue a Dashboard with no tiles. Per the owner decision on #471, the
+bottom nav stops hiding itself on this surface and shows only **Editor** — the other
+two panel values still say nothing about a Dashboard — and pressing it switches
+surface before selecting the panel, the same order `openSavedQuery` and
+`openVariableTab` use. Full-bleed was a *width* claim; a bottom bar shortens the
+Dashboard without overlapping it.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

@@ -7,25 +7,51 @@ async function openAt(page, width, height = 844) {
 }
 
 test.describe('Dashboard mobile layout', () => {
-  // #425: a Dashboard is full-bleed on mobile — the sidebar, its resize handle and
-  // the bottom Tables/Editor/Results nav all belong to the Query surface. Only a
-  // real browser can check this; happy-dom applies no CSS.
-  test('hides the sidebar and the bottom nav for a full-bleed Dashboard', async ({ page }) => {
+  // #425: a Dashboard is full-bleed on mobile — the sidebar and its resize handle
+  // belong to the Query surface. #471 amends the bottom nav half of that rule: with
+  // the Dashboard toolbar's `< Query` button gone and no per-tile action on a
+  // tile-less Dashboard, hiding the nav here would leave a phone with no route to
+  // the Workbench at all. It stays, showing ONLY Editor — the panel switcher's other
+  // two values still say nothing about a Dashboard. Only a real browser can check
+  // any of this; happy-dom applies no CSS.
+  test('hides the sidebar, and keeps only the Editor route in the bottom nav', async ({ page }) => {
     await openAt(page, 390);
     const hidden = await page.evaluate(() => ({
       sidebar: getComputedStyle(document.querySelector('.sidebar')).display,
       handle: getComputedStyle(document.querySelector('.col-resize')).display,
       nav: getComputedStyle(document.querySelector('.mobile-nav')).display,
+      navButtons: [...document.querySelectorAll('.mobile-nav-btn')]
+        .filter((button) => getComputedStyle(button).display !== 'none')
+        .map((button) => button.dataset.view),
       dashWidth: Math.round(document.querySelector('.dash-page').getBoundingClientRect().width),
       viewport: document.documentElement.clientWidth,
       pageOverflow: document.documentElement.scrollWidth - innerWidth,
     }));
     expect(hidden.sidebar).toBe('none');
     expect(hidden.handle).toBe('none');
-    expect(hidden.nav).toBe('none');
-    // The Dashboard therefore gets the whole viewport width, with no page overflow.
+    expect(hidden.nav).not.toBe('none');
+    expect(hidden.navButtons).toEqual(['editor']);
+    // Full-bleed is a WIDTH claim, and a bottom bar does not touch it: the Dashboard
+    // still gets the whole viewport width, with no page overflow.
     expect(hidden.dashWidth).toBe(hidden.viewport);
     expect(hidden.pageOverflow).toBeLessThanOrEqual(0);
+  });
+
+  // #471: the nav is a bar at the bottom of the flex column, so it must SHORTEN the
+  // Dashboard rather than float over its last row — content hidden behind it would
+  // be unreachable exactly where the tile actions live.
+  test('the bottom nav shortens the Dashboard instead of overlapping it', async ({ page }) => {
+    await openAt(page, 390);
+    const layout = await page.evaluate(() => {
+      const nav = document.querySelector('.mobile-nav').getBoundingClientRect();
+      const page_ = document.querySelector('.dash-page').getBoundingClientRect();
+      return {
+        navTop: Math.round(nav.top), navBottom: Math.round(nav.bottom),
+        pageBottom: Math.round(page_.bottom), viewportHeight: window.innerHeight,
+      };
+    });
+    expect(layout.pageBottom).toBeLessThanOrEqual(layout.navTop);
+    expect(layout.navBottom).toBeLessThanOrEqual(layout.viewportHeight);
   });
 
   // At desktop widths the sidebar STAYS beside the Dashboard — that is the point

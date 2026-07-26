@@ -41,7 +41,7 @@ import { movedPastThreshold, hitTestTile, resolveOverlapInsertIndex, flipDelta }
 import type { TileRect } from '../core/tile-reorder.js';
 import { createDragAutoScroll } from '../core/dashboard-autoscroll.js';
 import type { DragAutoScrollController, DragAutoScrollTarget, FrameScheduler } from '../core/dashboard-autoscroll.js';
-import { resolvePanel } from '../core/panel-cfg.js';
+import { isQuerylessPanel, resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
 import {
@@ -96,7 +96,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV2, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  SavedQueryV2, StoredWorkspaceV5,
+  Panel, SavedQueryV2, StoredWorkspaceV5,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
@@ -117,7 +117,7 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
-  chevLeft(): SVGElement;
+  code(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -141,6 +141,10 @@ export interface DashboardRenderTarget {
   mode: DashboardSurfaceMode;
   /** Where to land navigation focus once this Dashboard's DOM exists. */
   focus: DashboardFocusTarget | null;
+  /** #471: the scroll offset this render owes the page — a Dashboard returned to
+   *  through history restores where the user left it, not the top. `null` for every
+   *  ordinary render (open, mode switch, repaint), which starts at the top. */
+  scrollTop: number | null;
   /** Install this surface's header into the shell's shared header slot. */
   setHeader(header: Element): void;
 }
@@ -163,12 +167,19 @@ export interface DashboardApp {
   currentWorkspace: StoredWorkspaceV5 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
-   *  navigation API its own chrome (View/Edit, Back to query) transitions
-   *  through. */
+   *  navigation API its own View/Edit control transitions through. (#471's per-tile
+   *  Open in Workbench does not go through it: opening a document is not a surface
+   *  transition the Dashboard performs — see `openSavedQuery` below.) */
   mainSurface: App['mainSurface'];
   openDashboard: App['openDashboard'];
   showDashboardSurface: App['showDashboardSurface'];
-  showQuerySurface: App['showQuerySurface'];
+  /** #471: a tile's own `Open in Workbench` action, by the tile's `queryId` — the
+   *  Dashboard-owned copy's stable id, which is what makes the opened tab, and
+   *  every later Save from it, target this Dashboard's document. This surface no
+   *  longer needs `showQuerySurface`: leaving a Dashboard used to be a generic
+   *  toolbar act and is now always a document-opening one, which routes through
+   *  here (`openSavedQuery` switches the surface itself). */
+  openSavedQuery: App['openSavedQuery'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
@@ -276,6 +287,19 @@ export function disposeDashboardSurface(): void {
   installedNavHighlightClear = null;
   installedDashboardHost?.replaceChildren();
   installedDashboardHost = null;
+}
+
+/**
+ * The mounted Dashboard's live scroll offset, or `null` when none is mounted (#471).
+ *
+ * `.dash-page` is the scroll host — the grid scrolls under a sticky topbar, so the
+ * document itself never scrolls and `window.scrollY` would always read 0. Read at the
+ * moment the surface is left, because opening a tile's query disposes this DOM: the
+ * offset has to be recorded onto the history entry before it is gone.
+ */
+export function dashboardScrollTop(): number | null {
+  const page = installedDashboardHost?.querySelector('.dash-page');
+  return page ? page.scrollTop : null;
 }
 
 /** Build the Dashboard style picker with the same trigger and dropdown
@@ -417,30 +441,9 @@ function renderMissingDashboard(
   target.host.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-        buildBackToQuery(app),
         h('span', { class: 'dash-toolbar-spacer' }),
         buildDashboardModeSwitch(app, target.mode))),
     body));
-}
-
-/**
- * #426 — the visible way back to the Query surface.
- *
- * #437 removed the separate Back-to-query row on the grounds that the
- * application header's `SQL Browser | Dashboard` pair already did this. #426 then
- * removed THAT pair (Dashboard selection moved to the sidebar tree), which
- * together would have left `g w` and "click a saved query" as the only routes back
- * — and neither is reachable on a phone, where the mobile rules drop the sidebar
- * and the bottom nav for a full-bleed Dashboard. #426's own Header-cleanup section
- * requires this control to be retained, so it returns here: icon-first and inside
- * the ONE compact toolbar, per #437's design rather than as a second row.
- */
-function buildBackToQuery(app: DashboardApp): HTMLElement {
-  return h('button', {
-    class: 'editor-mode-btn dash-back-to-query', type: 'button',
-    'aria-label': 'Back to query', title: 'Back to query (G then W)',
-    onclick: () => { app.showQuerySurface(); },
-  }, Icon.chevLeft(), h('span', { class: 'dash-back-label' }, 'Query'));
 }
 
 /** #425/#437: View/Edit — the other Dashboard-owned control the compact primary
@@ -1265,13 +1268,48 @@ export async function renderDashboard(
     layoutMenu.sync();
   }
 
+  // ── Restored scroll offset (#471) ─────────────────────────────────────────
+  // The offset a history entry owes this render (see `dashboardScrollTop`), applied
+  // after mount and again after every publish until it TAKES.
+  //
+  // A scroll offset cannot be set against a page that is not yet tall enough: at
+  // mount the grid host is empty — tiles are appended by the first publish, and
+  // grafana-grid's per-tile px heights are applied there too — so a single
+  // post-mount write clamped silently to 0. happy-dom cannot see that at all; it
+  // reports back whatever was assigned.
+  //
+  // Self-limiting: it stops on the first write that sticks, so ordinary later
+  // publishes (a refresh wave, a Search, a layout switch) never yank a page the user
+  // has since scrolled. A Dashboard that no longer reaches that offset keeps clamping
+  // to its own maximum, which is the closest honest answer.
+  //
+  // Declared HERE, above the publish effect, rather than beside the mount that
+  // supplies `scrollHost`: `effect()` runs its body immediately on creation, so a
+  // `let` declared after it would be in its temporal dead zone on that first run and
+  // abort the whole render.
+  let owedScrollTop = target.scrollTop;
+  let scrollHost: HTMLElement | null = null;
+  const applyOwedScroll = (): void => {
+    if (owedScrollTop === null || owedScrollTop <= 0 || scrollHost === null) return;
+    scrollHost.scrollTop = owedScrollTop;
+    if (scrollHost.scrollTop > 0) owedScrollTop = null;
+  };
+
   // ── Tile DOM ──────────────────────────────────────────────────────────────
   const tileEls = new Map<string, TileEl>();
   // Flow KPI tiles do not render their cached `.dash-tile` card. Their
   // `.dash-kpi-member` host is the structural/movement surface instead.
   const flowKpiHosts = new Map<string, HTMLElement>();
-  // #332: the origin card of a just-completed move whose synthesized click must
-  // be swallowed once (see wireTileDrag). Module-to-gesture, not per-card.
+  // #332: the origin card of a just-completed move whose synthesized click must be
+  // swallowed once (see wireTileDrag). Module-to-gesture, not per-card.
+  //
+  // #471: the arming now EXPIRES on its own (see `onUp`). `onUp` cannot know whether
+  // a click will follow — only a release back over the origin card produces one — so
+  // before this the flag could stay armed indefinitely after a cross-tile or
+  // empty-space release and eat an unrelated later click on that card. Clearing it on
+  // the next pointerdown was not enough: a KEYBOARD activation (Enter/Space on a tile
+  // action) dispatches a click with NO pointer event before it, so the very first
+  // keyboard press after such a drag did nothing at all.
   let clickSuppressCard: HTMLElement | null = null;
   // #332: at most one tile-drag gesture at a time — a second pointerdown while
   // one is armed is ignored, so two live listener sets can't cross-contaminate.
@@ -1467,11 +1505,16 @@ export async function renderDashboard(
     const onPointerDown: EventListener = (event) => {
       const pe = event as PointerEvent;
       if (pe.button !== 0) return; // primary button only
-      // The resize handle (own stopPropagation) and delete button own their own
-      // gestures — never start a move from them.
+      // A fresh gesture never inherits a stale suppress. Belt and braces next to the
+      // timestamp window above — this covers a pointer gesture that begins inside
+      // the window, which the window alone would still swallow.
+      clickSuppressCard = null;
+      // The resize handle (own stopPropagation), the delete button and #471's
+      // Open-in-Workbench action own their own gestures — never start a move from
+      // them. Open-in-Workbench is the only one of the three that also exists in
+      // View mode, where this handler is never wired at all.
       const target = pe.target as Element;
-      if (target.closest('.dash-gg-resize, .dash-gg-del')) return;
-      clickSuppressCard = null; // a fresh gesture never inherits a stale suppress
+      if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open')) return;
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
       const fromGrip = !!target.closest('.dash-gg-grip');
@@ -1731,8 +1774,15 @@ export async function renderDashboard(
         if (!wasMoving) return; // never crossed the threshold: leave the click alone
         // A completed drag that releases back over its origin card synthesizes a
         // real click on it (same down/up target) — swallow it so no cell/link/
-        // preview fires. A cross-tile release fires no origin click (harmless).
+        // preview fires.
         clickSuppressCard = card;
+        // #471: and a release ANYWHERE ELSE synthesizes no origin click at all, so
+        // nothing would ever consume this. The synthesized click, when there is one,
+        // is dispatched in the same input task as the release — so a zero-delay timer
+        // runs strictly after it, and disarms the flag before any later click can meet
+        // it. That later click may have no pointerdown to clear it (Enter on a focused
+        // tile action), which is exactly the case a pointerdown-only reset missed.
+        win.setTimeout(() => { if (clickSuppressCard === card) clickSuppressCard = null; }, 0);
         if (targetId && targetId !== tileId) {
           runCommand({ type: 'move-tile', tileId, toIndex: currentDoc.tiles.map((t) => t.id).indexOf(targetId) });
         }
@@ -1774,6 +1824,37 @@ export async function renderDashboard(
     });
   }
 
+  /**
+   * #471 — the tile's own `Open in Workbench` action, or `null` when this tile has
+   * no query document to open.
+   *
+   * Deliberately NOT `!readOnly`-gated the way the grip and delete button are:
+   * inspecting the query behind a tile is a View-mode act first, and the issue
+   * requires the action in both modes. Built once per tile, like the heading.
+   *
+   * The tile's `queryId` IS the stable document origin this action needs. #427 made
+   * every panel tile reference a dedicated saved-query copy that exactly one member
+   * owns, so handing that id to `openSavedQuery` re-selects the tab already open on
+   * the SAME copy (`loadIntoNewTab` dedups on `savedId`, never on the displayed
+   * name) and every later Save from that tab keeps targeting this Dashboard's copy
+   * rather than a same-named Library query. Two Dashboards holding same-named
+   * copies are two ids, therefore two tabs.
+   *
+   * `null` — never a disabled-and-silent button, and never a button pointing at
+   * some other tile's document — when there is nothing to open: a `text` panel is
+   * queryless by capability (`isQuerylessPanel`, the same shared predicate Save and
+   * share use), and an unresolvable `queryId` belongs to a tile that is already
+   * rendering its own missing-query error.
+   */
+  function tileOpenAction(ts: ViewerTileState): HTMLButtonElement | null {
+    if (!queryById.has(ts.queryId) || isQuerylessPanel(ts.panel as Panel | null)) return null;
+    return h('button', {
+      class: 'dash-tile-open', type: 'button', title: 'Open in Workbench',
+      'aria-label': 'Open ' + ts.title + ' in Workbench',
+      onclick: () => { app.openSavedQuery(ts.queryId); },
+    }, Icon.code());
+  }
+
   function ensureTileEl(ts: ViewerTileState): TileEl {
     const existing = tileEls.get(ts.tileId);
     if (existing) return existing;
@@ -1793,12 +1874,13 @@ export async function renderDashboard(
       class: 'dash-gg-del', title: 'Remove tile', 'aria-label': 'Remove ' + ts.title + ' from the dashboard',
       onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },
     }, Icon.trash()) : null;
+    const openBtn = tileOpenAction(ts);
     const heading = h('div', { class: 'dash-tile-heading' },
       h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
       ts.description ? h('span', {
         class: 'dash-tile-desc', title: ts.description,
       }, ts.description) : null);
-    const head = h('div', { class: 'dash-tile-head' }, grip, heading, delBtn);
+    const head = h('div', { class: 'dash-tile-head' }, grip, heading, openBtn, delBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly
@@ -1950,14 +2032,44 @@ export async function renderDashboard(
   // frameless view-mode tile has no visible header, so the state card is the
   // only surface that can announce which tile is loading/blocked/failed.
   function renderKpiInto(host: HTMLElement, ts: ViewerTileState): void {
+    host.replaceChildren(...kpiContent(ts));
+  }
+
+  /**
+   * #471 — give a FLOW band member the tile's Open-in-Workbench action.
+   *
+   * Flow-only, and called right after `renderKpiInto` repaints the member: the GRID
+   * engine renders a KPI tile as a real card whose head carries the action already,
+   * so doing this there would give one tile two of them.
+   *
+   * The action is anchored INSIDE the first card rather than on the member host,
+   * because `.dash-kpi-member` is `display: contents` and generates no box at all —
+   * an absolutely-positioned child of it resolves against the page instead, which put
+   * the button up in the Dashboard toolbar. That is the same reason the
+   * `.is-nav-target` ring and the `.dash-drop-target` outline already reach through to
+   * `> *`. Anchoring inside a card also leaves the drag geometry untouched:
+   * `surfaceRect`/`hitRects` still read the member's card children, and the button
+   * lives inside one of those boxes rather than beside them.
+   *
+   * One action per TILE, so it goes on the first card of a multi-field KPI — and on a
+   * state card too, because a loading or failed tile is still query-backed and its
+   * query is exactly what the user wants to look at.
+   */
+  function attachFlowKpiOpenAction(host: HTMLElement, ts: ViewerTileState): void {
+    const anchor = host.firstElementChild;
+    const action = anchor ? tileOpenAction(ts) : null;
+    if (action) anchor!.appendChild(action);
+  }
+
+  /** The KPI cards, or the one state card standing in for them (#316). */
+  function kpiContent(ts: ViewerTileState): HTMLElement[] {
     if (ts.status !== 'ready') {
       const kind = ts.status === 'error' ? 'error' : ts.status === 'unfilled' ? 'unfilled' : 'loading';
       const message = ts.status === 'error' ? (ts.error || 'Error')
         : ts.status === 'unfilled' ? 'Enter a value for: ' + ts.unfilled.join(', ') : 'Loading…';
-      host.replaceChildren(h('div', {
+      return [h('div', {
         class: 'dash-kpi-state-card', role: kpiStateRole(kind), 'aria-label': `${ts.title}: ${message}`,
-      }, message));
-      return;
+      }, message)];
     }
     const panel = (ts.panel || {}) as Record<string, unknown>;
     const resolved = resolvePanel(panel as Parameters<typeof resolvePanel>[0], {
@@ -1966,10 +2078,10 @@ export async function renderDashboard(
       serverVersion: state.serverVersion,
     });
     const { cards, errors } = renderKpiCards(resolved.kpi);
-    host.replaceChildren(...(errors.length ? errors.map((e) => h('div', {
+    return errors.length ? errors.map((e) => h('div', {
       class: 'dash-kpi-state-card', role: kpiStateRole(e.code === 'kpi-no-data' ? 'zero-data' : 'error'),
       'aria-label': `${ts.title}: ${e.message}`,
-    }, e.message)) : cards));
+    }, e.message)) : cards;
   }
 
   // ── Grid reconciliation from the flow model ───────────────────────────────
@@ -2003,6 +2115,9 @@ export async function renderDashboard(
               'aria-label': ts.title,
               title: !readOnly ? 'Command/Ctrl-drag to move' : undefined,
             });
+            // #471's action is attached by `attachFlowKpiOpenAction` after the
+            // content paint below, not here: this host is `display: contents`, so the
+            // button has to live inside a CARD, and the cards do not exist yet.
             flowKpiHosts.set(member.tileId, host);
             if (!readOnly) wireTileDrag(member.tileId, host);
             stream.appendChild(host);
@@ -2024,10 +2139,11 @@ export async function renderDashboard(
     }
     // A KPI band member's CONTENT (cards / state) is refreshed on every publish
     // — cheap, KPI cards carry no charts — so a member reaching ready repaints
-    // without a structural rebuild.
+    // without a structural rebuild. #471's action is re-attached with it, because
+    // that repaint replaces the very card it is anchored inside.
     for (const host of grid.querySelectorAll('.dash-kpi-member')) {
       const ts = byId.get((host as HTMLElement).dataset.tile || '');
-      if (ts) renderKpiInto(host as HTMLElement, ts);
+      if (ts) { renderKpiInto(host as HTMLElement, ts); attachFlowKpiOpenAction(host as HTMLElement, ts); }
     }
   }
 
@@ -2276,6 +2392,9 @@ export async function renderDashboard(
     }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
     else reconcileGrid(sview, sview.layout);
+    // #471: the tiles this publish just placed are what finally make the page tall
+    // enough to hold a restored offset.
+    applyOwedScroll();
     // #437: the freshness control's icon-only refresh swaps in the spinner
     // while running, and its tooltip/aria-label carry the last-updated time
     // the visible `.dash-updated` span shows — `aria-busy` covers the running
@@ -2309,14 +2428,14 @@ export async function renderDashboard(
   // #437: one compact toolbar row — style/count/search/time variables, then the
   // freshness control, then View/Edit last. The separate #425 surface row (a
   // Back-to-query button plus a title) is gone.
-  // #426: Back to query returns as the row's FIRST control — icon-first, inside
-  // this same one row rather than as a second band. #437 could drop it because the
-  // application header still carried `SQL Browser | Dashboard`; #426 removed that
-  // pair, and without this the only routes back would be `g w` and clicking a
-  // saved query — neither reachable on a phone, where the mobile rules drop the
-  // sidebar and bottom nav for a full-bleed Dashboard.
+  // #471: so is the generic Back-to-query control #426 had put back here. It named
+  // no document — it was ordinary back-navigation occupying primary toolbar space —
+  // and leaving a Dashboard is now either a per-tile act (`Open in Workbench`,
+  // which says WHICH query it opens) or ordinary history/tree navigation. The
+  // phone route #426 was protecting moved to the bottom nav, which no longer hides
+  // itself on this surface (app-shell.ts + the `[data-surface="dashboard"]` mobile
+  // rules): a Dashboard with no tiles at all would otherwise be a dead end.
   const primaryToolbar = h('div', { class: 'dash-toolbar dash-toolbar-primary' },
-    buildBackToQuery(app),
     layoutWrap,
     tileCount,
     tileSearch,
@@ -2331,10 +2450,13 @@ export async function renderDashboard(
   }, ordinaryVariableHost, clearVariablesBtn);
 
   installedDashboardHost = target.host;
-  target.host.replaceChildren(h('div', { class: 'dash-page' },
+  const page = h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' },
       primaryToolbar, variableToolbar, variableRefreshLiveEl),
-    variableDiagnosticsHost, empty, searchEmpty, grid));
+    variableDiagnosticsHost, empty, searchEmpty, grid);
+  target.host.replaceChildren(page);
+  scrollHost = page;
+  applyOwedScroll();
 
   // Own every route-scoped resource in one teardown. An in-place Dashboard
   // rebuild must not leave Chart.js observers, signal effects, popovers, or

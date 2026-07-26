@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   QUERY_SURFACE, carryCurrentMember, isSameDashboardSelection, mainSurfaceRoute,
   reconcileMainSurface, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
-  withoutPendingFocus,
+  withoutPendingFocus, dashboardHistorySnapshot, readDashboardHistorySnapshot,
+  restoreDashboardSurface,
   type DashboardFocusTarget, type MainSurfaceState,
 } from '../../src/application/main-surface.js';
 import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
@@ -29,7 +30,11 @@ const onDashboard = (
   dashboardId: string, mode: 'view' | 'edit' = 'edit',
   currentMember: DashboardFocusTarget | null = null,
   pendingFocus: DashboardFocusTarget | null = null,
-): MainSurfaceState => ({ kind: 'dashboard', dashboardId, mode, currentMember, pendingFocus });
+  // #471: defaulted, because only history restoration ever supplies one.
+  pendingScrollTop: number | null = null,
+): MainSurfaceState => ({
+  kind: 'dashboard', dashboardId, mode, currentMember, pendingFocus, pendingScrollTop,
+});
 
 describe('resolveOpenDashboard', () => {
   it('resolves an exact id into Dashboard surface state, independent of position', () => {
@@ -37,7 +42,7 @@ describe('resolveOpenDashboard', () => {
     expect(resolved).toEqual({
       status: 'ok',
       surface: {
-        kind: 'dashboard', dashboardId: 'c', mode: 'view', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'c', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       },
     });
   });
@@ -49,7 +54,7 @@ describe('resolveOpenDashboard', () => {
     expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
       status: 'ok',
       surface: {
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: focus, pendingFocus: focus,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: focus, pendingFocus: focus, pendingScrollTop: null,
       },
     });
   });
@@ -61,7 +66,7 @@ describe('resolveOpenDashboard', () => {
     expect(resolveOpenDashboard(wsOf(dashWith('a', ['t1'])), { dashboardId: 'a', mode: 'edit', focus })).toEqual({
       status: 'ok',
       surface: {
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: focus,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: focus, pendingScrollTop: null,
       },
     });
   });
@@ -72,7 +77,7 @@ describe('resolveOpenDashboard', () => {
     expect(resolveOpenDashboard(ws(['a']), { dashboardId: 'a', mode: 'edit' })).toEqual({
       status: 'ok',
       surface: {
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       },
     });
   });
@@ -131,7 +136,7 @@ describe('reconcileMainSurface', () => {
   it('clears a current TILE member whose tile was removed, keeping the Dashboard open', () => {
     const surface = onDashboard('d', 'edit', { kind: 'tile', id: 'gone' });
     expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'])))).toEqual({
-      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
     });
   });
 
@@ -140,7 +145,7 @@ describe('reconcileMainSurface', () => {
   it('does not resolve a tile member by consulting any other collection, and a variable never needs one', () => {
     const tileSurface = onDashboard('d', 'edit', { kind: 'tile', id: 'x' });
     expect(reconcileMainSurface(tileSurface, wsOf(dashWith('d', [])))).toEqual({
-      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null,
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
     });
     const variableSurface = onDashboard('d', 'edit', { kind: 'variable', id: 'x' });
     expect(reconcileMainSurface(variableSurface, wsOf(dashWith('d', ['x'])))).toBe(variableSurface);
@@ -152,7 +157,7 @@ describe('reconcileMainSurface', () => {
     const current = { kind: 'tile', id: 't1' } as const;
     const surface = onDashboard('d', 'edit', current, { kind: 'tile', id: 'gone' });
     expect(reconcileMainSurface(surface, wsOf(dashWith('d', ['t1'])))).toEqual({
-      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: current, pendingFocus: null,
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit', currentMember: current, pendingFocus: null, pendingScrollTop: null,
     });
   });
 });
@@ -194,7 +199,7 @@ describe('withoutPendingFocus', () => {
     const member = { kind: 'variable', id: 'country' } as const;
     const surface = onDashboard('a', 'edit', member, member);
     expect(withoutPendingFocus(surface)).toEqual({
-      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null,
+      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null, pendingScrollTop: null,
     });
   });
 
@@ -212,7 +217,7 @@ describe('withCurrentMember', () => {
     const surface = onDashboard('a', 'view');
     expect(withCurrentMember(surface, { kind: 'tile', id: 't7' })).toEqual({
       kind: 'dashboard', dashboardId: 'a', mode: 'view',
-      currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+      currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null, pendingScrollTop: null,
     });
   });
 
@@ -220,7 +225,7 @@ describe('withCurrentMember', () => {
     const surface = onDashboard('a', 'view', { kind: 'tile', id: 'old' });
     expect(withCurrentMember(surface, { kind: 'variable', id: 'new' })).toEqual({
       kind: 'dashboard', dashboardId: 'a', mode: 'view',
-      currentMember: { kind: 'variable', id: 'new' }, pendingFocus: null,
+      currentMember: { kind: 'variable', id: 'new' }, pendingFocus: null, pendingScrollTop: null,
     });
   });
 
@@ -238,7 +243,7 @@ describe('carryCurrentMember', () => {
     const previous = onDashboard('a', 'view', member);
     const next = onDashboard('a', 'edit');
     expect(carryCurrentMember(previous, next)).toEqual({
-      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null,
+      kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: member, pendingFocus: null, pendingScrollTop: null,
     });
   });
 
@@ -261,5 +266,100 @@ describe('carryCurrentMember', () => {
     expect(carryCurrentMember(QUERY_SURFACE, next)).toBe(next);
     expect(carryCurrentMember(onDashboard('a', 'view', { kind: 'tile', id: 't1' }), QUERY_SURFACE))
       .toBe(QUERY_SURFACE);
+  });
+});
+
+// ── #471: the Dashboard history snapshot ────────────────────────────────────
+// The URL carries no Dashboard id (#425 keeps it session state), so a history entry
+// that records nothing cannot be returned to — Back out of a tile's
+// Open-in-Workbench landed on the collection's FIRST Dashboard, at the top of the
+// page. These three functions are what a per-entry memory is built from.
+describe('dashboardHistorySnapshot', () => {
+  it('describes the Dashboard on screen, with the offset the DOM has right now', () => {
+    const surface = onDashboard('sales', 'view', { kind: 'tile', id: 't1' });
+    expect(dashboardHistorySnapshot(surface, 'workspace', 640)).toEqual({
+      workspaceKey: 'workspace',
+      dashboardId: 'sales',
+      currentMember: { kind: 'tile', id: 't1' },
+      scrollTop: 640,
+    });
+  });
+
+  it('is null in Query mode, so a Query entry can never restore a Dashboard', () => {
+    expect(dashboardHistorySnapshot(QUERY_SURFACE, 'workspace', 640)).toBeNull();
+  });
+});
+
+describe('readDashboardHistorySnapshot', () => {
+  const stored = (over: Record<string, unknown> = {}): unknown => ({
+    dash: { workspaceKey: 'workspace', dashboardId: 'sales', currentMember: null, scrollTop: 200, ...over },
+  });
+
+  it('reads a snapshot written for THIS workspace', () => {
+    expect(readDashboardHistorySnapshot(stored(), 'workspace')).toEqual({
+      workspaceKey: 'workspace', dashboardId: 'sales', currentMember: null, scrollTop: 200,
+    });
+  });
+
+  it('rejects a snapshot from another workspace — a Dashboard id is unique per workspace, not globally', () => {
+    expect(readDashboardHistorySnapshot(stored(), 'other')).toBeNull();
+    expect(readDashboardHistorySnapshot(stored({ workspaceKey: null }), 'workspace')).toBeNull();
+  });
+
+  it('treats anything else as "this entry remembers nothing"', () => {
+    // A fresh load, an entry written before this existed, or another feature's state.
+    expect(readDashboardHistorySnapshot(null, 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot('nonsense', 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot({}, 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot({ dash: null }, 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot({ dash: 'sales' }, 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot(stored({ dashboardId: undefined }), 'workspace')).toBeNull();
+    expect(readDashboardHistorySnapshot(stored({ dashboardId: '' }), 'workspace')).toBeNull();
+  });
+
+  it('defaults an unusable offset to the top rather than rejecting the entry', () => {
+    // Losing the scroll is a wart; losing the DASHBOARD is the bug this fixes.
+    for (const scrollTop of [undefined, 'a lot', Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(readDashboardHistorySnapshot(stored({ scrollTop }), 'workspace'))
+        .toMatchObject({ dashboardId: 'sales', scrollTop: 0 });
+    }
+    expect(readDashboardHistorySnapshot(stored({ currentMember: undefined }), 'workspace'))
+      .toMatchObject({ currentMember: null });
+  });
+});
+
+describe('restoreDashboardSurface', () => {
+  const snapshot = {
+    workspaceKey: 'workspace', dashboardId: 'b', currentMember: null, scrollTop: 320,
+  };
+
+  it('reselects the snapshot\'s Dashboard and owes its scroll offset', () => {
+    // The whole point: 'b', never the collection's first entry.
+    expect(restoreDashboardSurface(snapshot, 'view', ws(['a', 'b', 'c']))).toEqual({
+      kind: 'dashboard', dashboardId: 'b', mode: 'view',
+      currentMember: null, pendingFocus: null, pendingScrollTop: 320,
+    });
+  });
+
+  it('takes the mode from the ROUTE, which is the part the URL does carry', () => {
+    expect(restoreDashboardSurface(snapshot, 'edit', ws(['a', 'b'])))
+      .toMatchObject({ mode: 'edit' });
+  });
+
+  it('owes no delivery of its own — a restored entry is not a focus request', () => {
+    expect(restoreDashboardSurface({ ...snapshot, currentMember: { kind: 'tile', id: 't1' } },
+      'view', wsOf(dashWith('b', ['t1']))))
+      .toMatchObject({ currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null });
+  });
+
+  it('falls back to Query mode when the remembered Dashboard is gone, never to another one', () => {
+    expect(restoreDashboardSurface(snapshot, 'view', ws(['a', 'c']))).toBe(QUERY_SURFACE);
+    expect(restoreDashboardSurface(snapshot, 'view', null)).toBe(QUERY_SURFACE);
+  });
+
+  it('drops a remembered member the Dashboard no longer contains', () => {
+    expect(restoreDashboardSurface({ ...snapshot, currentMember: { kind: 'tile', id: 'gone' } },
+      'view', wsOf(dashWith('b', ['t1']))))
+      .toMatchObject({ dashboardId: 'b', currentMember: null });
   });
 });

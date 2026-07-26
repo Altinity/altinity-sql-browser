@@ -5055,6 +5055,41 @@ describe('mobile best-effort mode (#126)', () => {
     expect(mainRow.dataset.mobileView).toBe('results');
   });
 
+  // #471 — with the Dashboard toolbar's generic `< Query` button gone, and a
+  // per-tile Open-in-Workbench action unable to help a Dashboard that has no tiles,
+  // this bar is a phone's route to the Workbench: the mobile rules stop hiding it on
+  // the Dashboard surface, and Editor there means "leave the Dashboard" rather than
+  // "select a panel". Surface first, then the panel — the same order
+  // `openSavedQuery`/`openVariableTab` use, so the panel the user lands on is the
+  // one they asked for.
+  it('on the Dashboard surface, the Editor nav button returns to the Workbench', () => {
+    const { app } = mobileApp(true);
+    app.currentWorkspace = {
+      storageVersion: 5, id: 'w', key: 'workspace', name: 'W', queries: [], dashboards: [],
+    };
+    app.workspaceRouteStatus = 'ready';
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd', mode: 'view',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    app.state.mobileView.value = 'tables';
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    nav(app, 'editor').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(showQuerySurface).toHaveBeenCalledOnce();
+    expect(app.state.mobileView.value).toBe('editor');
+  });
+
+  it('on the Query surface the same button only switches panels, never the surface', () => {
+    const { app } = mobileApp(true);
+    const showQuerySurface = vi.fn();
+    app.showQuerySurface = showQuerySurface;
+    app.state.mobileView.value = 'tables';
+    nav(app, 'editor').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(showQuerySurface).not.toHaveBeenCalled();
+    expect(app.state.mobileView.value).toBe('editor');
+  });
+
   it('the Schema | Library segmented switches the sidebar pane (data-mobile-tab)', () => {
     const { app } = mobileApp(true);
     const sidebar = qs(app.root, '.sidebar');
@@ -5258,7 +5293,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.openDashboard({ dashboardId: 'second', mode: 'view' });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       expect(app.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'ops', mode: 'view' });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(1);
@@ -5269,19 +5304,27 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'edit',
-        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: { kind: 'tile', id: 't7' },
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: { kind: 'tile', id: 't7' }, pendingScrollTop: null,
       });
     });
 
     it('pushes one history entry entering the Dashboard and REPLACES on a mode change', () => {
       const pushState = vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
       const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+      // #471 added a SECOND reason to call `replaceState`: stamping the Dashboard
+      // snapshot onto the current entry. The history discipline this test guards is
+      // about ENTRIES, and a stamp creates none — it is told apart by its STATE
+      // argument, since every route write passes `null` and only a stamp passes
+      // `{ dash: … }`.
+      const urlsReplaced = (): string[] => replaceState.mock.calls
+        .filter((call) => call[0] === null)
+        .map((call) => call[2] as string);
       const { app } = readyApp(['a']);
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
       expect(pushState).toHaveBeenCalledWith(null, '', '/sql?ws=ops&surface=dashboard');
-      expect(replaceState).not.toHaveBeenCalled();
+      expect(urlsReplaced()).toEqual([]);
       app.openDashboard({ dashboardId: 'a', mode: 'view' });
-      expect(replaceState).toHaveBeenCalledWith(null, '', '/sql?ws=ops&surface=dashboard&mode=view');
+      expect(urlsReplaced()).toEqual(['/sql?ws=ops&surface=dashboard&mode=view']);
       expect(pushState).toHaveBeenCalledTimes(1);
       // Leaving for the Query surface is a real navigation again.
       app.showQuerySurface();
@@ -5334,7 +5377,7 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
     });
@@ -5362,7 +5405,7 @@ describe('unified /sql routing', () => {
       // the port already delivered it.
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'edit',
-        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null, pendingScrollTop: null,
       });
       expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
     });
@@ -5380,7 +5423,7 @@ describe('unified /sql routing', () => {
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders + 1);
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'edit',
-        currentMember: { kind: 'variable', id: 'p' }, pendingFocus: { kind: 'variable', id: 'p' },
+        currentMember: { kind: 'variable', id: 'p' }, pendingFocus: { kind: 'variable', id: 'p' }, pendingScrollTop: null,
       });
     });
 
@@ -5394,7 +5437,7 @@ describe('unified /sql routing', () => {
       // The Dashboard stays open and unchanged; nothing is marked current.
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
         .toContain('That panel is no longer on this dashboard.');
@@ -5419,7 +5462,7 @@ describe('unified /sql routing', () => {
       app.showDashboardSurface('view');
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'view',
-        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null,
+        currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5429,7 +5472,7 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
       app.openDashboard({ dashboardId: 'b', mode: 'edit' });
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'b', mode: 'edit', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'b', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5506,7 +5549,7 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['first', 'second']);
       app.showDashboardSurface('edit');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'first', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5523,7 +5566,7 @@ describe('unified /sql routing', () => {
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
       app.showDashboardSurface('view');
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5577,7 +5620,7 @@ describe('unified /sql routing', () => {
         dashboards: [dash('shared'), dash('x')],
       });
       expect(kept.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'shared', mode: 'view', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'shared', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5767,7 +5810,7 @@ describe('unified /sql routing', () => {
       // after the focus ring has moved on.
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'b', mode: 'edit',
-        currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null,
+        currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null, pendingScrollTop: null,
       });
     });
 
@@ -5779,11 +5822,82 @@ describe('unified /sql routing', () => {
       // The URL carries no Dashboard id, so re-deriving one here would silently
       // retarget the surface to the collection's first entry.
       expect(app.mainSurface).toEqual({
-        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null,
+        kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       location.search = '?ws=ops';
       await app.handleSqlPopState();
       expect(app.mainSurface).toEqual({ kind: 'query' });
+    });
+
+    // #471 — the failure this issue's own acceptance criteria made unacceptable.
+    // Opening a tile's query pushes a Query entry and DISPOSES the Dashboard DOM, so
+    // Back rebuilds from scratch. The URL carries no Dashboard id, and the session
+    // now says "query", so the old fallback resolved the collection's FIRST
+    // Dashboard: the user left `second`, scrolled, and came back to `first` at the
+    // top. #471 removed the global control that made that round trip avoidable, so
+    // the history ENTRY has to remember instead.
+    it('Back out of a tile\'s query returns to the Dashboard the user LEFT', async () => {
+      const stamps: unknown[] = [];
+      const replaceState = vi.spyOn(window.history, 'replaceState')
+        .mockImplementation((state) => { stamps.push(state); });
+      const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'second', mode: 'view' });
+      // A tile's Open-in-Workbench: back to the Query surface, pushing an entry. On
+      // the way out the OUTGOING entry is stamped with what the URL cannot carry.
+      app.showQuerySurface();
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      const leaving = stamps.at(-1);
+      expect(leaving).toEqual({
+        dash: { workspaceKey: 'ops', dashboardId: 'second', currentMember: null, scrollTop: 0 },
+      });
+      replaceState.mockRestore();
+
+      // Back. The browser restores the entry AND its state; this fixture never
+      // navigates, so the restoration is applied by hand — the point under test is
+      // what `adoptRouteMainSurface` does with it, given a route that says only
+      // "a Dashboard, in view mode".
+      window.history.replaceState(leaving, '', '/sql?ws=ops&surface=dashboard&mode=view');
+      location.search = '?ws=ops&surface=dashboard&mode=view';
+      await app.handleSqlPopState();
+      expect(app.mainSurface).toMatchObject({
+        kind: 'dashboard', dashboardId: 'second', mode: 'view',
+        // A restored entry owes no focus DELIVERY: the ring is not re-flashed. (The
+        // remembered `currentMember` round trip is covered in main-surface.test.ts,
+        // where a fixture can hold a Dashboard that actually contains the tile.)
+        pendingFocus: null,
+      });
+      // The offset rides in the same snapshot; this fixture mounts no Dashboard, so
+      // there is none to record. `dashboard.test.ts` covers capture and restore
+      // against real DOM, and the e2e covers the whole round trip in a browser.
+      expect(app.mainSurface).toMatchObject({ pendingScrollTop: 0 });
+    });
+
+    it('ignores a remembered Dashboard from a DIFFERENT workspace', async () => {
+      // A Dashboard id is unique per workspace, not globally (#457), so a snapshot
+      // left by another workspace must not resolve even when the id collides.
+      const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
+      window.history.replaceState(
+        { dash: { workspaceKey: 'somewhere-else', dashboardId: 'second', currentMember: null, scrollTop: 90 } },
+        '', location.search,
+      );
+      app.mainSurface = { kind: 'query' };
+      location.search = '?ws=ops&surface=dashboard';
+      await app.handleSqlPopState();
+      // Falls back to the compatibility entry, exactly as a boot with no snapshot
+      // does — never to the other workspace's remembered id.
+      expect(app.mainSurface).toMatchObject({ dashboardId: 'first', pendingScrollTop: null });
+    });
+
+    it('falls back to the compatibility Dashboard when the remembered one is gone', async () => {
+      const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
+      window.history.replaceState(
+        { dash: { workspaceKey: 'ops', dashboardId: 'deleted-since', currentMember: null, scrollTop: 90 } },
+        '', location.search,
+      );
+      app.mainSurface = { kind: 'query' };
+      location.search = '?ws=ops&surface=dashboard';
+      await app.handleSqlPopState();
+      expect(app.mainSurface).toMatchObject({ dashboardId: 'first' });
     });
   });
 
@@ -5867,7 +5981,10 @@ describe('unified /sql routing', () => {
     // select, then re-project — a SAME-workspace projection, which is the only
     // kind that keeps a selection.
     app.applyCommittedWorkspace(workspace);
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'second', mode: 'edit', currentMember: null, pendingFocus: null };
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'second', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
     // Project through the real path: `state.dashboard` is whatever
     // `applyCommittedWorkspace` put there — the SELECTED document — never a
     // hand-made one production could not produce.
@@ -5921,7 +6038,10 @@ describe('unified /sql routing', () => {
     // A selection pinned before the entry was deleted elsewhere: the fold must
     // not guess into another slot. (`state.dashboard` still holds the document
     // that surface was editing.)
-    app.mainSurface = { kind: 'dashboard', dashboardId: 'deleted', mode: 'edit', currentMember: null, pendingFocus: null };
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'deleted', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
     app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
     app.renderDashboard = vi.fn();
     app.reloadDashboardRoute();

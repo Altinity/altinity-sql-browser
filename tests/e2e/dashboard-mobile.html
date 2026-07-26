@@ -47,7 +47,14 @@
     </div>
     <!-- The bottom nav is a sibling of `.main-row`, which is exactly the
          relationship the `~ .mobile-nav` rule depends on. -->
-    <div class="mobile-nav"><button class="mobile-nav-btn" data-view="tables">Tables</button></div>
+    <!-- All three shipped buttons (app-shell.ts), because #471's rules hide two of
+         them on this surface and leave Editor as the route to the Workbench — a
+         one-button mock could not tell the difference. -->
+    <div class="mobile-nav">
+      <button class="mobile-nav-btn" data-view="tables"><span class="mnav-label">Tables</span></button>
+      <button class="mobile-nav-btn" data-view="editor"><span class="mnav-label">Editor</span></button>
+      <button class="mobile-nav-btn" data-view="results"><span class="mnav-label">Results</span></button>
+    </div>
   </div>
   <script type="module">
     import { buildRecentField } from '/src/ui/recent-field.js';
