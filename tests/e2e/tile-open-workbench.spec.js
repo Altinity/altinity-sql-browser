@@ -129,6 +129,72 @@ test('a KPI tile in VIEW mode still exposes a reachable action', async ({ page }
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-kpi', active: true });
 });
 
+test('a KPI tile in EDIT mode puts the action top-right, beside the delete button', async ({ page }) => {
+  // Geometry, because CSS decides it and happy-dom sees none of it: a KPI tile has
+  // no heading to push its actions right, so the head squares them up itself. Two
+  // competing `margin-left: auto` items would SPLIT the free space and leave this
+  // action floating mid-head.
+  await open(page);
+  await openDashboard(page, 'sales', 'edit');
+
+  const kpi = page.locator('.dash-gg-tile.is-kpi');
+  await kpi.hover();
+  const geometry = await kpi.evaluate((tile) => {
+    const head = tile.querySelector(':scope > .dash-tile-head').getBoundingClientRect();
+    const open_ = tile.querySelector('.dash-tile-open').getBoundingClientRect();
+    const del = tile.querySelector('.dash-gg-del').getBoundingClientRect();
+    return { headLeft: head.left, headRight: head.right, headWidth: head.width, openLeft: open_.left, openRight: open_.right, delLeft: del.left, delRight: del.right };
+  });
+  // Both actions live in the right-hand quarter of the head, in reading order.
+  expect(geometry.openLeft).toBeGreaterThan(geometry.headLeft + geometry.headWidth * 0.75);
+  expect(geometry.openRight).toBeLessThanOrEqual(geometry.delLeft + 1);
+  expect(geometry.delRight).toBeLessThanOrEqual(geometry.headRight + 1);
+});
+
+test('the KPI overlay action is reachable by keyboard, which reveals the head', async ({ page }) => {
+  // The overlay is `opacity: 0` + `pointer-events: none` and is revealed by `:hover`
+  // and `:focus-within`. A keyboard user never hovers, so focus must be the whole
+  // path: reveal, then activate.
+  await open(page);
+  await openDashboard(page, 'sales');
+
+  const kpi = page.locator('.dash-gg-tile.is-kpi');
+  const action = kpi.locator('.dash-tile-open');
+  await action.focus();
+  await expect(action).toBeFocused();
+  await expect.poll(() => action.evaluate((el) => getComputedStyle(el.parentElement).opacity)).toBe('1');
+  await page.keyboard.press('Enter');
+
+  await expect.poll(() => surface(page)).toBe('query');
+  expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-kpi', active: true });
+});
+
+test('Saving the opened tab updates the Dashboard copy, not the same-named sibling', async ({ page }) => {
+  // The acceptance criterion that the identity argument rests on, asserted directly:
+  // `q-sales` and `q-ops` are both named `Live KPIs`, each owned by a different
+  // Dashboard. Editing the one this tile opened must write only that copy.
+  await open(page);
+  await openDashboard(page, 'sales');
+  await tileAction(page, 'Live KPIs').click();
+  await expect.poll(() => surface(page)).toBe('query');
+
+  await page.locator('.cm-content[data-language="sql"]').click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('SELECT 99 AS v');
+  await page.locator('.save-btn').click();
+
+  await expect.poll(async () => (await page.evaluate(() => window.__queries()))
+    .find((query) => query.id === 'q-sales').sql).toBe('SELECT 99 AS v');
+  const queries = await page.evaluate(() => window.__queries());
+  // The same-named copy in the OTHER Dashboard is untouched, and no new query was
+  // created (a name-keyed write would have hit one of these).
+  expect(queries.find((query) => query.id === 'q-ops').sql).toBe('SELECT 2 AS v');
+  expect(queries.map((query) => query.id)).toEqual(['q-sales', 'q-ops', 'q-kpi', 'q-text']);
+  // The tab is clean again, and still linked to the Dashboard's copy.
+  await expect(page.locator('.qtab.active .dirty')).toHaveCount(0);
+  expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-sales' });
+});
+
 test('a queryless (Text) tile exposes no action at all', async ({ page }) => {
   await open(page);
   await openDashboard(page, 'sales');
@@ -183,6 +249,18 @@ test.describe('touch', () => {
     // No hover, no focus — and still visible.
     expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
     await expect.poll(() => action.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+    // Including a KPI tile, whose whole chrome overlay is otherwise hover-revealed —
+    // and in EDIT mode, where that reveal is additionally `:not(.is-view)`-scoped, so
+    // a touch device satisfied neither half of it.
+    for (const mode of ['view', 'edit']) {
+      await openDashboard(page, 'sales', mode);
+      const kpiAction = page.locator('.dash-gg-tile.is-kpi .dash-tile-open');
+      await expect.poll(
+        () => kpiAction.evaluate((el) => getComputedStyle(el.parentElement).opacity),
+        { message: `KPI head hidden on touch in ${mode} mode` },
+      ).toBe('1');
+    }
+    await openDashboard(page, 'sales');
     // The tap itself is chromium-only: WebKit's mobile emulation hit-tests a tap to
     // the root element, which is a Playwright emulation limit rather than anything
     // about this button (its click path is covered on both engines above).

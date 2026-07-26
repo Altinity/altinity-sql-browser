@@ -163,15 +163,18 @@ export interface DashboardApp {
   currentWorkspace: StoredWorkspaceV5 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
-   *  navigation API its own chrome (View/Edit, and #471's per-tile Open in
-   *  Workbench) transitions through. */
+   *  navigation API its own View/Edit control transitions through. (#471's per-tile
+   *  Open in Workbench does not go through it: opening a document is not a surface
+   *  transition the Dashboard performs — see `openSavedQuery` below.) */
   mainSurface: App['mainSurface'];
   openDashboard: App['openDashboard'];
   showDashboardSurface: App['showDashboardSurface'];
-  showQuerySurface: App['showQuerySurface'];
   /** #471: a tile's own `Open in Workbench` action, by the tile's `queryId` — the
    *  Dashboard-owned copy's stable id, which is what makes the opened tab, and
-   *  every later Save from it, target this Dashboard's document. */
+   *  every later Save from it, target this Dashboard's document. This surface no
+   *  longer needs `showQuerySurface`: leaving a Dashboard used to be a generic
+   *  toolbar act and is now always a document-opening one, which routes through
+   *  here (`openSavedQuery` switches the surface itself). */
   openSavedQuery: App['openSavedQuery'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
@@ -1450,13 +1453,20 @@ export async function renderDashboard(
     const onPointerDown: EventListener = (event) => {
       const pe = event as PointerEvent;
       if (pe.button !== 0) return; // primary button only
+      // A fresh gesture never inherits a stale suppress. This runs BEFORE the
+      // action-chrome early return below, because `onUp` arms the suppress on every
+      // completed move while only a same-card release actually fires the click that
+      // consumes it: after a CROSS-tile release the flag is still set, and the
+      // capture-phase guard above lives on the card — an ancestor of every action
+      // button — so leaving it armed swallowed the first press on one of them
+      // (#471; the delete button had the same latent bug).
+      clickSuppressCard = null;
       // The resize handle (own stopPropagation), the delete button and #471's
       // Open-in-Workbench action own their own gestures — never start a move from
       // them. Open-in-Workbench is the only one of the three that also exists in
       // View mode, where this handler is never wired at all.
       const target = pe.target as Element;
       if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open')) return;
-      clickSuppressCard = null; // a fresh gesture never inherits a stale suppress
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
       const fromGrip = !!target.closest('.dash-gg-grip');

@@ -5341,6 +5341,39 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
   });
 
+  it('still opens on the first press after a drag that released away from its card', async () => {
+    // `onUp` arms the post-drag click suppression on EVERY completed move, but only a
+    // release back over the ORIGIN card fires the synthesized click that consumes it
+    // ("harmless" per its own comment). After a release anywhere else the flag stays
+    // armed, and the guard reading it is a capture-phase listener on the CARD — an
+    // ancestor of every action button — so the next press on this action was
+    // swallowed and the user had to click twice. Clearing the flag now happens
+    // before the action-chrome early return in `onPointerDown`, which is why a real
+    // press (pointerdown, then click) gets through.
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    });
+    const { app, commit } = dashApp({ workspace: ws });
+    const openSavedQuery = vi.fn();
+    app.openSavedQuery = openSavedQuery;
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    // A modifier-drag from tile 1's BODY released over empty space: the move
+    // completes (so the suppression arms) but hits no drop target, so nothing
+    // commits and this render — with its live cards — stays on screen.
+    pointerDragTo(cards, 0, OUTSIDE_ALL_TILES, { metaKey: true });
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    button.click();
+    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+  });
+
   const kpiWs = (layout: Record<string, unknown>): WsOver => ({
     queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
     tiles: [{ id: 't1', queryId: 'k1' }],

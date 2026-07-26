@@ -3541,16 +3541,19 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-tile-open:focus-visible { opacity: 1; }
 .dash-tile-open:hover { color: var(--accent-text); background: var(--bg-hover); }
 .dash-tile-open svg { width: 13px; height: 13px; }
-/* `margin-left: auto` rather than relying on the heading's `flex: 1` to push it
-   right: a KPI tile hides its heading entirely, and this must still sit top-right
-   there (before the delete button, when edit mode builds one). */
-.dash-tile-open { margin-left: auto; }
+/* No `margin-left: auto` here — the heading's `flex: 1` already pushes the trailing
+   actions right, and a second auto margin next to `.dash-gg-del`'s would SPLIT the
+   free space between the two rather than pinning both to the right (visible only on
+   a KPI tile, whose heading is `display: none`; that head is squared up where it is
+   styled, below). */
 /* A touch device has no hover and no keyboard: subtlety there would mean
    invisible. On a phone this action is also the primary route off a Dashboard into
    the query behind a tile, so it is always shown. */
 @media (hover: none) {
   .dash-tile-open { opacity: 1; }
-  .dash-gg-grid .dash-gg-tile.is-kpi.is-view > .dash-tile-head { opacity: 1; }
+  /* The KPI tile's chrome OVERLAY needs the same treatment, but its rule has to sit
+     with the KPI block further down: the selector there has identical specificity, so
+     only source order decides, and an override here would lose. */
 }
 /* Corner-drag resize handle (bottom-right, edit mode only): nwse-resize
    cursor, hover-revealed diagonal glyph, accent highlight while resizing. */
@@ -3646,9 +3649,15 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    positioning host for the remove control. The card itself already exposes
    the query title through its accessible group name. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-heading { display: none; }
+/* With the heading gone this head has no `flex: 1` item to push its actions right,
+   so it squares them up itself — and `.dash-gg-del`'s own `margin-left: auto` has to
+   be dropped, or that one auto margin would absorb the free space and strand
+   #471's action at the LEFT edge instead. */
+.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head { justify-content: flex-end; }
+.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-gg-del { margin-left: 0; }
+/* The head is a pointer-transparent overlay, so every control it holds has to opt
+   back in. #471's action is the first one that exists in View mode. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-gg-del,
-/* #471: the head is a pointer-transparent overlay — every control it holds has to
-   opt back in, and Open-in-Workbench is the first one that exists in View mode. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-open { pointer-events: auto; }
 /* #471: a View-mode KPI tile used to have NO chrome to reveal, so its head stayed
    hidden (`:not(.is-view)` on the reveal rules below). It has one control now, and
@@ -3656,6 +3665,16 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    `::before` hover outline stays edit-only: that one advertises drag/resize. */
 .dash-gg-grid .dash-gg-tile.is-kpi.is-view:hover > .dash-tile-head,
 .dash-gg-grid .dash-gg-tile.is-kpi.is-view:focus-within > .dash-tile-head { opacity: 1; }
+/* #471, touch: every reveal rule for this overlay is `:hover`/`:focus-within`, and in
+   Edit mode additionally `:not(.is-view)` — a touch device satisfies none of them, so
+   the whole head (this action AND the delete button) was unreachable there. Ancestor
+   opacity composites, so `.dash-tile-open`'s own `opacity: 1` cannot rescue it. This
+   has to live HERE, next to the KPI block, rather than with that rule further up:
+   the base `…is-kpi > .dash-tile-head { opacity: 0 }` above has identical
+   specificity, so source order alone decides. */
+@media (hover: none) {
+  .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head { opacity: 1; }
+}
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-body { padding: 0; }
 .dash-gg-grid .dash-gg-tile.is-kpi .dash-gg-grip { display: none; }
 .dash-gg-grid .dash-gg-tile.is-kpi::before {

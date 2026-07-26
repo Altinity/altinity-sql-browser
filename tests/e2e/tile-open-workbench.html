@@ -62,8 +62,10 @@
       queries: [
         query('q-sales', 'Live KPIs', 'SELECT 1 AS v'),
         query('q-ops', 'Live KPIs', 'SELECT 2 AS v'),
-        // A KPI tile: in FLOW layout it renders into a `.dash-kpi-member` band host
-        // with no tile head at all, so its action rides on the host itself.
+        // A KPI tile. In the grid engine it is a frameless CARD whose head is a
+        // pointer-transparent overlay — the hardest case for this action. (In FLOW
+        // layout a KPI tile renders into a chrome-less `.dash-kpi-member` band host
+        // instead and deliberately carries no action at all — #475.)
         query('q-kpi', 'Revenue KPI', 'SELECT 42 AS value', { type: 'kpi' }),
         // A genuinely queryless tile — it must expose NO action rather than opening
         // an unrelated document.
@@ -141,6 +143,14 @@
       active: tab.id === app.state.activeTabId.value,
     }));
     window.__surface = () => app.mainSurface.kind;
+    /** Committed truth for every query, so a Save can be checked against the
+     *  Dashboard's OWN copy and against the same-named copy it must not touch. */
+    window.__queries = async () => {
+      const read = await app.workspace.loadById(seed.id);
+      return read.status === 'ok'
+        ? read.workspace.queries.map((query) => ({ id: query.id, name: query.spec.name, sql: query.sql }))
+        : null;
+    };
     window.__app = app;
     window.__ready = true;
   </script>
