@@ -80,10 +80,6 @@ export interface TimeRangeFieldHandle {
   /** The control's root, a `.var-field.is-time-range` wrapper hosting the
    *  trigger — dropped straight into the bar's "Time" section by the caller. */
   el: HTMLElement;
-  /** Present for handle uniformity with the other variable controls. A plain
-   *  (non-source-backed) time-range control has no transport status to show,
-   *  so this is a documented no-op. */
-  updateStatus(s: unknown): void;
   /** Whether the popover is currently open. */
   isOpen(): boolean;
   /** Focus this control's trigger (used by the bar's rebuild focus-restore). */
@@ -358,7 +354,6 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
 
   return {
     el: h('div', { class: 'var-field is-time-range' }, trigger),
-    updateStatus: () => { /* no-op: a plain time-range control has no source status */ },
     isOpen: () => closeCurrent !== null,
     focusTrigger: () => { trigger.focus(); },
     refreshLabel: (nowMs) => computeTriggerLabel(nowMs),
