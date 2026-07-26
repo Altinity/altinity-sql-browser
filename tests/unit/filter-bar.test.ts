@@ -756,6 +756,23 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     expect([...document.querySelectorAll('.ms-option-label')].map((n) => n.textContent)).toEqual(['Spain']);
   });
 
+  it('renders a multi-select inert while its option batch is still loading', () => {
+    const onCommitVariableSelection = vi.fn();
+    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
+      variables: { tags: { options: [], loading: true, selection: ['de'] } },
+      onCommitVariableSelection,
+    });
+    const trigger = fieldFor(bar, 'tags').querySelector<HTMLButtonElement>('.ms-trigger')!;
+    expect(trigger.textContent).toBe('Loading options…');
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
+    // The options landing through the normal fold makes it operable.
+    bar.setVariableOptions({ tags: { options: OPTIONS, error: null } });
+    expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')!.getAttribute('aria-disabled')).toBe('false');
+    expect(onCommitVariableSelection).not.toHaveBeenCalled();
+  });
+
   it('renders a multi-select unavailable when the batch failed', () => {
     const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
       variables: { tags: { options: OPTIONS, optionsError: 'Variable options could not be loaded.' } },

@@ -3557,6 +3557,59 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     expect(panelRuns()[0].params.param_user).toBe("['ada','bo']");
     expect(qs(app.root, '.ms-trigger').textContent).toBe('2 selected');
   });
+
+  it('cannot clear a restored selection by Applying before the option batch answers', async () => {
+    // `renderDashboard` mounts the whole surface BEFORE awaiting `session.start()`,
+    // so a configured variable is on screen for the entire option request — long
+    // enough to open a multi-select and press Apply. With no loading guard the
+    // draft and the restored selection both canonicalize against the empty list
+    // that has not arrived, and the no-change Apply commits a CLEAR.
+    let resolveOptions!: (value: ExecResp) => void;
+    const pendingOptions = new Promise<ExecResp>((resolve) => { resolveOptions = resolve; });
+    // A persisted selection to restore, through the REAL default store that
+    // `renderDashboard` reads `KEYS.dashFilters` from (never the ambient one).
+    const stored = new Map<string, string>([[KEYS.dashFilters, JSON.stringify({
+      d: { user: { value: ['ada', 'bo'], active: true } },
+    })]]);
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => stored.get(k) ?? null,
+      setItem: (k: string, v: unknown) => { stored.set(k, String(v)); },
+    });
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('__variable_name')
+        ? pendingOptions
+        : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+      }),
+    });
+    const rendering = render(app);
+    // Flush microtasks up to (but not past) the in-flight option request.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+    const trigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(trigger.textContent).toBe('Loading options…');
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
+
+    resolveOptions({
+      columns: [
+        { name: '__variable_name', type: 'String' },
+        { name: 'v', type: 'String' },
+        { name: 'l', type: 'String' },
+      ],
+      rows: [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']],
+    });
+    await rendering;
+    await flush();
+    // The restored selection is intact, and the control is operable now.
+    expect(qs(app.root, '.ms-trigger').textContent).toBe('2 selected');
+    expect(qs(app.root, '.ms-trigger').getAttribute('aria-disabled')).toBe('false');
+    vi.unstubAllGlobals();
+  });
 });
 
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the

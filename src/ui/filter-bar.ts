@@ -130,6 +130,13 @@ export interface VariableFieldSpec {
    *  than in `app.state.varValues` on purpose — see
    *  `onCommitVariableSelection`. Ignored by every other control branch. */
   selection?: readonly string[];
+  /** The option batch has not answered for this variable yet (its published
+   *  status is still `loading`). A multi-select renders inert until it has, so a
+   *  no-change Apply against a not-yet-arrived list cannot clear a restored
+   *  selection. Ignored by every other control branch — the single-select
+   *  commits one value the user just picked from what IS shown, so an empty
+   *  list simply offers nothing to pick. */
+  loading?: boolean;
 }
 
 /** A per-field execution-status update (`status`/`stale`/`waitingFor` mirror
@@ -408,6 +415,7 @@ export function buildFilterBar(
       options: spec.options ?? [],
       selected: spec.selection ?? [],
       active: !!app.state.filterActive[p.name],
+      loading: !!spec.loading,
       title: p.name + ': ' + p.type,
       // Apply is a complete, deliberate action, so it bypasses the keystroke
       // debounce entirely — same reasoning as the single-select's own commit.

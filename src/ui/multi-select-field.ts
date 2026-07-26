@@ -57,6 +57,11 @@ export interface MultiSelectFieldOpts {
    *  value a refresh dropped); never mutated by this module. */
   selected: readonly string[];
   active: boolean;
+  /** The option batch has not answered for this variable yet. The control is
+   *  rendered but MUST NOT be operable: `options` is still empty, so an Apply
+   *  would canonicalize a restored selection against nothing and commit a clear.
+   *  Cleared by the first `setOptions`. */
+  loading?: boolean;
   /** The trigger's resting `title` — `name: Type`, from the bar. */
   title?: string;
   onApply(next: string[], active: boolean): void;
@@ -92,6 +97,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
 
   let options: readonly VariableOption[] = opts.options;
   let unavailable: string | null = null;
+  let loading = !!opts.loading;
   // The currently-open popover's own close() — non-null iff the popover is open
   // (`isOpen()` reads this directly rather than tracking a second flag).
   let closeCurrent: ((closeOpts?: { skipFocus?: boolean }) => void) | null = null;
@@ -108,6 +114,10 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
    *  one is (a value with no matching option still shows raw, so a dormant
    *  selection never reads as blank); `N selected` beyond that. */
   const triggerText = (): string => {
+    // While the batch is in flight the committed selection cannot be labelled
+    // (the labels live in the answer), and the control is not operable, so it
+    // says what it is doing rather than showing a count it cannot act on.
+    if (loading) return 'Loading options…';
     if (!active || selected.length === 0) return 'Not set';
     if (selected.length === 1) {
       const opt = options.find((o) => o.value === selected[0]);
@@ -116,14 +126,31 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     return `${selected.length} selected`;
   };
 
+  /** Whether the trigger refuses to open — and WHY, for `title`. Loading and a
+   *  batch failure are both "you cannot pick right now"; only the reason differs,
+   *  so they share the one inert state rather than growing a status machine. */
+  const inertReason = (): string | null =>
+    (unavailable ?? (loading ? 'Loading this variable’s options…' : null));
+
   const render = (): void => {
-    const text = triggerText();
-    trigger.textContent = text;
-    trigger.title = unavailable ?? baseTitle;
+    const reason = inertReason();
+    trigger.textContent = triggerText();
+    trigger.title = reason ?? baseTitle;
     trigger.setAttribute('aria-label', `${name} filter, ${selected.length} selected`);
+    control.classList.toggle('is-error', unavailable !== null);
+    trigger.classList.toggle('is-error', unavailable !== null);
+    trigger.classList.toggle('is-loading', loading && unavailable === null);
+    if (unavailable === null) trigger.removeAttribute('aria-invalid');
+    else trigger.setAttribute('aria-invalid', 'true');
+    // `aria-disabled`, never `disabled`: a disabled button is not focusable, so
+    // the reason in `title` becomes unreachable by keyboard and screen reader,
+    // and disabling a focused control drops focus to `<body>`. `onTriggerClick`
+    // is the real gate.
+    trigger.setAttribute('aria-disabled', reason === null ? 'false' : 'true');
+    trigger.setAttribute('aria-busy', String(loading));
   };
 
-  const onTriggerClick = (): void => { if (!unavailable) openPopover(); };
+  const onTriggerClick = (): void => { if (inertReason() === null) openPopover(); };
   trigger.addEventListener('click', onTriggerClick);
 
   // Mount a fresh popover. The generic dialog chrome lives in
@@ -255,6 +282,11 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     isOpen: () => closeCurrent !== null,
     setOptions: (next) => {
       options = next;
+      // The batch has answered for this variable, so the control becomes
+      // operable — this is the ONLY thing that clears `loading`, which is what
+      // guarantees an Apply can never canonicalize against a list that simply
+      // had not arrived.
+      loading = false;
       // A draft built against the PREVIOUS generation can never be applied
       // against this one, so an open popover is cancelled outright. `skipFocus`
       // is deliberately NOT passed: the trigger survives an options swap (unlike
@@ -266,17 +298,9 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     },
     setUnavailable: (reason) => {
       unavailable = reason;
-      // `aria-disabled` + `aria-invalid`, never `disabled`: a disabled button is
-      // not focusable, so its `title` — the only place the reason is written —
-      // becomes unreachable by keyboard and screen reader, and disabling a
-      // focused control silently drops focus to `<body>`. `onTriggerClick`
-      // refuses to open while a reason is set, which is the real gate.
-      control.classList.toggle('is-error', reason !== null);
-      trigger.classList.toggle('is-error', reason !== null);
-      if (reason === null) trigger.removeAttribute('aria-invalid');
-      else trigger.setAttribute('aria-invalid', 'true');
-      trigger.setAttribute('aria-disabled', reason === null ? 'false' : 'true');
-      if (reason !== null) closeCurrent?.();
+      // A batch failure also ends the wait: there will be no options for this
+      // wave, and leaving `loading` set would keep claiming one is coming.
+      if (reason !== null) { loading = false; closeCurrent?.(); }
       render();
     },
     focusTrigger: () => trigger.focus(),

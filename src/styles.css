@@ -2078,11 +2078,14 @@ body.detached-tab .graph-overlay-panel {
   text-align: left; cursor: pointer;
 }
 .ms-trigger:hover { border-color: var(--accent); }
-/* The batch-level failure affordance. The trigger carries `.var-input` too, so
-   `.var-input.is-error` above already paints it — only the affordance differs:
-   it stays `aria-disabled`, never `disabled`, so the reason in `title` remains
-   reachable by keyboard and screen reader, and the cursor says it won't open. */
-.ms-trigger.is-error { cursor: default; }
+/* The two inert states. The trigger carries `.var-input` too, so
+   `.var-input.is-error` above already paints the failure — only the affordance
+   differs: both stay `aria-disabled`, never `disabled`, so the reason in `title`
+   remains reachable by keyboard and screen reader, and the cursor says the
+   popover will not open. `.is-loading` is the in-flight option batch, dimmed and
+   italic like every other pending read in the app. */
+.ms-trigger.is-error, .ms-trigger.is-loading { cursor: default; }
+.ms-trigger.is-loading { opacity: .55; font-style: italic; }
 .ms-popover {
   position: fixed; z-index: 70; width: 260px; max-width: calc(100vw - 24px);
   display: flex; flex-direction: column; gap: 6px; padding: 8px;

@@ -332,6 +332,73 @@ describe('setOptions', () => {
   });
 });
 
+describe('loading', () => {
+  // The surface is mounted BEFORE `session.start()` resolves, so a configured
+  // variable is on screen for the whole option request. Left operable, a
+  // no-change Apply would canonicalize a restored selection against the empty
+  // list that has not arrived yet — and commit a clear.
+  it('refuses to open while the option batch is in flight', () => {
+    const { field, trigger } = build({ selected: ['de', 'fr'], active: true, options: [], loading: true });
+    expect(trigger.textContent).toBe('Loading options…');
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    expect(trigger.getAttribute('aria-busy')).toBe('true');
+    expect(trigger.classList.contains('is-loading')).toBe(true);
+    expect(trigger.title).toContain('Loading');
+    // Not `disabled` — the reason must stay reachable, and focus must not drop.
+    expect(trigger.disabled).toBe(false);
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
+    expect(field.isOpen()).toBe(false);
+  });
+
+  it('cannot clear a restored selection before its options arrive', () => {
+    // The exact reviewer scenario, end to end.
+    const { field, onApply, trigger } = build({
+      selected: ['de', 'fr'], active: true, options: [], loading: true,
+    });
+    trigger.click();
+    (document.querySelector('.ms-btn-primary') as HTMLButtonElement | null)?.click();
+    expect(onApply).not.toHaveBeenCalled();
+    field.setOptions(OPTIONS);
+    // Once the list lands the control is operable and the selection is intact.
+    expect(trigger.textContent).toBe('2 selected');
+    trigger.click();
+    expect(boxes().map((cb) => cb.checked)).toEqual([true, true, false]);
+  });
+
+  it('setOptions is what makes it operable, and restores the real trigger text', () => {
+    const { field, trigger } = build({ selected: ['de'], active: true, options: [], loading: true });
+    field.setOptions(OPTIONS);
+    expect(trigger.getAttribute('aria-disabled')).toBe('false');
+    expect(trigger.getAttribute('aria-busy')).toBe('false');
+    expect(trigger.classList.contains('is-loading')).toBe(false);
+    expect(trigger.textContent).toBe('Germany');
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).not.toBeNull();
+  });
+
+  it('a batch failure also ends the wait, and reports the failure instead', () => {
+    // Leaving `loading` set would keep promising a list that is not coming.
+    const { trigger } = build({ selected: ['de'], active: true, options: [], loading: true });
+    fields[fields.length - 1].setUnavailable('Variable options could not be loaded.');
+    expect(trigger.classList.contains('is-loading')).toBe(false);
+    expect(trigger.classList.contains('is-error')).toBe(true);
+    expect(trigger.getAttribute('aria-busy')).toBe('false');
+    expect(trigger.title).toBe('Variable options could not be loaded.');
+    // Still inert, for the other reason.
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).toBeNull();
+  });
+
+  it('is off by default, so a control built with its options is operable at once', () => {
+    const { trigger } = build();
+    expect(trigger.getAttribute('aria-busy')).toBe('false');
+    expect(trigger.getAttribute('aria-disabled')).toBe('false');
+    trigger.click();
+    expect(document.querySelector('.ms-popover')).not.toBeNull();
+  });
+});
+
 describe('setUnavailable', () => {
   it('marks the trigger without disabling it, and refuses to open', () => {
     const { field, trigger } = build();

@@ -359,14 +359,25 @@ export function readVariableOptionBatch(
     };
   }
   const seen = new Map<string, Set<string>>();
-  for (const name of requested) seen.set(name, new Set());
+  const rawCount = new Map<string, number>();
+  for (const name of requested) { seen.set(name, new Set()); rawCount.set(name, 0); }
   for (const row of response.rows ?? []) {
     const name = cell(row[0]);
     const options = byName.get(name);
-    // `undefined` for a name outside the requested set; `seen` is keyed by the
-    // same set, so it resolves whenever `options` does.
+    // `undefined` for a name outside the requested set; `seen` and `rawCount` are
+    // keyed by the same set, so they resolve whenever `options` does.
     if (options === undefined) continue;
-    if (options.length >= VARIABLE_OPTION_CAP) { truncated.add(name); continue; }
+    // Count RAW rows, before the blank/duplicate filters below. Each branch is
+    // sent `LIMIT VARIABLE_OPTION_CAP + 1`, so receiving that many rows means the
+    // SERVER cut the result off and there may be values we never saw. Deriving
+    // the flag from the KEPT count instead would miss exactly that case whenever
+    // duplicates or blanks collapsed the branch back under the cap (#461): a
+    // query returning 1,001 rows of 500 distinct values is still an incomplete
+    // list, and `applyOptions` must not prune a committed selection against one.
+    const raw = rawCount.get(name)! + 1;
+    rawCount.set(name, raw);
+    if (raw > VARIABLE_OPTION_CAP) truncated.add(name);
+    if (options.length >= VARIABLE_OPTION_CAP) continue;
     const value = cell(row[1]);
     if (value === '') continue;
     const values = seen.get(name)!;

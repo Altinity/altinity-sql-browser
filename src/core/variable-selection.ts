@@ -66,20 +66,30 @@ export interface SelectionReconciliation {
 
 /**
  * Reconcile a previously COMMITTED selection against a fresh option list (the
- * batch re-ran on a Dashboard refresh). Intersects `committed` with the values
- * still present in `options`, then canonicalizes the survivors by the NEW option
- * order — never re-introducing a value that is not in `committed`, because
- * auto-select is never this function's job.
+ * batch re-ran on a Dashboard refresh). Drops the committed values that are no
+ * longer offered, and does nothing else — it never re-introduces a value that is
+ * not in `committed` (auto-select is not this function's job), and it never
+ * REORDERS.
  *
- * - `deactivate` — true iff `committed` was non-empty and the intersection is
- *   empty: every previously selected value is gone, so the variable has nothing
- *   left to contribute and the caller returns it to unset rather than binding an
- *   empty selection.
+ * Order is preserved deliberately. The committed array is what
+ * `serializeParamValue` turns into an ordered ClickHouse literal, and panel SQL
+ * is free to read it order-sensitively (`arrayElement`, `arrayZip`, a positional
+ * join) — `{name:Array(T)}` promises nothing about membership semantics. An
+ * automatic refresh that re-canonicalized survivors into the new OPTION order
+ * would therefore change the value bound into panels whose displayed results came
+ * from the old order, and persist that difference, while reporting no wave. The
+ * user's own Apply still canonicalizes (`canonicalizeSelection`): that is a
+ * deliberate action taken against a list they are looking at.
+ *
+ * - `deactivate` — true iff `committed` was non-empty and nothing survived: the
+ *   variable has nothing left to contribute, so the caller returns it to unset
+ *   rather than binding an empty selection.
  * - `waveNeeded` — true iff the SET of values changed (some committed value was
- *   dropped because it is no longer a valid option); only then must the caller
- *   re-run the panels that declare this variable. A pure REORDER or a
- *   label-only change is `waveNeeded: false` even though `value`'s array order
- *   may differ from `committed`'s.
+ *   dropped, or a duplicate collapsed into a distinct value that binds
+ *   differently); only then must the caller re-run the panels declaring this
+ *   variable. A label-only or option-ORDER-only change needs no wave, and now
+ *   also leaves `value` byte-identical to `committed`, so the caller has nothing
+ *   to adopt.
  *
  * Pure.
  */
@@ -89,10 +99,12 @@ export function reconcileSelection(
 ): SelectionReconciliation {
   const optionValues = new Set(options.map((o) => o.value));
   const committedUnique = Array.from(new Set(committed));
-  const survivorsUnique = committedUnique.filter((v) => optionValues.has(v));
+  const survivors = committedUnique.filter((v) => optionValues.has(v));
   return {
-    value: canonicalizeSelection(survivorsUnique, options),
-    deactivate: committedUnique.length > 0 && survivorsUnique.length === 0,
-    waveNeeded: survivorsUnique.length !== committedUnique.length,
+    value: survivors,
+    deactivate: committedUnique.length > 0 && survivors.length === 0,
+    // Compare against the DEDUPED committed list: `['a','a']` and `['a']` bind
+    // identically, so collapsing them is not a reason to re-run anything.
+    waveNeeded: survivors.length !== committedUnique.length,
   };
 }

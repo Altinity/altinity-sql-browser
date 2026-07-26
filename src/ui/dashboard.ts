@@ -895,6 +895,12 @@ export async function renderDashboard(
         // whose option SQL was rejected locally has a specific problem, and the
         // batch failure is only its reason when it was actually in that batch.
         optionsError: f.optionsError,
+        // The batch has not answered for this variable yet. `renderDashboard`
+        // mounts the whole surface BEFORE awaiting `session.start()`, so a
+        // configured variable is interactive for the entire option request —
+        // long enough to open a multi-select and Apply against a list that has
+        // not arrived, which would clear a restored selection.
+        loading: f.status === 'loading',
         ...(selection === null ? {} : { selection }),
       };
     }

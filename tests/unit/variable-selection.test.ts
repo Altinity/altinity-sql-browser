@@ -54,9 +54,20 @@ describe('canonicalizeSelection', () => {
 });
 
 describe('reconcileSelection', () => {
-  it('keeps survivors, in the NEW option order, with no wave for a pure reorder', () => {
+  it('PRESERVES the committed order when the option order changes', () => {
+    // The committed array becomes an ORDERED ClickHouse literal, and panel SQL is
+    // free to read it order-sensitively — `{name:Array(T)}` promises nothing about
+    // membership semantics. Re-canonicalizing here would change the value bound
+    // into panels whose displayed results came from the old order, and persist
+    // that difference, while reporting no wave.
     const r = reconcileSelection(['a', 'b'], opts('b', 'a'));
-    expect(r).toEqual({ value: ['b', 'a'], deactivate: false, waveNeeded: false });
+    expect(r).toEqual({ value: ['a', 'b'], deactivate: false, waveNeeded: false });
+  });
+
+  it('preserves committed order among the SURVIVORS too', () => {
+    const r = reconcileSelection(['z', 'a', 'b'], opts('a', 'b', 'c'));
+    expect(r.value).toEqual(['a', 'b']);
+    expect(r.waveNeeded).toBe(true);
   });
 
   it('needs no wave when the list is unchanged', () => {

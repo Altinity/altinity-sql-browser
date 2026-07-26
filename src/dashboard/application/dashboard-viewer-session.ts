@@ -47,7 +47,7 @@ import {
   compileVariableOptionBatch, optionSqlDiagnostics, readVariableOptionBatch,
 } from '../../core/variable-options.js';
 import type { VariableOption } from '../../core/variable-options.js';
-import { reconcileSelection, sameSelection } from '../../core/variable-selection.js';
+import { reconcileSelection } from '../../core/variable-selection.js';
 import { multiSelectElementType } from '../../core/param-type.js';
 import { resolveAuthoredTimeRangeGroups } from '../../core/time-range.js';
 import type { DashboardTimeRangeGroup } from '../../core/time-range.js';
@@ -961,7 +961,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  deliberately kept and shown verbatim (`filter-option-field.ts`'s documented
    *  leniency): a value that is still bound into panels is not something an
    *  option refresh gets to silently drop. */
-  function applyOptions(filter: FilterRuntime, options: VariableOption[]): string | null {
+  function applyOptions(filter: FilterRuntime, options: VariableOption[], incomplete: boolean): string | null {
     const previous = filter.state.options;
     const changed = previous === null
       || previous.length !== options.length
@@ -971,15 +971,19 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     filter.state.optionsError = null;
     if (changed) filter.state.optionsRev += 1;
     if (!Array.isArray(filter.state.value)) return null;
+    // A list the server cut off at the cap is not evidence that anything was
+    // removed: a selected value could simply live past row 1,000. Pruning against
+    // it would silently delete a valid selection, re-run the panels, and persist
+    // the shortened array. The single-select already keeps an off-list committed
+    // value and shows it verbatim; a selection gets the same benefit of the doubt.
+    // The truncation WARNING still publishes, so the incompleteness is not hidden.
+    if (incomplete) return null;
     const reconciled = reconcileSelection(filter.state.value, options);
-    if (!reconciled.waveNeeded) {
-      // A pure REORDER, or a label-only change: adopt the new option order so the
-      // trigger reads in list order, but nothing new is bound, so no panel re-runs.
-      if (!sameSelection(reconciled.value, filter.state.value)) filter.state.value = reconciled.value;
-      return null;
-    }
+    // `reconcileSelection` never reorders, so a no-wave outcome means there is
+    // nothing to adopt: the committed value already IS the reconciled one.
+    if (!reconciled.waveNeeded) return null;
     // A selected value is gone from the list. Never auto-select a replacement:
-    // `reconcileSelection` only ever filters and reorders what was already there.
+    // `reconcileSelection` only ever filters what was already committed.
     filter.state.value = commitValue(reconciled.value);
     if (reconciled.deactivate) filter.state.active = false;
     return filter.def.parameter;
@@ -1042,7 +1046,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     for (const filter of filters) {
       const options = read.byName.get(filter.def.id);
       if (options === undefined) continue; // not in this batch
-      const name = applyOptions(filter, options);
+      const name = applyOptions(filter, options, read.truncated.has(filter.def.id));
       if (name !== null) reconciled.push(name);
     }
     // Publish as soon as the options land. Without this they would be invisible

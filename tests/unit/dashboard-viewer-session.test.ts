@@ -8,6 +8,7 @@ import type {
 import type {
   DashboardDocumentV2, DashboardTileV1, SavedQueryV2,
 } from '../../src/generated/json-schema.types.js';
+import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -2036,12 +2037,12 @@ describe('batched option execution (#447 phase 2)', () => {
       expect(session.state.value.filters[0].active).toBe(false);
     });
 
-    it('keeps a surviving selection, reordered to the new list, without re-running panels', async () => {
+    it('leaves a surviving selection completely alone when only the option ORDER changed', async () => {
       let call = 0;
       const { session, calls } = multiSession((sql) => {
         if (!isOptionCall(sql)) return { columns: [{ name: 'n' }], rows: [[1]] };
         call++;
-        // Same members, new ORDER — a reorder binds the same set.
+        // Same members, new ORDER.
         return call === 1
           ? optionRows(['user', 'ada', 'Ada'], ['user', 'bo', 'Bo'])
           : optionRows(['user', 'bo', 'Bo'], ['user', 'ada', 'Ada']);
@@ -2050,10 +2051,39 @@ describe('batched option execution (#447 phase 2)', () => {
       await session.applyFilter('user', ['ada', 'bo'], true);
       const before = calls.filter((c) => !isOptionCall(c.sql)).length;
       await session.refresh();
-      expect(session.state.value.filters[0].value).toEqual(['bo', 'ada']);
+      // The bound literal is UNCHANGED. Adopting the new option order would make
+      // the persisted value differ from the one that produced the results on
+      // screen — silently, since this path deliberately runs no wave.
+      expect(session.state.value.filters[0].value).toEqual(['ada', 'bo']);
       expect(session.state.value.filters[0].active).toBe(true);
       // One refresh wave for the tile, and no EXTRA reconciliation wave.
       expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
+    });
+
+    it('never prunes a selection against a list the server CUT OFF at the cap', async () => {
+      // A value can simply live past row 1,000. Pruning against a truncated list
+      // would delete a valid selection, re-run the panels, and persist the
+      // shortened array — the single-select keeps an off-list value verbatim, and
+      // a selection gets the same benefit of the doubt. The warning still fires.
+      const capped = (extra: [string, string, string][]) => {
+        const rows: [string, string, string][] = [];
+        for (let i = 0; i < VARIABLE_OPTION_CAP + 1; i++) rows.push(['user', `u${i}`, `U${i}`]);
+        return optionRows(...rows, ...extra);
+      };
+      const { session, calls } = multiSession(
+        (sql) => (isOptionCall(sql) ? capped([]) : { columns: [{ name: 'n' }], rows: [[1]] }),
+        { user: { value: ['way-past-the-cap'], active: true } },
+      );
+      await session.start();
+      const before = calls.filter((c) => !isOptionCall(c.sql)).length;
+      await session.refresh();
+      expect(session.state.value.filters[0].value).toEqual(['way-past-the-cap']);
+      expect(session.state.value.filters[0].active).toBe(true);
+      // No reconciliation wave — nothing was decided about the selection.
+      expect(calls.filter((c) => !isOptionCall(c.sql)).length).toBe(before + 1);
+      // The incompleteness is reported, not hidden.
+      expect(session.state.value.filterDiagnostics.map((d) => d.code))
+        .toContain('variable-options-truncated');
     });
 
     it('drops a selected value the refresh removed, and re-runs the affected panels ONCE', async () => {
