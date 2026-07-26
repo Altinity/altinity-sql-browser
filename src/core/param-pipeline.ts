@@ -29,7 +29,9 @@
 import { splitStatements as _splitStatements, isRowReturning as _isRowReturning } from './sql-split.js';
 import { scanParamDeclarations } from './param-scan.js';
 import type { ParamDeclaration } from './param-scan.js';
-import { parseParamType, conflictingTypes, enumValues } from './param-type.js';
+import {
+  parseParamType, conflictingTypes, enumValues, isCompoundParamType, typeLexKind,
+} from './param-type.js';
 import type { ParsedParamType } from './param-type.js';
 import { serializeParamValue as _serializeParamValue } from './param-serialize.js';
 import { materializeOptionalBlocks, countOptionalBlocks, ALL_ACTIVE } from './optional-blocks.js';
@@ -691,11 +693,38 @@ export function fieldControls(analysis: ParameterAnalysis): FieldControl[] {
 }
 
 /** `fieldControlKind`'s return shape — which control a `fieldControls` entry
- *  renders, and (for `'enum'`) the member list to offer. */
+ *  renders, and (for `'enum'`) the member list to offer. `'unsupported'` is
+ *  reachable only under the scalar-controls policy (see `fieldControlKind`). */
 export interface FieldControlKindResult {
-  kind: 'enum' | 'date' | 'text';
+  kind: 'enum' | 'date' | 'text' | 'unsupported';
   enumOptions: string[] | null;
 }
+
+/** `fieldControlKind`'s opt-in policy bag. */
+export interface FieldControlKindOptions {
+  /**
+   * Apply the control policy of a surface that can bind only ONE scalar per
+   * parameter name — a Dashboard variable (#447 phase 2). Two effects, both
+   * confined to that surface so the workbench's variables strip keeps rendering
+   * byte-identical controls:
+   *
+   *   - `Bool` gains `true`/`false` as suggestions (it would otherwise fall to a
+   *     plain text box with no hint of what it accepts). The field stays free
+   *     text, because ClickHouse's Bool accept-set is not enumerable —
+   *     `yes`/`no`/`on`/`off`/`1`/`0` all work — so the list is a hint, not a
+   *     constraint;
+   *   - a COMPOUND type (`Array`/`Tuple`/`Map`/`Nested`) resolves to
+   *     `'unsupported'`: there is no single-scalar control for a container, and
+   *     saying so is better than rendering a box that cannot produce a valid
+   *     value. The value pipeline itself still handles these types fine, which is
+   *     exactly why this is a per-surface policy rather than a global rule.
+   */
+  scalarControls?: boolean;
+}
+
+/** The suggestions offered for a `Bool` variable under the scalar-controls
+ *  policy. A hint, not a whitelist — see `FieldControlKindOptions`. */
+export const BOOL_CONTROL_OPTIONS: string[] = ['true', 'false'];
 
 /**
  * Which control a `fieldControls` entry renders — the enum > date-like >
@@ -712,10 +741,17 @@ export interface FieldControlKindResult {
 export function fieldControlKind(
   field: { type: string; conflict?: string[] },
   inferredEnumOptions: string[] | null = null,
+  options: FieldControlKindOptions = {},
 ): FieldControlKindResult {
   if (field.conflict) return { kind: 'text', enumOptions: null };
   const enumOptions = enumValues(field.type) || inferredEnumOptions;
   if (enumOptions) return { kind: 'enum', enumOptions };
   if (isDateLikeType(field.type)) return { kind: 'date', enumOptions: null };
+  if (options.scalarControls) {
+    // Checked AFTER enum/date so the priority order stays single-sourced: a
+    // declaration is only ever compound when neither of those claimed it.
+    if (isCompoundParamType(field.type)) return { kind: 'unsupported', enumOptions: null };
+    if (typeLexKind(field.type) === 'bool') return { kind: 'enum', enumOptions: BOOL_CONTROL_OPTIONS };
+  }
   return { kind: 'text', enumOptions: null };
 }

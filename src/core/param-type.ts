@@ -204,6 +204,30 @@ export function dateTimeTimeZone(type: string | ParsedParamType): string | null 
   return null;
 }
 
+// Compound (non-scalar) bases. `parseParamType` has already unwrapped
+// Nullable/LowCardinality, so `Nullable(Array(String))` reaches this as `Array`.
+// Matched as a LEADING NAME rather than the whole base, because a shape the
+// shared parser cannot read degrades to an opaque scalar whose `base` is the
+// entire declaration text — `Nested(a String)` is exactly that (the parser has no
+// Nested grammar), and it must still be recognized as a container. `\b` keeps a
+// scalar whose name merely starts with one of these (`ArrayLike`) from matching.
+const COMPOUND_BASE = /^(Array|Tuple|Map|Nested)\b/;
+
+/**
+ * True when the EFFECTIVE type is a compound container (`Array`, `Tuple`, `Map`,
+ * `Nested`) rather than a single scalar value.
+ *
+ * Used by a surface that can bind only ONE scalar per parameter name — a
+ * Dashboard variable (#447) — to say so instead of rendering a control that
+ * cannot work. It is deliberately NOT a statement that the value pipeline rejects
+ * these: `param-serialize.js` serializes `Array(T)` perfectly well, and the
+ * workbench's own variables strip keeps offering a text control for one. Pure.
+ */
+export function isCompoundParamType(type: string | ParsedParamType): boolean {
+  const base = typeof type === 'string' ? parseParamType(type).base : type.base;
+  return COMPOUND_BASE.test(base);
+}
+
 /**
  * The lexical family of a parsed (or raw) type, deciding how the typed
  * serializer emits an array *element* of that type:

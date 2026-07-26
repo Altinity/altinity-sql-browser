@@ -7,7 +7,50 @@ import {
   enumValues,
   isSupportedTimeRangeParamType,
   dateTimeTimeZone,
+  isCompoundParamType,
 } from '../../src/core/param-type.js';
+
+// #447 phase 2: named so a single-scalar surface can say "no control for this"
+// rather than render one that cannot produce a valid value.
+describe('isCompoundParamType', () => {
+  it('is true for the container types', () => {
+    expect(isCompoundParamType('Array(String)')).toBe(true);
+    expect(isCompoundParamType('Tuple(String, UInt8)')).toBe(true);
+    expect(isCompoundParamType('Tuple(a String, b UInt8)')).toBe(true);
+    expect(isCompoundParamType('Map(String, UInt64)')).toBe(true);
+    expect(isCompoundParamType('Nested(a String)')).toBe(true);
+  });
+
+  it('sees through the value-transparent wrappers', () => {
+    expect(isCompoundParamType('Nullable(Array(String))')).toBe(true);
+    expect(isCompoundParamType('LowCardinality(String)')).toBe(false);
+  });
+
+  it('is false for every scalar', () => {
+    for (const type of ['String', 'UInt64', 'Float64', 'Date', 'DateTime64(3)', 'Bool', 'UUID', "Enum8('a' = 1)"]) {
+      expect(isCompoundParamType(type)).toBe(false);
+    }
+    expect(isCompoundParamType('')).toBe(false);
+  });
+
+  it('still recognizes a container the shared parser cannot read', () => {
+    // These degrade to an opaque scalar whose `base` is the whole declaration
+    // text, so an exact base match would miss them — `Nested` has no grammar in
+    // the parser at all, and an unbalanced paren never parses.
+    expect(isCompoundParamType('Nested(a String, b UInt8)')).toBe(true);
+    expect(isCompoundParamType('Array(')).toBe(true);
+  });
+
+  it('does not match a scalar whose name merely starts with a container name', () => {
+    expect(isCompoundParamType('ArrayLike')).toBe(false);
+    expect(isCompoundParamType('Mapping')).toBe(false);
+  });
+
+  it('accepts an already-parsed type', () => {
+    expect(isCompoundParamType(parseParamType('Array(UInt8)'))).toBe(true);
+    expect(isCompoundParamType(parseParamType('String'))).toBe(false);
+  });
+});
 
 describe('isSupportedTimeRangeParamType', () => {
   it('accepts supported scalar date/time declarations and valid wrappers', () => {

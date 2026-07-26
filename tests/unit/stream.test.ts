@@ -46,6 +46,46 @@ describe('applyStreamLine', () => {
     applyStreamLine({ row: { a: '1', b: 'x' } }, r);
     expect(r.rows).toEqual([['1', 'x']]);
   });
+  // #447 phase 2: the Compact streaming variant ('TableCompact') sends rows as
+  // positional arrays. This exists because the name-keyed shape cannot represent
+  // a result with two identically-named columns.
+  it('takes a positional row array as the cell list, without consulting columns', () => {
+    const r = newResult('TableCompact');
+    applyStreamLine({ meta: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }] }, r);
+    applyStreamLine({ row: ['1', 'x'] }, r);
+    expect(r.rows).toEqual([['1', 'x']]);
+  });
+  it('keeps both cells of a positional row whose columns share one name', () => {
+    // The name-keyed path cannot do this: the wire object has a duplicate key,
+    // JSON.parse keeps the last, and the lookup yields it for BOTH columns. In a
+    // UNION ALL (names come from the first branch alone) that silently replaces a
+    // later branch's value with its label.
+    const r = newResult('TableCompact');
+    applyStreamLine({ meta: [{ name: 'env', type: 'String' }, { name: 'env', type: 'String' }] }, r);
+    applyStreamLine({ row: ['7', 'seven'] }, r);
+    expect(r.rows).toEqual([['7', 'seven']]);
+    // Contrast: the same result read by name loses the first cell.
+    const named = newResult('Table');
+    applyStreamLine({ meta: [{ name: 'env', type: 'String' }, { name: 'env', type: 'String' }] }, named);
+    applyStreamLine({ row: { env: 'seven' } }, named);
+    expect(named.rows).toEqual([['seven', 'seven']]);
+  });
+  it('copies a positional row, so mutating rows cannot reach the parsed line', () => {
+    const r = newResult('TableCompact');
+    const line: unknown[] = ['1', 'x'];
+    applyStreamLine({ meta: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }] }, r);
+    applyStreamLine({ row: line }, r);
+    (r.rows[0] as unknown[])[0] = 'mutated';
+    expect(line[0]).toBe('1');
+  });
+  it('caps positional rows at rowLimit exactly like name-keyed rows', () => {
+    const r = newResult('TableCompact', 1);
+    applyStreamLine({ meta: [{ name: 'a', type: 'String' }] }, r);
+    applyStreamLine({ row: ['1'] }, r);
+    applyStreamLine({ row: ['2'] }, r);
+    expect(r.rows).toEqual([['1']]);
+    expect(r.capped).toBe(true);
+  });
   it('preserves quoted Decimal tuple members exactly', () => {
     const r = newResult('KPI');
     applyStreamLine({ meta: [{ name: 'metric', type: 'Tuple(value Decimal(38, 2), delta Decimal(38, 2))' }] }, r);

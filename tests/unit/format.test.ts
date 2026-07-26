@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, detectSqlOutfile, stripTrailingTrivia, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
   parseServerVersion, versionAtLeast,
 } from '../../src/core/format.js';
 
@@ -158,6 +158,71 @@ describe('withStatementBreak', () => {
     expect(withStatementBreak('')).toBe('');
     expect(withStatementBreak(null)).toBe('');
     expect(withStatementBreak(undefined)).toBe('');
+  });
+});
+
+// #447 phase 2: the option-SQL contract rejects a non-embeddable output clause
+// locally, rather than letting the server answer with a syntax error from inside
+// a generated batch. Matched as an adjacent word PAIR through the same
+// top-level-word scan `detectSqlFormat` uses, so quoted/commented text and a
+// column merely named `outfile` are never false rejects.
+describe('detectSqlOutfile', () => {
+  it('detects a top-level INTO OUTFILE clause, case-insensitively', () => {
+    expect(detectSqlOutfile("SELECT 1 INTO OUTFILE 'x.tsv'")).toBe(true);
+    expect(detectSqlOutfile("select 1 into outfile 'x.tsv'")).toBe(true);
+    expect(detectSqlOutfile("SELECT 1\nINTO   OUTFILE 'x.tsv' FORMAT CSV")).toBe(true);
+  });
+
+  it('is false for SQL with no OUTFILE clause', () => {
+    expect(detectSqlOutfile('SELECT a, b FROM t')).toBe(false);
+    expect(detectSqlOutfile('')).toBe(false);
+    expect(detectSqlOutfile(null)).toBe(false);
+    expect(detectSqlOutfile(undefined)).toBe(false);
+  });
+
+  it('ignores the words inside strings, identifiers and comments', () => {
+    expect(detectSqlOutfile("SELECT 'INTO OUTFILE' AS a, b FROM t")).toBe(false);
+    expect(detectSqlOutfile('SELECT a, b FROM t -- INTO OUTFILE')).toBe(false);
+    expect(detectSqlOutfile('SELECT a, b FROM t /* INTO OUTFILE */')).toBe(false);
+    expect(detectSqlOutfile('SELECT a, "INTO OUTFILE" FROM t')).toBe(false);
+  });
+
+  it('does not fire on INTO or OUTFILE alone, or on the pair out of order', () => {
+    expect(detectSqlOutfile('INSERT INTO t SELECT a, b FROM u')).toBe(false);
+    expect(detectSqlOutfile('SELECT outfile, b FROM t')).toBe(false);
+    expect(detectSqlOutfile('SELECT outfile, into FROM t')).toBe(false);
+  });
+
+  it('ignores a nested (parenthesized) occurrence, like detectSqlFormat', () => {
+    expect(detectSqlOutfile("SELECT * FROM (SELECT 1 INTO OUTFILE 'x')")).toBe(false);
+  });
+});
+
+// #447 phase 2 exported this (it backs `normalizeOptionSql`, which has to embed
+// stored SQL inside a subquery). Its behaviour was already covered indirectly
+// through `prepareExportSql`/`withTrailingFormat`; these pin the contract that
+// caller depends on directly.
+describe('stripTrailingTrivia', () => {
+  it('strips trailing whitespace, semicolons and closed comments in any order', () => {
+    expect(stripTrailingTrivia('SELECT 1  ')).toBe('SELECT 1');
+    expect(stripTrailingTrivia('SELECT 1;')).toBe('SELECT 1');
+    expect(stripTrailingTrivia('SELECT 1;;')).toBe('SELECT 1');
+    expect(stripTrailingTrivia('SELECT 1 -- note')).toBe('SELECT 1');
+    expect(stripTrailingTrivia('SELECT 1; -- note')).toBe('SELECT 1');
+    expect(stripTrailingTrivia('SELECT 1 /* a */ ; /* b */')).toBe('SELECT 1');
+  });
+
+  it('leaves an unterminated block comment in place', () => {
+    expect(stripTrailingTrivia('SELECT 1 /* open')).toBe('SELECT 1 /* open');
+  });
+
+  it('never strips a semicolon inside a string literal', () => {
+    expect(stripTrailingTrivia("SELECT 'a;'")).toBe("SELECT 'a;'");
+  });
+
+  it('reduces trivia-only text to nothing', () => {
+    expect(stripTrailingTrivia('  ; -- note')).toBe('');
+    expect(stripTrailingTrivia('')).toBe('');
   });
 });
 
