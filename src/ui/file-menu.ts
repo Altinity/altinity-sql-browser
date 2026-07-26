@@ -10,9 +10,15 @@
 // reorder one.
 //
 // Resource-oriented portable-bundle workspace operations — New workspace /
-// Import queries / Import Dashboard / Import workspace / Export Dashboard /
-// Export workspace — plus the one-way Markdown/SQL Library
+// New dashboard / Import queries / Import dashboard / Import workspace /
+// Export dashboard / Export workspace — plus the one-way Markdown/SQL Library
 // downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
+// #463 makes the three Dashboard commands WORKSPACE operations rather than
+// operations on whichever Dashboard is open: New appends an empty one, Import
+// appends the imported one, and Export resolves an exact target (preferring the
+// one on screen, asking through a chooser when it cannot name one). None of them
+// can replace a Dashboard, so the destructive-replace confirm and the
+// `create-first`/compatibility-slot targeting both went with them.
 // #406 makes workspace import additive: local identity is reminted, the
 // generated key is made unique, and the previously active record is untouched.
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
@@ -35,7 +41,7 @@ import { closeOpenMenus, openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
 import { fileMenuModel } from '../core/file-menu-model.js';
 import type {
-  DashboardExportTarget, DashboardImportTarget, FileMenuActionId, FileMenuSurface,
+  DashboardExportTarget, FileMenuActionId, FileMenuSurface,
 } from '../core/file-menu-model.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -53,7 +59,10 @@ import {
 import type {
   QueryDecision, QueryConflict, QueryConflictAction, DashboardSummary, PortableBundleImportPlan,
 } from '../workspace/import-planner.js';
-import { createNewWorkspace, renameWorkspace } from '../workspace/workspace-operations.js';
+import {
+  appendDashboard, createNewWorkspace, renameWorkspace,
+} from '../workspace/workspace-operations.js';
+import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
@@ -170,6 +179,9 @@ export function renderLibraryTitle(app: App): void {
  *  without choosing one. */
 const ROW_ICONS: Record<FileMenuActionId, () => Node> = {
   'new-workspace': () => Icon.plus(),
+  // #463: the grid glyph, not a second `plus` — the two New rows sit adjacent
+  // and identical icons would make them read as one repeated command.
+  'new-dashboard': () => Icon.dashboard(),
   'import-workspace': () => Icon.folderOpen(),
   'export-workspace': () => Icon.download(),
   'import-queries': () => Icon.upload(),
@@ -215,7 +227,7 @@ export function openFileMenu(
     // `state`-derived workspace and must stay available.
     hasWorkspace: app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true,
     libraryQueryCount: list.length,
-    dashboardCount: app.currentWorkspace ? app.currentWorkspace.dashboards.length : 0,
+    dashboardIds: workspaceDashboards(app).map((dashboard) => dashboard.id),
   });
 
   const importQueriesInput = pickerInput(app, 'import-queries', (f) => onImportQueriesFile(app, f));
@@ -224,20 +236,19 @@ export function openFileMenu(
   // two now. It used to be body-mounted by `triggerImportDashboard` and removed
   // only on `change`, so a CANCELLED native chooser leaked a hidden input onto
   // the page across every surface switch.
-  const importDashboardInput = pickerInput(app, 'import-dashboard', (f) => onImportDashboardFile(
-    app, f, model.importDashboardTarget!,
-  ));
+  const importDashboardInput = pickerInput(app, 'import-dashboard', (f) => onImportDashboardFile(app, f));
 
-  // `model.*Target` is non-null exactly when its row is enabled (asserted in
-  // file-menu-model.test.ts), and a disabled row has no click handler at all —
-  // so these assertions can never fire.
+  // `model.exportDashboardTarget` is non-null exactly when its row is enabled
+  // (asserted in file-menu-model.test.ts), and a disabled row has no click
+  // handler at all — so that assertion can never fire.
   const RUN: Record<FileMenuActionId, () => void> = {
     'new-workspace': () => newWorkspaceAction(app),
+    'new-dashboard': () => newDashboardAction(app),
     'import-workspace': () => openWorkspaceInput.click(),
     'export-workspace': () => { void exportWorkspaceAction(app); },
     'import-queries': () => importQueriesInput.click(),
     'import-dashboard': () => importDashboardInput.click(),
-    'export-dashboard': () => { void exportDashboardAction(app, model.exportDashboardTarget!); },
+    'export-dashboard': () => resolveExportDashboard(app, model.exportDashboardTarget!),
     'download-md': () => downloadAction(app, 'md'),
     'download-sql': () => downloadAction(app, 'sql'),
   };
@@ -353,6 +364,23 @@ function currentWorkspace(app: App): StoredWorkspaceV5 {
     dashboards: app.currentWorkspace ? app.currentWorkspace.dashboards : [],
   };
   return app.state.dashboard ? withCompatibilityDashboard(envelope, app.state.dashboard) : envelope;
+}
+
+/**
+ * Every Dashboard the menu can act on, in collection order (#463) — the list
+ * behind the footer count, the Export chooser and the model's export targeting.
+ *
+ * Deliberately NOT `currentWorkspace(app).dashboards`: that folds the live
+ * `state.dashboard` projection into the compatibility SLOT, which is right for a
+ * commit (entry 0 is the projected document) but would report entry 0's id twice
+ * — and drop the real one — if the projection ever held a non-first Dashboard.
+ * Reading the two sources separately keeps the id list exactly as committed, and
+ * still covers the legacy no-aggregate install, where the single projected
+ * Dashboard is the only one there is.
+ */
+function workspaceDashboards(app: App): readonly DashboardDocumentV2[] {
+  if (app.currentWorkspace) return app.currentWorkspace.dashboards;
+  return app.state.dashboard ? [app.state.dashboard] : [];
 }
 
 /** Re-sync the surfaces a workspace change touches: Save button (tab links
@@ -539,20 +567,33 @@ function openConflictDialog(
 
 // ── multi-dashboard picker ───────────────────────────────────────────────────
 
-/** Show a picker over `dashboards` (bundle array order — presentation order,
- *  not re-sorted). Import Dashboard is the only caller and must import exactly
- *  one, so there is no "No dashboard" row (#424 retired its one user, the
- *  workspace import, which now takes every bundled Dashboard). Cancelling
- *  never calls `onPick`. */
+/** One choosable Dashboard. `meta` is the secondary identity line the caller
+ *  decides: duplicate TITLES are legitimate (identity is the id), so a chooser
+ *  that showed names alone would offer two indistinguishable rows. */
+interface DashboardPickerRow {
+  readonly id: string;
+  readonly title: string;
+  readonly meta: string;
+}
+
+const tiles = (n: number): string => `${n} ${n === 1 ? 'tile' : 'tiles'}`;
+
+/** Show a picker over `dashboards` in the caller's array order — presentation
+ *  order, never re-sorted. Both callers must resolve exactly one Dashboard, so
+ *  there is no "No dashboard" row (#424 retired its one user, the workspace
+ *  import, which now takes every bundled Dashboard). Cancelling — including via
+ *  Escape or an outside click, which `openDialogShell` owns — never calls
+ *  `onPick`. */
 function openDashboardPicker(
-  app: App, title: string, dashboards: readonly DashboardSummary[],
+  app: App, title: string, dashboards: readonly DashboardPickerRow[],
   onPick: (id: string) => void,
 ): void {
   const rows = dashboards.map((d) => h('button', {
-    class: 'fm-item', onclick: () => { handle.close(); onPick(d.id); },
+    class: 'fm-item', 'data-dashboard-id': d.id,
+    onclick: () => { handle.close(); onPick(d.id); },
   },
     h('span', { class: 'fm-label' }, d.title),
-    h('span', { class: 'fm-meta' }, `${d.tileCount} ${d.tileCount === 1 ? 'tile' : 'tiles'}`)));
+    h('span', { class: 'fm-meta' }, d.meta)));
   const handle = openDialogShell(app, title, [
     h('div', { class: 'fm-dialog-body fm-picker-list' }, rows),
     h('div', { class: 'fm-dialog-actions' },
@@ -590,6 +631,50 @@ async function doNewWorkspace(app: App): Promise<void> {
       { document: app.document },
     );
   });
+}
+
+// ── actions: New dashboard ───────────────────────────────────────────────────
+
+/** The name a New dashboard prompt opens on — the same title
+ *  `createEmptyDashboard` has always stamped, offered for editing instead of
+ *  applied silently. Duplicates are allowed (identity is the id), so accepting
+ *  it unchanged twice is a legitimate outcome, not a collision. */
+const DEFAULT_DASHBOARD_NAME = 'Dashboard';
+
+function newDashboardAction(app: App): void {
+  openNameDialog(app, {
+    title: 'New dashboard',
+    label: 'Dashboard name',
+    initial: DEFAULT_DASHBOARD_NAME,
+    confirmLabel: 'Create dashboard',
+    onConfirm: (name) => { void doNewDashboard(app, name); },
+  });
+}
+
+/**
+ * Append one empty Dashboard to the workspace and open it in Edit mode (#463).
+ *
+ * Additive by construction: `appendDashboard` preserves every existing Dashboard
+ * and query in place, so nothing here can reach `dashboards[0]` or the
+ * compatibility slot.
+ *
+ * The document is minted BEFORE the commit is queued, unlike the imports — which
+ * must re-plan against the dequeue-time baseline because their content depends
+ * on it. An empty Dashboard's content does not: it is a self-contained value
+ * with a freshly minted id, and only the APPEND has to see `latest`. That is
+ * what lets the navigation below name exactly what was committed without reading
+ * anything back out of the aggregate.
+ *
+ * A rejected commit leaves navigation and local state untouched —
+ * `commitWorkspace` toasts the diagnostic and answers `false`.
+ */
+async function doNewDashboard(app: App, name: string): Promise<void> {
+  const created: DashboardDocumentV2 = { ...createEmptyDashboard(app.genId()), title: name };
+  const committed = await commitWorkspace(
+    app, (latest) => appendDashboard(latest ?? currentWorkspace(app), created), 'Created dashboard',
+  );
+  if (!committed) return;
+  app.openDashboard({ dashboardId: created.id, mode: 'edit' });
 }
 
 // ── actions: rename ──────────────────────────────────────────────────────────
@@ -632,8 +717,8 @@ function startImportQueries(app: App, bundle: PortableBundleV2): void {
 
 // ── actions: Import Dashboard ────────────────────────────────────────────────
 
-function onImportDashboardFile(app: App, file: File, target: DashboardImportTarget): void {
-  readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle, target));
+function onImportDashboardFile(app: App, file: File): void {
+  readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle));
 }
 
 // #452 removed `triggerImportDashboard`. It existed so the Dashboard's own File
@@ -644,44 +729,27 @@ function onImportDashboardFile(app: App, file: File, target: DashboardImportTarg
 // keeping a second entry point would have left two implementations of one
 // operation.
 
-function startImportDashboard(
-  app: App, bundle: PortableBundleV2, target: DashboardImportTarget,
-): void {
+/** Bundle Dashboards as picker rows. A bundle's ids are the EXPORTER's, and are
+ *  reminted on import, so the tile count is the only identity worth showing. */
+const bundleRows = (dashboards: readonly DashboardSummary[]): DashboardPickerRow[] =>
+  dashboards.map((d) => ({ id: d.id, title: d.title, meta: tiles(d.tileCount) }));
+
+function startImportDashboard(app: App, bundle: PortableBundleV2): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
-  if (dashboards.length === 1) { runImportDashboard(app, bundle, dashboards[0].id, target); return; }
-  openDashboardPicker(app, 'Import which dashboard?', dashboards, (id) => {
-    runImportDashboard(app, bundle, id, target);
+  if (dashboards.length === 1) { doImportDashboard(app, bundle, dashboards[0].id); return; }
+  openDashboardPicker(app, 'Import which dashboard?', bundleRows(dashboards), (id) => {
+    doImportDashboard(app, bundle, id);
   });
 }
 
-function runImportDashboard(
-  app: App, bundle: PortableBundleV2, dashboardId: string, target: DashboardImportTarget,
-): void {
-  // Importing REPLACES the target Dashboard (its tiles/layout/filters). Confirm
-  // first, because that discards an existing Dashboard — unlike additive
-  // New/Import workspace, this gates a destructive commit (#287; flagged in
-  // review — silent, unrecoverable loss).
-  // #452: keyed on the TARGET, not on `app.state.dashboard`. `create-first`
-  // targets an empty collection, so there is nothing to discard and nothing to
-  // confirm; an `exact` target always names a Dashboard that will be replaced.
-  if (target.kind === 'exact') {
-    openConfirm(app, {
-      title: 'Import and replace current Dashboard?',
-      body: ['This replaces your current Dashboard (its tiles, layout, and variables) with the imported one. ',
-        'Its saved queries are kept and merged. Open editor tabs are unaffected. ',
-        'Export your Dashboard first if you want to keep it.'],
-      confirmLabel: 'Import Dashboard',
-      onConfirm: () => doImportDashboard(app, bundle, dashboardId, target),
-    });
-    return;
-  }
-  doImportDashboard(app, bundle, dashboardId, target);
-}
+// #463 removed the "Import and replace current Dashboard?" confirm along with
+// the replacement it gated. The dialog existed because the import destroyed the
+// Dashboard it was invoked from; an additive import destroys nothing, and
+// confirming an operation that cannot lose data only teaches the user to dismiss
+// confirmations.
 
-function doImportDashboard(
-  app: App, bundle: PortableBundleV2, dashboardId: string, target: DashboardImportTarget,
-): void {
+function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: string): void {
   // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit split
   // as `startImportQueries` above (#341/#344).
   const workspace = currentWorkspace(app);
@@ -689,34 +757,20 @@ function doImportDashboard(
   const closureIds = new Set(dashboardDependencyQueryIds(source));
   const closureQueries = bundle.queries.filter((q) => closureIds.has(q.id));
   withQueryDecisions(app, workspace.queries, closureQueries, (decisions) => {
-    // 'copy' mints a fresh Dashboard id/revision for the imported Dashboard,
-    // which then REPLACES the target (#280 "Import Dashboard replaces the
-    // current Dashboard"). The confirm above gates the destructive case.
+    // #463: the plan APPENDS a freshly minted Dashboard to whatever the
+    // dequeue-time baseline holds. There is no target to pass, nothing to
+    // re-validate about one, and no window in which the destination can go
+    // stale — the file chooser, the picker and the conflict dialog can all sit
+    // open across an arbitrary number of concurrent commits and the import still
+    // lands beside them rather than on top of one.
     //
-    // #452: the target arrives EXPLICITLY from the File menu instead of being
-    // re-read here from `selectedDashboardId(app.mainSurface)`. That read was
-    // the compatibility fallback this issue removes: invoked with the Query
-    // surface selected it returned `null`, and `planImportDashboard` then wrote
-    // the collection's FIRST entry — overwriting a Dashboard the user never
-    // named. `create-first` passes `null` deliberately, and the model only ever
-    // offers it for an EMPTY collection, where the compatibility slot is the
-    // correct (and only) destination.
-    //
-    // Neither target needs a pre-check here — both are re-validated against the
-    // DEQUEUE-TIME baseline inside the planner and fail closed, which
-    // `planBuild` toasts and aborts on (no commit, and the user can retry):
-    // an `exact` target that was removed or became ambiguous, and a
-    // `create-first` whose collection stopped being empty while the file
-    // chooser / picker / conflict dialog was open. Checking the count here
-    // instead would only re-read the same open-time snapshot the caller
-    // already used.
+    // What #452 had to defend against here (a `selectedDashboardId` read that
+    // silently resolved to the collection's FIRST entry, overwriting a Dashboard
+    // the user never named) is now unrepresentable: `planImportDashboard` has no
+    // parameter that can name an existing entry.
     void commitWorkspace(
       app, planBuild(app, closureQueries, decisions,
-        (base, revalidated) => planImportDashboard(
-          base, bundle, dashboardId, revalidated, 'copy', app.genId, {},
-          target.kind === 'exact' ? target.dashboardId : null,
-          target.kind === 'create-first',
-        )),
+        (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, app.genId)),
       'Imported dashboard',
     );
   });
@@ -798,10 +852,14 @@ async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV5 | null
   }
 }
 
+/** An export that has resolved to one id — what actually reads a document.
+ *  `choose` never reaches this far: `resolveExportDashboard` converts it. */
+type ExactDashboardExport = Extract<DashboardExportTarget, { kind: 'exact' }>;
+
 /** The target as committed truth holds it — `null` when it was removed, or when
  *  the id became ambiguous (never resolved by a guess). */
 function committedDashboard(
-  ws: StoredWorkspaceV5, target: DashboardExportTarget,
+  ws: StoredWorkspaceV5, target: ExactDashboardExport,
 ): DashboardDocumentV2 | null {
   const lookup = findDashboardStrict(ws, target.dashboardId);
   return lookup.status === 'ok' ? lookup.dashboard : null;
@@ -810,10 +868,41 @@ function committedDashboard(
 /** The degraded (no readable aggregate) fallback: the live projection, but only
  *  if it IS the requested Dashboard. */
 function degradedDashboard(
-  app: App, target: DashboardExportTarget,
+  app: App, target: ExactDashboardExport,
 ): DashboardDocumentV2 | null {
   const live = app.state.dashboard;
   return live && live.id === target.dashboardId ? live : null;
+}
+
+/**
+ * Turn the model's Export decision into one exact Dashboard (#463).
+ *
+ * `exact` runs straight through — the model already resolved it, preferring the
+ * Dashboard on screen — so exporting the Dashboard you are looking at, or the
+ * only one a workspace has, stays a single click. `choose` is the model saying
+ * it cannot name one, and is the ONLY path that opens a chooser; cancelling it
+ * exports nothing.
+ *
+ * The chooser's pick goes back through `exportDashboardAction` as an `exact`
+ * target, so every export — chosen or direct — reads committed truth by id
+ * through the same fail-closed lookup.
+ */
+function resolveExportDashboard(app: App, target: DashboardExportTarget): void {
+  if (target.kind === 'exact') {
+    void exportDashboardAction(app, { kind: 'exact', dashboardId: target.dashboardId });
+    return;
+  }
+  const rows = workspaceDashboards(app).map((dashboard) => ({
+    id: dashboard.id,
+    title: dashboard.title,
+    // Duplicate titles are allowed, so the tile count alone can still leave two
+    // identical rows. The id tail is the tiebreaker of last resort — it is the
+    // only thing guaranteed to differ.
+    meta: `${tiles(dashboard.tiles.length)} · ${dashboard.id.slice(-6)}`,
+  }));
+  openDashboardPicker(app, 'Export which dashboard?', rows, (id) => {
+    void exportDashboardAction(app, { kind: 'exact', dashboardId: id });
+  });
 }
 
 /**
@@ -834,7 +923,7 @@ function degradedDashboard(
  * retarget.
  */
 export async function exportDashboardAction(
-  app: App, target: DashboardExportTarget,
+  app: App, target: ExactDashboardExport,
 ): Promise<void> {
   const ws = await flushAndLoadCommitted(app);
   const dashboard = ws ? committedDashboard(ws, target) : degradedDashboard(app, target);
@@ -886,7 +975,7 @@ export function disposeFileMenuOverlays(app: Pick<App, 'document' | 'dom'>): voi
 
 /** Mount one `.fm-dialog-backdrop`/`.fm-dialog-card` (title + caller-supplied
  *  content nodes), wired for Esc + outside-click close — the shared shell
- *  `openConfirm`/the conflict dialog/the dashboard picker all build on. */
+ *  the conflict dialog/the dashboard picker/the name dialog all build on. */
 function openDialogShell(app: App, title: string, content: unknown[], extraCardClass?: string): DialogHandle {
   const doc = app.document;
   const releaseKeyboard = app.acquireKeyboardOwner('modal');
@@ -911,18 +1000,61 @@ function openDialogShell(app: App, title: string, content: unknown[], extraCardC
   return { close };
 }
 
-interface ConfirmOpts {
+interface NameDialogOpts {
   title: string;
-  body: unknown[];
+  /** The input's visible + accessible label — the two are the same element. */
+  label: string;
+  initial: string;
   confirmLabel: string;
-  onConfirm: () => void;
+  /** Called with the TRIMMED name, only on a real commit. */
+  onConfirm: (name: string) => void;
 }
 
-function openConfirm(app: App, { title, body, confirmLabel, onConfirm }: ConfirmOpts): void {
+/**
+ * Ask for one name (#463 — New dashboard is the first caller), on the same
+ * `.fm-dialog-*` shell as the confirm/conflict/picker dialogs, so Escape,
+ * outside-click and surface-exit teardown all behave identically.
+ *
+ * The name is trimmed once, at the boundary, and a whitespace-only name commits
+ * NOTHING: the confirm button stays disabled, so there is no reachable state in
+ * which the caller has to defend against an empty title. Enter is the same
+ * commit as the button (and equally refused when empty); Escape cancels through
+ * the shell. Duplicate names are allowed and deliberately not validated —
+ * identity is the id.
+ */
+function openNameDialog(
+  app: App, { title, label, initial, confirmLabel, onConfirm }: NameDialogOpts,
+): void {
+  const input = h('input', {
+    class: 'fm-dialog-input', type: 'text', id: 'fm-name-input', value: initial, spellcheck: 'false',
+  }) as HTMLInputElement;
+  const confirm = h('button', {
+    class: 'fm-dialog-confirm',
+    onclick: () => commit(),
+  }, confirmLabel) as HTMLButtonElement;
+  const commit = (): void => {
+    const name = input.value.trim();
+    if (!name) return;
+    handle.close();
+    onConfirm(name);
+  };
+  const sync = (): void => { confirm.disabled = input.value.trim() === ''; };
+  input.addEventListener('input', sync);
+  input.addEventListener('keydown', (e) => {
+    // Escape is the shell's, on a capture-phase document listener; only Enter is
+    // ours, and only because a single-field dialog has no form to submit.
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+  });
   const handle = openDialogShell(app, title, [
-    h('div', { class: 'fm-dialog-body' }, body),
+    h('div', { class: 'fm-dialog-body' },
+      h('label', { class: 'fm-dialog-label', for: 'fm-name-input' }, label), input),
     h('div', { class: 'fm-dialog-actions' },
       h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel'),
-      h('button', { class: 'fm-dialog-confirm', onclick: () => { handle.close(); onConfirm(); } }, confirmLabel)),
+      confirm),
   ]);
+  sync();
+  // Same deferred focus+select as the inline workspace rename: the card is in
+  // the document by now, and selecting the default name makes typing over it the
+  // one-keystroke path.
+  setTimeout(() => { input.focus(); input.select(); });
 }

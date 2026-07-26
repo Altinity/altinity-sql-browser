@@ -24,11 +24,8 @@ import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagno
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
 import {
-  importQueries, replaceWorkspaceContents,
+  appendDashboard, importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
-import {
-  replaceDashboard, withCompatibilityDashboard,
-} from './workspace-dashboards.js';
 import type { WorkspaceIdGen } from './workspace-operations.js';
 import { validateStoredWorkspaceDocument } from './stored-workspace.js';
 import { assignDedicatedOwnership } from './stored-workspace-ownership.js';
@@ -379,33 +376,12 @@ function invalidatedDashboardPlan(
   );
 }
 
-/** #425: an EXPLICIT import target that no longer resolves to exactly one stored
- *  Dashboard — deleted concurrently, or ambiguous under a duplicate id. The import
- *  commits nothing rather than retargeting the compatibility slot: the caller
- *  named a Dashboard, and writing a different one would destroy an entry the
- *  import never mentioned. */
-/** #452: a "create the first Dashboard" import that is no longer the first —
- *  the collection gained an entry between the caller's decision and this commit.
- *  Distinct code from `dashboard-import-target-stale` because nothing was
- *  targeted: the destination stopped being empty. */
-function staleCreateFirstPlan(sourceDashboardId: string): PortableBundleImportPlan {
-  return invalidPlan(
-    [diagnostic(['dashboards'], 'dashboard-import-collection-not-empty',
-      'This workspace gained a dashboard before the import completed — nothing was imported, try again')],
-    {}, sourceDashboardId,
-  );
-}
-
-function staleImportTargetPlan(
-  sourceDashboardId: string, targetDashboardId: string, queryMappings: IdMapping,
-): PortableBundleImportPlan {
-  return invalidPlan(
-    [diagnostic(['dashboards'], 'dashboard-import-target-stale',
-      'The dashboard this import targets was removed, or its id became ambiguous, before the import completed',
-      targetDashboardId)],
-    queryMappings, sourceDashboardId,
-  );
-}
+// #463 removed `staleCreateFirstPlan` and `staleImportTargetPlan` with the
+// targeting they guarded. A Dashboard import is now purely additive: it appends
+// a freshly minted document and names no existing entry, so there is no target
+// that can go stale between the user's decision and the commit, and no
+// "collection stopped being empty" window to fail closed on. Both diagnostics
+// were reachable only from those two branches.
 
 /** Queries-only import: merge the bundle's queries into the workspace's query
  * catalog per `decisions`. Every imported query lands in the LIBRARY — #427
@@ -423,43 +399,31 @@ export function planImportQueries(
   return validatedPlan(candidate, mapping, options);
 }
 
-/** Import one bundled Dashboard plus its dependency closure of queries.
- *  `mode: 'copy'` mints a fresh Dashboard id (revision reset to 1); `mode:
- *  'replace'` keeps the imported Dashboard's own id and revision. A skipped
- *  or unmapped required dependency invalidates the plan (`candidateWorkspace:
- *  null`) rather than silently dropping the reference.
+/**
+ * Import one bundled Dashboard plus its dependency closure of queries, as a NEW
+ * Dashboard APPENDED to the workspace (#463). A skipped or unmapped required
+ * dependency invalidates the plan (`candidateWorkspace: null`) rather than
+ * silently dropping the reference.
  *
- *  #424/#425: the imported Dashboard REPLACES the Dashboard the import was
- *  invoked from — `targetDashboardId` when the caller has an explicit selection,
- *  otherwise the COMPATIBILITY slot — and every other stored Dashboard is
- *  preserved in place. Addressing the target by id matters once a non-first
- *  Dashboard can be open: writing the compatibility slot would import "into" a
- *  Dashboard the user is not looking at. An unknown `targetDashboardId` (deleted
- *  concurrently) falls back to the compatibility slot rather than dropping the
- *  import. A `mode: 'replace'` id that collides with another stored Dashboard is
- *  diagnosed by the candidate's `workspace-duplicate-dashboard-id` rule rather
- *  than silently overwriting an unrelated Dashboard.
+ * Additive, unconditionally. Every existing Dashboard is preserved in place, in
+ * order, and the imported document always takes a freshly minted id with its
+ * revision reset to 1 — so importing the same bundle twice yields two distinct
+ * Dashboards rather than a collision, and an import can never overwrite a
+ * Dashboard the user was looking at (or, worse, `dashboards[0]`).
  *
- *  #452: `requireEmptyCollection` is for the "create the workspace's FIRST
- *  Dashboard" caller (the empty-Dashboard placeholder). It has no id to address
- *  — the document does not exist yet — so it necessarily writes the
- *  compatibility slot, and that slot REPLACES entry 0 on a non-empty collection.
- *  The caller decides it is safe from a count read when its menu opened, but the
- *  commit lands later: a file chooser, a picker dialog, a conflict dialog or a
- *  second tab can all seat a Dashboard in between. Re-checking here — at dequeue
- *  time, against the same baseline every other target is validated against — is
- *  what stops that window from silently destroying a Dashboard the import never
- *  named. Fails closed, exactly like a stale explicit target. */
+ * This replaced #424/#425/#452's three-way targeting (`targetDashboardId`, the
+ * compatibility slot, `requireEmptyCollection`). Each of those existed because a
+ * workspace could surface only one Dashboard, so an import had to choose which
+ * one to destroy; every one of them was a way to write an entry the import never
+ * named, guarded by a fail-closed check. Appending needs none of them. Replacing
+ * or merging into a specific Dashboard is deliberately NOT expressible here —
+ * #463 defers it to an explicit Dashboard-context operation.
+ */
 export function planImportDashboard(
   workspace: StoredWorkspaceV5, bundle: PortableBundleV2, sourceDashboardId: string,
-  decisions: readonly QueryDecision[], mode: 'copy' | 'replace', genId: WorkspaceIdGen,
+  decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
   options: WorkspaceCodecOptions = {},
-  targetDashboardId: string | null = null,
-  requireEmptyCollection = false,
 ): PortableBundleImportPlan {
-  if (requireEmptyCollection && workspace.dashboards.length > 0) {
-    return staleCreateFirstPlan(sourceDashboardId);
-  }
   const source = bundle.dashboards.find((dashboard) => dashboard.id === sourceDashboardId);
   if (!source) return dashboardNotFoundPlan(sourceDashboardId, {});
 
@@ -472,29 +436,15 @@ export function planImportDashboard(
   if (rewritten.invalidated) {
     return invalidatedDashboardPlan(sourceDashboardId, mapping, rewritten.missingRequiredIds);
   }
-  const finalDashboard: DashboardDocumentV2 = mode === 'copy'
-    ? { ...rewritten.dashboard, id: genId(), revision: 1 }
-    : rewritten.dashboard;
+  const finalDashboard: DashboardDocumentV2 = { ...rewritten.dashboard, id: genId(), revision: 1 };
 
   const base = replaceWorkspaceContents(
     workspace, { queries: nextQueries, dashboards: workspace.dashboards },
   );
-  // No explicit target: the legacy entry point writes the compatibility slot.
-  const scope = new Set([finalDashboard.id]);
-  if (targetDashboardId === null) {
-    return validatedPlan(
-      normalizedForOwnership(withCompatibilityDashboard(base, finalDashboard), scope),
-      mapping, options, sourceDashboardId,
-    );
-  }
-  // An EXPLICIT target fails closed. `replaceDashboard` returns null when the id
-  // names no entry (deleted concurrently) or names more than one (ambiguous), and
-  // falling back to the compatibility slot there would overwrite the collection's
-  // FIRST Dashboard — silently retargeting exactly the way #425 forbids, and
-  // destroying a Dashboard the import never named.
-  const candidate = replaceDashboard(base, targetDashboardId, finalDashboard);
-  if (!candidate) return staleImportTargetPlan(sourceDashboardId, targetDashboardId, mapping);
-  return validatedPlan(normalizedForOwnership(candidate, scope), mapping, options, sourceDashboardId);
+  return validatedPlan(
+    normalizedForOwnership(appendDashboard(base, finalDashboard), new Set([finalDashboard.id])),
+    mapping, options, sourceDashboardId,
+  );
 }
 
 /** Replace the workspace's queries AND Dashboards atomically (preserving
