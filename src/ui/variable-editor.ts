@@ -132,6 +132,11 @@ export interface VariableEditorApp {
   VariableEditor?: VariableEditorFactory;
   /** The injected option-query runner. When absent, no Test button is rendered. */
   runOptionQuery?: VariableOptionQueryRunner;
+  /** #447 phase 2: "re-read the committed workspace". A real `App` carries this
+   *  (`ui/dashboard.ts` binds it while a Dashboard is rendered), so a successful
+   *  configuration write reaches the viewer session that has to act on it. Absent
+   *  when no Dashboard is on screen, and in a narrow fixture. */
+  onWorkspaceExternallyChanged?: () => void;
 }
 
 /**
@@ -150,9 +155,18 @@ export interface VariableEditorApp {
  * ABORTS — committing nothing — when the workspace is gone or the Dashboard id
  * names no single entry (deleted concurrently, or ambiguous, which must never be
  * "repaired" by an arbitrary pick).
+ *
+ * #447 phase 2: a SUCCESSFUL commit then asks any rendered Dashboard to rebuild
+ * from committed truth. A viewer session reads `variableConfigs` ONCE, at
+ * construction — option SQL is not something `syncDocument` adopts — so without
+ * this, saving option SQL (or clearing it back to direct input, or deleting an
+ * orphan) changed the stored document while the on-screen controls kept running
+ * the previous configuration until the Dashboard happened to be reopened. Phase 1
+ * had the same staleness but no way to notice it: a configuration had no runtime
+ * consequence yet.
  */
 export function commitVariableConfig(
-  app: Pick<VariableEditorApp, 'mutateWorkspace'>,
+  app: Pick<VariableEditorApp, 'mutateWorkspace' | 'onWorkspaceExternallyChanged'>,
   dashboardId: string,
   name: string,
   config: { sql: string; lastKnownType?: string } | null,
@@ -173,6 +187,13 @@ export function commitVariableConfig(
     // safe answer — one of two identical ids must never be overwritten by a guess.
     const candidate = replaceDashboard(latest, dashboardId, next);
     return candidate === null ? null : { candidate };
+  }).then((result) => {
+    // Only on a real commit: an aborted transform changed nothing, so there is
+    // nothing for a Dashboard to re-read. The hook is the SAME one a cross-tab
+    // change uses (`ui/dashboard.ts` binds it to a rebuild from committed truth,
+    // which defers while commands are pending and is idempotent per render), and
+    // it is absent unless a Dashboard is actually rendered.
+    if (result.ok) app.onWorkspaceExternallyChanged?.();
   });
 }
 
@@ -278,7 +299,10 @@ export function openVariableEditor(app: VariableEditorApp, dashboardId: string, 
     const showResult = (kind: 'ok' | 'error', ...content: unknown[]): void => {
       result.className = 'varedit-result is-' + kind;
       result.style.display = '';
-      result.replaceChildren(...content as never[]);
+      // Nulls are filtered, NOT passed through: `h()` drops a null child but the
+      // raw DOM `replaceChildren` stringifies it, which rendered a literal "null"
+      // under the option preview whenever there was no "+N more" line.
+      result.replaceChildren(...content.filter((node) => node != null) as never[]);
     };
     const runner = app.runOptionQuery;
     // The button disables itself for the duration of a run, so there is only ever

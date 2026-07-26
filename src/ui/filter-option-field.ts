@@ -40,6 +40,11 @@ import type { VariableOption } from '../core/variable-options.types.js';
  *  says "nothing chosen", never "everything". */
 export const UNSET_OPTION_LABEL = 'Not set';
 
+/** Options rendered in the dropdown at once — the same bound (and the same
+ *  filter-then-cap order) `enum-field.ts`'s `ENUM_DROPDOWN_CAP` applies, since an
+ *  option query may return up to `VARIABLE_OPTION_CAP` rows. */
+export const OPTION_DROPDOWN_CAP = 200;
+
 /** `buildFilterOptionField`'s options bag. */
 export interface FilterOptionFieldOpts {
   document?: Document;
@@ -100,6 +105,11 @@ export function buildFilterOptionField({
   let committedText = input.value;
 
   const commitOption = (option: ComboOption): void => {
+    // An identical re-commit runs a whole execution wave for no change. Reachable
+    // on every focus/blur cycle of an already-committed field (`wireComboInput`
+    // fires its commit on EVERY blur), so without this, clicking a committed
+    // select and then clicking away re-queries every panel that binds it.
+    if (active && option.value === value) { input.value = option.label; return; }
     value = option.value;
     active = true;
     input.value = option.label;
@@ -118,11 +128,16 @@ export function buildFilterOptionField({
       // An exact match on the committed text must not filter the list down to
       // one entry — the field shows a committed LABEL, and re-opening the
       // dropdown on it should still offer every sibling.
-      if (q === committedText.toLowerCase()) return current.map((option) => ({ ...option }));
-      return current
-        .filter((option) => !q
-          || option.label.toLowerCase().includes(q) || option.value.toLowerCase().includes(q))
-        .map((option) => ({ ...option }));
+      const matches = q === committedText.toLowerCase()
+        ? current
+        : current.filter((option) => !q
+          || option.label.toLowerCase().includes(q) || option.value.toLowerCase().includes(q));
+      // Filter THEN cap, the same order `enum-field.ts` uses and for the same
+      // reason: capping first would make an option past the cap unreachable by
+      // typing. An option query may legitimately return up to
+      // `VARIABLE_OPTION_CAP` rows, which is far more than a dropdown should
+      // render (and rebuild) on every keystroke.
+      return matches.slice(0, OPTION_DROPDOWN_CAP).map((option) => ({ ...option }));
     },
     onCommit: commitOption,
   });
@@ -132,6 +147,11 @@ export function buildFilterOptionField({
   // A strict field never holds free text.
   const strictCommit = (): void => {
     const typed = input.value;
+    // An EMPTY box means unset and must never match an option — an option whose
+    // label happens to be blank (a NULL or `''` label column, which the reader
+    // deliberately preserves) would otherwise be selected by merely focusing the
+    // field and clicking away, applying a predicate the user never chose.
+    if (typed === '') { input.value = committedText; return; }
     const option = current.find((item) => item.label === typed || item.value === typed);
     if (option) commitOption(option);
     else input.value = committedText;
@@ -150,11 +170,13 @@ export function buildFilterOptionField({
     // before this handler even runs — double-committing the clear.
     onmousedown: (e: Event) => e.preventDefault(),
     onclick: () => {
+      const wasSet = active || value !== '';
       value = '';
       active = false;
       input.value = '';
       committedText = '';
-      onCommit('', false);
+      // Clearing an ALREADY-unset field is not a change, so it must not run a wave.
+      if (wasSet) onCommit('', false);
     },
   }, Icon.close());
 
@@ -166,16 +188,31 @@ export function buildFilterOptionField({
       // Re-render the committed value's LABEL: the same value may now carry a
       // different label, and a value that had no option before may have one now.
       // Never re-commits — an options refresh is not a user choice.
-      input.value = display();
-      committedText = input.value;
+      //
+      // But NOT while the user is mid-edit. The whole reason options arrive through
+      // this method instead of a bar rebuild is that a batch lands asynchronously
+      // and must not discard in-progress typing; overwriting the box here would
+      // reintroduce exactly that, for the one field the options belong to.
+      const editing = input.value !== committedText;
+      committedText = display();
+      if (!editing) input.value = committedText;
       if (combo.isOpen()) combo.refresh();
     },
     setUnavailable: (reason) => {
       unavailable = reason;
-      input.disabled = reason !== null;
+      // `readOnly` + `aria-disabled`, never `disabled`: a disabled input is not
+      // focusable, so its `title` — the ONLY place the reason is written — becomes
+      // unreachable by keyboard and screen reader, and disabling a focused field
+      // silently drops focus to `<body>`. Read-only keeps it reachable while still
+      // refusing input, and `aria-invalid` announces that something is wrong.
+      input.readOnly = reason !== null;
       input.classList.toggle('is-error', reason !== null);
       input.title = reason ?? baseTitle;
-      clear.disabled = reason !== null;
+      if (reason === null) input.removeAttribute('aria-invalid');
+      else input.setAttribute('aria-invalid', 'true');
+      input.setAttribute('aria-disabled', reason === null ? 'false' : 'true');
+      // The clear button stays live: a user whose option batch failed must still
+      // be able to un-apply a selection that is currently filtering their panels.
       if (reason !== null) combo.close();
     },
     dispose: combo.close,

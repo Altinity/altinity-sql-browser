@@ -28,10 +28,13 @@
 // this a compiler and a reader rather than a scheduler with a dependency graph.
 
 import { splitStatements, leadingKeyword } from './sql-split.js';
+import { scanSpans } from './sql-spans.js';
 import { detectSqlFormat, detectSqlOutfile, sqlString, stripTrailingTrivia } from './format.js';
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
+import { hasOptionalBlocks } from './optional-blocks.js';
 import { parseClickHouseType, analyzeTypeModifiers } from './clickhouse-type.js';
+import { isCompoundParamType } from './param-type.js';
 import type { DashboardVariable } from './dashboard-variables.types.js';
 import type {
   VariableOption, VariableOptionBatch, VariableOptionBranch, VariableOptionDiagnostic,
@@ -56,9 +59,28 @@ export const VARIABLE_OPTION_CAP = 1000;
 /** `max_result_bytes` for the whole compiled request. */
 export const VARIABLE_OPTION_BYTE_CAP = 10_000_000;
 
-/** The generated branch-tag column. Reading is positional, so this name is for a
- *  human looking at the query in a server log — nothing parses it. */
+// The three columns every branch projects. Naming them EXPLICITLY (rather than
+// letting `*` pass the user's own column names through) is what makes the response
+// readable at all:
+//
+//   - the streaming transport sends each row as a JSON OBJECT keyed by column
+//     name, so two identically-named columns collapse on parse — and
+//     `SELECT environment, environment FROM environments`, the option contract's
+//     own documented example, is exactly that shape;
+//   - in a `UNION ALL` the result column names come from the FIRST branch alone,
+//     so one branch with a duplicate name silently rewrites a LATER branch's value
+//     into its label. Verified against ClickHouse 26.6 before this projection
+//     existed.
+//
+// `tupleElement(tuple(*), n)` takes the user's columns BY POSITION, which is what
+// the contract specifies ("column position defines meaning; column names do not"),
+// and gives them names that cannot collide. Both functions have existed since
+// ClickHouse 20.4, so this needs no version gate and no transport change — the
+// alternative, a positional wire format, first shipped in 25.2 and would have made
+// the whole feature fail on anything older.
 export const VARIABLE_NAME_COLUMN = '__variable_name';
+export const VARIABLE_VALUE_COLUMN = '__variable_value';
+export const VARIABLE_LABEL_COLUMN = '__variable_label';
 
 /** The three columns every compiled branch projects, by position. */
 const BATCH_COLUMN_COUNT = 3;
@@ -130,6 +152,23 @@ export function optionSqlDiagnostics(sql?: string | null): VariableOptionDiagnos
         'Option SQL must be a SELECT (or WITH … SELECT) query.'));
     }
   }
+  // An unterminated string/comment span. `stripTrailingTrivia` deliberately
+  // refuses to strip an unclosed comment, so without this the text goes straight
+  // into the batch and the open span swallows the closing paren, the `LIMIT` and
+  // EVERY FOLLOWING BRANCH — one variable's typo takes the whole Dashboard's
+  // options down. Knowable from the text alone, which is exactly what local
+  // validation is for.
+  if ([...scanSpans(text)].some((span) => span.kind !== 'code' && span.closed === false)) {
+    out.push(diagnostic('variable-option-unterminated',
+      'Option SQL has an unterminated string or comment.'));
+  }
+  // The generated branch tag occupies this name. A user query projecting it too
+  // makes ClickHouse reject the whole batch (AMBIGUOUS_COLUMN_NAME, verified on
+  // 26.6) — a confusing failure for every other variable, so it is caught here.
+  if (new RegExp(`\\b${VARIABLE_NAME_COLUMN}\\b`).test(text)) {
+    out.push(diagnostic('variable-option-reserved-column',
+      `Option SQL cannot use the name ${VARIABLE_NAME_COLUMN}: it is reserved for the generated batch.`));
+  }
   if (detectSqlFormat(text)) {
     out.push(diagnostic('variable-option-format',
       'Option SQL cannot include a FORMAT clause.'));
@@ -154,6 +193,17 @@ export function optionSqlDiagnostics(sql?: string | null): VariableOptionDiagnos
   if (declarations.length) {
     out.push(diagnostic('variable-option-parameterized',
       'Variable option queries cannot reference Dashboard variables yet.'));
+  } else if (hasOptionalBlocks(raw)) {
+    // A `/*[ … ]*/` block exists to be switched on by a parameter, and option SQL
+    // may not have parameters — so a block here can never activate. Rejected
+    // rather than ignored because it does not merely do nothing: the block is a
+    // comment to everything downstream, so its content is silently dropped from
+    // what actually runs, and a trailing one is stripped outright by
+    // `normalizeOptionSql`. Reported only when the parameter rule did not already
+    // fire, so a block CONTAINING a parameter gets the one message that matters.
+    out.push(diagnostic('variable-option-optional-block',
+      'Variable option queries cannot use optional /*[ … ]*/ blocks: they are activated by '
+      + 'a parameter, and option SQL cannot have parameters.'));
   }
   return out;
 }
@@ -175,7 +225,14 @@ const isRunnableOptionSql = (sql: string | null): boolean =>
 export const optionBatchVariables = (
   variables: readonly DashboardVariable[],
 ): DashboardVariable[] => variables.filter(
-  (variable) => variable.status === 'active' && isRunnableOptionSql(variable.sql),
+  (variable) => variable.status === 'active'
+    // A CONTAINER-typed variable renders no option select (a two-String-column
+    // list cannot supply an `Array`/`Tuple`/`Map`/`Nested` value), so running its
+    // option SQL would be work for a control that never appears — and, worse, a
+    // broken one could fail the combined query and take every OTHER variable's
+    // options down with it. Same rule, same reason, as conflicted and orphaned.
+    && !isCompoundParamType(variable.type ?? '')
+    && isRunnableOptionSql(variable.sql),
 );
 
 // ── The compiler ─────────────────────────────────────────────────────────────
@@ -223,7 +280,10 @@ export function compileVariableOptionBatch(
     sql: normalizeOptionSql(variable.sql!),
   }));
   const sql = branches.map((branch) =>
-    `SELECT ${sqlString(branch.name)} AS ${VARIABLE_NAME_COLUMN}, * FROM ${nestBounded(branch.sql)}`)
+    `SELECT ${sqlString(branch.name)} AS ${VARIABLE_NAME_COLUMN},`
+    + `\n       tupleElement(tuple(*), 1) AS ${VARIABLE_VALUE_COLUMN},`
+    + `\n       tupleElement(tuple(*), 2) AS ${VARIABLE_LABEL_COLUMN}`
+    + `\nFROM ${nestBounded(branch.sql)}`)
     .join('\nUNION ALL\n');
   return { sql, branches, rowLimit: branches.length * BRANCH_LIMIT + 1 };
 }

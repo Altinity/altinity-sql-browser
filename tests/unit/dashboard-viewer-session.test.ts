@@ -309,8 +309,8 @@ describe('inferred variables (#447)', () => {
     // direct input and has nothing to load ('idle'). Both start with
     // `options: null`; only a completed batch replaces that.
     expect(state.filters).toEqual([
-      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, options: null, optionsRev: 0 },
-      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, options: null, optionsRev: 0 },
+      { id: 'region', parameter: 'region', label: 'region', active: false, value: '', status: 'loading', configured: true, optionsError: null, options: null, optionsRev: 0 },
+      { id: 'top', parameter: 'top', label: 'top', active: false, value: '', status: 'idle', configured: false, optionsError: null, options: null, optionsRev: 0 },
     ]);
     expect(state.resettableFilterIds).toEqual([]);
     expect(state.activeFilterCount).toBe(0);
@@ -1593,13 +1593,17 @@ describe('batched option execution (#447 phase 2)', () => {
     await session.start();
     const calls = optionCalls();
     expect(calls).toHaveLength(1);
+    const branch = (name: string, sql: string): string =>
+      `SELECT '${name}' AS __variable_name,\n`
+      + '       tupleElement(tuple(*), 1) AS __variable_value,\n'
+      + '       tupleElement(tuple(*), 2) AS __variable_label\n'
+      + `FROM (\n${sql}\n) LIMIT 1001`;
     expect(calls[0].sql).toBe(
-      "SELECT 'country' AS __variable_name, * FROM (\nSELECT a, b FROM countries\n) LIMIT 1001\n"
-      + 'UNION ALL\n'
-      + "SELECT 'city' AS __variable_name, * FROM (\nSELECT a, b FROM cities\n) LIMIT 1001",
+      `${branch('country', 'SELECT a, b FROM countries')}\nUNION ALL\n${branch('city', 'SELECT a, b FROM cities')}`,
     );
-    // Positional transport, bounded, read-only.
-    expect(calls[0].format).toBe('TableCompact');
+    // The ordinary streaming transport: positional access is done in SQL, so no
+    // special wire format is needed (and none is available before ClickHouse 25.2).
+    expect(calls[0].format).toBe('Table');
     expect(calls[0].params.readonly).toBe(2);
     expect(calls[0].params.max_result_bytes).toBe(10_000_000);
   });
@@ -1637,15 +1641,110 @@ describe('batched option execution (#447 phase 2)', () => {
     }
   });
 
-  it('issues no request when the only configured variable is locally rejected', async () => {
-    // A parameterised option query never reaches the server: no cascading.
+  it('issues no request for a locally-rejected variable, but still SAYS so on its control', async () => {
+    // A parameterised option query never reaches the server: no cascading. It must
+    // not quietly become a direct-input text box either — that is indistinguishable
+    // from never having been configured, so the stored SQL would be silently
+    // ignored with nothing anywhere explaining why.
     const { session, optionCalls } = optionSession(
       { country: { sql: 'SELECT a, b FROM t WHERE x = {city:String}' } },
       () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
     );
     await session.start();
     expect(optionCalls()).toHaveLength(0);
-    expect(session.state.value.filters.find((f) => f.id === 'country')!.configured).toBe(false);
+    const country = session.state.value.filters.find((f) => f.id === 'country')!;
+    expect(country.configured).toBe(true);
+    expect(country.status).toBe('error');
+    expect(country.optionsError).toBe('Variable option queries cannot reference Dashboard variables yet.');
+    expect(country.options).toBeNull();
+    // Per-variable, NOT a Dashboard-wide banner: no batch ran, so nothing failed
+    // at batch level.
+    expect(session.state.value.filterDiagnostics).toEqual([]);
+  });
+
+  it('reports every local problem with the SQL on the control at once', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SHOW TABLES FORMAT JSON' } },
+      () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const error = session.state.value.filters.find((f) => f.id === 'country')!.optionsError!;
+    expect(error).toContain('must be a SELECT');
+    expect(error).toContain('FORMAT');
+  });
+
+  it('keeps a locally-rejected variable OUT of a batch that other variables still run', async () => {
+    const { session, optionCalls } = optionSession(
+      {
+        country: { sql: 'SELECT a, b FROM countries' },
+        city: { sql: 'SELECT a, b FROM t; SELECT 1, 2' },
+      },
+      (sql) => (isOptionCall(sql)
+        ? optionRows(['country', 'de', 'Germany'])
+        : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    // One branch only, and the healthy variable is unaffected by the broken one.
+    expect(optionCalls()[0].sql).not.toContain('UNION ALL');
+    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    expect(byId.get('country')!.status).toBe('ready');
+    expect(byId.get('country')!.optionsError).toBeNull();
+    expect(byId.get('city')!.status).toBe('error');
+    expect(byId.get('city')!.optionsError).toContain('one statement');
+  });
+
+  it('a batch failure does not overwrite a locally-rejected variable\'s own reason', async () => {
+    const { session } = optionSession(
+      {
+        country: { sql: 'SELECT a, b FROM countries' },
+        city: { sql: 'SELECT a, b FROM t WHERE x = {country:String}' },
+      },
+      (sql) => (isOptionCall(sql) ? { error: 'boom' } : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const byId = new Map(session.state.value.filters.map((f) => [f.id, f]));
+    expect(byId.get('country')!.optionsError).toContain('boom');
+    // Replacing this with the batch message would be both vaguer and untrue: this
+    // variable was never in the batch.
+    expect(byId.get('city')!.optionsError).toBe('Variable option queries cannot reference Dashboard variables yet.');
+  });
+
+  it('rejects an optional block in option SQL, which could never activate', async () => {
+    const { session, optionCalls } = optionSession(
+      { country: { sql: 'SELECT a, b FROM t /*[ WHERE x = 1 ]*/' } },
+      () => ({ columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(optionCalls()).toHaveLength(0);
+    expect(session.state.value.filters.find((f) => f.id === 'country')!.optionsError)
+      .toContain('optional /*[');
+  });
+
+  it('names the diagnostic path in a transport failure, not just a raw server error', async () => {
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql) ? { error: 'Code: 47.' } : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    expect(session.state.value.filterDiagnostics[0].message).toContain('Test');
+  });
+
+  it('warns when a variable\'s option list was truncated at the cap', async () => {
+    const rows: [string, string, string][] = [];
+    for (let i = 0; i < 1005; i++) rows.push(['country', `v${i}`, `L${i}`]);
+    const { session } = optionSession(
+      { country: { sql: 'SELECT a, b FROM countries' } },
+      (sql) => (isOptionCall(sql) ? optionRows(...rows) : { columns: [{ name: 'n' }], rows: [[1]] }),
+    );
+    await session.start();
+    const diagnostics = session.state.value.filterDiagnostics;
+    expect(diagnostics).toHaveLength(1);
+    // A warning, not an error: the options it DID return are usable — the only
+    // dishonest option is letting a truncated list look complete.
+    expect(diagnostics[0].severity).toBe('warning');
+    expect(diagnostics[0].message).toContain('country');
+    expect(session.state.value.filters[0].status).toBe('ready');
+    expect(session.state.value.filters[0].options).toHaveLength(1000);
   });
 
   it('excludes conflicted and orphaned variables from the batch', async () => {
@@ -1764,7 +1863,8 @@ describe('batched option execution (#447 phase 2)', () => {
     expect(state.filterDiagnostics).toEqual([{
       severity: 'error',
       code: 'variable-options-batch-failed',
-      message: 'Variable options could not be loaded: Code: 47. Unknown expression identifier',
+      message: 'Variable options could not be loaded: Code: 47. Unknown expression identifier '
+        + '— use Test in a variable\u2019s editor to find the option SQL at fault.',
     }]);
     // Every option-backed control goes unavailable together — there is no
     // automatic fall-back to N separate per-variable queries in this issue.

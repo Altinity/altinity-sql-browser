@@ -346,20 +346,25 @@ export function buildFilterBar(
   const specOf = (name: string): VariableFieldSpec | undefined =>
     (variables ? variables[name] : undefined);
 
-  /** A variable whose declared type has no single-scalar control. Rendered
-   *  instead of an input, because an input could never produce a valid value —
-   *  and because leaving the field looking operable is how a user ends up waiting
-   *  forever for a panel that will never run. */
-  const buildUnsupportedField = (p: FieldControl, type: string): HTMLElement =>
-    h('label', { class: 'var-field' },
-      h('span', { class: 'var-name' }, p.name),
-      h('span', {
-        class: 'var-unsupported',
-        role: 'img',
-        'aria-label': `${p.name} cannot be filtered: ${type} is not a supported variable type`,
-        title: `A Dashboard variable must be a single scalar value. ${type} is a container type, `
-          + 'so no control can be shown for it.',
-      }, Icon.eyeOff(), type));
+  /** The marker shown beside a variable whose declared type is a CONTAINER
+   *  (`Array`/`Tuple`/`Map`/`Nested`): there is no inferred single-scalar control
+   *  for it, and no option list can back it.
+   *
+   *  It ADORNS the plain field rather than replacing it. Removing the input
+   *  outright would make an existing Dashboard strictly less capable — a
+   *  container-typed variable already rendered a free-text field, and
+   *  `param-serialize.ts` binds an array literal typed into it perfectly well, so
+   *  taking it away would leave those panels permanently `unfilled` with no way to
+   *  fill them. The marker says the Dashboard cannot infer a control; it does not
+   *  claim the value is unusable. */
+  const unsupportedMarker = (p: FieldControl, type: string): HTMLElement =>
+    h('span', {
+      class: 'var-unsupported',
+      role: 'img',
+      'aria-label': `${p.name} has no inferred control: ${type} is a container type — type a literal value`,
+      title: `A Dashboard cannot infer a control for ${type}, which is a container type. `
+        + 'Type a literal value directly.',
+    }, Icon.eyeOff(), type);
 
   /** The strict single-select over one variable's batched option rows. */
   const buildOptionField = (p: FieldControl, spec: VariableFieldSpec): HTMLElement => {
@@ -508,13 +513,15 @@ export function buildFilterBar(
   // #447 phase 2 adds two variable-only branches ahead of the plain one; with no
   // `variables` map every param still reaches `buildParamField` unchanged.
   const buildField = (p: FieldControl): HTMLElement => {
-    // The unsupported verdict comes from the SAME shared decision `buildParamField`
+    // The container verdict comes from the SAME shared decision `buildParamField`
     // consults, rather than being passed in by the caller — one decision point, so
     // the control a Dashboard renders and the policy that classified its type can
-    // never disagree. It wins over an option list: if the value cannot bind, the
-    // fact that someone configured options for it does not make it usable.
+    // never disagree. It wins over an option list: a two-String-column list cannot
+    // supply a container value, so offering a select for one would be a lie.
     if (fieldControlKind(p, null, { scalarControls: !!variables }).kind === 'unsupported') {
-      return buildUnsupportedField(p, p.type);
+      const field = buildParamField(p);
+      field.appendChild(unsupportedMarker(p, p.type));
+      return field;
     }
     const spec = specOf(p.name);
     if (spec && spec.options !== null) return buildOptionField(p, spec);

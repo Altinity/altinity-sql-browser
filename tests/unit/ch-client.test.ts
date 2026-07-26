@@ -561,23 +561,6 @@ describe('runQuery', () => {
     expect(ctx.fetchMock.mock.calls[0][0]).toContain('output_format_json_quote_decimals=1');
     expect((lines[1].row as Record<string, unknown>).metric).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
   });
-  // #447 phase 2: 'TableCompact' is the same streaming transport as 'Table' (it
-  // still gets progress-bearing JSON and the server-side row cap — it is NOT raw
-  // passthrough), but with positional rows, so a result with two identically
-  // named columns keeps both cells.
-  it('maps the TableCompact alias to the compact progress stream, keeping the row cap', async () => {
-    const ctx = ctxWith(async () => streamResp([
-      '{"meta":[{"name":"env","type":"String"},{"name":"env","type":"String"}]}\n',
-      '{"row":["7", "seven"]}\n',
-    ]));
-    const lines: StreamLine[] = [];
-    await runQuery(ctx, 'SELECT 1', { format: 'TableCompact', resultRowLimit: 5, onLine: (line) => lines.push(line) });
-    const url = ctx.fetchMock.mock.calls[0][0];
-    expect(url).toContain('default_format=JSONCompactStringsEachRowWithProgress');
-    expect(url).toContain('max_result_rows=5');
-    expect(url).toContain('result_overflow_mode=break');
-    expect(lines[1].row).toEqual(['7', 'seven']);
-  });
   it('streams lines and reports an error result on !ok', async () => {
     const ctx = ctxWith(async () => textResp('{"exception":"boom"}', false, 500));
     const out = await runQuery(ctx, 'bad', { format: 'Table' });

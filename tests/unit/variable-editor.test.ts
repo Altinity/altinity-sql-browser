@@ -446,6 +446,45 @@ describe('createTextareaVariableEditor', () => {
   });
 });
 
+// #447 phase 2: a successful configuration write asks any rendered Dashboard to
+// re-read committed truth. A viewer session reads `variableConfigs` ONCE, at
+// construction, so without this the stored document changed while the on-screen
+// controls kept running the previous configuration until the Dashboard happened to
+// be reopened.
+describe('commitVariableConfig — refreshing a rendered Dashboard (#447 phase 2)', () => {
+  it('asks the Dashboard to re-read committed truth after a successful commit', async () => {
+    const onWorkspaceExternallyChanged = vi.fn();
+    const { app } = makeApp({ onWorkspaceExternallyChanged });
+    commitVariableConfig(app, 'd', 'country', { sql: 'SELECT a, b FROM t' });
+    await settle();
+    expect(onWorkspaceExternallyChanged).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT ask after an aborted commit — nothing changed to re-read', async () => {
+    const onWorkspaceExternallyChanged = vi.fn();
+    // A Dashboard id that resolves to nothing aborts the transform.
+    const { app } = makeApp({ onWorkspaceExternallyChanged });
+    commitVariableConfig(app, 'no-such-dashboard', 'country', { sql: 'SELECT a, b FROM t' });
+    await settle();
+    expect(onWorkspaceExternallyChanged).not.toHaveBeenCalled();
+  });
+
+  it('works when no Dashboard is rendered (no hook injected)', async () => {
+    const { app, committed } = makeApp();
+    commitVariableConfig(app, 'd', 'country', null);
+    await settle();
+    expect(committed).toHaveLength(1);
+  });
+
+  it('refreshes after the tree deletes an orphan configuration too', async () => {
+    const onWorkspaceExternallyChanged = vi.fn();
+    const { app } = makeApp({ onWorkspaceExternallyChanged });
+    commitVariableConfig(app, 'd', 'country', null);
+    await settle();
+    expect(onWorkspaceExternallyChanged).toHaveBeenCalledOnce();
+  });
+});
+
 // #447 phase 2: the Test action. It validates the DRAFT locally first (so nothing
 // is sent for a problem the app can already see), then runs this variable's query
 // alone and checks its result shape — the only place the "exactly two String

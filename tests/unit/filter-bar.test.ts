@@ -542,7 +542,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
       variables: { country: { options: OPTIONS, optionsError: 'boom' } },
     });
     const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
-    expect(input.disabled).toBe(true);
+    expect(input.readOnly).toBe(true);
     expect(input.title).toBe('boom');
   });
 
@@ -550,21 +550,28 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     const { bar } = build('SELECT {country:String}', { variables: { country: { options: [] } } });
     const field = fieldFor(bar, 'country');
     const input = field.querySelector<HTMLInputElement>('.var-input')!;
+    // The select starts with nothing to offer.
+    input.focus();
+    input.dispatchEvent(new Event('focus'));
+    expect(field.querySelectorAll('.combo-option')).toHaveLength(0);
     bar.setVariableOptions({ country: { options: OPTIONS, error: null } });
     // Same nodes — this is the whole point: an options batch landing mid-session
     // must not discard what the user is typing in some other field.
     expect(fieldFor(bar, 'country')).toBe(field);
     expect(field.querySelector('.var-input')).toBe(input);
-    expect(input.disabled).toBe(false);
+    // ...and the options really did arrive. Without this the test passes even if
+    // the bar never forwards them to the field.
+    expect([...field.querySelectorAll('.combo-option')].map((n) => n.textContent ?? '').join('|'))
+      .toContain('Germany');
   });
 
   it('setVariableOptions can flip a select to unavailable and back', () => {
     const { bar } = build('SELECT {country:String}', { variables: { country: { options: OPTIONS } } });
     const input = fieldFor(bar, 'country').querySelector<HTMLInputElement>('.var-input')!;
     bar.setVariableOptions({ country: { options: [], error: 'boom' } });
-    expect(input.disabled).toBe(true);
+    expect(input.readOnly).toBe(true);
     bar.setVariableOptions({ country: { options: OPTIONS, error: null } });
-    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(false);
   });
 
   it('setVariableOptions ignores a key this bar built no select for', () => {
@@ -605,15 +612,19 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     expect(bar.focusedFieldKey()).toBe('country');
   });
 
-  it('renders an unsupported-type diagnostic instead of a control for a container type', () => {
+  it('marks a container type as having no inferred control, but KEEPS its input', () => {
+    // Removing the input would make an existing Dashboard strictly less capable: a
+    // container-typed variable already had a free-text field, and param-serialize
+    // binds an array literal typed into it — taking it away leaves those panels
+    // permanently unfilled with no way to fill them.
     const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
       variables: { tags: { options: null } },
     });
     const field = fieldFor(bar, 'tags');
-    expect(field.querySelector('input')).toBeNull();
+    expect(field.querySelector('.var-input')).not.toBeNull();
     const note = field.querySelector('.var-unsupported')!;
     expect(note.textContent).toContain('Array(String)');
-    expect(note.getAttribute('aria-label')).toContain('not a supported variable type');
+    expect(note.getAttribute('aria-label')).toContain('no inferred control');
     expect(note.getAttribute('title')).toContain('container type');
   });
 
@@ -625,6 +636,7 @@ describe('buildFilterBar — Dashboard variable controls (#447 phase 2)', () => 
     });
     expect(fieldFor(bar, 'tags').querySelector('.filter-select')).toBeNull();
     expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
   });
 
   it('reports unsupported for a container even with no entry in the variables map', () => {

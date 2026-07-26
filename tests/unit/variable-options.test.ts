@@ -100,8 +100,41 @@ describe('optionSqlDiagnostics', () => {
       .toEqual(['variable-option-parameterized']);
   });
 
+  it('rejects an optional block, which could never activate in option SQL', () => {
+    // A `/*[ … ]*/` block is switched on by a parameter, and option SQL may not
+    // have parameters — so the block is dead weight AND actively harmful: it is a
+    // comment to everything downstream, so its content is silently dropped from
+    // what runs (and a trailing one is stripped outright by normalization).
+    expect(codes('SELECT a, b FROM t /*[ WHERE x = 1 ]*/')).toEqual(['variable-option-optional-block']);
+    expect(codes('SELECT a, b FROM t /*[ AND y = 2 ]*/ ORDER BY a')).toEqual(['variable-option-optional-block']);
+  });
+
+  it('prefers the no-cascading message when the block CONTAINS a parameter', () => {
+    // One message, and the one that matters: the parameter is the real problem.
+    expect(codes('SELECT a, b FROM t /*[ WHERE x = {c:String} ]*/'))
+      .toEqual(['variable-option-parameterized']);
+  });
+
   it('ignores a placeholder-looking string literal', () => {
     expect(codes("SELECT '{country:String}', 'label'")).toEqual([]);
+  });
+
+  it('rejects an unterminated string or comment', () => {
+    // `stripTrailingTrivia` deliberately refuses to strip an unclosed comment, so
+    // without this the text enters the batch and the open span swallows the closing
+    // paren, the LIMIT and EVERY FOLLOWING BRANCH — one variable's typo would take
+    // the whole Dashboard's options down.
+    expect(codes('SELECT a, b FROM t /* todo')).toEqual(['variable-option-unterminated']);
+    expect(codes("SELECT 'abc, b FROM t")).toEqual(['variable-option-unterminated']);
+    // A properly closed one is fine.
+    expect(codes('SELECT a, b FROM t /* done */')).toEqual([]);
+  });
+
+  it('rejects a user column named like the generated branch tag', () => {
+    // ClickHouse answers AMBIGUOUS_COLUMN_NAME for the whole batch, which would be
+    // a baffling failure for every OTHER variable.
+    expect(codes('SELECT a AS __variable_name, b FROM t'))
+      .toEqual(['variable-option-reserved-column']);
   });
 
   it('reports every finding at once rather than stopping at the first', () => {
@@ -135,6 +168,20 @@ describe('optionBatchVariables', () => {
   it('excludes a variable whose option SQL is locally rejected', () => {
     expect(optionBatchVariables([variable({ name: 'bad', sql: 'SELECT a, b FROM t; SELECT 1, 2' })])).toEqual([]);
   });
+
+  it('excludes a CONTAINER-typed variable, which can never render an option select', () => {
+    // A two-String-column list cannot supply an Array/Tuple/Map/Nested value, so
+    // running its option SQL is work for a control that never appears — and a
+    // broken one could fail the combined query and take other variables down.
+    for (const type of ['Array(String)', 'Tuple(String, String)', 'Map(String, String)']) {
+      expect(optionBatchVariables([
+        variable({ name: 'tags', type, types: [type], sql: 'SELECT a, b FROM t' }),
+      ])).toEqual([]);
+    }
+    // A scalar with the same SQL is still included.
+    expect(optionBatchVariables([variable({ name: 'ok', sql: 'SELECT a, b FROM t' })]))
+      .toHaveLength(1);
+  });
 });
 
 describe('compileVariableOptionBatch', () => {
@@ -150,23 +197,29 @@ describe('compileVariableOptionBatch', () => {
     ]);
     expect(batch).not.toBeNull();
     expect(batch!.sql).toBe(
-      "SELECT 'country' AS __variable_name, * FROM (\n"
-      + 'SELECT toString(country_id), country_name\nFROM countries\n'
-      + ') LIMIT 1001\n'
+      "SELECT 'country' AS __variable_name,\n"
+      + '       tupleElement(tuple(*), 1) AS __variable_value,\n'
+      + '       tupleElement(tuple(*), 2) AS __variable_label\n'
+      + 'FROM (\nSELECT toString(country_id), country_name\nFROM countries\n) LIMIT 1001\n'
       + 'UNION ALL\n'
-      + "SELECT 'city' AS __variable_name, * FROM (\n"
-      + 'SELECT toString(city_id), city_name FROM cities\n'
-      + ') LIMIT 1001',
+      + "SELECT 'city' AS __variable_name,\n"
+      + '       tupleElement(tuple(*), 1) AS __variable_value,\n'
+      + '       tupleElement(tuple(*), 2) AS __variable_label\n'
+      + 'FROM (\nSELECT toString(city_id), city_name FROM cities\n) LIMIT 1001',
     );
     expect(batch!.branches.map((b) => b.name)).toEqual(['country', 'city']);
   });
 
   it('compiles a single variable without a UNION ALL', () => {
     const batch = compileVariableOptionBatch([variable({ name: 'env', sql: 'SELECT environment, environment FROM environments' })]);
+    // The contract's own value==label example: two output columns with the SAME
+    // name. Reading it by name would collapse them, so the compiler takes the
+    // user's columns BY POSITION and gives them names that cannot collide.
     expect(batch!.sql).toBe(
-      "SELECT 'env' AS __variable_name, * FROM (\n"
-      + 'SELECT environment, environment FROM environments\n'
-      + ') LIMIT 1001',
+      "SELECT 'env' AS __variable_name,\n"
+      + '       tupleElement(tuple(*), 1) AS __variable_value,\n'
+      + '       tupleElement(tuple(*), 2) AS __variable_label\n'
+      + 'FROM (\nSELECT environment, environment FROM environments\n) LIMIT 1001',
     );
     expect(batch!.sql).not.toContain('UNION ALL');
   });
@@ -193,14 +246,14 @@ describe('compileVariableOptionBatch', () => {
     ]);
     // The comment is stripped by normalization, and the `)` would still be safe
     // if it were not: it never shares a line with user text.
-    expect(batch!.sql).toContain('SELECT a, b FROM t\n) LIMIT 1001\nUNION ALL');
+    expect(batch!.sql).toContain('FROM (\nSELECT a, b FROM t\n) LIMIT 1001\nUNION ALL');
   });
 
   it('nests user SQL verbatim, including its own ORDER BY and LIMIT', () => {
     const batch = compileVariableOptionBatch([
       variable({ name: 'top', sql: 'SELECT a, b FROM t ORDER BY b LIMIT 5' }),
     ]);
-    expect(batch!.sql).toContain('SELECT a, b FROM t ORDER BY b LIMIT 5\n) LIMIT 1001');
+    expect(batch!.sql).toContain('FROM (\nSELECT a, b FROM t ORDER BY b LIMIT 5\n) LIMIT 1001');
   });
 
   it('sizes the transport cap to the sum of the branch limits', () => {

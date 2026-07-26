@@ -3445,7 +3445,7 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
   });
 
   it('commits a select pick straight through to the session, rerunning its panels', async () => {
-    const { app } = dashApp({
+    const { app, calls } = dashApp({
       responder: (sql) => (sql.includes('__variable_name')
         ? {
           columns: [
@@ -3464,8 +3464,11 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     });
     await render(app);
     const input = qs(app.root, '.filter-select .var-input') as HTMLInputElement;
-    // The panel is waiting on an unset required variable.
-    expect(qs(app.root, '.dash-tile')).not.toBeNull();
+    const tileText = (): string => qs(app.root, '.dash-tile').textContent ?? '';
+    const panelRuns = () => calls.filter((c) => !c.sql.includes('__variable_name'));
+    // The panel is WAITING on an unset required variable, so it has not run.
+    expect(tileText()).toContain('country');
+    expect(panelRuns()).toHaveLength(0);
     input.focus();
     input.dispatchEvent(new Event('focus'));
     const option = [...app.root!.querySelectorAll<HTMLElement>('.combo-option')]
@@ -3473,6 +3476,32 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     await flush();
     expect(input.value).toBe('Germany');
+    // The pick reached the SESSION and actually ran the panel that declares the
+    // variable, bound to the option's VALUE (not its label). Asserting only the
+    // input's own text would pass even if nothing else had happened.
+    expect(panelRuns()).toHaveLength(1);
+    expect(panelRuns()[0].params.param_country).toBe('de');
+    expect(tileText()).not.toContain('Enter a value');
+  });
+
+  it('shows a locally-rejected option query on the control instead of silently degrading it', async () => {
+    // Without this the variable renders a plain text box, indistinguishable from
+    // one nobody ever configured — so the stored SQL is simply ignored.
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1 WHERE c = {country:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        variableConfigs: { country: { sql: 'SELECT a, b FROM t WHERE x = {other:String}' } },
+      }),
+    });
+    await render(app);
+    const input = qs(app.root, '.filter-select .var-input') as HTMLInputElement;
+    // read-only rather than disabled, so the reason in `title` stays reachable.
+    expect(input.readOnly).toBe(true);
+    expect(input.title).toContain('cannot reference Dashboard variables');
+    // Per-variable, so no Dashboard-wide banner is raised for it.
+    expect(app.root!.querySelectorAll('.dash-config-diagnostic')).toHaveLength(0);
   });
 
   it('renders an unsupported-type note instead of a control for a container variable', async () => {

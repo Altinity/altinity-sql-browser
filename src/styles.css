@@ -2100,11 +2100,12 @@ body.detached-tab .graph-overlay-panel {
 .var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
 .var-combo-clear-inline:disabled { cursor: not-allowed; opacity: .5; }
 /* #447 phase 2: a variable whose declared type is a container (Array/Tuple/Map/
-   Nested) has no single-scalar control, so the field says so in place of an input
-   that could never produce a valid value. Warning, not error — the SQL is fine;
-   it is the Dashboard that cannot bind it. */
+   Nested) gets no INFERRED control, so this marker sits beside its plain input
+   rather than replacing it — a literal value typed there still binds. Warning, not
+   error: nothing is wrong, the Dashboard just cannot infer a control. */
 .var-unsupported {
   grid-column: 2;
+  margin-top: 2px;
   height: 24px; display: inline-flex; align-items: center; gap: 6px;
   padding: 0 8px; border-radius: var(--r-sm);
   border: 1px dashed var(--warn-bd); background: var(--warn-bg); color: var(--warn-fg);

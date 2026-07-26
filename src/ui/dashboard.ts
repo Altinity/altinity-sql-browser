@@ -878,14 +878,16 @@ export async function renderDashboard(
     // as a text box and changes type once the query lands. `null` options mean
     // direct input; `[]` means option-backed with nothing to offer yet.
     const variables: Record<string, VariableFieldSpec> = {};
-    const optionsError = sview.filterDiagnostics.length ? sview.filterDiagnostics[0].message : null;
     for (const f of sview.filters) {
       draftValues[f.parameter] = valueString(f.value);
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
       variables[f.parameter] = {
         options: f.configured ? (f.options ?? []) : null,
-        optionsError: f.configured ? optionsError : null,
+        // The variable's OWN reason, not the Dashboard-wide banner: a variable
+        // whose option SQL was rejected locally has a specific problem, and the
+        // batch failure is only its reason when it was actually in that batch.
+        optionsError: f.optionsError,
       };
     }
     const onCommit = (name: string): void => {
@@ -2167,16 +2169,13 @@ export async function renderDashboard(
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
-    const optionsSig = JSON.stringify([
-      sview.filters.map((f) => [f.id, f.configured, f.optionsRev, f.status]),
-      sview.filterDiagnostics.map((d) => d.message),
-    ]);
+    const optionsSig = JSON.stringify(sview.filters.map((f) =>
+      [f.id, f.configured, f.optionsRev, f.status, f.optionsError]));
     if (!rebuilt && optionsSig !== lastOptionsSig) {
-      const batchError = sview.filterDiagnostics.length ? sview.filterDiagnostics[0].message : null;
       const states: Record<string, { options: readonly ViewerFilterOption[]; error: string | null }> = {};
       for (const f of sview.filters) {
         if (!f.configured) continue;
-        states[f.parameter] = { options: f.options ?? [], error: batchError };
+        states[f.parameter] = { options: f.options ?? [], error: f.optionsError };
       }
       currentFilterBar?.setVariableOptions(states);
     }

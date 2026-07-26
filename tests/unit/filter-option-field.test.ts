@@ -7,7 +7,9 @@
 // fresh option list in place without losing the committed value.
 
 import { describe, it, expect, vi } from 'vitest';
-import { buildFilterOptionField, UNSET_OPTION_LABEL } from '../../src/ui/filter-option-field.js';
+import {
+  OPTION_DROPDOWN_CAP, UNSET_OPTION_LABEL, buildFilterOptionField,
+} from '../../src/ui/filter-option-field.js';
 import type { FilterOptionFieldOpts } from '../../src/ui/filter-option-field.js';
 
 const OPTIONS = [
@@ -185,33 +187,98 @@ describe('buildFilterOptionField', () => {
     expect(optionTexts(field.el)).toHaveLength(3);
   });
 
-  it('setUnavailable disables the control, offers nothing, and states why', () => {
+  it('setUnavailable refuses input, offers nothing, and states why — while staying REACHABLE', () => {
     const { field, input } = build();
     field.setUnavailable('Variable options could not be loaded: boom');
-    expect(input.disabled).toBe(true);
+    // read-only, NOT disabled: a disabled input is not focusable, so its `title` —
+    // the only place the reason is written — would be unreachable by keyboard and
+    // screen reader, and disabling a focused field drops focus to <body>.
+    expect(input.readOnly).toBe(true);
+    expect(input.disabled).toBe(false);
+    expect(input.getAttribute('aria-disabled')).toBe('true');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(input.classList.contains('is-error')).toBe(true);
     expect(input.title).toBe('Variable options could not be loaded: boom');
-    expect(clearBtn(field.el).disabled).toBe(true);
     focus(input);
     expect(optionTexts(field.el)).toHaveLength(0);
+  });
+
+  it('keeps the clear button live while unavailable', () => {
+    // A user whose option batch failed must still be able to un-apply a selection
+    // that is currently filtering their panels.
+    const { field, onCommit } = build({ value: 'de', active: true });
+    field.setUnavailable('boom');
+    const clear = clearBtn(field.el);
+    expect(clear.disabled).toBe(false);
+    clear.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onCommit).toHaveBeenCalledWith('', false);
   });
 
   it('setUnavailable(null) restores the control and its base title', () => {
     const { field, input } = build({ title: 'country: String' });
     field.setUnavailable('boom');
     field.setUnavailable(null);
-    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(false);
     expect(input.classList.contains('is-error')).toBe(false);
+    expect(input.hasAttribute('aria-invalid')).toBe(false);
+    expect(input.getAttribute('aria-disabled')).toBe('false');
     expect(input.title).toBe('country: String');
-    expect(clearBtn(field.el).disabled).toBe(false);
   });
 
-  it('starts unavailable when built with an optionsError already known', () => {
-    const { field, input } = build();
+  it('dispose closes the list of an unavailable field too', () => {
+    const { field } = build();
     field.setUnavailable('boom');
-    expect(input.disabled).toBe(true);
     field.dispose();
     expect(listOf(field.el).hidden).toBe(true);
+  });
+
+  it('never selects a BLANK-labelled option just because the box is empty', () => {
+    // A NULL or '' label column is preserved by the reader, so this option exists.
+    // Matching it on empty text would apply a predicate on nothing but a focus and
+    // a click elsewhere.
+    const { input, onCommit } = build({ options: [{ value: '7', label: '' }, ...OPTIONS] });
+    focus(input);
+    blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe('');
+  });
+
+  it('does not re-commit an unchanged selection on blur', () => {
+    // `wireComboInput` fires its commit on EVERY blur, so without a change check a
+    // focus/blur cycle on a committed select re-runs every panel that binds it.
+    const { input, onCommit } = build({ value: 'de', active: true });
+    focus(input);
+    blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe('Germany');
+  });
+
+  it('does not fire a clear on an already-unset field', () => {
+    const { field, onCommit } = build();
+    clearBtn(field.el).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it('caps the rendered dropdown, filtering BEFORE capping', () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ value: `v${i}`, label: `L${i}` }));
+    const { field, input } = build({ options: many });
+    focus(input);
+    expect(optionTexts(field.el)).toHaveLength(OPTION_DROPDOWN_CAP);
+    // An option past the cap is still reachable by typing — which is why the
+    // filter runs first.
+    type(input, 'L249');
+    expect(optionTexts(field.el).join('|')).toContain('L249');
+  });
+
+  it('setOptions does not discard in-progress typing', () => {
+    // The whole reason options arrive through setOptions instead of a bar rebuild
+    // is that a batch lands asynchronously and must not throw away what the user
+    // is typing — including in the field the options belong to.
+    const { field, input } = build({ options: [] });
+    focus(input);
+    type(input, 'Ger');
+    field.setOptions(OPTIONS);
+    expect(input.value).toBe('Ger');
   });
 
   it('falls back to the ambient document and the name as the title', () => {

@@ -619,17 +619,17 @@ export function createApp(env: CreateAppEnv = {}): App {
   // and a single callback keeps `StreamResult`/transport caps out of both that
   // tree's narrow app contract and the editor module itself.
   //
-  // Runs under the same bounded, read-only, POSITIONAL transport the refresh
-  // batch uses ('TableCompact'), so Test cannot pass for a query the batch would
-  // read differently — and cannot pull an unbounded result of its own.
+  // Runs under the same bounded, read-only transport the refresh batch uses, and
+  // through the same nesting (`compileOptionProbe`), so Test cannot pass for a
+  // query the batch would reject — and cannot pull an unbounded result of its own.
   app.runOptionQuery = async (sql: string) => {
     if (!(await conn.ensureFreshToken())) {
       return { columns: [], rows: [], error: 'Not signed in.' };
     }
     const rowLimit = VARIABLE_OPTION_CAP + 1;
-    const result = newResult('TableCompact', rowLimit);
+    const result = newResult('Table', rowLimit);
     await exec.executeRead(result, {
-      sql, format: 'TableCompact', rowLimit,
+      sql, format: 'Table', rowLimit,
       params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
     });
     return {

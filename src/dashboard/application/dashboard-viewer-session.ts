@@ -43,7 +43,8 @@ import { panelExecution } from '../../core/panel-execution.js';
 import { bindableVariables, inferDashboardVariables } from '../../core/dashboard-variables.js';
 import type { DashboardVariable } from '../../core/dashboard-variables.js';
 import {
-  VARIABLE_OPTION_BYTE_CAP, compileVariableOptionBatch, readVariableOptionBatch,
+  VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
+  compileVariableOptionBatch, optionSqlDiagnostics, readVariableOptionBatch,
 } from '../../core/variable-options.js';
 import type { VariableOption } from '../../core/variable-options.js';
 import { resolveAuthoredTimeRangeGroups } from '../../core/time-range.js';
@@ -122,13 +123,23 @@ export interface ViewerFilterState {
   active: boolean;
   value: unknown;
   status: ViewerFilterStatus;
-  /** True when this variable has Dashboard-local option SQL that is locally
-   *  acceptable — i.e. it renders a single-select rather than a direct input.
-   *  Published SEPARATELY from `options` because it is known at construction
-   *  while `options` only arrives with the first batch: without it a control
-   *  would have to start as a text box and change type once the query landed.
-   *  #447 phase 2. */
+  /** True when this variable has Dashboard-local option SQL AT ALL — so it
+   *  renders a single-select rather than a direct input. Published SEPARATELY
+   *  from `options` because it is known at construction while `options` only
+   *  arrives with the first batch: without it a control would have to start as a
+   *  text box and change type once the query landed.
+   *
+   *  Deliberately NOT "…and the SQL is valid". A configured variable whose SQL is
+   *  locally unacceptable stays a select and reports `optionsError`, because
+   *  degrading it to a direct-input text box would be indistinguishable from a
+   *  variable nobody ever configured — the user would see their option SQL
+   *  silently ignored with nothing anywhere saying why. #447 phase 2. */
   configured: boolean;
+  /** Why this variable's control cannot offer options: its own option SQL is
+   *  locally unacceptable, or the batch it belongs to failed. `null` when it is
+   *  fine (and always, for a direct-input variable). Distinct from
+   *  `DashboardViewState.filterDiagnostics`, which is the BATCH-level report. */
+  optionsError: string | null;
   /** The options the last successful batch returned for this variable, or `null`
    *  before one has (and always, for a direct-input variable). An EMPTY array is
    *  a real answer — the option query returned no rows. */
@@ -559,10 +570,27 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     names: compiled.branches.map((branch) => branch.name),
     rowLimit: compiled.rowLimit,
   };
-  // The names that render a single-select. Read at construction so a configured
-  // variable's control type is stable from the first publish, rather than starting
-  // as a text box and changing once the batch lands.
-  const configuredNames = new Set(optionBatch === null ? [] : optionBatch.names);
+  // The names actually IN the batch — the ones a response can fill.
+  const batchedNames = new Set(optionBatch === null ? [] : optionBatch.names);
+  // Every variable that carries option SQL, whether or not that SQL can run, and
+  // the reason when it cannot. A configured-but-broken variable must still render
+  // as a select reporting its problem: the alternative (falling back to a plain
+  // text box) is indistinguishable from never having been configured, which is
+  // how stored option SQL ends up silently ignored. Local rejection is decided by
+  // the SAME pure service the batch and the editor's Test use, so the three can
+  // never disagree about what is acceptable.
+  const localOptionErrors = new Map<string, string>();
+  for (const variable of bindable) {
+    if (variable.sql === null || batchedNames.has(variable.name)) continue;
+    const issues = optionSqlDiagnostics(variable.sql);
+    localOptionErrors.set(variable.name, issues.length
+      ? issues.map((issue) => issue.message).join(' ')
+      // Unreachable via `optionBatchVariables`' own rule (a non-null `sql` is
+      // either acceptable, and so batched, or produces at least one diagnostic),
+      // kept as an honest message rather than an empty string.
+      : 'This variable’s option SQL cannot be used.');
+  }
+  const configuredNames = new Set([...batchedNames, ...localOptionErrors.keys()]);
   const filters: FilterRuntime[] = bindable.map((variable) => {
     const name = variable.name;
     // #303: a persisted seed for this VARIABLE NAME overrides the unset start
@@ -570,14 +598,18 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // name). A seed whose `value` is nullish falls back to the unset value.
     const seed = deps.initialFilters ? deps.initialFilters[name] : undefined;
     const configured = configuredNames.has(name);
+    const localError = localOptionErrors.get(name) ?? null;
     const state: ViewerFilterState = {
       id: name, parameter: name, label: name,
       active: seed !== undefined ? !!seed.active : false,
       value: seed !== undefined ? (seed.value ?? UNSET_VALUE) : UNSET_VALUE,
-      // A configured variable is 'loading' from the very first publish: its
-      // control exists but cannot offer a choice until the batch returns.
-      status: configured ? 'loading' : 'idle',
+      // A batched variable is 'loading' from the very first publish: its control
+      // exists but cannot offer a choice until the batch returns. One whose SQL
+      // was rejected locally is already in its terminal state — no request will
+      // ever be made for it.
+      status: localError !== null ? 'error' : configured ? 'loading' : 'idle',
       configured,
+      optionsError: localError,
       options: null,
       optionsRev: 0,
     };
@@ -854,6 +886,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       || options.some((option, i) => previous[i].value !== option.value || previous[i].label !== option.label);
     filter.state.options = options;
     filter.state.status = 'ready';
+    filter.state.optionsError = null;
     if (changed) filter.state.optionsRev += 1;
   }
 
@@ -874,10 +907,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    */
   async function runOptionBatch(generation: number): Promise<void> {
     if (optionBatch === null) return;
-    const result = newResult('TableCompact', optionBatch.rowLimit);
+    const result = newResult('Table', optionBatch.rowLimit);
     await deps.exec.executeRead(result, {
       sql: optionBatch.sql,
-      format: 'TableCompact',
+      format: 'Table',
       rowLimit: optionBatch.rowLimit,
       params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
     });
@@ -886,7 +919,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       ? (result.error || 'Cancelled')
       : null;
     if (failure !== null) {
-      markOptionsFailed(`Variable options could not be loaded: ${failure}`);
+      // Names the diagnostic path, exactly as the shape failure does: the combined
+      // query cannot say WHICH branch broke it, so the user has to be told where
+      // to look rather than left with a raw server error.
+      markOptionsFailed(`Variable options could not be loaded: ${failure} `
+        + '— use Test in a variable’s editor to find the option SQL at fault.');
       return;
     }
     const read = readVariableOptionBatch(
@@ -896,12 +933,24 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       markOptionsFailed(read.error.message, read.error.code);
       return;
     }
-    filterDiagnostics = NO_FILTER_DIAGNOSTICS;
+    // A variable whose list was cut off at the cap is reported once, as a warning
+    // rather than an error: the options it DID return are usable, and the only
+    // honest alternative to saying so is letting a truncated list look complete.
+    filterDiagnostics = read.truncated.size === 0 ? NO_FILTER_DIAGNOSTICS : [{
+      severity: 'warning',
+      code: 'variable-options-truncated',
+      message: `Only the first ${VARIABLE_OPTION_CAP.toLocaleString()} options are shown for `
+        + `${[...read.truncated].join(', ')}. Narrow the option SQL to see the rest.`,
+    }];
     for (const filter of filters) {
       const options = read.byName.get(filter.def.id);
-      if (options === undefined) continue; // not a configured variable
+      if (options === undefined) continue; // not in this batch
       applyOptions(filter, options);
     }
+    // Publish as soon as the options land. Without this they would be invisible
+    // until the caller's own post-wave publish — i.e. until the SLOWEST tile
+    // finished, which inverts the whole point of running the two concurrently.
+    publish();
   }
 
   /** Publish a batch-level options failure: one Dashboard diagnostic, and every
@@ -911,9 +960,19 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  to load would silently change what the panels show. */
   function markOptionsFailed(message: string, code = 'variable-options-batch-failed'): void {
     filterDiagnostics = [{ severity: 'error', code, message }];
+    // Only the variables this batch was actually running for. One whose SQL was
+    // rejected locally keeps its OWN, more specific reason — overwriting it with
+    // the batch's message would replace "your SQL declares a parameter" with
+    // "the combined query failed", which is both vaguer and untrue for it.
     for (const filter of filters) {
-      if (filter.state.configured) filter.state.status = 'error';
+      if (batchedNames.has(filter.def.id)) {
+        filter.state.status = 'error';
+        filter.state.optionsError = message;
+      }
     }
+    // Same reason as the success path: a failure the user cannot see until every
+    // tile finishes is a failure they will read as a hang.
+    publish();
   }
 
   function markTextAndErrorTiles(): void {

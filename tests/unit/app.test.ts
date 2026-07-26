@@ -6623,13 +6623,13 @@ describe('unified /sql routing', () => {
 describe('createApp — runOptionQuery (#447 phase 2)', () => {
   const OPTION_SQL = 'SELECT * FROM (\nSELECT a, b FROM countries\n) LIMIT 1001';
 
-  it('runs under the bounded, read-only, POSITIONAL transport the refresh batch uses', async () => {
+  it('runs under the bounded, read-only transport the refresh batch uses', async () => {
     const fetchMock = makeFetch([
       [(u, sql) => /countries/.test(sql), resp({
         body: streamBody([
           '{"meta":[{"name":"a","type":"String"},{"name":"b","type":"LowCardinality(String)"}]}\n',
-          '{"row":["de", "Germany"]}\n',
-          '{"row":["fr", "France"]}\n',
+          '{"row":{"a":"de","b":"Germany"}}\n',
+          '{"row":{"a":"fr","b":"France"}}\n',
         ]),
       })],
     ]);
@@ -6639,9 +6639,9 @@ describe('createApp — runOptionQuery (#447 phase 2)', () => {
     const url = asMock(fetchMock).mock.calls
       .map((call) => String(call[0]))
       .find((candidate) => candidate.includes('default_format='))!;
-    // Positional rows, so a user query with two identically-named output columns
-    // cannot lose its value to its label.
-    expect(url).toContain('default_format=JSONCompactStringsEachRowWithProgress');
+    // The ordinary streaming transport — positional access is done in SQL by the
+    // compiler, so no special wire format is needed here either.
+    expect(url).toContain('default_format=JSONStringsEachRowWithProgress');
     expect(url).toContain('readonly=2');
     expect(url).toContain('max_result_bytes=10000000');
     expect(url).toContain('max_result_rows=1001');

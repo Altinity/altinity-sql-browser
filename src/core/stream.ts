@@ -1,24 +1,11 @@
 // Pure result accumulator for ClickHouse's JSONStringsEachRowWithProgress
 // streaming format. Each newline-delimited JSON object is one of:
 //   { meta: [{name,type}, ...] }   — column headers (once, first)
-//   { row:  { col: value, ... } }  — one data row, keyed BY COLUMN NAME
-//   { row:  [value, ...] }         — one data row, POSITIONAL (the Compact
-//                                    variant — see below)
+//   { row:  { col: value, ... } }  — one data row
 //   { progress: {...} }            — incremental progress stats
 //   { exception: "..." }           — server-side error
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
-//
-// #447 phase 2 added the POSITIONAL row shape, emitted by
-// `JSONCompactStringsEachRowWithProgress` (the `'TableCompact'` format in
-// `net/ch-client.ts`). The name-keyed shape cannot represent a result with two
-// identically-named columns: the wire object has a duplicate key, `JSON.parse`
-// keeps only the last, and the name lookup below then yields that one value for
-// BOTH columns. `SELECT environment, environment FROM environments` is exactly
-// that result, and in a `UNION ALL` the result column names come from the first
-// branch alone — so a later branch's distinct value/label pair silently
-// collapses. Reading by position is immune, so any caller that must not lose a
-// column to a name collision asks for the Compact format instead.
 
 /** One streamed result column, as reported by a `{meta}` line. */
 export interface StreamColumn {
@@ -78,9 +65,7 @@ export function newResult(fmt: string, rowLimit = 0): StreamResult {
  *  shapes a line can take; unrecognized lines (no known key) are a no-op. */
 export interface StreamLine {
   meta?: StreamColumn[];
-  /** Name-keyed (`JSONStringsEachRowWithProgress`) or positional (the Compact
-   *  variant) — see the module doc for why both exist. */
-  row?: Record<string, unknown> | unknown[];
+  row?: Record<string, unknown>;
   progress?: {
     total_rows_to_read?: unknown;
     read_rows?: unknown;
@@ -101,10 +86,7 @@ export function applyStreamLine(json: StreamLine, result: StreamResult): StreamR
     if (result.rowLimit > 0 && result.rows.length >= result.rowLimit) {
       result.capped = true;
     } else {
-      // A positional row already IS the cell array (copied, so a caller mutating
-      // `rows` can never reach back into the parsed line); a name-keyed row is
-      // projected through `columns` to fix the cell order.
-      result.rows.push(Array.isArray(row) ? row.slice() : result.columns.map((c) => row[c.name]));
+      result.rows.push(result.columns.map((c) => row[c.name]));
     }
   } else if (json.progress) {
     const p = json.progress;
