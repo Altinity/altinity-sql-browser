@@ -5,6 +5,7 @@ import {
   sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
   detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries, adoptSavedIntoTab, reconcileLinkedTabsToLatest,
+  variableDoc, findVariableTab,
 } from '../../src/state.js';
 import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
@@ -63,7 +64,8 @@ const savedQuery = (args: Record<string, unknown> = {}): SavedQueryV2 =>
 describe('newTabObj', () => {
   it('creates a blank tab', () => {
     expect(newTabObj('t9')).toEqual({
-      id: 't9', name: 'Untitled', sqlDraft: '', specVersion: 1,
+      // #457: every tab declares WHICH document it edits; a fresh one is a query.
+      id: 't9', doc: { kind: 'query' }, name: 'Untitled', sqlDraft: '', specVersion: 1,
       specText: '{\n  "name": "Untitled",\n  "favorite": false\n}',
       specParsed: { name: 'Untitled', favorite: false }, specDiagnostics: [],
       editorMode: 'sql', dirtySql: false, dirtySpec: false,
@@ -71,6 +73,53 @@ describe('newTabObj', () => {
     });
     expect(tabDirty(newTabObj('t1'))).toBe(false);
     expect(tabDirty({ dirtySpec: true })).toBe(true);
+  });
+});
+
+// #457 — a tab is not always a query. These two are the ONLY way the rest of the
+// app asks "which document is this?" and "is this variable already open?".
+describe('variableDoc / findVariableTab', () => {
+  const varTab = (id: string, dashboardId: string, variableName: string): QueryTab => {
+    const tab = newTabObj(id);
+    tab.doc = { kind: 'dashboard-variable', dashboardId, variableName };
+    return tab;
+  };
+
+  it('narrows a variable tab to its binding and answers null for a query tab', () => {
+    expect(variableDoc(varTab('t1', 'sales', 'zone')))
+      .toEqual({ kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' });
+    expect(variableDoc(newTabObj('t2'))).toBeNull();
+  });
+
+  it('treats a tab with no doc at all as an ordinary query tab', () => {
+    // `doc` is required on `QueryTab` and always set by `newTabObj`, but a
+    // hand-built fixture can still assert its way to a `QueryTab` without one —
+    // and reading `tab.doc.kind` straight would throw on those instead.
+    expect(variableDoc({ } as QueryTab)).toBeNull();
+    expect(variableDoc(null)).toBeNull();
+    expect(variableDoc(undefined)).toBeNull();
+  });
+
+  it('finds the open tab for an exact (dashboardId, variableName) pair', () => {
+    const tabs = [newTabObj('t1'), varTab('t2', 'sales', 'zone')];
+    expect(findVariableTab(tabs, 'sales', 'zone')!.id).toBe('t2');
+  });
+
+  it('scopes identity to the Dashboard: the same NAME elsewhere is a different document', () => {
+    const tabs = [varTab('t1', 'sales', 'zone'), varTab('t2', 'ops', 'zone')];
+    expect(findVariableTab(tabs, 'sales', 'zone')!.id).toBe('t1');
+    expect(findVariableTab(tabs, 'ops', 'zone')!.id).toBe('t2');
+    expect(findVariableTab(tabs, 'exec', 'zone')).toBeUndefined();
+  });
+
+  it('matches the variable name exactly, never case-insensitively or by prefix', () => {
+    const tabs = [varTab('t1', 'sales', 'zone')];
+    expect(findVariableTab(tabs, 'sales', 'Zone')).toBeUndefined();
+    expect(findVariableTab(tabs, 'sales', 'zon')).toBeUndefined();
+  });
+
+  it('answers undefined when no variable tab is open at all', () => {
+    expect(findVariableTab([newTabObj('t1')], 'sales', 'zone')).toBeUndefined();
   });
 });
 
@@ -400,6 +449,40 @@ describe('saved queries', () => {
     });
     expect(linked.lastCommittedQueryToken).toBeUndefined();
     expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
+  });
+  // #457: a variable tab is workspace-bound through a DASHBOARD id, and has
+  // `savedId === null` by design — so the `savedId` loop above never reaches it.
+  // Dashboard ids are unique within a workspace, not globally (importing the same
+  // workspace JSON twice preserves them), so a variable tab that survived a
+  // workspace switch could commit option SQL into a Dashboard the user never
+  // opened. Demoting it to a plain query tab makes that unaddressable.
+  it('demotes a variable tab to a plain query tab, keeping its draft', () => {
+    const s = savedTestState();
+    const variable = newTabObj('t1');
+    variable.doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    variable.name = 'Variable: zone';
+    variable.sqlDraft = 'SELECT z, z FROM zones';
+    variable.dirtySql = true;
+    s.tabs.value = [variable];
+
+    detachWorkspaceBoundTabs(s);
+
+    expect(variable.doc).toEqual({ kind: 'query' });
+    expect(variableDoc(variable)).toBeNull();
+    expect(variable.name).toBe('Untitled');
+    // The user's work is not the thing at risk — the stale BINDING is.
+    expect(variable).toMatchObject({ sqlDraft: 'SELECT z, z FROM zones', dirtySql: true });
+  });
+  it('leaves an ordinary query tab\'s document kind alone', () => {
+    const s = savedTestState();
+    const plain = newTabObj('t1');
+    plain.name = 'Report';
+    s.tabs.value = [plain];
+
+    detachWorkspaceBoundTabs(s);
+
+    expect(plain.doc).toEqual({ kind: 'query' });
+    expect(plain.name).toBe('Report');
   });
   it('renameSaved updates the entry + any linked tab name', async () => {
     const s = savedTestState();

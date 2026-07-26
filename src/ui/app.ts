@@ -8,7 +8,7 @@ import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
-  savedForTab, tabPanel,
+  savedForTab, tabPanel, variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
   adoptSavedIntoTab, reconcileLinkedTabsToLatest,
 } from '../state.js';
@@ -24,7 +24,6 @@ import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
-import { VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP } from '../core/variable-options.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
   hasBlockingSpecErrors,
@@ -37,8 +36,11 @@ import { createNoopPort } from '../editor/editor-port.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
-import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
+import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab } from './tabs.js';
 import type { QueryOrName } from './tabs.js';
+import { commitVariableConfig } from '../application/dashboard-variable-config.js';
+import { dashboardVariables } from '../application/dashboard-tree-model.js';
+import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
@@ -614,30 +616,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
   });
   app.exec = exec;
-  // #447 phase 2: the per-variable option-query runner the variable editor's Test
-  // action uses. Wired ONCE here — the editor is opened from the Dashboards tree,
-  // and a single callback keeps `StreamResult`/transport caps out of both that
-  // tree's narrow app contract and the editor module itself.
-  //
-  // Runs under the same bounded, read-only transport the refresh batch uses, and
-  // through the same nesting (`compileOptionProbe`), so Test cannot pass for a
-  // query the batch would reject — and cannot pull an unbounded result of its own.
-  app.runOptionQuery = async (sql: string) => {
-    if (!(await conn.ensureFreshToken())) {
-      return { columns: [], rows: [], error: 'Not signed in.' };
-    }
-    const rowLimit = VARIABLE_OPTION_CAP + 1;
-    const result = newResult('Table', rowLimit);
-    await exec.executeRead(result, {
-      sql, format: 'Table', rowLimit,
-      params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
-    });
-    return {
-      columns: result.columns.map((column) => ({ name: column.name, type: column.type })),
-      rows: result.rows,
-      error: result.error ?? (result.cancelled ? 'Cancelled' : null),
-    };
-  };
+  // #457 removed `app.runOptionQuery` (#447 phase 2's per-variable option-query
+  // transport): it existed only for the variable DRAWER's Test action. A variable
+  // tab runs through the ordinary Run action and paints into the ordinary result
+  // area, so there is no second transport to wire.
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
   app.now = now;
@@ -1341,6 +1323,18 @@ export function createApp(env: CreateAppEnv = {}): App {
       return;
     }
     app.dom.saveBtn.classList.remove('conflict');
+    // #457: a variable tab has no saved query behind it, so "saved" is simply
+    // "not dirty", and no Spec can ever block its Save.
+    if (variableDoc(tab) !== null) {
+      const stored = !tab.dirtySql;
+      app.dom.saveBtn.classList.toggle('saved', stored);
+      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, stored ? 'Saved' : 'Save'));
+      app.dom.saveBtn.disabled = false;
+      app.dom.saveBtn.title = stored
+        ? 'Saved — edit to re-save (⌘S)'
+        : 'Save this variable’s option SQL (⌘S)';
+      return;
+    }
     const entry = savedForTab(app.state, tab);
     const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
     const blocked = !!entry && specBlocked(tab);
@@ -1452,8 +1446,63 @@ export function createApp(env: CreateAppEnv = {}): App {
     return result.entry;
   }
 
+  /**
+   * #457 — Save on a `dashboard-variable` tab. The ONE write it performs is
+   * `dashboard.variableConfigs[variableName]`: no `SavedQueryV2` is created or
+   * touched, and the document is never added to the Library, History, favourites
+   * or Panels.
+   *
+   * The trim rule is the pure service's, never re-implemented here: blank (or
+   * whitespace-only) SQL REMOVES the configuration and returns the variable to
+   * direct input, rather than storing an empty string that would later read as
+   * configured-but-broken.
+   */
+  async function saveVariableTab(
+    tab: QueryTab, binding: { dashboardId: string; variableName: string },
+  ): Promise<null> {
+    const surfaceGeneration = app.captureSurfaceGeneration();
+    const sql = normalizeVariableSql(tab.sqlDraft);
+    // `lastKnownType` is what lets a configuration still display a type once its
+    // last declaring panel disappears. Recorded from whatever type is agreed NOW
+    // (a live declaration always wins over it), and read from the same projection
+    // the tab was opened through, at save time rather than at open time.
+    const type = dashboardVariables(app.currentWorkspace, binding.dashboardId)
+      .find((candidate) => candidate.name === binding.variableName)?.type ?? null;
+    const outcome = await commitVariableConfig(app, binding.dashboardId, binding.variableName, sql === null
+      ? null
+      : { sql, ...(type === null ? {} : { lastKnownType: type }) });
+    // Same staleness bracket every other async save uses: a navigation that began
+    // mid-write must not be repainted or toasted over.
+    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return null;
+    if (outcome.ok) {
+      tab.dirtySql = false;
+      app.actions.rerenderTabs();
+      app.updateSaveBtn();
+      flashToast(sql === null ? 'Option SQL removed' : 'Saved', { document: doc });
+      return null;
+    }
+    // `aborted` covers more than one thing, and only ONE of them is this
+    // transform's own refusal (`data === 'declined'` — the Dashboard is gone or
+    // its id is ambiguous, and nothing was written). The others are the primitive
+    // deciding the route moved on, and at least one of those keeps a durable
+    // write — so they say nothing rather than claim a failure that may not be one.
+    // Either way the draft stays dirty: it is the only copy of the user's edit.
+    if (outcome.aborted) {
+      if (outcome.data === 'declined') {
+        flashToast('This dashboard is no longer available — nothing was saved', { document: doc });
+      }
+      return null;
+    }
+    flashToast('Save failed: ' + outcome.diagnostics[0].message, { document: doc });
+    return null;
+  }
+
   async function saveActiveQuery(): Promise<SavedQueryV2 | null | undefined> {
     const tab = app.activeTab();
+    // #457: Save dispatches on the DOCUMENT KIND first. A variable tab is not a
+    // saved query and must never reach the linked-save or Save-as-new paths.
+    const variable = variableDoc(tab);
+    if (variable !== null) return saveVariableTab(tab, variable);
     // #343: while a linked tab is in conflict, Save opens the resolution chooser
     // rather than silently overwriting the externally changed query. A
     // 'deleted'-flagged orphan has `savedId === null` already, so it falls
@@ -2355,6 +2404,25 @@ export function createApp(env: CreateAppEnv = {}): App {
     // accepts the looser `string | Json` shape a `SavedQueryV2` satisfies
     // structurally but not nominally (no index signature).
     if (query) { loadIntoNewTab(app, { ...query }); toEditorOnMobile(); }
+  };
+
+  // #457 — opening a variable's option SQL is a Query-mode act for exactly the
+  // same reason opening a saved query is, and routes the same way.
+  //
+  // The variable is resolved through `dashboardVariables`, the SAME projection the
+  // Dashboards tree paints its rows from, so what opens always matches what was
+  // clicked — active, conflicted and orphaned rows alike. A name that no longer
+  // resolves (a click racing a repaint that has already dropped it) opens nothing
+  // at all, rather than a tab for a variable that does not exist.
+  app.openVariableTab = (dashboardId, variableName) => {
+    const variable = dashboardVariables(app.currentWorkspace, dashboardId)
+      .find((candidate) => candidate.name === variableName);
+    if (variable === undefined) return;
+    app.showQuerySurface();
+    // A newly inferred variable opens EMPTY; a configured one opens on its stored
+    // SQL. An orphan is configured by definition, so it opens on its SQL.
+    openVariableTab(app, { dashboardId, variableName }, variable.sql ?? '');
+    toEditorOnMobile();
   };
 
   // Adopt the surface the ROUTE describes. Used at boot, on Back/Forward, and

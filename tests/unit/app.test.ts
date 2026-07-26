@@ -29,7 +29,7 @@ import type {
 } from '../../src/workspace/workspace-repository.js';
 import type { App, WorkspaceChangedMessage } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
-import { renameSaved, savedForTab } from '../../src/state.js';
+import { renameSaved, savedForTab, variableDoc } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
 import type {
   DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
@@ -6616,58 +6616,310 @@ describe('unified /sql routing', () => {
   });
 });
 
-// #447 phase 2: the option-query runner the variable editor's Test action uses.
-// Wired here (rather than threaded as `exec` + connection through the Dashboards
-// tree) so neither that tree's narrow app contract nor the editor module has to
-// know about streaming, caps or transports.
-describe('createApp — runOptionQuery (#447 phase 2)', () => {
-  const OPTION_SQL = 'SELECT * FROM (\nSELECT a, b FROM countries\n) LIMIT 1001';
+// #457 — the Dashboard variable as a MAIN-EDITOR DOCUMENT. Every assertion here is
+// against the real `createApp` and its real IndexedDB-backed workspace, because
+// the two things that can go wrong are both about committed truth: what the tab
+// opens ON, and what the Save writes INTO.
+describe('createApp — Dashboard variable tabs (#457)', () => {
+  const PANEL_SQL = 'SELECT * FROM events WHERE zone = {zone:String}';
 
-  it('runs under the bounded, read-only transport the refresh batch uses', async () => {
-    const fetchMock = makeFetch([
-      [(u, sql) => /countries/.test(sql), resp({
-        body: streamBody([
-          '{"meta":[{"name":"a","type":"String"},{"name":"b","type":"LowCardinality(String)"}]}\n',
-          '{"row":{"a":"de","b":"Germany"}}\n',
-          '{"row":{"a":"fr","b":"France"}}\n',
-        ]),
-      })],
-    ]);
-    const app = createApp(env({ fetch: fetchMock }));
-    const answer = await app.runOptionQuery(OPTION_SQL);
-    // Not call[0]: `createApp` fetches `/sql/config.json` first.
-    const url = asMock(fetchMock).mock.calls
-      .map((call) => String(call[0]))
-      .find((candidate) => candidate.includes('default_format='))!;
-    // The ordinary streaming transport — positional access is done in SQL by the
-    // compiler, so no special wire format is needed here either.
-    expect(url).toContain('default_format=JSONStringsEachRowWithProgress');
-    expect(url).toContain('readonly=2');
-    expect(url).toContain('max_result_bytes=10000000');
-    expect(url).toContain('max_result_rows=1001');
-    expect(answer.error).toBeNull();
-    // The real column TYPES come back, which is what makes the two-String-column
-    // rule checkable here — a merged UNION ALL column list could not report them.
-    expect(answer.columns).toEqual([
-      { name: 'a', type: 'String' }, { name: 'b', type: 'LowCardinality(String)' },
-    ]);
-    expect(answer.rows).toEqual([['de', 'Germany'], ['fr', 'France']]);
+  /** One Dashboard owning ONE panel tile. `queryId` is per-Dashboard because #427
+   *  requires every tile to reference its own dedicated copy — two Dashboards
+   *  sharing one query id is rejected by the aggregate, not merely discouraged. */
+  const dashboard = (
+    id: string, queryId: string | null = 'q1', over: Partial<DashboardDocumentV2> = {},
+  ): DashboardDocumentV2 => ({
+    documentVersion: 2, id, title: id.toUpperCase(), revision: 1,
+    // Placements must match tiles exactly, so an empty Dashboard has neither.
+    layout: { type: 'flow', version: 1, preset: 'report', items: queryId === null ? {} : { t1: {} } },
+    tiles: queryId === null ? [] : [{ id: 't1', queryId }], ...over,
+  });
+  const ws = (
+    dashboards: DashboardDocumentV2[], queryIds: string[] = ['q1'],
+  ): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'w1', key: 'workspace_one', name: 'W',
+    // A panel query declaring `{zone:String}` — which is the ONLY thing that makes
+    // `zone` a variable of its Dashboard. A variable is inferred, never declared,
+    // so a fixture that omits the panel SQL tests nothing real.
+    queries: queryIds.map((id) => savedQuery({ id, name: 'Panel ' + id, sql: PANEL_SQL })),
+    dashboards,
   });
 
-  it('reports a server exception as an error rather than throwing', async () => {
-    const app = createApp(env({
-      fetch: makeFetch([[() => true, resp({ ok: false, status: 500, text: 'Code: 60. Unknown table' })]]),
-    }));
-    const answer = await app.runOptionQuery(OPTION_SQL);
-    expect(answer.error).toContain('Code: 60');
-    expect(answer.rows).toEqual([]);
+  /** A signed-in app on the Query surface with `workspace` committed. `live: true`
+   *  keeps the REAL `renderCurrentSurface`, which is what actually advances the
+   *  surface generation on a transition — a stubbed renderer never does, so a
+   *  staleness test has to opt in. */
+  const variableApp = async (workspace: StoredWorkspaceV5, live = false) => {
+    const app = createApp(env());
+    await seedActiveWorkspace(app, workspace);
+    if (!live) app.renderCurrentSurface = vi.fn();
+    return app;
+  };
+
+  const activeVariableTab = (app: App) => variableDoc(app.activeTab());
+
+  describe('openVariableTab', () => {
+    it('switches to the Query surface and opens the variable on its committed SQL', async () => {
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { zone: { sql: 'SELECT z, z FROM zones' } },
+      })]));
+      app.openDashboard({ dashboardId: 'sales', mode: 'edit' });
+
+      app.openVariableTab('sales', 'zone');
+
+      expect(app.mainSurface).toEqual({ kind: 'query' });
+      expect(app.activeTab().name).toBe('Variable: zone');
+      expect(app.activeTab().sqlDraft).toBe('SELECT z, z FROM zones');
+      expect(activeVariableTab(app))
+        .toEqual({ kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' });
+    });
+
+    it('opens BLANK for an inferred variable that has no stored configuration', async () => {
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.openVariableTab('sales', 'zone');
+
+      expect(app.activeTab().sqlDraft).toBe('');
+      expect(app.activeTab().dirtySql).toBe(false);
+    });
+
+    it('opens an ORPHANED variable — its SQL is real work, kept editable', async () => {
+      // No panel declares `gone` any more, but its configuration survives.
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { gone: { sql: 'SELECT g, g FROM g', lastKnownType: 'String' } },
+      })]));
+      app.openVariableTab('sales', 'gone');
+
+      expect(app.activeTab().sqlDraft).toBe('SELECT g, g FROM g');
+      expect(activeVariableTab(app)!.variableName).toBe('gone');
+    });
+
+    it('opens nothing at all for a name that no longer resolves', async () => {
+      // A click racing a repaint that already dropped the row must not conjure a
+      // tab for a variable that does not exist.
+      const app = await variableApp(ws([dashboard('sales')]));
+      const before = app.state.tabs.value.length;
+
+      app.openVariableTab('sales', 'never-declared');
+      app.openVariableTab('no-such-dashboard', 'zone');
+
+      expect(app.state.tabs.value).toHaveLength(before);
+      expect(activeVariableTab(app)).toBeNull();
+    });
+
+    it('re-opening selects the same tab, and two Dashboards give two tabs', async () => {
+      // Each Dashboard owns its OWN copy of the panel query (#427), so each
+      // independently infers a `zone` variable.
+      const app = await variableApp(ws([
+        dashboard('sales', 'q1', { variableConfigs: { zone: { sql: 'SELECT sales' } } }),
+        dashboard('ops', 'q2', { variableConfigs: { zone: { sql: 'SELECT ops' } } }),
+      ], ['q1', 'q2']));
+
+      app.openVariableTab('sales', 'zone');
+      const first = app.activeTab().id;
+      app.openVariableTab('sales', 'zone');
+      expect(app.activeTab().id).toBe(first);
+
+      // Same NAME, different Dashboard → a different document.
+      app.openVariableTab('ops', 'zone');
+      expect(app.activeTab().id).not.toBe(first);
+      expect(app.activeTab().sqlDraft).toBe('SELECT ops');
+      expect(app.state.tabs.value.filter((tab) => variableDoc(tab) !== null)).toHaveLength(2);
+    });
   });
 
-  it('refuses to run when the token preflight fails', async () => {
-    const app = createApp(env({ sessionStorage: memSession({}) }));
-    const answer = await app.runOptionQuery(OPTION_SQL);
-    expect(answer.error).toBe('Not signed in.');
-    expect(answer.columns).toEqual([]);
-    expect(answer.rows).toEqual([]);
+  describe('Save on a variable tab', () => {
+    it('writes ONLY variableConfigs[name], and creates no saved query', async () => {
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
+      app.activeTab().dirtySql = true;
+
+      await app.actions.save();
+
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards[0].variableConfigs).toEqual({
+        zone: { sql: 'SELECT z, z FROM zones', lastKnownType: 'String' },
+      });
+      // The panel query is untouched — a variable's name and type live in it.
+      expect(latest!.queries.map((q) => q.id)).toEqual(['q1']);
+      expect(latest!.queries[0].sql).toBe(PANEL_SQL);
+      expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']);
+      expect(app.activeTab().savedId).toBeNull();
+      // A successful save is what clears the dirty marker.
+      expect(app.activeTab().dirtySql).toBe(false);
+    });
+
+    it('records no lastKnownType when the variable has no agreed type', async () => {
+      // An orphan whose configuration never recorded one: a type must be read,
+      // never invented.
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { gone: { sql: 'OLD' } },
+      })]));
+      app.openVariableTab('sales', 'gone');
+      app.activeTab().sqlDraft = 'SELECT g, g FROM g';
+
+      await app.actions.save();
+
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards[0].variableConfigs).toEqual({ gone: { sql: 'SELECT g, g FROM g' } });
+    });
+
+    it('blank SQL REMOVES the configuration, returning the variable to direct input', async () => {
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { zone: { sql: 'SELECT z, z FROM zones' } },
+      })]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = '   \n  ';
+      app.activeTab().dirtySql = true;
+
+      await app.actions.save();
+
+      const latest = await loadActiveWorkspace(app);
+      // Not an empty string, which would later read as configured-but-broken —
+      // and `variableConfigs` itself goes once it would be empty.
+      expect('variableConfigs' in latest!.dashboards[0]).toBe(false);
+      expect(app.activeTab().dirtySql).toBe(false);
+    });
+
+    it('leaves every OTHER variable configuration on the Dashboard alone', async () => {
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { zone: { sql: 'Z' }, other: { sql: 'O' } },
+      })]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'NEW';
+
+      await app.actions.save();
+
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards[0].variableConfigs!.other).toEqual({ sql: 'O' });
+    });
+
+    it('aborts safely when the Dashboard no longer resolves, keeping the draft dirty', async () => {
+      const app = await variableApp(ws([dashboard('sales'), dashboard('ops', null)]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
+      app.activeTab().dirtySql = true;
+      // The Dashboard is deleted from COMMITTED truth after the tab was opened.
+      // `q1` goes with it: it was that Dashboard's own owned copy.
+      await app.workspace.commit(ws([dashboard('ops', null)], []));
+
+      await app.actions.save();
+
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards.map((d) => d.id)).toEqual(['ops']);
+      expect(latest!.dashboards[0].variableConfigs).toBeUndefined();
+      // The user's edit is the only copy — it must survive a refused write.
+      expect(app.activeTab().dirtySql).toBe(true);
+      expect(app.activeTab().sqlDraft).toBe('SELECT z, z FROM zones');
+    });
+
+    it('never writes into a DIFFERENT Dashboard that reuses the same id', async () => {
+      // Dashboard ids are unique per workspace, not globally. A variable tab that
+      // outlived a workspace switch must not be addressable at all.
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { zone: { sql: 'ORIGINAL' } },
+      })]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'HIJACK';
+
+      app.applyCommittedWorkspace({
+        storageVersion: 5, id: 'w2', key: 'other', name: 'Other',
+        queries: [savedQuery({ id: 'q1', name: 'Panel', sql: PANEL_SQL })],
+        dashboards: [dashboard('sales')],
+      });
+
+      // The switch demoted it to a plain query tab, draft intact.
+      expect(variableDoc(app.state.tabs.value.find((t) => t.sqlDraft === 'HIJACK')!)).toBeNull();
+    });
+
+    it('does not repaint or toast over a surface the user navigated to mid-save', async () => {
+      // The staleness bracket every other async save uses. The write itself is
+      // durable and lands; what must NOT happen is this save settling its tab
+      // chrome and toast against a renderer that has already been replaced.
+      const app = await variableApp(ws([dashboard('sales', 'q1', {
+        variableConfigs: { zone: { sql: 'OLD' } },
+      })]), true);
+      app.renderApp();
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
+      app.activeTab().dirtySql = true;
+
+      const saving = app.actions.save();
+      app.openDashboard({ dashboardId: 'sales', mode: 'edit' }); // advances the surface generation
+      await saving;
+
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards[0].variableConfigs!.zone.sql).toBe('SELECT z, z FROM zones');
+      expect(document.querySelector('.share-toast')).toBeNull();
+    });
+
+    it('surfaces a rejected commit, and keeps the draft dirty', async () => {
+      // Distinct from an ABORT: the transform built a candidate and the aggregate
+      // refused the whole workspace, which has a diagnostic worth showing.
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.renderApp();
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
+      app.activeTab().dirtySql = true;
+      app.workspace.commit = vi.fn(async () => ({
+        ok: false as const,
+        diagnostics: [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }],
+      }));
+
+      await app.actions.save();
+
+      expect(qs(document, '.share-toast').textContent).toBe('Save failed: boom');
+      expect(app.activeTab().dirtySql).toBe(true);
+    });
+
+    it('a variable tab does not reach the saved-query conflict chooser', async () => {
+      // `externalState` is a linked-saved-query concept; a variable tab has no
+      // link, and Save must dispatch on the DOCUMENT KIND before reading it.
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().externalState = 'conflict';
+      app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
+
+      await app.actions.save();
+
+      expect(app.dom.savePopover).toBeFalsy();
+      const latest = await loadActiveWorkspace(app);
+      expect(latest!.dashboards[0].variableConfigs).toEqual({
+        zone: { sql: 'SELECT z, z FROM zones', lastKnownType: 'String' },
+      });
+    });
+  });
+
+  describe('the Save button on a variable tab', () => {
+    const saveBtnState = (app: App) => ({
+      text: app.dom.saveBtn!.textContent,
+      saved: app.dom.saveBtn!.classList.contains('saved'),
+      disabled: app.dom.saveBtn!.disabled,
+    });
+
+    it('reads dirty state directly, with no saved query behind it', async () => {
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.renderApp();
+      app.openVariableTab('sales', 'zone');
+
+      app.updateSaveBtn();
+      expect(saveBtnState(app)).toEqual({ text: 'Saved', saved: true, disabled: false });
+
+      app.activeTab().dirtySql = true;
+      app.updateSaveBtn();
+      expect(saveBtnState(app)).toEqual({ text: 'Save', saved: false, disabled: false });
+      expect(app.dom.saveBtn!.title).toContain('option SQL');
+    });
+
+    it('is never disabled by Spec state — a variable has no Spec to block it', async () => {
+      const app = await variableApp(ws([dashboard('sales')]));
+      app.renderApp();
+      app.openVariableTab('sales', 'zone');
+      app.activeTab().specDiagnostics = [{ severity: 'error', message: 'nope' }];
+
+      app.updateSaveBtn();
+
+      expect(app.dom.saveBtn!.disabled).toBe(false);
+    });
   });
 });

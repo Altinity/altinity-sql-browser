@@ -86,6 +86,61 @@ export function replaceDashboard(
   };
 }
 
+/** One variable's stored option-list configuration, as a caller hands it in.
+ *  Structurally the persisted `DashboardVariableConfigV1`; declared here rather
+ *  than imported so this module keeps naming only the shapes it writes. */
+export interface VariableConfigInput {
+  sql: string;
+  lastKnownType?: string;
+}
+
+/**
+ * Store or remove ONE variable's option-SQL configuration, addressed by
+ * Dashboard id + exact variable name — a variable's only identity (#457).
+ *
+ * A Dashboard variable is not a stored object: its name and ClickHouse type come
+ * from the `{name:Type}` placeholders the Dashboard's panel queries declare
+ * (`core/dashboard-variables.ts`). The only thing that persists is this optional
+ * per-name configuration, so no panel query is ever touched here — a variable's
+ * name and type live in the panel SQL, and this write must not be able to change
+ * them.
+ *
+ * `config: null` removes the key entirely (both `sql` and `lastKnownType`), and
+ * the `variableConfigs` object itself is dropped once it would be empty, so a
+ * Dashboard that never configured a variable stays byte-identical to one that
+ * configured and then removed one.
+ *
+ * Returns `null` — committing nothing — for the same two reasons
+ * `replaceDashboard` does: the id names no entry (deleted concurrently) or names
+ * more than one (ambiguous, and never to be "repaired" by an arbitrary pick).
+ * Never mutates `workspace`.
+ *
+ * #457 moved this out of the deleted variable-SQL drawer (`ui/variable-editor.ts`)
+ * and split it: the transform is pure and lives here beside the other id-addressed
+ * Dashboard writers; the `mutateWorkspace` plumbing around it is
+ * `application/dashboard-variable-config.ts`.
+ */
+export function withVariableConfig(
+  workspace: StoredWorkspaceV5,
+  dashboardId: string,
+  name: string,
+  config: VariableConfigInput | null,
+): StoredWorkspaceV5 | null {
+  const base = findDashboard(workspace, dashboardId);
+  if (base === null) return null;
+  const configs = { ...(base.variableConfigs ?? {}) };
+  if (config === null) delete configs[name];
+  else configs[name] = config;
+  const next: DashboardDocumentV2 = { ...base, revision: base.revision + 1 };
+  if (Object.keys(configs).length === 0) delete next.variableConfigs;
+  else next.variableConfigs = configs;
+  // `replaceDashboard` is the write-side guard: it answers `null` for an
+  // AMBIGUOUS id, which the `findDashboard` above happily resolves to the first
+  // match. Committing nothing is the only safe answer — one of two identical ids
+  // must never be overwritten by a guess.
+  return replaceDashboard(workspace, dashboardId, next);
+}
+
 /**
  * Write back the compatibility SLOT — the position the current UI edits — while
  * preserving every later Dashboard:

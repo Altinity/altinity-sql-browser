@@ -118,10 +118,11 @@ export type DashboardTreeCommand =
   | { kind: 'toggle' }
   | { kind: 'open-query'; queryId: string }
   | { kind: 'open-dashboard'; request: OpenDashboardRequest }
-  /** #447: open THIS variable's option-SQL editor. Deliberately not
-   *  `open-query`: a variable is not a saved query (an orphan has no declaring
-   *  panel at all), and its editor is addressed by Dashboard id + exact name,
-   *  which is the only identity a variable has. */
+  /** #447: open THIS variable's option SQL. Deliberately not `open-query`: a
+   *  variable is not a saved query (an orphan has no declaring panel at all), and
+   *  it is addressed by Dashboard id + exact name, which is the only identity a
+   *  variable has. #457 made the target a dedicated main-editor tab rather than a
+   *  drawer; the command itself is unchanged, since the identity is the same. */
   | { kind: 'open-variable'; dashboardId: string; name: string };
 
 export interface DashboardTreeMenuItem {
@@ -301,9 +302,9 @@ function variablesFor(
 
 /**
  * One Dashboard's variables, resolved straight from the committed aggregate — the
- * per-variable option-SQL editor's resolver (`ui/variable-editor.ts`), which is
- * handed only a Dashboard id and a NAME and must agree exactly with the row the
- * user clicked. An unknown Dashboard id resolves to no variables at all rather
+ * resolver behind opening a variable's option-SQL tab (#457, `ui/app.ts`), which
+ * is handed only a Dashboard id and a NAME and must agree exactly with the row
+ * the user clicked. An unknown Dashboard id resolves to no variables at all rather
  * than throwing; with a duplicated id (which a write path refuses outright) the
  * FIRST entry answers, matching the row order this tree paints.
  */

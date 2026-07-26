@@ -310,10 +310,27 @@ describe('resolveEditorMode', () => {
     expect(gate).toEqual({ ok: true });
   });
 
-  it('always allows sql mode', () => {
+  // #457: a variable document has no Spec to author, and never will — Save writes
+  // one Dashboard configuration key and creates no SavedQueryV2 to hang a Spec on.
+  // `savedForTab` already refused it (a variable tab has `savedId === null`), but
+  // with a message telling the user to save a query they cannot save.
+  it('blocks spec mode on a variable tab for its OWN reason, not the unsaved-query one', () => {
+    const tab = newTabObj('t1');
+    tab.doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    const { deps } = makeDeps({ tab });
+    const gate = createQueryDocumentSession(deps).resolveEditorMode(tab, 'spec');
+    expect(gate).toEqual({ ok: false, message: 'A dashboard variable has no Spec.' });
+  });
+
+  it('always allows sql mode, including on a variable tab', () => {
     const tab = newTabObj('t1');
     const { deps } = makeDeps({ tab });
     expect(createQueryDocumentSession(deps).resolveEditorMode(tab, 'sql')).toEqual({ ok: true });
+
+    const variable = newTabObj('t2');
+    variable.doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    expect(createQueryDocumentSession(makeDeps({ tab: variable }).deps)
+      .resolveEditorMode(variable, 'sql')).toEqual({ ok: true });
   });
 
   it('rejects (silently) a mode outside sql/spec — a defensive runtime guard behind the typed signature', () => {

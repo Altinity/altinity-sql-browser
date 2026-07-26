@@ -12,7 +12,6 @@ import type { EditorView } from '@codemirror/view';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
-import type { VariableEditorFactory, VariableOptionQueryRunner } from './variable-editor.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
@@ -262,23 +261,11 @@ export interface App {
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   CodeViewer: CodeViewerFactory;
-  /**
-   * #447: the per-variable option-SQL editing surface the Dashboard tree's
-   * variable editor mounts (`ui/variable-editor.ts`). OPTIONAL, like `Chart`/
-   * `Dagre`: when no adapter is injected the editor mounts its own styled
-   * `<textarea>` (a read-only `CodeViewer` cannot take an edit, and an
-   * `EditorPort` is bound to the Workbench's active tab, so neither existing seam
-   * fits). Wiring a CodeMirror adapter onto it needs a `CreateAppEnv` field, an
-   * adapter under `src/editor/**` and a `main.ts` injection — none of which this
-   * phase owns.
-   */
-  VariableEditor?: VariableEditorFactory;
-  /** #447 phase 2: runs ONE variable's option query for the variable editor's
-   *  Test action, under the same bounded/read-only/positional transport the
-   *  refresh batch uses. Bound by app.ts; a narrow callback rather than the
-   *  `exec` + connection pair it composes, so neither the Dashboards tree's app
-   *  contract nor the editor module has to know about streaming or caps. */
-  runOptionQuery: VariableOptionQueryRunner;
+  // #457 removed `VariableEditor` and `runOptionQuery`: both existed only for the
+  // per-variable option-SQL DRAWER (a second SQL editing surface, with its own
+  // editor seam and its own Test transport). Option SQL is edited in the main
+  // editor as a `dashboard-variable` tab now, so it reuses `sqlEditor` and the
+  // ordinary Run action — there is nothing left for a second seam to inject.
   /** #313: the open-the-reference-pane action the CM6 adapter's hover button
    *  and F1 command invoke — bound by app.ts to ui/doc-pane.ts's
    *  `openDocEntry(app, target)` so the editor layer never imports UI
@@ -504,6 +491,12 @@ export interface App {
   showDashboardSurface(mode: DashboardSurfaceMode): void;
   /** #425 — open a saved query into a tab, switching back to Query mode first. */
   openSavedQuery(queryId: string): void;
+  /** #457 — open (or re-select) the main-editor tab that edits ONE Dashboard
+   *  variable's option SQL, switching back to Query mode first. A variable is
+   *  addressed by Dashboard id + exact name, which is the only identity it has:
+   *  it is not a saved query, and no `SavedQueryV2` is created for it. A name
+   *  that no longer resolves opens nothing. */
+  openVariableTab(dashboardId: string, variableName: string): void;
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV5 | null;

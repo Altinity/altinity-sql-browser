@@ -504,11 +504,6 @@ const appDefaults: App = {
   },
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
-  // #447 phase 2 — inert placeholder answering an empty, successful result. A
-  // fixture exercising the variable editor's Test action overrides this directly;
-  // one that does not must still be able to OPEN the editor, which renders the
-  // Test button whenever a runner is present.
-  runOptionQuery: vi.fn(async () => ({ columns: [], rows: [], error: null })),
   // #313 — inert placeholder; a fixture exercising the reference-pane action
   // (hover button, F1, a schema-surface action) overrides this directly.
   openDocEntry: vi.fn(),
@@ -586,6 +581,7 @@ const appDefaults: App = {
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
   openSavedQuery: () => {},
+  openVariableTab: () => {},
   actions: {} as ActionsRegistry,
 };
 

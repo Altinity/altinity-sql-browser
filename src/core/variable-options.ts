@@ -19,9 +19,10 @@
 // that keeps the variable out of the batch entirely, while a problem only
 // ClickHouse can see (a branch whose arity disagrees with its siblings, a
 // genuinely broken query) fails the COMBINED request and is reported as a
-// batch-level failure. The per-variable editor's Run/Test action — which runs a
-// single variable's query on its own, where the response metadata describes that
-// query alone — is the precise diagnostic path for the rest.
+// batch-level failure. Narrowing a batch-level failure to the branch at fault
+// means running that one variable's query on its own, where the response
+// metadata describes that query alone — which is what a variable's own
+// main-editor tab and the ordinary Run action are for (#457).
 //
 // Deliberately NOT here: cascading/dependent option queries. Option SQL may not
 // reference `{name:Type}` parameters at all in this issue, which is what keeps
@@ -33,7 +34,6 @@ import { detectSqlFormat, detectSqlOutfile, sqlString, stripTrailingTrivia } fro
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
 import { hasOptionalBlocks } from './optional-blocks.js';
-import { parseClickHouseType, analyzeTypeModifiers } from './clickhouse-type.js';
 import { isCompoundParamType } from './param-type.js';
 import type { DashboardVariable } from './dashboard-variables.types.js';
 import type {
@@ -89,11 +89,10 @@ const BATCH_COLUMN_COUNT = 3;
  *  DETECTABLE rather than silently indistinguishable from "exactly that many". */
 const BRANCH_LIMIT = VARIABLE_OPTION_CAP + 1;
 
-/** Wrap already-normalized user SQL as a bounded subquery — the exact nesting
- *  every branch and the editor's Test probe share, so testing one variable
- *  exercises the same embedding the batch will use. `)` deliberately sits on its
- *  own line: a user query ending in `-- note` would otherwise comment out
- *  whatever followed it. */
+/** Wrap already-normalized user SQL as a bounded subquery — the embedding every
+ *  branch of the combined request shares. `)` deliberately sits on its own line:
+ *  a user query ending in `-- note` would otherwise comment out whatever
+ *  followed it. */
 const nestBounded = (sql: string): string => `(\n${sql}\n) LIMIT ${BRANCH_LIMIT}`;
 
 const diagnostic = (code: string, message: string): VariableOptionDiagnostic => ({ code, message });
@@ -121,7 +120,7 @@ export const normalizeOptionSql = (sql: string): string => stripTrailingTrivia(s
  * alone. Empty when the SQL is locally acceptable — which is NOT a promise that
  * it runs, only that nothing is knowably wrong with it yet.
  *
- * Returns ALL findings rather than the first, so the editor can show a query's
+ * Returns ALL findings rather than the first, so a caller can show a query's
  * complete story instead of one problem at a time.
  */
 export function optionSqlDiagnostics(sql?: string | null): VariableOptionDiagnostic[] {
@@ -130,8 +129,8 @@ export function optionSqlDiagnostics(sql?: string | null): VariableOptionDiagnos
   if (text === '') {
     // Not an error anywhere it is reachable: blank option SQL is how a variable
     // stays on direct input, and `normalizeVariableSql` removes the stored
-    // configuration entirely. Reported so a caller validating a draft (the
-    // editor's Run/Test on an empty box) has something to say.
+    // configuration entirely. Reported so a caller validating a draft (an empty
+    // variable tab) has something to say.
     return [diagnostic('variable-option-sql-empty', 'Option SQL is empty. Leave it blank to type values directly instead.')];
   }
   const out: VariableOptionDiagnostic[] = [];
@@ -288,73 +287,17 @@ export function compileVariableOptionBatch(
   return { sql, branches, rowLimit: branches.length * BRANCH_LIMIT + 1 };
 }
 
-/**
- * The query the per-variable editor's Test action runs: ONE variable's option
- * SQL, embedded exactly as a batch branch embeds it but without the branch tag.
- *
- * Sharing `nestBounded` with the compiler is the point — Test must not pass for
- * SQL the batch would reject, and the nesting is the one transformation that can
- * make an otherwise-valid query fail. Dropping the tag column keeps the response
- * metadata describing the USER's own columns, which is what makes the "exactly
- * two String columns" rule checkable here and nowhere else: in the combined batch
- * `UNION ALL` reports one merged column list for every branch.
- *
- * Bounded like a branch, so Test cannot pull an unbounded result either.
- */
-export const compileOptionProbe = (sql: string): string =>
-  `SELECT * FROM ${nestBounded(normalizeOptionSql(sql))}`;
+// #457 removed `compileOptionProbe`, `isOptionColumnType` and
+// `validateOptionColumns`. All three existed for the per-variable drawer's Test
+// action — a single-variable probe whose response metadata describes the user's
+// own columns, which is the only place the "exactly two String columns" rule is
+// checkable (a combined `UNION ALL` reports one merged column list for every
+// branch). Deleting that drawer left them with no caller in `src/`. Re-hosting the
+// check on the variable tab's Run is deferred; see the follow-up issue.
 
 // ── The response reader ──────────────────────────────────────────────────────
 
 const cell = (value: unknown): string => (value == null ? '' : String(value));
-
-/**
- * Is `type` acceptable for an option value/label column?
- *
- * `String` and the wrappers that are transparent to VALUE handling —
- * `LowCardinality(String)`, `FixedString(N)` — all qualify: a low-cardinality
- * dimension column is the single most common real source of option values, and
- * rejecting it would reject the contract's own example. `Nullable(...)` does NOT:
- * the streaming transport renders a null cell as ClickHouse's literal `ᴺᵁᴸᴸ`
- * marker, which is meaningless as either a bound value or a label, so it is
- * better refused with its type named than silently offered as an option.
- */
-export function isOptionColumnType(type?: string | null): boolean {
-  const node = parseClickHouseType(String(type ?? '').trim());
-  if (!node) return false;
-  const mods = analyzeTypeModifiers(node);
-  if (mods.nullable) return false;
-  const base = mods.valueType.name;
-  return base === 'String' || base === 'FixedString';
-}
-
-/**
- * Validate the response METADATA of a SINGLE variable's option query — the
- * editor's Run/Test path, where the columns describe that one query rather than a
- * compiled batch.
- *
- * This is where the contract's column rules are actually enforceable: exactly two
- * columns, both String. In the combined batch the same rules cannot be checked
- * from metadata at all, because `UNION ALL` reports one merged column list for
- * every branch (names from the first branch, types promoted to a supertype) — so
- * the batch relies on ClickHouse rejecting a branch whose arity disagrees, and
- * Run/Test is how a user finds out precisely which variable is wrong and why.
- */
-export function validateOptionColumns(
-  columns: readonly { name: string; type: string }[],
-): VariableOptionDiagnostic | null {
-  if (columns.length !== 2) {
-    return diagnostic('variable-option-column-count',
-      `Option SQL must return exactly two columns (value, then label); this returns ${columns.length}.`);
-  }
-  const bad = columns.filter((column) => !isOptionColumnType(column.type));
-  if (bad.length) {
-    return diagnostic('variable-option-column-type',
-      'Both option columns must be String; '
-      + `this returns ${bad.map((column) => column.type).join(' and ')}.`);
-  }
-  return null;
-}
 
 /**
  * Turn one option-batch response into per-variable option lists.
@@ -396,7 +339,8 @@ export function readVariableOptionBatch(
       truncated,
       error: diagnostic('variable-option-batch-shape',
         'Every configured variable\'s option SQL must return exactly two columns '
-        + '(value, then label). Use Test in a variable’s editor to find the one that does not.'),
+        + '(value, then label). Open a variable from the Dashboards tree and run its '
+        + 'SQL on its own to find the one that does not.'),
     };
   }
   const seen = new Map<string, Set<string>>();

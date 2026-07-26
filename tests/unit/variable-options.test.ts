@@ -9,9 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
-  compileVariableOptionBatch, isOptionColumnType, normalizeOptionSql,
+  compileVariableOptionBatch, normalizeOptionSql,
   optionBatchVariables, optionSqlDiagnostics, readVariableOptionBatch,
-  validateOptionColumns,
 } from '../../src/core/variable-options.js';
 import type { DashboardVariable } from '../../src/core/dashboard-variables.js';
 
@@ -278,53 +277,6 @@ describe('compileVariableOptionBatch', () => {
   });
 });
 
-describe('isOptionColumnType', () => {
-  it('accepts String and the wrappers transparent to value handling', () => {
-    expect(isOptionColumnType('String')).toBe(true);
-    expect(isOptionColumnType('LowCardinality(String)')).toBe(true);
-    expect(isOptionColumnType('FixedString(4)')).toBe(true);
-  });
-
-  it('rejects Nullable, because a null cell arrives as a literal marker string', () => {
-    expect(isOptionColumnType('Nullable(String)')).toBe(false);
-    expect(isOptionColumnType('LowCardinality(Nullable(String))')).toBe(false);
-  });
-
-  it('rejects every other type', () => {
-    expect(isOptionColumnType('UInt64')).toBe(false);
-    expect(isOptionColumnType('Date')).toBe(false);
-    expect(isOptionColumnType('Array(String)')).toBe(false);
-    expect(isOptionColumnType('')).toBe(false);
-    expect(isOptionColumnType(null)).toBe(false);
-    expect(isOptionColumnType('Tuple(')).toBe(false);
-  });
-});
-
-describe('validateOptionColumns', () => {
-  it('accepts exactly two String columns', () => {
-    expect(validateOptionColumns([
-      { name: 'v', type: 'String' }, { name: 'l', type: 'LowCardinality(String)' },
-    ])).toBeNull();
-  });
-
-  it('rejects the wrong column count, naming it', () => {
-    expect(validateOptionColumns([{ name: 'v', type: 'String' }])!.code)
-      .toBe('variable-option-column-count');
-    expect(validateOptionColumns([])!.message).toContain('this returns 0');
-    expect(validateOptionColumns([
-      { name: 'a', type: 'String' }, { name: 'b', type: 'String' }, { name: 'c', type: 'String' },
-    ])!.message).toContain('this returns 3');
-  });
-
-  it('rejects a non-String column, naming every offending type', () => {
-    const found = validateOptionColumns([
-      { name: 'v', type: 'UInt64' }, { name: 'l', type: 'Nullable(String)' },
-    ])!;
-    expect(found.code).toBe('variable-option-column-type');
-    expect(found.message).toContain('UInt64 and Nullable(String)');
-  });
-});
-
 describe('readVariableOptionBatch', () => {
   const cols = [
     { name: '__variable_name', type: 'String' },
@@ -412,7 +364,9 @@ describe('readVariableOptionBatch', () => {
       rows: [['a', 'x']],
     }, ['a']);
     expect(read.error!.code).toBe('variable-option-batch-shape');
-    expect(read.error!.message).toContain('Test');
+    // #457: names running one variable's SQL on its own, not the deleted drawer's
+    // Test button — a merged column list cannot say which branch is at fault.
+    expect(read.error!.message).toContain('run its SQL on its own');
     expect(read.byName.get('a')).toEqual([]);
   });
 

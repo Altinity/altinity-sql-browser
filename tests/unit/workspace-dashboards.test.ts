@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   findDashboard, findDashboardStrict, replaceDashboard, resolveCompatibilityDashboard,
-  withCompatibilityDashboard,
+  withCompatibilityDashboard, withVariableConfig,
 } from '../../src/workspace/workspace-dashboards.js';
 import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
@@ -114,5 +114,86 @@ describe('withCompatibilityDashboard', () => {
     const workspace = ws([dash('a')]);
     withCompatibilityDashboard(workspace, dash('b'));
     expect(workspace.dashboards.map((d) => d.id)).toEqual(['a']);
+  });
+});
+
+// #457 — the pure half of committing one variable's option SQL. It moved here from
+// the deleted variable-SQL drawer (`ui/variable-editor.ts`) because it is exactly
+// the same kind of id-addressed, exactly-one-match Dashboard write the functions
+// above are, and it must never depend on a UI surface to be correct.
+describe('withVariableConfig', () => {
+  const configured = (over: Partial<DashboardDocumentV2> = {}): StoredWorkspaceV5 =>
+    ws([dash('sales', { variableConfigs: { zone: { sql: 'SELECT z, z FROM zones' } }, ...over }), dash('ops')]);
+
+  it('stores a configuration under the exact name, bumping only that Dashboard', () => {
+    const workspace = configured();
+    const next = withVariableConfig(workspace, 'sales', 'country', { sql: 'SELECT c, c FROM t' })!;
+    expect(next.dashboards[0].variableConfigs).toEqual({
+      zone: { sql: 'SELECT z, z FROM zones' },
+      country: { sql: 'SELECT c, c FROM t' },
+    });
+    expect(next.dashboards[0].revision).toBe(2);
+    // Every other Dashboard is untouched, by identity — not merely by value.
+    expect(next.dashboards[1]).toBe(workspace.dashboards[1]);
+  });
+
+  it('records lastKnownType alongside the SQL when the caller has one', () => {
+    const next = withVariableConfig(ws([dash('sales')]), 'sales', 'zone',
+      { sql: 'SELECT z, z FROM zones', lastKnownType: 'String' })!;
+    expect(next.dashboards[0].variableConfigs!.zone)
+      .toEqual({ sql: 'SELECT z, z FROM zones', lastKnownType: 'String' });
+  });
+
+  it('replaces an existing configuration for the same name rather than merging it', () => {
+    const next = withVariableConfig(
+      ws([dash('sales', { variableConfigs: { zone: { sql: 'OLD', lastKnownType: 'String' } } })]),
+      'sales', 'zone', { sql: 'NEW' },
+    )!;
+    // `lastKnownType` is NOT carried over: the caller decides the whole record.
+    expect(next.dashboards[0].variableConfigs!.zone).toEqual({ sql: 'NEW' });
+  });
+
+  it('removes the key entirely for a null config', () => {
+    const next = withVariableConfig(
+      ws([dash('sales', { variableConfigs: { zone: { sql: 'Z' }, country: { sql: 'C' } } })]),
+      'sales', 'zone', null,
+    )!;
+    expect(next.dashboards[0].variableConfigs).toEqual({ country: { sql: 'C' } });
+  });
+
+  it('drops variableConfigs altogether once it would be empty', () => {
+    // A Dashboard that configured and then removed a variable must be
+    // byte-identical to one that never configured one.
+    const next = withVariableConfig(configured(), 'sales', 'zone', null)!;
+    expect('variableConfigs' in next.dashboards[0]).toBe(false);
+  });
+
+  it('starts a variableConfigs map for a Dashboard that has none', () => {
+    const next = withVariableConfig(ws([dash('sales')]), 'sales', 'zone', { sql: 'Z' })!;
+    expect(next.dashboards[0].variableConfigs).toEqual({ zone: { sql: 'Z' } });
+  });
+
+  it('commits NOTHING for an id that names no Dashboard', () => {
+    expect(withVariableConfig(configured(), 'gone', 'zone', { sql: 'Z' })).toBeNull();
+  });
+
+  it('commits NOTHING for an AMBIGUOUS id rather than picking one', () => {
+    // `findDashboard` happily answers the first match; the write must not.
+    // Overwriting one of two identical ids by a guess is unrecoverable.
+    expect(withVariableConfig(ws([dash('dup'), dash('dup')]), 'dup', 'zone', { sql: 'Z' })).toBeNull();
+  });
+
+  it('never mutates its input, including the Dashboard it rewrites', () => {
+    const workspace = configured();
+    withVariableConfig(workspace, 'sales', 'country', { sql: 'C' });
+    expect(workspace.dashboards[0].variableConfigs).toEqual({ zone: { sql: 'SELECT z, z FROM zones' } });
+    expect(workspace.dashboards[0].revision).toBe(1);
+  });
+
+  it('touches no panel query — a variable name and type live in the panel SQL', () => {
+    const workspace = ws([dash('sales', { tiles: [{ id: 't1', queryId: 'q1' }] })]);
+    const next = withVariableConfig(workspace, 'sales', 'zone', { sql: 'Z' })!;
+    expect(next.queries).toBe(workspace.queries);
+    expect(next.dashboards[0].tiles).toEqual(workspace.dashboards[0].tiles);
   });
 });

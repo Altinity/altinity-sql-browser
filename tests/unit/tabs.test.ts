@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from '../../src/ui/tabs.js';
-import { tabPanel } from '../../src/state.js';
+import {
+  renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab,
+} from '../../src/ui/tabs.js';
+import { tabPanel, variableDoc } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
@@ -166,5 +168,106 @@ describe('closeTab', () => {
     app.state.activeTabId.value = 't2';
     closeTab(app, 't2');
     expect(app.state.activeTabId.value).toBe('t1');
+  });
+});
+
+// #457 — the variable document, opened into the SAME tab strip and the SAME
+// editor a query uses. What matters here is identity and non-destructiveness:
+// a variable is addressed by (dashboardId, variableName) and nothing else, and
+// opening one must never disturb work already open.
+describe('openVariableTab', () => {
+  const bind = (dashboardId: string, variableName: string) => ({ dashboardId, variableName });
+
+  it('opens a new tab titled for the variable, on its committed SQL', () => {
+    const app = makeApp();
+    app.sqlEditor.focus = vi.fn(); // tabs.ts focuses through the port (#143)
+    const tab = openVariableTab(app, bind('sales', 'zone'), 'SELECT z, z FROM zones');
+
+    expect(tab.name).toBe('Variable: zone');
+    expect(tab.sqlDraft).toBe('SELECT z, z FROM zones');
+    expect(variableDoc(tab))
+      .toEqual({ kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' });
+    expect(app.state.activeTabId.value).toBe(tab.id);
+    expect(app.sqlEditor.focus).toHaveBeenCalled();
+  });
+
+  it('is NOT a saved query: no savedId, and nothing is added to the Library', () => {
+    const app = makeApp();
+    const tab = openVariableTab(app, bind('sales', 'zone'), 'Z');
+
+    expect(tab.savedId).toBeNull();
+    expect(app.state.savedQueries).toEqual([]);
+  });
+
+  it('opens blank for a variable with no stored configuration, and is not dirty', () => {
+    const app = makeApp();
+    const tab = openVariableTab(app, bind('sales', 'fresh'), '');
+
+    expect(tab.sqlDraft).toBe('');
+    // Committed truth just loaded — the user has not typed anything yet.
+    expect(tab.dirtySql).toBe(false);
+    expect(tab.dirtySpec).toBe(false);
+  });
+
+  it('carries the tab name into the Spec draft, so nothing reads it as Untitled', () => {
+    // Same treatment `loadIntoNewTab` gives an unsaved document — a share link or
+    // a result-source header then says what this document actually is.
+    const app = makeApp();
+    const tab = openVariableTab(app, bind('sales', 'zone'), 'Z');
+
+    expect((tab.specParsed as { name?: string }).name).toBe('Variable: zone');
+  });
+
+  it('re-opening the SAME variable selects the existing tab instead of duplicating it', () => {
+    const app = makeApp();
+    app.sqlEditor.focus = vi.fn();
+    const first = openVariableTab(app, bind('sales', 'zone'), 'Z');
+    // A local edit the user has not saved yet must survive the re-open.
+    first.sqlDraft = 'SELECT edited';
+    first.dirtySql = true;
+    app.state.activeTabId.value = 't1';
+
+    const again = openVariableTab(app, bind('sales', 'zone'), 'Z');
+
+    expect(again).toBe(first);
+    expect(again.sqlDraft).toBe('SELECT edited');
+    expect(again.dirtySql).toBe(true);
+    expect(app.state.tabs.value.filter((t) => variableDoc(t) !== null)).toHaveLength(1);
+    expect(app.state.activeTabId.value).toBe(first.id);
+    expect(app.sqlEditor.focus).toHaveBeenCalled();
+  });
+
+  it('gives the same variable NAME in two Dashboards two distinct tabs', () => {
+    const app = makeApp();
+    const sales = openVariableTab(app, bind('sales', 'zone'), 'SELECT sales');
+    const ops = openVariableTab(app, bind('ops', 'zone'), 'SELECT ops');
+
+    expect(ops.id).not.toBe(sales.id);
+    expect(sales.sqlDraft).toBe('SELECT sales');
+    expect(ops.sqlDraft).toBe('SELECT ops');
+    expect(app.state.tabs.value.filter((t) => variableDoc(t) !== null)).toHaveLength(2);
+  });
+
+  it('preserves every already-open tab and its unsaved draft', () => {
+    const app = makeApp();
+    const existing = app.state.tabs.value[0];
+    existing.sqlDraft = 'SELECT untouched';
+    existing.dirtySql = true;
+
+    openVariableTab(app, bind('sales', 'zone'), 'Z');
+
+    expect(app.state.tabs.value).toHaveLength(2);
+    expect(app.state.tabs.value[0]).toBe(existing);
+    expect(existing.sqlDraft).toBe('SELECT untouched');
+    expect(existing.dirtySql).toBe(true);
+  });
+
+  it('paints its title in the strip like any other tab', () => {
+    const app = makeApp();
+    openVariableTab(app, bind('sales', 'zone'), 'Z');
+    renderTabs(app);
+
+    expect([...app.dom.qtabsInner!.querySelectorAll('.qtab .name')].map((n) => n.textContent))
+      .toEqual(['Untitled', 'Variable: zone']);
   });
 });
