@@ -548,9 +548,14 @@ Which control a configured variable renders follows from its declared type:
   re-runs only the panels declaring that variable; Cancel, Escape and clicking
   outside discard the draft. The selection binds as a real ClickHouse array
   literal, so quotes, backslashes, Unicode and big integers are all escaped by the
-  same typed serializer everything else uses. When a refresh drops a value you had
-  selected, the rest of your selection survives; if every selected value is gone,
-  the variable returns to unset. Selections persist across a reload.
+  same typed serializer everything else uses. Selections persist across a reload.
+
+  Your selection is never changed behind your back: the control stays inert
+  (*Loading options…*) until its list arrives, a refresh only ever **removes**
+  values that are genuinely gone — keeping the order you committed, since the
+  array binds positionally — and if the option list came back truncated at the
+  1,000 cap, nothing is removed at all. If every selected value disappears, the
+  variable returns to unset.
 
 A variable with **no** option SQL keeps the direct input inferred from its declared
 type. `Tuple`, `Map`, `Nested` and nested `Array(Array(…))` have no inferable

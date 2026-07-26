@@ -32,10 +32,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `param_user=['ada','bo']` with quotes, backslashes, Unicode and big integers all
   escaped, never a joined `"ada,bo"`. An **empty** selection is unset (the panels
   wait) rather than a literal `[]`, which would return nothing while looking
-  filtered. When a refresh drops a selected value the survivors stay bound and the
-  affected panels re-run in **one** coalesced wave; a pure reorder or a label-only
-  change re-runs nothing; an empty intersection returns the variable to unset. New
-  options are never auto-selected. Selections survive a reload.
+  filtered. Selections survive a reload.
+
+  A committed selection is **never silently changed**. While the option batch is
+  in flight the control is inert (`Loading options…`) — the Dashboard is mounted
+  before the request finishes, so an Apply against a list that had not arrived
+  would otherwise clear a restored selection. An automatic refresh only ever
+  **removes** values that are genuinely gone, in **one** coalesced wave, and
+  preserves the committed ORDER: the array binds as an ordered ClickHouse literal
+  and panel SQL may read it positionally, so re-sorting it to match a new option
+  order would change what panels bind without re-running them. A label-only or
+  option-order-only change therefore does nothing at all, and if the option list
+  came back **truncated** at the 1,000 cap, nothing is pruned — a selected value
+  may simply live past the cap. New options are never auto-selected.
 
   Eligibility is one pure predicate (`multiSelectElementType`) shared by the option
   batch and the control dispatch, so a type whose option SQL ran can never be one

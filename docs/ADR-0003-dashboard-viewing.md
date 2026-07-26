@@ -438,6 +438,34 @@ restores the #189/PR-#364 control on top of the inferred-variable model.
   supersede tiles mid-refresh and make the outcome classifier judge tiles that are
   already re-running. One coalesced wave is structural, not a flag to remember.
 
+- **A committed selection is never silently changed** — three separate ways it
+  could have been, all found in review and all closed:
+
+  - *Applying before the options arrive.* `renderDashboard` mounts the surface
+    BEFORE awaiting `session.start()`, and a configured variable publishes with
+    `options: null` and no error, so the control was operable for the entire
+    request; a no-change Apply canonicalized a restored selection against the
+    empty list and committed a clear. The variable's `loading` status now reaches
+    the control, which stays inert until `setOptions` (the only thing that clears
+    it) or a batch failure. This is the one piece of #189's status machine with a
+    reason to exist that survived the trim.
+  - *Re-canonicalizing on refresh.* `reconcileSelection` preserves the COMMITTED
+    order and only filters. The array binds as an ORDERED literal and panel SQL
+    may read it positionally (`arrayElement`, a positional join) — `{name:Array(T)}`
+    promises nothing about membership semantics — so adopting a new option order
+    would change what panels bind while reporting no wave, and persist the
+    difference. The user's own Apply still canonicalizes: that is a deliberate
+    action taken against a list they are looking at.
+  - *Pruning against a capped list.* A value can live past the 1,000-option cap,
+    so a truncated result is not evidence that anything was removed; reconciliation
+    is skipped entirely for one (the warning still publishes). The truncation
+    SIGNAL was itself unsound — derived from the KEPT count, it missed a branch
+    whose 1,001 rows collapsed under the cap through dedup or blank filtering
+    (#461) — and now counts RAW rows against the branch `LIMIT`, which is what
+    actually says the server cut the result off. The single-select already kept an
+    off-list committed value verbatim; a selection gets the same benefit of the
+    doubt.
+
 - **A latent bug fell out.** `dashboard-viewer-session.ts` marked every `Array(T)`
   variable with valid option SQL as `status: 'error'` via a branch commented
   "unreachable" — true only for the types that genuinely cannot be option-backed.
