@@ -447,6 +447,13 @@ const AMBIGUOUS_DASHBOARD_REASON =
  *  checked ahead of ownership rather than folded into it. */
 const AMBIGUOUS_TILE_REASON =
   'Two panels in this dashboard share this id, so it cannot be edited or removed here.';
+/** Same ambiguity as `AMBIGUOUS_DASHBOARD_REASON`, worded for the one control
+ *  an orphaned-variable row offers — delete only, never edit. Deleting stored
+ *  option SQL is addressed by Dashboard id alone (#447), so a duplicated
+ *  Dashboard id leaves it exactly as unresolvable as a Dashboard-level delete;
+ *  `commitVariableConfig`'s own strict-replacement guard refuses it too. */
+const AMBIGUOUS_DASHBOARD_VARIABLE_REASON =
+  'Two dashboards in this workspace share this id, so this stored option SQL cannot be removed here.';
 
 /** One trailing control, available. */
 const action = (
@@ -493,6 +500,14 @@ export function deriveDashboardTree(
   for (const dashboard of dashboards) {
     dashboardIdCounts.set(dashboard.id, (dashboardIdCounts.get(dashboard.id) ?? 0) + 1);
   }
+  // Which OCCURRENCE of a duplicated Dashboard id this is, in document order —
+  // 0 for the first, 1 for the second, and so on. Availability only needs the
+  // COUNT above; this is what lets two rows sharing a duplicated id still get
+  // two DISTINCT presentation keys below, so the roving tabindex, `data-key`
+  // focus restoration and drag-highlight lookups (all keyed on `row.key`) each
+  // resolve to exactly one row instead of silently picking whichever matching
+  // node happens to be first in the DOM.
+  const dashboardOccurrenceSeen = new Map<string, number>();
   const ownership = buildQueryOwnershipIndex({
     queries: workspace?.queries ?? [],
     dashboards: dashboards.map((dashboard) => ({
@@ -565,13 +580,24 @@ export function deriveDashboardTree(
   const rows: DashboardTreeRow[] = [];
 
   for (const dashboard of dashboards) {
-    const dashboardKey = encodeKeyPart(workspaceId) + ':' + encodeKeyPart(dashboard.id);
+    const dashboardIdDuplicated = (dashboardIdCounts.get(dashboard.id) ?? 0) > 1;
+    const dashboardOccurrenceIndex = dashboardOccurrenceSeen.get(dashboard.id) ?? 0;
+    dashboardOccurrenceSeen.set(dashboard.id, dashboardOccurrenceIndex + 1);
+    // The PRESENTATION key, distinct from the (still ambiguous) mutation
+    // target below: when the id is duplicated, every row this Dashboard emits
+    // — this one and, through `groupKeyFor`/the variable and panel keys built
+    // from it, every descendant — carries a `:dup:<occurrence>` suffix so the
+    // two Dashboards' subtrees never collide on `row.key`/`data-key`, even
+    // though `dashboardId: dashboard.id` (what `edit-dashboard`'s target and
+    // `dropTarget` would name, were either not already unavailable/null below)
+    // still names the SAME ambiguous id.
+    const dashboardKey = encodeKeyPart(workspaceId) + ':' + encodeKeyPart(dashboard.id)
+      + (dashboardIdDuplicated ? ':dup:' + dashboardOccurrenceIndex : '');
     const title = trimmed(dashboard.title);
     const description = trimmed(dashboard.description);
     const dashboardMatched = search !== '' && hits([title, description]);
 
     const tiles = dashboard.tiles ?? [];
-    const dashboardIdDuplicated = (dashboardIdCounts.get(dashboard.id) ?? 0) > 1;
     // Dashboard-LOCAL tile-id cardinality: two tiles of the SAME Dashboard
     // sharing an id, never a count across Dashboards — a tile id is only ever
     // addressed together with its owning Dashboard id (#430).
@@ -579,6 +605,10 @@ export function deriveDashboardTree(
     for (const tile of tiles) {
       tileIdCounts.set(tile.id, (tileIdCounts.get(tile.id) ?? 0) + 1);
     }
+    // Same occurrence-tracking as `dashboardOccurrenceSeen`, scoped to THIS
+    // Dashboard's own tiles — reset every iteration, since a tile id is only
+    // ever compared against siblings of the same Dashboard.
+    const tileOccurrenceSeen = new Map<string, number>();
     const tileEntries = tileEntriesOf(dashboard, queries);
     // #447: the variable rows come from the pure inference service, over THIS
     // Dashboard's panel-owned queries plus its stored option SQL.
@@ -660,7 +690,11 @@ export function deriveDashboardTree(
       single: openDashboardCommand(dashboard.id, 'view'),
       double: null,
       shift: openDashboardCommand(dashboard.id, 'edit'),
-      dropTarget: { kind: 'panel', dashboardId: dashboard.id },
+      // A duplicated Dashboard id cannot be a drop destination either: an
+      // assignment drop resolves its target by `dashboardId` alone, and
+      // `dashboardId` alone has two answers here — the same ambiguity that
+      // already withholds this row's own pencil/trash above.
+      dropTarget: dashboardIdDuplicated ? null : { kind: 'panel', dashboardId: dashboard.id },
     });
 
     if (!dashboardExpanded) continue;
@@ -700,11 +734,21 @@ export function deriveDashboardTree(
         // #447's trash, unchanged in behaviour: an ORPHANED configuration is
         // the only variable state with anything of its own to delete — an
         // active or conflicted variable is inferred from the panel SQL.
+        //
+        // A duplicated Dashboard id leaves it unavailable too: the delete is
+        // addressed by `dashboardId` alone, `commitVariableConfig`'s own
+        // strict-replacement guard refuses an ambiguous one exactly the way
+        // the Dashboard row's own delete does, and offering a trash the
+        // commit would only silently no-op is the same bug being closed
+        // everywhere else on this row.
         actions: variable.status === 'orphaned'
-          ? [action('delete-variable-config',
-            'Delete the stored option SQL for ' + variable.name, 'Delete stored option SQL',
-            { kind: 'variable-config', dashboardId: dashboard.id, name: variable.name },
-            'Delete the stored option SQL for ' + quoted(variable.name) + '? The SQL is lost.')]
+          ? [dashboardIdDuplicated
+            ? unavailableAction('delete-variable-config',
+              'Delete the stored option SQL for ' + variable.name, AMBIGUOUS_DASHBOARD_VARIABLE_REASON)
+            : action('delete-variable-config',
+              'Delete the stored option SQL for ' + variable.name, 'Delete stored option SQL',
+              { kind: 'variable-config', dashboardId: dashboard.id, name: variable.name },
+              'Delete the stored option SQL for ' + quoted(variable.name) + '? The SQL is lost.')]
           : [],
         dashboardId: dashboard.id,
         member,
@@ -717,7 +761,9 @@ export function deriveDashboardTree(
         // panel declares any more has nothing to bind to, though it stays
         // editable and deletable through its own affordances — which is why this
         // reads the same `status === 'orphaned'` that `deletable` above does.
-        dropTarget: variable.status === 'orphaned'
+        // A duplicated Dashboard id is withheld here too — same reasoning as
+        // the Dashboard row's own `dropTarget` above.
+        dropTarget: (variable.status === 'orphaned' || dashboardIdDuplicated)
           ? null
           : { kind: 'variable', dashboardId: dashboard.id, variableName: variable.name },
       };
@@ -725,6 +771,10 @@ export function deriveDashboardTree(
 
     const panelRows = shownTiles.map(({ tile, facts }): DashboardTreeRow => {
       const member: DashboardFocusTarget = { kind: 'tile', id: tile.id };
+      const tileIdDuplicated = (tileIdCounts.get(tile.id) ?? 0) > 1;
+      const tileOccurrenceIndex = tileOccurrenceSeen.get(tile.id) ?? 0;
+      tileOccurrenceSeen.set(tile.id, tileOccurrenceIndex + 1);
+      const identityAmbiguous = dashboardIdDuplicated || tileIdDuplicated;
       // One query can back several panels, so this is one row PER TILE — never
       // merged by query id or label.
       const openQuery: DashboardTreeCommand | null = facts.queryId === null
@@ -733,7 +783,19 @@ export function deriveDashboardTree(
       const focusView = openDashboardCommand(dashboard.id, 'view', member);
       const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
       return {
-        key: tileRowKey(workspaceId, dashboard.id, tile.id),
+        // Disambiguated the SAME way the Dashboard row's own key is — built
+        // from `dashboardKey` (already carrying its own `:dup:` suffix when
+        // the DASHBOARD id is duplicated, never the raw `dashboard.id`
+        // `tileRowKey` would use) plus this tile's own suffix when the TILE
+        // id is duplicated. A duplicated id at either level still needs a
+        // UNIQUE `row.key` per row — the roving tabindex, `data-key` focus
+        // restoration and drag-highlight lookups downstream all resolve by
+        // this key alone, so two rows sharing one would let either mechanism
+        // silently pick the wrong (first-in-DOM) row. Equal to
+        // `tileRowKey(workspaceId, dashboard.id, tile.id)` whenever neither is
+        // duplicated, since `dashboardKey` itself is then unsuffixed.
+        key: dashboardKey + ':tile:' + encodeKeyPart(tile.id)
+          + (tileIdDuplicated ? ':dup:' + tileOccurrenceIndex : ''),
         kind: 'panel',
         level: 3,
         parentKey: groupKeyFor('panels'),
@@ -750,17 +812,20 @@ export function deriveDashboardTree(
         diagnostic: facts.invalid === null ? null : MISSING_QUERY_DIAGNOSTIC,
         actions: panelActions(dashboard.id, title || UNTITLED_DASHBOARD, tile.id, facts.label, facts.queryId,
           dashboardIdDuplicated ? AMBIGUOUS_DASHBOARD_REASON
-            : ((tileIdCounts.get(tile.id) ?? 0) > 1 ? AMBIGUOUS_TILE_REASON : null)),
+            : (tileIdDuplicated ? AMBIGUOUS_TILE_REASON : null)),
         dashboardId: dashboard.id,
         member,
         queryId: facts.queryId,
         group: 'panels',
-        // Only the query-open action is withheld: Dashboard View/Edit focus
-        // navigation stays available so a broken panel's diagnostics remain
-        // reachable.
+        // Only the query-open action stays available under identity ambiguity
+        // (it is addressed by `queryId` alone, which is unaffected): View/Edit
+        // focus navigation is withheld instead, because both are addressed by
+        // `dashboard.id` + `member.id` — the Dashboard viewer's own tile-focus
+        // lookup is keyed by tile id alone, so an ambiguous pair could resolve
+        // (or highlight) a DIFFERENT tile than the one the row names.
         single: openQuery,
-        double: focusView,
-        shift: focusEdit,
+        double: identityAmbiguous ? null : focusView,
+        shift: identityAmbiguous ? null : focusEdit,
         // #428 rejects an individual panel row: sharing one query between panels
         // and moving members between Dashboards are both out of scope, so there
         // is no assignment a panel row could mean.
@@ -816,10 +881,13 @@ export function deriveDashboardTree(
         single: groupForced ? null : { kind: 'toggle' },
         double: null,
         shift: null,
-        // #428: Panels means the same thing as the Dashboard row itself. The
-        // VARIABLES group never accepts — it does not identify which variable
-        // would receive the SQL, and guessing is worse than rejecting.
-        dropTarget: group === 'panels' ? { kind: 'panel', dashboardId: dashboard.id } : null,
+        // #428: Panels means the same thing as the Dashboard row itself —
+        // including its own ambiguous-id rejection when `dashboardId` alone
+        // has two answers. The VARIABLES group never accepts — it does not
+        // identify which variable would receive the SQL, and guessing is
+        // worse than rejecting.
+        dropTarget: (group === 'panels' && !dashboardIdDuplicated)
+          ? { kind: 'panel', dashboardId: dashboard.id } : null,
       });
       if (groupExpanded) rows.push(...members);
     }

@@ -175,6 +175,32 @@ describe('renderDashboardTree — structure and ARIA', () => {
     expect(tabbableChevrons[0].closest('.dash-tree-row')!.getAttribute('data-key')).toBe('w1:sales');
   });
 
+  // #501 review — a duplicated Dashboard or tile id used to collapse two rows
+  // onto the same `row.key`/`data-key`, and `syncRovingTabindex` sets
+  // `tabindex="0"` on every node whose `dataset.key` matches the owner: with a
+  // shared key that meant BOTH duplicate rows entered the Tab order at once,
+  // breaking the tree's "exactly one row" roving-tabindex invariant.
+  it('keeps exactly ONE row in the Tab order even with duplicated Dashboard and tile ids', () => {
+    const { app, list } = treeApp();
+    (app.currentWorkspace as unknown as TreeWorkspace).dashboards = [
+      { id: 'dup', title: 'A', tiles: [{ id: 't1', queryId: 'q1' }, { id: 't1', queryId: 'q1' }] },
+      { id: 'dup', title: 'B', tiles: [] },
+    ];
+    openAll(app, 'dup');
+    renderDashboardTree(app);
+    // Every rendered row has its own unique `data-key` — the precondition for
+    // a roving tabindex (or any `data-key` lookup) to ever pick the right node.
+    const keys = rows(list).map((row) => row.dataset.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    const tabbable = rows(list).filter((row) => row.getAttribute('tabindex') === '0');
+    expect(tabbable).toHaveLength(1);
+    expect(rows(list).filter((row) => row.getAttribute('tabindex') === '-1'))
+      .toHaveLength(rows(list).length - 1);
+    const tabbableChevrons = [...list.querySelectorAll<HTMLElement>('.dash-tree-chev')]
+      .filter((chev) => chev.getAttribute('tabindex') === '0');
+    expect(tabbableChevrons).toHaveLength(1);
+  });
+
   it('indents by level', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
@@ -1415,6 +1441,39 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
     vi.advanceTimersByTime(400);
     expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
     vi.useRealTimers();
+  });
+
+  // #501 review 5 — the delete used to fire `commitVariableConfig` and discard
+  // its result (`void commitVariableConfig(...)`), so a concurrent race or a
+  // storage rejection presented as "the confirmation closed and nothing
+  // happened", with no diagnostic anywhere.
+  it('reports a Dashboard that no longer resolves (deleted, or made a duplicate id) concurrently, committing nothing further', async () => {
+    const mutateWorkspace = vi.fn(async () => ({
+      ok: false, aborted: true, data: 'declined',
+    })) as unknown as App['mutateWorkspace'];
+    const { app, list } = treeApp({ mutateWorkspace });
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    click(trash(list, 'w1:sales:variable:region')!);
+    click(confirmItems()[0]);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toBe('That dashboard is no longer part of this workspace.');
+    expect(mutateWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the aggregate\'s own diagnostic when the commit is rejected', async () => {
+    const mutateWorkspace = vi.fn(async () => ({
+      ok: false,
+      diagnostics: [{ path: [], severity: 'error', code: 'x', message: 'Storage is full' }],
+    })) as unknown as App['mutateWorkspace'];
+    const { app, list } = treeApp({ mutateWorkspace });
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    click(trash(list, 'w1:sales:variable:region')!);
+    click(confirmItems()[0]);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.share-toast')!.textContent).toBe('✕ Storage is full');
   });
 });
 

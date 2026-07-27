@@ -63,6 +63,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   nothing, since the tree's own warning note already trimmed and so never
   fired for it.
 
+  A sixth pass found the fifth round's own fix incomplete: counting duplicated
+  ids made edit/delete agree with delete's stricter rule, but the row's
+  *presentation* identity — `row.key`, and the `data-key` every focus
+  restoration, drag highlight and the roving tabindex resolve by — still
+  collapsed two ambiguous rows onto one key. A duplicated Dashboard or tile id
+  could therefore put more than one row in the Tab order at once, and let
+  focus/highlight resolution silently pick whichever matching DOM node came
+  first. Malformed duplicates now get distinct presentation keys, and a
+  Panel row's own View/Edit Dashboard-focus navigation (addressed by
+  Dashboard id + tile id, unlike its still-available open-query gesture,
+  addressed by query id alone) is withheld under the same ambiguity — the
+  Dashboard viewer's own tile-focus lookup is keyed by tile id alone and
+  would otherwise resolve the *other* duplicate. Every drop target this
+  ambiguity could reach (the Dashboard row, its Panels group, and a Variable
+  row) is withheld too.
+
+  The same pass found the orphaned-variable trash still discarding its own
+  commit outcome (`void commitVariableConfig(...)`) — the one destructive
+  control on this row that predates this round's `reportRemoval` pattern for
+  the Dashboard and Panel trash. A concurrent Dashboard deletion, a Dashboard
+  that became a duplicate id, or a storage rejection all committed nothing
+  and said nothing: the confirmation just closed. It now awaits and reports
+  the outcome the same way, and the orphan-delete control is itself withheld
+  when the Dashboard id is already known to be ambiguous.
+
   Not yet included: the **Open in Dashboard** focus button, which is held back
   until #438 fixes tile focus on flow-layout KPI tiles.
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The

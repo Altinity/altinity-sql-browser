@@ -41,6 +41,7 @@ import {
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
+import type { VariableConfigOutcome } from '../application/dashboard-variable-config.js';
 import { commitDashboardRename } from '../application/dashboard-title.js';
 import type { DashboardRenameOutcome } from '../application/dashboard-title.js';
 import {
@@ -969,7 +970,9 @@ function runDestructive(
   target: DashboardTreeActionTarget,
 ): void {
   if (target.kind === 'variable-config') {
-    void commitVariableConfig(app, target.dashboardId, target.name, null);
+    void reportVariableConfigRemoval(
+      doc, commitVariableConfig(app, target.dashboardId, target.name, null),
+    );
     return;
   }
   // Decided BEFORE the commit, against the rows currently painted: once the
@@ -1175,6 +1178,38 @@ async function reportRemoval(
     ?? painted[0];
   if (landing !== undefined) { moveTo(app, landing.key); return; }
   app.dom.dashboardSearchInput?.focus();
+}
+
+/** What an orphaned-variable delete has to say — `null` on a real commit,
+ *  mirroring `dashboardDeleteMessage`'s own shape. `commitVariableConfig`'s
+ *  ONE abort reason (`'declined'`) covers both a Dashboard deleted
+ *  concurrently and one that became a duplicate id after this row was
+ *  painted available — `withVariableConfig`/`replaceDashboard` collapse both
+ *  into the same "no single entry to write" refusal, so there is no narrower
+ *  reason to report than the Dashboard-missing wording #429 phase 1 already
+ *  settled. */
+const variableConfigMessage = (outcome: VariableConfigOutcome): string | null => {
+  if (outcome.ok) return null;
+  if (!outcome.aborted) return '✕ ' + (outcome.diagnostics[0]?.message || 'Could not save workspace');
+  return outcome.data === 'declined' ? 'That dashboard is no longer part of this workspace.' : null;
+};
+
+/**
+ * Report an orphaned-variable delete — the variable-config counterpart to
+ * `reportRemoval` above, minus the successor-focus step neither this row's
+ * own row nor its siblings need: deleting stored option SQL never removes a
+ * row, so there is nowhere for focus to need to go.
+ *
+ * Awaiting and reporting this (rather than firing it and discarding the
+ * result, as the pre-#501-review-5 code did) is what surfaces a concurrent
+ * Dashboard deletion or a storage rejection instead of leaving the
+ * confirmation close over a write that silently did nothing.
+ */
+async function reportVariableConfigRemoval(
+  doc: Document, pending: Promise<VariableConfigOutcome>,
+): Promise<void> {
+  const message = variableConfigMessage(await pending);
+  if (message !== null) flashToast(message, { document: doc });
 }
 
 /**

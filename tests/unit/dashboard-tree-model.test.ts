@@ -933,7 +933,7 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
   // of ownership, and why `removeDashboardPanel`/`removeDashboardDocument`
   // already refuse the same shapes (`dashboard-duplicate`/`tile-duplicate`).
   describe('ambiguous Dashboard/tile identity', () => {
-    it('withholds Dashboard edit/delete on TWO Dashboard documents sharing one id', () => {
+    it('withholds Dashboard edit/delete on TWO Dashboard documents sharing one id, and gives each row a DISTINCT presentation key', () => {
       const tree = derive(ws({
         dashboards: [
           dashboard({ id: 'd', title: 'D1', tiles: [{ id: 't1', queryId: 'q1' }] }),
@@ -941,24 +941,43 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
         ],
         queries: [query('q1', 'Q1')],
       }), allOpen(['d']));
-      const dupes = tree.rows.filter((r) => r.key === 'w1:d');
-      expect(dupes).toHaveLength(2);
-      for (const dash of dupes) {
+      // No two rows share a key: `keys` below is exactly `tree.rows.length` long
+      // as a set. That is what keeps the roving tabindex, `data-key` focus
+      // restoration and drag highlighting — all resolved by `row.key` alone —
+      // from ever picking the wrong (first-in-DOM) row.
+      const keys = tree.rows.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      const dash0 = row(tree.rows, 'w1:d:dup:0');
+      const dash1 = row(tree.rows, 'w1:d:dup:1');
+      for (const dash of [dash0, dash1]) {
         expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
         for (const a of dash.actions) {
           expect(a.target).toBeNull();
           expect(a.confirm).toBeNull();
           expect(a.unavailable).toContain('share this id');
         }
+        // An ambiguous Dashboard id is not a drop destination either — same
+        // reasoning as the pencil/trash above: `dashboardId` alone has two
+        // answers here.
+        expect(dash.dropTarget).toBeNull();
       }
       // The ambiguity cascades to the panels underneath: which Dashboard "d"
-      // even is has no answer, so its tiles cannot be resolved either.
-      const panel = row(tree.rows, 'w1:d:tile:t1');
+      // even is has no answer, so its tiles cannot be resolved either — and the
+      // panel row's own key inherits dash0's `:dup:0` disambiguation rather
+      // than colliding on the bare `tileRowKey` shape.
+      const panel = row(tree.rows, 'w1:d:dup:0:tile:t1');
       expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
       for (const a of panel.actions) {
         expect(a.target).toBeNull();
         expect(a.unavailable).toContain('share this id');
       }
+      // View/Edit Dashboard-focus navigation is withheld too: both are
+      // addressed by dashboard.id + tile.id, and the Dashboard half is
+      // ambiguous — only the query-open gesture (addressed by queryId alone)
+      // survives.
+      expect(panel.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(panel.double).toBeNull();
+      expect(panel.shift).toBeNull();
     });
 
     it('withholds panel edit/delete on TWO tiles of the SAME Dashboard sharing one tileId, even when they reference DIFFERENT queries', () => {
@@ -969,20 +988,27 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
         })],
         queries: [query('q1', 'Q1'), query('q2', 'Q2')],
       }), allOpen(['d']));
-      const dupes = tree.rows.filter((r) => r.key === 'w1:d:tile:t1');
-      expect(dupes).toHaveLength(2);
-      for (const panel of dupes) {
+      const keys = tree.rows.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      const first = row(tree.rows, 'w1:d:tile:t1:dup:0');
+      const second = row(tree.rows, 'w1:d:tile:t1:dup:1');
+      for (const panel of [first, second]) {
         expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
         for (const a of panel.actions) {
           expect(a.target).toBeNull();
           expect(a.confirm).toBeNull();
           expect(a.unavailable).toContain('share this id');
         }
-        // Each tile still resolves its OWN open-query gesture — only the
-        // identity-addressed edit/delete controls are withheld.
+        // View/Edit navigation is withheld: the Dashboard viewer resolves tile
+        // focus by tile id alone, so an ambiguous id could focus/highlight the
+        // OTHER duplicate instead of the row that was actually activated.
+        expect(panel.double).toBeNull();
+        expect(panel.shift).toBeNull();
       }
-      expect(dupes[0].single).toEqual({ kind: 'open-query', queryId: 'q1' });
-      expect(dupes[1].single).toEqual({ kind: 'open-query', queryId: 'q2' });
+      // Each tile still resolves its OWN open-query gesture — only the
+      // identity-addressed edit/delete/navigation controls are withheld.
+      expect(first.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(second.single).toEqual({ kind: 'open-query', queryId: 'q2' });
     });
   });
 
@@ -1137,6 +1163,30 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
     expect(row(rows, 'w1:empty').dropTarget).toEqual({ kind: 'panel', dashboardId: 'empty' });
     expect(row(rows, 'w1:empty:group:panels').dropTarget)
       .toEqual({ kind: 'panel', dashboardId: 'empty' });
+  });
+
+  it('rejects every drop target and the orphan delete when the Dashboard id is duplicated', () => {
+    const rows = derive(ws({
+      dashboards: [
+        dashboard({ id: 'd1', variableConfigs: { region: { sql: 'SELECT r, r' } } }),
+        dashboard({ id: 'd1' }),
+      ],
+    }), allOpen(['d1'])).rows;
+    // Both Dashboard rows, under their disambiguated presentation keys.
+    expect(row(rows, 'w1:d1:dup:0').dropTarget).toBeNull();
+    expect(row(rows, 'w1:d1:dup:0:group:panels').dropTarget).toBeNull();
+    // An orphaned variable's delete is addressed by dashboardId alone too —
+    // ambiguous the same way, and `commitVariableConfig`'s own guard refuses
+    // it the same way `removeDashboardDocument` refuses the Dashboard delete.
+    const orphan = row(rows, 'w1:d1:dup:0:variable:region');
+    expect(orphan.actions).toEqual([{
+      kind: 'delete-variable-config',
+      label: 'Delete the stored option SQL for region',
+      tooltip: 'Two dashboards in this workspace share this id, so this stored option SQL cannot be removed here.',
+      target: null,
+      unavailable: 'Two dashboards in this workspace share this id, so this stored option SQL cannot be removed here.',
+      confirm: null,
+    }]);
   });
 
   it('preserves case-sensitive variable identity in the target', () => {
