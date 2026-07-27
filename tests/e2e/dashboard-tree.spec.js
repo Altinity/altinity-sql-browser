@@ -812,11 +812,45 @@ test.describe('direct row actions (#494)', () => {
     }).toBe('Revenue by region');
   });
 
+  // #494's Browser-accessibility section asks for REAL keyboard events, not
+  // `.click()` substitutes — and the ring is the half a mouse-driven test
+  // cannot show, because Chromium withholds `:focus-visible` after a pointer
+  // interaction.
+  test('a keyboard-driven panel delete leaves focus on a VISIBLY ringed row', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+
+    // Walk to the first panel row's trash with real keys: row → pencil → trash.
+    await treeRow(page, 'workspace:sales:tile:t-rev').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(treeRow(page, 'workspace:sales:tile:t-rev')
+      .getByRole('button', { name: 'Remove Revenue from dashboard' })).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    // The confirmation opens on CANCEL, so an Enter pressed out of momentum
+    // cannot delete anything; the destructive item is one step away.
+    await expect(page.locator('.dash-tree-confirm .fm-item', { hasText: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('ArrowUp');
+    await expect(page.locator('.dash-tree-confirm .fm-item', { hasText: 'Remove panel' })).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    await expect(treeRow(page, 'workspace:sales:tile:t-rev')).toHaveCount(0);
+    const landed = await page.evaluate(() => ({
+      key: document.activeElement?.dataset?.key ?? document.activeElement?.tagName,
+      ringed: document.activeElement?.matches(':focus-visible') ?? false,
+    }));
+    expect(landed.key).toMatch(/:tile:t-cost$/);
+    expect(landed.ringed).toBe(true);
+  });
+
   // #494: "narrow sidebar layout must preserve the label's usable width and
   // ellipsis rather than overlapping or wrapping the controls". Two revealed
   // buttons per row is one more than #429 phase 3 had, and happy-dom can see
   // none of this — only a real layout can.
-  test('a long title still ellipsizes with the cluster revealed, and nothing overlaps', async ({ page }) => {
+  test('a long title still ellipsizes in a narrow pane with the cluster revealed', async ({ page }) => {
     await open(page, 900);
     await roleTab(page, 'Dashboards').click();
     const row = treeRow(page, 'workspace:long');
@@ -869,7 +903,11 @@ test.describe('direct row actions (#494)', () => {
         queries: committed.queries.map((q) => q.id).sort(),
       };
     }).toEqual({ tiles: ['t-rev'], queries: ['q-lib', 'q-rev'] });
-    // Focus did not vanish with the row it was standing on.
-    await expect(page.locator('.dash-tree-list')).toContainText('Revenue');
+    // Focus did not vanish with the row it was standing on: the surviving
+    // sibling panel row holds it, with a visible ring. `toContainText` would
+    // have passed with focus on `<body>`.
+    const landed = await page.evaluate(() =>
+      document.activeElement?.dataset?.key ?? document.activeElement?.tagName);
+    expect(landed).toMatch(/:tile:t-rev$/);
   });
 });

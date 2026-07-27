@@ -61,6 +61,17 @@ export interface MenuOptions {
    *  lets the caller clear its own open/closed bookkeeping. */
   onClose?: () => void;
   onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
+  /**
+   * Which focusable row takes focus when the menu opens. Defaults to the
+   * FIRST, which is right for a menu of ordinary operations — a keyboard user
+   * arrives on the thing they most likely came for.
+   *
+   * A destructive CONFIRMATION inverts that: its whole purpose is to interpose
+   * a deliberate second act, and landing on "Delete" means an Enter pressed
+   * out of momentum — the reflex right after opening any other menu — destroys
+   * something. Those pass `'last'`, which is Cancel.
+   */
+  initialFocus?: 'first' | 'last';
 }
 
 export interface MenuHandle {
@@ -184,7 +195,10 @@ export function openMenu(opts: MenuOptions): MenuHandle {
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';
   doc.addEventListener('keydown', onKey, true);
-  if (focusable.length) setTimeout(() => focusable[0].focus());
+  if (focusable.length) {
+    const initial = opts.initialFocus === 'last' ? focusable[focusable.length - 1] : focusable[0];
+    setTimeout(() => initial.focus());
+  }
 
   const handle: MenuHandle = { el: menu, close };
   openByTrigger.set(trigger, handle);

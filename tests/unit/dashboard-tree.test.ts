@@ -5,6 +5,7 @@ import {
 import { LIBRARY_QUERY_MIME } from '../../src/ui/dnd-mime.js';
 import type { DashboardTreeApp } from '../../src/ui/dashboard-tree.js';
 import { buildSidebarUpper } from '../../src/ui/sidebar-upper.js';
+import { Icon } from '../../src/ui/icons.js';
 import { makeApp } from '../helpers/fake-app.js';
 import {
   EMPTY_TREE_UI, groupStateKey, readTreeUi, setTreeSearch, toggleDashboardExpanded,
@@ -709,9 +710,6 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     renderDashboardTree(fixture.app);
     return fixture;
   };
-  const confirmItems = (): HTMLElement[] =>
-    [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
-
   it('renders no overflow menu on ANY row, and no menu markup at all', () => {
     const { list } = open();
     expect(list.querySelectorAll('.dash-tree-menu-btn')).toHaveLength(0);
@@ -742,8 +740,12 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     for (const button of rowFor(list, 'w1:sales:tile:t1').querySelectorAll<HTMLButtonElement>('.dash-tree-act')) {
       expect(button.tagName).toBe('BUTTON');
       expect(button.type).toBe('button');
-      expect(button.getAttribute('aria-label')).not.toBe('');
-      expect(button.getAttribute('title')).not.toBe('');
+      // `not.toBe('')` would also pass on a MISSING attribute; these are the
+      // exact strings the model composed.
+      expect(button.getAttribute('aria-label')).toMatch(/^(Edit|Remove) Revenue/);
+      expect(button.getAttribute('title')).toBe(
+        button.dataset.act === 'edit-panel' ? 'Edit name & description' : 'Remove panel',
+      );
       expect(button.getAttribute('aria-expanded')).toBe('false');
     }
     expect(actionBtn(list, 'w1:sales:tile:t1', 'Edit Revenue')!.getAttribute('aria-haspopup'))
@@ -758,6 +760,24 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
       .toBe(false);
     expect(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!.classList.contains('dash-tree-act-danger'))
       .toBe(true);
+  });
+
+  it('keeps a delete looking and announcing like a delete even when it is unavailable', () => {
+    // #494: a row's vocabulary must not change with availability. The
+    // confirmation is what an unavailable action loses, not its identity.
+    const { list } = open();
+    const trash = actionBtn(list, 'w1:sales:tile:t-broken', 'Remove Untitled panel from dashboard')!;
+    expect(trash.classList.contains('dash-tree-act-danger')).toBe(true);
+    expect(trash.getAttribute('aria-haspopup')).toBe('menu');
+  });
+
+  it('paints the pencil glyph on edit and the trash glyph on delete', () => {
+    const { list } = open();
+    // Swapping the two icons would otherwise pass every other assertion here.
+    expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.innerHTML)
+      .toBe(Icon.pencil().outerHTML);
+    expect(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!.innerHTML)
+      .toBe(Icon.trash().outerHTML);
   });
 
   // A panel whose query cannot be proven to be its own: the controls stay, so
@@ -784,6 +804,22 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     await Promise.resolve();
     expect(document.querySelector('.dash-tree-confirm')).toBeNull();
     expect(committed).toEqual([]);
+  });
+
+  it('cancels its OWN row\'s pending single — the click that armed it must not fire behind the dialog', () => {
+    vi.useFakeTimers();
+    const { app, list } = open();
+    // Arm a pending `open-query` on the panel row (a panel row arbitrates,
+    // because it has a double-click action)…
+    click(rowFor(list, 'w1:sales:tile:t1'));
+    // …then press THAT SAME row's own control inside the ~300ms window.
+    click(actionBtn(list, 'w1:sales:tile:t1', 'Edit Revenue')!);
+    vi.advanceTimersByTime(400);
+    // Without the `cancelFor`, the deferred single fires a third of a second
+    // later and navigates the surface out from under the dialog just opened.
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+    expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
+    vi.useRealTimers();
   });
 
   it('an action never expands, never navigates, and cancels no other row\'s pending click', () => {
@@ -980,7 +1016,10 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     app.mutateWorkspace = (async (transform) => {
       const latest = workspace() as unknown as StoredWorkspaceV5;
       latest.dashboards[0].tiles = [];
-      return transform(latest) === null ? { ok: false, aborted: true } : { ok: false, aborted: true };
+      // The transform is still RUN, so its dequeue-time guard is exercised;
+      // it refuses, and the outcome is the abort that refusal produces.
+      await transform(latest);
+      return { ok: false, aborted: true };
     }) as App['mutateWorkspace'];
     click(pencil(list));
     nameInput().value = 'Kept';
@@ -991,6 +1030,34 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     expect(nameInput().value).toBe('Kept');
     expect(document.querySelector('.fm-dialog-error')!.textContent)
       .toBe('That panel is no longer part of this dashboard.');
+  });
+
+  it('lands focus on the ROW when a successful commit repainted the trigger away', async () => {
+    // #495 review 2 made the dialog close only after the write answers — and
+    // that write repaints the tree, detaching the button the dialog captured.
+    // `focus()` on a detached node is a silent no-op, which used to strand the
+    // keyboard on `<body>`.
+    const fixture = treeApp();
+    fixture.app.state.savedQueries = [query('q1', 'Revenue')];
+    // The production ordering, which the plain fixture does not reproduce: the
+    // commit projects and REPAINTS before it resolves, so by the time the
+    // dialog closes the button it captured is gone.
+    const inner = fixture.app.mutateWorkspace;
+    fixture.app.mutateWorkspace = (async (transform) => {
+      const outcome = await inner(transform);
+      renderDashboardTree(fixture.app);
+      return outcome;
+    }) as App['mutateWorkspace'];
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    const trigger = actionBtn(fixture.list, 'w1:sales:tile:t1', 'Edit Revenue')!;
+    click(trigger);
+    nameInput().value = 'Renamed';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    save().click();
+    await settle();
+    expect(trigger.isConnected).toBe(false);
+    expect(document.activeElement).toBe(rowFor(fixture.list, 'w1:sales:tile:t1'));
   });
 
   it('keeps the trigger revealed for the dialog\'s whole lifetime', () => {
@@ -1093,6 +1160,40 @@ describe('renderDashboardTree — Dashboard trash (#494)', () => {
     expect(committed).toEqual([]);
     expect(app.openDashboard).not.toHaveBeenCalled();
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+  });
+
+  it('moves keyboard focus to the next Dashboard row, and to the search box when none is left', async () => {
+    const { app, list } = open();
+    click(trash(list));
+    click(confirmItems()[0]);
+    await settle();
+    // The confirmation's own menu closed by removing the item that was just
+    // activated, and the trigger went with the row — so without an explicit
+    // placement here, focus would be on `<body>`.
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:ops');
+
+    // …and when the LAST Dashboard goes, there is no row to stand on at all.
+    const only = treeApp();
+    (only.app.currentWorkspace as unknown as TreeWorkspace).dashboards = [
+      { id: 'sales', title: 'Sales', tiles: [] },
+    ];
+    renderDashboardTree(only.app);
+    click(actionBtn(only.list, 'w1:sales', 'Delete dashboard Sales')!);
+    click(confirmItems()[0]);
+    await settle();
+    expect(document.activeElement).toBe(only.app.dom.dashboardSearchInput);
+  });
+
+  it('a destructive confirmation lands on Cancel, not on the destructive item', () => {
+    vi.useFakeTimers();
+    const { list } = open();
+    click(trash(list));
+    // `openMenu` autofocuses its first focusable row by default; a
+    // confirmation exists to interpose a deliberate act, so an Enter pressed
+    // out of momentum must not delete a Dashboard.
+    vi.advanceTimersByTime(10);
+    expect(document.activeElement!.textContent).toBe('Cancel');
+    vi.useRealTimers();
   });
 
   it('reports a rejected commit', async () => {

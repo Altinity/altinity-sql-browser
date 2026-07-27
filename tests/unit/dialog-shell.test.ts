@@ -279,17 +279,30 @@ describe('openMetadataDialog', () => {
     expect(document.activeElement).toBe(nameInput());
   });
 
-  it('disables both actions while a commit is in flight, so the same write cannot be submitted twice', async () => {
+  it('bars a SECOND submit while the first is in flight, but leaves the way out open', async () => {
     let release = (): void => {};
     const onConfirm = vi.fn(() => new Promise<string | null>((resolve) => { release = () => resolve(null); }));
     open(onConfirm);
     save().click();
     expect(save().disabled).toBe(true);
-    expect(cancelBtn().disabled).toBe(true);
     save().click();
     key(nameInput(), 'Enter');
     expect(onConfirm).toHaveBeenCalledTimes(1);
+    // Cancel is NOT disabled: Escape and the backdrop were never gated, and a
+    // visible button that dies with no explanation reads as a wedged dialog.
+    expect(cancelBtn().disabled).toBe(false);
     release();
+    await settle();
+    expect(backdropOf()).toBeNull();
+  });
+
+  it('a Cancel taken mid-write closes, and the late answer is dropped', async () => {
+    let release = (message: string | null): void => { void message; };
+    open(() => new Promise<string | null>((resolve) => { release = resolve; }));
+    save().click();
+    cancelBtn().click();
+    expect(backdropOf()).toBeNull();
+    release('Storage is full');
     await settle();
     expect(backdropOf()).toBeNull();
   });

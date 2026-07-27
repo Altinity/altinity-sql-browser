@@ -824,7 +824,11 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
 function buildActionButton(
   app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
 ): HTMLElement {
-  const destructive = act.confirm !== null;
+  // From the KIND, never from `act.confirm`: an UNAVAILABLE delete still has
+  // to look and announce like a delete (#494 — a row's vocabulary must not
+  // change with availability), and its `confirm` is null precisely because it
+  // will never be asked.
+  const destructive = act.kind !== 'edit-dashboard' && act.kind !== 'edit-panel';
   const trigger: HTMLButtonElement = h('button', {
     class: 'dash-tree-act'
       + (destructive ? ' dash-tree-act-danger' : '')
@@ -839,6 +843,7 @@ function buildActionButton(
     'aria-expanded': 'false',
     'aria-label': act.label,
     title: act.tooltip,
+    'data-act': act.kind,
     ...(act.unavailable === null ? {} : { 'aria-disabled': 'true' }),
     onkeydown: isolateActivationKeys,
     onclick: (event: MouseEvent) => {
@@ -851,6 +856,26 @@ function buildActionButton(
   }, act.kind === 'edit-dashboard' || act.kind === 'edit-panel' ? Icon.pencil() : Icon.trash());
   return trigger;
 }
+
+/**
+ * Where a dialog opened from a row control hands focus back.
+ *
+ * The trigger while it is still on screen — the Cancel/Escape paths, where
+ * nothing repainted. But a SUCCESSFUL commit repaints the tree before the
+ * dialog closes (the write projects synchronously, and the tree's effect
+ * rebuilds every row), which detaches that button; `renderDashboardTree`'s own
+ * restore deliberately declines to help, because focus was inside the
+ * body-mounted dialog rather than in the list. So the fallback is the ROW,
+ * re-resolved by key: it is what the freshly painted control belongs to, and
+ * unlike the rebuilt control it is not hidden behind hover/`:focus-within`.
+ */
+const returnFocusAfterDialog = (
+  app: DashboardTreeApp, trigger: HTMLButtonElement, rowKey: string,
+) => (): HTMLElement | null => (trigger.isConnected
+  ? trigger
+  : app.dom.dashboardTreeList?.querySelector<HTMLElement>(
+    '[data-key="' + CSS.escape(rowKey) + '"]',
+  ) ?? null);
 
 /** The confirm menu's own go-ahead label, per action. Short and specific: the
  *  question above it already named the resource, and "OK" next to a sentence
@@ -900,6 +925,10 @@ function confirmDestructive(
     document: doc,
     trigger,
     menuClass: 'dash-tree-confirm',
+    // Cancel, not the destructive item: this menu exists to interpose a
+    // deliberate second act, and `openMenu`'s default first-row focus would
+    // put an out-of-momentum Enter straight through it.
+    initialFocus: 'last',
     rows: [
       { kind: 'section', label: act.confirm! },
       {
@@ -930,15 +959,14 @@ function runDestructive(
     void commitVariableConfig(app, target.dashboardId, target.name, null);
     return;
   }
-  if (act.kind === 'delete-dashboard') {
-    void reportRemoval(app, doc, commitDashboardRemoval(app, target.dashboardId));
-    return;
-  }
-  const panel = target as PanelActionTarget;
   // Decided BEFORE the commit, against the rows currently painted: once the
   // write lands, the row this focus decision is relative to no longer exists.
   const successor = focusSuccessorKey(app, row);
-  void reportRemoval(app, doc, commitPanelRemoval(app, panel), successor);
+  if (act.kind === 'delete-dashboard') {
+    void reportRemoval(app, doc, commitDashboardRemoval(app, target.dashboardId), successor);
+    return;
+  }
+  void reportRemoval(app, doc, commitPanelRemoval(app, target as PanelActionTarget), successor);
 }
 
 /**
@@ -972,7 +1000,7 @@ function openDashboardMetadataDialog(
     description: current?.description ?? '',
     confirmLabel: 'Save',
     idPrefix: 'dash-rename',
-    returnFocusTo: trigger,
+    returnFocusTo: returnFocusAfterDialog(app, trigger, row.key),
     onClose: () => trigger.setAttribute('aria-expanded', 'false'),
     onConfirm: async ({ name, description }) =>
       renameMessage(await commitDashboardRename(app, row.dashboardId, name, description)),
@@ -1031,7 +1059,7 @@ function openPanelMetadataDialog(
     note: overridden
       ? 'This tile was imported with its own title, which keeps priority over the query name here.'
       : null,
-    returnFocusTo: trigger,
+    returnFocusTo: returnFocusAfterDialog(app, trigger, row.key),
     onClose: () => trigger.setAttribute('aria-expanded', 'false'),
     onConfirm: async ({ name, description }) => panelMetadataMessage(
       await commitPanelQueryMetadata(panelMetadataDeps(app), target, name, description),
@@ -1074,15 +1102,26 @@ const panelMetadataMessage = (outcome: PanelMetadataOutcome): string | null => {
  */
 async function reportRemoval(
   app: DashboardTreeApp, doc: Document,
-  pending: Promise<DashboardDeleteOutcome>, successorKey?: string,
+  pending: Promise<DashboardDeleteOutcome>, successorKey: string | null,
 ): Promise<void> {
   const outcome = await pending;
   const message = dashboardDeleteMessage(outcome);
   if (message !== null) flashToast(message, { document: doc });
-  if (!outcome.ok || successorKey === undefined) return;
+  if (!outcome.ok) return;
   // The commit reprojected and repainted the tree already, so this addresses
   // rows that exist NOW.
-  moveTo(app, successorKey);
+  //
+  // Focus is NOT optional here. The confirmation's own menu closes by removing
+  // the item that was just activated, without restoring the trigger — and the
+  // trigger is on its way out with the row anyway — so at this moment DOM focus
+  // is on `<body>`. `renderDashboardTree`'s own restore is deliberately
+  // conditional on the tree ALREADY holding focus, so it will not step in.
+  // Without this, deleting from the keyboard drops the user at the top of the
+  // page with no ring anywhere.
+  if (successorKey !== null) { moveTo(app, successorKey); return; }
+  // Nothing is left to stand on (the last Dashboard just went): the search box
+  // is the tree's own always-present landing spot.
+  app.dom.dashboardSearchInput?.focus();
 }
 
 /**
@@ -1094,16 +1133,17 @@ async function reportRemoval(
  * focus must not jump to a row the user cannot see. A row whose parent group
  * is collapsed is not painted at all, so the parent key is the floor.
  */
-function focusSuccessorKey(app: DashboardTreeApp, row: DashboardTreeRow): string {
+function focusSuccessorKey(app: DashboardTreeApp, row: DashboardTreeRow): string | null {
   const painted = app._dashTreeRows ?? [];
   const index = painted.findIndex((candidate) => candidate.key === row.key);
   const sibling = (candidate: DashboardTreeRow): boolean => candidate.parentKey === row.parentKey;
   const after = painted.slice(index + 1).find(sibling);
   if (after !== undefined) return after.key;
   const before = painted.slice(0, index).reverse().find(sibling);
-  // A panel row always HAS a parent group — it is level 3 by construction — so
-  // the fallback is never the empty string in practice.
-  return before?.key ?? row.parentKey!;
+  // A panel row always has a parent group to fall back to; a DASHBOARD row is
+  // top-level, so when it was the last one there is no row left at all — the
+  // tree paints its empty state, and the caller sends focus elsewhere.
+  return before?.key ?? row.parentKey;
 }
 
 // A positive guard, not an early `return`: `clampKeyboardRow` has already made the

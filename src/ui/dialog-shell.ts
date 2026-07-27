@@ -32,13 +32,22 @@ export interface DialogHostApp {
 
 export interface OpenDialogShellOpts {
   extraCardClass?: string;
-  /** Element to return focus to when the dialog closes — `null` when there is
-   *  nothing to remember (the trigger is already gone by the time the dialog
-   *  mounts, as with a File-menu row: `openMenu` closes the row's menu before
-   *  running the click). `focus()` on a since-detached element is a harmless
-   *  no-op, so a caller may pass its own trigger button without re-checking
-   *  it is still attached. */
-  returnFocusTo: HTMLElement | null;
+  /**
+   * Where focus goes when the dialog closes — `null` when there is nothing to
+   * remember (the trigger is already gone by the time the dialog mounts, as
+   * with a File-menu row: `openMenu` closes the row's menu before running the
+   * click).
+   *
+   * Pass a FUNCTION when the trigger may not survive the dialog. Since #495
+   * review 2 a metadata dialog closes only after its write ANSWERS, and that
+   * write repaints the surface underneath — so the button captured at open
+   * time is detached by the time focus is handed back, and `focus()` on a
+   * detached element is a silent no-op that strands the keyboard on `<body>`.
+   * A resolver is called at CLOSE time, so it can hand back whatever is on
+   * screen now. An element (or a resolver answering one) that is merely
+   * detached is still harmless — it just does nothing.
+   */
+  returnFocusTo: HTMLElement | (() => HTMLElement | null) | null;
   /** Runs on every close path (Escape, outside-click, and whatever the caller's
    *  own content wires up) — AFTER `returnFocusTo` is focused, never before. A
    *  trigger that is only revealed on hover/`:focus-within` (the Dashboard-tree
@@ -83,7 +92,8 @@ export function openDialogShell(
     if (openHandle?.backdrop === backdrop) openHandle = null;
     backdrop.remove();
     releaseKeyboard();
-    opts.returnFocusTo?.focus();
+    const restore = typeof opts.returnFocusTo === 'function' ? opts.returnFocusTo() : opts.returnFocusTo;
+    restore?.focus();
     opts.onClose?.();
   };
   /** Everything inside the card a Tab can land on, in DOM order. Disabled
@@ -153,7 +163,7 @@ export interface MetadataDialogOpts {
    *  case: the query name is editable, but the tile keeps rendering its own
    *  imported title, and a dialog that said nothing would look broken. */
   note?: string | null;
-  returnFocusTo: HTMLElement | null;
+  returnFocusTo: OpenDialogShellOpts['returnFocusTo'];
   onClose?: () => void;
   /**
    * Commit the edit. Resolve `null` when it succeeded — the dialog closes —
@@ -206,8 +216,13 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
   let closed = false;
   let inFlight = false;
   const sync = (): void => {
+    // Only the CONFIRM is barred while a write is in flight — that is what
+    // stops the same mutation being submitted twice. Cancel stays operable, so
+    // the visible way out agrees with Escape and the backdrop, which were never
+    // gated; a dialog whose only escape hatches are invisible reads as wedged.
+    // Closing mid-write is safe: the late answer is dropped below rather than
+    // written into a detached card.
     confirm.disabled = inFlight || nameInput.value.trim() === '';
-    cancel.disabled = inFlight;
   };
   const commit = async (): Promise<void> => {
     const name = nameInput.value.trim();
