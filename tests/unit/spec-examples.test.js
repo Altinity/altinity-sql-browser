@@ -57,11 +57,13 @@ describe('schema artifacts and examples', () => {
   // every example is already covered by the "migrates every shipped example
   // bundle" test above; this test is specifically about the shape the files
   // are still committed in.
-  // clickhouse-operations.json moved to portable-bundle v2 / Dashboard v2 ahead
-  // of the other checked-in examples (#458 follow-up): its authored Dashboard
-  // dropped the curated `filters` array in favor of inferred Variables. The
-  // rest stay pinned to v1 until phase 3's broader example rewrite.
-  const V2_EXAMPLES = new Set(['clickhouse-operations.json']);
+  // All three authored, checked-in Dashboards (clickhouse-operations first,
+  // #458 follow-up; shop-charts and ontime-charts in the phase-3 rewrite) moved
+  // to portable-bundle v2 / Dashboard v2, dropping the curated `filters` array
+  // in favor of inferred Variables. The generated Iceberg examples still go
+  // through `buildDashboard()` (documentVersion 1, filters required) and stay
+  // pinned to v1 until that generator itself becomes version-aware.
+  const V2_EXAMPLES = new Set(['clickhouse-operations.json', 'ontime-charts.json', 'shop-charts.json']);
 
   it('keeps every checked-in JSON example on its pinned portable bundle version with explicit Dashboard documents', () => {
     const examples = resolve(root, 'examples');

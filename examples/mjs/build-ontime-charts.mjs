@@ -1,7 +1,9 @@
 // Refresh the live schema keys in examples/ontime-charts.json against the
 // configured antalya ClickHouse connection. The checked-in bundle is the
 // authored source of truth for SQL, semantic tile order, grafana-grid sizing,
-// filters/defaults/targets, KPI field configuration, and the flow fallback.
+// KPI field configuration, and the flow fallback. Dashboard variables are not
+// touched here — they are inferred at runtime from the `{name:Type}`
+// placeholders already in the SQL this script leaves untouched.
 //
 // Run: node examples/mjs/build-ontime-charts.mjs
 
@@ -47,5 +49,6 @@ writeExampleBundle(outPath, {
   metadata: document.metadata,
   queries: document.queries,
   dashboards: document.dashboards,
+  version: document.version,
 });
 console.log(`wrote ${outPath}`);

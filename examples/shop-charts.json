@@ -1,7 +1,7 @@
 {
-  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
     "name": "Shop analytics",
@@ -259,7 +259,7 @@
   ],
   "dashboards": [
     {
-      "documentVersion": 1,
+      "documentVersion": 2,
       "id": "shop-analytics",
       "title": "Shop analytics",
       "description": "Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset.",
@@ -333,68 +333,6 @@
           }
         }
       },
-      "filters": [
-        {
-          "id": "shop-from",
-          "parameter": "from",
-          "label": "From",
-          "defaultValue": "-90d",
-          "defaultActive": true,
-          "targets": [
-            "tile-shop-kpis",
-            "tile-shop-daily-revenue",
-            "tile-shop-revenue-by-country",
-            "tile-shop-revenue-by-category",
-            "tile-shop-top-products",
-            "tile-shop-daily-active-users",
-            "tile-shop-traffic-by-hour"
-          ]
-        },
-        {
-          "id": "shop-to",
-          "parameter": "to",
-          "label": "To",
-          "defaultValue": "now",
-          "defaultActive": true,
-          "targets": [
-            "tile-shop-kpis",
-            "tile-shop-daily-revenue",
-            "tile-shop-revenue-by-country",
-            "tile-shop-revenue-by-category",
-            "tile-shop-top-products",
-            "tile-shop-daily-active-users",
-            "tile-shop-traffic-by-hour"
-          ]
-        },
-        {
-          "id": "shop-country",
-          "parameter": "country",
-          "label": "Country",
-          "defaultValue": [],
-          "defaultActive": false,
-          "targets": [
-            "tile-shop-kpis",
-            "tile-shop-daily-revenue",
-            "tile-shop-revenue-by-country",
-            "tile-shop-top-products",
-            "tile-shop-daily-active-users",
-            "tile-shop-traffic-by-hour"
-          ]
-        },
-        {
-          "id": "shop-category",
-          "parameter": "category",
-          "label": "Category",
-          "defaultValue": [],
-          "defaultActive": false,
-          "targets": [
-            "tile-shop-kpis",
-            "tile-shop-revenue-by-category",
-            "tile-shop-top-products",
-            "tile-shop-traffic-by-hour"
-          ]
-        }
-      ],
       "tiles": [
         {
           "id": "tile-shop-kpis",
@@ -424,7 +362,15 @@
           "id": "tile-shop-traffic-by-hour",
           "queryId": "shop-traffic-by-hour"
         }
-      ]
+      ],
+      "variableConfigs": {
+        "country": {
+          "sql": "SELECT DISTINCT country, country FROM shop.events_raw ORDER BY country"
+        },
+        "category": {
+          "sql": "SELECT DISTINCT category, category FROM shop.products ORDER BY category"
+        }
+      }
     }
   ]
 }

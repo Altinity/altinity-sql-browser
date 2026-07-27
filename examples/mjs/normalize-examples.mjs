@@ -20,7 +20,7 @@ const checkOnly = process.argv.includes('--check');
 
 const CONFIG = {
   'shop-charts.json': {
-    id: 'shop-analytics', title: 'Shop analytics', authoredDashboard: true,
+    id: 'shop-analytics', title: 'Shop analytics', authoredDashboard: true, version: 2,
     description: 'Revenue, buyers, products, geography, and traffic over the shop-demo.sql dataset.',
   },
   'clickhouse-operations.json': {
@@ -28,7 +28,7 @@ const CONFIG = {
     description: 'Operator-first server overview, resources, background work, and investigation views.',
   },
   'ontime-charts.json': {
-    id: 'ontime-flights', title: 'On-time flights', authoredDashboard: true,
+    id: 'ontime-flights', title: 'On-time flights', authoredDashboard: true, version: 2,
     description: 'Flight punctuality, volume, carriers, airports, delays, and cancellations with a shared 2023 slice.',
   },
   'iceberg-catalog-dashboard.json': {
