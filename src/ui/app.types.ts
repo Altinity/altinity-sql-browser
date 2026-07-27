@@ -469,7 +469,9 @@ export interface App {
    *  compatibility Dashboard and opens it by id, falling back to the Dashboard
    *  surface's own "Create dashboard" state for an empty collection. */
   showDashboardSurface(mode: DashboardSurfaceMode): void;
-  /** #425 — open a saved query into a tab, switching back to Query mode first. */
+  /** #425 — open a saved query into a tab, switching back to Query mode first.
+   *  #443 — the id is resolved BEFORE anything moves: one that names no saved
+   *  query reports a diagnostic and changes no surface, no route and no tab. */
   openSavedQuery(queryId: string): void;
   /** #457 — open (or re-select) the main-editor tab that edits ONE Dashboard
    *  variable's option SQL, switching back to Query mode first. A variable is

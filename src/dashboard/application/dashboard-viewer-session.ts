@@ -550,7 +550,16 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const isKpi = type === 'kpi';
     const isText = type === 'text';
     const explicit: Panel | null = isObject(panel) && isObject(panel.cfg) ? (panel as unknown as Panel) : null;
-    const title = (typeof tile.title === 'string' && tile.title) || (query ? queryName(query) : tile.queryId) || tile.id;
+    // #476 — TRIM before the fallback, so a whitespace-only authored title
+    // behaves exactly like an absent one. `dashboardTileV1.title` carries no
+    // `minLength`, so `"   "` is a schema-legal document; left truthy it won the
+    // chain unfiltered and composed blank accessible names ("Open, — , in
+    // Workbench") and a blank `.dash-tile-name` heading. This is the ONE place
+    // the viewer resolves a tile's display title, so trimming here settles it for
+    // every consumer of `state.title` (`tileLabels`, the parameter-analysis
+    // labels, and all of `ui/dashboard.ts`'s composed names alike).
+    const authored = typeof tile.title === 'string' ? tile.title.trim() : '';
+    const title = authored || (query ? queryName(query) : tile.queryId) || tile.id;
     const description = (typeof tile.description === 'string' && tile.description)
       || (typeof query?.spec?.description === 'string' ? query.spec.description : '');
     const state: ViewerTileState = {

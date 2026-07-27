@@ -602,6 +602,48 @@ describe('variables and the affected-panel planner', () => {
     expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['a', 'b', 'c', 'd']);
     session.setTileSearch(''); // identical search is a no-op
   });
+
+  // #476 (via #429 phase 1) — `dashboardTileV1.title` carries no `minLength`, so
+  // a whitespace-only title is a schema-legal document. It used to be truthy and
+  // win the fallback chain unfiltered, leaving `state.title` blank — which is
+  // what `ui/dashboard.ts` composes every accessible name and the visible
+  // heading from. This is a deliberate BEHAVIOUR CHANGE for such documents: they
+  // start showing the query name.
+  it('treats a whitespace-only tile title as absent, and trims a padded one', async () => {
+    const { exec } = makeExec();
+    const document = doc({
+      tiles: [
+        tile('blank', 'qa', { title: '   \t\n ' }),
+        tile('padded', 'qb', { title: '  Revenue  ' }),
+        tile('absent', 'qc'),
+        // No query resolves for this one, so the chain must fall through the
+        // trimmed title PAST the query name to the queryId.
+        tile('orphan', 'qd', { title: ' ' }),
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        // The two titled tiles declare ONE variable name at conflicting types, so
+        // the conflict diagnostic below is composed from their resolved labels.
+        query('qa', 'SELECT {p:String} AS n', { name: 'Query A' }),
+        query('qb', 'SELECT {p:Int32} AS n', { name: 'Query B' }),
+        query('qc', 'SELECT 3', { name: 'Query C' }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.tiles.map((entry) => entry.title))
+      .toEqual(['Query A', 'Revenue', 'Query C', 'qd']);
+    // The resolved titles are also what labels a variable-conflict diagnostic —
+    // one of the composed names a blank title used to hollow out.
+    const conflicted = session.state.value.variables.find((variable) => variable.name === 'p');
+    expect(conflicted?.diagnostic).toContain('Query A');
+    expect(conflicted?.diagnostic).toContain('Revenue');
+    // …and a blank title is searchable by the query name it now falls back to,
+    // rather than by nothing at all.
+    session.setTileSearch('query a');
+    expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['blank']);
+  });
 });
 
 describe('variable-bar bridge (controls / getVariableField / applyVariable)', () => {

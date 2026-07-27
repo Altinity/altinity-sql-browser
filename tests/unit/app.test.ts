@@ -5660,6 +5660,29 @@ describe('unified /sql routing', () => {
       expect(app.state.tabs.value.some((tab) => tab.savedId === 'owned')).toBe(true);
     });
 
+    // #443: the id used to be handed to `showQuerySurface` before anything knew
+    // whether it resolved, so a dead click threw the user off the surface they
+    // were on, pushed a history entry, opened no tab and said nothing. It stays
+    // put now, and says so once.
+    it('an unresolved saved-query id changes no surface, no route and no tab, and reports once', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const surface = app.mainSurface;
+      const route = app.sqlRoute;
+      const tabs = app.state.tabs.value.length;
+      const toastsBefore = document.querySelectorAll('.share-toast').length;
+      app.state.savedQueries = [savedQuery({ id: 'q1', name: 'Sales', sql: 'SELECT 1' })];
+
+      app.openSavedQuery('gone');
+
+      expect(app.mainSurface).toEqual(surface);
+      expect(app.sqlRoute).toEqual(route);
+      expect(app.state.tabs.value.length).toBe(tabs);
+      expect(document.querySelectorAll('.share-toast').length).toBe(toastsBefore + 1);
+      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
+        .toContain('That query is no longer in this workspace.');
+    });
+
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });

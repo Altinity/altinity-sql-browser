@@ -2443,13 +2443,27 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // Opening a saved query is a Query-mode act: it returns to the preserved
   // Query surface first, so the tab it opens is the one the user then sees.
+  //
+  // #443 — RESOLVE BEFORE NAVIGATING. Switching first meant an id that resolves
+  // to nothing yanked the user off whatever surface they were on and pushed a
+  // history entry, then opened no tab and said nothing — a dead click that also
+  // lost their place. Report it the way `openDashboard` reports a missing
+  // Dashboard, and leave surface and route exactly as they were. Every current
+  // caller (`dashboard-tree.ts`'s open-query command and its post-assignment
+  // reveal, `dashboard.ts`'s Open in Workbench) addresses a query it just
+  // resolved or just created, so none depended on the unconditional switch.
   app.openSavedQuery = (queryId) => {
     const query = app.state.savedQueries.find((saved) => saved.id === queryId);
+    if (!query) {
+      flashToast('That query is no longer in this workspace.', { document: doc });
+      return;
+    }
     app.showQuerySurface();
     // Spread, like saved-history.ts's own two call sites: `loadIntoNewTab`
     // accepts the looser `string | Json` shape a `SavedQueryV2` satisfies
     // structurally but not nominally (no index signature).
-    if (query) { loadIntoNewTab(app, { ...query }); toEditorOnMobile(); }
+    loadIntoNewTab(app, { ...query });
+    toEditorOnMobile();
   };
 
   // #457 — opening a variable's option SQL is a Query-mode act for exactly the
