@@ -765,7 +765,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     // display-only and doesn't grey out the button while still focused.
     const tab = app.activeTab();
     if (gate == null) {
-      gate = running || !tab
+      // #465 review: a dashboard-variable tab's text is option SQL, not an
+      // ordinary parameterised query — the {name:Type} gate never applies to
+      // it (optionSqlDiagnostics, surfaced on Run, is its complete policy).
+      gate = running || !tab || variableDoc(tab) !== null
         ? { missing: [], invalid: [], errors: [] }
         : params.inputGate(params.tabAnalysis(tab.sqlDraft));
     }
@@ -803,6 +806,17 @@ export function createApp(env: CreateAppEnv = {}): App {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
+    // #465 review: a dashboard-variable tab's own text is option SQL, not an
+    // ordinary parameterised query — the {name:Type} strip/gate never applies
+    // to it. A `{name:Type}` inside it is optionSqlDiagnostics' story to tell
+    // (surfaced in the results pane on Run), not an input field to fill in.
+    if (tab && variableDoc(tab) !== null) {
+      app.dom.varStripSig = '';
+      strip.replaceChildren();
+      strip.style.display = 'none';
+      setRunBtn(app.state.running.value);
+      return;
+    }
     // One analysis per repaint (review F9): fieldControls, the #172 v2
     // comparison scan, a rebuild's initial field paint, and the tail's Run-
     // button gate all feed off this single pass instead of re-analyzing the

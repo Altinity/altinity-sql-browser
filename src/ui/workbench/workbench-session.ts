@@ -431,7 +431,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // multi-statement (so a multi-statement input NEVER reaches runScript()),
     // FORMAT/INTO OUTFILE, a `{name:Type}` parameter, an optional block, an
     // unterminated span, the reserved branch-tag column — is reported here,
-    // before authentication or a request is ever sent.
+    // before authentication or a request is ever sent. This is the COMPLETE
+    // parameter policy for option SQL (#465 review): `hooks.varGateBlocked`
+    // is deliberately never consulted here — it gates on `tab.sqlDraft`
+    // wholesale (the ordinary {name:Type} query-variable policy), which would
+    // both wrongly re-flag a `{name:Type}` this diagnostic already rejects
+    // and could block a validated `sql` (a selection) over an unfilled
+    // variable elsewhere in the same tab's untouched draft text.
     const diagnostics = optionSqlDiagnostics(sql);
     if (diagnostics.length) {
       const result: QueryResult = newResult('Table', 0);
@@ -440,8 +446,6 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       hooks.renderResults();
       return;
     }
-    const waveMs = deps.wallNow();
-    if (hooks.varGateBlocked(waveMs)) return;
     await deps.ensureConfig();
     if (!(await deps.getToken())) { hooks.onAuthFailed(); return; }
 

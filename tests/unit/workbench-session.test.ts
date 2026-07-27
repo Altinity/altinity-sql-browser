@@ -832,15 +832,39 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
   });
 
-  it('blocks (no exec call) when the var gate is blocked, same as an ordinary tab', async () => {
+  it('never consults the ordinary {name:Type} var gate — optionSqlDiagnostics is its complete policy (#465 review)', async () => {
     const h = makeHarness({
       tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
       hooks: { varGateBlocked: vi.fn(() => true) },
     });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [] });
+      return result;
+    });
     const session = createWorkbenchSession(h.deps);
     await session.run();
-    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
-    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.hooks.varGateBlocked).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).toHaveBeenCalled();
+  });
+
+  it('validates and runs a valid selection even when unselected draft text has an unfilled {name:Type} (#465 review)', async () => {
+    // A locally-clean selection must not be blocked by an unrelated,
+    // untouched {name:Type} elsewhere in the same tab's full sqlDraft —
+    // runVariableSql validates exactly the sql it was asked to run.
+    const h = makeHarness({
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t WHERE c = {c:String}' }),
+      hooks: { getSelectionText: vi.fn(() => 'SELECT a, b FROM t') },
+    });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.runEntry();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+    expect(req.sql).toContain('SELECT a, b FROM t');
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toBeNull();
   });
 
   it('runEntry dispatches straight to run(), forwarding an editor selection', async () => {

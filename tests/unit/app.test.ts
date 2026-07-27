@@ -2121,6 +2121,37 @@ describe('query run', () => {
     expect(qs(document, '.share-toast').textContent).toMatch(/Dashboard variable/);
     expect(sentExplains(e)).toHaveLength(0);
   });
+  it('a {name:Type} in a dashboard-variable tab keeps Run enabled and shows no input strip; ' +
+    'the option-SQL diagnostic is reported on Run instead (#465 review)', async () => {
+    const { app } = appForRun([]);
+    app.activeTab().doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    app.activeTab().sqlDraft = 'SELECT a, b FROM t WHERE c = {c:String}';
+    app.renderVarStrip();
+    // No ordinary {name:Type} input field, and Run is NOT gated on it (unlike
+    // an equivalent ordinary tab, see 'query variables (#134)' above).
+    expect(app.dom.varStrip!.style.display).toBe('none');
+    expect(qsa(app.dom.varStrip!, '.var-field').length).toBe(0);
+    expect(app.dom.runBtn!.disabled).toBe(false);
+    await app.actions.run();
+    // No request sent for the variable SQL — optionSqlDiagnostics rejects the
+    // {c:String} reference locally, and that diagnostic (not "Enter a value
+    // for: c") is what shows.
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.some(([, init]) => /SELECT a, b FROM t/.test(String(init?.body ?? '')))).toBe(false);
+    expect(result(app.activeTab()).error).toMatch(/cannot reference Dashboard variables/);
+  });
+  it('a valid selection still runs when unselected draft text has an unfilled {name:Type} (#465 review)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT a, b FROM t/.test(sql),
+        resp({ body: streamBody(['{"meta":[{"name":"a","type":"String"},{"name":"b","type":"String"}]}\n']) })],
+    ]);
+    app.activeTab().doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    app.activeTab().sqlDraft = 'SELECT a, b FROM t WHERE c = {c:String}';
+    // Only "SELECT a, b FROM t" is selected — the unfilled {c:String} is outside it.
+    app.sqlEditor = { ...app.sqlEditor, getSelection: () => ({ start: 0, end: 18, text: 'SELECT a, b FROM t' }) };
+    await app.actions.run();
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.some(([, init]) => /SELECT a, b FROM t/.test(String(init?.body ?? '')))).toBe(true);
+    expect(result(app.activeTab()).error).toBeNull();
+  });
   it('runs ESTIMATE as a structured table (streaming), not raw', async () => {
     const { app } = appForRun([
       [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],

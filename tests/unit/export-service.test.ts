@@ -247,6 +247,21 @@ describe('createExportService: exportEntry (dispatch)', () => {
     expect(h.sink.pickFile).not.toHaveBeenCalled();
   });
 
+  it('is blocked with a toast, no picker, for a dashboard-variable tab — Export is uncapped, option SQL never is (#465 review)', async () => {
+    const h = makeHarness({
+      tab: {
+        sqlDraft: 'SELECT a, b FROM t',
+        doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' },
+      },
+    });
+    const service = createExportService(h.deps);
+    await service.exportEntry();
+    expect(h.hooks.toast).toHaveBeenCalledWith('Export isn’t available for a Dashboard variable’s option SQL.');
+    expect(h.sink.pickFile).not.toHaveBeenCalled();
+    expect(h.sink.pickDirectory).not.toHaveBeenCalled();
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+  });
+
   it('one statement -> the single-file picker; more than one -> the directory picker', async () => {
     const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
     const service = createExportService(h.deps);
