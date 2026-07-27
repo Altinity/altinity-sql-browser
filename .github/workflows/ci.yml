@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706
         if: github.event_name == 'pull_request'
         id: filter
         with:
