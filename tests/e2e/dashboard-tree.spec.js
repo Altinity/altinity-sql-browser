@@ -197,6 +197,40 @@ test.describe('Dashboard hierarchy tree', () => {
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
   });
 
+  // Real dblclick timing, not two synthesized clicks: the row dispatches the SAME
+  // idempotent open twice and never a second, different action. (That the repeat then
+  // writes no history entry is `app.openDashboard`'s job — proved against the real
+  // controller in `tests/unit/app.test.ts`; this fixture stubs it out.)
+  test('a Dashboard double-click repeats one command and expands nothing', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.label').dblclick();
+    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+    ]);
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  // #472 wants the three targets "separately announced". A `treeitem` names itself
+  // from its CONTENTS, so before the row carried an explicit name, the chevron's label
+  // was folded into it ("Expand Sales revenue Sales revenue 2"). Asserted through
+  // `getByRole`, which resolves names with Playwright's own accname implementation in
+  // every engine — happy-dom cannot compute an accessible name at all.
+  test('the row announces itself, its chevron and its trailing action separately', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const tree = page.getByRole('tree', { name: 'Dashboards' });
+    await expect(tree.getByRole('treeitem', { name: 'Sales revenue 2', exact: true })).toHaveCount(1);
+    // No row's own name may contain a control's verb.
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
+    // The controls keep those names for themselves.
+    await expect(tree.getByRole('button', { name: 'Expand Sales revenue' })).toHaveCount(1);
+    await tree.getByRole('button', { name: 'Expand Sales revenue' }).click();
+    await expect(tree.getByRole('button', { name: 'Collapse Sales revenue' })).toHaveCount(1);
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
+  });
+
   test('a Dashboard Shift-click on the name opens Edit', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();

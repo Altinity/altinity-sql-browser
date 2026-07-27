@@ -553,6 +553,14 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     click(chevron(list, 'w1:sales'));
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
     expect(app.openDashboard).not.toHaveBeenCalled();
+    // The fourth corner of the matrix the issue asks for — EXPANDED and CURRENT — so
+    // neither state can quietly break the other's announcement.
+    expect(chevron(list, 'w1:sales').getAttribute('aria-expanded')).toBe('true');
+    expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
+    expect(rowFor(list, 'w1:sales').classList.contains('is-current')).toBe(true);
+    click(chevron(list, 'w1:sales'));
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
   it('Enter and Space toggle expansion and open NOTHING', () => {
@@ -615,6 +623,34 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     expect(leaf.hasAttribute('aria-label')).toBe(false);
     expect(leaf.hasAttribute('aria-expanded')).toBe(false);
     expect(leaf.innerHTML).toBe('');
+  });
+
+  // Measured in real Chromium before this was added: a `treeitem` names itself from
+  // its CONTENTS, so the chevron's own label was folded into the row's — the row
+  // announced "Expand Sales revenue Sales revenue 2", and "Collapse … Actions for
+  // Sales revenue" once focus revealed the `⋯`. #472 wants the three targets
+  // announced SEPARATELY, so the row states its own name.
+  it('names itself without swallowing its buttons\' labels', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const name = (rowKey: string): string => rowFor(list, rowKey).getAttribute('aria-label')!;
+    // Dashboard row: its name plus the panel count it shows, and nothing else.
+    expect(name('w1:sales')).toBe('Sales 2');
+    expect(name('w1:sales')).not.toContain('Expand');
+    expect(name('w1:sales')).not.toContain('Actions for');
+    // Group row: the count is announced, the disclosure verb is not.
+    expect(name('w1:sales:group:variables')).toBe('Variables 2');
+    // Everything that was announced before still is: the status WORD, the type meta
+    // and the marker's severity label.
+    expect(name('w1:sales:variable:region')).toBe('region unused String Unused');
+    expect(name('w1:sales:variable:country')).toBe('country String');
+    expect(name('w1:sales:tile:t-broken')).toBe('Untitled panel Broken reference');
+    // The chevron and the menu keep their own, distinct names (`openAll` expanded
+    // this row, so its verb is Collapse).
+    expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
+    expect(rowFor(list, 'w1:sales').querySelector('.dash-tree-menu-btn')!.getAttribute('aria-label'))
+      .toBe('Actions for Sales');
   });
 
   it('is isolated from the trailing action, which expands and navigates neither', () => {

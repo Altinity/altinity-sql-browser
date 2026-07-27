@@ -128,6 +128,31 @@ const STATUS_LABELS: Record<Exclude<DashboardTreeInvalid, null>, string> = {
   'variable-unused': 'Unused',
 };
 
+/**
+ * The row's OWN announcement, stated explicitly rather than left to name-from-content.
+ *
+ * A `treeitem` takes its accessible name from its contents — and since #429/#472 those
+ * contents include a LABELLED BUTTON. Measured in Chromium
+ * (`Accessibility.getPartialAXTree`, not assumed): a screen reader arrowing onto the row
+ * announced *"Expand Sales revenue Sales revenue 2"*, and *"Collapse Sales revenue Sales
+ * revenue 2 Actions for Sales revenue"* once focus revealed the `⋯`. The chevron's and
+ * the menu's names were being swallowed into the row's, which is the opposite of #472's
+ * "three independent targets, each … separately announced". An explicit name stops the
+ * content walk at the row.
+ *
+ * Composed from the MODEL's strings, in the order the row paints them — name, count,
+ * status word, trailing meta, marker label — so it cannot drift from what is on screen,
+ * and nothing that was announced before is lost. The `title` diagnostic is unaffected:
+ * it was never the name (content won), and it stays the tooltip and the description.
+ */
+const rowAccessibleName = (row: DashboardTreeRow): string => [
+  row.label,
+  row.count === null ? '' : String(row.count),
+  row.invalid === 'variable-unused' ? UNUSED_VARIABLE_STATUS : '',
+  row.meta,
+  row.invalid === null ? '' : STATUS_LABELS[row.invalid],
+].filter((part) => part !== '').join(' ');
+
 /** One arbiter per app instance, surviving the repaints that replace every row. */
 function arbiterFor(app: DashboardTreeApp): ClickArbiter {
   if (!app._dashTreeArbiter) {
@@ -610,6 +635,9 @@ function buildRow(
     ...(row.dropTarget === null ? {} : { 'data-droptarget': row.dropTarget.kind }),
     ...dropProps(app, row),
     role: 'treeitem',
+    // Explicit, so the chevron's and the `⋯`'s own names stay THEIRS (see
+    // `rowAccessibleName`) rather than being folded into this row's.
+    'aria-label': rowAccessibleName(row),
     'aria-level': String(row.level),
     ...(row.expandable ? { 'aria-expanded': row.expanded ? 'true' : 'false' } : {}),
     // Roving tabindex: exactly one row is in the Tab order.

@@ -1781,8 +1781,9 @@ body.detached-tab .graph-overlay-panel {
    this): the ROW is the wide `--ring-nav` box-shadow, the TRAILING buttons tint
    their own background, and the disclosure control is a tight accent outline around
    the glyph — the outline channel being free on the row itself except during a
-   drag. Two classes, so this wins against `.tree-row .chev`'s equal-specificity
-   colour rule further down the file. */
+   drag. Scoped to `.dash-tree-row` so it outranks `.tree-row .chev`'s own colour
+   rule further down the file (three class selectors against two) rather than
+   depending on source order. */
 .dash-tree-row .dash-tree-chev:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
