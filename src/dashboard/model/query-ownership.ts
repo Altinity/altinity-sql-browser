@@ -65,8 +65,18 @@ export interface OwnershipDashboard {
   tiles: readonly OwnershipTile[];
 }
 
+/** All ownership reads of a query: its identity. Narrowed to this in #494 so
+ *  the Dashboard tree's own loosened projection types (`TreeQuery`, which
+ *  makes `sql`/`spec` optional because the tree must render stale or imported
+ *  data) can be indexed by the ONE ownership rule instead of re-deriving
+ *  "which member owns this query" beside it. `libraryQueries` still answers in
+ *  the caller's own element type — see its generic below. */
+export interface OwnershipQuery {
+  id: string;
+}
+
 export interface OwnershipWorkspace {
-  queries: readonly SavedQueryV2[];
+  queries: readonly OwnershipQuery[];
   dashboards: readonly OwnershipDashboard[];
 }
 
@@ -120,7 +130,9 @@ export function buildQueryOwnershipIndex(workspace: OwnershipWorkspace): QueryOw
  *  original `workspace.queries[]` relative order. The lower sidebar renders
  *  exactly this (#427); owned copies stay serialized and stay openable by id,
  *  they are simply not Library entries. */
-export function libraryQueries(workspace: OwnershipWorkspace): SavedQueryV2[] {
+export function libraryQueries<Q extends OwnershipQuery>(
+  workspace: { queries: readonly Q[]; dashboards: readonly OwnershipDashboard[] },
+): Q[] {
   const { libraryQueryIds } = buildQueryOwnershipIndex(workspace);
   return workspace.queries.filter((query) => libraryQueryIds.has(query.id));
 }
