@@ -644,6 +644,33 @@ describe('variables and the affected-panel planner', () => {
     session.setTileSearch('query a');
     expect(session.state.value.tiles.map((entry) => entry.tileId)).toEqual(['blank']);
   });
+
+  // Same schema gap as the title above, on the OTHER field: `dashboardTileV1.description`
+  // carries no `minLength` either, so a whitespace-only authored description is
+  // schema-legal. Left untrimmed it was truthy and won the fallback chain,
+  // masking `query.spec.description` with blank text — silently, since the
+  // tree's own override warning already trims and so never fired for it.
+  it('treats a whitespace-only tile description as absent, and trims a padded one', async () => {
+    const { exec } = makeExec();
+    const document = doc({
+      tiles: [
+        tile('blank', 'qa', { description: '   \t\n ' }),
+        tile('padded', 'qb', { description: '  Padded  ' }),
+        tile('absent', 'qc'),
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qa', 'SELECT 1', { description: 'Query A description' }),
+        query('qb', 'SELECT 2', { description: 'Query B description' }),
+        query('qc', 'SELECT 3', { description: 'Query C description' }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.tiles.map((entry) => entry.description))
+      .toEqual(['Query A description', 'Padded', 'Query C description']);
+  });
 });
 
 describe('variable-bar bridge (controls / getVariableField / applyVariable)', () => {

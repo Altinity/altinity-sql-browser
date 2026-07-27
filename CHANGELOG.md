@@ -45,6 +45,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   to a non-panel query all refuse and say why, rather than deleting whatever
   the tile happens to point at by then.
 
+  A fifth review pass found the Dashboard/tile identity check was looser than
+  delete's own: both the tree's availability rule and the metadata guard asked
+  "is there at least one match" rather than "is there exactly one", so two
+  Dashboard documents sharing an id — or two tiles of the *same* Dashboard
+  sharing an id, even when they reference different queries — could still
+  offer a pencil that delete already refused. Both now count Dashboard and
+  Dashboard-local tile ids the same pass counts query ids, and refuse
+  identically. The pencil's own rapid-reactivation race is fixed too:
+  replacing an already-open dialog force-closes it first, and that closing
+  dialog's `onClose` used to reset the *same* trigger's `aria-expanded` back to
+  `"false"` right after the new dialog had just set it `"true"` — stranding
+  the trigger effectively unfocusable for as long as the replacement stayed
+  open. And the viewer's tile-description override now trims before the
+  fallback, matching its title override (#476): a whitespace-only description
+  is schema-legal and was silently masking the query's own description with
+  nothing, since the tree's own warning note already trimmed and so never
+  fired for it.
+
   Not yet included: the **Open in Dashboard** focus button, which is held back
   until #438 fixes tile focus on flow-layout KPI tiles.
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The

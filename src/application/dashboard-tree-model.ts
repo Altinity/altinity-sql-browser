@@ -434,6 +434,19 @@ const AMBIGUOUS_QUERY_REASON =
  *  repair the workspace by destroying the evidence — fail closed instead. */
 const WRONG_ROLE_REASON =
   'This panel references a query that is not a panel query, so it cannot be edited or removed here.';
+/** Two Dashboard documents carry this id. Which one a Dashboard-level edit or
+ *  delete would act on has no answer — the same "a control must not open a
+ *  dialog only to refuse at the end of it" rule `AMBIGUOUS_QUERY_REASON`
+ *  states, applied to the Dashboard identity delete already refuses on
+ *  (`dashboard-duplicate` in `removeDashboardDocument`/`removeDashboardPanel`). */
+const AMBIGUOUS_DASHBOARD_REASON =
+  'Two dashboards in this workspace share this id, so it cannot be edited or removed here.';
+/** Two tiles in the SAME Dashboard carry this id — even when they reference
+ *  different queries. Each would otherwise look, independently, like that
+ *  query's sole owner (`ownersOfQuery` cannot tell them apart), so this is
+ *  checked ahead of ownership rather than folded into it. */
+const AMBIGUOUS_TILE_REASON =
+  'Two panels in this dashboard share this id, so it cannot be edited or removed here.';
 
 /** One trailing control, available. */
 const action = (
@@ -471,6 +484,15 @@ export function deriveDashboardTree(
   for (const query of workspace?.queries ?? []) {
     documentsById.set(query.id, (documentsById.get(query.id) ?? 0) + 1);
   }
+  // How many Dashboard DOCUMENTS carry each Dashboard id — the same shape of
+  // count as `documentsById` above, one level up. `deleteDashboardDocument`/
+  // `removeDashboardPanel` already refuse a duplicated Dashboard id
+  // (`dashboard-duplicate`); this is what lets the row's own pencil/trash
+  // agree ahead of a commit rather than opening a dialog that then refuses.
+  const dashboardIdCounts = new Map<string, number>();
+  for (const dashboard of dashboards) {
+    dashboardIdCounts.set(dashboard.id, (dashboardIdCounts.get(dashboard.id) ?? 0) + 1);
+  }
   const ownership = buildQueryOwnershipIndex({
     queries: workspace?.queries ?? [],
     dashboards: dashboards.map((dashboard) => ({
@@ -493,7 +515,21 @@ export function deriveDashboardTree(
    */
   const panelActions = (
     dashboardId: string, dashboardLabel: string, tileId: string, label: string, queryId: string | null,
+    identityReason: string | null,
   ): DashboardTreeAction[] => {
+    // Checked BEFORE ownership, not folded into it: a duplicated Dashboard or
+    // Dashboard-local tile id is ambiguous on its own terms, and the #427
+    // ownership index — keyed by query id — cannot see it. Two tiles sharing
+    // an id but referencing different queries each look, independently, like
+    // that query's sole owner; this is what keeps the model agreeing with
+    // `removeDashboardPanel`'s own `dashboard-duplicate`/`tile-duplicate`
+    // refusals instead of offering a pencil delete already refuses.
+    if (identityReason !== null) {
+      return [
+        unavailableAction('edit-panel', 'Edit ' + label, identityReason),
+        unavailableAction('delete-panel', 'Remove ' + label + ' from dashboard', identityReason),
+      ];
+    }
     const owners = queryId === null ? [] : ownership.ownersByQueryId.get(queryId) ?? [];
     const owned = owners.length === 1
       && owners[0].dashboardId === dashboardId && owners[0].tileId === tileId;
@@ -535,6 +571,14 @@ export function deriveDashboardTree(
     const dashboardMatched = search !== '' && hits([title, description]);
 
     const tiles = dashboard.tiles ?? [];
+    const dashboardIdDuplicated = (dashboardIdCounts.get(dashboard.id) ?? 0) > 1;
+    // Dashboard-LOCAL tile-id cardinality: two tiles of the SAME Dashboard
+    // sharing an id, never a count across Dashboards — a tile id is only ever
+    // addressed together with its owning Dashboard id (#430).
+    const tileIdCounts = new Map<string, number>();
+    for (const tile of tiles) {
+      tileIdCounts.set(tile.id, (tileIdCounts.get(tile.id) ?? 0) + 1);
+    }
     const tileEntries = tileEntriesOf(dashboard, queries);
     // #447: the variable rows come from the pure inference service, over THIS
     // Dashboard's panel-owned queries plus its stored option SQL.
@@ -583,14 +627,26 @@ export function deriveDashboardTree(
       // gone — *Open in Edit* was its last item, and a menu button that opens
       // a one-item menu beside two real controls is chrome, not vocabulary.
       // Shift-click / Shift+Enter remain the Edit gesture (`shift` below).
-      actions: [
-        action('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
-          'Edit dashboard title & description', { kind: 'dashboard', dashboardId: dashboard.id }),
-        action('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
-          'Delete dashboard', { kind: 'dashboard', dashboardId: dashboard.id },
-          'Delete dashboard ' + quoted(title || UNTITLED_DASHBOARD)
-          + '? This also deletes every query its panels own.'),
-      ],
+      //
+      // A duplicated Dashboard id leaves both unavailable: `findDashboardStrict`
+      // already refuses `dashboard-duplicate` for both removal paths, and a
+      // rename has no less ambiguous a target — offering a pencil that a
+      // commit would only refuse is the exact bug this closes.
+      actions: dashboardIdDuplicated
+        ? [
+          unavailableAction('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
+            AMBIGUOUS_DASHBOARD_REASON),
+          unavailableAction('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
+            AMBIGUOUS_DASHBOARD_REASON),
+        ]
+        : [
+          action('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
+            'Edit dashboard title & description', { kind: 'dashboard', dashboardId: dashboard.id }),
+          action('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
+            'Delete dashboard', { kind: 'dashboard', dashboardId: dashboard.id },
+            'Delete dashboard ' + quoted(title || UNTITLED_DASHBOARD)
+            + '? This also deletes every query its panels own.'),
+        ],
       dashboardId: dashboard.id,
       member: null,
       queryId: null,
@@ -692,7 +748,9 @@ export function deriveDashboardTree(
         invalid: facts.invalid,
         severity: facts.invalid === null ? null : 'error',
         diagnostic: facts.invalid === null ? null : MISSING_QUERY_DIAGNOSTIC,
-        actions: panelActions(dashboard.id, title || UNTITLED_DASHBOARD, tile.id, facts.label, facts.queryId),
+        actions: panelActions(dashboard.id, title || UNTITLED_DASHBOARD, tile.id, facts.label, facts.queryId,
+          dashboardIdDuplicated ? AMBIGUOUS_DASHBOARD_REASON
+            : ((tileIdCounts.get(tile.id) ?? 0) > 1 ? AMBIGUOUS_TILE_REASON : null)),
         dashboardId: dashboard.id,
         member,
         queryId: facts.queryId,

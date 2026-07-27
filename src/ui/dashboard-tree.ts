@@ -51,7 +51,7 @@ import { commitPanelQueryMetadata } from '../application/dashboard-panel-metadat
 import type {
   PanelMetadataDeps, PanelMetadataOutcome,
 } from '../application/dashboard-panel-metadata.js';
-import { openMetadataDialog } from './dialog-shell.js';
+import { closeOpenDialogShell, openMetadataDialog } from './dialog-shell.js';
 import {
   assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
 } from '../application/library-assignment-service.js';
@@ -1006,6 +1006,14 @@ function openDashboardMetadataDialog(
   // `:focus-within` still holds on the row, and a `display: none` trigger cannot
   // receive the focus this dialog returns to it (only e2e catches this; happy-dom
   // enforces no CSS layout at all).
+  //
+  // Force-closed FIRST: `openMetadataDialog` → `openDialogShell` closes any
+  // already-open dialog for us, and on a rapid second activation of THIS same
+  // trigger that closing dialog's own `onClose` resets `aria-expanded` back to
+  // `"false"` — clobbering the `"true"` below if it ran after. Closing here,
+  // before setting the attribute, means that reset lands first and is
+  // superseded rather than the other way round.
+  closeOpenDialogShell();
   trigger.setAttribute('aria-expanded', 'true');
   const current = app.currentWorkspace?.dashboards?.find((d) => d.id === row.dashboardId);
   openMetadataDialog({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, {
@@ -1058,6 +1066,12 @@ function openPanelMetadataDialog(
   // Same hover-reveal trap as the Dashboard pencil: the trigger is
   // `display: none` unless the row is hovered or holds focus, and `focus()` on
   // a `display: none` element is a silent no-op in a real browser.
+  //
+  // Force-closed FIRST — see the matching comment in
+  // `openDashboardMetadataDialog`: on a rapid re-activation of this same
+  // trigger, the previous dialog's `onClose` resets `aria-expanded` to
+  // `"false"`, and that has to happen before this sets it `"true"`, not after.
+  closeOpenDialogShell();
   trigger.setAttribute('aria-expanded', 'true');
   const query = app.currentWorkspace?.queries?.find((entry) => entry.id === target.queryId);
   const tile = app.currentWorkspace?.dashboards

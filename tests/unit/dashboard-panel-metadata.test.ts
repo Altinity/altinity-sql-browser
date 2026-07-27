@@ -73,6 +73,37 @@ describe('ownedByPanel (#494, #427 exactly-one-owner rule asked about ONE member
     );
     expect(ownedByPanel(workspace, { dashboardId: 'dash', tileId: 't1', queryId: 'q1' })).toBe(false);
   });
+
+  // Strict resolution (findDashboardStrict), not a loose `.some(...)` match:
+  // two Dashboard DOCUMENTS sharing an id is `dashboard-duplicate` for
+  // `removeDashboardPanel` too, and "which one is being edited" has no answer
+  // even when the query-ownership index alone would report exactly one owner.
+  it('is false when TWO Dashboard documents share this dashboardId', () => {
+    const workspace = ws(
+      [
+        dash({ id: 'dash', tiles: [{ id: 't1', queryId: 'q1' }] }),
+        dash({ id: 'dash', tiles: [] }),
+      ],
+      [savedQuery({ id: 'q1' })],
+    );
+    expect(ownedByPanel(workspace, { dashboardId: 'dash', tileId: 't1', queryId: 'q1' })).toBe(false);
+  });
+
+  // Two tiles of the SAME Dashboard sharing an id, referencing DIFFERENT
+  // queries: the #427 ownership index cannot see this at all — q1 and q2 each
+  // still have exactly one owner naming {dash, t1}. Only resolving the tile
+  // by id INSIDE the dashboard (and requiring exactly one match) catches it.
+  it('is false when TWO tiles of the same Dashboard share this tileId, even though each still names exactly one owner', () => {
+    const workspace = ws(
+      [dash({
+        id: 'dash',
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't1', queryId: 'q2' }],
+      })],
+      [savedQuery({ id: 'q1' }), savedQuery({ id: 'q2' })],
+    );
+    expect(ownedByPanel(workspace, { dashboardId: 'dash', tileId: 't1', queryId: 'q1' })).toBe(false);
+    expect(ownedByPanel(workspace, { dashboardId: 'dash', tileId: 't1', queryId: 'q2' })).toBe(false);
+  });
 });
 
 /**

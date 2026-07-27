@@ -534,6 +534,35 @@ test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
     await page.keyboard.press('Escape');
     await expect(trigger).toBeFocused();
   });
+
+  // Real-browser-only regression: replacing an already-open dialog
+  // force-closes it first, and that closing dialog's OWN `onClose` used to
+  // reset this SAME trigger's `aria-expanded` back to "false" right after the
+  // new dialog had just set it "true" — happy-dom cannot see the consequence,
+  // since it never enforces the `[aria-expanded="true"] { display: inline-flex }`
+  // CSS rule that is the only thing keeping a hover-revealed trigger visible
+  // (and thus focusable) once the pointer has moved onto the dialog itself.
+  test('repeated activation leaves the trigger visibly revealed, not stranded by a stale aria-expanded', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const trigger = await pencil(page, 'workspace:sales');
+    // Three activations of the SAME trigger, dispatched directly rather than
+    // through Playwright's pointer-actionability checks: a real second mouse
+    // click cannot reach a button the first dialog's backdrop now covers, but
+    // a keyboard autorepeat's synthesized click can (the review's own repro),
+    // and a direct `.click()` is the fair proxy for that — same synchronous
+    // call stack as the unit-level "opens exactly ONE dialog" regression, now
+    // asserting on the REAL CSS the unit test cannot see.
+    await trigger.evaluate((el) => { el.click(); el.click(); el.click(); });
+    await expect(dialog(page)).toHaveCount(1);
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    // Off the row entirely, so nothing but `aria-expanded="true"` is keeping
+    // the trigger's `display` non-`none`.
+    await page.mouse.move(0, 0);
+    await expect(trigger).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
+  });
 });
 
 // #428 — dragging a Library query onto a Dashboard destination. Real
@@ -810,6 +839,29 @@ test.describe('direct row actions (#494)', () => {
       const committed = await page.evaluate(() => window.__committed());
       return committed.queries.find((query) => query.id === 'q-rev').spec.name;
     }).toBe('Revenue by region');
+  });
+
+  // Same real-browser-only regression as the Dashboard pencil above: the
+  // replacement dialog's own force-close resets THIS trigger's
+  // `aria-expanded` too, and only a real `[aria-expanded="true"]` CSS rule can
+  // show whether it landed before or after the new dialog's own "true".
+  test('repeated activation of the panel pencil leaves the trigger visibly revealed', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+    const trigger = await act(page, 'workspace:sales:tile:t-rev', 'Edit Revenue');
+    // See the Dashboard pencil's own comment above: a direct `.click()`,
+    // dispatched three times in one call, is the fair proxy for the keyboard
+    // autorepeat that is the only real way a user re-activates a trigger a
+    // modal backdrop already covers.
+    await trigger.evaluate((el) => { el.click(); el.click(); el.click(); });
+    await expect(page.locator('.fm-dialog-card')).toHaveCount(1);
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await page.mouse.move(0, 0);
+    await expect(trigger).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
   });
 
   // #494's Browser-accessibility section asks for REAL keyboard events, not

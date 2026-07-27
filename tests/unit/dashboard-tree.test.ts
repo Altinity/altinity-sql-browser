@@ -1149,6 +1149,23 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('stays aria-expanded "true" across repeated activation, and returns focus visibly on close', () => {
+    // Same race as the Dashboard pencil: the replacement dialog's own
+    // `openDialogShell` force-closes the one this same trigger already
+    // opened, running that dialog's `onClose` — which resets THIS trigger's
+    // `aria-expanded` to "false" — before the replacement's own "true" is set.
+    const { list } = open();
+    const trigger = pencil(list);
+    click(trigger);
+    click(trigger);
+    click(trigger);
+    expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('Cancel commits nothing', async () => {
     const { list, committed } = open();
     click(pencil(list));
@@ -1349,17 +1366,6 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
     const { list } = open();
     click(trash(list, 'w1:sales:variable:region')!);
     await new Promise((r) => setTimeout(r)); // openMenu's own deferred autofocus
-    expect(document.activeElement).toBe(confirmItems()[1]);
-    expect(document.activeElement!.textContent).toBe('Cancel');
-  });
-
-  // #501 — the destructive row is listed FIRST (`openMenu` autofocuses
-  // whichever row asks for it), so a keyboard user pressing Enter right after
-  // opening this must land on Cancel, not on the row that deletes the SQL.
-  it('focuses Cancel by default, not the destructive action', async () => {
-    const { list } = open();
-    click(trash(list, 'w1:sales:variable:region')!);
-    await new Promise((resolve) => { setTimeout(resolve); }); // openMenu's deferred autofocus
     expect(document.activeElement).toBe(confirmItems()[1]);
     expect(document.activeElement!.textContent).toBe('Cancel');
   });
@@ -1619,6 +1625,27 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
     expect(document.querySelectorAll('#dash-rename-name')).toHaveLength(1);
     expect(list).toBeDefined();
+  });
+
+  it('stays aria-expanded "true" across repeated activation, and returns focus visibly on close', () => {
+    // Regression for the force-close/set-attribute race: the REPLACEMENT
+    // dialog's own `openDialogShell` call force-closes whatever the first
+    // click opened, which runs the first dialog's `onClose` — resetting THIS
+    // SAME trigger's `aria-expanded` to "false". If that reset ran after this
+    // click's own "true", the trigger would be left "false" (and later
+    // effectively unfocusable/hidden by the hover-reveal CSS) for the entire
+    // time the replacement dialog is open.
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!;
+    click(trigger);
+    click(trigger);
+    click(trigger);
+    expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('still restores focus when the row the dialog belonged to is gone', async () => {

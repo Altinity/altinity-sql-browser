@@ -926,6 +926,66 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
     });
   });
 
+  // A different failure shape than the #427 exactly-one-owner rule above:
+  // this is an ambiguous ID, not an ownership conflict — the #427 index alone
+  // cannot see it (each query still has exactly one owner), which is exactly
+  // why deriveDashboardTree has to check cardinality on the id itself, ahead
+  // of ownership, and why `removeDashboardPanel`/`removeDashboardDocument`
+  // already refuse the same shapes (`dashboard-duplicate`/`tile-duplicate`).
+  describe('ambiguous Dashboard/tile identity', () => {
+    it('withholds Dashboard edit/delete on TWO Dashboard documents sharing one id', () => {
+      const tree = derive(ws({
+        dashboards: [
+          dashboard({ id: 'd', title: 'D1', tiles: [{ id: 't1', queryId: 'q1' }] }),
+          dashboard({ id: 'd', title: 'D2' }),
+        ],
+        queries: [query('q1', 'Q1')],
+      }), allOpen(['d']));
+      const dupes = tree.rows.filter((r) => r.key === 'w1:d');
+      expect(dupes).toHaveLength(2);
+      for (const dash of dupes) {
+        expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+        for (const a of dash.actions) {
+          expect(a.target).toBeNull();
+          expect(a.confirm).toBeNull();
+          expect(a.unavailable).toContain('share this id');
+        }
+      }
+      // The ambiguity cascades to the panels underneath: which Dashboard "d"
+      // even is has no answer, so its tiles cannot be resolved either.
+      const panel = row(tree.rows, 'w1:d:tile:t1');
+      expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+      for (const a of panel.actions) {
+        expect(a.target).toBeNull();
+        expect(a.unavailable).toContain('share this id');
+      }
+    });
+
+    it('withholds panel edit/delete on TWO tiles of the SAME Dashboard sharing one tileId, even when they reference DIFFERENT queries', () => {
+      const tree = derive(ws({
+        dashboards: [dashboard({
+          id: 'd', title: 'D',
+          tiles: [{ id: 't1', queryId: 'q1' }, { id: 't1', queryId: 'q2' }],
+        })],
+        queries: [query('q1', 'Q1'), query('q2', 'Q2')],
+      }), allOpen(['d']));
+      const dupes = tree.rows.filter((r) => r.key === 'w1:d:tile:t1');
+      expect(dupes).toHaveLength(2);
+      for (const panel of dupes) {
+        expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+        for (const a of panel.actions) {
+          expect(a.target).toBeNull();
+          expect(a.confirm).toBeNull();
+          expect(a.unavailable).toContain('share this id');
+        }
+        // Each tile still resolves its OWN open-query gesture — only the
+        // identity-addressed edit/delete controls are withheld.
+      }
+      expect(dupes[0].single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(dupes[1].single).toEqual({ kind: 'open-query', queryId: 'q2' });
+    });
+  });
+
   it('gives no actions to a group row or an ACTIVE (non-orphaned) variable row', () => {
     const tree = derive(ws({
       dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] })],

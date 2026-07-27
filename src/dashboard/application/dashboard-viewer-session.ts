@@ -560,7 +560,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // labels, and all of `ui/dashboard.ts`'s composed names alike).
     const authored = typeof tile.title === 'string' ? tile.title.trim() : '';
     const title = authored || (query ? queryName(query) : tile.queryId) || tile.id;
-    const description = (typeof tile.description === 'string' && tile.description)
+    // Same TRIM-before-fallback as the title above, for the same reason: the
+    // tile description has no `minLength` either, so a whitespace-only
+    // authored value is schema-legal, and left untrimmed it wins the chain
+    // and masks `query.spec.description` with blank text instead of falling
+    // through to it.
+    const authoredDescription = typeof tile.description === 'string' ? tile.description.trim() : '';
+    const description = authoredDescription
       || (typeof query?.spec?.description === 'string' ? query.spec.description : '');
     const state: ViewerTileState = {
       tileId: tile.id, queryId: tile.queryId, title, description, isKpi, panel,

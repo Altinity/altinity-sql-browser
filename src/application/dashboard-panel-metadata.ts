@@ -25,6 +25,7 @@ import { renameSaved } from '../state.js';
 import type { AppState, MutateWorkspace, SpecValidationService } from '../state.js';
 import { ownersOfQuery } from '../dashboard/model/query-ownership.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
+import { findDashboardStrict } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 
 /** Which owned query to edit, addressed the way #430 requires — Dashboard id +
@@ -69,24 +70,35 @@ export interface PanelMetadataDeps {
  * Exported because the tree model answers the same question when it decides
  * whether to enable the pencil at all — the difference is only WHEN it is
  * asked (paint time there, dequeue time here), and the two must agree.
+ *
+ * Dashboard and tile identity are resolved STRICTLY, the same way
+ * `removeDashboardPanel` resolves them, rather than by a loose `.some(...)`
+ * membership check: a duplicated Dashboard id or a duplicated Dashboard-local
+ * tile id refuses here even when the query-ownership index alone cannot see
+ * it. Two tiles sharing an id but referencing different queries would each
+ * otherwise still look, independently, like that query's sole owner — the
+ * `.some(...)` check never asked "how many", only "does at least one match".
  */
 export function ownedByPanel(
   workspace: StoredWorkspaceV5, target: PanelMetadataTarget,
 ): boolean {
-  const owners = ownersOfQuery(workspace, target.queryId);
+  const lookup = findDashboardStrict(workspace, target.dashboardId);
+  if (lookup.status !== 'ok') return false;
+
+  const tiles = lookup.dashboard.tiles.filter((tile) => tile.id === target.tileId);
+  if (tiles.length !== 1 || tiles[0].queryId !== target.queryId) return false;
+
+  // Exactly one document, and a PANEL one: an ambiguous id would make "which
+  // query am I editing" unanswerable, and a Setup- or other-role reference is
+  // malformed data this must not quietly write over.
   const matching = workspace.queries.filter((query) => query.id === target.queryId);
-  return owners.length === 1
-    && owners[0].dashboardId === target.dashboardId
-    && owners[0].tileId === target.tileId
-    // Exactly one document, and a PANEL one: an ambiguous id would make
-    // "which query am I editing" unanswerable, and a Setup- or other-role
-    // reference is malformed data this must not quietly write over.
-    && matching.length === 1
-    && queryDashboardRole(matching[0]) === 'panel'
-    // The tile must still point AT it — the pair is the identity, and a tile
-    // re-pointed while the dialog was open is a different resource.
-    && workspace.dashboards.some((dashboard) => dashboard.id === target.dashboardId
-      && dashboard.tiles.some((tile) => tile.id === target.tileId && tile.queryId === target.queryId));
+  if (matching.length !== 1 || queryDashboardRole(matching[0]) !== 'panel') return false;
+
+  // The sole owner is never re-checked against `dashboardId`/`tileId` by hand
+  // — same as `removeDashboardPanel`'s own comment: whenever this reports
+  // exactly one owner for a query id this exact (now uniquely resolved) tile
+  // references, that owner IS this Dashboard and this tile.
+  return ownersOfQuery(workspace, target.queryId).length === 1;
 }
 
 /**
