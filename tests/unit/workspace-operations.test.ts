@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CURRENT_STORAGE_VERSION, DEFAULT_WORKSPACE_NAME,
-  createNewWorkspace, generateWorkspaceId, importQueries,
+  appendDashboard, createNewWorkspace, generateWorkspaceId, importQueries,
   renameWorkspace, replaceWorkspaceContents,
 } from '../../src/workspace/workspace-operations.js';
 import type {
@@ -67,6 +67,42 @@ describe('workspace operations', () => {
     expect(result.dashboards).toEqual(workspace.dashboards);
     expect(result.dashboards).not.toBe(workspace.dashboards);
     expect(result.dashboards[1]).toBe(workspace.dashboards[1]);
+  });
+
+  // #463 — the additive Dashboard write behind New dashboard and Import
+  // dashboard.
+  it('appends a Dashboard last, preserving every existing entry and its order', () => {
+    const workspace = { ...base(), dashboards: [dashboard('d1'), dashboard('d2')] };
+    const added = dashboard('d3');
+    const result = appendDashboard(workspace, added);
+    expect(result.dashboards.map((d) => d.id)).toEqual(['d1', 'd2', 'd3']);
+    expect(result.dashboards[2]).toBe(added);
+    // Existing entries are carried through by reference — byte-for-byte, with
+    // no clone that could quietly normalize one.
+    expect(result.dashboards[0]).toBe(workspace.dashboards[0]);
+    expect(result.dashboards[1]).toBe(workspace.dashboards[1]);
+    expect(result.queries).toBe(workspace.queries);
+    expect(result.id).toBe(workspace.id);
+    expect(result.key).toBe(workspace.key);
+    expect(result.name).toBe(workspace.name);
+    // Never mutates the input.
+    expect(workspace.dashboards).toHaveLength(2);
+    expect(result.dashboards).not.toBe(workspace.dashboards);
+  });
+
+  it('appends into an empty collection as the sole Dashboard', () => {
+    const workspace = { ...base(), dashboards: [] };
+    expect(appendDashboard(workspace, dashboard('first')).dashboards.map((d) => d.id))
+      .toEqual(['first']);
+  });
+
+  // Duplicate TITLES are allowed — identity is the id — so two Dashboards named
+  // the same must both survive the append.
+  it('appends a Dashboard whose title duplicates an existing one', () => {
+    const twin = { ...dashboard('d2'), title: 'D1' };
+    const result = appendDashboard(base(), twin);
+    expect(result.dashboards.map((d) => d.title)).toEqual(['D1', 'D1']);
+    expect(result.dashboards.map((d) => d.id)).toEqual(['d1', 'd2']);
   });
 
   it('replaces portable contents while preserving local identity', () => {

@@ -430,10 +430,10 @@ function renderMissingDashboard(
         },
       }, 'Create dashboard'));
   target.setHeader(buildAppHeader(app as App, {
-    // #452: no document resolved, so there is no exact Dashboard to act on. The
-    // File menu decides from `dashboardCount` whether this is a genuinely empty
-    // collection (Import creates the first) or a selection that stopped
-    // resolving against a NON-empty one (Import must not retarget entry 0).
+    // #452: no document resolved, so there is no exact Dashboard to act on.
+    // #463 makes that harmless — the File menu's Dashboard commands are
+    // workspace operations now: New and Import append, and Export resolves an
+    // exact target from the workspace's own ids or asks through a chooser.
     fileMenu: { surface: 'dashboard', mode: target.mode, dashboardId: null },
     workspaceTitleEditable: !readOnly,
   }));

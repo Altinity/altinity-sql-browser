@@ -775,6 +775,20 @@ h1, h2, h3, h4, h5, h6 {
 }
 .fm-conflict-row:last-child { border-bottom: none; }
 .fm-picker-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+/* New dashboard… name prompt (#463) — the shell's only single-field dialog. */
+.fm-dialog-label {
+  display: block; margin-bottom: 6px;
+  font-size: var(--text-micro); font-weight: var(--fw-semibold);
+  color: var(--fg-mute); text-transform: uppercase; letter-spacing: .04em;
+}
+.fm-dialog-input {
+  width: 100%; box-sizing: border-box; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--fg);
+  font-family: inherit; font-size: var(--text-body);
+}
+.fm-dialog-input:focus { outline: none; border-color: var(--accent); }
+.fm-dialog-confirm:disabled { opacity: .45; cursor: default; filter: none; }
 
 /* ------------ main row ------------ */
 /* position:relative so the mobile sidebar overlay + backdrop (#126) can anchor
