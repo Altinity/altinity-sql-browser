@@ -23,6 +23,7 @@ import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { decodeShare } from '../../src/core/share.js';
+import { flashToast } from '../../src/ui/toast.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type {
   WorkspaceCommitResult, WorkspaceLoadResult, WorkspaceMarkOpenedResult,
@@ -5670,17 +5671,21 @@ describe('unified /sql routing', () => {
       const surface = app.mainSurface;
       const route = app.sqlRoute;
       const tabs = app.state.tabs.value.length;
-      const toastsBefore = document.querySelectorAll('.share-toast').length;
       app.state.savedQueries = [savedQuery({ id: 'q1', name: 'Sales', sql: 'SELECT 1' })];
+      // `flashToast` REUSES one `.share-toast` element per document, so counting
+      // elements can never distinguish one report from two. Materialise the
+      // element, then count how many times a report RAISES it.
+      flashToast('seed', { document });
+      const toastEl = document.querySelector('.share-toast')!;
+      const raised = vi.spyOn(toastEl.classList, 'add');
 
       app.openSavedQuery('gone');
 
       expect(app.mainSurface).toEqual(surface);
       expect(app.sqlRoute).toEqual(route);
       expect(app.state.tabs.value.length).toBe(tabs);
-      expect(document.querySelectorAll('.share-toast').length).toBe(toastsBefore + 1);
-      expect([...document.querySelectorAll('.share-toast')].at(-1)?.textContent)
-        .toContain('That query is no longer in this workspace.');
+      expect(raised).toHaveBeenCalledExactlyOnceWith('show');
+      expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
     });
 
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {

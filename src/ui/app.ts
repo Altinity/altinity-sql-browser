@@ -1895,10 +1895,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #426: a deferred single-click was scheduled against the rows of a PROJECTION,
     // and every projection replaces them — not just a workspace switch. Deleting a
     // Dashboard inside the 300ms window would otherwise let the delayed toggle
-    // re-add the id that was just pruned, and a deleted panel's deferred open would
-    // reach `openSavedQuery` with a dead id. Cancelling unconditionally can drop a
+    // re-add the id that was just pruned. Cancelling unconditionally can drop a
     // click when a background commit lands mid-gesture, which is the cheaper error:
-    // the rows that click referred to are gone either way.
+    // the rows that click referred to are gone either way. (#443 removed the other
+    // half of this rationale: a deleted panel's deferred open reaching
+    // `openSavedQuery` with a dead id is now handled at the callee, which reports
+    // and stays put rather than navigating nowhere.)
     cancelDashboardTreeClicks(app);
     invalidateDashboardTree();
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
@@ -2455,7 +2457,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.openSavedQuery = (queryId) => {
     const query = app.state.savedQueries.find((saved) => saved.id === queryId);
     if (!query) {
-      flashToast('That query is no longer in this workspace.', { document: doc });
+      flashToast('That query is no longer part of this workspace.', { document: doc });
       return;
     }
     app.showQuerySurface();

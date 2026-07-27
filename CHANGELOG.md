@@ -113,8 +113,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `openSavedQuery` an id that names nothing used to switch to the Query surface
   and push a history entry first, then discover the query was missing — opening
   no tab, showing no diagnostic, and leaving the user somewhere they never asked
-  to be. It now resolves first: a miss reports *"That query is no longer in this
-  workspace."* and changes no surface, no route and no tab, while a resolving id
+  to be. It now resolves first: a miss reports *"That query is no longer part of
+  this workspace."* and changes no surface, no route and no tab, while a resolving id
   behaves exactly as before.
 
 - **A whitespace-only tile title no longer blanks a heading or a screen-reader
