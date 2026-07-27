@@ -2033,17 +2033,24 @@ body.detached-tab .graph-overlay-panel {
 }
 .var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
 .var-combo-clear-inline:disabled { cursor: not-allowed; opacity: .5; }
-/* #447 phase 2: a variable whose declared type is a container (Array/Tuple/Map/
-   Nested) gets no INFERRED control, so this marker sits beside its plain input
-   rather than replacing it — a literal value typed there still binds. Warning, not
-   error: nothing is wrong, the Dashboard just cannot infer a control. */
-.var-unsupported {
-  grid-column: 2;
-  margin-top: 2px;
-  height: 24px; display: inline-flex; align-items: center; gap: 6px;
-  padding: 0 8px; border-radius: var(--r-sm);
-  border: 1px dashed var(--warn-bd); background: var(--warn-bg); color: var(--warn-fg);
-  font-size: var(--text-label); white-space: nowrap;
+/* #447 phase 2 (relaid out #470): a variable whose declared type is a container
+   (Array/Tuple/Map/Nested) gets no INFERRED control, so this state adorns its
+   plain input rather than replacing it — a literal value typed there still
+   binds. Warning, not error: nothing is wrong, the Dashboard just cannot infer
+   a control. It used to be a separate element beside the input; both were
+   pinned to this same grid column, so auto-placement pushed it into a second
+   row that read as a duplicate control. Now the warning styling lands on the
+   input itself (like .is-conflict above) and only a decorative icon is added,
+   absolutely positioned over the input (like .var-combo-clear-inline) so the
+   `.var-combo` column never gains a second row. */
+.var-input.is-unsupported {
+  border-style: dashed; border-color: var(--warn-bd); background: var(--warn-bg);
+  padding-right: 26px;
+}
+.var-unsupported-icon {
+  position: absolute; top: 0; right: 6px; height: 24px;
+  display: inline-flex; align-items: center; color: var(--warn-fg);
+  pointer-events: none;
 }
 .var-combo-list {
   position: fixed; z-index: 70; max-height: 260px; overflow-y: auto;

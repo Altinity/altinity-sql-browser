@@ -578,7 +578,24 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
     expect(bar.openPopoverKey()).toBeNull();
   });
 
-  it('marks a container type as having no inferred control, but KEEPS its input', () => {
+  // #470: the diagnostic used to be a second element (icon + a repeat of the
+  // declared type) appended beside the input; both it and the input's wrapper
+  // were pinned to the same CSS grid column, so it landed in a second row that
+  // read as a duplicate control. It must now adorn the SAME `.var-input` in
+  // place — one row, one occurrence of the type text (the input's own
+  // `placeholder`, unchanged) — with the full diagnostic reachable on hover
+  // (`title`) and keyboard focus (`aria-describedby`).
+  const unsupportedDesc = (field: HTMLElement, input: HTMLInputElement): Element => {
+    const id = input.getAttribute('aria-describedby');
+    expect(id).not.toBeNull();
+    // `field` isn't attached to `document` in these tests, so `getElementById`
+    // wouldn't find it — a scoped `querySelector` does.
+    const desc = field.querySelector('#' + id);
+    expect(desc).not.toBeNull();
+    return desc!;
+  };
+
+  it('marks a container type as having no inferred control, but KEEPS its input, in ONE row', () => {
     // Removing the input would make an existing Dashboard strictly less capable: a
     // container-typed variable already had a free-text field, and param-serialize
     // binds an array literal typed into it — taking it away leaves those panels
@@ -587,11 +604,30 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
       variables: { tags: { options: null } },
     });
     const field = fieldFor(bar, 'tags');
-    expect(field.querySelector('.var-input')).not.toBeNull();
-    const note = field.querySelector('.var-unsupported')!;
-    expect(note.textContent).toContain('Map(String, String)');
-    expect(note.getAttribute('aria-label')).toContain('no inferred control');
-    expect(note.getAttribute('title')).toContain('container type');
+    const input = field.querySelector<HTMLInputElement>('.var-input')!;
+    expect(input).not.toBeNull();
+    expect(input.classList.contains('is-unsupported')).toBe(true);
+    expect(input.placeholder).toBe('Map(String, String)');
+    expect(input.title).toContain('container type');
+    // The icon is the ONLY other element the diagnostic adds, and it carries
+    // no text of its own — so the type label is never rendered twice.
+    const icon = field.querySelector('.var-unsupported-icon')!;
+    expect(icon).not.toBeNull();
+    expect(icon.textContent).toBe('');
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+    expect(unsupportedDesc(field, input).textContent).toContain('no inferred control');
+    // Exactly the name label + the combo wrapper — never a third top-level
+    // child that would push the diagnostic into its own grid row.
+    expect(field.children.length).toBe(2);
+    // #470 regression: `applyFieldState` resets `title` from `baseTitle` on
+    // every keystroke/commit (`onValueInput`/`onCommitHard`) — the diagnostic
+    // must survive that, not revert to the plain name/type tooltip the moment
+    // the user types.
+    input.value = '{}';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.title).toContain('container type');
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    expect(input.title).toContain('container type');
   });
 
   it('the unsupported verdict wins over a configured option list', () => {
@@ -602,48 +638,58 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
       const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
         variables: { tags: { options: OPTIONS } },
       });
-      expect(fieldFor(bar, 'tags').querySelector('.variable-select')).toBeNull();
-      expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).toBeNull();
-      expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
-      expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+      const field = fieldFor(bar, 'tags');
+      expect(field.querySelector('.variable-select')).toBeNull();
+      expect(field.querySelector('.ms-trigger')).toBeNull();
+      expect(field.querySelector('.var-unsupported-icon')).not.toBeNull();
+      expect(field.querySelector('.var-input.is-unsupported')).not.toBeNull();
     }
   });
 
   it('reports unsupported for a container even with no entry in the variables map', () => {
     // The verdict comes from the declared TYPE, not from the map.
     const { bar } = build('SELECT * FROM t WHERE x IN {tags:Map(String, String)}', { variables: {} });
-    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).not.toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported-icon')).not.toBeNull();
   });
 
   it('never reports unsupported without the variables map — the workbench keeps its text field', () => {
     for (const type of ['Array(String)', 'Map(String, String)']) {
       const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`);
-      expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).toBeNull();
-      expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).toBeNull();
-      expect(fieldFor(bar, 'tags').querySelector('.var-input')).not.toBeNull();
+      const field = fieldFor(bar, 'tags');
+      expect(field.querySelector('.var-unsupported-icon')).toBeNull();
+      expect(field.querySelector('.ms-trigger')).toBeNull();
+      const input = field.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input).not.toBeNull();
+      expect(input.classList.contains('is-unsupported')).toBe(false);
     }
   });
 
-  it('marks an Array(scalar) with NO option SQL as having no option list, and keeps its input', () => {
+  it('marks an Array(scalar) with NO option SQL as having no option list, and keeps its input, for every scalar element type', () => {
     // Its type IS controllable — configuring option SQL turns it into the
     // multi-select — so the marker names that fix instead of calling the type
     // uncontrollable. The free-text input stays either way: a hand-typed
-    // `['a','b']` still binds.
-    const { bar } = build('SELECT * FROM t WHERE x IN {tags:Array(String)}', {
-      variables: { tags: { options: null } },
-    });
-    const field = fieldFor(bar, 'tags');
-    expect(field.querySelector('.var-input')).not.toBeNull();
-    expect(field.querySelector('.ms-trigger')).toBeNull();
-    const note = field.querySelector('.var-unsupported')!;
-    expect(note.textContent).toContain('Array(String)');
-    expect(note.getAttribute('aria-label')).toContain('no option list');
-    expect(note.getAttribute('title')).toContain('Add option SQL');
-    // Never the misleading container wording.
-    expect(note.getAttribute('title')).not.toContain('container type');
+    // `['a','b']` still binds. Covers both an integer and a string element type
+    // (#470 acceptance).
+    for (const type of ['Array(Int32)', 'Array(String)']) {
+      const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
+        variables: { tags: { options: null } },
+      });
+      const field = fieldFor(bar, 'tags');
+      const input = field.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input).not.toBeNull();
+      expect(field.querySelector('.ms-trigger')).toBeNull();
+      expect(input.classList.contains('is-unsupported')).toBe(true);
+      expect(input.placeholder).toBe(type);
+      expect(input.title).toContain('Add option SQL');
+      // Never the misleading container wording.
+      expect(input.title).not.toContain('container type');
+      expect(unsupportedDesc(field, input).textContent).toContain('no option list');
+      // One control, one row: the icon is the only sibling, and it's textless.
+      expect(field.querySelector('.var-unsupported-icon')!.textContent).toBe('');
+    }
   });
 
-  it('renders an Array(scalar) WITH options as the multi-select, not a text field', () => {
+  it('renders an Array(scalar) WITH options as the multi-select, not a text field — the diagnostic clears with no leftover styling', () => {
     for (const type of ['Array(String)', 'Array(UInt64)', 'Array(LowCardinality(String))']) {
       const { bar } = build(`SELECT * FROM t WHERE x IN {tags:${type}}`, {
         variables: { tags: { options: OPTIONS } },
@@ -653,10 +699,12 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
       expect(trigger).not.toBeNull();
       expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
       expect(trigger.textContent).toBe('Not set');
-      // It REPLACES the plain input and the single-select, rather than adorning.
-      expect(field.querySelector('.var-unsupported')).toBeNull();
+      // It REPLACES the plain input and the single-select, rather than adorning —
+      // clearing the diagnostic leaves no trace of the warning treatment.
+      expect(field.querySelector('.var-unsupported-icon')).toBeNull();
       expect(field.querySelector('.variable-select')).toBeNull();
       expect(field.querySelector('input.var-input')).toBeNull();
+      expect(field.querySelector('.is-unsupported')).toBeNull();
     }
   });
 
@@ -667,7 +715,7 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
       variables: { tags: { options: [] } },
     });
     expect(fieldFor(bar, 'tags').querySelector('.ms-trigger')).not.toBeNull();
-    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported')).toBeNull();
+    expect(fieldFor(bar, 'tags').querySelector('.var-unsupported-icon')).toBeNull();
   });
 
   it('takes the committed selection from the spec, and leaves varValues untouched', () => {

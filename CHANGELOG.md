@@ -206,6 +206,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   renders a multi-select. The marker survives for every other container, and for
   an `Array(scalar T)` nobody has configured.)
 
+- **The no-inferred-control diagnostic no longer renders a duplicate second row**
+  (#470). The marker above used to be a sibling element (icon + a repeat of the
+  declared type, e.g. `Array(Int32)`) appended beside the input; since it and the
+  input's own wrapper were both pinned to the same CSS grid column, the layout
+  pushed it into a visible second row that read as a duplicate control rather
+  than a diagnostic. It now adorns the SAME input in place — a yellow/dashed
+  class (mirroring the existing invalid/conflict affordances), a decorative
+  icon absolutely positioned over the input, and the full message reachable on
+  hover (`title`) and keyboard focus (`aria-describedby`) — with no change to
+  the input's rendered width or the one-row filter layout.
+
 ### Changed
 - **A Dashboard tile opens its own query in the Workbench; the Dashboard-level
   `< Query` button is gone** (#471). Every query-backed tile carries an
