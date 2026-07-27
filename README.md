@@ -509,10 +509,11 @@ three dividers, in this order:
   Disabled only when the workspace holds none (*No dashboards*). Both choosers
   focus their first row on open and keep Tab inside the dialog.
 
-  An export is bound to the workspace it was chosen in: Dashboard ids are unique
-  within a workspace, not across them, so switching workspace while the export
-  flushes pending writes cancels it rather than exporting a same-id Dashboard
-  from the new one.
+  An export is bound to the workspace it was chosen in — both its **contents**
+  and its **file name**. Dashboard ids are unique within a workspace, not across
+  them, so switching workspace while the export flushes pending writes cancels it
+  rather than exporting a same-id Dashboard from the new one, and a workspace
+  export never lands under the name of the workspace you moved to.
 
 Below a separator, the two one-way Library downloads — **Download Library as
 Markdown** (`.md`, a `### heading` + fenced ` ```sql ` cookbook) and **Download

@@ -436,7 +436,7 @@ describe('Export', () => {
   // export download the collection's first entry.
   it('exportDashboardAction fails closed when the target resolves to nothing', async () => {
     const app = mount();
-    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, workspaceName: app.state.libraryName.value, dashboardId: 'd1' });
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('✕ That dashboard is no longer available');
   });
@@ -445,7 +445,7 @@ describe('Export', () => {
     const app = mount();
     app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
     app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
-    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, workspaceName: app.state.libraryName.value, dashboardId: 'd1' });
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Ops.json');
     expect(mime).toBe('application/json');
@@ -469,7 +469,7 @@ describe('Export', () => {
     // catches the role mismatch.
     app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
     app.state.savedQueries = [setupQuery];
-    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, workspaceName: app.state.libraryName.value, dashboardId: 'd1' });
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);
   });
@@ -504,7 +504,7 @@ describe('Export', () => {
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
     app.state.savedQueries = [panelQuery('stale', 'Stale')];
-    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, workspaceName: app.state.libraryName.value, dashboardId: 'd1' });
     const [fname, , content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Committed.json'); // committed title, not the stale one
     const decoded = decodePortableBundleJson(content as string);
@@ -946,6 +946,200 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     await flush();
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('✕ That workspace is no longer available');
+  });
+
+  // P1: `state.dashboard` projects the SELECTED Dashboard (#425), which can be
+  // any entry. Folding it back through the compatibility slot produced [B, B] —
+  // the real first Dashboard dropped and a duplicate id minted — on the very
+  // path a user reaches when their storage is failing.
+  it('the degraded workspace export keeps every Dashboard when a NON-FIRST one is selected', async () => {
+    const a = dashboardDoc({ id: 'a', title: 'Alpha' });
+    const b = dashboardDoc({ id: 'b', title: 'Beta' });
+    const app = mount({
+      currentWorkspace: {
+        storageVersion: 5, id: 'w', key: 'w', name: 'Ops', queries: [], dashboards: [a, b],
+      },
+      // The committed read rejects: blocked/quota/private-mode IndexedDB.
+      workspace: { loadById: async () => { throw new Error('idb blocked'); } },
+    });
+    app.state.workspaceId = 'w';
+    app.state.dashboard = b;   // the SECOND entry is the one on screen
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    await flush();
+    const decoded = decodePortableBundleJson(app.downloadFile.mock.calls[0][2] as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.dashboards.map((d) => d.id)).toEqual(['a', 'b']);
+      expect(decoded.value.dashboards[0]).toEqual(a);
+    }
+  });
+
+  // The legacy/no-aggregate install: nothing is stored, so the live projection
+  // IS the workspace's only Dashboard and has to be seated as such — the one
+  // case where there is no committed entry to fold onto.
+  it('the degraded export seats the live projection when nothing is stored', async () => {
+    const only = dashboardDoc({ id: 'only', title: 'Only' });
+    const app = mount({ workspace: { loadById: async () => { throw new Error('idb blocked'); } } });
+    app.state.libraryName.value = 'Legacy';
+    app.state.dashboard = only;
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    await flush();
+    const decoded = decodePortableBundleJson(app.downloadFile.mock.calls[0][2] as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.dashboards.map((d) => d.id)).toEqual(['only']);
+  });
+
+  // The live projection still has to WIN over the committed copy on this path —
+  // it is the newer of the two — but by exact id, in place.
+  it('the degraded export folds the live projection onto its own entry', async () => {
+    const b = dashboardDoc({ id: 'b', title: 'Beta' });
+    const app = mount({
+      currentWorkspace: {
+        storageVersion: 5, id: 'w', key: 'w', name: 'Ops', queries: [],
+        dashboards: [dashboardDoc({ id: 'a', title: 'Alpha' }), b],
+      },
+      workspace: { loadById: async () => { throw new Error('idb blocked'); } },
+    });
+    app.state.workspaceId = 'w';
+    app.state.dashboard = { ...b, title: 'Beta (edited)', revision: 9 };
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    await flush();
+    const decoded = decodePortableBundleJson(app.downloadFile.mock.calls[0][2] as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.dashboards.map((d) => d.title)).toEqual(['Alpha', 'Beta (edited)']);
+    }
+  });
+
+  // A projection that names no stored entry is not a slot to guess at: the
+  // committed collection is the only trustworthy version left.
+  it('the degraded export ignores a projection that names no stored Dashboard', async () => {
+    const app = mount({
+      currentWorkspace: {
+        storageVersion: 5, id: 'w', key: 'w', name: 'Ops', queries: [],
+        dashboards: [dashboardDoc({ id: 'a', title: 'Alpha' })],
+      },
+      workspace: { loadById: async () => { throw new Error('idb blocked'); } },
+    });
+    app.state.workspaceId = 'w';
+    app.state.dashboard = dashboardDoc({ id: 'ghost', title: 'Ghost' });
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    await flush();
+    const decoded = decodePortableBundleJson(app.downloadFile.mock.calls[0][2] as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.dashboards.map((d) => d.id)).toEqual(['a']);
+  });
+
+  // P2: the bytes were pinned to the source workspace, but the FILE NAME still
+  // came from live state — workspace A's contents saved as `B.json`.
+  it('names a workspace export after the workspace it exported, not the one now open', async () => {
+    const committed: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'workspace-a', key: 'a', name: 'Workspace A',
+      queries: [panelQuery('q1')], dashboards: [],
+    };
+    let released: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { released = resolve; });
+    const app = mount({
+      flushWorkspaceWrites: () => gate,
+      workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) },
+    });
+    app.state.workspaceId = 'workspace-a';
+    app.state.libraryName.value = 'Workspace A';
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    app.state.workspaceId = 'workspace-b';
+    app.state.libraryName.value = 'Workspace B';
+    released();
+    await flush();
+    expect(app.downloadFile.mock.calls[0][0]).toBe('Workspace A.json');
+  });
+
+  // An empty Dashboard title is schema-valid, and its file-name fallback is the
+  // workspace name — which must be the source workspace's.
+  it('names an untitled Dashboard export after its own workspace', async () => {
+    const committed: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'workspace-a', key: 'a', name: 'Workspace A',
+      queries: [], dashboards: [dashboardDoc({ id: 'only', title: '' })],
+    };
+    const app = mount({
+      currentWorkspace: committed,
+      workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) },
+    });
+    app.state.workspaceId = 'workspace-a';
+    app.state.libraryName.value = 'Workspace A';
+    openFileMenu(app);
+    click(row('Export dashboard…'));
+    await flush();
+    expect(app.downloadFile.mock.calls[0][0]).toBe('Workspace A.json');
+  });
+
+  // …and on the degraded path the pinned name is the only one available.
+  it('names an untitled Dashboard export after its workspace on the degraded path too', async () => {
+    const untitled = dashboardDoc({ id: 'only', title: '' });
+    const app = mount({ workspace: { loadById: async () => { throw new Error('idb blocked'); } } });
+    app.state.workspaceId = 'workspace-a';
+    app.state.libraryName.value = 'Workspace A';
+    app.state.dashboard = untitled;
+    app.currentWorkspace = {
+      storageVersion: 5, id: 'workspace-a', key: 'a', name: 'Workspace A',
+      queries: [], dashboards: [untitled],
+    };
+    openFileMenu(app);
+    click(row('Export dashboard…'));
+    await flush();
+    expect(app.downloadFile.mock.calls[0][0]).toBe('Workspace A.json');
+  });
+
+  // P2: the menu's decision is made when it OPENS, and nothing closes it when a
+  // background commit lands. A `choose` target whose Dashboards are all gone
+  // used to open a chooser with no rows — and then throw focusing row zero.
+  it('re-resolves the export target on activation instead of opening an empty chooser', async () => {
+    // Both aliased to the interface: an inline literal narrows
+    // `app.currentWorkspace` to its own shape and refuses the later assignment.
+    const before: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [],
+      dashboards: [dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' })],
+    };
+    const emptied: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [],
+    };
+    const app = mount({ currentWorkspace: before });
+    openFileMenu(app);
+    expect(reasonOf('Export dashboard…')).toBeNull();   // enabled: two Dashboards
+    // Another tab removes both, projecting a new workspace under the open menu.
+    app.currentWorkspace = emptied;
+    expect(() => click(row('Export dashboard…'))).not.toThrow();
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('✕ That dashboard is no longer available');
+  });
+
+  // The same re-resolution narrows `choose` to `exact` when the collection drops
+  // to one — no chooser for a workspace with a single answer.
+  it('re-resolves a narrowed collection straight to its sole Dashboard', async () => {
+    const survivor = dashboardDoc({ id: 'b', title: 'Survivor' });
+    const shrunk: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [survivor],
+    };
+    const before: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [],
+      dashboards: [dashboardDoc({ id: 'a' }), survivor],
+    };
+    const app = mount({
+      currentWorkspace: before,
+      workspace: { loadById: async () => ({ status: 'ok' as const, workspace: shrunk }) },
+    });
+    openFileMenu(app);
+    app.currentWorkspace = shrunk;
+    click(row('Export dashboard…'));
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.downloadFile.mock.calls[0][0]).toBe('Survivor.json');
   });
 
   it('cancelling the export chooser downloads nothing', () => {

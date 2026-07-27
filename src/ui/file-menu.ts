@@ -41,7 +41,7 @@ import { closeOpenMenus, openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
 import { fileMenuModel, shortIdFragments } from '../core/file-menu-model.js';
 import type {
-  DashboardExportTarget, FileMenuActionId, FileMenuSurface,
+  DashboardExportTarget, FileMenuActionId, FileMenuContext, FileMenuSurface,
 } from '../core/file-menu-model.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -66,7 +66,7 @@ import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.j
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
-  findDashboardStrict, withCompatibilityDashboard,
+  findDashboardStrict, replaceDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type {
   DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
@@ -210,30 +210,11 @@ export function openFileMenu(
   // trigger's `aria-expanded` — set to 'true' by `openMenu` on open and back
   // to 'false' on close — is the authoritative open-state flag to bail on.
   if (app.dom.fileBtn!.getAttribute('aria-expanded') === 'true') return null;
-  // #427: the LIBRARY projection, matching the sidebar count, the workspace
-  // picker's count and the document exports below. Counting the raw collection
-  // would roughly double for every migrated workspace, and — worse — the count
-  // would enable "Download Library as Markdown/SQL" on a workspace whose every
-  // query is owned, which then toasts "Nothing to save".
-  const list = libraryEntries(app);
   // #452: recomputed on every open, so the same header control reflects current
   // state after a surface change without its rows moving. Only the SURFACE half
   // of the context is fixed when the header was built — the surface is what
   // knows which document it actually rendered.
-  // Not `app.currentWorkspace !== null`: that is also null on the legacy
-  // no-aggregate path, where export/import deliberately fall back to the
-  // `state`-derived workspace and must stay available.
-  const hasWorkspace = app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true;
-  const model = fileMenuModel({
-    surface: context,
-    hasWorkspace,
-    libraryQueryCount: list.length,
-    // No resolved workspace means no Dashboards to act on, whatever `state` is
-    // still projecting: the workspace-not-found surface exists BECAUSE nothing
-    // resolved, and a `state.dashboard` left over from the workspace the user
-    // came from would otherwise offer to export a document that is not there.
-    dashboardIds: hasWorkspace ? workspaceDashboards(app).map((dashboard) => dashboard.id) : [],
-  });
+  const model = fileMenuModel(liveContext(app, context));
 
   const importQueriesInput = pickerInput(app, 'import-queries', (f) => onImportQueriesFile(app, f));
   const openWorkspaceInput = pickerInput(app, 'import-workspace', (f) => onOpenWorkspaceFile(app, f));
@@ -253,7 +234,11 @@ export function openFileMenu(
     'export-workspace': () => { void exportWorkspaceAction(app); },
     'import-queries': () => importQueriesInput.click(),
     'import-dashboard': () => importDashboardInput.click(),
-    'export-dashboard': () => resolveExportDashboard(app, model.exportDashboardTarget!),
+    // Re-RESOLVED on activation, not read from the model built when the menu
+    // opened. Nothing forces an open menu to close when another tab's commit
+    // lands, so the Dashboard collection behind a `choose` decision can be empty
+    // by the time the row is clicked — which used to open a chooser with no rows.
+    'export-dashboard': () => resolveExportDashboard(app, fileMenuModel(liveContext(app, context)).exportDashboardTarget),
     'download-md': () => downloadAction(app, 'md'),
     'download-sql': () => downloadAction(app, 'sql'),
   };
@@ -350,15 +335,28 @@ function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV
 
 // ── current workspace + commit/project ──────────────────────────────────────
 
-/** The current committed aggregate, reconstructed from `state` — W4 keeps
- *  `state.savedQueries`/`dashboard`/`workspaceId`/`libraryName` as a live
- *  projection of it, so this never needs its own read of `app.workspace`.
+/**
+ * The current committed aggregate, reconstructed from `state` — W4 keeps
+ * `state.savedQueries`/`dashboard`/`workspaceId`/`libraryName` as a live
+ * projection of it, so this never needs its own read of `app.workspace`.
  *
- *  #424: `state.dashboard` projects only the COMPATIBILITY Dashboard, so the
- *  collection is taken from `app.currentWorkspace` (which carries every stored
- *  Dashboard) with the live projection folded back into its compatibility slot.
- *  Falling back to `state.dashboard` alone would silently truncate a
- *  multi-Dashboard workspace on the degraded Export path. */
+ * The collection comes from `app.currentWorkspace` (which carries every stored
+ * Dashboard); `state.dashboard` is folded back onto it **by exact id**.
+ *
+ * #425 made `state.dashboard` the SELECTED Dashboard, which can be any entry —
+ * so the compatibility slot is the wrong place to put it back. Writing entry 0
+ * with a selected entry 1 produced `[B, B]`: the real first Dashboard silently
+ * dropped and a duplicate id minted. That is a data-loss bug precisely where it
+ * hurts most, since this reconstruction is the DEGRADED path — the one an export
+ * falls back to when IndexedDB is blocked, over quota, or in private mode, which
+ * is exactly when a user is trying to get their work out.
+ *
+ * A projection that names no stored entry (or an ambiguous one) leaves the
+ * committed collection alone: it is the only trustworthy version available, and
+ * guessing a slot for the stray document is what caused the loss. An EMPTY
+ * collection is the genuine legacy/first-run case — the projection is then the
+ * only Dashboard there is, so it becomes the sole entry.
+ */
 function currentWorkspace(app: App): StoredWorkspaceV5 {
   const envelope: StoredWorkspaceV5 = {
     storageVersion: 5,
@@ -368,20 +366,51 @@ function currentWorkspace(app: App): StoredWorkspaceV5 {
     queries: app.state.savedQueries,
     dashboards: app.currentWorkspace ? app.currentWorkspace.dashboards : [],
   };
-  return app.state.dashboard ? withCompatibilityDashboard(envelope, app.state.dashboard) : envelope;
+  const live = app.state.dashboard;
+  if (!live) return envelope;
+  if (envelope.dashboards.length === 0) return appendDashboard(envelope, live);
+  return replaceDashboard(envelope, live.id, live) ?? envelope;
+}
+
+/**
+ * The pure model's inputs, read from the app RIGHT NOW.
+ *
+ * Called once when the menu opens (to paint it) and again when the Export row is
+ * activated. A menu is not torn down by a background commit — a cross-tab
+ * refresh projects a new workspace and repaints the saved list without any
+ * surface transition — so the two calls can legitimately disagree, and the
+ * SECOND one is the state the click actually acts on.
+ */
+function liveContext(app: App, context: FileMenuSurfaceContext): FileMenuContext {
+  // Not `app.currentWorkspace !== null`: that is also null on the legacy
+  // no-aggregate path, where export/import deliberately fall back to the
+  // `state`-derived workspace and must stay available.
+  const hasWorkspace = app.workspaceRouteStatus === 'ready' && context.workspaceMissing !== true;
+  return {
+    surface: context,
+    hasWorkspace,
+    // #427: the LIBRARY projection, matching the sidebar count, the workspace
+    // picker's count and the document exports below. Counting the raw collection
+    // would roughly double for every migrated workspace, and — worse — the count
+    // would enable "Download Library as Markdown/SQL" on a workspace whose every
+    // query is owned, which then toasts "Nothing to save".
+    libraryQueryCount: libraryEntries(app).length,
+    // No resolved workspace means no Dashboards to act on, whatever `state` is
+    // still projecting: the workspace-not-found surface exists BECAUSE nothing
+    // resolved, and a `state.dashboard` left over from the workspace the user
+    // came from would otherwise offer to export a document that is not there.
+    dashboardIds: hasWorkspace ? workspaceDashboards(app).map((dashboard) => dashboard.id) : [],
+  };
 }
 
 /**
  * Every Dashboard the menu can act on, in collection order (#463) — the list
  * behind the footer count, the Export chooser and the model's export targeting.
  *
- * Deliberately NOT `currentWorkspace(app).dashboards`: that folds the live
- * `state.dashboard` projection into the compatibility SLOT, which is right for a
- * commit (entry 0 is the projected document) but would report entry 0's id twice
- * — and drop the real one — if the projection ever held a non-first Dashboard.
- * Reading the two sources separately keeps the id list exactly as committed, and
- * still covers the legacy no-aggregate install, where the single projected
- * Dashboard is the only one there is.
+ * Reads the committed collection directly rather than through
+ * `currentWorkspace(app)`: the ids are what matter here, and the committed
+ * collection already has them all. The legacy no-aggregate install is covered by
+ * the projection, which is then the only Dashboard there is.
  */
 function workspaceDashboards(app: App): readonly DashboardDocumentV2[] {
   if (app.currentWorkspace) return app.currentWorkspace.dashboards;
@@ -899,6 +928,11 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV2, baseName: str
 interface DashboardExportRequest {
   readonly workspaceId: string;
   readonly dashboardId: string;
+  /** The workspace name as it was when the export was chosen. A Dashboard title
+   *  may legitimately be empty, and the file name then falls back to the
+   *  workspace's — which must be the workspace the export came FROM, not
+   *  whichever one `state` happens to be projecting after the flush. */
+  readonly workspaceName: string;
 }
 
 /** #341: flush every write already queued through `serializeWrite` (a Dashboard
@@ -956,20 +990,27 @@ function degradedDashboard(
  * target, so every export — chosen or direct — reads committed truth by id
  * through the same fail-closed lookup.
  */
-function resolveExportDashboard(app: App, target: DashboardExportTarget): void {
+function resolveExportDashboard(app: App, target: DashboardExportTarget | null): void {
+  // The row was enabled when the menu opened and the workspace has since lost
+  // every Dashboard. Say so rather than opening an empty chooser.
+  if (target === null) {
+    flashToast('✕ That dashboard is no longer available', { document: app.document });
+    return;
+  }
   // Pinned HERE, synchronously, while the menu row is still the user's last
   // action — for the chooser too, so a workspace switch made while it is open
   // fails the export closed instead of retargeting into the new workspace.
   const workspaceId = app.state.workspaceId;
+  const workspaceName = app.state.libraryName.value;
   if (target.kind === 'exact') {
-    void exportDashboardAction(app, { workspaceId, dashboardId: target.dashboardId });
+    void exportDashboardAction(app, { workspaceId, workspaceName, dashboardId: target.dashboardId });
     return;
   }
   const rows = pickerRows(workspaceDashboards(app).map((dashboard) => ({
     id: dashboard.id, title: dashboard.title, tileCount: dashboard.tiles.length,
   })));
   openDashboardPicker(app, 'Export which dashboard?', rows, (dashboardId) => {
-    void exportDashboardAction(app, { workspaceId, dashboardId });
+    void exportDashboardAction(app, { workspaceId, workspaceName, dashboardId });
   });
 }
 
@@ -998,7 +1039,9 @@ export async function exportDashboardAction(
   if (!dashboard) { flashToast('✕ That dashboard is no longer available', { document: app.document }); return; }
   const queryList = ws ? ws.queries : app.state.savedQueries;
   const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
-  downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
+  // An empty title is schema-valid, and the fallback must name the workspace the
+  // export came from — committed truth when it loaded, the pinned name otherwise.
+  downloadEncodedBundle(app, bundle, dashboard.title || (ws ? ws.name : request.workspaceName));
 }
 
 /** The same workspace pin as the Dashboard export, for the same reason: the
@@ -1008,13 +1051,16 @@ export async function exportDashboardAction(
  *  name. */
 async function exportWorkspaceAction(app: App): Promise<void> {
   const workspaceId = app.state.workspaceId;
+  const workspaceName = app.state.libraryName.value;
   const ws = await flushAndLoadCommitted(app, workspaceId);
   if (!ws && !stillCurrent(app, workspaceId)) {
     flashToast('✕ That workspace is no longer available', { document: app.document });
     return;
   }
   const bundle = buildWorkspaceExportBundle(ws ?? currentWorkspace(app), new Date(app.wallNow()).toISOString());
-  downloadEncodedBundle(app, bundle, app.state.libraryName.value);
+  // The NAME is pinned the same way the contents are: a file whose bytes are
+  // workspace A and whose name is workspace B is worse than either.
+  downloadEncodedBundle(app, bundle, ws ? ws.name : workspaceName);
 }
 
 /** The LIBRARY projection: the queries no Dashboard member owns. Each member owns

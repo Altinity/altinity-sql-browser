@@ -42,16 +42,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     Dashboard's tile count and an id fragment — widened until no two rows read
     alike — so duplicate names stay distinguishable. Both choosers focus their
     first row and keep Tab inside the dialog. Every export resolves an **exact
-    id** in the workspace it was chosen from: ids are unique within a workspace,
-    not across them, so switching workspace while the export flushes pending
-    writes cancels it instead of exporting a same-id Dashboard from the new one.
-    There is no fallback to `dashboards[0]` left to reach.
+    id** in the workspace it was chosen from — contents and file name both: ids
+    are unique within a workspace, not across them, so switching workspace while
+    the export flushes pending writes cancels it instead of exporting a same-id
+    Dashboard from the new one, and no export lands under the name of the
+    workspace you moved to. There is no fallback to `dashboards[0]` left to
+    reach.
 
   The menu regroups by verb — create / import / export / download — behind three
   dividers, and the two Dashboard rows drop to sentence case. Row order,
   separators, labels, availability and reason text remain the pure model's alone
   (`core/file-menu-model.ts`), and context still changes enabled state only:
   no row appears, disappears or moves when the work surface changes.
+
+### Fixed
+- **A degraded workspace export no longer loses a Dashboard** (#463). When the
+  committed read is unavailable — blocked, over-quota or private-mode IndexedDB —
+  the File menu rebuilds the workspace from its live projection. That projection
+  has been the *selected* Dashboard since #425, but it was folded back through
+  the compatibility slot, which is entry 0 unconditionally: with Dashboards
+  `[A, B]` and B on screen, the reconstruction produced `[B, B]`, dropping A and
+  minting a duplicate id. It now folds back **by exact id**, leaves the committed
+  collection alone when the projection names no stored entry, and seats the
+  projection only when there is genuinely nothing stored. This is the path a user
+  reaches precisely when their storage is failing and they are trying to get
+  their work out.
 
 - **An `Array(T)` Dashboard variable with option SQL is a searchable
   multi-select** (#468). `Array(T)` is the type multi-select exists for, but #447
