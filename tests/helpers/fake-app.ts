@@ -465,6 +465,7 @@ const appDefaults: App = {
   syncSqlRoute: () => {},
   rewriteWorkspaceRoute: () => {},
   renderCurrentSurface: () => {},
+  syncBeforeUnload: () => {},
   reloadDashboardRoute: () => {},
   loadWorkspaceOnBoot: async () => null,
   // Inert placeholders — `base` below overrides both with real, state-backed

@@ -10,6 +10,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
+  tab strip's close button asks before discarding an unsaved draft — a normal
+  query tab or a Dashboard-variable's option SQL, saved-linked or never saved
+  anywhere — instead of dropping it unconditionally; Cancel keeps the tab open
+  exactly as it was. Reloading or closing the browser tab/window while any tab
+  still holds an unsaved draft now shows the browser's own native confirmation
+  too. Both read the same dirty predicate the tab's own dirty-dot indicator
+  already used, so nothing needed reclassifying — a never-saved scratch tab
+  gets the same protection as a saved query. The confirm's default keyboard
+  focus is Cancel, not the destructive action, so pressing Enter right after
+  opening it never discards the draft — the Dashboard tree's own orphaned-
+  variable delete confirm gets the same fix (#501), same root cause. The
+  page-leave warning installs and removes itself as tabs go dirty/clean
+  rather than staying permanently registered, since Firefox (and older
+  Chromium) exclude a page from the back/forward cache merely for having a
+  `beforeunload` listener attached at all — including re-syncing immediately
+  after a save that clears a draft's dirty flags while navigating away from
+  its surface mid-write, rather than only on the next unrelated tab repaint.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   Revealed on hover/focus-within next to the existing `⋯`, it opens a small
   dialog prefilled from the Dashboard's own committed document — Cancel and

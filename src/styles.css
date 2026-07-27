@@ -1925,6 +1925,13 @@ body.detached-tab .graph-overlay-panel {
   display: flex; align-items: center; justify-content: center;
 }
 .qtab .close:hover { background: var(--bg-hover); color: var(--fg); }
+/* #466: the confirm-before-close popover, mirroring `.dash-tree-confirm*`
+   (dashboard-tree.ts's own delete confirm) — same `openMenu` idiom, own
+   classes per that file's per-consumer-styling convention. */
+.qtab-close-confirm { min-width: 268px; }
+.qtab-close-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
+.qtab-close-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
+.qtab-close-confirm-cancel { color: var(--fg-mute); }
 .qtabs .new-tab {
   width: 32px; border: none; background: transparent;
   color: var(--fg-mute); cursor: pointer;
