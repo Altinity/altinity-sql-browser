@@ -6775,9 +6775,10 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
     app.renderApp();
     app.actions.loadIntoNewTab(asQueryOrName(linked));
-    app.sqlEditor.replaceDocument('SELECT 2');
+    app.sqlEditor.replaceDocument('SELECT 2'); // dirties the tab, installing the beforeunload guard
     const { commit, release } = deferNextCommit(app);
 
+    const removeEventListener = vi.spyOn(window, 'removeEventListener');
     const save = app.actions.save();
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
     await app.navigateSqlRoute({
@@ -6794,6 +6795,13 @@ describe('unified /sql routing', () => {
       surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
     });
     expectSurface(app, 'dashboard');
+    // #501-review: `commitLinkedQuery`'s own staleness bracket (the navigation
+    // above made this save's surface generation stale) returns early, before
+    // its own `rerenderTabs()` call would otherwise re-sync the beforeunload
+    // guard — so `commitLinkedQuery` has to re-sync it INSIDE the bracket.
+    expect(app.activeTab().dirtySql).toBe(false);
+    expect(removeEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    removeEventListener.mockRestore();
   });
 
   it('a Workbench Save-as completion cannot settle its removed popover after switching to Dashboard', async () => {
@@ -7191,7 +7199,9 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
       app.openVariableTab('sales', 'zone');
       app.activeTab().sqlDraft = 'SELECT z, z FROM zones';
       app.activeTab().dirtySql = true;
+      app.syncBeforeUnload(); // installs the real beforeunload guard while dirty
 
+      const removeEventListener = vi.spyOn(window, 'removeEventListener');
       const saving = app.actions.save();
       app.openDashboard({ dashboardId: 'sales', mode: 'edit' }); // advances the surface generation
       await saving;
@@ -7205,6 +7215,12 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
       // it inside the service, BEFORE its own bracket) left a committed tab
       // permanently dirty with nothing able to clear it.
       expect(app.activeTab().dirtySql).toBe(false);
+      // #501-review: same bracket, same gap — `saveVariableTab`'s own
+      // `rerenderTabs()` call sits past it too, so without an explicit re-sync
+      // inside the `if (outcome.ok)` block the guard stayed installed for a tab
+      // that is, by now, genuinely clean and durably written.
+      expect(removeEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      removeEventListener.mockRestore();
     });
 
     it('surfaces a rejected commit, and keeps the draft dirty', async () => {

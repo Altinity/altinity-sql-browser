@@ -1443,6 +1443,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
     // wrapper needed (it would only double-queue).
     const result = await saved.commit(tab, evaluated);
+    // #466/#501-review: `saved.commit` already cleared `dirtySql`/`dirtySpec`
+    // on a real commit (`commitSavedQuery`, state.ts) — BEFORE the staleness
+    // bracket below, which can return early on a navigation that began
+    // mid-write. `rerenderTabs()` (which re-syncs this too) only runs past
+    // that bracket, so without this the guard stays installed for a tab that
+    // is, by now, genuinely clean and durably written.
+    if (result.ok) app.syncBeforeUnload();
     if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
       return result.ok ? result.entry : null;
     }
@@ -1519,6 +1526,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       // the result toolbar's panel-type picker can still set it. Clearing it here
       // keeps a saved variable tab from carrying a flag nothing else ever resets.
       tab.dirtySpec = false;
+      // #466/#501-review: re-sync the `beforeunload` guard for THIS tab-side
+      // clear too — `rerenderTabs()` below the staleness bracket also does it,
+      // but that bracket can return early on a navigation that began mid-write.
+      app.syncBeforeUnload();
     }
     // Same staleness bracket every other async save uses: a navigation that began
     // mid-write must not be REPAINTED or TOASTED over.
@@ -1622,6 +1633,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       // which already serializes + reads the latest committed aggregate — no
       // outer `serializeWrite` wrapper needed.
       const result = await saved.create(tab, input.value, descInput.value);
+      // #466/#501-review: `saved.create` already cleared `dirtySql`/`dirtySpec`
+      // on success (`createSavedQuery`, state.ts) — before the staleness
+      // bracket, which can return early on a navigation that began mid-write.
+      if (result.ok) app.syncBeforeUnload();
       if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });

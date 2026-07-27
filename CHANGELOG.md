@@ -25,7 +25,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   page-leave warning installs and removes itself as tabs go dirty/clean
   rather than staying permanently registered, since Firefox (and older
   Chromium) exclude a page from the back/forward cache merely for having a
-  `beforeunload` listener attached at all.
+  `beforeunload` listener attached at all — including re-syncing immediately
+  after a save that clears a draft's dirty flags while navigating away from
+  its surface mid-write, rather than only on the next unrelated tab repaint.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   Revealed on hover/focus-within next to the existing `⋯`, it opens a small
   dialog prefilled from the Dashboard's own committed document — Cancel and
