@@ -9,6 +9,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **An error toast now stays up long enough to read.** `flashToast` defaulted
+  every toast — success or failure — to the same 1.6s auto-dismiss, so a
+  failed open/import/save (`✕ …`, the app's established failure marker) could
+  vanish before it was even fully read, let alone copied for a bug report.
+  An error toast's default now runs 30s instead; a plain informational toast
+  (no leading `✕`) is unchanged. An explicit `duration` passed by the caller
+  still wins either way.
+
 ### Added
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
   tab strip's close button asks before discarding an unsaved draft — a normal
