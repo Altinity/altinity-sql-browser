@@ -286,3 +286,188 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(result.pageOverflow).toBeLessThanOrEqual(0);
   });
 });
+
+// #428 — dragging a Library query onto a Dashboard destination. Real
+// DragEvent/DataTransfer, because happy-dom has no native drag machinery: the
+// unit suite hand-builds event objects, so only this level proves the two
+// payloads actually ride the same real drag and that the browser delivers the
+// drop to the row the pointer is over.
+//
+// Escape is deliberately not tested here: Playwright's synthesized drag is not a
+// real drag session, so pressing Escape produces no `dragend`. The unit suite
+// covers `dragend` clearing, which is the same code path a real Escape takes.
+test.describe('Library → Dashboard assignment (#428)', () => {
+  const libraryRow = (page) => page.locator('.saved-row', { hasText: 'Countries' });
+
+  /** Start a real drag on the Library row and drop it on `key`, returning the
+   *  MIME types the source actually published. */
+  const dragLibraryOnto = async (page, key) => {
+    await libraryRow(page).waitFor();
+    return page.evaluate((rowKey) => {
+      const source = [...document.querySelectorAll('.saved-row')]
+        .find((row) => row.textContent.includes('Countries'));
+      const target = document.querySelector(`.dash-tree-row[data-key="${rowKey}"]`);
+      const dt = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const types = [...dt.types];
+      const box = target.getBoundingClientRect();
+      const at = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+      target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, ...at }));
+      target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, ...at }));
+      source.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      return types;
+    }, key);
+  };
+
+  const committed = (page) => page.evaluate(() => window.__committed());
+
+  test('one drag publishes both the subquery text and the Dashboard identity', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const types = await dragLibraryOnto(page, 'workspace:ops');
+    expect(types).toContain('application/x-asb-subquery');
+    expect(types).toContain('application/x-asb-library-query');
+  });
+
+  test('dropping on a Dashboard row creates an owned copy and a tile', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await dragLibraryOnto(page, 'workspace:ops');
+
+    await expect.poll(async () => {
+      const workspace = await committed(page);
+      return workspace.dashboards.find((d) => d.id === 'ops').tiles.length;
+    }).toBe(1);
+
+    const workspace = await committed(page);
+    const ops = workspace.dashboards.find((d) => d.id === 'ops');
+    const clone = workspace.queries.find((q) => q.id === ops.tiles[0].queryId);
+    // A dedicated copy, not the Library entry itself.
+    expect(clone.id).not.toBe('q-lib');
+    expect(clone.sql).toBe("SELECT 'eu' AS v, 'Europe' AS l");
+    expect(clone.spec.dashboard.role).toBe('panel');
+    // The source stays in the Library, untouched.
+    expect(workspace.queries.find((q) => q.id === 'q-lib').sql).toBe("SELECT 'eu' AS v, 'Europe' AS l");
+    await expect(libraryRow(page)).toBeVisible();
+    // The new panel row is revealed and is the tree's position…
+    const newRow = page.locator('.dash-tree-row[data-key^="workspace:ops:tile:"]');
+    await expect(newRow).toHaveCount(1);
+    await expect(newRow).toHaveAttribute('tabindex', '0');
+    // …and the panel's OWNED COPY opens in the editor, while the DASHBOARD does
+    // not open (this fixture records navigation instead of performing it).
+    expect(await page.evaluate(() => window.__opened))
+      .toEqual([{ kind: 'query', queryId: clone.id }]);
+  });
+
+  test('dropping on an inferred Variables row copies only the SQL', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:variables').click();
+    await dragLibraryOnto(page, 'workspace:sales:variable:region');
+
+    await expect.poll(async () => {
+      const workspace = await committed(page);
+      return workspace.dashboards.find((d) => d.id === 'sales').variableConfigs.region?.sql;
+    }).toBe("SELECT 'eu' AS v, 'Europe' AS l");
+
+    const workspace = await committed(page);
+    const sales = workspace.dashboards.find((d) => d.id === 'sales');
+    // No clone, no tile — a variable assignment copies text and nothing else.
+    expect(sales.tiles).toHaveLength(2);
+    expect(workspace.queries).toHaveLength(3);
+  });
+
+  test('the Variables group and a panel row are not drop targets', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+
+    await expect(treeRow(page, 'workspace:sales:group:variables'))
+      .not.toHaveAttribute('data-droptarget', /.*/);
+    await expect(treeRow(page, 'workspace:sales:tile:t-rev'))
+      .not.toHaveAttribute('data-droptarget', /.*/);
+    await expect(treeRow(page, 'workspace:sales:group:panels'))
+      .toHaveAttribute('data-droptarget', 'panel');
+  });
+
+  test('the drag highlight and active-target outline are real, painted CSS', async ({ page }) => {
+    // The only level that can see this: happy-dom computes no layout or cascade,
+    // so a rule that never matched would pass the unit suite silently. It also
+    // pins the three states apart — an eligible row must NOT look like the
+    // current Dashboard, which is what reusing `--bg-highlight` would have done.
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await libraryRow(page).waitFor();
+
+    const styles = await page.evaluate(() => {
+      const source = [...document.querySelectorAll('.saved-row')]
+        .find((row) => row.textContent.includes('Countries'));
+      const target = document.querySelector('.dash-tree-row[data-key="workspace:ops"]');
+      const other = document.querySelector('.dash-tree-row[data-key="workspace:long"]');
+      const read = (el) => {
+        const style = getComputedStyle(el);
+        return {
+          style: style.outlineStyle,
+          width: parseFloat(style.outlineWidth),
+          colour: style.outlineColor,
+          background: style.backgroundColor,
+        };
+      };
+      const idle = read(target);
+      const dt = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const box = target.getBoundingClientRect();
+      target.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, dataTransfer: dt,
+        clientX: box.left + box.width / 2, clientY: box.top + box.height / 2,
+      }));
+      const active = read(target);
+      const eligible = read(other);
+      source.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      return { idle, active, eligible, after: read(target), settled: read(other) };
+    });
+
+    // Idle: no outline at all.
+    expect(styles.idle.style).not.toBe('dashed');
+    // Eligible: a faint dashed edge appears, and NO tonal fill (that would make
+    // it indistinguishable from the currently-open Dashboard).
+    expect(styles.eligible.style).toBe('dashed');
+    expect(styles.eligible.width).toBeGreaterThan(0);
+    expect(styles.eligible.background).toBe(styles.idle.background);
+    // Active: same channel, turned up — thicker, a different colour, plus fill.
+    expect(styles.active.style).toBe('dashed');
+    expect(styles.active.width).toBeGreaterThan(styles.eligible.width);
+    expect(styles.active.colour).not.toBe(styles.eligible.colour);
+    expect(styles.active.background).not.toBe(styles.idle.background);
+    // dragend puts everything back.
+    expect(styles.after.style).not.toBe('dashed');
+    expect(styles.settled.style).not.toBe('dashed');
+  });
+
+  test('a collapsed Dashboard auto-expands under a hovering drag, without navigating', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await expect(treeRow(page, 'workspace:ops:group:panels')).toHaveCount(0);
+
+    await libraryRow(page).waitFor();
+    await page.evaluate(() => {
+      const source = [...document.querySelectorAll('.saved-row')]
+        .find((row) => row.textContent.includes('Countries'));
+      const target = document.querySelector('.dash-tree-row[data-key="workspace:ops"]');
+      const dt = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const box = target.getBoundingClientRect();
+      target.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, dataTransfer: dt,
+        clientX: box.left + box.width / 2, clientY: box.top + box.height / 2,
+      }));
+    });
+
+    // Both groups open, so Panels and Variables rows become reachable mid-drag.
+    await expect(treeRow(page, 'workspace:ops:group:panels')).toHaveCount(1);
+    await expect(treeRow(page, 'workspace:ops:group:variables')).toHaveCount(1);
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+  });
+});

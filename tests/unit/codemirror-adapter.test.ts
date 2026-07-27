@@ -11,7 +11,9 @@ import type { CodeMirrorEditorApp, DropEvent, SqlCompletionContext } from '../..
 import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { createState, activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
-import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
+import {
+  IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME, LIBRARY_QUERY_MIME,
+} from '../../src/ui/dnd-mime.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
 import type { DocLookup, DocSummary } from '../../src/core/doc-types.js';
@@ -1049,6 +1051,36 @@ describe('handleDrop', () => {
     expect(handleDrop(app, view, e)).toBe(true);
     expect(view.state.doc.toString()).toBe('xx(\nSELECT 1\n)');
     expect(view.state.selection.main.head).toBe(view.state.doc.length);
+  });
+
+  it('ignores the #428 Library identity payload — it is not the editor\'s to read', () => {
+    // A Library row publishes LIBRARY_QUERY_MIME alongside SUBQUERY_MIME. The
+    // editor must behave exactly as it did before that second payload existed:
+    // same text, same position, one undo step, no reference to the identity.
+    const { view, app } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'xx' }, selection: { anchor: 0 } });
+    view.posAtCoords = stubPosAtCoords(2);
+    const e = evt({
+      [SUBQUERY_MIME]: 'SELECT 1',
+      [LIBRARY_QUERY_MIME]: JSON.stringify({ kind: 'library-query', workspaceId: 'w1', queryId: 'q1' }),
+    });
+
+    expect(handleDrop(app, view, e)).toBe(true);
+    expect(view.state.doc.toString()).toBe('xx(\nSELECT 1\n)');
+    expect(view.state.doc.toString()).not.toContain('library-query');
+  });
+
+  it('does nothing at all for a drag carrying ONLY the Library identity payload', () => {
+    // Dragging a Library row across the editor on its way to the Dashboard tree
+    // must not insert anything.
+    const { view, app } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'keep' }, selection: { anchor: 0 } });
+    const e = evt({
+      [LIBRARY_QUERY_MIME]: JSON.stringify({ kind: 'library-query', workspaceId: 'w1', queryId: 'q1' }),
+    });
+
+    expect(handleDrop(app, view, e)).toBe(false);
+    expect(view.state.doc.toString()).toBe('keep');
   });
 
   it('is wired into the view: real dragover/drop events route through the handlers', () => {

@@ -986,10 +986,11 @@ export async function renderDashboard(
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
     // #427: the star no longer adds a panel, so this must not tell the user to
-    // use it. Nor may it point at the Library: dragging a query onto a Dashboard
-    // is #428 and does not exist yet. The only route that works TODAY is the
-    // Spec editor, so that is what it says.
-    'No panels yet — add one by editing this dashboard\u2019s Spec.');
+    // use it. #428 built the route this now names first — dragging a Library
+    // query onto this Dashboard (or its Panels group) in the sidebar tree, which
+    // is the discoverable one. Editing the Spec still works and stays named as
+    // the fallback.
+    'No panels yet — drag a query here from the Library, or edit this dashboard’s Spec.');
   const searchEmpty = h('div', { class: 'dash-empty dash-search-empty', style: { display: 'none' } },
     h('h2', null, 'No tiles match'),
     h('p', null, 'Try a different title or description.'),

@@ -10,6 +10,59 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Drag a Library query onto a Dashboard to assign it** (#428). One drag from the
+  lower Library list now has three destination-dependent meanings, and the row
+  publishes two independent payloads to serve them:
+
+  - onto a **Dashboard row or its Panels group** → an independent panel-owned
+    *copy* of the query plus a tile referencing it. The Library entry is never
+    modified, never removed, and keeps its favourite; repeated drops of the same
+    source create genuinely independent panels rather than sharing one query. The
+    new tile's placement is seeded from the source's own size hints, so a wide
+    panel lands wide.
+  - onto an **inferred Variables row** → the query's SQL text is copied into that
+    Dashboard variable's option-SQL configuration. Only text: no clone, no tile,
+    no owner, no lineage. Later edits to the Library query do not reach the copy.
+  - onto the **main SQL editor** → unchanged from PR #40: the `( … )` subquery
+    insertion at the drop position, still undoable, still touching no storage.
+
+  Dashboard assignment never trusts what it reads off the drag. The payload is
+  just `(workspaceId, queryId)`, re-resolved against the latest committed
+  workspace inside the write queue — so a source deleted, edited, or turned
+  Dashboard-owned mid-drag aborts cleanly, a drop landing after a workspace switch
+  is rejected, and an ordinary same-workspace change simply rebases. Every
+  assignment is one atomic, fully validated commit that bumps only the target
+  Dashboard's revision, exactly once.
+
+  Eligible destinations light up while you drag, the row under the pointer takes a
+  dashed outline, and resting on a collapsed Dashboard opens it — along with both
+  its groups, so Panels and Variables rows become reachable without dropping
+  first. That auto-expansion is view state only: it never navigates and never
+  writes. The Variables *group* is deliberately not a target (it does not say
+  which variable), nor is an individual panel row or an orphaned variable.
+
+  A successful drop **lands on what it created**: the tree expands to the new
+  panel or variable row and focuses it, and the assigned document opens in the
+  editor — for a panel the new owned copy (not the Library original), for a
+  variable its `Variable: <name>` tab. The Dashboard itself is still never opened
+  in View/Edit, and nothing is executed.
+
+  A drop can never silently overwrite an unsaved variable draft. If the matching
+  `Variable: <name>` tab has unsaved changes the assignment is refused outright
+  and that tab is focused, and the check runs inside the write transaction rather
+  than before it, so a keystroke landing while the commit is *queued* cannot slip
+  past. A keystroke landing while the commit is *persisting* is a window no check
+  can close — the write is already durable — so that case is reported instead of
+  hidden: a toast that stays until you act on it explains that the tab's unsaved
+  changes now differ from what was assigned, and offers **Discard draft** to adopt
+  the assigned SQL. Nothing discards your typing on its own. Dropping a blank query
+  is refused as a no-op rather than treated as a deletion — clearing option SQL
+  stays the variable tab's explicit blank-Save.
+
+  The empty-Dashboard message now names this route. The keyboard-accessible
+  **Add to dashboard…** equivalent is tracked separately in #483; until it lands,
+  assignment is pointer-only.
+
 - **The File menu creates, imports and exports Dashboards across the whole
   workspace** (#463). Its three Dashboard commands still assumed one exact
   Dashboard was already open — a model that stopped fitting once a workspace

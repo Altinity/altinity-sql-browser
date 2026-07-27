@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderDashboardTree, cancelDashboardTreeClicks } from '../../src/ui/dashboard-tree.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  renderDashboardTree, cancelDashboardTreeClicks, beginLibraryDrag, endLibraryDrag,
+} from '../../src/ui/dashboard-tree.js';
+import { LIBRARY_QUERY_MIME } from '../../src/ui/dnd-mime.js';
 import type { DashboardTreeApp } from '../../src/ui/dashboard-tree.js';
 import { buildSidebarUpper } from '../../src/ui/sidebar-upper.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -970,5 +973,628 @@ describe('renderDashboardTree — search', () => {
     input.dispatchEvent(new Event('input'));
     vi.advanceTimersByTime(400);
     expect(app.openSavedQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe('Library-query drop targets (#428)', () => {
+  const PAYLOAD = JSON.stringify({ kind: 'library-query', workspaceId: 'w1', queryId: 'q-lib' });
+
+  /** A drag event carrying whatever MIME types the case needs. `types` is all a
+   *  real `dragover` can read; `getData` only answers on `drop`. */
+  const dragEvent = (type: string, over: {
+    types?: string[]; data?: Record<string, string>; relatedTarget?: EventTarget | null;
+  } = {}): Event => {
+    const types = over.types ?? [LIBRARY_QUERY_MIME];
+    const data = over.data ?? { [LIBRARY_QUERY_MIME]: PAYLOAD };
+    return Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+      dataTransfer: { types, getData: (t: string) => data[t] ?? '', dropEffect: 'none' },
+      relatedTarget: over.relatedTarget ?? null,
+    });
+  };
+
+  /**
+   * The tree fixture plus a Library query to drag, and a `mutateWorkspace` that
+   * PROJECTS its commit back onto `app.currentWorkspace` — as the real primitive
+   * does — so post-commit reads (the variable reconcile) see committed truth.
+   */
+  const dropApp = (over: Partial<DashboardTreeApp> & { duringCommit?: () => void } = {}) => {
+    const { duringCommit, ...appOver } = over;
+    const base = treeApp(appOver);
+    const { app } = base;
+    const ws = app.currentWorkspace as unknown as StoredWorkspaceV5;
+    ws.storageVersion = 5; ws.key = 'w'; ws.name = 'W';
+    ws.queries = [...ws.queries, query('q-lib', 'Countries', 'SELECT c, c FROM countries')];
+    const committed: StoredWorkspaceV5[] = [];
+    if (!('mutateWorkspace' in appOver)) {
+      app.mutateWorkspace = (async (transform) => {
+        const input = await transform(app.currentWorkspace as StoredWorkspaceV5);
+        const candidate = input === null ? null : input.candidate;
+        if (candidate === null) {
+          return { ok: false, aborted: true, data: input === null ? undefined : input.data };
+        }
+        committed.push(candidate);
+        app.currentWorkspace = candidate as never;
+        // The real primitive awaits persistence HERE, after the transform has
+        // returned — past every gate the transform could apply.
+        if (duringCommit) duringCommit();
+        await Promise.resolve();
+        return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
+      }) as App['mutateWorkspace'];
+    }
+    return { ...base, committed };
+  };
+
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  describe('eligibility is static markup', () => {
+    it('marks the Dashboard row, the Panels group and an INFERRED variable row', () => {
+      const { app, list } = dropApp();
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+
+      expect(rowFor(list, 'w1:sales').dataset.droptarget).toBe('panel');
+      expect(rowFor(list, 'w1:sales:group:panels').dataset.droptarget).toBe('panel');
+      expect(rowFor(list, 'w1:sales:variable:country').dataset.droptarget).toBe('variable');
+    });
+
+    it('leaves the Variables group, an ORPHAN variable and a panel row unmarked', () => {
+      const { app, list } = dropApp();
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+
+      // The Variables group does not identify WHICH variable would receive the SQL.
+      expect(rowFor(list, 'w1:sales:group:variables').dataset.droptarget).toBeUndefined();
+      // `region` is configured but no panel declares it any more.
+      expect(rowFor(list, 'w1:sales:variable:region').dataset.droptarget).toBeUndefined();
+      expect(rowFor(list, 'w1:sales:tile:t1').dataset.droptarget).toBeUndefined();
+    });
+
+    it('is present whether or not a drag is in flight — revealing it costs no repaint', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      expect(rowFor(list, 'w1:sales').dataset.droptarget).toBe('panel');
+      expect(list.classList.contains('dash-dragging')).toBe(false);
+      const before = rowFor(list, 'w1:sales');
+
+      beginLibraryDrag(app);
+      expect(list.classList.contains('dash-dragging')).toBe(true);
+      endLibraryDrag(app);
+      expect(list.classList.contains('dash-dragging')).toBe(false);
+      // The SAME nodes throughout: a repaint here would `replaceChildren()` the
+      // row under the pointer and strand the drop mid-drag.
+      expect(rowFor(list, 'w1:sales')).toBe(before);
+    });
+  });
+
+  describe('hover feedback', () => {
+    it('accepts the drag on an eligible row and marks it active', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+
+      const event = dragEvent('dragover');
+      row.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(row.classList.contains('dash-drop-target')).toBe(true);
+    });
+
+    it('marks only ONE row at a time', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragenter'));
+      rowFor(list, 'w1:ops').dispatchEvent(dragEvent('dragenter'));
+
+      expect(rowFor(list, 'w1:sales').classList.contains('dash-drop-target')).toBe(false);
+      expect(rowFor(list, 'w1:ops').classList.contains('dash-drop-target')).toBe(true);
+    });
+
+    it('does NOT accept a drag carrying no library payload', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+
+      const event = dragEvent('dragover', { types: ['text/plain'] });
+      row.dispatchEvent(event);
+      // Falls through to native behaviour rather than looking droppable.
+      expect(event.defaultPrevented).toBe(false);
+      expect(row.classList.contains('dash-drop-target')).toBe(false);
+    });
+
+    it('does NOT accept a drag on an ineligible row', () => {
+      const { app, list } = dropApp();
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+      const group = rowFor(list, 'w1:sales:group:variables');
+
+      const event = dragEvent('dragover');
+      group.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(group.classList.contains('dash-drop-target')).toBe(false);
+    });
+
+    it('keeps the mark while the pointer crosses onto one of the row\'s own children', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+      row.dispatchEvent(dragEvent('dragenter'));
+
+      row.dispatchEvent(dragEvent('dragleave', { relatedTarget: row.querySelector('.label') }));
+      expect(row.classList.contains('dash-drop-target')).toBe(true);
+    });
+
+    it('clears the mark when the pointer genuinely leaves the row', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+      row.dispatchEvent(dragEvent('dragenter'));
+
+      row.dispatchEvent(dragEvent('dragleave', { relatedTarget: list }));
+      expect(row.classList.contains('dash-drop-target')).toBe(false);
+    });
+
+    it('ignores a dragleave belonging to a row that is not the active target', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragenter'));
+
+      rowFor(list, 'w1:ops').dispatchEvent(dragEvent('dragleave', { relatedTarget: list }));
+      expect(rowFor(list, 'w1:sales').classList.contains('dash-drop-target')).toBe(true);
+    });
+
+    it('re-applies the active mark after a repaint replaced the row', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragenter'));
+
+      renderDashboardTree(app);
+      expect(rowFor(list, 'w1:sales').classList.contains('dash-drop-target')).toBe(true);
+    });
+
+    it('is inert when the tree has no mount point', () => {
+      // `endLibraryDrag` is called from the Library row's `dragend`, which can
+      // fire while the Dashboards role has never been built.
+      const { app } = dropApp();
+      (app.dom as { dashboardTreeList: HTMLElement | null }).dashboardTreeList = null;
+      expect(() => { beginLibraryDrag(app); endLibraryDrag(app); }).not.toThrow();
+    });
+
+    it('dragend clears every visual trace', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      beginLibraryDrag(app);
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragenter'));
+
+      endLibraryDrag(app);
+      expect(list.querySelector('.dash-drop-target')).toBeNull();
+      expect(list.classList.contains('dash-dragging')).toBe(false);
+    });
+  });
+
+  describe('hover auto-expand', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('opens a collapsed Dashboard AND both its groups, without navigating', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragover'));
+      vi.advanceTimersByTime(600);
+
+      // Variables rows are only reachable once BOTH the Dashboard and the
+      // Variables group are open.
+      expect(labels(list)).toContain('country');
+      expect(labels(list)).toContain('Revenue');
+      expect(app.openDashboard).not.toHaveBeenCalled();
+      expect(app.openSavedQuery).not.toHaveBeenCalled();
+    });
+
+    it('opens the Variables GROUP on hover even though it rejects drops', () => {
+      // Otherwise a variable row could never be reached by dragging at all.
+      const { app, list } = dropApp();
+      setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
+      renderDashboardTree(app);
+      expect(labels(list)).not.toContain('country');
+
+      rowFor(list, 'w1:sales:group:variables').dispatchEvent(dragEvent('dragover'));
+      vi.advanceTimersByTime(600);
+      expect(labels(list)).toContain('country');
+    });
+
+    it('does not expand before the delay elapses', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragover'));
+      vi.advanceTimersByTime(300);
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+    });
+
+    it('cancels the timer when the pointer leaves', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+
+      row.dispatchEvent(dragEvent('dragover'));
+      row.dispatchEvent(dragEvent('dragleave', { relatedTarget: list }));
+      vi.advanceTimersByTime(600);
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+    });
+
+    it('arms exactly ONE timer however many dragover events arrive', () => {
+      // `dragover` repeats every ~350ms while the pointer rests, so re-arming
+      // per event would both leak timers and push the expansion out forever.
+      const setTimeoutSpy = vi.fn((fn: () => void, ms: number) => globalThis.setTimeout(fn, ms));
+      const { app, list } = dropApp({
+        window: { setTimeout: setTimeoutSpy, clearTimeout: globalThis.clearTimeout } as never,
+      });
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+
+      row.dispatchEvent(dragEvent('dragover'));
+      row.dispatchEvent(dragEvent('dragover'));
+      row.dispatchEvent(dragEvent('dragover'));
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(600);
+      expect(labels(list)).toContain('country');
+    });
+
+    it('moving between rows hands the timer over without losing a tick', () => {
+      // Per the HTML drag model `dragenter` on the NEW target fires BEFORE
+      // `dragleave` on the old one. Without a hand-over, `ops` would fail to arm
+      // (sales' timer still pending) and sales' departure would then cancel
+      // everything, leaving nobody counting down until the next dragover tick.
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const sales = rowFor(list, 'w1:sales');
+      const ops = rowFor(list, 'w1:ops');
+
+      sales.dispatchEvent(dragEvent('dragover'));
+      // Pointer moves sales -> ops: enter first, then leave.
+      ops.dispatchEvent(dragEvent('dragenter'));
+      sales.dispatchEvent(dragEvent('dragleave', { relatedTarget: ops }));
+
+      vi.advanceTimersByTime(600);
+      // `ops` — the row the pointer is actually on — expanded, and `sales` did not.
+      expect(rowFor(list, 'w1:ops:group:panels')).toBeTruthy();
+      expect(labels(list)).not.toContain('country');
+    });
+
+    it('the row the pointer LEFT does not cancel the timer that took over', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const ops = rowFor(list, 'w1:ops');
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragover'));
+      ops.dispatchEvent(dragEvent('dragenter'));
+      // A late `dragleave` from the old row must not disarm the new one.
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragleave', { relatedTarget: list }));
+
+      vi.advanceTimersByTime(600);
+      expect(rowFor(list, 'w1:ops:group:variables')).toBeTruthy();
+    });
+
+    it('finds nothing to do when the row opened by other means while it waited', () => {
+      // The chevron is the instant expansion path and does not cancel a pending
+      // hover timer. When that timer finally fires, the state it wanted is
+      // already in place — it must return rather than repaint under the drag.
+      const { app, list } = dropApp();
+      setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales:group:variables').dispatchEvent(dragEvent('dragover'));
+      click(rowFor(list, 'w1:sales:group:variables').querySelector('.chev')!);
+      expect(labels(list)).toContain('country');
+
+      const opened = rowFor(list, 'w1:sales:group:variables');
+      vi.advanceTimersByTime(600);
+      // Same node: the timer found the state already correct and returned.
+      expect(rowFor(list, 'w1:sales:group:variables')).toBe(opened);
+    });
+
+    it('is a no-op on an already-expanded row, so a rested pointer never repaints', () => {
+      const { app, list } = dropApp();
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+      const before = rowFor(list, 'w1:sales');
+
+      before.dispatchEvent(dragEvent('dragover'));
+      vi.advanceTimersByTime(600);
+      // Same node — no repaint happened.
+      expect(rowFor(list, 'w1:sales')).toBe(before);
+    });
+
+    it('a workspace switch or dispose cancels a pending expand', () => {
+      // `cancelDashboardTreeClicks` is the tree's existing "this deferred state
+      // must not outlive what it belonged to" hook. Without the hover timer on
+      // it, a timer armed before a workspace refresh fires afterwards and writes
+      // expansion for a Dashboard the refresh just pruned — resurrecting exactly
+      // the state `applyCommittedWorkspace` removed.
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragover'));
+
+      cancelDashboardTreeClicks(app);
+      vi.advanceTimersByTime(600);
+
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+      expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales'))
+        .toBe(false);
+    });
+
+    it('a new drag clears the previous drag\'s state, in case dragend never fired', () => {
+      // A background `renderSavedHistory` can replace the source row mid-drag,
+      // and a removed source does not reliably deliver `dragend`.
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragenter'));
+      expect(list.querySelector('.dash-drop-target')).not.toBeNull();
+
+      beginLibraryDrag(app);
+      expect(list.querySelector('.dash-drop-target')).toBeNull();
+      vi.advanceTimersByTime(600);
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+    });
+
+    it('dragend cancels a pending expand', () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('dragover'));
+      endLibraryDrag(app);
+      vi.advanceTimersByTime(600);
+      expect(labels(list)).toEqual(['Sales', 'Ops']);
+    });
+  });
+
+  describe('panel assignment', () => {
+    it('drops onto a Dashboard row: one clone, one tile, and the new row selected', async () => {
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+      beginLibraryDrag(app);
+
+      const event = dragEvent('drop');
+      rowFor(list, 'w1:sales').dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await flush();
+
+      const dashboard = committed[0].dashboards.find((d) => d.id === 'sales')!;
+      expect(dashboard.tiles).toHaveLength(3);
+      const added = dashboard.tiles[2];
+      expect(committed[0].queries.some((q) => q.id === added.queryId)).toBe(true);
+      // The tree revealed and selected it, without opening the DASHBOARD…
+      expect(labels(list)).toContain('Countries');
+      expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey)
+        .toBe('w1:sales:tile:' + added.id);
+      expect(app.openDashboard).not.toHaveBeenCalled();
+      // …and the new panel's OWNED COPY opens in the editor, not the Library
+      // original: editing the original would not touch the panel.
+      expect(app.openSavedQuery).toHaveBeenCalledWith(added.queryId);
+      expect(added.queryId).not.toBe('q-lib');
+      expect(list.classList.contains('dash-dragging')).toBe(false);
+    });
+
+    it('puts the tree position ON the new panel row, scrolled into view', async () => {
+      // Not just `tabindex="0"`: `renderDashboardTree` restores focus only when
+      // the tree already held it, and after a mouse drop it does not — so the row
+      // is focused explicitly or it is the arrow-key origin while off-screen.
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+      const elsewhere = document.createElement('button');
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop'));
+      await flush();
+
+      const sales = committed[0].dashboards.find((d) => d.id === 'sales');
+      expect(sales).toBeDefined();
+      const newRow = rowFor(list, 'w1:sales:tile:' + sales!.tiles[2].id);
+      expect(newRow.getAttribute('tabindex')).toBe('0');
+      expect(document.activeElement).toBe(newRow);
+      expect(document.activeElement).not.toBe(elsewhere);
+    });
+
+    it('drops onto the Panels group with the same result', async () => {
+      const { app, list, committed } = dropApp();
+      openAll(app, 'ops');
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:ops:group:panels').dispatchEvent(dragEvent('drop'));
+      await flush();
+
+      expect(committed[0].dashboards.find((d) => d.id === 'ops')!.tiles).toHaveLength(1);
+    });
+
+    it('repeated drops create independent copies', async () => {
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop'));
+      await flush();
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop'));
+      await flush();
+
+      const tiles = committed[1].dashboards.find((d) => d.id === 'sales')!.tiles;
+      expect(tiles).toHaveLength(4);
+      expect(tiles[2].queryId).not.toBe(tiles[3].queryId);
+      expect(tiles[2].id).not.toBe(tiles[3].id);
+    });
+
+    it('cancels a pending row click so the drop does not also navigate', async () => {
+      const { app, list } = dropApp();
+      renderDashboardTree(app);
+      const row = rowFor(list, 'w1:sales');
+      // A deferred single-click waiting out the double-click window.
+      click(row);
+
+      row.dispatchEvent(dragEvent('drop'));
+      await flush();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(app.openDashboard).not.toHaveBeenCalled();
+    });
+
+    it('reports a declined assignment and commits nothing', async () => {
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+
+      // A payload naming a query this workspace does not have.
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop', {
+        data: {
+          [LIBRARY_QUERY_MIME]: JSON.stringify({
+            kind: 'library-query', workspaceId: 'w1', queryId: 'nope',
+          }),
+        },
+      }));
+      await flush();
+
+      expect(committed).toHaveLength(0);
+      expect(document.querySelector('.share-toast')!.textContent).toContain('deleted');
+    });
+  });
+
+  describe('variable assignment', () => {
+    const dropOnCountry = async (app: DashboardTreeApp, list: HTMLElement) => {
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+      rowFor(list, 'w1:sales:variable:country').dispatchEvent(dragEvent('drop'));
+      await flush();
+    };
+
+    it('copies the SQL into the exact variable and selects its row', async () => {
+      const { app, list, committed } = dropApp();
+      await dropOnCountry(app, list);
+
+      const dashboard = committed[0].dashboards.find((d) => d.id === 'sales')!;
+      expect(dashboard.variableConfigs!.country)
+        .toEqual({ sql: 'SELECT c, c FROM countries', lastKnownType: 'String' });
+      // No query, no tile.
+      expect(dashboard.tiles).toHaveLength(2);
+      expect(committed[0].queries).toHaveLength(2);
+      expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey)
+        .toBe('w1:sales:variable:country');
+    });
+
+    it('adopts the committed SQL into a CLEAN open variable tab, and opens it', async () => {
+      const { app, list } = dropApp();
+      const tab = {
+        id: 'vt', doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'country' },
+        dirtySql: false, sqlDraft: 'SELECT stale',
+      };
+      app.state.tabs.value = [...app.state.tabs.value, tab as never];
+
+      await dropOnCountry(app, list);
+
+      expect(tab.sqlDraft).toBe('SELECT c, c FROM countries');
+      // Owner decision: the assigned option SQL opens for editing.
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+    });
+
+    it('opens the variable tab even when none was open', async () => {
+      const { app, list } = dropApp();
+      await dropOnCountry(app, list);
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+    });
+
+    it('says so — and offers a way out — when the tab turns dirty during the commit', async () => {
+      // The in-transform gate cannot close the persistence window. Reporting a
+      // clean success here is what would leave the next Save silently reverting
+      // the assignment, so the toast persists (an action suppresses auto-dismiss)
+      // and carries the one-click resolution.
+      const tab = {
+        id: 'vt', doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'country' },
+        dirtySql: false, sqlDraft: 'SELECT mine',
+      };
+      const { app, list, committed } = dropApp({
+        duringCommit: () => { tab.dirtySql = true; },
+      });
+      app.state.tabs.value = [...app.state.tabs.value, tab as never];
+
+      await dropOnCountry(app, list);
+
+      // The write landed…
+      expect(committed[0].dashboards.find((d) => d.id === 'sales')!.variableConfigs!.country.sql)
+        .toBe('SELECT c, c FROM countries');
+      // …the draft is untouched, and NOT silently adopted…
+      expect(tab.sqlDraft).toBe('SELECT mine');
+      // …the user is told, and the tab is opened so they can see both.
+      const toast = document.querySelector('.share-toast')!;
+      expect(toast.textContent).toContain('unsaved changes that differ');
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+
+      // The escape hatch actually resolves it.
+      const action = toast.querySelector('button')!;
+      expect(action.textContent).toBe('Discard draft');
+      action.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(tab.sqlDraft).toBe('SELECT c, c FROM countries');
+      expect(tab.dirtySql).toBe(false);
+    });
+
+    it('refuses to overwrite a DIRTY variable tab, and focuses it instead', async () => {
+      const { app, list, committed } = dropApp();
+      const tab = {
+        id: 'vt', doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'country' },
+        dirtySql: true, sqlDraft: 'SELECT mine',
+      };
+      app.state.tabs.value = [...app.state.tabs.value, tab as never];
+
+      await dropOnCountry(app, list);
+
+      expect(committed).toHaveLength(0);
+      expect(tab.sqlDraft).toBe('SELECT mine');
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+      expect(document.querySelector('.share-toast')!.textContent).toContain('unsaved changes');
+    });
+
+    it('refuses a blank source rather than deleting the configuration', async () => {
+      const { app, list, committed } = dropApp();
+      const ws = app.currentWorkspace as unknown as StoredWorkspaceV5;
+      ws.queries = ws.queries.map((q) => (q.id === 'q-lib' ? { ...q, sql: '   ' } : q));
+
+      await dropOnCountry(app, list);
+
+      expect(committed).toHaveLength(0);
+      expect(document.querySelector('.share-toast')!.textContent).toContain('clear it in the variable tab');
+    });
+  });
+
+  describe('payload handling', () => {
+    it('ignores a drop carrying no library payload', async () => {
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+
+      const event = dragEvent('drop', { types: ['text/plain'] });
+      rowFor(list, 'w1:sales').dispatchEvent(event);
+      await flush();
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(committed).toHaveLength(0);
+    });
+
+    it('ignores an unparseable payload without committing or throwing', async () => {
+      const { app, list, committed } = dropApp();
+      renderDashboardTree(app);
+
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop', {
+        data: { [LIBRARY_QUERY_MIME]: 'not json' },
+      }));
+      await flush();
+      expect(committed).toHaveLength(0);
+    });
+
+    it('an ineligible row does not handle a drop at all', async () => {
+      const { app, list, committed } = dropApp();
+      openAll(app, 'sales');
+      renderDashboardTree(app);
+
+      const event = dragEvent('drop');
+      rowFor(list, 'w1:sales:tile:t1').dispatchEvent(event);
+      await flush();
+      expect(event.defaultPrevented).toBe(false);
+      expect(committed).toHaveLength(0);
+    });
   });
 });

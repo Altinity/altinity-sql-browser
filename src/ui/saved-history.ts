@@ -6,7 +6,9 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
-import { SUBQUERY_MIME } from './dnd-mime.js';
+import { LIBRARY_QUERY_MIME, SUBQUERY_MIME } from './dnd-mime.js';
+import { encodeLibraryQueryPayload } from '../core/library-drag.js';
+import { beginLibraryDrag, endLibraryDrag } from './dashboard-tree.js';
 import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved,
   deleteHistory, invalidSpecTabForSaved, SAVED_VIEWS,
@@ -30,6 +32,48 @@ type ResultView = AppState['resultView']['value'];
 const dragProps = (sql: string): { draggable: string; ondragstart: (e: DragEvent) => void } => ({
   draggable: 'true',
   ondragstart: (e: DragEvent) => e.dataTransfer!.setData(SUBQUERY_MIME, sql),
+});
+
+/**
+ * A LIBRARY row's drag: the same subquery payload as above, PLUS the stable
+ * identity Dashboard destinations read (#428). One gesture, two independent
+ * payloads, two readers that never see each other's (`ui/dnd-mime.ts`).
+ *
+ * The subquery payload is written FIRST and identically to `dragProps`, so the
+ * shipped editor drop (PR #40) is bit-for-bit unaffected by the addition.
+ *
+ * `dragstart`/`dragend` also bracket the Dashboard tree's eligible-target
+ * highlight. That is a class on the tree's own list element rather than app
+ * state, so starting a drag repaints nothing — a repaint mid-drag would
+ * `replaceChildren()` the row under the pointer and strand the drop bookkeeping.
+ *
+ * There is deliberately no "suppress the row's click while dragging" flag: a
+ * native HTML5 drag emits no `click`, so such a guard would be a branch no test
+ * could reach. `saved-history.test.ts` proves the absence instead.
+ */
+const libraryDragProps = (app: App, query: SavedQueryV2): {
+  draggable: string;
+  ondragstart: (e: DragEvent) => void;
+  ondragend: () => void;
+} => ({
+  draggable: 'true',
+  ondragstart: (e: DragEvent) => {
+    e.dataTransfer!.setData(SUBQUERY_MIME, query.sql);
+    const workspaceId = app.currentWorkspace?.id;
+    // No aggregate committed yet (a fresh boot, or a degraded route) means there
+    // is no Dashboard to assign to and no workspace id to scope the identity by,
+    // so the row drags as text only.
+    if (workspaceId !== undefined) {
+      e.dataTransfer!.setData(LIBRARY_QUERY_MIME, encodeLibraryQueryPayload({
+        kind: 'library-query', workspaceId, queryId: query.id,
+      }));
+      beginLibraryDrag(app);
+    }
+  },
+  // Fires for a completed drop AND for every cancellation — including Escape,
+  // which the browser swallows during a drag rather than delivering as a
+  // keydown. One handler is therefore the whole teardown.
+  ondragend: () => endLibraryDrag(app),
 });
 
 /**
@@ -213,7 +257,7 @@ function renderSaved(app: App, list: HTMLElement): void {
       // file) still needs the Panel drawer open, or clicking it shows nothing.
       else if (isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
     };
-    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: open },
+    const row = h('div', { class: 'saved-row', ...libraryDragProps(app, q), onclick: open },
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, name),

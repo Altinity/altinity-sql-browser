@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSavedHistory } from '../../src/ui/saved-history.js';
-import { SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
+import { LIBRARY_QUERY_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
@@ -701,6 +701,119 @@ describe('drag a row into the editor', () => {
     expect(row.getAttribute('draggable')).toBe('true');
     const setData = dragStart(row);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');
+  });
+});
+
+describe('drag a Library row onto a Dashboard (#428)', () => {
+  /** An app whose Library holds `s1` and whose tree list exists to be classed. */
+  const libraryApp = (over: { workspace?: boolean } = {}) => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1', favorite: false }]);
+    if (over.workspace !== false) {
+      app.currentWorkspace = {
+        storageVersion: 5, id: 'w1', key: 'w', name: 'W',
+        queries: app.state.savedQueries,
+        dashboards: [],
+      } as never;
+    }
+    const list = app.document.createElement('div');
+    list.className = 'schema-list dash-tree-list';
+    (app.dom as { dashboardTreeList: HTMLElement }).dashboardTreeList = list;
+    renderSavedHistory(app);
+    return { app, list, row: qs(savedList(app), '.saved-row') };
+  };
+
+  it('publishes BOTH payloads — the editor takes SQL, Dashboards take identity', () => {
+    const { row } = libraryApp();
+    const setData = dragStart(row);
+
+    expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 1');
+    expect(setData).toHaveBeenCalledWith(
+      LIBRARY_QUERY_MIME,
+      JSON.stringify({ kind: 'library-query', workspaceId: 'w1', queryId: 's1' }),
+    );
+    expect(setData).toHaveBeenCalledTimes(2);
+  });
+
+  it('never puts SQL or a saved query into the identity payload', () => {
+    const { row } = libraryApp();
+    const setData = dragStart(row);
+    const identity = setData.mock.calls.find((call) => call[0] === LIBRARY_QUERY_MIME)![1];
+
+    expect(JSON.parse(identity)).toEqual({ kind: 'library-query', workspaceId: 'w1', queryId: 's1' });
+    expect(identity).not.toContain('SELECT');
+  });
+
+  it('a History row publishes ONLY the subquery payload — it has no stable identity', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    const setData = dragStart(qs(savedList(app), '.history-row'));
+
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');
+  });
+
+  it('drags as text only when no workspace aggregate is committed yet', () => {
+    // Nothing to assign to, and no workspace id to scope the identity by.
+    const { app, list, row } = libraryApp({ workspace: false });
+    app.currentWorkspace = null;
+    renderSavedHistory(app);
+    const setData = dragStart(qs(savedList(app), '.saved-row'));
+
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 1');
+    expect(list.classList.contains('dash-dragging')).toBe(false);
+    expect(row).toBeTruthy();
+  });
+
+  it('reveals the tree\'s eligible targets while dragging, and clears on dragend', () => {
+    const { list, row } = libraryApp();
+
+    dragStart(row);
+    expect(list.classList.contains('dash-dragging')).toBe(true);
+
+    row.dispatchEvent(new Event('dragend', { bubbles: true }));
+    expect(list.classList.contains('dash-dragging')).toBe(false);
+  });
+
+  it('starting a drag does not open the query', () => {
+    // A native HTML5 drag emits no `click`, which is why there is no
+    // suppression flag in the source — a branch no test could reach.
+    const { app, row } = libraryApp();
+    const loadIntoNewTab = vi.fn();
+    (app.actions as { loadIntoNewTab: unknown }).loadIntoNewTab = loadIntoNewTab;
+
+    dragStart(row);
+    row.dispatchEvent(new Event('dragend', { bubbles: true }));
+    expect(loadIntoNewTab).not.toHaveBeenCalled();
+  });
+
+  it('leaves star, rename and delete WORKING on a draggable row', async () => {
+    // `draggable="true"` on the row must not swallow a child button's click.
+    const { app, row } = libraryApp();
+    expect(row.getAttribute('draggable')).toBe('true');
+
+    click(qs(row, '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
+    // The row's own open action never fired.
+    expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
+  });
+
+  it('rename and delete still reach their handlers through a draggable row', async () => {
+    const { app } = libraryApp();
+    click(byTitle(qs(savedList(app), '.saved-row'), 'Edit name & description'));
+    expect(app.state.editingSavedId.value).toBe('s1');
+    expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
+
+    app.state.editingSavedId.value = null;
+    renderSavedHistory(app);
+    click(byTitle(qs(savedList(app), '.saved-row'), 'Delete'));
+    await flush();
+    expect(app.state.savedQueries).toHaveLength(0);
   });
 });
 

@@ -777,3 +777,92 @@ describe('the unused status word', () => {
     expect(UNUSED_VARIABLE_STATUS).toBe('unused');
   });
 });
+
+describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
+  /** One Dashboard with a declaring panel (`country`), a conflicting second
+   *  declaration, and an orphaned configuration (`region`). */
+  const fixture = () => ws({
+    queries: [
+      query('q1', 'Revenue', undefined, 'SELECT * FROM r WHERE c = {country:String}'),
+      query('q2', 'Cost', undefined, 'SELECT {country:UInt8}, {zone:String}'),
+    ],
+    dashboards: [dashboard({
+      id: 'd1',
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      variableConfigs: { region: { sql: 'SELECT r, r FROM regions' } },
+    })],
+  });
+
+  const targets = (rows: readonly DashboardTreeRow[]): Record<string, unknown> =>
+    Object.fromEntries(rows.map((r) => [r.key, r.dropTarget]));
+
+  it('accepts on the Dashboard row and the Panels group — both mean the same write', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    expect(row(rows, 'w1:d1').dropTarget).toEqual({ kind: 'panel', dashboardId: 'd1' });
+    expect(row(rows, 'w1:d1:group:panels').dropTarget).toEqual({ kind: 'panel', dashboardId: 'd1' });
+  });
+
+  it('accepts on an inferred variable row, carrying its exact name', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    expect(row(rows, 'w1:d1:variable:country').dropTarget)
+      .toEqual({ kind: 'variable', dashboardId: 'd1', variableName: 'country' });
+  });
+
+  it('accepts on a CONFLICTED variable — it is inferred and names a real variable', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    const conflicted = row(rows, 'w1:d1:variable:country');
+    expect(conflicted.invalid).toBe('variable-conflict');
+    expect(conflicted.dropTarget).not.toBeNull();
+  });
+
+  it('rejects the Variables group — it does not identify which variable', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    expect(row(rows, 'w1:d1:group:variables').dropTarget).toBeNull();
+  });
+
+  it('rejects an ORPHANED variable row, which stays editable and deletable', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    const orphan = row(rows, 'w1:d1:variable:region');
+    expect(orphan.deletable).toBe(true);
+    expect(orphan.dropTarget).toBeNull();
+  });
+
+  it('rejects an individual panel row', () => {
+    const rows = derive(fixture(), allOpen(['d1'])).rows;
+    expect(row(rows, 'w1:d1:tile:t1').dropTarget).toBeNull();
+    expect(row(rows, 'w1:d1:tile:t2').dropTarget).toBeNull();
+  });
+
+  it('resolves exactly one decision per row across the whole tree', () => {
+    // The full matrix in one assertion, so a new row kind cannot slip through
+    // with an accidental default.
+    expect(targets(derive(fixture(), allOpen(['d1'])).rows)).toEqual({
+      'w1:d1': { kind: 'panel', dashboardId: 'd1' },
+      'w1:d1:group:variables': null,
+      'w1:d1:variable:country': { kind: 'variable', dashboardId: 'd1', variableName: 'country' },
+      'w1:d1:variable:zone': { kind: 'variable', dashboardId: 'd1', variableName: 'zone' },
+      'w1:d1:variable:region': null,
+      'w1:d1:group:panels': { kind: 'panel', dashboardId: 'd1' },
+      'w1:d1:tile:t1': null,
+      'w1:d1:tile:t2': null,
+    });
+  });
+
+  it('an empty Dashboard still offers both stable panel targets', () => {
+    // #426 keeps both group rows visible while a Dashboard is expanded precisely
+    // so an empty Dashboard has somewhere to drop.
+    const rows = derive(ws({ dashboards: [dashboard({ id: 'empty' })] }), allOpen(['empty'])).rows;
+    expect(row(rows, 'w1:empty').dropTarget).toEqual({ kind: 'panel', dashboardId: 'empty' });
+    expect(row(rows, 'w1:empty:group:panels').dropTarget)
+      .toEqual({ kind: 'panel', dashboardId: 'empty' });
+  });
+
+  it('preserves case-sensitive variable identity in the target', () => {
+    const cased = ws({
+      queries: [query('q1', 'Q', undefined, 'SELECT {Country:String}')],
+      dashboards: [dashboard({ id: 'd1', tiles: [{ id: 't1', queryId: 'q1' }] })],
+    });
+    expect(row(derive(cased, allOpen(['d1'])).rows, 'w1:d1:variable:Country').dropTarget)
+      .toEqual({ kind: 'variable', dashboardId: 'd1', variableName: 'Country' });
+  });
+});

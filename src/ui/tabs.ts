@@ -139,6 +139,59 @@ export function loadIntoNewTab(app: TabsApp, queryOrName: QueryOrName, sql = '')
 const variableTabName = (variableName: string): string => 'Variable: ' + variableName;
 
 /**
+ * Point an already-open, CLEAN variable tab at newly committed option SQL —
+ * without selecting it, focusing the editor, or leaving the current surface
+ * (#428).
+ *
+ * `openVariableTab` performs the same adoption, but it is an OPEN action: it also
+ * sets `activeTabId`, focuses the editor, and (through `app.openVariableTab`)
+ * calls `showQuerySurface()`. That is right when the user asked for the tab and
+ * wrong after a drag-assignment, which #428 requires not to "automatically switch
+ * to the Query surface". Hence a second, narrower entry point rather than a flag.
+ *
+ * Returns `false` — changing nothing — when no such tab is open, or when it holds
+ * an unsaved draft. A dirty draft is the user's only copy and is never
+ * overwritten; the caller rejects the assignment outright before reaching here,
+ * and this is the second, independent guard on the same rule.
+ */
+export function reconcileVariableTab(
+  // Narrower than `TabsApp` on purpose: this touches only the tabs signal, so
+  // the Dashboard tree can call it without pretending to own the tab strip's DOM
+  // or the editor port.
+  app: Pick<TabsApp, 'state'>, dashboardId: string, variableName: string, sql: string,
+): boolean {
+  const existing = findVariableTab(app.state.tabs.value, dashboardId, variableName);
+  if (!existing || existing.dirtySql || existing.sqlDraft === sql) return false;
+  existing.sqlDraft = sql;
+  // The editor syncs off the tabs signal and mutating `sqlDraft` in place is
+  // invisible to it, so the list identity has to be poked — but ONLY that.
+  // Touching `activeTabId` here is what would navigate.
+  app.state.tabs.value = [...app.state.tabs.value];
+  return true;
+}
+
+/**
+ * Throw away a variable tab's unsaved draft and adopt `sql` instead — the
+ * explicit, user-invoked counterpart to `reconcileVariableTab`, which refuses a
+ * dirty tab (#428).
+ *
+ * The only caller is the "Discard draft" action on the toast shown when an
+ * assignment commits while the user is typing in that variable's tab: the write
+ * is durable, the draft is untouched, and the two disagree. Nothing calls this
+ * automatically — discarding someone's typing is a choice they have to make.
+ */
+export function discardVariableDraft(
+  app: Pick<TabsApp, 'state'>, dashboardId: string, variableName: string, sql: string,
+): boolean {
+  const existing = findVariableTab(app.state.tabs.value, dashboardId, variableName);
+  if (!existing) return false;
+  existing.sqlDraft = sql;
+  existing.dirtySql = false;
+  app.state.tabs.value = [...app.state.tabs.value];
+  return true;
+}
+
+/**
  * Open — or re-select — the tab that edits ONE Dashboard variable's option SQL
  * (#457).
  *

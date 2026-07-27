@@ -1668,6 +1668,33 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row.is-current:focus-visible {
   box-shadow: inset 2px 0 0 var(--accent), var(--ring-nav);
 }
+/* #428 — Library-query drag targets. Eligibility is marked in the MARKUP on
+   every paint (`data-droptarget`), and only revealed while a drag is in flight,
+   so starting a drag costs no repaint: repainting would replace the row under
+   the pointer and strand the drop. */
+/* Eligibility is a faint dashed edge, NOT `--bg-highlight`: that token already
+   means "the current Dashboard/member", and reusing it would make every eligible
+   row indistinguishable from the open one for the whole duration of a drag. The
+   outline channel is free on these rows (`is-current` and `:focus-visible` both
+   use `box-shadow`), so the two signals compose instead of colliding. */
+.dash-tree-list.dash-dragging .dash-tree-row[data-droptarget] {
+  outline: 1px dashed var(--border);
+  outline-offset: -2px;
+}
+/* The row under the pointer: same channel, turned up — accent, thicker, plus the
+   tonal fill, so "this one" reads at a glance against "any of these". */
+.dash-tree-list.dash-dragging .dash-tree-row.dash-drop-target {
+  outline: 2px dashed var(--accent);
+  background: var(--bg-highlight);
+}
+/* `.dash-tree-row:focus-visible` sets `outline: none`, which would otherwise win
+   on a row that is both keyboard-focused and a drop target. */
+.dash-tree-list.dash-dragging .dash-tree-row[data-droptarget]:focus-visible {
+  outline: 1px dashed var(--border);
+}
+.dash-tree-list.dash-dragging .dash-tree-row.dash-drop-target:focus-visible {
+  outline: 2px dashed var(--accent);
+}
 /* A broken reference or a type conflict (#447 severity 'error'): the row stays,
    its label stays readable, and only the operation needing what is missing is
    withheld. Italic is the non-colour half of the signal. */

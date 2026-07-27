@@ -656,6 +656,122 @@ surface before selecting the panel, the same order `openSavedQuery` and
 `openVariableTab` use. Full-bleed was a *width* claim; a bottom bar shortens the
 Dashboard without overlapping it.
 
+## Addendum (#428, 2026-07-27): a Library drag carries identity, the editor takes text
+
+One Library row now publishes **two independent `dataTransfer` payloads** on a
+single drag: the existing `SUBQUERY_MIME` SQL snapshot (PR #40), and a new
+`LIBRARY_QUERY_MIME` identity `{kind, workspaceId, queryId}`. The same gesture
+therefore means different things to different targets — the main editor consumes
+TEXT and inserts a `( … )` subquery, while a Dashboard row, its Panels group, or
+an inferred Variables row consumes IDENTITY and re-resolves it against committed
+truth. History rows keep the text payload alone: a history entry has no stable
+saved-query identity to re-resolve.
+
+Five decisions are worth recording.
+
+- **Dashboard assignment never trusts `dataTransfer`.** A drag can outlive the
+  state it began in: the workspace may have been committed to several times, and
+  the source may have been edited, deleted, or become Dashboard-owned. Carrying
+  only two ids forces the drop to re-read the aggregate inside `mutateWorkspace`,
+  which is the only place that can be authoritative. `workspaceId` rides along so
+  a drop landing after a workspace SWITCH is rejected rather than resolving a
+  same-looking id in the wrong document. A same-workspace change during the drag
+  is explicitly NOT a cancellation — the operation rebases (#343).
+
+- **Eligibility is a row field, not a view branch.** `DashboardTreeRow.dropTarget`
+  is resolved in `application/dashboard-tree-model.ts` alongside every other
+  structural decision, so the whole "rejected destinations" list is one pure,
+  exhaustively-tested rule and `ui/dashboard-tree.ts` holds no targeting branches
+  it could not cover. The Variables GROUP rejects (it does not identify which
+  variable would receive the SQL) and an ORPHANED variable rejects (a
+  configuration no panel declares is not a destination), while a CONFLICTED
+  variable accepts — it is inferred and names a real variable, and its type
+  conflict is orthogonal to where option SQL is stored.
+
+- **Drag feedback deliberately causes no repaint.** Eligibility is emitted as
+  static `data-droptarget` markup on every paint and merely REVEALED by one
+  `dash-dragging` class on the tree list; the active target is a class re-applied
+  from a module-private row key after any paint. Routing this through an
+  `AppState` signal instead would have repainted the tree on drag start and on
+  every hover auto-expand — and a repaint calls `replaceChildren()`, which
+  destroys the row under the pointer: `dragleave` never fires for a removed node,
+  Firefox stops delivering `dragover` until the pointer moves again, and the
+  paint can steal focus. There is likewise **no Escape handler**: the browser
+  consumes keydown during a native drag and delivers `dragend`, so a key listener
+  would be a branch no test could reach.
+
+- **Hover auto-expand is decoupled from eligibility.** A variable row only exists
+  once both the Dashboard and the Variables group are expanded, but that group is
+  not a valid drop target — so gating the hover timer on eligibility would leave
+  variable rows unreachable by drag. Any collapsed expandable row therefore gets
+  the bounded timer (a Dashboard row opens both of its groups); only *dropping*
+  is restricted. Expansion is UI state: it never navigates and never mutates.
+
+- **The dirty-variable-tab gate runs INSIDE the transform, not before dispatch.**
+  A pre-dispatch check is a snapshot, not a gate: `mutateWorkspace` queues behind
+  `serializeWrite` and then awaits `workspace.loadById`, so a keystroke in that
+  window flips the tab dirty after the check and before the commit. What makes
+  that worse than an ordinary race is that nothing downstream would notice — a
+  variable tab has `savedId === null`, so #343's linked-tab reconciler skips it
+  and there is no external-change marker for a `dashboard-variable` document,
+  leaving a diverged draft over freshly-assigned SQL with the next Save silently
+  reverting the assignment. `src/application` may import `src/state.ts`, so the
+  service re-reads the tabs at dequeue time. A committed assignment then adopts
+  into a CLEAN open tab through a new `reconcileVariableTab`, which pokes the tabs
+  signal but does not select the tab or focus the editor — `openVariableTab` calls
+  `showQuerySurface()`, and a successful drop must not leave the Dashboard.
+
+Panel assignment routes through `applyCommand('add-query-instance')`, the app's
+canonical add path, rather than pushing a tile: only that path seeds placement
+from the source query's own `spec.dashboard.sizeHints`, which grafana-grid@1
+requires of every mutation. `add-query-instance` (not `add-query`) is correct
+because repeated drops of one source into one Dashboard are explicitly allowed,
+each producing an independent query and tile. Ids come from the injected
+`crypto.randomUUID` seam rather than `deriveOwnedQueryId`, whose derived
+`q-own-…` form exists to keep migration and import idempotent — a user drag is
+neither, and a content-derived id would actively fight repeated drops.
+
+### Addendum to the addendum (2026-07-27, owner): a drop opens what it created
+
+#428's "After success" list says the drop must not switch surfaces. That was
+reversed on review of the shipped behaviour: the point of dropping a query onto a
+Dashboard is to *work on* the thing you just made, and landing on a Dashboard with
+no visible change read as "did anything happen?". So a successful drop now:
+
+- expands down to the created object, makes it the tree's keyboard row, and
+  **focuses** that row (`renderDashboardTree` restores focus only when the tree
+  already held it, and after a mouse drop it does not — so without an explicit
+  focus the row was the arrow-key origin while being off-screen); then
+- **opens the assigned document in the editor** — for a panel, the new OWNED COPY
+  (never the Library original, editing which would not touch the panel); for a
+  variable, its `Variable: <name>` tab.
+
+What did NOT change: the Dashboard itself is still never opened in View/Edit, and
+nothing is executed.
+
+**The dirty-draft gate has a second half, because a gate alone cannot be enough.**
+The in-transform check closes the queue-and-load window, but `mutateWorkspace` then
+awaits `workspace.commit(candidate)`, and a keystroke landing in *that* window
+passes every check and diverges anyway — a blocked or slow IndexedDB transaction
+widens it materially. No check can close it: the commit is the repository's atomic
+write and UI state cannot be held still across it. Refusing to adopt while
+reporting a clean success was the actual bug — the write is durable, the draft
+survives, they disagree, and the next Save silently reverts the assignment.
+
+So the outcome carries `draftDiverged`, re-read after the commit resolves, and the
+drop surfaces it: a toast that does not auto-dismiss (an `action` suppresses the
+timer) saying the tab's unsaved changes now differ, with a **Discard draft**
+action wired to `discardVariableDraft` — the explicit, user-invoked counterpart to
+`reconcileVariableTab`, which still refuses a dirty tab. Nothing discards typing
+automatically.
+
+The keyboard-accessible **Add to dashboard…** command (#428 acceptance bullet 9)
+is deferred to **#483** by owner decision; this addendum covers the drag path
+only. Mobile is out of scope for the gesture as a whole, so no `isMobile`
+branches were added — touch drag is a stated non-goal, and `draggable` stays
+unconditional on Library and History rows so the shipped editor drop is unchanged
+there.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from
