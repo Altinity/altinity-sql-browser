@@ -737,6 +737,11 @@ describe('renderDashboardTree — action menu', () => {
     vi.advanceTimersByTime(400);
     expect(app.openDashboard).not.toHaveBeenCalled();
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    // Pre-existing leak fixed in passing: this was the one test in the file
+    // that called `vi.useFakeTimers()` with no matching restore, leaving fake
+    // timers active for every later test — including a real `setTimeout`-based
+    // await in the #501 focus test below, which hung until the 5s test timeout.
+    vi.useRealTimers();
   });
 
   it('gives a group row no menu button at all', () => {
@@ -788,6 +793,18 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
       .toEqual(['Delete option SQL', 'Cancel']);
     await Promise.resolve();
     expect(committed).toEqual([]);
+  });
+
+  // #501 — the destructive row is listed FIRST (openMenu otherwise autofocuses
+  // whichever row is listed first), so a keyboard user pressing Enter right
+  // after opening this must land on Cancel, not on the row that deletes the
+  // stored SQL.
+  it('focuses Cancel by default, not the destructive action', async () => {
+    const { list } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    await new Promise((r) => setTimeout(r)); // openMenu's own deferred autofocus
+    expect(document.activeElement).toBe(confirmItems()[1]);
+    expect(document.activeElement!.textContent).toBe('Cancel');
   });
 
   it('deletes nothing when the confirmation is refused', async () => {

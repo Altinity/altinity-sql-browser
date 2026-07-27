@@ -775,6 +775,12 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  * Like the menu button, it stops propagation and calls `cancelFor` rather than
  * going through the arbiter: clicking trash must NOT also open the variable's
  * tab, and it must cancel no OTHER row's pending click.
+ *
+ * Cancel carries `autofocus: true` (#501, `menu.ts`): the destructive row is
+ * still listed FIRST — `openMenu` otherwise autofocuses whichever row is
+ * listed first, and a keyboard user who opens this and immediately presses
+ * Enter (the browser's native focused-button activation) must land on
+ * Cancel, not on the row that deletes the stored SQL.
  */
 function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
   // `row.label` IS the variable's exact name by construction — the model sets a
@@ -810,7 +816,10 @@ function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardT
             // on its own, and an aborted one leaves nothing to undo.
             onClick: () => { void commitVariableConfig(app, row.dashboardId, row.label, null); },
           },
-          { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
+          {
+            kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', autofocus: true,
+            onClick: () => {},
+          },
         ],
       });
     },

@@ -241,6 +241,12 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
     state.activeTabId.value;
     queryDoc.revalidateSpecDrafts({ refreshUi: false });
     renderTabs(app);
+    // #466/#501-review: a new/closed/switched tab changes the `tabs` SIGNAL
+    // itself, which this effect reacts to — so this is the one place that
+    // re-syncs the `beforeunload` guard for THAT case. An in-place
+    // `dirtySql`/`dirtySpec` mutation never reaches here at all; that case is
+    // `actions.rerenderTabs`'s job (`app.ts`).
+    app.syncBeforeUnload();
     // Live `app.sqlEditor`/`app.specEditor` reads (not the `sqlEditor`/
     // `specEditor` deps locals): a caller (e.g. a test) can hot-swap either
     // port wholesale on the real `app` object after mount — the original

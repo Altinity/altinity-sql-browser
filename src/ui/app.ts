@@ -2165,30 +2165,48 @@ export function createApp(env: CreateAppEnv = {}): App {
   if (typeof doc.addEventListener === 'function') {
     doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
   }
-  // #466: warn on a whole-page reload/close too, not just a tab-strip close —
-  // the same `tabSaveDirty` predicate the tab strip's dirty dot and its own
-  // close-confirm (tabs.ts's `requestCloseTab`) already read. `returnValue`
-  // must be set to a TRUTHY value (lib.dom.d.ts's own doc comment: "when set
-  // to a truthy value, triggers a browser-generated confirmation dialog") —
-  // the empty string is `returnValue`'s own default, so assigning it back is
-  // a no-op for the legacy UAs that key off it rather than `preventDefault()`.
+  // #466/#501-review: warn on a whole-page reload/close too, not just a
+  // tab-strip close — the same `tabSaveDirty` predicate the tab strip's dirty
+  // dot and its own close-confirm (tabs.ts's `requestCloseTab`) already read.
   //
-  // Registered unconditionally, like the `focus`/`popstate`/`visibilitychange`
-  // listeners right above/below this one — this deliberately does NOT install/
-  // remove itself as tabs go dirty/clean. Per-tab dirtiness is mutated in place
-  // across many call sites (`tab.dirtySql = true`, etc.) with no existing
-  // aggregate signal to hook a transition off; the check itself only runs at
-  // actual unload time, so a permanent listener costs nothing while every tab
-  // is clean. This app has no bfcache-restore path either (no `pageshow`/
-  // `event.persisted` handling — a reload always re-runs `bootstrap()`), so
-  // there is no observed bfcache-eligibility win being given up here today.
-  if (typeof win.addEventListener === 'function') {
-    win.addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
-      if (!app.state.tabs.value.some(tabSaveDirty)) return;
-      e.preventDefault();
-      e.returnValue = true;
-    });
-  }
+  // The listener itself is installed/removed as the aggregate dirty state
+  // flips, rather than registered once and left checking inside — an earlier
+  // version of this comment argued a permanent listener "costs nothing" and
+  // that this app has no bfcache-restore path to give up. Both were wrong:
+  // Firefox (and older Chromium) disqualify a page from bfcache merely for
+  // HAVING a `beforeunload` listener attached, independent of what the
+  // callback does or whether it ever calls `preventDefault()`; bfcache
+  // restoration itself needs no `pageshow`/`event.persisted` handling on this
+  // app's part — the browser thaws the whole in-memory page, `bootstrap()`
+  // and all, without a reload ever happening. `returnValue` must be a TRUTHY
+  // value (lib.dom.d.ts's own doc comment: "when set to a truthy value,
+  // triggers a browser-generated confirmation dialog") — its own default is
+  // the empty string, so assigning that back would be a no-op for the legacy
+  // UAs that key off it rather than `preventDefault()`.
+  const beforeUnload = (e: BeforeUnloadEvent): void => {
+    e.preventDefault();
+    e.returnValue = true;
+  };
+  let beforeUnloadInstalled = false;
+  const canToggleBeforeUnload = typeof win.addEventListener === 'function'
+    && typeof win.removeEventListener === 'function';
+  // Called from every place that can change the aggregate dirty state: the
+  // tab-list reactive effect (`workbench-shell.ts`, for a new/closed/switched
+  // tab — anything that touches the `tabs` SIGNAL's own identity) and
+  // `actions.rerenderTabs` (for an in-place `dirtySql`/`dirtySpec` mutation,
+  // which never touches that signal at all — the SQL editor's `onDocChange`
+  // already calls `rerenderTabs()` right after setting `dirtySql = true`, so
+  // this reuses that existing repaint path rather than a new aggregate
+  // signal). Idempotent: a redundant call when the aggregate hasn't actually
+  // flipped is a no-op, never a duplicate registration.
+  app.syncBeforeUnload = (): void => {
+    if (!canToggleBeforeUnload) return;
+    const needed = app.state.tabs.value.some(tabSaveDirty);
+    if (needed === beforeUnloadInstalled) return;
+    beforeUnloadInstalled = needed;
+    if (needed) win.addEventListener('beforeunload', beforeUnload);
+    else win.removeEventListener('beforeunload', beforeUnload);
+  };
 
   const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
     const listed = await app.workspace.list();
@@ -2667,7 +2685,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
     replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
     loadColumns,
-    rerenderTabs: () => renderTabs(app),
+    // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
+    // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
+    // (no new array), so this is also the one place that re-syncs the
+    // `beforeunload` guard for that case — the tab-list reactive effect
+    // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
+    // tabs) on its own.
+    rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
     rerenderResults: () => renderResults(app),
     updateSaveBtn: () => app.updateSaveBtn(),
   };

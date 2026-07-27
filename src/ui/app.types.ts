@@ -441,6 +441,12 @@ export interface App {
   renderApp(): void;
   renderDashboard(): void;
   renderCurrentSurface(): void;
+  /** #466/#501-review: re-syncs the `beforeunload` listener to whether ANY
+   *  tab is currently `tabSaveDirty` — installs it on a clean→dirty flip,
+   *  removes it on dirty→clean, idempotent otherwise. Called from the tab-list
+   *  reactive effect (`workbench-shell.ts`) and `actions.rerenderTabs`; see
+   *  `createApp`'s own definition for why both are needed. */
+  syncBeforeUnload(): void;
   /** #425 — which main work surface owns the right-hand work area, and, for a
    *  Dashboard, WHICH stored Dashboard is selected in which presentation mode,
    *  plus (#426) the member currently navigated to inside it and any focus

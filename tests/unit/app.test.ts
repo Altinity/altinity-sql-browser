@@ -847,38 +847,102 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  // #466: the SAME `tabSaveDirty` predicate the tab strip's dirty dot and its
-  // own close-confirm (tabs.ts's `requestCloseTab`) read — a whole-page
-  // reload/close is the bigger version of the same data-loss gap. The
-  // listener is invoked directly (the `popstate` test's own pattern below) —
-  // every `createApp()` call in this file registers its own permanent
-  // `beforeunload` listener on the real shared `window`, so dispatching a
-  // real event would also trip every earlier test's still-attached listener.
-  it('beforeunload warns when any tab has an unsaved draft, and not otherwise', () => {
-    let listener: EventListener | null = null;
-    const addEventListener = vi.spyOn(window, 'addEventListener').mockImplementation(
-      ((type: string, callback: EventListenerOrEventListenerObject) => {
-        if (type === 'beforeunload' && typeof callback === 'function') listener = callback;
-      }) as typeof window.addEventListener,
-    );
-    const app = createApp(env());
-    addEventListener.mockRestore();
-    expect(listener).not.toBeNull();
+  // #466/#501-review: `syncBeforeUnload` installs/removes the `beforeunload`
+  // listener as the aggregate dirty state flips, rather than registering it
+  // once and checking inside — Firefox (and older Chromium) disqualify a page
+  // from bfcache merely for HAVING a `beforeunload` listener attached, so a
+  // permanent listener is not actually free. `window.addEventListener`/
+  // `removeEventListener` are spied (not mocked away) so the real attach/
+  // detach happens and the captured listener reference is the genuine one.
+  describe('syncBeforeUnload — install/remove as the aggregate dirty state flips', () => {
+    it('does not install while every tab is clean', () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const app = createApp(env());
+      addEventListener.mockClear(); // drop createApp's own focus/popstate registrations
+      app.syncBeforeUnload();
+      expect(addEventListener).not.toHaveBeenCalledWith('beforeunload', expect.anything());
+      addEventListener.mockRestore();
+    });
 
-    const clean = new Event('beforeunload', { cancelable: true });
-    listener!(clean);
-    expect(clean.defaultPrevented).toBe(false);
+    it('installs on a clean→dirty flip, and the listener warns via preventDefault + a truthy returnValue', () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const app = createApp(env());
+      addEventListener.mockClear();
 
-    app.state.tabs.value[0].dirtySql = true;
-    const dirty = new Event('beforeunload', { cancelable: true });
-    listener!(dirty);
-    expect(dirty.defaultPrevented).toBe(true);
-    // `returnValue` must end up TRUTHY — lib.dom.d.ts's own doc comment on
-    // `BeforeUnloadEvent.returnValue`: "when set to a truthy value, triggers a
-    // browser-generated confirmation dialog". Its default IS the empty string,
-    // so a test that only checked `defaultPrevented` would not have caught a
-    // `returnValue = ''` regression (a real no-op assignment) at all.
-    expect((dirty as unknown as { returnValue: unknown }).returnValue).toBeTruthy();
+      app.state.tabs.value[0].dirtySql = true;
+      app.syncBeforeUnload();
+      expect(addEventListener).toHaveBeenCalledTimes(1);
+      const [, listener] = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')!;
+      addEventListener.mockRestore();
+
+      const dirty = new Event('beforeunload', { cancelable: true });
+      (listener as EventListener)(dirty);
+      expect(dirty.defaultPrevented).toBe(true);
+      // `returnValue` must end up TRUTHY — lib.dom.d.ts's own doc comment on
+      // `BeforeUnloadEvent.returnValue`: "when set to a truthy value, triggers
+      // a browser-generated confirmation dialog". Its default IS the empty
+      // string, so a test that only checked `defaultPrevented` would not have
+      // caught a `returnValue = ''` regression (a real no-op assignment).
+      expect((dirty as unknown as { returnValue: unknown }).returnValue).toBeTruthy();
+    });
+
+    it('does not duplicate the registration while additional dirty changes happen', () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const app = createApp(env());
+      app.state.tabs.value[0].dirtySql = true;
+      app.syncBeforeUnload();
+      addEventListener.mockClear();
+
+      app.state.tabs.value[0].dirtySpec = true; // still dirty, a different field
+      app.syncBeforeUnload();
+      expect(addEventListener).not.toHaveBeenCalledWith('beforeunload', expect.anything());
+      addEventListener.mockRestore();
+    });
+
+    it('removes the listener once the tab goes fully clean again', () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const removeEventListener = vi.spyOn(window, 'removeEventListener');
+      const app = createApp(env());
+      app.state.tabs.value[0].dirtySql = true;
+      app.syncBeforeUnload();
+      expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+
+      app.state.tabs.value[0].dirtySql = false;
+      app.syncBeforeUnload();
+      expect(removeEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      addEventListener.mockRestore();
+      removeEventListener.mockRestore();
+    });
+
+    // The two real WIRING call sites — never called directly by a test above,
+    // which exercises `syncBeforeUnload` itself. `actions.rerenderTabs` is the
+    // in-place-mutation path (a keystroke's `dirtySql = true` never touches the
+    // `tabs` signal); `renderApp`'s tab-list effect is the signal-driven path
+    // (a new/closed/switched tab DOES touch it).
+    it('actions.rerenderTabs re-syncs the guard for an in-place dirty mutation', () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const app = createApp(env());
+      addEventListener.mockClear();
+
+      app.state.tabs.value[0].dirtySql = true;
+      app.actions.rerenderTabs();
+      expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      addEventListener.mockRestore();
+    });
+
+    it("renderApp's tab-list effect re-syncs the guard on a tabs-signal change", () => {
+      const addEventListener = vi.spyOn(window, 'addEventListener');
+      const app = createApp(env());
+      app.renderApp();
+      addEventListener.mockClear();
+
+      app.state.tabs.value[0].dirtySql = true; // in place — doesn't fire the effect on its own
+      // Reassigning `tabs.value` is what `newTab`/`closeTab` (tabs.ts) do, and
+      // exactly what this effect reacts to.
+      app.state.tabs.value = [...app.state.tabs.value];
+      expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      addEventListener.mockRestore();
+    });
   });
 
   it('a corrupt reload warns and keeps the projection without wedging the queue', async () => {
