@@ -9,6 +9,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **`shop-charts.json` and `ontime-charts.json` moved to portable-bundle v2 /
+  Dashboard document v2**, dropping their curated `filters` arrays in favor of
+  inferred Variables — the phase-3 example rewrite `spec-examples.test.js` had
+  been pinning them against, following `clickhouse-operations.json`'s earlier
+  move (#458 follow-up). Every `from`/`to`/`country`/`category`/`carrier`/
+  `origin` variable was already targeting exactly the tiles whose query
+  declares its `{name:Type}` placeholder, so the curated `targets` lists these
+  examples carried added nothing the placeholders didn't already say; removing
+  them changes no runtime behavior. `build-ontime-charts.mjs` now passes its
+  bundle's own `version` through to `writeExampleBundle` instead of silently
+  reverting to v1 on its next regeneration.
+- **The three flagship dashboards' Array/enum variables get real option lists
+  again.** `country`/`category` (`shop-charts.json`), `carrier`/`origin`
+  (`ontime-charts.json`), and `user`/`query_kind`/`exception_code`/
+  `query_hash`/`metric`/`is_initial_query` (`clickhouse-operations.json`) had
+  been reduced to bare freeform-text Array inputs ever since #447's mechanical
+  minimum pass dropped every curated filter's `sourceQueryId` — the pre-#447
+  option-source queries existed (`shop-filter-options`, `ontime-filter-options`,
+  `gco-filter`) but returned one row of ARRAY-typed columns, a shape the v2
+  option-SQL contract (one row per option, two String columns: value, then
+  label) cannot reuse directly. Each is now ported into its own
+  `variableConfigs[name].sql`, so these variables render a searchable
+  (multi-)select again instead of pure freeform text, restoring the pre-#447
+  browsing experience under the new inferred model.
+
 ### Added
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
   tab strip's close button asks before discarding an unsaved draft — a normal

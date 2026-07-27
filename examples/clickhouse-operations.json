@@ -2916,7 +2916,27 @@
           "id": "tile-ops-recent-server-logs",
           "queryId": "ops-recent-server-logs"
         }
-      ]
+      ],
+      "variableConfigs": {
+        "user": {
+          "sql": "SELECT DISTINCT initial_user, initial_user\nFROM merge(system, '^query_log')\nWHERE event_time >= now() - INTERVAL 7 DAY AND initial_user != ''\nORDER BY initial_user"
+        },
+        "query_kind": {
+          "sql": "SELECT DISTINCT query_kind, query_kind\nFROM merge(system, '^query_log')\nWHERE event_time >= now() - INTERVAL 7 DAY AND query_kind != ''\nORDER BY query_kind"
+        },
+        "exception_code": {
+          "sql": "SELECT toString(exception_code), concat(toString(exception_code), ' · ', errorCodeToName(exception_code))\nFROM (\n  SELECT exception_code\n  FROM merge(system, '^query_log')\n  WHERE event_time >= now() - INTERVAL 7 DAY AND exception_code != 0\n  GROUP BY exception_code\n  ORDER BY count() DESC\n  LIMIT 100\n)"
+        },
+        "query_hash": {
+          "sql": "SELECT toString(normalized_query_hash), concat(toString(normalized_query_hash), ' · ', substring(sample_query, 1, 80))\nFROM (\n  SELECT normalized_query_hash, anyHeavy(replaceAll(query, '\\n', ' ')) AS sample_query\n  FROM merge(system, '^query_log')\n  WHERE event_time >= now() - INTERVAL 7 DAY AND normalized_query_hash != 0\n  GROUP BY normalized_query_hash\n  ORDER BY count() DESC\n  LIMIT 80\n)"
+        },
+        "metric": {
+          "sql": "SELECT metric, metric\nFROM (\n  SELECT arrayJoin(['count', 'avg_duration', 'max_duration', 'cpu_time', 'read_bytes', 'written_bytes', 'avg_written_rows', 'result_bytes', 'network_bytes', 'memory', 'max_memory', 'network_wait', 'io_time', 'io_wait', 'zk_txns', 'read_bps', 'write_bps', 'parts_inserted', 'parts_inserted_avg', 'marks_load_time', 'marks_miss_rate', 'selected_parts', 'selected_ranges', 'selected_marks', 'exceptions', 'open_files', 'external_processing_files', 'threads1', 'threads2', 'threads3']) AS metric\n)"
+        },
+        "is_initial_query": {
+          "sql": "SELECT toString(v), if(v = 1, 'Yes', 'No')\nFROM (SELECT arrayJoin([1, 0]) AS v)"
+        }
+      }
     }
   ]
 }

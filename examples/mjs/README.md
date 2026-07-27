@@ -1,10 +1,28 @@
 # Example Bundles and Generators
 
-The checked-in JSON files under `examples/` are canonical **portable bundle
-v1** documents. Query definitions use saved-query **Spec v1** and every
-Dashboard example includes an explicit **Dashboard document v1** with semantic
-tile order, filter definitions, and either `flow@1` or `grafana-grid@1` layout.
-Every grid layout carries a complete `flow@1` fallback.
+The checked-in JSON files under `examples/` are canonical **portable bundle**
+documents. Query definitions use saved-query **Spec v1**, and every Dashboard
+example includes an explicit **Dashboard document** with semantic tile order
+and either `flow@1` or `grafana-grid@1` layout. Every grid layout carries a
+complete `flow@1` fallback.
+
+The three flagship, hand-authored dashboards — `clickhouse-operations.json`,
+`shop-charts.json`, and `ontime-charts.json` — are on **portable bundle v2 /
+Dashboard document v2** (#447/#459): there is no curated `filters` array.
+Dashboard variables are inferred from the `{name:Type}` placeholders in the
+tiled queries' own SQL, matched by exact name, so a variable applies to
+exactly the tiles whose query declares it — adding, removing, or renaming a
+placeholder is the only way to change a variable's assignment. Every
+Array/enum-shaped variable (`country`/`category`, `carrier`/`origin`,
+`user`/`query_kind`/`exception_code`/`query_hash`/`metric`/`is_initial_query`)
+carries real, dashboard-local option SQL under `variableConfigs`, ported from
+the pre-#447 curated-filter option-source queries into the two-String-column
+(value, then label) contract — a direct-input free-text box only remains for
+`from`/`to`/`search`. The generated
+Iceberg examples (`iceberg-catalog-dashboard.json`, `iceberg-dba-dashboard.json`,
+and the drill-down template) still go through `buildDashboard()` and stay on
+**v1** with a minimal curated `filters` array (one per SQL parameter, no
+label/default/targets) until that generator itself becomes version-aware.
 
 Legacy Library v1/v2 JSON remains importable for compatibility, but it is not an
 authoring format for new or regenerated examples.
@@ -20,8 +38,9 @@ authoring format for new or regenerated examples.
 ## Generators
 
 - `build-ontime-charts.mjs` refreshes the live panel schema keys in
-  `ontime-charts.json` while preserving its authored grid, filters, KPI
-  configuration, tile order, and flow fallback.
+  `ontime-charts.json` while preserving its authored grid, KPI configuration,
+  tile order, and flow fallback. It does not touch Dashboard variables — those
+  are inferred at runtime from the query placeholders it leaves untouched.
 - `build-iceberg-install.mjs` regenerates `iceberg-install.json`.
 - `build-iceberg-dashboards.mjs` regenerates
   `iceberg-catalog-dashboard.json` and `iceberg-dba-dashboard.json`.

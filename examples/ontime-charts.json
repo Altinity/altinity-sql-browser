@@ -1,7 +1,7 @@
 {
-  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
   "format": "altinity-sql-browser/portable-bundle",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-07-22T00:00:00.000Z",
   "metadata": {
     "name": "On-time flights",
@@ -360,7 +360,7 @@
   ],
   "dashboards": [
     {
-      "documentVersion": 1,
+      "documentVersion": 2,
       "id": "ontime-flights",
       "title": "On-time flights",
       "description": "Flight punctuality, volume, carriers, airports, delays, and cancellations with a shared 2023 slice.",
@@ -434,72 +434,6 @@
           }
         }
       },
-      "filters": [
-        {
-          "id": "ontime-date-from",
-          "parameter": "from",
-          "label": "From",
-          "defaultValue": "2023-01-01",
-          "defaultActive": true,
-          "targets": [
-            "tile-ontime-kpis",
-            "tile-s3",
-            "tile-s4",
-            "tile-s1",
-            "tile-s6",
-            "tile-s7",
-            "tile-s5"
-          ]
-        },
-        {
-          "id": "ontime-date-to",
-          "parameter": "to",
-          "label": "To",
-          "defaultValue": "2023-12-31",
-          "defaultActive": true,
-          "targets": [
-            "tile-ontime-kpis",
-            "tile-s3",
-            "tile-s4",
-            "tile-s1",
-            "tile-s6",
-            "tile-s7",
-            "tile-s5"
-          ]
-        },
-        {
-          "id": "ontime-carrier",
-          "parameter": "carrier",
-          "label": "Carrier",
-          "defaultValue": [],
-          "defaultActive": false,
-          "targets": [
-            "tile-ontime-kpis",
-            "tile-s3",
-            "tile-s4",
-            "tile-s1",
-            "tile-s6",
-            "tile-s7",
-            "tile-s5"
-          ]
-        },
-        {
-          "id": "ontime-origin",
-          "parameter": "origin",
-          "label": "Origin airport",
-          "defaultValue": [],
-          "defaultActive": false,
-          "targets": [
-            "tile-ontime-kpis",
-            "tile-s3",
-            "tile-s4",
-            "tile-s1",
-            "tile-s6",
-            "tile-s7",
-            "tile-s5"
-          ]
-        }
-      ],
       "tiles": [
         {
           "id": "tile-ontime-kpis",
@@ -529,7 +463,15 @@
           "id": "tile-s5",
           "queryId": "s5"
         }
-      ]
+      ],
+      "variableConfigs": {
+        "carrier": {
+          "sql": "SELECT DISTINCT Carrier, Carrier FROM ontime.fact_ontime WHERE Carrier != '' ORDER BY Carrier"
+        },
+        "origin": {
+          "sql": "SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName"
+        }
+      }
     }
   ]
 }
