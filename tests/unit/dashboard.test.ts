@@ -3530,7 +3530,7 @@ describe('renderDashboard — option-source runtime rebuild + diagnostics (#359)
     expect(app.root!.querySelectorAll('.dash-config-diagnostic')).toHaveLength(0);
   });
 
-  it('renders an unsupported-type note instead of a control for a container variable', async () => {
+  it('renders an unsupported-type diagnostic on the control itself, not a second row, for a container variable', async () => {
     const { app } = dashApp({
       responder: () => ({ columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
       workspace: wsWith({
@@ -3539,8 +3539,13 @@ describe('renderDashboard — option-source runtime rebuild + diagnostics (#359)
       }),
     });
     await render(app);
-    const note = qs(app.root, '.var-unsupported');
-    expect(note.textContent).toContain('Array(String)');
+    // #470: no second element repeating the type text — the SAME input carries
+    // the warning styling, and the icon (the only sibling the diagnostic adds)
+    // is textless.
+    const input = qs<HTMLInputElement>(app.root, '.var-input.is-unsupported');
+    expect(input.placeholder).toBe('Array(String)');
+    const icon = qs(app.root, '.var-unsupported-icon');
+    expect(icon.textContent).toBe('');
   });
 
   it('renders an Array(String) variable WITH option SQL as the multi-select, and binds its selection', async () => {
@@ -3566,7 +3571,7 @@ describe('renderDashboard — option-source runtime rebuild + diagnostics (#359)
     // Unset, so the panel waits — and the control is the multiselect, not a text
     // box with the no-inferred-control marker.
     expect(panelRuns()).toHaveLength(0);
-    expect(app.root!.querySelector('.var-unsupported')).toBeNull();
+    expect(app.root!.querySelector('.var-unsupported-icon')).toBeNull();
     const trigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
     expect(trigger.textContent).toBe('Not set');
 

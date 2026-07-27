@@ -35,7 +35,7 @@ import {
 } from './relative-time-field.js';
 import { buildRecentField as _buildRecentField } from './recent-field.js';
 import { buildEnumField } from './enum-field.js';
-import { wireComboInput } from './combobox.js';
+import { idSafe, wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildTimeRangeField } from './time-range-field.js';
 import { buildVariableOptionField } from './variable-option-field.js';
@@ -363,7 +363,13 @@ export function buildVariableBar(
   const specOf = (name: string): VariableFieldSpec | undefined =>
     (variables ? variables[name] : undefined);
 
-  /** The marker shown beside a variable the Dashboard cannot infer a control for.
+  /** The "cannot infer a control" diagnostic's two texts — a short summary (for
+   *  the accessible description) and a longer, actionable detail (folded into
+   *  the field's `title` by its caller, `buildParamField`, since `title` is
+   *  reset from `baseTitle` on every keystroke/commit via `applyFieldState`;
+   *  computing the detail as part of `baseTitle` itself, rather than assigning
+   *  `input.title` once here, is what makes it SURVIVE interaction instead of
+   *  reverting to the plain type tooltip after the first character typed).
    *
    *  Two reasons reach it, and they say different things:
    *   - a CONTAINER with no flat element list (`Tuple`/`Map`/`Nested`, or a
@@ -372,28 +378,49 @@ export function buildVariableBar(
    *   - an `Array(scalar T)` with no option SQL has no LIST to pick from yet.
    *     Its type is perfectly controllable — configuring option SQL turns it
    *     into the multiselect — so saying "container type" would be misleading
-   *     advice. It names the fix instead.
+   *     advice. It names the fix instead. */
+  const unsupportedNote = (p: FieldControl, type: string, listable: boolean): { summary: string; detail: string } => ({
+    summary: listable
+      ? `${p.name} has no option list: add option SQL to pick from a list, or type a literal value`
+      : `${p.name} has no inferred control: ${type} is a container type — type a literal value`,
+    detail: listable
+      ? `A Dashboard has no option list for ${type}. Add option SQL to this variable to pick `
+        + 'values from a list, or type a literal value directly.'
+      : `A Dashboard cannot infer a control for ${type}, which is a container type. `
+        + 'Type a literal value directly.',
+  });
+
+  /** Applies the diagnostic to the variable's EXISTING input in place (#470) —
+   *  never a second element. It used to be a sibling `<span>` (icon + a repeat
+   *  of the declared type) appended into `.var-field`'s two-column grid; since
+   *  that span and the real control's wrapper were both pinned to the same grid
+   *  column, auto-placement pushed it into its own row, which read as a
+   *  duplicate control rather than a diagnostic. Now it mirrors `var-field.ts`'s
+   *  `applyFieldState` (`is-invalid`/`is-conflict`): a class on the SAME
+   *  `.var-input` carries the yellow/dashed styling, and an `aria-describedby`
+   *  sibling — a visually-hidden `.sr-only` span, never a visible row — carries
+   *  the summary to keyboard focus/screen readers. (The longer detail text
+   *  reaches pointer hover through `title`/`baseTitle`, set by the caller — see
+   *  `unsupportedNote`'s header comment for why it can't be assigned here.) The
+   *  decorative icon is appended into `comboEl` (`.var-combo`,
+   *  `position: relative`) and positioned absolutely, the same technique
+   *  `variable-option-field.ts`'s inline clear (×) already uses to sit over the
+   *  input without adding to the combo's flex-column flow.
    *
-   *  Either way it ADORNS the plain field rather than replacing it. Removing the
-   *  input outright would make an existing Dashboard strictly less capable — a
+   *  This ADORNS the plain field rather than replacing it. Removing the input
+   *  outright would make an existing Dashboard strictly less capable — a
    *  container-typed variable already rendered a free-text field, and
    *  `param-serialize.ts` binds an array literal typed into it perfectly well, so
-   *  taking it away would leave those panels permanently `unfilled` with no way to
-   *  fill them. The marker says the Dashboard cannot infer a control; it does not
-   *  claim the value is unusable. */
-  const unsupportedMarker = (p: FieldControl, type: string, listable = false): HTMLElement =>
-    h('span', {
-      class: 'var-unsupported',
-      role: 'img',
-      'aria-label': listable
-        ? `${p.name} has no option list: add option SQL to pick from a list, or type a literal value`
-        : `${p.name} has no inferred control: ${type} is a container type — type a literal value`,
-      title: listable
-        ? `A Dashboard has no option list for ${type}. Add option SQL to this variable to pick `
-          + 'values from a list, or type a literal value directly.'
-        : `A Dashboard cannot infer a control for ${type}, which is a container type. `
-          + 'Type a literal value directly.',
-    }, Icon.eyeOff(), type);
+   *  taking it away would leave those panels permanently `unfilled` with no way
+   *  to fill them. The marker says the Dashboard cannot infer a control; it does
+   *  not claim the value is unusable. */
+  const markUnsupported = (input: HTMLInputElement, comboEl: HTMLElement, p: FieldControl, summary: string): void => {
+    input.classList.add('is-unsupported');
+    const descId = 'var-unsupported-desc-' + idSafe(p.name);
+    input.setAttribute('aria-describedby', descId);
+    comboEl.appendChild(h('span', { class: 'sr-only', id: descId }, summary));
+    comboEl.appendChild(h('span', { class: 'var-unsupported-icon', 'aria-hidden': 'true' }, Icon.eyeOff()));
+  };
 
   /** The searchable multiselect over one `Array(scalar T)` variable's batched
    *  option rows (#189, restored). Its committed value is a real `string[]`, so
@@ -469,7 +496,9 @@ export function buildVariableBar(
       h('span', { class: 'var-name' }, p.name), field.el);
   };
 
-  const buildParamField = (p: FieldControl): HTMLElement => {
+  const buildParamField = (
+    p: FieldControl, unsupported?: { type: string; listable: boolean },
+  ): HTMLElement => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
     // #173 acceptance (review F1): a type-conflicted param (declared with
@@ -479,9 +508,16 @@ export function buildVariableBar(
     // a tooltip listing them.
     const conflictNote = p.conflict
       ? 'Conflicting type declarations: ' + p.conflict.join(' vs ') : null;
+    const unsupported_ = unsupported ? unsupportedNote(p, unsupported.type, unsupported.listable) : null;
+    // #470: the unsupported detail is folded into `baseTitle` itself — not
+    // assigned to `input.title` once after build — so it survives every later
+    // `applyFieldState` call (onValueInput/onCommitHard/onPick all reset
+    // `title` from this SAME closed-over `baseTitle`), rather than reverting to
+    // the plain type tooltip the moment the user types or commits.
     const baseTitle = p.name + ': ' + p.type
       + (p.optional ? ' — optional: blank leaves its filter block out' : '')
-      + (conflictNote ? ' — ' + conflictNote : '');
+      + (conflictNote ? ' — ' + conflictNote : '')
+      + (unsupported_ ? ' — ' + unsupported_.detail : '');
     const commitNow = (): void => {
       if (timer == null) return;
       clearTimeout(timer);
@@ -550,6 +586,7 @@ export function buildVariableBar(
     wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
     if (conflictNote) input.classList.add('is-conflict');
     applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo?.previewEl);
+    if (unsupported_) markUnsupported(input, combo.el, p, unsupported_.summary);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), combo.el);
   };
@@ -588,19 +625,13 @@ export function buildVariableBar(
     // so a type that gets a select can never be one whose option SQL was skipped.
     const kind = fieldControlKind(p, null, { scalarControls: !!variables }).kind;
     // A container with no flat element list: no control is inferable at all.
-    if (kind === 'unsupported') {
-      const field = buildParamField(p);
-      field.appendChild(unsupportedMarker(p, p.type));
-      return field;
-    }
+    if (kind === 'unsupported') return buildParamField(p, { type: p.type, listable: false });
     const spec = specOf(p.name);
     if (kind === 'multi') {
       // The type CAN be multi-selected; whether there is anything to select from
       // is the spec's answer, which only this layer can see.
       if (spec && spec.options !== null) return buildMultiField(p, spec);
-      const field = buildParamField(p);
-      field.appendChild(unsupportedMarker(p, p.type, true));
-      return field;
+      return buildParamField(p, { type: p.type, listable: true });
     }
     if (spec && spec.options !== null) return buildOptionField(p, spec);
     return buildParamField(p);
