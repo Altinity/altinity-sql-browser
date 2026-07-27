@@ -2167,14 +2167,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
   // #466: warn on a whole-page reload/close too, not just a tab-strip close —
   // the same `tabSaveDirty` predicate the tab strip's dirty dot and its own
-  // close-confirm (tabs.ts's `requestCloseTab`) already read. Setting
-  // `returnValue` is the legacy incantation browsers still require to show
-  // their own native prompt; the prompt's own text is never user-controllable.
+  // close-confirm (tabs.ts's `requestCloseTab`) already read. `returnValue`
+  // must be set to a TRUTHY value (lib.dom.d.ts's own doc comment: "when set
+  // to a truthy value, triggers a browser-generated confirmation dialog") —
+  // the empty string is `returnValue`'s own default, so assigning it back is
+  // a no-op for the legacy UAs that key off it rather than `preventDefault()`.
+  //
+  // Registered unconditionally, like the `focus`/`popstate`/`visibilitychange`
+  // listeners right above/below this one — this deliberately does NOT install/
+  // remove itself as tabs go dirty/clean. Per-tab dirtiness is mutated in place
+  // across many call sites (`tab.dirtySql = true`, etc.) with no existing
+  // aggregate signal to hook a transition off; the check itself only runs at
+  // actual unload time, so a permanent listener costs nothing while every tab
+  // is clean. This app has no bfcache-restore path either (no `pageshow`/
+  // `event.persisted` handling — a reload always re-runs `bootstrap()`), so
+  // there is no observed bfcache-eligibility win being given up here today.
   if (typeof win.addEventListener === 'function') {
     win.addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
       if (!app.state.tabs.value.some(tabSaveDirty)) return;
       e.preventDefault();
-      e.returnValue = '';
+      e.returnValue = true;
     });
   }
 

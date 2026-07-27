@@ -873,6 +873,12 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     const dirty = new Event('beforeunload', { cancelable: true });
     listener!(dirty);
     expect(dirty.defaultPrevented).toBe(true);
+    // `returnValue` must end up TRUTHY — lib.dom.d.ts's own doc comment on
+    // `BeforeUnloadEvent.returnValue`: "when set to a truthy value, triggers a
+    // browser-generated confirmation dialog". Its default IS the empty string,
+    // so a test that only checked `defaultPrevented` would not have caught a
+    // `returnValue = ''` regression (a real no-op assignment) at all.
+    expect((dirty as unknown as { returnValue: unknown }).returnValue).toBeTruthy();
   });
 
   it('a corrupt reload warns and keeps the projection without wedging the queue', async () => {

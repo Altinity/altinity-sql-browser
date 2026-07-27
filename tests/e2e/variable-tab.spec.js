@@ -129,6 +129,9 @@ test('closing a dirty variable tab confirms first; Cancel keeps the draft open',
   await openVariable(page, 'sales', 'zone');
   await sqlEditor(page).click();
   await page.keyboard.type('x');
+  // Dismiss any CM6 completion popup the typed character opened — it can
+  // otherwise overlap and intercept the click meant for the tab strip below.
+  await page.keyboard.press('Escape');
 
   await page.locator('.qtab.active .close').click();
   await expect(page.locator('.qtab-close-confirm')).toBeVisible();
@@ -140,11 +143,43 @@ test('closing a dirty variable tab confirms first; Cancel keeps the draft open',
   await expect(page.locator('.qtab.active .dirty')).toHaveCount(1); // draft untouched
 });
 
+// Review finding: `openMenu` autofocuses a row as soon as it opens, and a
+// browser's native focused-button activation fires on Enter — a real UA
+// behavior no unit test can exercise. The destructive row is listed FIRST
+// (visually matching the Dashboard tree's own delete-confirm), so this is the
+// one place that actually proves Enter lands on Cancel, not on it.
+test('pressing Enter right after the confirm opens does NOT discard the draft', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.type('x');
+  // Dismiss any CM6 completion popup the typed character opened — it can
+  // otherwise overlap and intercept the click meant for the tab strip below.
+  await page.keyboard.press('Escape');
+
+  await page.locator('.qtab.active .close').click();
+  await expect(page.locator('.qtab-close-confirm')).toBeVisible();
+  // `openMenu`'s own initial-focus assignment is deferred a tick (a browser
+  // click already focuses the clicked `.close` button itself; the deferred
+  // focus is what lets the popover's own focus grab win afterward) — wait for
+  // it to actually settle on Cancel, matching a real user's reaction time,
+  // rather than racing it with an instantaneous keypress.
+  await expect(page.locator('.qtab-close-confirm-cancel')).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('.qtab-close-confirm')).toHaveCount(0);
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: zone']);
+  await expect(page.locator('.qtab.active .dirty')).toHaveCount(1); // draft untouched
+});
+
 test('confirming the close discards the dirty tab', async ({ page }) => {
   await open(page);
   await openVariable(page, 'sales', 'zone');
   await sqlEditor(page).click();
   await page.keyboard.type('x');
+  // Dismiss any CM6 completion popup the typed character opened — it can
+  // otherwise overlap and intercept the click meant for the tab strip below.
+  await page.keyboard.press('Escape');
 
   await page.locator('.qtab.active .close').click();
   await page.locator('.qtab-close-confirm-go').click();

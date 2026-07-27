@@ -18,7 +18,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   still holds an unsaved draft now shows the browser's own native confirmation
   too. Both read the same dirty predicate the tab's own dirty-dot indicator
   already used, so nothing needed reclassifying — a never-saved scratch tab
-  gets the same protection as a saved query.
+  gets the same protection as a saved query. The confirm's default keyboard
+  focus is Cancel, not the destructive action, so pressing Enter right after
+  opening it never discards the draft.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   Revealed on hover/focus-within next to the existing `⋯`, it opens a small
   dialog prefilled from the Dashboard's own committed document — Cancel and

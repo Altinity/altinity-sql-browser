@@ -266,6 +266,12 @@ export function openVariableTab(
  *
  * A clean tab (nothing to lose) closes immediately, exactly as `closeTab`
  * always has — this only gates the destructive path.
+ *
+ * Cancel carries `autofocus: true` (`menu.ts`): the destructive row is still
+ * listed FIRST, matching the Dashboard tree's own delete-confirm, but a
+ * keyboard user who opens this and immediately presses Enter — the browser's
+ * native focused-button activation — must land on Cancel, not on the row
+ * that discards their draft.
  */
 export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement): void {
   const tab = app.state.tabs.value.find((t) => t.id === id)!;
@@ -282,7 +288,10 @@ export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement):
         extraClass: 'qtab-close-confirm-go',
         onClick: () => closeTab(app, id),
       },
-      { kind: 'item', label: 'Cancel', extraClass: 'qtab-close-confirm-cancel', onClick: () => {} },
+      {
+        kind: 'item', label: 'Cancel', extraClass: 'qtab-close-confirm-cancel', autofocus: true,
+        onClick: () => {},
+      },
     ],
   });
 }

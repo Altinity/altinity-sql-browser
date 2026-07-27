@@ -19,6 +19,8 @@ const qs = <T extends Element = Element>(root: ParentNode, selector: string): T 
 // `unknown` bridge.
 const asRecord = (v: object): Record<string, unknown> => v as Record<string, unknown>;
 const sq = (over: SavedQueryFixture): Record<string, unknown> => asRecord(savedQuery(over));
+// `openMenu`'s initial-focus `setTimeout` (menu.ts) — same helper as menu.test.ts.
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
 
 // #466: `requestCloseTab`'s confirm popover is the first thing in this file
 // that mounts into the REAL document.body (`renderTabs`'s own DOM lives in a
@@ -240,6 +242,21 @@ describe('requestCloseTab', () => {
     ];
     requestCloseTab(app, 't1', trigger());
     expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
+  });
+
+  // #466 review finding: the destructive row is listed FIRST (matching the
+  // Dashboard tree's own delete-confirm), so `openMenu`'s default "focus the
+  // first focusable row" would otherwise hand a keyboard user's immediate
+  // Enter straight to it. Cancel must be the one that ends up focused.
+  it('opening the confirm focuses Cancel, not the destructive action', async () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    await flush();
+    expect(document.activeElement).toBe(document.querySelector('.qtab-close-confirm-cancel'));
   });
 
   it('Cancel leaves the tab open', () => {
