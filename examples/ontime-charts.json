@@ -463,7 +463,15 @@
           "id": "tile-s5",
           "queryId": "s5"
         }
-      ]
+      ],
+      "variableConfigs": {
+        "carrier": {
+          "sql": "SELECT DISTINCT Carrier, Carrier FROM ontime.fact_ontime WHERE Carrier != '' ORDER BY Carrier"
+        },
+        "origin": {
+          "sql": "SELECT AirportCode, any(DisplayAirportName) AS DisplayAirportName FROM ontime.dim_airports WHERE IsLatest = 1 GROUP BY AirportCode ORDER BY DisplayAirportName"
+        }
+      }
     }
   ]
 }

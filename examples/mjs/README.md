@@ -12,7 +12,13 @@ Dashboard document v2** (#447/#459): there is no curated `filters` array.
 Dashboard variables are inferred from the `{name:Type}` placeholders in the
 tiled queries' own SQL, matched by exact name, so a variable applies to
 exactly the tiles whose query declares it — adding, removing, or renaming a
-placeholder is the only way to change a variable's assignment. The generated
+placeholder is the only way to change a variable's assignment. Every
+Array/enum-shaped variable (`country`/`category`, `carrier`/`origin`,
+`user`/`query_kind`/`exception_code`/`query_hash`/`metric`/`is_initial_query`)
+carries real, dashboard-local option SQL under `variableConfigs`, ported from
+the pre-#447 curated-filter option-source queries into the two-String-column
+(value, then label) contract — a direct-input free-text box only remains for
+`from`/`to`/`search`. The generated
 Iceberg examples (`iceberg-catalog-dashboard.json`, `iceberg-dba-dashboard.json`,
 and the drill-down template) still go through `buildDashboard()` and stay on
 **v1** with a minimal curated `filters` array (one per SQL parameter, no

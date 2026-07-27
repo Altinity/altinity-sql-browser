@@ -362,7 +362,15 @@
           "id": "tile-shop-traffic-by-hour",
           "queryId": "shop-traffic-by-hour"
         }
-      ]
+      ],
+      "variableConfigs": {
+        "country": {
+          "sql": "SELECT DISTINCT country, country FROM shop.events_raw ORDER BY country"
+        },
+        "category": {
+          "sql": "SELECT DISTINCT category, category FROM shop.products ORDER BY category"
+        }
+      }
     }
   ]
 }
