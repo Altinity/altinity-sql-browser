@@ -9,6 +9,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **`shop-charts.json` and `ontime-charts.json` moved to portable-bundle v2 /
+  Dashboard document v2**, dropping their curated `filters` arrays in favor of
+  inferred Variables — the phase-3 example rewrite `spec-examples.test.js` had
+  been pinning them against, following `clickhouse-operations.json`'s earlier
+  move (#458 follow-up). Every `from`/`to`/`country`/`category`/`carrier`/
+  `origin` variable was already targeting exactly the tiles whose query
+  declares its `{name:Type}` placeholder, so the curated `targets` lists these
+  examples carried added nothing the placeholders didn't already say; removing
+  them changes no runtime behavior. `build-ontime-charts.mjs` now passes its
+  bundle's own `version` through to `writeExampleBundle` instead of silently
+  reverting to v1 on its next regeneration.
+
 ### Added
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
   tab strip's close button asks before discarding an unsaved draft — a normal
