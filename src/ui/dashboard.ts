@@ -79,10 +79,12 @@ import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
-import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import { DEFAULT_DASHBOARD_TITLE, createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import { appendDashboard } from '../workspace/workspace-operations.js';
 import {
-  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, replaceDashboard, resolveCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
+import { openNameDialog } from './dialog-shell.js';
 import type {
   DashboardFocusTarget, DashboardSurfaceMode,
 } from '../application/main-surface.js';
@@ -400,35 +402,55 @@ function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarge
       h('p', null, 'This workspace no longer exists on this browser.'))));
 }
 
+/**
+ * Append one empty Dashboard — named through the same prompt File ▸ New
+ * dashboard… uses — and open it (#429 phase 3/#481). Additive by
+ * construction: `appendDashboard` preserves every existing Dashboard and
+ * query in place, so this never reaches `dashboards[0]`/the compatibility
+ * slot the way the pre-#481 placeholder did.
+ *
+ * The `!latest` guard is required by `appendDashboard`'s non-nullable
+ * parameter but is provably dead at runtime: `app.mutateWorkspace` only ever
+ * invokes this transform once a workspace has actually loaded.
+ */
+async function doCreateDashboardFromPlaceholder(
+  app: DashboardApp, name: string, target: DashboardRenderTarget, surfaceGeneration: number,
+): Promise<void> {
+  const created = createEmptyDashboard(app.genId(), name);
+  const outcome = await app.mutateWorkspace<string>((latest) => (
+    !latest ? null : { candidate: appendDashboard(latest, created), data: created.id }
+  ));
+  if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
+  // #425: SELECT what we just created rather than re-rendering an unselected
+  // surface. Without this the session would keep reporting Query mode while a
+  // Dashboard is on screen — harmless today (every consumer falls back to the
+  // compatibility entry) but a lie that #426's tree would render as "nothing
+  // selected".
+  if (outcome.ok) app.openDashboard({ dashboardId: outcome.data!, mode: target.mode });
+}
+
 function renderMissingDashboard(
   app: DashboardApp, target: DashboardRenderTarget, readOnly: boolean, surfaceGeneration: number,
 ): void {
+  let createBtn: HTMLButtonElement;
   const body = readOnly
     ? h('div', { class: 'dash-empty' },
       h('h2', null, 'This workspace has no dashboard'))
     : h('div', { class: 'dash-empty' },
       h('h2', null, 'Create a dashboard for this workspace'),
-      h('button', {
+      createBtn = h('button', {
         class: 'dash-btn dash-create',
-        onclick: async () => {
-          const outcome = await app.mutateWorkspace<string>((latest) => {
-            // #424: "no Dashboard yet" is asked through the one compatibility
-            // seam, and the new document becomes the collection's first entry.
-            if (!latest || resolveCompatibilityDashboard(latest).dashboard) return null;
-            const created = createEmptyDashboard(app.genId());
-            // The new id rides back through the mutation's own `data` channel, so
-            // the open below cannot disagree with what was committed.
-            return { candidate: withCompatibilityDashboard(latest, created), data: created.id };
+        onclick: () => {
+          openNameDialog(app, {
+            title: 'New dashboard',
+            label: 'Dashboard name',
+            initial: DEFAULT_DASHBOARD_TITLE,
+            confirmLabel: 'Create dashboard',
+            returnFocusTo: createBtn,
+            onConfirm: (name) => { void doCreateDashboardFromPlaceholder(app, name, target, surfaceGeneration); },
           });
-          if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
-          // #425: SELECT what we just created rather than re-rendering an
-          // unselected surface. Without this the session would keep reporting
-          // Query mode while a Dashboard is on screen — harmless today (every
-          // consumer falls back to the compatibility entry) but a lie that #426's
-          // tree would render as "nothing selected".
-          if (outcome.ok) app.openDashboard({ dashboardId: outcome.data!, mode: target.mode });
         },
-      }, 'Create dashboard'));
+      }, 'Create dashboard') as HTMLButtonElement);
   target.setHeader(buildAppHeader(app as App, {
     // #452: no document resolved, so there is no exact Dashboard to act on.
     // #463 makes that harmless — the File menu's Dashboard commands are

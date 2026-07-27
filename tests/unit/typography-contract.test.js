@@ -317,6 +317,11 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // makes an emitter/rule drift on a class like `.dash-variable-time`
       // detectable at all.
       'src/ui/variable-bar.ts',
+      // #429 phase 3: `openDialogShell`/`openNameDialog` moved out of
+      // file-menu.ts (not itself in this list) into their own module so the
+      // Dashboard tree's rename pencil can reuse them — listed here so the
+      // `.fm-dialog-*` markup they build stays under this gate's view.
+      'src/ui/dialog-shell.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
     const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));

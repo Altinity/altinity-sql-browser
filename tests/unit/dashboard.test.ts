@@ -3998,7 +3998,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('missing dashboard differs in view and edit, and Create persists only on click', async () => {
+  it('missing dashboard differs in view and edit, and Create prompts before persisting', async () => {
     const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const viewed = modeApp({ workspace: empty, mode: 'view' });
     await render(viewed.app);
@@ -4015,14 +4015,36 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const create = qs<HTMLButtonElement>(edited.app.root, '.dash-create');
     expect(edited.commit).not.toHaveBeenCalled();
     create.click();
+    // #429/#481: one create path — the same name prompt File ▸ New dashboard…
+    // uses. Nothing commits until it is answered.
+    const card = document.querySelector('.fm-dialog-card')!;
+    expect(card.textContent).toContain('New dashboard');
+    const input = card.querySelector<HTMLInputElement>('.fm-dialog-input')!;
+    expect(input.value).toBe('Dashboard');
+    expect(edited.commit).not.toHaveBeenCalled();
+    input.value = 'Sales revenue';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!.click();
     await flush();
     expect(edited.commit).toHaveBeenCalledOnce();
     const created = edited.commit.mock.calls[0][0].dashboards[0];
     expect(created).not.toBeUndefined();
+    expect(created.title).toBe('Sales revenue');
     // #425: the new document is SELECTED, by the id that was actually committed —
     // otherwise the session would keep reporting Query mode with a Dashboard on
     // screen, which #426's tree would render as "nothing selected".
     expect(openDashboard).toHaveBeenCalledWith({ dashboardId: created.id, mode: 'edit' });
+  });
+
+  it('cancelling the prompt commits nothing', async () => {
+    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
+    const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!.click();
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
   });
 
   it.each(['view', 'edit'] as const)(
@@ -4040,17 +4062,27 @@ describe('renderDashboard — unified live modes (#407)', () => {
     },
   );
 
-  it('Create dashboard aborts if another producer created one before the click commits', async () => {
-    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
-    const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
-    await render(app);
-    const concurrentlyUpdated = wsWith({ id: 'already-created' }) as unknown as StoredWorkspaceV5;
-    app.workspace.loadById = vi.fn(async () => ({
-      status: 'ok' as const, workspace: concurrentlyUpdated,
-    }));
+  it('appends into a workspace that already holds Dashboards, preserving every existing one', async () => {
+    // #429/#481: the placeholder is reachable even for a non-empty collection —
+    // a stale EXPLICIT `dashboardId` (deleted by an import, or by another tab)
+    // while other Dashboards remain resolves to nothing (`findDashboard` misses)
+    // — and once the write is `appendDashboard`, checking "is the collection
+    // empty" first would serve no purpose: append is safe regardless.
+    const existing = savedQuery({ id: 'q1', name: 'Existing' });
+    const workspace = wsWith({ queries: [existing] }) as unknown as StoredWorkspaceV5;
+    const { app, commit } = modeApp({ workspace: workspace as unknown as ReturnType<typeof wsWith>, mode: 'edit' });
+    await render(app, { dashboardId: 'not-in-this-workspace' });
+    expect(qs(app.root, '.dash-create')).not.toBeNull();
+
     qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!.click();
     await flush();
-    expect(commit).not.toHaveBeenCalled();
+
+    expect(commit).toHaveBeenCalledOnce();
+    const candidate = commit.mock.calls[0][0];
+    expect(candidate.dashboards).toHaveLength(2);
+    expect(candidate.dashboards[0]).toEqual(workspace.dashboards[0]);
+    expect(candidate.queries).toEqual([existing]);
   });
 
   // #425: this surface's own chrome no longer writes routes. It delegates to the

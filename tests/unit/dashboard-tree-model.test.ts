@@ -731,6 +731,18 @@ describe('deriveDashboardTree — command sets', () => {
     expect(variable.member).toEqual({ kind: 'variable', id: 'region' });
   });
 
+  // #429 phase 3: the metadata pencil is a Dashboard-row-only affordance —
+  // panel edit (phase 4) is a SEPARATE control, and a group/variable row has
+  // no document of its own to rename.
+  it('offers the rename affordance on the Dashboard row only', () => {
+    const rows = tree().rows;
+    expect(row(rows, 'w1:d').renamable).toBe(true);
+    expect(row(rows, 'w1:d:group:panels').renamable).toBe(false);
+    expect(row(rows, 'w1:d:group:variables').renamable).toBe(false);
+    expect(row(rows, 'w1:d:tile:t1').renamable).toBe(false);
+    expect(row(rows, 'w1:d:variable:region').renamable).toBe(false);
+  });
+
   it('marks member rows as non-expandable leaves at level 3', () => {
     for (const key of ['w1:d:variable:region', 'w1:d:tile:t1']) {
       const member = row(tree().rows, key);

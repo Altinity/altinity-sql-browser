@@ -10,6 +10,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **A Dashboard row's pencil edits its title and description** (#429 phase 3).
+  Revealed on hover/focus-within next to the existing `⋯`, it opens a small
+  dialog prefilled from the Dashboard's own committed document — Cancel and
+  Escape commit nothing, a blank title disables Save, and a real commit bumps
+  only that Dashboard's revision and refreshes the tree and any open Dashboard
+  surface. There is still no Dashboard **trash** action.
 - **Drag a Library query onto a Dashboard to assign it** (#428). One drag from the
   lower Library list now has three destination-dependent meanings, and the row
   publishes two independent payloads to serve them:
@@ -237,6 +243,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the input's rendered width or the one-row filter layout.
 
 ### Changed
+- **Exactly one command creates a Dashboard** (#429 phase 3, absorbing #481).
+  File ▸ New dashboard… and the empty-workspace placeholder's Create button now
+  both prompt for a name (seeded with the same default) and commit through
+  `appendDashboard` — never the compatibility slot the placeholder used to
+  write through silently. The placeholder still reveals exactly what it
+  created, by the id the commit actually returned.
 - **A Dashboard tree row is three independent targets: chevron, name, trailing
   action** (#429 phase 2, absorbing #472). Clicking a Dashboard's **name** now
   opens it in View — immediately, with no double-click window to sit through —

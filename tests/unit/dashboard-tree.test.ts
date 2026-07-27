@@ -838,6 +838,147 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
   });
 });
 
+describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () => {
+  const pencil = (list: HTMLElement, rowKey: string): HTMLButtonElement | null =>
+    rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-rename-btn');
+  const dialogTitleInput = (): HTMLInputElement =>
+    document.querySelector<HTMLInputElement>('#dash-rename-title')!;
+  const dialogDescInput = (): HTMLTextAreaElement =>
+    document.querySelector<HTMLTextAreaElement>('#dash-rename-description')!;
+  const dialogSave = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+
+  it('renders the pencil on every Dashboard row', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    expect(pencil(list, 'w1:sales')).not.toBeNull();
+    expect(pencil(list, 'w1:ops')).not.toBeNull();
+  });
+
+  it('renders no pencil on group, variable or panel rows', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    expect(pencil(list, 'w1:sales:group:panels')).toBeNull();
+    expect(pencil(list, 'w1:sales:variable:country')).toBeNull();
+    expect(pencil(list, 'w1:sales:tile:t1')).toBeNull();
+  });
+
+  it('labels the trigger with the Dashboard\'s name', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const button = pencil(list, 'w1:sales')!;
+    expect(button.getAttribute('aria-label')).toBe('Edit dashboard Sales');
+    expect(button.type).toBe('button');
+  });
+
+  it('opens a dialog prefilled from the current title and description, never navigating or expanding', () => {
+    vi.useFakeTimers();
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    vi.advanceTimersByTime(400);
+    expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('Edit dashboard');
+    expect(dialogTitleInput().value).toBe('Sales');
+    expect(dialogDescInput().value).toBe('');
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it('prefills an existing description', () => {
+    const { app, list } = treeApp();
+    (app.currentWorkspace as unknown as TreeWorkspace).dashboards![0]!.description = 'Quarterly figures';
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    expect(dialogDescInput().value).toBe('Quarterly figures');
+  });
+
+  it('commits the edited title and description, and closes', async () => {
+    const { app, list, committed } = treeApp();
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    dialogTitleInput().value = 'Sales revenue';
+    dialogTitleInput().dispatchEvent(new Event('input', { bubbles: true }));
+    dialogDescInput().value = 'Quarterly figures';
+    dialogSave().click();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    await Promise.resolve(); await Promise.resolve();
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.dashboards[0].title).toBe('Sales revenue');
+    expect(committed[0]!.dashboards[0].description).toBe('Quarterly figures');
+    // The OTHER Dashboard and every query are untouched.
+    expect(committed[0]!.dashboards[1]).toEqual(workspace().dashboards![1]);
+    expect(committed[0]!.queries).toEqual(workspace().queries);
+  });
+
+  it('disables Save on a blank title, and Enter in the title field commits nothing while blank', async () => {
+    const { app, list, committed } = treeApp();
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    dialogTitleInput().value = '   ';
+    dialogTitleInput().dispatchEvent(new Event('input', { bubbles: true }));
+    expect(dialogSave().disabled).toBe(true);
+    dialogTitleInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(committed).toEqual([]);
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+  });
+
+  it('Cancel commits nothing', async () => {
+    const { app, list, committed } = treeApp();
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    dialogTitleInput().value = 'Should not be saved';
+    dialogTitleInput().dispatchEvent(new Event('input', { bubbles: true }));
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    await Promise.resolve();
+    expect(committed).toEqual([]);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+  });
+
+  it('returns focus to the pencil trigger on close', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = pencil(list, 'w1:sales')!;
+    click(trigger);
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // Real-browser-only bug this pins at the unit level too: the trigger is
+  // `display: none` except on hover/`:focus-within`, and by the time the
+  // dialog closes the pointer has typically moved onto the dialog's own
+  // controls, so it needs its own signal to stay visible/focusable for the
+  // dialog's WHOLE lifetime — matching `buildMenuButton`'s
+  // `[aria-expanded="true"]` convention, not just hover/focus-within.
+  it('marks the trigger aria-expanded for the dialog\'s whole lifetime, false again once it closes', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = pencil(list, 'w1:sales')!;
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('does not also run the row\'s own navigation, and cancels only its own row\'s pending click', () => {
+    vi.useFakeTimers();
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    // A pending single belongs to the PANEL row...
+    click(rowFor(list, 'w1:sales:tile:t1'));
+    // ...and the pencil clicked here belongs to a DIFFERENT row.
+    click(pencil(list, 'w1:ops')!);
+    vi.advanceTimersByTime(400);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    vi.useRealTimers();
+  });
+});
+
 describe('renderDashboardTree — keyboard', () => {
   it('Down/Up traverse the VISIBLE rows and stop at the ends', () => {
     const { app, list } = treeApp();

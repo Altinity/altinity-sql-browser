@@ -35,7 +35,9 @@
 // (app.mutateWorkspace / app.downloadFile / app.FileReader / app.document /
 // app.genId / app.wallNow), so it is fully testable.
 
-import { h, attachBackdropClose } from './dom.js';
+import { h } from './dom.js';
+import { closeOpenDialogShell, openDialogShell, openNameDialog } from './dialog-shell.js';
+import type { DialogHandle } from './dialog-shell.js';
 import { Icon } from './icons.js';
 import { closeOpenMenus, openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
@@ -62,7 +64,7 @@ import type {
 import {
   appendDashboard, createNewWorkspace, renameWorkspace,
 } from '../workspace/workspace-operations.js';
-import { createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import { DEFAULT_DASHBOARD_TITLE, createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
@@ -581,7 +583,7 @@ function openConflictDialog(
     return h('div', { class: 'fm-conflict-row' },
       h('span', { class: 'fm-label' }, queryName(c.existing)), rowSelect);
   });
-  const handle = openDialogShell(app, `Resolve ${conflicts.length} conflicting ${conflicts.length === 1 ? 'query' : 'queries'}`, [
+  const handle = openFileDialogShell(app, `Resolve ${conflicts.length} conflicting ${conflicts.length === 1 ? 'query' : 'queries'}`, [
     h('div', { class: 'fm-dialog-body' },
       'These incoming queries share an id with an existing query whose content differs.',
       h('div', { class: 'fm-conflict-global' },
@@ -647,7 +649,7 @@ function openDashboardPicker(
   },
     h('span', { class: 'fm-label' }, d.title),
     h('span', { class: 'fm-meta' }, d.meta)));
-  const handle = openDialogShell(app, title, [
+  const handle = openFileDialogShell(app, title, [
     h('div', { class: 'fm-dialog-body fm-picker-list' }, rows),
     h('div', { class: 'fm-dialog-actions' },
       h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel')),
@@ -693,18 +695,13 @@ async function doNewWorkspace(app: App): Promise<void> {
 
 // ── actions: New dashboard ───────────────────────────────────────────────────
 
-/** The name a New dashboard prompt opens on — the same title
- *  `createEmptyDashboard` has always stamped, offered for editing instead of
- *  applied silently. Duplicates are allowed (identity is the id), so accepting
- *  it unchanged twice is a legitimate outcome, not a collision. */
-const DEFAULT_DASHBOARD_NAME = 'Dashboard';
-
 function newDashboardAction(app: App): void {
   openNameDialog(app, {
     title: 'New dashboard',
     label: 'Dashboard name',
-    initial: DEFAULT_DASHBOARD_NAME,
+    initial: DEFAULT_DASHBOARD_TITLE,
     confirmLabel: 'Create dashboard',
+    returnFocusTo: app.dom.fileBtn ?? null,
     onConfirm: (name) => { void doNewDashboard(app, name); },
   });
 }
@@ -727,7 +724,7 @@ function newDashboardAction(app: App): void {
  * `commitWorkspace` toasts the diagnostic and answers `false`.
  */
 async function doNewDashboard(app: App, name: string): Promise<void> {
-  const created: DashboardDocumentV2 = { ...createEmptyDashboard(app.genId()), title: name };
+  const created: DashboardDocumentV2 = createEmptyDashboard(app.genId(), name);
   const committed = await commitWorkspace(
     app, (latest) => appendDashboard(latest ?? currentWorkspace(app), created), 'Created dashboard',
   );
@@ -1087,125 +1084,24 @@ function downloadAction(app: App, fmt: 'md' | 'sql'): void {
 
 // ── dialogs (shared `.fm-dialog-*` visual language) ─────────────────────────
 
-interface DialogHandle { close(): void; }
-const dialogClosers = new WeakMap<Element, () => void>();
-
 /** Close body-mounted File menus/dialogs before an application surface exits. */
-export function disposeFileMenuOverlays(app: Pick<App, 'document' | 'dom'>): void {
+export function disposeFileMenuOverlays(app: Pick<App, 'document'>): void {
   closeOpenMenus(app.document);
-  const dialog = app.dom.fileDialog;
-  if (dialog) dialogClosers.get(dialog)?.();
-}
-
-/** Mount one `.fm-dialog-backdrop`/`.fm-dialog-card` (title + caller-supplied
- *  content nodes), wired for Esc + outside-click close — the shared shell
- *  the conflict dialog/the dashboard picker/the name dialog all build on.
- *
- *  #463: closing RETURNS FOCUS to the File trigger. Every one of these dialogs
- *  is opened from a File-menu row, and the row is already gone by the time the
- *  dialog mounts (the shared `openMenu` closes before running the click) — so
- *  `activeElement` is `<body>` and there is nothing to remember. Without this,
- *  dismissing a dialog left focus on `<body>` and a keyboard user lost their
- *  place in the menu they had just been in. `fileBtn!` holds the same invariant
- *  `openFileMenu` asserts; on a detached button (a surface swap tore the header
- *  down under an open dialog) `focus()` is a harmless no-op. */
-function openDialogShell(app: App, title: string, content: unknown[], extraCardClass?: string): DialogHandle {
-  const doc = app.document;
-  const releaseKeyboard = app.acquireKeyboardOwner('modal');
-  let backdrop: HTMLElement;
-  const close = (): void => {
-    doc.removeEventListener('keydown', onKey, true);
-    detachBackdrop();
-    dialogClosers.delete(backdrop);
-    backdrop.remove();
-    if (app.dom.fileDialog === backdrop) app.dom.fileDialog = undefined;
-    releaseKeyboard();
-    app.dom.fileBtn!.focus();
-  };
-  /** Everything inside the card a Tab can land on, in DOM order. Disabled
-   *  controls are excluded — the name dialog's confirm is disabled while the
-   *  name is empty, and tabbing onto an inert button is a dead stop. */
-  const focusables = (): HTMLElement[] =>
-    [...card.querySelectorAll<HTMLElement>('button, input, select')]
-      .filter((el) => !(el as HTMLButtonElement).disabled);
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
-    if (e.key !== 'Tab') return;
-    // Keep Tab inside the card. `openDialogShell` mounts a MODAL, but nothing
-    // else makes the page behind it unreachable — so without this a keyboard
-    // user tabs straight out of a dialog they cannot see they have left.
-    const items = focusables();
-    const edge = e.shiftKey ? items[0] : items[items.length - 1];
-    const wrapTo = e.shiftKey ? items[items.length - 1] : items[0];
-    if (doc.activeElement === edge) { e.preventDefault(); wrapTo.focus(); }
-    else if (!card.contains(doc.activeElement)) { e.preventDefault(); items[0].focus(); }
-  };
-  const card = h('div', { class: extraCardClass ? `fm-dialog-card ${extraCardClass}` : 'fm-dialog-card' },
-    h('div', { class: 'fm-dialog-title' }, title), content);
-  backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
-  const detachBackdrop = attachBackdropClose(backdrop, close);
-  app.dom.fileDialog = backdrop;
-  dialogClosers.set(backdrop, close);
-  doc.body.appendChild(backdrop);
-  doc.addEventListener('keydown', onKey, true);
-  return { close };
-}
-
-interface NameDialogOpts {
-  title: string;
-  /** The input's visible + accessible label — the two are the same element. */
-  label: string;
-  initial: string;
-  confirmLabel: string;
-  /** Called with the TRIMMED name, only on a real commit. */
-  onConfirm: (name: string) => void;
+  closeOpenDialogShell();
 }
 
 /**
- * Ask for one name (#463 — New dashboard is the first caller), on the same
- * `.fm-dialog-*` shell as the confirm/conflict/picker dialogs, so Escape,
- * outside-click and surface-exit teardown all behave identically.
- *
- * The name is trimmed once, at the boundary, and a whitespace-only name commits
- * NOTHING: the confirm button stays disabled, so there is no reachable state in
- * which the caller has to defend against an empty title. Enter is the same
- * commit as the button (and equally refused when empty); Escape cancels through
- * the shell. Duplicate names are allowed and deliberately not validated —
- * identity is the id.
+ * `openDialogShell` (`dialog-shell.ts`), pinned to the File menu's own
+ * return-focus target. #463: closing RETURNS FOCUS to the File trigger —
+ * every one of these dialogs is opened from a File-menu row, and the row is
+ * already gone by the time the dialog mounts (the shared `openMenu` closes
+ * before running the click), so `activeElement` is `<body>` and there is
+ * nothing else to remember. `fileBtn!` holds the same invariant `openFileMenu`
+ * asserts; on a detached button (a surface swap tore the header down under an
+ * open dialog) `focus()` is a harmless no-op.
  */
-function openNameDialog(
-  app: App, { title, label, initial, confirmLabel, onConfirm }: NameDialogOpts,
-): void {
-  const input = h('input', {
-    class: 'fm-dialog-input', type: 'text', id: 'fm-name-input', value: initial, spellcheck: 'false',
-  }) as HTMLInputElement;
-  const confirm = h('button', {
-    class: 'fm-dialog-confirm',
-    onclick: () => commit(),
-  }, confirmLabel) as HTMLButtonElement;
-  const commit = (): void => {
-    const name = input.value.trim();
-    if (!name) return;
-    handle.close();
-    onConfirm(name);
-  };
-  const sync = (): void => { confirm.disabled = input.value.trim() === ''; };
-  input.addEventListener('input', sync);
-  input.addEventListener('keydown', (e) => {
-    // Escape is the shell's, on a capture-phase document listener; only Enter is
-    // ours, and only because a single-field dialog has no form to submit.
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-  });
-  const handle = openDialogShell(app, title, [
-    h('div', { class: 'fm-dialog-body' },
-      h('label', { class: 'fm-dialog-label', for: 'fm-name-input' }, label), input),
-    h('div', { class: 'fm-dialog-actions' },
-      h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel'),
-      confirm),
-  ]);
-  sync();
-  // Same deferred focus+select as the inline workspace rename: the card is in
-  // the document by now, and selecting the default name makes typing over it the
-  // one-keystroke path.
-  setTimeout(() => { input.focus(); input.select(); });
+function openFileDialogShell(
+  app: App, title: string, content: unknown[], extraCardClass?: string,
+): DialogHandle {
+  return openDialogShell(app, title, content, { extraCardClass, returnFocusTo: app.dom.fileBtn ?? null });
 }

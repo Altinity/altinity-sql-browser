@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  findDashboard, findDashboardStrict, replaceDashboard, resolveCompatibilityDashboard,
+  findDashboard, findDashboardStrict, renameDashboard, replaceDashboard, resolveCompatibilityDashboard,
   withCompatibilityDashboard, withVariableConfig,
 } from '../../src/workspace/workspace-dashboards.js';
 import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
@@ -195,5 +195,88 @@ describe('withVariableConfig', () => {
     const next = withVariableConfig(workspace, 'sales', 'zone', { sql: 'Z' })!;
     expect(next.queries).toBe(workspace.queries);
     expect(next.dashboards[0].tiles).toEqual(workspace.dashboards[0].tiles);
+  });
+});
+
+// #429 phase 3 — the pure half of the Dashboard-row rename pencil. Modeled on
+// `withVariableConfig` above: find → build the next document → delegate the
+// write to `replaceDashboard`.
+describe('renameDashboard', () => {
+  it('renames the title and bumps only that Dashboard\'s revision', () => {
+    const workspace = ws([dash('sales'), dash('ops')]);
+    const next = renameDashboard(workspace, 'sales', 'Sales revenue')!;
+    expect(next.dashboards[0].title).toBe('Sales revenue');
+    expect(next.dashboards[0].revision).toBe(2);
+    // Every other Dashboard is untouched, by identity.
+    expect(next.dashboards[1]).toBe(workspace.dashboards[1]);
+  });
+
+  it('sets a description when one is given', () => {
+    const next = renameDashboard(ws([dash('sales')]), 'sales', 'Sales', 'Quarterly revenue')!;
+    expect(next.dashboards[0].description).toBe('Quarterly revenue');
+  });
+
+  it('replaces an existing description rather than merging it', () => {
+    const next = renameDashboard(
+      ws([dash('sales', { description: 'Old note' })]), 'sales', 'Sales', 'New note',
+    )!;
+    expect(next.dashboards[0].description).toBe('New note');
+  });
+
+  it('omits description entirely when given an empty/whitespace-only string', () => {
+    const next = renameDashboard(
+      ws([dash('sales', { description: 'Old note' })]), 'sales', 'Sales', '   ',
+    )!;
+    expect('description' in next.dashboards[0]).toBe(false);
+  });
+
+  it('leaves an existing description untouched when none is given', () => {
+    const next = renameDashboard(ws([dash('sales', { description: 'Kept' })]), 'sales', 'Sales')!;
+    expect(next.dashboards[0].description).toBe('Kept');
+  });
+
+  it('trims the title before storing it', () => {
+    const next = renameDashboard(ws([dash('sales')]), 'sales', '  Sales revenue  ')!;
+    expect(next.dashboards[0].title).toBe('Sales revenue');
+  });
+
+  it('trims a leading/trailing-whitespace description too', () => {
+    const next = renameDashboard(ws([dash('sales')]), 'sales', 'Sales', '  note  ')!;
+    expect(next.dashboards[0].description).toBe('note');
+  });
+
+  it('REFUSES a whitespace-only title — the same "blank means blank" rule as the read side', () => {
+    const workspace = ws([dash('sales')]);
+    expect(renameDashboard(workspace, 'sales', '   ')).toBeNull();
+    expect(renameDashboard(workspace, 'sales', '')).toBeNull();
+    // Nothing committed: the stored title is untouched.
+    expect(workspace.dashboards[0].title).toBe('SALES');
+  });
+
+  it('commits NOTHING for an id that names no Dashboard', () => {
+    expect(renameDashboard(ws([dash('sales')]), 'gone', 'New title')).toBeNull();
+  });
+
+  it('commits NOTHING for an AMBIGUOUS id rather than picking one', () => {
+    expect(renameDashboard(ws([dash('dup'), dash('dup')]), 'dup', 'New title')).toBeNull();
+  });
+
+  it('preserves layout, tiles, variableConfigs and unknown fields', () => {
+    const workspace = ws([dash('sales', {
+      tiles: [{ id: 't1', queryId: 'q1' }],
+      variableConfigs: { zone: { sql: 'Z' } },
+    })]);
+    const next = renameDashboard(workspace, 'sales', 'Renamed')!;
+    expect(next.dashboards[0].tiles).toEqual(workspace.dashboards[0].tiles);
+    expect(next.dashboards[0].variableConfigs).toEqual(workspace.dashboards[0].variableConfigs);
+    expect(next.dashboards[0].layout).toEqual(workspace.dashboards[0].layout);
+    expect(next.dashboards[0].id).toBe('sales');
+  });
+
+  it('never mutates its input', () => {
+    const workspace = ws([dash('sales')]);
+    renameDashboard(workspace, 'sales', 'Renamed');
+    expect(workspace.dashboards[0].title).toBe('SALES');
+    expect(workspace.dashboards[0].revision).toBe(1);
   });
 });

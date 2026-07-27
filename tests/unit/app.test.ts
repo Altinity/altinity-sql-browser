@@ -6261,6 +6261,7 @@ describe('unified /sql routing', () => {
     app.renderDashboard();
     const { commit, release } = deferNextCommit(app);
     qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!.click();
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');

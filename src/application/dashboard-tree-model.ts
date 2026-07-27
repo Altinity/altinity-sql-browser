@@ -179,6 +179,11 @@ export interface DashboardTreeRow {
    *  holds. An active or conflicted variable is inferred from the panel queries,
    *  so there is nothing about it a tree row could delete. */
   deletable: boolean;
+  /** #429 phase 3: whether this row offers a trailing rename affordance (title
+   *  + description). True for the DASHBOARD row only — a panel row's own
+   *  metadata pencil is phase 4's, and a variable/group row has no document of
+   *  its own to rename. */
+  renamable: boolean;
   dashboardId: string;
   /** The member this row addresses, by Dashboard-local id — never by query id. */
   member: DashboardFocusTarget | null;
@@ -438,6 +443,7 @@ export function deriveDashboardTree(
       severity: null,
       diagnostic: null,
       deletable: false,
+      renamable: true,
       dashboardId: dashboard.id,
       member: null,
       queryId: null,
@@ -497,6 +503,7 @@ export function deriveDashboardTree(
         // Verbatim from the inference service — never re-composed here.
         diagnostic: variable.diagnostic,
         deletable: variable.status === 'orphaned',
+        renamable: false,
         dashboardId: dashboard.id,
         member,
         queryId: null,
@@ -541,6 +548,7 @@ export function deriveDashboardTree(
         severity: facts.invalid === null ? null : 'error',
         diagnostic: facts.invalid === null ? null : MISSING_QUERY_DIAGNOSTIC,
         deletable: false,
+        renamable: false,
         dashboardId: dashboard.id,
         member,
         queryId: facts.queryId,
@@ -602,6 +610,7 @@ export function deriveDashboardTree(
         severity: null,
         diagnostic: null,
         deletable: false,
+        renamable: false,
         dashboardId: dashboard.id,
         member: null,
         queryId: null,

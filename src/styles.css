@@ -789,6 +789,11 @@ h1, h2, h3, h4, h5, h6 {
 }
 .fm-dialog-input:focus { outline: none; border-color: var(--accent); }
 .fm-dialog-confirm:disabled { opacity: .45; cursor: default; filter: none; }
+/* Dashboard metadata pencil (#429 phase 3) — the two-field variant's
+   description field, on the same `.fm-dialog-input` look, with its own label
+   given breathing room above the title field it follows. */
+.fm-dialog-textarea { min-height: 64px; resize: vertical; font-family: inherit; }
+.fm-dialog-input + .fm-dialog-label { margin-top: 12px; }
 
 /* ------------ main row ------------ */
 /* position:relative so the mobile sidebar overlay + backdrop (#126) can anchor
@@ -1743,7 +1748,7 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
 .dash-tree-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
 .dash-tree-confirm-cancel { color: var(--fg-mute); }
-.dash-tree-menu-btn {
+.dash-tree-menu-btn, .dash-tree-rename-btn {
   width: 18px; height: 18px; padding: 0;
   border: none; background: transparent;
   color: var(--fg-faint); cursor: pointer;
@@ -1752,11 +1757,20 @@ body.detached-tab .graph-overlay-panel {
 }
 /* Revealed on hover like the Library row actions, but ALWAYS present for the
    keyboard: focus-within keeps it visible while it or the row owns focus, so the
-   double-click-only operations are never keyboard-unreachable. */
+   double-click-only operations (and #429 phase 3's rename pencil — renaming is
+   routine, not destructive like the always-visible trash above) are never
+   keyboard-unreachable. */
 .dash-tree-row:hover .dash-tree-menu-btn,
 .dash-tree-row:focus-within .dash-tree-menu-btn,
-.dash-tree-menu-btn[aria-expanded="true"] { display: inline-flex; }
-.dash-tree-menu-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.dash-tree-menu-btn[aria-expanded="true"],
+.dash-tree-row:hover .dash-tree-rename-btn,
+.dash-tree-row:focus-within .dash-tree-rename-btn,
+/* #429 phase 3: stays visible for its OWN dialog's whole lifetime, not just
+   hover/focus-within — the dialog is body-mounted, so once its own controls are
+   interacted with, the pointer and focus both leave the row, and a `display:
+   none` trigger could not receive the focus the dialog returns to it on close. */
+.dash-tree-rename-btn[aria-expanded="true"] { display: inline-flex; }
+.dash-tree-menu-btn:hover, .dash-tree-rename-btn:hover { color: var(--fg); background: var(--bg-hover); }
 /* #429/#472 — the disclosure control is its own BUTTON, because expansion is now
    the only thing this target does (the row itself opens the Dashboard). Box, width
    and colour still come from the shared `.tree-row .chev` rule below, so the two
