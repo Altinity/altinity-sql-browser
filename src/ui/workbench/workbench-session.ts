@@ -20,7 +20,7 @@
 
 import { effect, batch } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
-import { savedForTab, tabPanel, recordScriptHistory } from '../../state.js';
+import { savedForTab, tabPanel, recordScriptHistory, variableDoc } from '../../state.js';
 import type { QueryTab, HistoryEntry, SaveJSON, AppState } from '../../state.js';
 import type { SavedQueryV2 } from '../../generated/json-schema.types.js';
 import type { ResultSort } from '../../core/sort.js';
@@ -32,6 +32,7 @@ import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } fro
 import { isKpiPanel, panelExecution } from '../../core/panel-execution.js';
 import { newResult } from '../../core/stream.js';
 import { buildResultSource } from '../../core/query-source.js';
+import { compileOptionProbe, optionSqlDiagnostics, validateOptionColumns } from '../../core/variable-options.js';
 import type { QueryResult, ScriptResult, ScriptEntry } from '../results.js';
 import type { QueryExecutionService } from '../../application/query-execution-service.js';
 
@@ -228,6 +229,11 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // the whole tab runs, byte-for-byte as before (FORMAT / EXPLAIN detection,
     // trailing `;`, history).
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
+    // #465: a `dashboard-variable` tab's Run is validated and executed as a
+    // variable option query — dispatched BEFORE the blank-SQL bail below,
+    // because blank/whitespace-only option SQL must still report its own
+    // diagnostic rather than silently no-op like an ordinary tab.
+    if (variableDoc(tab) !== null) { await runVariableSql(tab, srcSql); return; }
     if (!srcSql.trim()) return;
     const waveMs = deps.wallNow(); // one wall clock for this run wave: gate + args see the same instant
     if (hooks.varGateBlocked(waveMs)) return;
@@ -390,6 +396,89 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     }
   }
 
+  // #465 — Run's `dashboard-variable`-tab path: validate `sql` as a Dashboard
+  // variable option query and execute it through the same bounded single-branch
+  // probe (`compileOptionProbe`) the option batch's own branches use, rather
+  // than running it raw. A typed FORMAT clause, a `{name:Type}` parameter, or
+  // a KPI panel can never reach here — `optionSqlDiagnostics` rejects the first
+  // two locally, and a variable document never carries a panel — so none of
+  // `run()`'s machinery for those applies. The EXPLAIN button/view-switch
+  // (`opts.explain`/`opts.explainView`) are irrelevant here for a different
+  // reason: `run()` dispatches to this function unconditionally for a variable
+  // tab, before either is ever read, so app.ts's `explainQuery`/
+  // `setExplainView` refuse to call `workbench.run()` at all for one (guarded
+  // by `explainVariableBlocked`) rather than have their intent silently
+  // dropped here. Duplicating just the bookkeeping this path DOES need
+  // (running/cancellation/elapsed, via the session's shared private run state)
+  // keeps it auditable on its own rather than threading a second mode through
+  // every branch of `run()` above.
+  //
+  // A variable document is not a query (#457, mirrored by `saveVariableTab` in
+  // app.ts): a probe run is never added to History, never records bound params
+  // (option SQL can have none), never captures a detached-result `source`
+  // (there is no saved query to attach one to), and never touches
+  // `lastSuccessfulResultColumns` (a variable tab has no Spec for that to feed).
+  async function runVariableSql(tab: QueryTab, sql: string): Promise<void> {
+    // Every locally-detectable problem — blank, comment-only, non-SELECT,
+    // multi-statement (so a multi-statement input NEVER reaches runScript()),
+    // FORMAT/INTO OUTFILE, a `{name:Type}` parameter, an optional block, an
+    // unterminated span, the reserved branch-tag column — is reported here,
+    // before authentication or a request is ever sent.
+    const diagnostics = optionSqlDiagnostics(sql);
+    if (diagnostics.length) {
+      const result: QueryResult = newResult('Table', 0);
+      result.error = diagnostics.map((d) => d.message).join('\n');
+      Object.assign(tab, { result });
+      hooks.renderResults();
+      return;
+    }
+    const waveMs = deps.wallNow();
+    if (hooks.varGateBlocked(waveMs)) return;
+    await deps.ensureConfig();
+    if (!(await deps.getToken())) { hooks.onAuthFailed(); return; }
+
+    hooks.cancelSchemaGraph();
+    state.forceExplain = false;
+
+    const t0 = deps.now();
+    const result: QueryResult = newResult('Table', state.resultRowLimit);
+    Object.assign(tab, { result });
+    state.resultSort = { col: null, dir: 'asc' };
+    runT0 = t0;
+    runQueryId = deps.uid('q');
+    abortController = new AbortController();
+    runTick = setInterval(hooks.tickElapsed, 100);
+    state.running.value = true;
+
+    try {
+      await deps.exec.executeRead(result, {
+        sql: compileOptionProbe(sql),
+        format: 'Table',
+        rowLimit: state.resultRowLimit,
+        queryId: runQueryId,
+        signal: abortController.signal,
+        params: {},
+        onChunk: () => hooks.renderResults(),
+      });
+      // Only the probe's own transport succeeding makes its response metadata
+      // meaningful — a transport error or a cancellation already has its own
+      // story and must not be overwritten by a shape verdict about a response
+      // that never fully arrived.
+      if (!result.error && !result.cancelled) {
+        const shape = validateOptionColumns(result.columns);
+        if (shape) result.error = shape.message;
+      }
+    } finally {
+      clearInterval(runTick as ReturnType<typeof setInterval>);
+      runTick = null;
+      abortController = null;
+      runQueryId = null;
+      runT0 = null;
+      result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
+      state.running.value = false;
+    }
+  }
+
   // Run a `;`-separated script sequentially: one ClickHouse request per statement
   // (CH's HTTP interface runs exactly one statement per request), stopping on the
   // first failure. Row-returning statements (SELECT/WITH/SHOW/…) are fetched as
@@ -488,11 +577,21 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
   // split: one statement keeps today's rich Table/Chart/EXPLAIN path (run());
   // more than one runs sequentially as a script (runScript).
   function runEntry(opts?: RunOpts): void | Promise<void> {
-    if (deps.activeTab().editorMode !== 'sql') return;
+    const tab = deps.activeTab();
+    if (tab.editorMode !== 'sql') return;
     if (state.running.value) return;
     const sel = hooks.getSelectionText();
     const hasSel = sel.trim() !== '';
-    const input = hasSel ? sel : deps.activeTab().sqlDraft;
+    const input = hasSel ? sel : tab.sqlDraft;
+    // #465: a `dashboard-variable` tab is validated and executed as a variable
+    // option query, dispatched straight to `run()` — NEVER through the
+    // statement-count split below. A multi-statement variable SQL must fail
+    // with `optionSqlDiagnostics`' own statement-count diagnostic, not be
+    // silently routed to runScript() as an ordinary script.
+    if (variableDoc(tab) !== null) {
+      if (state.isMobile.value) state.mobileView.value = 'results';
+      return run(hasSel ? { ...opts, sql: input } : opts);
+    }
     const statements = splitStatements(input);
     if (!statements.length) return; // nothing runnable (empty / comments-only)
     // The unfilled-variable gate (#134) lives in run()/runScript() — the shared

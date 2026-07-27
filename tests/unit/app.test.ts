@@ -2100,6 +2100,27 @@ describe('query run', () => {
     expect(qs(document, '.share-toast').textContent).toMatch(/multi-statement/);
     expect(sentExplains(e)).toHaveLength(0);
   });
+  it('Explain on a dashboard-variable tab shows a message and sends no EXPLAIN (#465)', async () => {
+    // Without this guard, workbench.run({explain:true}) would dispatch straight
+    // to the variable-tab Run path (#465) and silently run an ordinary
+    // validation probe instead — Explain's intent would vanish with no
+    // indication anything was ignored.
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    app.activeTab().sqlDraft = 'SELECT a, b FROM t';
+    await app.actions.explainQuery();
+    expect(qs(document, '.share-toast').textContent).toMatch(/Dashboard variable/);
+    expect(sentExplains(e)).toHaveLength(0);
+    expect(app.activeTab().result).toBeNull();
+  });
+  it('setExplainView on a dashboard-variable tab is also blocked (#465)', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().doc = { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'zone' };
+    app.activeTab().sqlDraft = 'SELECT a, b FROM t';
+    await app.actions.setExplainView('pipeline');
+    expect(qs(document, '.share-toast').textContent).toMatch(/Dashboard variable/);
+    expect(sentExplains(e)).toHaveLength(0);
+  });
   it('runs ESTIMATE as a structured table (streaming), not raw', async () => {
     const { app } = appForRun([
       [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],

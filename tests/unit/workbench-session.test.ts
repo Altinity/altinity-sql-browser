@@ -580,6 +580,269 @@ describe('createWorkbenchSession: runEntry()', () => {
   });
 });
 
+// ── dashboard-variable Run (#465) ────────────────────────────────────────────
+
+function variableTab(over: Partial<QueryTab> = {}): Partial<QueryTab> {
+  return { doc: { kind: 'dashboard-variable', dashboardId: 'd1', variableName: 'zone' }, ...over };
+}
+
+describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
+  it('sends no request and reports the empty-SQL diagnostic for blank option SQL', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: '   ' }) });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
+    const result = h.tab.result as { error: string } | null;
+    expect(result?.error).toMatch(/Option SQL is empty/);
+  });
+
+  it('sends no request for a multi-statement variable query, reporting the statement-count diagnostic', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t; SELECT c, d FROM u;' }) });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    const result = h.tab.result as { error: string } | null;
+    expect(result?.error).toMatch(/must be one statement/);
+  });
+
+  it('runEntry never routes a multi-statement variable tab through runScript', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t; SELECT c, d FROM u;' }) });
+    const session = createWorkbenchSession(h.deps);
+    await session.runEntry();
+    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    const result = h.tab.result as { error: string } | null;
+    expect(result?.error).toMatch(/must be one statement/);
+  });
+
+  it.each<[string, RegExp]>([
+    ['CREATE TABLE t (a String) ENGINE=Memory', /must be a SELECT/],
+    ['SELECT a, b FROM t FORMAT JSON', /FORMAT clause/],
+    ["SELECT a, b FROM t INTO OUTFILE 'x'", /OUTFILE clause/],
+    ['SELECT a, b FROM t WHERE c = {c:String}', /cannot reference Dashboard variables/],
+    ['SELECT a, b FROM t /*[ WHERE c = 1 ]*/', /optional/],
+    ["SELECT a, b FROM t WHERE c = 'unterminated", /unterminated/],
+    ['SELECT a, b, __variable_name FROM t', /reserved for the generated batch/],
+  ])('reports a local diagnostic without a request: %s', async (sql, pattern) => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: sql }) });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    const result = h.tab.result as { error: string } | null;
+    expect(result?.error).toMatch(pattern);
+  });
+
+  it('executes a locally-valid query through the bounded probe, never raw, and displays its rows', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult, req: ExecuteReadRequest) => {
+      req.onChunk?.(); // per-chunk repaint hook — exercised same as an ordinary run
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }],
+        rows: [['v1', 'l1']],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+    expect(req.sql).toBe('SELECT * FROM (\nSELECT a, b FROM t\n) LIMIT 1001');
+    expect(req.format).toBe('Table');
+    expect(h.hooks.renderResults).toHaveBeenCalled();
+    const result = h.tab.result as { error: string | null; rows: unknown[][] } | null;
+    expect(result?.error).toBeNull();
+    expect(result?.rows).toEqual([['v1', 'l1']]);
+  });
+
+  it('accepts String, LowCardinality(String), and FixedString(N) columns', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'LowCardinality(String)' }, { name: 'b', type: 'FixedString(4)' }],
+        rows: [],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toBeNull();
+  });
+
+  it('zero returned rows passes validation', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null; rows: unknown[][] } | null;
+    expect(result?.error).toBeNull();
+    expect(result?.rows).toEqual([]);
+  });
+
+  it('a one-column result reports the actual column count', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }], rows: [['x']] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toMatch(/this returns 1/);
+  });
+
+  it('a three-column result reports the actual column count', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b, c FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }, { name: 'c', type: 'String' }],
+        rows: [['x', 'y', 'z']],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toMatch(/this returns 3/);
+  });
+
+  it('an unsupported column type (UInt64/Nullable) reports the offending type(s)', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'UInt64' }, { name: 'b', type: 'Nullable(String)' }],
+        rows: [[1, 'x']],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toContain('UInt64 and Nullable(String)');
+  });
+
+  it('preserves a transport error, never overwritten by shape validation', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      result.error = 'Some server error';
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toBe('Some server error');
+  });
+
+  it('preserves cancellation, never overwritten by shape validation', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      result.cancelled = true;
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null; cancelled?: boolean } | null;
+    expect(result?.cancelled).toBe(true);
+    expect(result?.error).toBeNull();
+  });
+
+  it('a shape-validation failure is not recorded as a successful run', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }], rows: [['x']] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
+    const result = h.tab.result as { source?: unknown } | null;
+    expect(result?.source).toBeUndefined();
+    expect(h.tab.lastSuccessfulResultColumns).toEqual([]);
+  });
+
+  it('a validated success is also never added to History — a variable document is not a query (#457)', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [['v', 'l']],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
+    expect(h.tab.lastSuccessfulResultColumns).toEqual([]);
+  });
+
+  it('auth failure (getToken → null): no exec call, fires onAuthFailed, never reaches shape validation', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }), getToken: async () => null });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
+    expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks (no exec call) when the var gate is blocked, same as an ordinary tab', async () => {
+    const h = makeHarness({
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+      hooks: { varGateBlocked: vi.fn(() => true) },
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+  });
+
+  it('runEntry dispatches straight to run(), forwarding an editor selection', async () => {
+    const h = makeHarness({
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+      hooks: { getSelectionText: vi.fn(() => 'SELECT c, d FROM u') },
+    });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'c', type: 'String' }, { name: 'd', type: 'String' }], rows: [] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.runEntry();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+    expect(req.sql).toContain('SELECT c, d FROM u');
+  });
+
+  it('runEntry jumps the mobile bottom nav to Results, same as an ordinary tab', async () => {
+    const h = makeHarness({
+      state: { isMobile: signal(true) },
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.runEntry();
+    expect(h.state.mobileView.value).toBe('results');
+  });
+
+  it('cancel() aborts an in-flight variable probe the same way as an ordinary run', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    const gate = deferred<StreamResult>();
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult, req: ExecuteReadRequest) => {
+      req.signal?.addEventListener('abort', () => { result.cancelled = true; gate.resolve(result); });
+      return gate.promise;
+    });
+    const session = createWorkbenchSession(h.deps);
+    const p = session.run();
+    await flush();
+    session.cancel();
+    await p;
+    expect(h.execFakes.kill).toHaveBeenCalled();
+    const result = h.tab.result as { cancelled?: boolean } | null;
+    expect(result?.cancelled).toBe(true);
+  });
+});
+
 // ── cancel() ─────────────────────────────────────────────────────────────────
 
 describe('createWorkbenchSession: cancel()', () => {

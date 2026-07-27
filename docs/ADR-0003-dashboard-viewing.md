@@ -772,6 +772,70 @@ branches were added — touch drag is a stated non-goal, and `draggable` stays
 unconditional on Library and History rows so the shipped editor drop is unchanged
 there.
 
+## Addendum (#465, 2026-07-27): Test's shape check is re-hosted on Run, not re-invented
+
+The #457 addendum above ("Losing Test is accepted...") deferred re-hosting the
+two-`String`-column check on the ordinary Run action. Until this addendum, Run on
+a `dashboard-variable` tab executed the SQL raw: a wrong column count or type
+reported a plain success, and the mistake surfaced only later, as an unattributed
+batch-level failure.
+
+- **The preflight lives in `WorkbenchSession`, ahead of every execution choke
+  point — not inside `run()` alone.** `runEntry()` dispatches a `dashboard-variable`
+  tab straight to `run()`, before `splitStatements` decides between `run()` and
+  `runScript()`. Doing the check only inside `run()` would leave a multi-statement
+  variable query free to reach `runScript()` unvalidated — the ordinary script
+  runner has no concept of this contract at all, so `optionSqlDiagnostics`' own
+  statement-count diagnostic is what a multi-statement input must fail with,
+  not a script grid. `run()` itself runs the check before its own blank-SQL
+  no-op and before the `{name:Type}` unfilled-variable gate, so blank/comment-only
+  option SQL is reported explicitly rather than silently doing nothing the way an
+  ordinary tab's blank Run does.
+
+- **Execution reuses the batch's own bounded probe, not a new transport.**
+  `compileOptionProbe` — restored alongside `isOptionColumnType` and
+  `validateOptionColumns`, the exact three helpers the #457 addendum named as
+  Test's own — embeds the SQL through the same `nestBounded` subquery and
+  per-branch `LIMIT` the batch compiler uses, so Run can never accept SQL the
+  combined batch would reject. It drops the branch tag `compileVariableOptionBatch`
+  adds, which is what makes the two-column rule checkable at all: a `UNION ALL`
+  reports one merged column list for every branch, but a lone probe's response
+  describes only that query's own columns.
+
+- **A shape failure borrows the ordinary run's own success gate, rather than a
+  parallel one.** `runVariableSql` (a new function beside `run()`/`runScript()`,
+  not a branch inside `run()` — a typed FORMAT clause or a `{name:Type}`
+  parameter can never reach here, `optionSqlDiagnostics` rejects both locally,
+  and a variable document never carries a panel, so none of `run()`'s KPI/
+  FORMAT machinery applies) sets `result.error` to the validation diagnostic
+  before any success bookkeeping runs, so a shape-invalid response is never
+  mistaken for a successful one. It shares `run()`/`runScript()`'s private
+  run-state (`runT0`/`runQueryId`/`runTick`/`abortController`), so `cancel()`
+  and a transport error behave identically to an ordinary tab's Run — a
+  genuine transport error or cancellation is never overwritten by a shape
+  verdict about a response that
+  never fully arrived.
+
+- **A variable document still is not a query.** Mirroring `saveVariableTab`'s
+  exclusion from History/Library/favourites/Panels, a variable tab's Run —
+  success or failure — is never added to History, never records bound params
+  (option SQL can have none), never captures a detached-result `source` (there
+  is no saved query to attach one to), and never updates
+  `lastSuccessfulResultColumns` (a variable tab has no Spec for that to feed).
+
+- **EXPLAIN is refused where it is invoked, not silently swallowed where it
+  would land.** `run()` dispatches to `runVariableSql` unconditionally for a
+  variable tab, before `opts.explain`/`opts.explainView` are ever read — so
+  those flags are simply never consulted there. Left at that, the Explain
+  button and its production callers (`app.ts`'s `explainQuery`/
+  `setExplainView`, both gated only on `editorMode === 'sql'`, true for a
+  variable tab) would have called `workbench.run({explain: true})` and gotten
+  an ordinary validation probe back with no sign Explain was ignored — a
+  review finding caught before this shipped. `explainVariableBlocked()`
+  mirrors the existing `explainMultiBlocked()` toast-on-click pattern (the
+  Explain button itself stays visible, same as the multi-statement case) and
+  is checked first, since option SQL is always one statement.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

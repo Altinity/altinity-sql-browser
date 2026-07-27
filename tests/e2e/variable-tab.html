@@ -33,12 +33,12 @@
     } }
   </script>
   <script type="module">
-    // #457: the WHOLE application — the Dashboards tree AND the workbench column,
-    // with a real CodeMirror editor injected. `dashboard-tree.html` deliberately
-    // omits the workbench, so it can only prove the tab MODEL; this fixture is
-    // where "the main CodeMirror editor, toolbar and tab strip are REUSED for a
-    // variable" is actually observable — the tab strip is the shipped one, the
-    // editor is the shipped one, and Save is the shipped control.
+    // #457/#465: the WHOLE application — the Dashboards tree AND the workbench
+    // column, with a real CodeMirror editor injected. `dashboard-tree.html`
+    // deliberately omits the workbench, so it can only prove the tab MODEL;
+    // this fixture is where "the main CodeMirror editor, toolbar, tab strip and
+    // Run action are REUSED for a variable" is actually observable — the tab
+    // strip, editor, Save and Run are all the shipped controls.
     import { createApp } from '/src/ui/app.js';
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
     import { createSpecEditor } from '/src/editor/spec-editor.js';
@@ -72,6 +72,16 @@
       ],
     };
 
+    // #465: Run needs `getToken()`/`ensureConfig()` to resolve, and both are
+    // captured from `conn` once at createApp() time — stubbing them after the
+    // fact (the way `ensureFreshToken`/`loadSchema` are stubbed below) would
+    // not reach the already-wired workbench session. Basic-auth mode short-
+    // circuits BOTH with no network call at all, and is read from
+    // sessionStorage before `createConnectionSession` runs, so it has to be
+    // seeded here, before `createApp`.
+    sessionStorage.setItem('ch_basic_auth', 'e2e-token');
+    sessionStorage.setItem('ch_basic_user', 'e2e');
+
     const root = document.querySelector('#root');
     const app = createApp({
       root,
@@ -82,10 +92,24 @@
     });
     app.conn.ensureFreshToken = async () => true;
     app.conn.chCtx.onSignedOut = () => {};
-    // Stubbed: this fixture is about EDITING a variable, not about running one —
-    // a real schema load or query would need a server.
     app.catalog.loadSchema = async () => { app.state.schema.value = []; };
     app.catalog.loadReference = async () => {};
+    // #465: a canned two-column response for one probe SQL, a broken
+    // one-column response for every other — enough to exercise Run's real
+    // wiring (the bounded-probe substitution, the shape validation) without a
+    // server. Keyed on the embedded user SQL, since every probe request shares
+    // the same `SELECT * FROM ( … ) LIMIT …` wrapper.
+    app.exec.executeRead = async (result, req) => {
+      if (req.sql.includes("'v1'")) {
+        result.columns = [{ name: 'value', type: 'String' }, { name: 'label', type: 'String' }];
+        result.rows = [['v1', 'Label 1']];
+      } else {
+        result.columns = [{ name: 'only', type: 'String' }];
+        result.rows = [[1]];
+      }
+      result.error = null;
+      return result;
+    };
 
     const loaded = await app.workspace.loadById(seed.id);
     let workspace = loaded.status === 'ok' ? loaded.workspace : null;
@@ -111,6 +135,11 @@
       if (read.status !== 'ok') return null;
       const found = read.workspace.dashboards.find((d) => d.id === dashboardId);
       return found?.variableConfigs?.[name]?.sql ?? null;
+    };
+    /** The active tab's run result, narrowed to what the Run specs check. */
+    window.__runResult = () => {
+      const r = app.activeTab().result;
+      return r ? { error: r.error, rows: r.rows, columns: r.columns } : null;
     };
     window.__app = app;
     window.__ready = true;
