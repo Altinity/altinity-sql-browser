@@ -18,6 +18,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   to resolve `config.json` from the containing directory when `basePath` is a
   static filename (e.g. `sql.html`) rather than a route (e.g. `/sql`), which
   this static hosting case needs and the ClickHouse route did not exercise.
+- **File ▾ → Import example dashboard…** (#506): a modal dialog lists the three
+  flagship example dashboards (ClickHouse Operations, Shop Charts, OnTime
+  Charts) by their catalogue name; Import is disabled until one is selected,
+  and Cancel/Escape/close leave the workspace untouched. Selecting one runs it
+  through the exact same portable-bundle decode/validate/dependency-closure/
+  commit path a file-based **Import dashboard…** uses — purely additive, so an
+  existing Dashboard is never replaced or merged into. The catalogue is
+  `examples/dashboard-manifest.json` (the ordered `{file, name}` source of
+  truth) plus the three referenced `examples/*.json` files, compiled by the new
+  `build/compile-example-dashboards.mjs` into the checked-in
+  `src/generated/example-dashboards.ts` (mirroring the JSON-Schema generation
+  pipeline) so the catalogue ships inside the single build artifact; `npm run
+  check:examples` (wired into `prebuild`/`pretest`) fails the build on a
+  missing, malformed, or stale example so one cannot ship unnoticed.
 
 ### Changed
 - **`shop-charts.json` and `ontime-charts.json` moved to portable-bundle v2 /
@@ -65,6 +79,86 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   still wins either way.
 
 ### Added
+- **Dashboard and Panel rows act directly, and the `⋯` overflow menus are gone**
+  (#494 / #429 phase 4). A Dashboard row now carries a pencil and a trash; a
+  Panel row carries a pencil that edits its dedicated query's name and
+  description, and a trash that removes the tile *and* that query in one atomic
+  commit. Both clusters follow the Library Query row's vocabulary: revealed on
+  hover and `:focus-within`, destructive action rightmost, each button
+  separately named for a screen reader (`Edit Revenue`, `Remove Revenue from
+  dashboard`), each keyboard-operable inside the row's single tab stop, and
+  each isolated from the row's own click/Shift-click/expand gestures.
+
+  Deleting anything **confirms first**, naming both the panel and the Dashboard
+  and saying that the dedicated query copy goes too — with keyboard focus on
+  Cancel, through the same `autofocus` row #501 added for the orphaned-variable
+  confirm. A panel delete removes the
+  tile, every layout placement (including the grafana-grid flow fallback) and
+  exactly its owned query, bumps that Dashboard's revision once, and moves
+  keyboard focus to the next panel row — then the previous, then the Panels
+  group. An orphaned variable configuration deliberately survives.
+
+  Edit and delete are only offered when ownership can be **proven**: the tile's
+  query must exist and be owned by that one tile. A query shared between panels,
+  or a reference to a query the workspace no longer carries, leaves both
+  controls rendered but `aria-disabled` with the reason in their tooltip —
+  nothing is ever guessed or cascade-deleted. Every dialog and confirmation
+  re-resolves its target inside the write queue, so one that went stale while it
+  was open commits nothing and says so.
+
+  Every one of those operations re-proves the **exact identity** the user
+  confirmed, inside the write queue: the Dashboard, the tile, the query the
+  confirmation named, that the tile still references it, that exactly one
+  document carries that id, and that it is a panel-role query. A tile
+  re-pointed while the confirmation was open, an ambiguous id, or a reference
+  to a non-panel query all refuse and say why, rather than deleting whatever
+  the tile happens to point at by then.
+
+  A fifth review pass found the Dashboard/tile identity check was looser than
+  delete's own: both the tree's availability rule and the metadata guard asked
+  "is there at least one match" rather than "is there exactly one", so two
+  Dashboard documents sharing an id — or two tiles of the *same* Dashboard
+  sharing an id, even when they reference different queries — could still
+  offer a pencil that delete already refused. Both now count Dashboard and
+  Dashboard-local tile ids the same pass counts query ids, and refuse
+  identically. The pencil's own rapid-reactivation race is fixed too:
+  replacing an already-open dialog force-closes it first, and that closing
+  dialog's `onClose` used to reset the *same* trigger's `aria-expanded` back to
+  `"false"` right after the new dialog had just set it `"true"` — stranding
+  the trigger effectively unfocusable for as long as the replacement stayed
+  open. And the viewer's tile-description override now trims before the
+  fallback, matching its title override (#476): a whitespace-only description
+  is schema-legal and was silently masking the query's own description with
+  nothing, since the tree's own warning note already trimmed and so never
+  fired for it.
+
+  A sixth pass found the fifth round's own fix incomplete: counting duplicated
+  ids made edit/delete agree with delete's stricter rule, but the row's
+  *presentation* identity — `row.key`, and the `data-key` every focus
+  restoration, drag highlight and the roving tabindex resolve by — still
+  collapsed two ambiguous rows onto one key. A duplicated Dashboard or tile id
+  could therefore put more than one row in the Tab order at once, and let
+  focus/highlight resolution silently pick whichever matching DOM node came
+  first. Malformed duplicates now get distinct presentation keys, and a
+  Panel row's own View/Edit Dashboard-focus navigation (addressed by
+  Dashboard id + tile id, unlike its still-available open-query gesture,
+  addressed by query id alone) is withheld under the same ambiguity — the
+  Dashboard viewer's own tile-focus lookup is keyed by tile id alone and
+  would otherwise resolve the *other* duplicate. Every drop target this
+  ambiguity could reach (the Dashboard row, its Panels group, and a Variable
+  row) is withheld too.
+
+  The same pass found the orphaned-variable trash still discarding its own
+  commit outcome (`void commitVariableConfig(...)`) — the one destructive
+  control on this row that predates this round's `reportRemoval` pattern for
+  the Dashboard and Panel trash. A concurrent Dashboard deletion, a Dashboard
+  that became a duplicate id, or a storage rejection all committed nothing
+  and said nothing: the confirmation just closed. It now awaits and reports
+  the outcome the same way, and the orphan-delete control is itself withheld
+  when the Dashboard id is already known to be ambiguous.
+
+  Not yet included: the **Open in Dashboard** focus button, which is held back
+  until #438 fixes tile focus on flow-layout KPI tiles.
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
   tab strip's close button asks before discarding an unsaved draft — a normal
   query tab or a Dashboard-variable's option SQL, saved-linked or never saved
@@ -84,11 +178,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   after a save that clears a draft's dirty flags while navigating away from
   its surface mid-write, rather than only on the next unrelated tab repaint.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
-  Revealed on hover/focus-within next to the existing `⋯`, it opens a small
-  dialog prefilled from the Dashboard's own committed document — Cancel and
-  Escape commit nothing, a blank title disables Save, and a real commit bumps
-  only that Dashboard's revision and refreshes the tree and any open Dashboard
-  surface. There is still no Dashboard **trash** action.
+  It opens a small dialog prefilled from the Dashboard's own committed
+  document — Cancel and Escape commit nothing, a blank title disables Save, and
+  a real commit bumps only that Dashboard's revision and refreshes the tree and
+  any open Dashboard surface. (Phase 3 put this pencil beside the row's `⋯`
+  menu and shipped no Dashboard trash; #494 above then removed that menu and
+  added the trash, so what ships in this release is the pencil as part of the
+  direct-action cluster.)
 - **Drag a Library query onto a Dashboard to assign it** (#428). One drag from the
   lower Library list now has three destination-dependent meanings, and the row
   publishes two independent payloads to serve them:
@@ -188,6 +284,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no row appears, disappears or moves when the work surface changes.
 
 ### Fixed
+- **Enter on a Dashboard-tree action button ran the row's command instead of the
+  button's** (#495 review). The tree's keyboard handler lives on the list and its
+  Enter arm runs the focused row's action, so Enter on the rename pencil opened
+  the Dashboard — and could swallow the button's own activation on the way. Every
+  nested control now stops Enter/Space from propagating (without preventing the
+  default, so native activation still fires exactly once), and the tree handler
+  independently ignores an Enter that originated on a button. Arrow keys, Home and
+  End still walk the tree from a focused control.
+- **A failed Dashboard rename closed its dialog and discarded the edit** (#495
+  review). The dialog now waits for the write: a Dashboard deleted in another tab,
+  a duplicate id, a validation rejection or a storage failure keeps the card open
+  with the typed text intact and shows one targeted message inside it. Both
+  buttons are disabled while a write is in flight, so the same rename cannot be
+  submitted twice.
+- **Creating a Dashboard from the empty-workspace placeholder said nothing when
+  the commit was rejected** (#495 review / #481). Both entry points — File ▸ New
+  dashboard… and the placeholder — now run one creation command and report
+  identically; each keeps its own "where to go afterwards" policy.
+- **Modal dialogs were invisible to assistive technology** (#495 review). The
+  shared dialog shell now marks its card `role="dialog"` with `aria-modal="true"`
+  and an `aria-labelledby` pointing at its own heading, so a screen reader is told
+  a modal opened and which one.
 - **A Dashboard variable's Run action validates its option SQL again** (#465,
   follow-up to #457). #457 moved option SQL into a `dashboard-variable` main-editor
   tab and deleted the drawer's **Test** action along with it, but nothing replaced

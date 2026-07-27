@@ -64,7 +64,8 @@ import type {
 import {
   appendDashboard, createNewWorkspace, renameWorkspace,
 } from '../workspace/workspace-operations.js';
-import { DEFAULT_DASHBOARD_TITLE, createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
+import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
@@ -74,6 +75,8 @@ import type {
   DashboardDocumentV2, PortableBundleV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../generated/json-schema.types.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
+import { EXAMPLE_DASHBOARDS } from '../generated/example-dashboards.js';
+import type { ExampleDashboardEntry } from '../generated/example-dashboards.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
  *  collapses spaces). */
@@ -188,6 +191,10 @@ const ROW_ICONS: Record<FileMenuActionId, () => Node> = {
   'export-workspace': () => Icon.download(),
   'import-queries': () => Icon.upload(),
   'import-dashboard': () => Icon.upload(),
+  // #506: the catalogue book glyph, not another `upload` — this row picks from
+  // a shipped list rather than a file, and the two adjacent import rows would
+  // otherwise read as duplicates.
+  'import-example-dashboard': () => Icon.book(),
   'export-dashboard': () => Icon.download(),
   'download-md': () => Icon.download(),
   'download-sql': () => Icon.download(),
@@ -236,6 +243,7 @@ export function openFileMenu(
     'export-workspace': () => { void exportWorkspaceAction(app); },
     'import-queries': () => importQueriesInput.click(),
     'import-dashboard': () => importDashboardInput.click(),
+    'import-example-dashboard': () => openExampleDashboardDialog(app),
     // Re-RESOLVED on activation, not read from the model built when the menu
     // opened. Nothing forces an open menu to close when another tab's commit
     // lands, so the Dashboard collection behind a `choose` decision can be empty
@@ -306,31 +314,37 @@ const BUNDLE_IDENTITY_CODES = new Set([
 const isUnrecognizedBundleFormat = (diagnostics: readonly WorkspaceDiagnostic[]): boolean =>
   diagnostics.length === 1 && BUNDLE_IDENTITY_CODES.has(diagnostics[0].code);
 
-/** Read + decode one portable-bundle (or legacy Library v1/v2) JSON file, then
+/** Decode one portable-bundle (or legacy Library v1/v2) JSON string, then
  *  `onBundle(bundle)`. `decodePortableBundleJson` runs first; a
  *  format/version-identity failure falls back to
  *  `normalizeLegacyLibraryToBundle` (legacy Library → an in-memory bundle with
  *  `dashboards: []`). Any other failure (or a failed fallback) toasts the
- *  first diagnostic and aborts — never a partial import. */
+ *  first diagnostic and aborts — never a partial import. Shared by every
+ *  bundle source this menu reads text from — a file picker (`readBundleFile`
+ *  below) and the shipped example catalogue (#506) — so a decode failure is
+ *  handled identically whichever one it came from. */
+function decodeBundleText(app: App, text: string, onBundle: (bundle: PortableBundleV2) => void): void {
+  const nowISO = new Date(app.wallNow()).toISOString();
+  // `decodePortableBundleJson` validates an EXISTING document (it always
+  // carries its own `exportedAt`) — `nowISO` is only meaningful for the
+  // legacy fallback below, which builds a fresh bundle envelope around
+  // queries that may have no `exportedAt` of their own.
+  const decoded = decodePortableBundleJson(text);
+  if (decoded.ok) { onBundle(decoded.value); return; }
+  if (!isUnrecognizedBundleFormat(decoded.diagnostics)) {
+    flashToast('✕ ' + first(decoded.diagnostics, 'Could not read file'), { document: app.document });
+    return;
+  }
+  const legacy = normalizeLegacyLibraryToBundle(text, { nowISO });
+  if (legacy.ok) { onBundle(legacy.value); return; }
+  flashToast('✕ ' + first(legacy.diagnostics, 'Unrecognized file format'), { document: app.document });
+}
+
+/** Read + decode one portable-bundle (or legacy Library v1/v2) JSON file, then
+ *  `onBundle(bundle)` — see `decodeBundleText` above for the decode rules. */
 function readBundleFile(app: App, file: File, onBundle: (bundle: PortableBundleV2) => void): void {
   const reader = new (app.FileReader || globalThis.FileReader)();
-  reader.onload = () => {
-    const text = String(reader.result);
-    const nowISO = new Date(app.wallNow()).toISOString();
-    // `decodePortableBundleJson` validates an EXISTING document (it always
-    // carries its own `exportedAt`) — `nowISO` is only meaningful for the
-    // legacy fallback below, which builds a fresh bundle envelope around
-    // queries that may have no `exportedAt` of their own.
-    const decoded = decodePortableBundleJson(text);
-    if (decoded.ok) { onBundle(decoded.value); return; }
-    if (!isUnrecognizedBundleFormat(decoded.diagnostics)) {
-      flashToast('✕ ' + first(decoded.diagnostics, 'Could not read file'), { document: app.document });
-      return;
-    }
-    const legacy = normalizeLegacyLibraryToBundle(text, { nowISO });
-    if (legacy.ok) { onBundle(legacy.value); return; }
-    flashToast('✕ ' + first(legacy.diagnostics, 'Unrecognized file format'), { document: app.document });
-  };
+  reader.onload = () => decodeBundleText(app, String(reader.result), onBundle);
   reader.onerror = () => flashToast('✕ Could not read file', { document: app.document });
   reader.readAsText(file);
 }
@@ -709,27 +723,34 @@ function newDashboardAction(app: App): void {
 /**
  * Append one empty Dashboard to the workspace and open it in Edit mode (#463).
  *
- * Additive by construction: `appendDashboard` preserves every existing Dashboard
- * and query in place, so nothing here can reach `dashboards[0]` or the
- * compatibility slot.
+ * The mint/append/report half is `application/dashboard-create.ts` — the ONE
+ * creation command, shared with the empty-workspace placeholder since #495
+ * review 3, so the two entry points cannot disagree about what a rejected
+ * commit means. What stays here is this entry point's own reveal policy.
  *
- * The document is minted BEFORE the commit is queued, unlike the imports — which
- * must re-plan against the dequeue-time baseline because their content depends
- * on it. An empty Dashboard's content does not: it is a self-contained value
- * with a freshly minted id, and only the APPEND has to see `latest`. That is
- * what lets the navigation below name exactly what was committed without reading
- * anything back out of the aggregate.
- *
- * A rejected commit leaves navigation and local state untouched —
- * `commitWorkspace` toasts the diagnostic and answers `false`.
+ * A rejected commit leaves navigation and local state untouched, and reports
+ * through the same `dashboardCreateMessage` the placeholder uses. The success
+ * toast fires here rather than inside `commitWorkspace` because this path no
+ * longer goes through it — `afterLibraryChange` is still owed, since a new
+ * Dashboard changes what the sidebar renders.
  */
 async function doNewDashboard(app: App, name: string): Promise<void> {
-  const created: DashboardDocumentV2 = createEmptyDashboard(app.genId(), name);
-  const committed = await commitWorkspace(
-    app, (latest) => appendDashboard(latest ?? currentWorkspace(app), created), 'Created dashboard',
-  );
-  if (!committed) return;
-  revealDashboard(app, created.id);
+  const outcome = await createDashboard({
+    mutateWorkspace: app.mutateWorkspace,
+    genId: app.genId,
+    // The one path that reaches a workspace with no persisted aggregate at
+    // all: `currentWorkspace` synthesizes the envelope from projected state
+    // (and folds in the live in-memory Dashboard), which is what lets the
+    // very first Dashboard of a fresh workspace be created here.
+    baseline: () => currentWorkspace(app),
+  }, name);
+  const message = dashboardCreateMessage(outcome);
+  if (message !== null) flashToast(message, { document: app.document });
+  if (!outcome.ok) return;
+  // #343 §2: `mutateWorkspace` already projected the committed workspace; this
+  // is the local re-render every file-menu commit owes afterwards.
+  afterLibraryChange(app);
+  revealDashboard(app, outcome.data!);
 }
 
 /**
@@ -850,6 +871,61 @@ function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: stri
       if (committed) revealDashboard(app, lastPlan!.importedDashboardId!);
     });
   });
+}
+
+// ── actions: Import example dashboard (#506) ────────────────────────────────
+
+/**
+ * The picker for the shipped example catalogue (#506): a single-select list
+ * of `EXAMPLE_DASHBOARDS`, in manifest order (`role="radio"` rows inside a
+ * `role="radiogroup"`), with Import/Cancel buttons. Import starts disabled
+ * and stays disabled until a row is selected; clicking a row selects it
+ * without closing the dialog (unlike `openDashboardPicker`, whose click IS
+ * the pick — this one needs a separate confirm step). Cancel, Escape, and an
+ * outside click all close the dialog through the shared shell with no
+ * `startImportExampleDashboard` call — no workspace change either way.
+ */
+function openExampleDashboardDialog(app: App): void {
+  let selected: ExampleDashboardEntry | null = null;
+  // Disabled until `select` below runs at least once — a disabled button
+  // dispatches no click in a real browser, so `selected` is never read null.
+  const confirm = h('button', {
+    class: 'fm-dialog-confirm', disabled: true,
+    onclick: () => {
+      handle.close();
+      startImportExampleDashboard(app, selected!);
+    },
+  }, 'Import') as HTMLButtonElement;
+  const select = (entry: ExampleDashboardEntry, button: HTMLButtonElement): void => {
+    selected = entry;
+    confirm.disabled = false;
+    for (const row of rows) row.setAttribute('aria-checked', row === button ? 'true' : 'false');
+  };
+  const rows: HTMLButtonElement[] = EXAMPLE_DASHBOARDS.map((entry) => {
+    const button = h('button', {
+      class: 'fm-item', role: 'radio', 'aria-checked': 'false',
+    }, h('span', { class: 'fm-label' }, entry.name)) as HTMLButtonElement;
+    button.addEventListener('click', () => select(entry, button));
+    return button;
+  });
+  const handle = openFileDialogShell(app, 'Import example dashboard', [
+    h('div', { class: 'fm-dialog-body fm-picker-list', role: 'radiogroup', 'aria-label': 'Example dashboards' }, rows),
+    h('div', { class: 'fm-dialog-actions' },
+      h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel'),
+      confirm),
+  ], 'fm-dialog-card--wide');
+  setTimeout(() => rows[0]?.focus());
+}
+
+/** Decode one embedded example bundle and run it through the SAME additive
+ *  Dashboard-import pipeline a picked file uses (`startImportDashboard`) —
+ *  #506 requires reusing the existing import/codec/validation/commit path
+ *  rather than a second importer. Exported so a malformed or unrecognizable
+ *  embedded example (which build-time validation should already have caught)
+ *  still fails the same way a bad file does: a toast, and no workspace
+ *  change — directly testable without going through the dialog. */
+export function startImportExampleDashboard(app: App, entry: ExampleDashboardEntry): void {
+  decodeBundleText(app, entry.json, (bundle) => startImportDashboard(app, bundle));
 }
 
 // ── actions: Import workspace ────────────────────────────────────────────────

@@ -79,8 +79,8 @@ import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
-import { DEFAULT_DASHBOARD_TITLE, createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
-import { appendDashboard } from '../workspace/workspace-operations.js';
+import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
+import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
 import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
@@ -404,23 +404,31 @@ function renderDashboardNotFound(app: DashboardApp, target: DashboardRenderTarge
 
 /**
  * Append one empty Dashboard — named through the same prompt File ▸ New
- * dashboard… uses — and open it (#429 phase 3/#481). Additive by
- * construction: `appendDashboard` preserves every existing Dashboard and
- * query in place, so this never reaches `dashboards[0]`/the compatibility
- * slot the way the pre-#481 placeholder did.
+ * dashboard… uses — and open it (#429 phase 3/#481).
  *
- * The `!latest` guard is required by `appendDashboard`'s non-nullable
- * parameter but is provably dead at runtime: `app.mutateWorkspace` only ever
- * invokes this transform once a workspace has actually loaded.
+ * Both the mint/append transform and the report are `createDashboard` /
+ * `dashboardCreateMessage` (`application/dashboard-create.ts`), shared with
+ * the File menu since #495 review 3: this path used to call
+ * `app.mutateWorkspace` directly and say NOTHING when the commit was
+ * rejected, so a storage or validation failure looked exactly like a dialog
+ * that had done its job. What stays here is the placeholder's own reveal
+ * policy — select the new Dashboard in whichever mode this surface is
+ * already showing.
  */
 async function doCreateDashboardFromPlaceholder(
   app: DashboardApp, name: string, target: DashboardRenderTarget, surfaceGeneration: number,
 ): Promise<void> {
-  const created = createEmptyDashboard(app.genId(), name);
-  const outcome = await app.mutateWorkspace<string>((latest) => (
-    !latest ? null : { candidate: appendDashboard(latest, created), data: created.id }
-  ));
+  const outcome = await createDashboard({
+    mutateWorkspace: app.mutateWorkspace,
+    genId: app.genId,
+    // This surface only renders once a workspace is projected, so the
+    // fallback is the projection itself; `null` (no workspace at all) aborts
+    // exactly as the pre-#495 transform's own `!latest` guard did.
+    baseline: () => app.currentWorkspace,
+  }, name);
   if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
+  const message = dashboardCreateMessage(outcome);
+  if (message !== null) flashToast(message, { document: app.document });
   // #425: SELECT what we just created rather than re-rendering an unselected
   // surface. Without this the session would keep reporting Query mode while a
   // Dashboard is on screen — harmless today (every consumer falls back to the

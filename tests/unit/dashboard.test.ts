@@ -4051,6 +4051,46 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(openDashboard).toHaveBeenCalledWith({ dashboardId: created.id, mode: 'edit' });
   });
 
+  // #495 review 3: the placeholder and File ▸ New dashboard… run ONE creation
+  // command now (`application/dashboard-create.ts`). It used to call
+  // `mutateWorkspace` directly and say nothing at all when the commit was
+  // rejected, so a storage or validation failure was indistinguishable from
+  // success — the File menu had always toasted the same failure.
+  it('reports a rejected create instead of failing silently', async () => {
+    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
+    const commit = vi.fn(async () => ({
+      ok: false as const,
+      diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'Storage is full' }],
+    }));
+    const { app } = modeApp({ workspace: empty, mode: 'edit' });
+    app.workspace.commit = commit as unknown as App['workspace']['commit'];
+    const openDashboard = vi.fn();
+    app.openDashboard = openDashboard;
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!.click();
+    await flush();
+    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ Storage is full');
+    // Nothing was created, so nothing is opened.
+    expect(openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('creates the first Dashboard of a workspace with no persisted aggregate yet', async () => {
+    // `mutateWorkspace` hands the transform `null` until an aggregate has been
+    // committed once; the projected workspace is the baseline this entry point
+    // supplies, exactly as the File menu supplies its own.
+    const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
+    const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
+    app.workspace.loadById = (async () => ({ status: 'empty' as const })) as App['workspace']['loadById'];
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-create').click();
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!.click();
+    await flush();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(commit.mock.calls[0][0].dashboards).toHaveLength(1);
+    expect(document.querySelector('.share-toast')?.textContent).toBe('Created dashboard');
+  });
+
   it('cancelling the prompt commits nothing', async () => {
     const empty = { ...wsWith(), dashboards: [] } as unknown as ReturnType<typeof wsWith>;
     const { app, commit } = modeApp({ workspace: empty, mode: 'edit' });
@@ -4309,7 +4349,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     openFileMenuBtn(app.root);
     expect(menuItems()).toEqual([
       'New workspace…', 'New dashboard…',
-      'Import workspace…', 'Import queries…', 'Import dashboard…',
+      'Import workspace…', 'Import queries…', 'Import dashboard…', 'Import example dashboard…',
       'Export workspace…', 'Export dashboard…',
       'Download Library as Markdown', 'Download Library as SQL',
     ]);
@@ -4319,11 +4359,11 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     expect(document.querySelector('.dash-file-btn')).toBeNull();
   });
 
-  it('Dashboard Edit enables all three Dashboard rows against the rendered document', async () => {
+  it('Dashboard Edit enables all four Dashboard rows against the rendered document', async () => {
     const { app } = editApp();
     await render(app);
     openFileMenuBtn(app.root);
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
     }
   });
@@ -4365,9 +4405,9 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     const importRow = menuRow('Import queries…');
     expect(importRow.getAttribute('aria-disabled')).toBe('true');
     expect(importRow.querySelector('.fm-reason')!.textContent).toBe('Edit mode only');
-    // #463: the three Dashboard commands are workspace operations, so View — a
+    // #463: the four Dashboard commands are workspace operations, so View — a
     // presentation choice, not an authorization boundary — does not gate them.
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
     }
   });
@@ -4378,7 +4418,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-empty')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(9);
+    expect(menuItems()).toHaveLength(10);
     expect(menuRow('Export dashboard…').querySelector('.fm-reason')!.textContent).toBe('No dashboards');
   });
 
@@ -4387,7 +4427,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-notfound')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(9);
+    expect(menuItems()).toHaveLength(10);
     expect(menuRow('Export workspace…').querySelector('.fm-reason')!.textContent).toBe('No workspace');
   });
 

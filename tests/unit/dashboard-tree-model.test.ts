@@ -269,7 +269,9 @@ describe('deriveDashboardTree — variable inference', () => {
     expect(only.invalid).toBeNull();
     expect(only.severity).toBeNull();
     expect(only.diagnostic).toBeNull();
-    expect(only.deletable).toBe(false);
+    // An ACTIVE variable is inferred from the panel SQL — there is no stored
+    // configuration of its own to edit or delete.
+    expect(only.actions).toEqual([]);
   });
 
   it('still produces ONE row when several panels declare the same name and type', () => {
@@ -297,8 +299,8 @@ describe('deriveDashboardTree — variable inference', () => {
     expect(rows[0].meta).toBe('String | UInt64');
     expect(rows[0].invalid).toBe('variable-conflict');
     expect(rows[0].severity).toBe('error');
-    // Never deletable: there is no stored configuration behind a conflict.
-    expect(rows[0].deletable).toBe(false);
+    // Never has an action: there is no stored configuration behind a conflict.
+    expect(rows[0].actions).toEqual([]);
   });
 
   it('names the conflicting panel/query usages in the hover text, the way the TREE labels them', () => {
@@ -347,7 +349,16 @@ describe('deriveDashboardTree — variable inference', () => {
     expect(orphan.diagnostic).toContain('not referenced by any Dashboard panel');
     // The remembered type still displays, so the row is not mysteriously blank.
     expect(orphan.meta).toBe('String');
-    expect(orphan.deletable).toBe(true);
+    // #494: an orphan's ONE action is the trash for its stored option SQL,
+    // fully resolved and carrying the confirmation sentence.
+    expect(orphan.actions).toEqual([{
+      kind: 'delete-variable-config',
+      label: 'Delete the stored option SQL for region',
+      tooltip: 'Delete stored option SQL',
+      target: { kind: 'variable-config', dashboardId: 'd', name: 'region' },
+      unavailable: null,
+      confirm: 'Delete the stored option SQL for “region”? The SQL is lost.',
+    }]);
   });
 
   it('shows NO type for an orphan whose configuration never recorded one', () => {
@@ -405,7 +416,13 @@ describe('deriveDashboardTree — invalid panel references', () => {
     const broken = row(derive(workspace(), allOpen(['d'])).rows, 'w1:d:tile:t-broken');
     expect(broken.double).toMatchObject({ kind: 'open-dashboard' });
     expect(broken.shift).toMatchObject({ kind: 'open-dashboard' });
-    expect(broken.menu.map((item) => item.command === null)).toEqual([true, false, false]);
+    // #494: both direct controls still RENDER — the row's vocabulary does not
+    // shrink — but neither can act on a query that is not in the workspace.
+    expect(broken.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+    expect(broken.actions.every((a) => a.target === null)).toBe(true);
+    expect(broken.actions.every((a) => a.confirm === null)).toBe(true);
+    expect(broken.actions[0].unavailable).toContain('not in this workspace');
+    expect(broken.actions[1].unavailable).toBe(broken.actions[0].unavailable);
   });
 
   it('never hides the Dashboard because one reference is bad', () => {
@@ -585,7 +602,8 @@ describe('deriveDashboardTree — search', () => {
     // like any other, where before it was a dead click.
     expect(dash.single).toMatchObject({ kind: 'open-dashboard', request: { mode: 'view' } });
     expect(dash.shift).toMatchObject({ kind: 'open-dashboard', request: { mode: 'edit' } });
-    expect(dash.menu).toHaveLength(1);
+    // The search forcing expansion open does not touch the row's OWN actions.
+    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
   });
 
   it('every row is toggleable again once the search clears', () => {
@@ -685,18 +703,18 @@ describe('deriveDashboardTree — command sets', () => {
     expect(dash.shift).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'edit' } });
     // Both requests name the Dashboard alone: a Dashboard row focuses no member.
     expect('focus' in (dash.single as { request: object }).request).toBe(false);
-    // *Open in View* is redundant once the row itself opens View; *Open in Edit*
-    // stays, being reachable only through the hidden Shift modifier otherwise.
-    expect(dash.menu.map((item) => item.label)).toEqual(['Open in Edit']);
-    expect(dash.menu.every((item) => item.command !== null)).toBe(true);
+    // #494 removed the `⋯` menu — *Open in Edit* was its last item, and Shift
+    // (asserted above via `shift`) is still how Edit is reached. The row's
+    // vocabulary is now its two direct actions, and nothing else mirrors a menu.
+    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
   });
 
-  it('gives a group row ONLY a toggle — no double, no Shift, no menu', () => {
+  it('gives a group row ONLY a toggle — no double, no Shift, no actions', () => {
     const group = row(tree().rows, 'w1:d:group:panels');
     expect(group.single).toEqual({ kind: 'toggle' });
     expect(group.double).toBeNull();
     expect(group.shift).toBeNull();
-    expect(group.menu).toEqual([]);
+    expect(group.actions).toEqual([]);
   });
 
   it('gives a panel row query-open plus tile-focused View/Edit, addressed by TILE id', () => {
@@ -711,36 +729,41 @@ describe('deriveDashboardTree — command sets', () => {
       kind: 'open-dashboard',
       request: { dashboardId: 'd', mode: 'edit', focus: { kind: 'tile', id: 't1' } },
     });
-    expect(panel.menu.map((item) => item.label)).toEqual([
-      'Open query',
-      'Open Dashboard in View and focus panel',
-      'Open Dashboard in Edit and focus panel',
-    ]);
+    // #494 removed the `⋯` menu — Open query/View/Edit are the gestures above;
+    // this healthy panel's SOLE owner is this tile, so its own edit/delete
+    // controls are fully resolved rather than withheld.
+    expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+    expect(panel.actions.every((a) => a.target !== null)).toBe(true);
+    expect(panel.actions.every((a) => a.unavailable === null)).toBe(true);
   });
 
   // #447: a variable row activates its own editor and offers NOTHING else — no
   // `…` menu (the issue forbids it), and no hidden double/Shift gesture a menu
   // would have to expose.
-  it('gives a variable row open-variable and no menu, double or Shift action', () => {
+  it('gives a variable row open-variable and no double or Shift action', () => {
     const variable = row(tree().rows, 'w1:d:variable:region');
     expect(variable.single).toEqual({ kind: 'open-variable', dashboardId: 'd', name: 'region' });
     expect(variable.double).toBeNull();
     expect(variable.shift).toBeNull();
-    expect(variable.menu).toEqual([]);
+    // 'region' is declared by no panel SQL in this fixture (the tile's query is
+    // plain `SELECT 1`), so it is the orphaned case — its ONE action is the
+    // trash, never a menu mirroring the gestures above.
+    expect(variable.actions.map((a) => a.kind)).toEqual(['delete-variable-config']);
     expect(variable.queryId).toBeNull();
     expect(variable.member).toEqual({ kind: 'variable', id: 'region' });
   });
 
-  // #429 phase 3: the metadata pencil is a Dashboard-row-only affordance —
-  // panel edit (phase 4) is a SEPARATE control, and a group/variable row has
-  // no document of its own to rename.
-  it('offers the rename affordance on the Dashboard row only', () => {
+  // #429 phase 3 / #494: editing is now expressed as an `edit-*` action rather
+  // than a `renamable` boolean — a Dashboard row and a healthy Panel row both
+  // carry one; a group or variable row never does (a variable's own SQL is
+  // reached through its `open-variable` command, not a pencil).
+  it('offers an edit action on the Dashboard row and the Panel row only', () => {
     const rows = tree().rows;
-    expect(row(rows, 'w1:d').renamable).toBe(true);
-    expect(row(rows, 'w1:d:group:panels').renamable).toBe(false);
-    expect(row(rows, 'w1:d:group:variables').renamable).toBe(false);
-    expect(row(rows, 'w1:d:tile:t1').renamable).toBe(false);
-    expect(row(rows, 'w1:d:variable:region').renamable).toBe(false);
+    expect(row(rows, 'w1:d').actions.some((a) => a.kind === 'edit-dashboard')).toBe(true);
+    expect(row(rows, 'w1:d:group:panels').actions.some((a) => a.kind.startsWith('edit-'))).toBe(false);
+    expect(row(rows, 'w1:d:group:variables').actions.some((a) => a.kind.startsWith('edit-'))).toBe(false);
+    expect(row(rows, 'w1:d:tile:t1').actions.some((a) => a.kind === 'edit-panel')).toBe(true);
+    expect(row(rows, 'w1:d:variable:region').actions.some((a) => a.kind.startsWith('edit-'))).toBe(false);
   });
 
   it('marks member rows as non-expandable leaves at level 3', () => {
@@ -750,6 +773,268 @@ describe('deriveDashboardTree — command sets', () => {
       expect(member.expanded).toBe(false);
       expect(member.level).toBe(3);
     }
+  });
+});
+
+// #494 replaced `menu` / `deletable` / `renamable` with one resolved `actions`
+// list per row. These are the CONTRACT for `panelActions` and the Dashboard /
+// variable action literals — every branch that decides `target: null` vs a
+// resolved target is exercised here, not just the shape of the field.
+describe('deriveDashboardTree — direct actions (#494)', () => {
+  it('gives a healthy Panel row edit and delete, in that order, fully resolved', () => {
+    const tree = derive(ws({
+      dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] })],
+      queries: [query('q1', 'Q1')],
+    }), allOpen(['d']));
+    const panel = row(tree.rows, 'w1:d:tile:t1');
+    // Accessible names identify the RESOURCE, never a bare "Edit" — a screen
+    // reader hears many rows' buttons in sequence.
+    expect(panel.actions).toEqual([
+      {
+        kind: 'edit-panel', label: 'Edit Q1', tooltip: 'Edit name & description',
+        target: { kind: 'panel', dashboardId: 'd', tileId: 't1', queryId: 'q1' },
+        unavailable: null, confirm: null,
+      },
+      {
+        kind: 'delete-panel', label: 'Remove Q1 from dashboard', tooltip: 'Remove panel',
+        target: { kind: 'panel', dashboardId: 'd', tileId: 't1', queryId: 'q1' },
+        unavailable: null,
+        confirm: 'Remove panel “Q1” from “D”? This also deletes its dedicated query copy.',
+      },
+    ]);
+  });
+
+  it('names the Dashboard row\'s own controls "Edit dashboard <title>" / "Delete dashboard <title>"', () => {
+    const tree = derive(ws({ dashboards: [dashboard({ id: 'd', title: 'D' })] }));
+    const dash = row(tree.rows, 'w1:d');
+    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions.map((a) => a.label)).toEqual(['Edit dashboard D', 'Delete dashboard D']);
+    expect(dash.actions[1].confirm).toBe('Delete dashboard “D”? This also deletes every query its panels own.');
+  });
+
+  it('falls back to the row\'s own Untitled label in an action name, on both row kinds', () => {
+    const tree = derive(ws({
+      dashboards: [dashboard({ id: 'd', title: '   ', tiles: [{ id: 't1', queryId: 'q1' }] })],
+      queries: [query('q1')],
+    }), allOpen(['d']));
+    const dash = row(tree.rows, 'w1:d');
+    const panel = row(tree.rows, 'w1:d:tile:t1');
+    // Same fallback the ROW itself displays — never a second, disagreeing default.
+    expect(dash.label).toBe(UNTITLED_DASHBOARD);
+    expect(panel.label).toBe(UNTITLED_PANEL);
+    expect(dash.actions.map((a) => a.label)).toEqual([
+      'Edit dashboard ' + UNTITLED_DASHBOARD, 'Delete dashboard ' + UNTITLED_DASHBOARD,
+    ]);
+    expect(panel.actions.map((a) => a.label)).toEqual([
+      'Edit ' + UNTITLED_PANEL, 'Remove ' + UNTITLED_PANEL + ' from dashboard',
+    ]);
+    expect(panel.actions[1].confirm).toBe(
+      'Remove panel “' + UNTITLED_PANEL + '” from “' + UNTITLED_DASHBOARD
+      + '”? This also deletes its dedicated query copy.',
+    );
+  });
+
+  // The #427 exactly-one-owner rule, checked against every shape that fails it.
+  // Every case asserts the SAME shape — both panel actions withheld, the row's
+  // own navigation untouched — so a future branch that forgets one arm shows up
+  // as a failing case here rather than a silent regression.
+  describe('the #427 exactly-one-owner rule (malformed ownership)', () => {
+    const bothUnavailable = (member: DashboardTreeRow): void => {
+      expect(member.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+      for (const a of member.actions) {
+        expect(a.target).toBeNull();
+        expect(a.confirm).toBeNull();
+        expect(a.unavailable).not.toBeNull();
+      }
+    };
+
+    it('(a) withholds both actions when the queryId names no query in the collection', () => {
+      const tree = derive(ws({
+        dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q-gone' }] })],
+        queries: [],
+      }), allOpen(['d']));
+      const panel = row(tree.rows, 'w1:d:tile:t1');
+      bothUnavailable(panel);
+      expect(panel.actions[0].unavailable).toContain('not in this workspace');
+      // The broken reference still leaves View/Edit focus navigation reachable —
+      // only the operation that needs the missing query is withheld.
+      expect(panel.single).toBeNull();
+      expect(panel.double).toMatchObject({ kind: 'open-dashboard' });
+      expect(panel.shift).toMatchObject({ kind: 'open-dashboard' });
+    });
+
+    it('(b) withholds both actions on TWO tiles of the SAME Dashboard sharing one query', () => {
+      const tree = derive(ws({
+        dashboards: [dashboard({
+          id: 'd', title: 'D',
+          tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }],
+        })],
+        queries: [query('q1', 'Q1')],
+      }), allOpen(['d']));
+      const t1 = row(tree.rows, 'w1:d:tile:t1');
+      const t2 = row(tree.rows, 'w1:d:tile:t2');
+      bothUnavailable(t1);
+      bothUnavailable(t2);
+      expect(t1.actions[0].unavailable).toContain('shared with another panel');
+      // The query itself resolves fine, so the row's own open-query gesture and
+      // Dashboard focus navigation are both untouched.
+      expect(t1.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(t2.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(t1.double).toMatchObject({ kind: 'open-dashboard' });
+    });
+
+    it('(c) withholds both actions on two tiles of DIFFERENT Dashboards sharing one query', () => {
+      const tree = derive(ws({
+        dashboards: [
+          dashboard({ id: 'd1', title: 'D1', tiles: [{ id: 't1', queryId: 'shared' }] }),
+          dashboard({ id: 'd2', title: 'D2', tiles: [{ id: 't2', queryId: 'shared' }] }),
+        ],
+        queries: [query('shared', 'Shared')],
+      }), allOpen(['d1', 'd2']));
+      const t1 = row(tree.rows, 'w1:d1:tile:t1');
+      const t2 = row(tree.rows, 'w1:d2:tile:t2');
+      bothUnavailable(t1);
+      bothUnavailable(t2);
+      expect(t1.actions[0].unavailable).toContain('shared with another panel');
+      expect(t1.single).toEqual({ kind: 'open-query', queryId: 'shared' });
+      expect(t2.single).toEqual({ kind: 'open-query', queryId: 'shared' });
+    });
+
+    it('(d) withholds both actions on a tile with NO queryId at all', () => {
+      const tree = derive(ws({
+        dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1' }] })],
+      }), allOpen(['d']));
+      const panel = row(tree.rows, 'w1:d:tile:t1');
+      bothUnavailable(panel);
+      expect(panel.actions[0].unavailable).toContain('not in this workspace');
+      expect(panel.single).toBeNull();
+    });
+
+    it('gives a missing query and a shared query DIFFERENT reasons', () => {
+      const missing = derive(ws({
+        dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q-gone' }] })],
+      }), allOpen(['d']));
+      const shared = derive(ws({
+        dashboards: [dashboard({
+          id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }],
+        })],
+        queries: [query('q1', 'Q1')],
+      }), allOpen(['d']));
+      const missingReason = row(missing.rows, 'w1:d:tile:t1').actions[0].unavailable;
+      const sharedReason = row(shared.rows, 'w1:d:tile:t1').actions[0].unavailable;
+      expect(missingReason).not.toBe(sharedReason);
+    });
+  });
+
+  // A different failure shape than the #427 exactly-one-owner rule above:
+  // this is an ambiguous ID, not an ownership conflict — the #427 index alone
+  // cannot see it (each query still has exactly one owner), which is exactly
+  // why deriveDashboardTree has to check cardinality on the id itself, ahead
+  // of ownership, and why `removeDashboardPanel`/`removeDashboardDocument`
+  // already refuse the same shapes (`dashboard-duplicate`/`tile-duplicate`).
+  describe('ambiguous Dashboard/tile identity', () => {
+    it('withholds Dashboard edit/delete on TWO Dashboard documents sharing one id, and gives each row a DISTINCT presentation key', () => {
+      const tree = derive(ws({
+        dashboards: [
+          dashboard({ id: 'd', title: 'D1', tiles: [{ id: 't1', queryId: 'q1' }] }),
+          dashboard({ id: 'd', title: 'D2' }),
+        ],
+        queries: [query('q1', 'Q1')],
+      }), allOpen(['d']));
+      // No two rows share a key: `keys` below is exactly `tree.rows.length` long
+      // as a set. That is what keeps the roving tabindex, `data-key` focus
+      // restoration and drag highlighting — all resolved by `row.key` alone —
+      // from ever picking the wrong (first-in-DOM) row.
+      const keys = tree.rows.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      const dash0 = row(tree.rows, 'w1:d:dup:0');
+      const dash1 = row(tree.rows, 'w1:d:dup:1');
+      for (const dash of [dash0, dash1]) {
+        expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+        for (const a of dash.actions) {
+          expect(a.target).toBeNull();
+          expect(a.confirm).toBeNull();
+          expect(a.unavailable).toContain('share this id');
+        }
+        // An ambiguous Dashboard id is not a drop destination either — same
+        // reasoning as the pencil/trash above: `dashboardId` alone has two
+        // answers here.
+        expect(dash.dropTarget).toBeNull();
+      }
+      // The ambiguity cascades to the panels underneath: which Dashboard "d"
+      // even is has no answer, so its tiles cannot be resolved either — and the
+      // panel row's own key inherits dash0's `:dup:0` disambiguation rather
+      // than colliding on the bare `tileRowKey` shape.
+      const panel = row(tree.rows, 'w1:d:dup:0:tile:t1');
+      expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+      for (const a of panel.actions) {
+        expect(a.target).toBeNull();
+        expect(a.unavailable).toContain('share this id');
+      }
+      // View/Edit Dashboard-focus navigation is withheld too: both are
+      // addressed by dashboard.id + tile.id, and the Dashboard half is
+      // ambiguous — only the query-open gesture (addressed by queryId alone)
+      // survives.
+      expect(panel.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(panel.double).toBeNull();
+      expect(panel.shift).toBeNull();
+    });
+
+    it('withholds panel edit/delete on TWO tiles of the SAME Dashboard sharing one tileId, even when they reference DIFFERENT queries', () => {
+      const tree = derive(ws({
+        dashboards: [dashboard({
+          id: 'd', title: 'D',
+          tiles: [{ id: 't1', queryId: 'q1' }, { id: 't1', queryId: 'q2' }],
+        })],
+        queries: [query('q1', 'Q1'), query('q2', 'Q2')],
+      }), allOpen(['d']));
+      const keys = tree.rows.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      const first = row(tree.rows, 'w1:d:tile:t1:dup:0');
+      const second = row(tree.rows, 'w1:d:tile:t1:dup:1');
+      for (const panel of [first, second]) {
+        expect(panel.actions.map((a) => a.kind)).toEqual(['edit-panel', 'delete-panel']);
+        for (const a of panel.actions) {
+          expect(a.target).toBeNull();
+          expect(a.confirm).toBeNull();
+          expect(a.unavailable).toContain('share this id');
+        }
+        // View/Edit navigation is withheld: the Dashboard viewer resolves tile
+        // focus by tile id alone, so an ambiguous id could focus/highlight the
+        // OTHER duplicate instead of the row that was actually activated.
+        expect(panel.double).toBeNull();
+        expect(panel.shift).toBeNull();
+      }
+      // Each tile still resolves its OWN open-query gesture — only the
+      // identity-addressed edit/delete/navigation controls are withheld.
+      expect(first.single).toEqual({ kind: 'open-query', queryId: 'q1' });
+      expect(second.single).toEqual({ kind: 'open-query', queryId: 'q2' });
+    });
+  });
+
+  it('gives no actions to a group row or an ACTIVE (non-orphaned) variable row', () => {
+    const tree = derive(ws({
+      dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] })],
+      queries: [query('q1', 'Q1', undefined, 'SELECT 1 WHERE c = {country:String}')],
+    }), allOpen(['d']));
+    expect(row(tree.rows, 'w1:d:group:panels').actions).toEqual([]);
+    expect(row(tree.rows, 'w1:d:group:variables').actions).toEqual([]);
+    expect(row(tree.rows, 'w1:d:variable:country').actions).toEqual([]);
+  });
+
+  it('gives an orphaned variable row exactly one action, with its confirm sentence', () => {
+    const tree = derive(ws({
+      dashboards: [dashboard({ id: 'd', title: 'D', variableConfigs: { region: { sql: 'SELECT r, r' } } })],
+    }), allOpen(['d']));
+    const orphan = row(tree.rows, 'w1:d:variable:region');
+    expect(orphan.actions).toEqual([{
+      kind: 'delete-variable-config',
+      label: 'Delete the stored option SQL for region',
+      tooltip: 'Delete stored option SQL',
+      target: { kind: 'variable-config', dashboardId: 'd', name: 'region' },
+      unavailable: null,
+      confirm: 'Delete the stored option SQL for “region”? The SQL is lost.',
+    }]);
   });
 });
 
@@ -846,7 +1131,7 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
   it('rejects an ORPHANED variable row, which stays editable and deletable', () => {
     const rows = derive(fixture(), allOpen(['d1'])).rows;
     const orphan = row(rows, 'w1:d1:variable:region');
-    expect(orphan.deletable).toBe(true);
+    expect(orphan.actions.map((a) => a.kind)).toEqual(['delete-variable-config']);
     expect(orphan.dropTarget).toBeNull();
   });
 
@@ -880,6 +1165,30 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
       .toEqual({ kind: 'panel', dashboardId: 'empty' });
   });
 
+  it('rejects every drop target and the orphan delete when the Dashboard id is duplicated', () => {
+    const rows = derive(ws({
+      dashboards: [
+        dashboard({ id: 'd1', variableConfigs: { region: { sql: 'SELECT r, r' } } }),
+        dashboard({ id: 'd1' }),
+      ],
+    }), allOpen(['d1'])).rows;
+    // Both Dashboard rows, under their disambiguated presentation keys.
+    expect(row(rows, 'w1:d1:dup:0').dropTarget).toBeNull();
+    expect(row(rows, 'w1:d1:dup:0:group:panels').dropTarget).toBeNull();
+    // An orphaned variable's delete is addressed by dashboardId alone too —
+    // ambiguous the same way, and `commitVariableConfig`'s own guard refuses
+    // it the same way `removeDashboardDocument` refuses the Dashboard delete.
+    const orphan = row(rows, 'w1:d1:dup:0:variable:region');
+    expect(orphan.actions).toEqual([{
+      kind: 'delete-variable-config',
+      label: 'Delete the stored option SQL for region',
+      tooltip: 'Two dashboards in this workspace share this id, so this stored option SQL cannot be removed here.',
+      target: null,
+      unavailable: 'Two dashboards in this workspace share this id, so this stored option SQL cannot be removed here.',
+      confirm: null,
+    }]);
+  });
+
   it('preserves case-sensitive variable identity in the target', () => {
     const cased = ws({
       queries: [query('q1', 'Q', undefined, 'SELECT {Country:String}')],
@@ -887,5 +1196,56 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
     });
     expect(row(derive(cased, allOpen(['d1'])).rows, 'w1:d1:variable:Country').dropTarget)
       .toEqual({ kind: 'variable', dashboardId: 'd1', variableName: 'Country' });
+  });
+
+  it('withholds edit and delete from a tile whose query is not a PANEL query', () => {
+    // The semantic validator calls this out (`dashboard-setup-reference` /
+    // `dashboard-tile-role-incompatible`). Offering the controls anyway would
+    // let a delete "repair" the workspace by destroying the evidence.
+    const tree = deriveDashboardTree({
+      workspace: {
+        id: 'w1',
+        queries: [{ id: 'q1', sql: 'SELECT 1', spec: { name: 'Setup', dashboard: { role: 'setup' } } }],
+        dashboards: [{ id: 'd1', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] }],
+      },
+      surface: QUERY_SURFACE,
+      ui: allOpen(['d1']),
+    });
+    const panel = tree.rows.find((row) => row.kind === 'panel')!;
+    expect(panel.actions.map((action) => action.kind)).toEqual(['edit-panel', 'delete-panel']);
+    for (const action of panel.actions) {
+      expect(action.target).toBeNull();
+      expect(action.unavailable).toBe(
+        'This panel references a query that is not a panel query, so it cannot be edited or removed here.',
+      );
+    }
+    // The row itself still navigates — only the WRITES are withheld.
+    expect(panel.single).not.toBeNull();
+    expect(panel.double).not.toBeNull();
+  });
+
+  it('withholds edit and delete when TWO query documents carry the panel\'s query id', () => {
+    // The commit paths refuse this state, so the model must not offer a
+    // control that opens a dialog only to refuse at the end of it. The
+    // projection collapses duplicates into one map entry, so cardinality is
+    // counted separately.
+    const query = { id: 'q1', sql: 'SELECT 1', spec: { name: 'Twin' } };
+    const tree = deriveDashboardTree({
+      workspace: {
+        id: 'w1',
+        queries: [query, query],
+        dashboards: [{ id: 'd1', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] }],
+      },
+      surface: QUERY_SURFACE,
+      ui: allOpen(['d1']),
+    });
+    const panel = tree.rows.find((row) => row.kind === 'panel')!;
+    expect(panel.actions.map((action) => action.kind)).toEqual(['edit-panel', 'delete-panel']);
+    for (const action of panel.actions) {
+      expect(action.target).toBeNull();
+      expect(action.unavailable).toBe(
+        'Two saved queries in this workspace share this panel’s query id, so it cannot be edited or removed here.',
+      );
+    }
   });
 });

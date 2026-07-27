@@ -68,7 +68,7 @@ export interface FileMenuContext {
 
 export type FileMenuActionId =
   | 'new-workspace' | 'new-dashboard'
-  | 'import-workspace' | 'import-queries' | 'import-dashboard'
+  | 'import-workspace' | 'import-queries' | 'import-dashboard' | 'import-example-dashboard'
   | 'export-workspace' | 'export-dashboard'
   | 'download-md' | 'download-sql';
 
@@ -105,7 +105,7 @@ export type DashboardExportTarget =
   | { readonly kind: 'choose' };
 
 export interface FileMenuModel {
-  /** All nine rows, always, in the settled order. */
+  /** All ten rows, always, in the settled order. */
   readonly items: readonly FileMenuItemSpec[];
   readonly footer: string;
   /** Non-null exactly when the `export-dashboard` row is enabled. */
@@ -204,7 +204,7 @@ export function fileMenuFooter(ctx: FileMenuContext): string {
     + ` · ${plural(ctx.dashboardIds.length, 'dashboard', 'dashboards')}`;
 }
 
-/** The whole menu for one context: the nine rows in their settled order, the
+/** The whole menu for one context: the ten rows in their settled order, the
  *  footer, and the Export target. The target rides along with the rows so
  *  "this row is enabled" and "here is what it acts on" are decided ONCE, by the
  *  same rule, and cannot drift apart at the call site. */
@@ -232,6 +232,10 @@ export function fileMenuModel(ctx: FileMenuContext): FileMenuModel {
       // no longer asks which surface you are on or which Dashboard is open —
       // there is no longer anything for it to overwrite.
       row('import-dashboard', 'Import dashboard…', null, noWorkspace),
+      // #506: picks from the shipped example catalogue instead of a file, but
+      // is otherwise the same additive append — same availability rule as
+      // `import-dashboard`.
+      row('import-example-dashboard', 'Import example dashboard…', null, noWorkspace),
       row('export-workspace', 'Export workspace…', '.json', noWorkspace, true),
       // #463: gated on the WORKSPACE holding a Dashboard, not on one being on
       // screen. `exportDashboardTargetOf` and this reason read the same list, so
