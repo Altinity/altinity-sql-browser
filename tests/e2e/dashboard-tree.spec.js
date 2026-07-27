@@ -223,7 +223,7 @@ test.describe('Dashboard hierarchy tree', () => {
     const tree = page.getByRole('tree', { name: 'Dashboards' });
     await expect(tree.getByRole('treeitem', { name: 'Sales revenue 2', exact: true })).toHaveCount(1);
     // No row's own name may contain a control's verb.
-    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for|Edit dashboard/ })).toHaveCount(0);
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Edit dashboard|Delete dashboard/ })).toHaveCount(0);
     // The controls keep those names for themselves. The pencil is `display:
     // none` (and thus absent from the accessibility tree) until the row is
     // hovered or holds focus, like the trailing `⋯` it sits beside.
@@ -232,7 +232,7 @@ test.describe('Dashboard hierarchy tree', () => {
     await expect(tree.getByRole('button', { name: 'Edit dashboard Sales revenue' })).toHaveCount(1);
     await tree.getByRole('button', { name: 'Expand Sales revenue' }).click();
     await expect(tree.getByRole('button', { name: 'Collapse Sales revenue' })).toHaveCount(1);
-    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for|Edit dashboard/ })).toHaveCount(0);
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Edit dashboard|Delete dashboard/ })).toHaveCount(0);
   });
 
   test('a Dashboard Shift-click on the name opens Edit', async ({ page }) => {
@@ -321,9 +321,8 @@ test.describe('Dashboard hierarchy tree', () => {
       const style = getComputedStyle(el);
       return {
         what: el.classList.contains('dash-tree-chev') ? 'chevron'
-          : el.classList.contains('dash-tree-rename-btn') ? 'pencil'
-            : el.classList.contains('dash-tree-menu-btn') ? 'menu'
-              : el.dataset.key ?? el.tagName,
+          : el.classList.contains('dash-tree-act') ? el.getAttribute('aria-label')
+            : el.dataset.key ?? el.tagName,
         outline: style.outlineStyle === 'none' ? 'none' : style.outlineWidth + ' ' + style.outlineStyle,
         shadow: style.boxShadow,
       };
@@ -339,9 +338,14 @@ test.describe('Dashboard hierarchy tree', () => {
     await page.keyboard.press('Tab');
     const pencil = await ring();
     await page.keyboard.press('Tab');
-    const menu = await ring();
+    const trash = await ring();
 
-    expect([row.what, chevron.what, pencil.what, menu.what]).toEqual(['workspace:sales', 'chevron', 'pencil', 'menu']);
+    // #494: the trailing target became a CLUSTER — pencil then trash, the
+    // destructive one last — and Tab reaches both inside the one composite
+    // tab stop, in paint order.
+    expect([row.what, chevron.what, pencil.what, trash.what]).toEqual([
+      'workspace:sales', 'chevron', 'Edit dashboard Sales revenue', 'Delete dashboard Sales revenue',
+    ]);
     // The row rings with a box-shadow and no outline; the chevron with an outline and
     // no shadow. Different channels, so neither reads as the other — and neither
     // trailing button matches the chevron's channel.
@@ -350,7 +354,7 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(chevron.outline).toContain('solid');
     expect(chevron.shadow).toBe('none');
     expect(pencil.outline).not.toBe(chevron.outline);
-    expect(menu.outline).not.toBe(chevron.outline);
+    expect(trash.outline).not.toBe(chevron.outline);
     // Nothing was opened or expanded by walking the row.
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
@@ -398,17 +402,20 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 
-  // #429/#472 dropped *Open in View* — it is the row's own click now — and kept
-  // *Open in Edit*, whose only gestures are the hidden Shift modifiers.
-  test('the action menu exposes the Shift-click operation to the keyboard', async ({ page }) => {
+  // #494 removed the `⋯` from every production row: a Dashboard row's last
+  // menu item was *Open in Edit*, and Shift-click / Shift+Enter remain its
+  // gestures. What replaced the menu is two real buttons.
+  test('no row renders an overflow menu, and the direct controls are real buttons', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
+    await expect(page.locator('.dash-tree-menu-btn')).toHaveCount(0);
     const row = treeRow(page, 'workspace:sales');
     await row.hover();
-    await row.locator('.dash-tree-menu-btn').click();
-    await expect(page.locator('.dash-tree-menu')).toBeVisible();
-    await expect(page.locator('.dash-tree-menu .fm-label')).toHaveText(['Open in Edit']);
-    await page.locator('.dash-tree-menu .fm-item', { hasText: 'Open in Edit' }).click();
+    await expect(row.getByRole('button', { name: 'Edit dashboard Sales revenue' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Delete dashboard Sales revenue' })).toBeVisible();
+    // Shift+Enter still opens Edit mode, unchanged by the menu's removal.
+    await row.focus();
+    await page.keyboard.press('Shift+Enter');
     await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
       { kind: 'dashboard', dashboardId: 'sales', mode: 'edit' },
     ]);
@@ -455,13 +462,12 @@ test.describe('Dashboard hierarchy tree', () => {
 // compute either.
 test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
   // `display: none` (and thus unclickable/absent from the a11y tree) until the
-  // row is hovered or holds focus, like the trailing `⋯` it sits beside —
-  // every interaction here hovers the row first, matching how the existing
-  // `.dash-tree-menu-btn` tests above reach that button.
+  // row is hovered or holds focus, like every other control in #494's trailing
+  // cluster — so each interaction here hovers the row first.
   const pencil = async (page, key) => {
     const row = treeRow(page, key);
     await row.hover();
-    return row.locator('.dash-tree-rename-btn');
+    return row.locator('.dash-tree-act[aria-label^="Edit dashboard"]');
   };
   const dialog = (page) => page.locator('.fm-dialog-card');
 
@@ -470,10 +476,10 @@ test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
     await roleTab(page, 'Dashboards').click();
     await (await pencil(page, 'workspace:sales')).click();
     await expect(dialog(page)).toBeVisible();
-    await expect(dialog(page).locator('#dash-rename-title')).toHaveValue('Sales revenue');
+    await expect(dialog(page).locator('#dash-rename-name')).toHaveValue('Sales revenue');
     await expect(dialog(page).locator('#dash-rename-description')).toHaveValue('');
 
-    await dialog(page).locator('#dash-rename-title').fill('Sales revenue (EMEA)');
+    await dialog(page).locator('#dash-rename-name').fill('Sales revenue (EMEA)');
     await dialog(page).locator('#dash-rename-description').fill('Quarterly figures');
     await dialog(page).getByRole('button', { name: 'Save' }).click();
     await expect(dialog(page)).toHaveCount(0);
@@ -492,13 +498,13 @@ test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     await (await pencil(page, 'workspace:sales')).click();
-    await dialog(page).locator('#dash-rename-title').fill('Should not be saved');
+    await dialog(page).locator('#dash-rename-name').fill('Should not be saved');
     await page.keyboard.press('Escape');
     await expect(dialog(page)).toHaveCount(0);
     await expect(treeRow(page, 'workspace:sales').locator('.label')).toHaveText('Sales revenue');
 
     await (await pencil(page, 'workspace:sales')).click();
-    await dialog(page).locator('#dash-rename-title').fill('Should not be saved either');
+    await dialog(page).locator('#dash-rename-name').fill('Should not be saved either');
     await dialog(page).getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog(page)).toHaveCount(0);
     await expect(treeRow(page, 'workspace:sales').locator('.label')).toHaveText('Sales revenue');
@@ -510,7 +516,7 @@ test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     await (await pencil(page, 'workspace:sales')).click();
-    await dialog(page).locator('#dash-rename-title').fill('   ');
+    await dialog(page).locator('#dash-rename-name').fill('   ');
     await expect(dialog(page).getByRole('button', { name: 'Save' })).toBeDisabled();
     await page.keyboard.press('Escape');
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
@@ -712,5 +718,158 @@ test.describe('Library → Dashboard assignment (#428)', () => {
     await expect(treeRow(page, 'workspace:ops:group:panels')).toHaveCount(1);
     await expect(treeRow(page, 'workspace:ops:group:variables')).toHaveCount(1);
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
+  });
+});
+
+/**
+ * #494/#495 — the direct action cluster in a REAL browser.
+ *
+ * Everything here is real-browser-only on purpose: the controls are
+ * `display: none` until hover/`:focus-within` (so happy-dom, which enforces no
+ * CSS at all, cannot tell an unreachable control from a reachable one), native
+ * Enter/Space activation is a browser behaviour rather than a DOM API, and
+ * `getByRole` is the only cross-engine way to read an accessible name.
+ */
+test.describe('direct row actions (#494)', () => {
+  const act = async (page, key, name) => {
+    const row = treeRow(page, key);
+    await row.hover();
+    return row.getByRole('button', { name });
+  };
+
+  test('Enter on the pencil opens exactly one dialog and does NOT open the Dashboard', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    // Tab to the pencil the way a keyboard user reaches it — row, chevron,
+    // pencil — rather than calling `.click()`, which is what let the #495
+    // review defect through: the tree's own Enter handler runs on the LIST and
+    // would otherwise navigate instead.
+    await treeRow(page, 'workspace:sales').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(treeRow(page, 'workspace:sales')
+      .getByRole('button', { name: 'Edit dashboard Sales revenue' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Edit dashboard' })).toBeVisible();
+    await expect(page.locator('.fm-dialog-card')).toHaveCount(1);
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    await page.keyboard.press('Escape');
+  });
+
+  test('Space on the pencil behaves the same, and neither navigates', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Space');
+    await expect(page.locator('.fm-dialog-card')).toHaveCount(1);
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    await page.keyboard.press('Escape');
+  });
+
+  test('the dialog announces itself as a modal named by its heading', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await (await act(page, 'workspace:sales', 'Edit dashboard Sales revenue')).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit dashboard' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    await page.keyboard.press('Escape');
+  });
+
+  test('a panel row exposes a pencil and a trash that name the panel', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+    const row = treeRow(page, 'workspace:sales:tile:t-rev');
+    await row.hover();
+    await expect(row.getByRole('button', { name: 'Edit Revenue' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Remove Revenue from dashboard' })).toBeVisible();
+    // The row's own announcement stays ITS own — nested control labels are not
+    // folded into the treeitem's accessible name.
+    await expect(page.getByRole('treeitem', { name: 'Revenue', exact: true })).toHaveCount(1);
+  });
+
+  test('the panel pencil edits the owned query and the tree label follows', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+    await (await act(page, 'workspace:sales:tile:t-rev', 'Edit Revenue')).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit panel' });
+    await expect(dialog).toBeVisible();
+    await dialog.locator('#panel-metadata-name').fill('Revenue by region');
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(treeRow(page, 'workspace:sales:tile:t-rev').locator('.label'))
+      .toHaveText('Revenue by region');
+    // Committed, not merely painted.
+    await expect.poll(async () => {
+      const committed = await page.evaluate(() => window.__committed());
+      return committed.queries.find((query) => query.id === 'q-rev').spec.name;
+    }).toBe('Revenue by region');
+  });
+
+  // #494: "narrow sidebar layout must preserve the label's usable width and
+  // ellipsis rather than overlapping or wrapping the controls". Two revealed
+  // buttons per row is one more than #429 phase 3 had, and happy-dom can see
+  // none of this — only a real layout can.
+  test('a long title still ellipsizes with the cluster revealed, and nothing overlaps', async ({ page }) => {
+    await open(page, 900);
+    await roleTab(page, 'Dashboards').click();
+    const row = treeRow(page, 'workspace:long');
+    await row.hover();
+    const box = await page.evaluate(() => {
+      const el = document.querySelector('.dash-tree-row[data-key="workspace:long"]');
+      const label = el.querySelector('.label');
+      const acts = [...el.querySelectorAll('.dash-tree-act')];
+      const list = document.querySelector('.dash-tree-list');
+      const listBox = list.getBoundingClientRect();
+      const labelBox = label.getBoundingClientRect();
+      return {
+        actCount: acts.length,
+        // The label is clipped, not wrapped: one line, and narrower than its
+        // own content.
+        lines: Math.round(labelBox.height),
+        clipped: label.scrollWidth > label.clientWidth,
+        // No control sits on top of the label…
+        overlap: acts.some((act) => act.getBoundingClientRect().left < labelBox.right - 0.5),
+        // …and, the assertion that actually bites: the label SHRINKS to make
+        // room, so both controls stay inside the visible pane instead of being
+        // pushed off its right edge where nothing can reach them.
+        spilled: acts.filter((act) => act.getBoundingClientRect().right > listBox.right + 0.5).length,
+        rowOverflow: el.scrollWidth - list.clientWidth,
+      };
+    });
+    expect(box.actCount).toBe(2);
+    expect(box.lines).toBeLessThanOrEqual(24);
+    expect(box.clipped).toBe(true);
+    expect(box.overlap).toBe(false);
+    expect(box.spilled).toBe(0);
+    expect(box.rowOverflow).toBeLessThanOrEqual(0);
+  });
+
+  test('the panel trash confirms, then removes the tile and its owned query', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.chev').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+    await (await act(page, 'workspace:sales:tile:t-cost', 'Remove Cost from dashboard')).click();
+    // A confirmation naming both resources, not an immediate delete.
+    await expect(page.locator('.dash-tree-confirm .fm-section'))
+      .toHaveText('Remove panel “Cost” from “Sales revenue”? This also deletes its dedicated query copy.');
+    await page.locator('.dash-tree-confirm .fm-item', { hasText: 'Remove panel' }).click();
+    await expect(treeRow(page, 'workspace:sales:tile:t-cost')).toHaveCount(0);
+    await expect.poll(async () => {
+      const committed = await page.evaluate(() => window.__committed());
+      return {
+        tiles: committed.dashboards.find((d) => d.id === 'sales').tiles.map((t) => t.id),
+        queries: committed.queries.map((q) => q.id).sort(),
+      };
+    }).toEqual({ tiles: ['t-rev'], queries: ['q-lib', 'q-rev'] });
+    // Focus did not vanish with the row it was standing on.
+    await expect(page.locator('.dash-tree-list')).toContainText('Revenue');
   });
 });

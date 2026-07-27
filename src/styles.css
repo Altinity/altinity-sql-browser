@@ -1780,11 +1780,12 @@ body.detached-tab .graph-overlay-panel {
    `disabled` — but visibly inert, with the reason in its tooltip. */
 .dash-tree-act[aria-disabled="true"] { opacity: .4; cursor: default; }
 .dash-tree-act[aria-disabled="true"]:hover { color: var(--fg-faint); background: transparent; }
-/* Each control carries its OWN focus ring, in a channel the row does not use —
-   #472's "three independent targets" now being up to four. */
-.dash-tree-row .dash-tree-act:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: -2px;
-}
+/* No custom focus ring here, deliberately: the chevron already owns the
+   `2px solid var(--accent)` outline channel, and #472 requires each of the
+   row's targets to be visibly DISTINGUISHABLE — the row rings with a
+   box-shadow, the chevron with that outline, and these keep the user agent's
+   own focus ring, which is what shipped with #429 phase 3's pencil. An e2e
+   test compares all three and fails if any two collapse into one look. */
 /* The delete CONFIRMATION, built from the shared menu primitive (ui/menu.ts) and
    anchored on the trash button. Wider than the action menu because its heading is
    a sentence stating what is lost. */

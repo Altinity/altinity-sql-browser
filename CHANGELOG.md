@@ -10,6 +10,33 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Dashboard and Panel rows act directly, and the `⋯` overflow menus are gone**
+  (#494 / #429 phase 4). A Dashboard row now carries a pencil and a trash; a
+  Panel row carries a pencil that edits its dedicated query's name and
+  description, and a trash that removes the tile *and* that query in one atomic
+  commit. Both clusters follow the Library Query row's vocabulary: revealed on
+  hover and `:focus-within`, destructive action rightmost, each button
+  separately named for a screen reader (`Edit Revenue`, `Remove Revenue from
+  dashboard`), each keyboard-operable inside the row's single tab stop, and
+  each isolated from the row's own click/Shift-click/expand gestures.
+
+  Deleting anything **confirms first**, naming both the panel and the Dashboard
+  and saying that the dedicated query copy goes too. A panel delete removes the
+  tile, every layout placement (including the grafana-grid flow fallback) and
+  exactly its owned query, bumps that Dashboard's revision once, and moves
+  keyboard focus to the next panel row — then the previous, then the Panels
+  group. An orphaned variable configuration deliberately survives.
+
+  Edit and delete are only offered when ownership can be **proven**: the tile's
+  query must exist and be owned by that one tile. A query shared between panels,
+  or a reference to a query the workspace no longer carries, leaves both
+  controls rendered but `aria-disabled` with the reason in their tooltip —
+  nothing is ever guessed or cascade-deleted. Every dialog and confirmation
+  re-resolves its target inside the write queue, so one that went stale while it
+  was open commits nothing and says so.
+
+  Not yet included: the **Open in Dashboard** focus button, which is held back
+  until #438 fixes tile focus on flow-layout KPI tiles.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   Revealed on hover/focus-within next to the existing `⋯`, it opens a small
   dialog prefilled from the Dashboard's own committed document — Cancel and
@@ -115,6 +142,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no row appears, disappears or moves when the work surface changes.
 
 ### Fixed
+- **Enter on a Dashboard-tree action button ran the row's command instead of the
+  button's** (#495 review). The tree's keyboard handler lives on the list and its
+  Enter arm runs the focused row's action, so Enter on the rename pencil opened
+  the Dashboard — and could swallow the button's own activation on the way. Every
+  nested control now stops Enter/Space from propagating (without preventing the
+  default, so native activation still fires exactly once), and the tree handler
+  independently ignores an Enter that originated on a button. Arrow keys, Home and
+  End still walk the tree from a focused control.
+- **A failed Dashboard rename closed its dialog and discarded the edit** (#495
+  review). The dialog now waits for the write: a Dashboard deleted in another tab,
+  a duplicate id, a validation rejection or a storage failure keeps the card open
+  with the typed text intact and shows one targeted message inside it. Both
+  buttons are disabled while a write is in flight, so the same rename cannot be
+  submitted twice.
+- **Creating a Dashboard from the empty-workspace placeholder said nothing when
+  the commit was rejected** (#495 review / #481). Both entry points — File ▸ New
+  dashboard… and the placeholder — now run one creation command and report
+  identically; each keeps its own "where to go afterwards" policy.
+- **Modal dialogs were invisible to assistive technology** (#495 review). The
+  shared dialog shell now marks its card `role="dialog"` with `aria-modal="true"`
+  and an `aria-labelledby` pointing at its own heading, so a screen reader is told
+  a modal opened and which one.
 - **A Dashboard variable's Run action validates its option SQL again** (#465,
   follow-up to #457). #457 moved option SQL into a `dashboard-variable` main-editor
   tab and deleted the drawer's **Test** action along with it, but nothing replaced
