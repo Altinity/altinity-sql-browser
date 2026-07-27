@@ -23,6 +23,13 @@ interface ToastEl extends HTMLElement {
   _timer?: number | null;
 }
 
+const DEFAULT_DURATION_MS = 1600;
+/** An error toast (the app's established convention: text starting with
+ *  '✕ ', used throughout file-menu.ts/dashboard.ts for every failed
+ *  open/import/save) stays up long enough to actually read — a failure
+ *  message gone in 1.6s couldn't be caught or copied. */
+const ERROR_DURATION_MS = 30_000;
+
 export function flashToast(text: string, opts: ToastOptions = {}): HTMLElement {
   const doc = opts.document || document;
   // Explicitly typed to the injected-seam shape (rather than left to widen to
@@ -31,7 +38,7 @@ export function flashToast(text: string, opts: ToastOptions = {}): HTMLElement {
   // return narrows in; clearTimeout's `number | undefined` param widens out).
   const setTimer: (handler: () => void, ms: number) => number = opts.setTimeout || setTimeout;
   const clearTimer: (id: number) => void = opts.clearTimeout || clearTimeout;
-  const duration = opts.duration ?? 1600;
+  const duration = opts.duration ?? (text.startsWith('✕') ? ERROR_DURATION_MS : DEFAULT_DURATION_MS);
 
   let el = doc.querySelector('.share-toast') as ToastEl | null;
   if (!el) {

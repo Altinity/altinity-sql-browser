@@ -35,6 +35,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (multi-)select again instead of pure freeform text, restoring the pre-#447
   browsing experience under the new inferred model.
 
+### Fixed
+- **A fresh time-range pair seeds to an active "-1d" → "now" range instead of
+  empty.** Most panel queries declare their `from`/`to` (or `start`/`end`,
+  `from_time`/`to_time`, `start_time`/`end_time`) variables directly in a
+  required `WHERE` clause, never behind an optional `/*[ … ]*/` block — so on
+  first load, before #447's curated `defaultValue` was removed, every one of
+  those panels was blocked until the user set a range by hand. A
+  never-persisted time-range bound (no committed value in this browser for
+  this Dashboard yet) now starts at a real, running `-1d` → `now`, active from
+  the first render; a variable outside every resolvable pair, or one with ANY
+  already-persisted value (even a deliberately cleared one), is untouched.
+- **An error toast now stays up long enough to read.** `flashToast` defaulted
+  every toast — success or failure — to the same 1.6s auto-dismiss, so a
+  failed open/import/save (`✕ …`, the app's established failure marker) could
+  vanish before it was even fully read, let alone copied for a bug report.
+  An error toast's default now runs 30s instead; a plain informational toast
+  (no leading `✕`) is unchanged. An explicit `duration` passed by the caller
+  still wins either way.
+
 ### Added
 - **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
   tab strip's close button asks before discarding an unsaved draft — a normal

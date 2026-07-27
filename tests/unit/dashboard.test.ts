@@ -3119,12 +3119,14 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     await render(app);
     document.body.appendChild(rootEl(app));
     const before = calls.length;
-    await applyRange(app, '-1d', 'now');
+    // Distinct from the fresh "-1d" → "now" default (#508) so this Apply is a
+    // genuine change, not a no-op against the already-committed seed.
+    await applyRange(app, '-3d', '-2h');
     const added = calls.slice(before).filter((c) => 'param_from' in c.params || 'param_to' in c.params);
     expect(added.length).toBeGreaterThanOrEqual(1);
     // One atomic wave binds BOTH parameters on every affected tile call.
     expect(added.every((c) => 'param_from' in c.params && 'param_to' in c.params)).toBe(true);
-    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -1d → now');
+    expect(qs(app.root, '.dash-topbar > .sr-only').textContent).toBe('Time range applied: -3d → -2h');
     // The bar rebuilt on the committed-value change and now shows a resolved,
     // active range (not "Not set").
     expect(qs(app.root, '.trf-trigger').textContent).not.toBe('Not set');
@@ -3153,7 +3155,9 @@ describe('renderDashboard — compound time-range control (#335)', () => {
       inputs[1].value = to; inputs[1].dispatchEvent(inputEv());
       qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
     };
-    startApply('-1d', 'now');
+    // Distinct from the fresh "-1d" → "now" default (#508) so this first Apply
+    // is a genuine change that actually starts the delayed request the gate holds.
+    startApply('-3d', '-2h');
     await flush();
     startApply('-7d', 'now');
     await flush();
@@ -3183,8 +3187,11 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     };
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
     const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
-    inputs[0].value = '-1d'; inputs[0].dispatchEvent(inputEv());
-    inputs[1].value = 'now'; inputs[1].dispatchEvent(inputEv());
+    // Distinct from the fresh "-1d" → "now" default (#508): an identical draft
+    // is a no-op the field itself short-circuits before ever calling `onApply`
+    // (see time-range-field.ts), which would skip this test's whole flow.
+    inputs[0].value = '-3d'; inputs[0].dispatchEvent(inputEv());
+    inputs[1].value = '-2h'; inputs[1].dispatchEvent(inputEv());
     qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
     await flush();
     surfaceGeneration += 1;
@@ -3194,13 +3201,15 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     rootEl(app).remove();
   });
 
-  it('pushes the OUTGOING committed pair to per-group recents on a changing re-apply, never on the first commit from unset', async () => {
+  it('pushes the OUTGOING committed pair to per-group recents on a changing re-apply, never on an identical no-op commit', async () => {
     const { app } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),
     });
     await render(app);
     document.body.appendChild(rootEl(app));
-    // First commit — the outgoing pair was unset/inactive, so nothing is pushed.
+    // First "commit" — identical to the fresh "-1d" → "now" default (#508), so
+    // the field's own identical-draft guard never even calls onApply; nothing
+    // is pushed.
     await applyRange(app, '-1d', 'now');
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
     expect(qs(document.body, '.trf-empty')?.textContent).toContain('No recent ranges yet');
@@ -3221,8 +3230,10 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     app.wallNow = () => clock;
     await render(app);
     document.body.appendChild(rootEl(app));
-    // #447: there are no persisted filter defaults to seed an active relative
-    // range — commit one through the control itself, then let `now` advance.
+    // #508: a fresh from/to pair already seeds to an ACTIVE "-1d" → "now"
+    // range, so this Apply is a no-op (kept for clarity/robustness against a
+    // future default change) — the assertions below just need `now` to advance
+    // under an already-resolved relative range.
     await applyRange(app, '-1d', 'now');
     const trigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
     const before = trigger.textContent;
@@ -3244,8 +3255,10 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     const oldTrigger = qs<HTMLButtonElement>(app.root, '.trf-trigger');
     oldTrigger.dispatchEvent(clickEv());
     const inputs = qsa<HTMLInputElement>(document.body, '.trf-input');
-    inputs[0].value = '-1d'; inputs[0].dispatchEvent(inputEv());
-    inputs[1].value = 'now'; inputs[1].dispatchEvent(inputEv());
+    // Distinct from the fresh "-1d" → "now" default (#508) so this Apply is a
+    // genuine committed-value change that rebuilds the bar.
+    inputs[0].value = '-3d'; inputs[0].dispatchEvent(inputEv());
+    inputs[1].value = '-2h'; inputs[1].dispatchEvent(inputEv());
     qs<HTMLButtonElement>(document.body, '.trf-btn-primary').dispatchEvent(clickEv());
     // The synchronous applyVariables publish rebuilt the bar, detaching the old
     // trigger — focus lands on the fresh one (never stranded at <body>).
@@ -3266,7 +3279,9 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     document.body.appendChild(rootEl(app));
     expect(qs(app.root, '.trf-trigger')).not.toBeNull();
     const before = calls.length;
-    await applyRange(app, '-1d', 'now');
+    // Distinct from the fresh "-1d" → "now" default (#508) so this Apply is a
+    // genuine change, not a no-op against the already-committed seed.
+    await applyRange(app, '-3d', '-2h');
     const added = calls.slice(before).filter((c) => 'param_from' in c.params && 'param_to' in c.params);
     expect(added.length).toBeGreaterThanOrEqual(1);
     rootEl(app).remove();

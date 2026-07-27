@@ -51,7 +51,7 @@ import {
 import type { VariableOption } from '../../core/variable-options.js';
 import { reconcileSelection } from '../../core/variable-selection.js';
 import { multiSelectElementType } from '../../core/param-type.js';
-import { resolveAuthoredTimeRangeGroups } from '../../core/time-range.js';
+import { resolveAuthoredTimeRangeGroups, resolveTimeRangeGroups } from '../../core/time-range.js';
 import type { DashboardTimeRangeGroup } from '../../core/time-range.js';
 import type { Diagnostic } from '../../core/diagnostics.js';
 import { newResult } from '../../core/stream.js';
@@ -618,6 +618,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // to bind and gate `unfilled`, while every panel that does not declare it
   // runs exactly as before.
   const bindable: DashboardVariable[] = bindableVariables(variables);
+  // A never-persisted time-range bound seeds to a real "-1d" → "now" range
+  // rather than empty: most panel queries declare `from`/`to` as REQUIRED
+  // (never behind an optional `/*[ … ]*/` block), so an empty seed blocked
+  // every one of that pair's panels on first load until the user set a range
+  // by hand. This is the same pure name/type gate `resolveAuthoredTimeRangeGroups`
+  // applies below for the authoritative, tile-scoped groups — run early and
+  // without a document's authored pairing metadata, which is not needed just
+  // to pick a sensible default. A variable outside every resolvable pair is
+  // untouched below and still starts genuinely unset.
+  const defaultTimeRangeRole = new Map<string, 'from' | 'to'>();
+  for (const group of resolveTimeRangeGroups({ variables: bindable, analysis, executableTileIds: knownTileIds })) {
+    defaultTimeRangeRole.set(group.fromVariableId, 'from');
+    defaultTimeRangeRole.set(group.toVariableId, 'to');
+  }
   // #447 phase 2: the ONE compiled option request for every CONFIGURED variable
   // (inferred, type-consistent, non-orphaned, with locally-acceptable option SQL
   // — `optionBatchVariables`' rule, applied inside the compiler). `null` when
@@ -671,20 +685,31 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // same pure predicate `fieldControlKind` renders the multi-select on, so the
     // session and the bar can never disagree about a variable's shape.
     const multiple = batchedNames.has(name) && multiSelectElementType(variable.type ?? '') !== null;
+    // A variable with NO persisted seed at all that is also a resolved
+    // time-range bound gets a running "-1d"/"now" default instead of unset —
+    // see `defaultTimeRangeRole` above. Any already-persisted seed (even a
+    // cleared, inactive one) is the user's real committed state and is never
+    // overridden.
+    const freshTimeRangeValue = seed === undefined ? defaultTimeRangeRole.get(name) === 'from' ? '-1d'
+      : defaultTimeRangeRole.get(name) === 'to' ? 'now' : null : null;
     // The store is untrusted, and a variable's type or its option SQL can change
     // under an already-persisted value. A seed of the WRONG SHAPE for what this
     // variable now binds would reach `serializeParamValue` as a `structural`
     // error and block every panel that declares it, so it degrades to unset
-    // instead of being carried forward.
+    // (or the fresh time-range default) instead of being carried forward.
     const seeded = seed !== undefined && Array.isArray(seed.value) === multiple
-      ? (seed.value ?? UNSET_VALUE) : UNSET_VALUE;
+      ? (seed.value ?? UNSET_VALUE) : (freshTimeRangeValue ?? UNSET_VALUE);
     const state: ViewerVariableState = {
       id: name, parameter: name, label: name,
       // A selection carries its own activation: an array seed that survived the
       // shape check is active iff it has elements. `commitValue` has already
       // reduced an empty one to `''`, so this can never leave an `Array(T)`
-      // parameter active with a scalar `''` bound.
-      active: multiple ? valueImpliesActive(seeded) : (seed !== undefined && !!seed.active),
+      // parameter active with a scalar `''` bound. A fresh time-range default
+      // is committed, not a draft, so it starts active too — otherwise the
+      // compound control would show "Not set" while the query underneath it
+      // already runs with a real range.
+      active: multiple ? valueImpliesActive(seeded)
+        : (seed !== undefined && !!seed.active) || freshTimeRangeValue !== null,
       value: commitValue(seeded),
       // A batched variable is 'loading' from the very first publish: its control
       // exists but cannot offer a choice until the batch returns. One whose SQL

@@ -23,6 +23,21 @@ describe('flashToast', () => {
     setTimeout.mock.calls[0][0]();
     expect(el.classList.contains('show')).toBe(false);
   });
+  it('defaults a plain message to the short 1600ms duration', () => {
+    const setTimeout = fakeSetTimeout(1);
+    flashToast('Saved', { document, setTimeout });
+    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 1600);
+  });
+  it('defaults an error message (leading ✕) to a much longer 30000ms duration so it can be read', () => {
+    const setTimeout = fakeSetTimeout(1);
+    flashToast('✕ Could not read file', { document, setTimeout });
+    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 30_000);
+  });
+  it('an explicit duration overrides the error-message default', () => {
+    const setTimeout = fakeSetTimeout(1);
+    flashToast('✕ Could not read file', { document, setTimeout, duration: 200 });
+    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 200);
+  });
   it('reuses the existing toast element and clears the prior timer', () => {
     const clearTimeout = vi.fn();
     const setTimeout = fakeSetTimeout(1);
