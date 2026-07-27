@@ -237,6 +237,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the input's rendered width or the one-row filter layout.
 
 ### Changed
+- **A Dashboard tree row is three independent targets: chevron, name, trailing
+  action** (#429 phase 2, absorbing #472). Clicking a Dashboard's **name** now
+  opens it in View — immediately, with no double-click window to sit through —
+  and Shift-click still opens Edit. Expansion belongs to the **chevron** alone,
+  which became a real button with its own accessible name (*Expand Sales* /
+  *Collapse Sales*), its own `aria-expanded`, its own focus ring and native
+  Enter/Space, and which never navigates. The trailing `⋯` does neither.
+
+  Before this, a single click only expanded the row and opening needed a
+  double-click, so navigation waited ~300ms on every click and the two operations
+  competed for one gesture. They no longer do, and the delayed arbitration is gone
+  from Dashboard rows entirely; a **panel** row's gestures are unchanged (click
+  opens its query, double-click and Shift-click focus the tile), so it still
+  arbitrates. Keyboard: `Enter` on a Dashboard row opens View, `Shift+Enter` opens
+  Edit, `→`/`←` still expand and collapse, and Tab reaches all three of a focused
+  row's targets without turning the tree into one tab stop per chevron.
+
+  The row's `⋯` menu loses **Open in View**, which is now simply what clicking the
+  row does, and keeps **Open in Edit**, whose only other forms are the hidden
+  Shift-click and `Shift+Enter` modifiers. A Dashboard the search is holding open
+  still cannot be collapsed (expansion state stays the user's), but its name now
+  opens it, where before that click did nothing at all.
 - **A Dashboard tile opens its own query in the Workbench; the Dashboard-level
   `< Query` button is gone** (#471). Every query-backed tile carries an
   **Open in Workbench** icon action in its own chrome, in both View and Edit mode

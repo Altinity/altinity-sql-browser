@@ -18,9 +18,15 @@
 // meta) deliberately: DESIGN.md asks for one tree vocabulary, and the two trees
 // then stay visually identical for free. The MARKUP is built here rather than
 // shared with `ui/schema.ts`'s private `treeRow` helper, because these rows need
-// `role="treeitem"`, `aria-level`, a chevron that is its own click target, and a
-// trailing action menu — enough divergence that sharing would mean parameterising
+// `role="treeitem"`, `aria-level`, a chevron that is its own disclosure BUTTON, and
+// a trailing action menu — enough divergence that sharing would mean parameterising
 // that helper into something neither caller reads clearly.
+//
+// #429/#472: a Dashboard row is THREE independent targets — the disclosure button
+// expands, the primary row content opens View (Shift opens Edit), and the trailing
+// control acts without doing either. The delayed single/double arbitration that
+// #426 needed there is gone, because expansion and navigation no longer compete for
+// one gesture; a PANEL row still arbitrates, its gestures being unchanged.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -94,6 +100,9 @@ export interface DashboardTreeApp {
 const INDENT_PX = 14;
 const OPEN_ROTATE = 'rotate(0deg)';
 const CLOSED_ROTATE = 'rotate(-90deg)';
+/** #429/#472: the disclosure BUTTON, on top of the shared `.chev` box the schema
+ *  tree also paints. Named once — the roving tabindex sync selects on it. */
+const CHEVRON_CLASS = 'dash-tree-chev';
 
 /** #447: `Icon.braces()` for the Variables group AND for a variable row — a
  *  variable IS a `{name:Type}` placeholder, so the brace glyph names it exactly,
@@ -118,6 +127,31 @@ const STATUS_LABELS: Record<Exclude<DashboardTreeInvalid, null>, string> = {
   'variable-conflict': 'Type conflict',
   'variable-unused': 'Unused',
 };
+
+/**
+ * The row's OWN announcement, stated explicitly rather than left to name-from-content.
+ *
+ * A `treeitem` takes its accessible name from its contents — and since #429/#472 those
+ * contents include a LABELLED BUTTON. Measured in Chromium
+ * (`Accessibility.getPartialAXTree`, not assumed): a screen reader arrowing onto the row
+ * announced *"Expand Sales revenue Sales revenue 2"*, and *"Collapse Sales revenue Sales
+ * revenue 2 Actions for Sales revenue"* once focus revealed the `⋯`. The chevron's and
+ * the menu's names were being swallowed into the row's, which is the opposite of #472's
+ * "three independent targets, each … separately announced". An explicit name stops the
+ * content walk at the row.
+ *
+ * Composed from the MODEL's strings, in the order the row paints them — name, count,
+ * status word, trailing meta, marker label — so it cannot drift from what is on screen,
+ * and nothing that was announced before is lost. The `title` diagnostic is unaffected:
+ * it was never the name (content won), and it stays the tooltip and the description.
+ */
+const rowAccessibleName = (row: DashboardTreeRow): string => [
+  row.label,
+  row.count === null ? '' : String(row.count),
+  row.invalid === 'variable-unused' ? UNUSED_VARIABLE_STATUS : '',
+  row.meta,
+  row.invalid === null ? '' : STATUS_LABELS[row.invalid],
+].filter((part) => part !== '').join(' ');
 
 /** One arbiter per app instance, surviving the repaints that replace every row. */
 function arbiterFor(app: DashboardTreeApp): ClickArbiter {
@@ -243,12 +277,47 @@ function commitUi(app: DashboardTreeApp, next: DashboardTreeUiState): void {
   renderDashboardTree(app);
 }
 
-/** Expand/collapse the row, whichever kind it is. */
-function toggleRow(app: DashboardTreeApp, row: DashboardTreeRow): void {
-  const ui = readUi(app);
+/**
+ * Expand/collapse a GROUP row — the only kind that still reaches here, and the only
+ * kind whose primary action is expansion at all. #429/#472 gave the Dashboard row's
+ * press to navigation, so the model emits `{ kind: 'toggle' }` for a group row and
+ * nothing else; a Dashboard row is expanded from its chevron
+ * (`toggleFromChevron`) or the arrow keys (`expand`), never through a command. That
+ * is why `row.group` is asserted rather than branched on — a Dashboard arm here
+ * would be unreachable.
+ */
+function toggleGroupRow(app: DashboardTreeApp, row: DashboardTreeRow): void {
+  commitUi(app, toggleGroupExpanded(readUi(app), row.dashboardId, row.group!));
+}
+
+/**
+ * Toggle from the disclosure control (#429/#472), which owes two things a bare
+ * `toggleRow` does not.
+ *
+ * The keyboard owner MOVES to this row — the same reason the row's own click moves
+ * it: the user just operated this row, so Tab and the arrow keys must continue from
+ * here rather than from wherever they were. It also makes the chevron's own
+ * `tabindex` 0, which is what keeps focus restoration below on a control that is
+ * still in the Tab order.
+ *
+ * And focus returns to the CHEVRON, because `commitUi` repaints through
+ * `replaceChildren` and the button that was just activated is gone. Landing on the
+ * row instead would mean one Space expands and the next Enter *navigates* — which is
+ * exactly the "toggles expansion only" contract broken by a focus side effect.
+ * Both writes go in one `commitUi`, so this is a single repaint.
+ *
+ * It deliberately does NOT cancel this row's pending single the way #426's chevron
+ * did. Only a row with a `double` is ever arbitrated, and since the split that means
+ * a PANEL row — which has no chevron. So there is nothing left for this key to
+ * cancel, and a `cancelFor` here would be a guard against a hazard the split
+ * removed. Another row's pending action is untouched either way, as #426 requires.
+ */
+function toggleFromChevron(app: DashboardTreeApp, row: DashboardTreeRow): void {
+  const ui = setKeyboardRow(readUi(app), row.key);
   commitUi(app, row.group === null
     ? toggleDashboardExpanded(ui, row.dashboardId)
     : toggleGroupExpanded(ui, row.dashboardId, row.group));
+  focusChevron(app.dom.dashboardTreeList!, row.key);
 }
 
 /**
@@ -285,7 +354,7 @@ function hoverExpand(app: DashboardTreeApp, row: DashboardTreeRow): void {
  * model resolves every argument, so there is nothing here to defend against.
  */
 function runCommand(app: DashboardTreeApp, row: DashboardTreeRow, command: DashboardTreeCommand): void {
-  if (command.kind === 'toggle') { toggleRow(app, row); return; }
+  if (command.kind === 'toggle') { toggleGroupRow(app, row); return; }
   if (command.kind === 'open-query') { app.openSavedQuery(command.queryId); return; }
   if (command.kind === 'open-variable') {
     app.openVariableTab(command.dashboardId, command.name);
@@ -457,11 +526,14 @@ function dropProps(app: DashboardTreeApp, row: DashboardTreeRow): Record<string,
       ondrop: (event: DragEvent) => {
         if (!carriesLibraryQuery(event)) return;
         event.preventDefault();
-        // A drop must not also register as a click on the row: the arbiter may be
-        // holding a deferred "open this dashboard" that would otherwise fire
-        // ~300ms later and navigate away from the tree.
+        // The drop is handled here and nowhere else. #428 also cancelled this row's
+        // deferred single-click, because the arbiter could be holding an "open this
+        // dashboard" that would fire ~300ms after the drop and navigate away from
+        // the tree; #429/#472 removed that hazard at the source. Only a row with a
+        // double-click action is arbitrated at all, which now means a PANEL row —
+        // and a panel row accepts no drop, so there is no pending action left here
+        // to cancel.
         event.stopPropagation();
-        app._dashTreeArbiter?.cancelFor(row.key);
         const raw = event.dataTransfer!.getData(LIBRARY_QUERY_MIME);
         endLibraryDrag(app);
         void dispatchDrop(app, row, target, raw);
@@ -527,23 +599,7 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
 function buildRow(
   app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, ui: DashboardTreeUiState,
 ): HTMLElement {
-  const chevron = h('span', {
-    class: 'chev',
-    style: row.expandable ? { transform: row.expanded ? OPEN_ROTATE : CLOSED_ROTATE } : null,
-    // The chevron is the deliberate INSTANT path for expansion: a Dashboard row's
-    // own click has to wait out the double-click window, so this gives the user a
-    // way to expand with no delay at all. A row a search is holding open is NOT
-    // toggleable, so it gets no handler rather than an affordance that lies.
-    ...(row.toggleable ? {
-      onclick: (event: MouseEvent) => {
-        event.stopPropagation();
-        // Only this row's own pending single — a click here must not disturb one
-        // already scheduled on a different row.
-        app._dashTreeArbiter?.cancelFor(row.key);
-        toggleRow(app, row);
-      },
-    } : {}),
-  }, row.expandable ? Icon.chevDown() : null);
+  const chevron = buildChevron(app, row, ui);
 
   const label = h('span', { class: 'label' }, row.label);
   const count = row.count === null
@@ -579,6 +635,9 @@ function buildRow(
     ...(row.dropTarget === null ? {} : { 'data-droptarget': row.dropTarget.kind }),
     ...dropProps(app, row),
     role: 'treeitem',
+    // Explicit, so the chevron's and the `⋯`'s own names stay THEIRS (see
+    // `rowAccessibleName`) rather than being folded into this row's.
+    'aria-label': rowAccessibleName(row),
     'aria-level': String(row.level),
     ...(row.expandable ? { 'aria-expanded': row.expanded ? 'true' : 'false' } : {}),
     // Roving tabindex: exactly one row is in the Tab order.
@@ -606,21 +665,86 @@ function buildRow(
   return rowEl;
 }
 
-/** Route one primary press through the arbiter — except a row with NO double and
- *  NO Shift gesture (a group row, whose single action is expansion; a variable
- *  row, whose single action opens its tab), which has nothing to arbitrate
- *  against and would only feel slow if its action waited out the double-click
- *  window. */
+/**
+ * The disclosure control — #429/#472 promoted it from a click handler on a span to
+ * a real `<button>`, because it is now one of the row's THREE independent targets
+ * rather than a shortcut past the row's own delayed toggle. That buys it an
+ * accessible name of its own (*Expand Executive* / *Collapse Executive*), its own
+ * `aria-expanded`, its own focus ring, and native Enter/Space semantics.
+ *
+ * The row keeps `aria-expanded` too, and deliberately: the `treeitem` is what a
+ * screen reader announces while walking the tree, and this is what it announces
+ * when the button itself has focus. They are painted from the same `row.expanded`,
+ * so they cannot disagree.
+ *
+ * A row a search is holding open is NOT toggleable, so it stays a plain span — no
+ * affordance, no button, no accessible name that lies about what it can do
+ * (retained from #426). Non-expandable rows keep the same span as the layout
+ * spacer they have always been.
+ */
+function buildChevron(
+  app: DashboardTreeApp, row: DashboardTreeRow, ui: DashboardTreeUiState,
+): HTMLElement {
+  // The rotation goes on the GLYPH, never on the control. Hit-testing and
+  // `getBoundingClientRect` both use the TRANSFORMED box, and this control is a
+  // 10×24 button (it stretches to the row's height so a 10px glyph is still worth
+  // aiming at) — rotating that by 90° would turn its clickable band into 24 wide by
+  // 10 tall, spilling 7px each side and swallowing clicks meant for the row icon
+  // beside it. The schema tree's chevron gets away with rotating its own box only
+  // because it is a 10×10 square, which rotation leaves unchanged. Asserted in a
+  // real browser (`tests/e2e/dashboard-tree.spec.js`) — happy-dom has no layout.
+  const glyph = row.expandable ? Icon.chevDown() : null;
+  if (glyph !== null) glyph.style.transform = row.expanded ? OPEN_ROTATE : CLOSED_ROTATE;
+  if (!row.toggleable) return h('span', { class: 'chev' }, glyph);
+  return h('button', {
+    class: 'chev ' + CHEVRON_CLASS,
+    type: 'button',
+    'aria-expanded': row.expanded ? 'true' : 'false',
+    'aria-label': (row.expanded ? 'Collapse ' : 'Expand ') + row.label,
+    // Roving with its own row, exactly like the row element: the tree is ONE
+    // composite tab stop, so Tab walks the focused row's three targets and then
+    // leaves — it never offers a stop per chevron for the whole collection.
+    tabindex: row.key === ui.keyboardRowKey ? '0' : '-1',
+    onclick: (event: MouseEvent) => {
+      // Expansion ONLY: without this the press would bubble to the row, which now
+      // opens the Dashboard.
+      event.stopPropagation();
+      toggleFromChevron(app, row);
+    },
+    onkeydown: (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      // Keeps the browser from ALSO synthesising a click from this key (which would
+      // toggle straight back) and, for Space, from scrolling the sidebar.
+      event.preventDefault();
+      // The tree's key handler lives on the LIST and its Enter opens the row's
+      // primary action — the Dashboard. Expansion must be all this key does.
+      event.stopPropagation();
+      toggleFromChevron(app, row);
+    },
+  }, glyph);
+}
+
+/**
+ * Route one primary press. The arbiter — and with it the ~300ms wait — is for rows
+ * that have a DOUBLE-click action to arbitrate against, which since #429/#472 means
+ * a panel row only.
+ *
+ * Everything else acts at once: a group row (expansion), a variable row (its option
+ * SQL), and now a Dashboard row, whose expansion moved to the chevron so its
+ * primary press can open the Dashboard with no delay. A Shift press on such a row
+ * runs its Shift action directly — for a Dashboard that is Edit mode; for a row
+ * with none, Shift is simply ignored and the primary action runs, as before.
+ */
 function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean): void {
-  if (row.double === null && row.shift === null) {
+  if (row.double === null) {
     app._dashTreeArbiter?.cancelFor(row.key);
-    if (row.single !== null) runCommand(app, row, row.single);
+    const command = shift && row.shift !== null ? row.shift : row.single;
+    if (command !== null) runCommand(app, row, command);
     return;
   }
   // Every row that reaches the arbiter has BOTH a double and a Shift action — the
-  // early return above took every row that has neither — so only `single` (which a
-  // search-forced Dashboard row, or a panel with an unresolved query, withholds)
-  // still needs a null check here.
+  // early return above took the only kinds that lack one — so only `single` (which
+  // a panel with an unresolved query withholds) still needs a null check here.
   arbiterFor(app).press(row.key, {
     single: row.single === null ? null : () => runCommand(app, row, row.single!),
     double: () => runCommand(app, row, row.double!),
@@ -687,8 +811,10 @@ function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardT
   return trigger;
 }
 
-/** The keyboard-reachable equivalent of the double-click and Shift-click gestures,
- *  which a pointer-only affordance would otherwise hide. */
+/** The keyboard-reachable, DISCOVERABLE equivalent of the gestures a pointer-only
+ *  affordance would otherwise hide — a panel row's double-click and Shift-click, and
+ *  (since #429/#472 dropped the now-redundant *Open in View*) a Dashboard row's
+ *  Shift-click alone. */
 function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
   const trigger: HTMLButtonElement = h('button', {
     class: 'dash-tree-menu-btn', type: 'button',
@@ -727,10 +853,28 @@ const focusRow = (list: HTMLElement, key: string | null): void => {
   if (key !== null) list.querySelector<HTMLElement>('[data-key="' + CSS.escape(key) + '"]')?.focus();
 };
 
+/** Focus one row's disclosure button. Asserted rather than guarded, and for the same
+ *  reason as `focusRow` above: the only caller is that button's own activation, and
+ *  toggling changes neither whether the row is rendered nor whether it is
+ *  `toggleable` (which depends on the search alone) — so the button it rebuilt is
+ *  always there, and a bailout branch here would be unreachable. */
+const focusChevron = (list: HTMLElement, key: string): void => {
+  list.querySelector<HTMLElement>(
+    '[data-key="' + CSS.escape(key) + '"] .' + CHEVRON_CLASS,
+  )!.focus();
+};
+
 /** Put `tabindex="0"` on exactly one row, without rebuilding anything. */
 function syncRovingTabindex(list: HTMLElement | null, key: string): void {
   for (const node of list?.querySelectorAll<HTMLElement>('.dash-tree-row') ?? []) {
-    node.setAttribute('tabindex', node.dataset.key === key ? '0' : '-1');
+    const value = node.dataset.key === key ? '0' : '-1';
+    node.setAttribute('tabindex', value);
+    // #429/#472: the disclosure button roves WITH its row, so the immediate sync
+    // has to move it too — otherwise the row the user just left keeps a chevron in
+    // the Tab order until the next paint, and the tree briefly offers four targets.
+    for (const chev of node.querySelectorAll<HTMLElement>('.' + CHEVRON_CLASS)) {
+      chev.setAttribute('tabindex', value);
+    }
   }
 }
 

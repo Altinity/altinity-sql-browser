@@ -569,20 +569,23 @@ describe('deriveDashboardTree — search', () => {
   it('offers no toggle on a row the search is forcing open', () => {
     const tree = search('latency');
     expect(row(tree.rows, 'w1:ops').toggleable).toBe(false);
-    expect(row(tree.rows, 'w1:ops').single).toBeNull();
     // It is genuinely open, so aria-expanded still reports that.
     expect(row(tree.rows, 'w1:ops').expanded).toBe(true);
-    // The forced group likewise; the unforced one stays toggleable.
+    // The forced group likewise — and it has no action left at all, expansion being
+    // the only thing a group row does. The unforced one stays toggleable.
     expect(row(tree.rows, 'w1:ops:group:panels').toggleable).toBe(false);
+    expect(row(tree.rows, 'w1:ops:group:panels').single).toBeNull();
     expect(row(tree.rows, 'w1:ops:group:variables').toggleable).toBe(true);
   });
 
   it('keeps View/Edit navigation on a forced-open Dashboard row', () => {
     const dash = row(search('latency').rows, 'w1:ops');
-    // Only the toggle is withheld — the row is still a navigation target.
-    expect(dash.double).toMatchObject({ kind: 'open-dashboard' });
-    expect(dash.shift).toMatchObject({ kind: 'open-dashboard' });
-    expect(dash.menu).toHaveLength(2);
+    // #429/#472: only expansion is withheld. Navigation was never what the search
+    // forced, and the row's primary press IS navigation now — so a forced row opens
+    // like any other, where before it was a dead click.
+    expect(dash.single).toMatchObject({ kind: 'open-dashboard', request: { mode: 'view' } });
+    expect(dash.shift).toMatchObject({ kind: 'open-dashboard', request: { mode: 'edit' } });
+    expect(dash.menu).toHaveLength(1);
   });
 
   it('every row is toggleable again once the search clears', () => {
@@ -671,12 +674,20 @@ describe('deriveDashboardTree — command sets', () => {
     queries: [query('q1', 'Q1')],
   }), allOpen(['d']));
 
-  it('gives a Dashboard row toggle / View / Edit, with NO focus target', () => {
+  // #429/#472 — the Dashboard row's primary press OPENS View (it used to expand,
+  // deferred behind a double-click window). `double: null` is what tells the view it
+  // has nothing to arbitrate, so the press can act at once; expansion moved to the
+  // chevron, which is a target of its own.
+  it('gives a Dashboard row View / Edit and NO double action, with no focus target', () => {
     const dash = row(tree().rows, 'w1:d');
-    expect(dash.single).toEqual({ kind: 'toggle' });
-    expect(dash.double).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'view' } });
+    expect(dash.single).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'view' } });
+    expect(dash.double).toBeNull();
     expect(dash.shift).toEqual({ kind: 'open-dashboard', request: { dashboardId: 'd', mode: 'edit' } });
-    expect(dash.menu.map((item) => item.label)).toEqual(['Open in View', 'Open in Edit']);
+    // Both requests name the Dashboard alone: a Dashboard row focuses no member.
+    expect('focus' in (dash.single as { request: object }).request).toBe(false);
+    // *Open in View* is redundant once the row itself opens View; *Open in Edit*
+    // stays, being reachable only through the hidden Shift modifier otherwise.
+    expect(dash.menu.map((item) => item.label)).toEqual(['Open in Edit']);
     expect(dash.menu.every((item) => item.command !== null)).toBe(true);
   });
 

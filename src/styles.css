@@ -1757,6 +1757,39 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row:focus-within .dash-tree-menu-btn,
 .dash-tree-menu-btn[aria-expanded="true"] { display: inline-flex; }
 .dash-tree-menu-btn:hover { color: var(--fg); background: var(--bg-hover); }
+/* #429/#472 — the disclosure control is its own BUTTON, because expansion is now
+   the only thing this target does (the row itself opens the Dashboard). Box, width
+   and colour still come from the shared `.tree-row .chev` rule below, so the two
+   trees keep one chevron vocabulary; this only strips the user-agent button chrome
+   and gives the glyph a hit area worth aiming at. */
+.dash-tree-chev {
+  appearance: none;
+  border: none; background: none; padding: 0; margin: 0;
+  font: inherit; cursor: pointer;
+  /* A 10px glyph is a poor target: stretching to the row's full height buys a
+     10×24 hit area without changing where the chevron appears. Because this box is
+     no longer square, the open/closed ROTATION lives on the glyph inside it — a
+     rotated box is hit-tested rotated, so spinning this one would spill its
+     clickable band sideways over the row icon (see `ui/dashboard-tree.ts`). */
+  align-self: stretch;
+  align-items: center; justify-content: center;
+}
+/* …which also means the transition follows the glyph. `.tree-row .chev`'s own
+   transition still serves the schema tree, whose chevron rotates its own box. */
+.dash-tree-row .chev > svg { transition: transform .15s; }
+/* Three targets, three distinguishable focus treatments (#472 asks for exactly
+   this): the ROW is the wide `--ring-nav` box-shadow, the TRAILING buttons tint
+   their own background, and the disclosure control is a tight accent outline around
+   the glyph — the outline channel being free on the row itself except during a
+   drag. Scoped to `.dash-tree-row` so it outranks `.tree-row .chev`'s own colour
+   rule further down the file (three class selectors against two) rather than
+   depending on source order. */
+.dash-tree-row .dash-tree-chev:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--r-xs);
+}
+.dash-tree-row .dash-tree-chev:hover { color: var(--fg); }
 .dash-tree-menu { min-width: 220px; }
 /* An unavailable operation still renders, so the row's vocabulary stays
    discoverable — it just cannot be invoked. */

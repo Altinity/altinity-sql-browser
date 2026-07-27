@@ -27,13 +27,13 @@ const tileCard = (page, title) => page
 const tileAction = (page, title) => tileCard(page, title).locator('.dash-tile-open');
 const tileNames = (page) => page.locator('.dash-tile .dash-tile-name');
 
-/** Open a Dashboard from the tree the way the shipped gestures do (#426): a single
- *  click only expands the row — double-click opens it in View, Shift-click in Edit. */
+/** Open a Dashboard from the tree the way the shipped gestures do (#429/#472): the
+ *  row's name opens it in View, Shift-click in Edit, and expansion belongs to the
+ *  chevron alone — a plain click no longer merely expands, as it did under #426. */
 const openDashboard = async (page, dashboardId, mode = 'view') => {
   await roleTab(page, 'Dashboards').click();
   const row = treeRow(page, `workspace:${dashboardId}`);
-  if (mode === 'edit') await row.click({ modifiers: ['Shift'] });
-  else await row.dblclick();
+  await row.locator('.label').click(mode === 'edit' ? { modifiers: ['Shift'] } : {});
   await expect(page.locator('.dash-page')).toBeVisible();
 };
 

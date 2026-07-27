@@ -5383,6 +5383,35 @@ describe('unified /sql routing', () => {
       expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
     });
 
+    // #429/#472 — the Dashboard tree row opens on a PLAIN click now, so a
+    // double-click dispatches the identical open twice. The issue requires that to
+    // produce no duplicate navigation or history entry; this is where that holds,
+    // and it is why the tree does not also dedupe (it cannot see the route).
+    it('a REPEATED identical open pushes no second history entry', () => {
+      const pushState = vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
+      const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+      // Route writes pass `null` state; a #471 Dashboard snapshot stamp passes
+      // `{ dash: … }` and creates no entry, so only the former counts here.
+      const routeWrites = (): number => pushState.mock.calls.length
+        + replaceState.mock.calls.filter((call) => call[0] === null).length;
+      const { app } = readyApp(['a']);
+
+      app.openDashboard({ dashboardId: 'a', mode: 'view' });
+      expect(pushState).toHaveBeenCalledTimes(1);
+      const writes = routeWrites();
+      const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
+
+      // The second half of the double-click.
+      app.openDashboard({ dashboardId: 'a', mode: 'view' });
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(routeWrites()).toBe(writes);
+      // ...and no second viewer build either: not merely "no entry", but no action.
+      expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
+      expect(app.mainSurface).toMatchObject({ kind: 'dashboard', dashboardId: 'a', mode: 'view' });
+      pushState.mockRestore();
+      replaceState.mockRestore();
+    });
+
     // #426's headline requirement: the tree makes repeated same-Dashboard member
     // navigation a NORMAL operation, so it must not rebuild the viewer, re-run the
     // Dashboard, or push another history entry. `renderCurrentSurface` staying

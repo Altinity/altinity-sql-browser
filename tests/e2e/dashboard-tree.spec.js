@@ -185,14 +185,165 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(await page.evaluate(() => window.__opened.length)).toBe(1);
   });
 
-  test('a Dashboard double-click opens View and leaves expansion untouched', async ({ page }) => {
+  // #429/#472 — the three targets, against real event ordering and real timers.
+  test('a Dashboard name click opens View at once and leaves expansion untouched', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
-    await treeRow(page, 'workspace:sales').dblclick();
+    await treeRow(page, 'workspace:sales').locator('.label').click();
     await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
       { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
     ]);
-    // The scheduled expansion was cancelled outright, not toggled and undone.
+    // Still collapsed: opening is not expanding.
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  // Real dblclick timing, not two synthesized clicks: the row dispatches the SAME
+  // idempotent open twice and never a second, different action. (That the repeat then
+  // writes no history entry is `app.openDashboard`'s job — proved against the real
+  // controller in `tests/unit/app.test.ts`; this fixture stubs it out.)
+  test('a Dashboard double-click repeats one command and expands nothing', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.label').dblclick();
+    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+    ]);
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  // #472 wants the three targets "separately announced". A `treeitem` names itself
+  // from its CONTENTS, so before the row carried an explicit name, the chevron's label
+  // was folded into it ("Expand Sales revenue Sales revenue 2"). Asserted through
+  // `getByRole`, which resolves names with Playwright's own accname implementation in
+  // every engine — happy-dom cannot compute an accessible name at all.
+  test('the row announces itself, its chevron and its trailing action separately', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const tree = page.getByRole('tree', { name: 'Dashboards' });
+    await expect(tree.getByRole('treeitem', { name: 'Sales revenue 2', exact: true })).toHaveCount(1);
+    // No row's own name may contain a control's verb.
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
+    // The controls keep those names for themselves.
+    await expect(tree.getByRole('button', { name: 'Expand Sales revenue' })).toHaveCount(1);
+    await tree.getByRole('button', { name: 'Expand Sales revenue' }).click();
+    await expect(tree.getByRole('button', { name: 'Collapse Sales revenue' })).toHaveCount(1);
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
+  });
+
+  test('a Dashboard Shift-click on the name opens Edit', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.label').click({ modifiers: ['Shift'] });
+    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'edit' },
+    ]);
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  test('the chevron expands without navigating, and the name does not expand', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const chevron = treeRow(page, 'workspace:sales').locator('.dash-tree-chev');
+    await expect(chevron).toHaveAttribute('aria-expanded', 'false');
+    await expect(chevron).toHaveAttribute('aria-label', 'Expand Sales revenue');
+    await chevron.click();
+    await expect(page.locator('.dash-tree-row')).toHaveCount(5);
+    await expect(treeRow(page, 'workspace:sales').locator('.dash-tree-chev'))
+      .toHaveAttribute('aria-label', 'Collapse Sales revenue');
+    // A real browser focuses a button on mousedown; the toggle rebuilt every row, so
+    // this also proves focus came back to the NEW button rather than being dropped.
+    await expect(treeRow(page, 'workspace:sales').locator('.dash-tree-chev')).toBeFocused();
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+  });
+
+  // Caught in a real browser and nowhere else: the control is 10 wide by 24 tall so
+  // the glyph is worth aiming at, and hit-testing uses the TRANSFORMED box — so if
+  // the collapsed row's `rotate(-90deg)` were applied to the button instead of to
+  // the glyph inside it, its clickable band would become 24 wide and 10 tall,
+  // overlapping the row icon and expanding when the user meant to open. happy-dom
+  // has no layout and cannot see any of this.
+  test('the chevron\'s hit area stays in its own slot, collapsed and expanded', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const boxes = async () => page.evaluate(() => {
+      const row = document.querySelector('.dash-tree-row[data-key="workspace:sales"]');
+      const b = (el) => { const r = el.getBoundingClientRect(); return { w: +r.width.toFixed(1), h: +r.height.toFixed(1), left: r.left, right: r.right }; };
+      return { chev: b(row.querySelector('.dash-tree-chev')), icon: b(row.querySelector('.icon')), row: b(row) };
+    });
+    const collapsed = await boxes();
+    // Upright box, not a rotated band.
+    expect(collapsed.chev.w).toBeLessThanOrEqual(11);
+    expect(collapsed.chev.h).toBeGreaterThan(11);
+    // ...and it does not reach the icon beside it, so the icon's clicks still open.
+    expect(collapsed.chev.right).toBeLessThanOrEqual(collapsed.icon.left);
+    expect(collapsed.chev.left).toBeGreaterThanOrEqual(collapsed.row.left);
+
+    await page.locator('.dash-tree-row[data-key="workspace:sales"] .dash-tree-chev').click();
+    const expanded = await boxes();
+    expect(expanded.chev.w).toBeLessThanOrEqual(11);
+    expect(expanded.chev.right).toBeLessThanOrEqual(expanded.icon.left);
+    // Clicking the ICON is row content and therefore opens, proving the slot is clean.
+    await page.locator('.dash-tree-row[data-key="workspace:sales"] .icon').click();
+    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+    ]);
+  });
+
+  test('Enter and Space on the chevron toggle expansion and never navigate', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.dash-tree-chev').focus();
+    // The trap: the tree's key handler is on the LIST, and its Enter opens the
+    // Dashboard. Native button activation must not reach it — nor fire twice.
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.dash-tree-row')).toHaveCount(5);
+    await page.keyboard.press('Space');
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+  });
+
+  // #472: "focus styling must visibly distinguish the disclosure control from the
+  // navigation target from the trailing action". happy-dom can see none of this, and
+  // `:focus-visible` only applies under real keyboard modality — so it has to be a
+  // real Tab walk in a real browser. Which doubles as proof that all three targets
+  // are keyboard-reachable, in row order, within ONE composite tab stop.
+  test('Tab walks the row, its chevron and its trailing action, each ringed differently', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const ring = () => page.evaluate(() => {
+      const el = document.activeElement;
+      const style = getComputedStyle(el);
+      return {
+        what: el.classList.contains('dash-tree-chev') ? 'chevron'
+          : el.classList.contains('dash-tree-menu-btn') ? 'menu'
+            : el.dataset.key ?? el.tagName,
+        outline: style.outlineStyle === 'none' ? 'none' : style.outlineWidth + ' ' + style.outlineStyle,
+        shadow: style.boxShadow,
+      };
+    });
+    // Establish keyboard modality (and land on the row) with real keys, not
+    // `focus()` — Chromium withholds `:focus-visible` after a pointer interaction.
+    await treeRow(page, 'workspace:sales').focus();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    const row = await ring();
+    await page.keyboard.press('Tab');
+    const chevron = await ring();
+    await page.keyboard.press('Tab');
+    const menu = await ring();
+
+    expect([row.what, chevron.what, menu.what]).toEqual(['workspace:sales', 'chevron', 'menu']);
+    // The row rings with a box-shadow and no outline; the chevron with an outline and
+    // no shadow. Different channels, so neither reads as the other — and the trailing
+    // button matches neither.
+    expect(row.shadow).not.toBe('none');
+    expect(row.outline).toBe('none');
+    expect(chevron.outline).toContain('solid');
+    expect(chevron.shadow).toBe('none');
+    expect(menu.outline).not.toBe(chevron.outline);
+    // Nothing was opened or expanded by walking the row.
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
   });
 
@@ -238,14 +389,16 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 
-  test('the action menu exposes the double-click operations to the keyboard', async ({ page }) => {
+  // #429/#472 dropped *Open in View* — it is the row's own click now — and kept
+  // *Open in Edit*, whose only gestures are the hidden Shift modifiers.
+  test('the action menu exposes the Shift-click operation to the keyboard', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     const row = treeRow(page, 'workspace:sales');
     await row.hover();
     await row.locator('.dash-tree-menu-btn').click();
     await expect(page.locator('.dash-tree-menu')).toBeVisible();
-    await expect(page.locator('.dash-tree-menu .fm-label')).toHaveText(['Open in View', 'Open in Edit']);
+    await expect(page.locator('.dash-tree-menu .fm-label')).toHaveText(['Open in Edit']);
     await page.locator('.dash-tree-menu .fm-item', { hasText: 'Open in Edit' }).click();
     await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
       { kind: 'dashboard', dashboardId: 'sales', mode: 'edit' },
