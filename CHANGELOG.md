@@ -10,6 +10,64 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **The File menu creates, imports and exports Dashboards across the whole
+  workspace** (#463). Its three Dashboard commands still assumed one exact
+  Dashboard was already open — a model that stopped fitting once a workspace
+  could hold many. There was no way to create a Dashboard from the menu at all;
+  **Import Dashboard…** was disabled on the Query surface with *Open a
+  dashboard* and, where it did work, **replaced** whichever Dashboard was open;
+  and **Export Dashboard…** was unavailable unless one was on screen, even with
+  Dashboards sitting in the workspace to choose from.
+
+  All three are now workspace operations:
+
+  - **New dashboard…** — a new row, immediately after **New workspace…**. It
+    asks for a name, appends an empty Dashboard to the current workspace, opens
+    it in Edit mode, and switches the upper sidebar to the Dashboards tree so
+    the new Dashboard is actually visible in the list that marks it selected.
+    Duplicate names are allowed (identity is the id); Cancel and Escape commit
+    nothing, and a rejected commit leaves navigation, the sidebar and local
+    state untouched.
+  - **Import dashboard…** is **additive** and available from Query, Dashboard
+    View, Dashboard Edit and the empty-Dashboard placeholder whenever a writable
+    workspace exists. The imported Dashboard is appended under a freshly minted
+    id and opened the same way a created one is, so it can never merge into or
+    replace the one you are looking at — and the destructive *Import and replace
+    current Dashboard?* confirm is gone with the replacement it gated. Dependent
+    queries still go through the existing conflict planner.
+  - **Export dashboard…** is workspace-aware rather than surface-gated. Zero
+    Dashboards disables it with *No dashboards*; the Dashboard on screen (in
+    View as well as Edit) exports in one click; a sole Dashboard exports
+    directly from Query too; anything else opens a chooser listing each
+    Dashboard's tile count and an id fragment — widened until no two rows read
+    alike — so duplicate names stay distinguishable. Both choosers focus their
+    first row and keep Tab inside the dialog. Every export resolves an **exact
+    id** in the workspace it was chosen from — contents and file name both: ids
+    are unique within a workspace, not across them, so switching workspace while
+    the export flushes pending writes cancels it instead of exporting a same-id
+    Dashboard from the new one, and no export lands under the name of the
+    workspace you moved to. There is no fallback to `dashboards[0]` left to
+    reach.
+
+  The menu regroups by verb — create / import / export / download — behind three
+  dividers, and the two Dashboard rows drop to sentence case. Row order,
+  separators, labels, availability and reason text remain the pure model's alone
+  (`core/file-menu-model.ts`), and context still changes enabled state only:
+  no row appears, disappears or moves when the work surface changes.
+
+### Fixed
+- **A degraded workspace export no longer loses a Dashboard** (#463). When the
+  committed read is unavailable — blocked, over-quota or private-mode IndexedDB —
+  the File menu rebuilds the workspace from its live projection. That projection
+  has been the *selected* Dashboard since #425, but it was folded back through
+  the compatibility slot, which is entry 0 unconditionally: with Dashboards
+  `[A, B]` and B on screen, the reconstruction produced `[B, B]`, dropping A and
+  minting a duplicate id. It now folds back **by exact id**, leaves the committed
+  collection alone when the projection names no stored entry, and seats the
+  projection only when there is genuinely nothing stored. This is the path a user
+  reaches precisely when their storage is failing and they are trying to get
+  their work out.
+
 - **An `Array(T)` Dashboard variable with option SQL is a searchable
   multi-select** (#468). `Array(T)` is the type multi-select exists for, but #447
   phase 1 removed the curated model's multiselect control as an owner decision and

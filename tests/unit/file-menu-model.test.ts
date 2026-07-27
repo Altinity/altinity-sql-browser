@@ -1,23 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import {
-  fileMenuModel, fileMenuFooter,
+  fileMenuModel, fileMenuFooter, shortIdFragments,
 } from '../../src/core/file-menu-model.js';
 import type {
   FileMenuActionId, FileMenuContext, FileMenuItemSpec, FileMenuSurface,
 } from '../../src/core/file-menu-model.js';
 
-// The settled row order (#452). Every assertion about "the same menu everywhere"
-// compares against this one list, so a reordering breaks every surface's spec at
-// once rather than silently passing on the surface nobody re-fixtured.
+// The settled row order (#452, regrouped by verb in #463). Every assertion about
+// "the same menu everywhere" compares against this one list, so a reordering
+// breaks every surface's spec at once rather than silently passing on the
+// surface nobody re-fixtured.
 const ORDER: FileMenuActionId[] = [
-  'new-workspace', 'import-workspace', 'export-workspace',
-  'import-queries', 'import-dashboard', 'export-dashboard',
+  'new-workspace', 'new-dashboard',
+  'import-workspace', 'import-queries', 'import-dashboard',
+  'export-workspace', 'export-dashboard',
   'download-md', 'download-sql',
 ];
 
 const LABELS = [
-  'New workspace…', 'Import workspace…', 'Export workspace…',
-  'Import queries…', 'Import Dashboard…', 'Export Dashboard…',
+  'New workspace…', 'New dashboard…',
+  'Import workspace…', 'Import queries…', 'Import dashboard…',
+  'Export workspace…', 'Export dashboard…',
   'Download Library as Markdown', 'Download Library as SQL',
 ];
 
@@ -28,7 +31,7 @@ const view = (dashboardId: string | null): FileMenuSurface =>
   ({ surface: 'dashboard', mode: 'view', dashboardId });
 
 const ctx = (over: Partial<FileMenuContext> = {}): FileMenuContext => ({
-  surface: QUERY, hasWorkspace: true, libraryQueryCount: 3, dashboardCount: 1, ...over,
+  surface: QUERY, hasWorkspace: true, libraryQueryCount: 3, dashboardIds: ['d1'], ...over,
 });
 
 const byId = (c: FileMenuContext, id: FileMenuActionId): FileMenuItemSpec =>
@@ -51,22 +54,23 @@ const SURFACES: [name: string, surface: FileMenuSurface][] = [
 describe('fileMenuModel — one stable structure on every surface', () => {
   // Issue test 1: Query, Dashboard Edit, Dashboard View and the empty Dashboard
   // render the same labels in the same order.
-  it.each(SURFACES)('%s renders all eight rows, same ids, same labels, same order', (_name, surface) => {
+  it.each(SURFACES)('%s renders all nine rows, same ids, same labels, same order', (_name, surface) => {
     const model = fileMenuModel(ctx({ surface }));
     expect(model.items.map((item) => item.id)).toEqual(ORDER);
     expect(model.items.map((item) => item.label)).toEqual(LABELS);
   });
 
-  // Issue acceptance: "Context changes enabled state only; rows never disappear
-  // or move." Asserted across the whole cartesian product rather than per case,
-  // so a future rule that filters instead of disabling cannot slip through.
+  // Issue acceptance: "Menu rows do not appear, disappear, or reorder when the
+  // work surface changes." Asserted across the whole cartesian product rather
+  // than per case, so a future rule that filters instead of disabling cannot
+  // slip through.
   it('never adds, removes, reorders or relabels a row for ANY context', () => {
     const surfaces = [QUERY, edit('d1'), view('d1'), edit(null), view(null)];
     for (const surface of surfaces) {
       for (const hasWorkspace of [true, false]) {
         for (const libraryQueryCount of [0, 1, 7]) {
-          for (const dashboardCount of [0, 1, 4]) {
-            const model = fileMenuModel({ surface, hasWorkspace, libraryQueryCount, dashboardCount });
+          for (const dashboardIds of [[], ['d1'], ['d1', 'd2', 'd3', 'd4']]) {
+            const model = fileMenuModel({ surface, hasWorkspace, libraryQueryCount, dashboardIds });
             expect(model.items.map((item) => item.id)).toEqual(ORDER);
             expect(model.items.map((item) => item.label)).toEqual(LABELS);
           }
@@ -75,10 +79,28 @@ describe('fileMenuModel — one stable structure on every surface', () => {
     }
   });
 
-  it('groups the two Library downloads behind the one divider', () => {
+  // #463: the menu is grouped by VERB — create / import / export / download.
+  it('divides the four verb groups, and only those', () => {
     const model = fileMenuModel(ctx());
     expect(model.items.filter((item) => item.separatorBefore).map((item) => item.id))
-      .toEqual(['download-md']);
+      .toEqual(['import-workspace', 'export-workspace', 'download-md']);
+  });
+
+  it('groups the same way whatever the context', () => {
+    for (const surface of [QUERY, edit('d1'), view(null)]) {
+      for (const hasWorkspace of [true, false]) {
+        const model = fileMenuModel(ctx({ surface, hasWorkspace, dashboardIds: [], libraryQueryCount: 0 }));
+        expect(model.items.filter((item) => item.separatorBefore).map((item) => item.id))
+          .toEqual(['import-workspace', 'export-workspace', 'download-md']);
+      }
+    }
+  });
+
+  // Sentence case (#463): `dashboard`, not `Dashboard`, inside a label.
+  it('spells dashboard in sentence case in every label', () => {
+    for (const item of fileMenuModel(ctx()).items) {
+      expect(item.label).not.toContain('Dashboard');
+    }
   });
 
   it('keeps the file extension on a row independent of its availability', () => {
@@ -87,6 +109,7 @@ describe('fileMenuModel — one stable structure on every surface', () => {
     expect(byId(ctx(), 'download-md').meta).toBe('.md');
     expect(byId(ctx(), 'download-sql').meta).toBe('.sql');
     expect(byId(ctx(), 'new-workspace').meta).toBeNull();
+    expect(byId(ctx(), 'new-dashboard').meta).toBeNull();
     // Disabled rows keep their extension AND carry a reason.
     const disabled = byId(ctx({ libraryQueryCount: 0 }), 'download-md');
     expect(disabled).toMatchObject({ meta: '.md', enabled: false, reason: 'No Library queries' });
@@ -94,7 +117,9 @@ describe('fileMenuModel — one stable structure on every surface', () => {
 
   it('reports a reason exactly when a row is disabled', () => {
     for (const surface of [QUERY, edit('d1'), view('d1'), edit(null)]) {
-      for (const item of fileMenuModel(ctx({ surface, hasWorkspace: false, libraryQueryCount: 0 })).items) {
+      for (const item of fileMenuModel(ctx({
+        surface, hasWorkspace: false, libraryQueryCount: 0, dashboardIds: [],
+      })).items) {
         expect(item.enabled).toBe(item.reason === null);
       }
     }
@@ -103,7 +128,7 @@ describe('fileMenuModel — one stable structure on every surface', () => {
 
 describe('fileMenuModel — workspace operations', () => {
   it('New workspace and Import workspace need nothing at all', () => {
-    const nothing = ctx({ surface: view(null), hasWorkspace: false, libraryQueryCount: 0, dashboardCount: 0 });
+    const nothing = ctx({ surface: view(null), hasWorkspace: false, libraryQueryCount: 0, dashboardIds: [] });
     expect(state(nothing, 'new-workspace')).toEqual([true, null]);
     expect(state(nothing, 'import-workspace')).toEqual([true, null]);
   });
@@ -123,8 +148,35 @@ describe('fileMenuModel — workspace operations', () => {
   });
 });
 
+describe('fileMenuModel — New dashboard (#463)', () => {
+  // Acceptance: "The File menu contains New dashboard… in the agreed stable
+  // position on every surface" — immediately after New workspace…, always.
+  it('sits immediately after New workspace on every surface', () => {
+    for (const [, surface] of SURFACES) {
+      const ids = fileMenuModel(ctx({ surface })).items.map((item) => item.id);
+      expect(ids.indexOf('new-dashboard')).toBe(ids.indexOf('new-workspace') + 1);
+    }
+  });
+
+  it('needs a writable workspace and nothing else', () => {
+    for (const [, surface] of SURFACES) {
+      for (const dashboardIds of [[], ['d1'], ['d1', 'd2']]) {
+        expect(state(ctx({ surface, dashboardIds }), 'new-dashboard')).toEqual([true, null]);
+      }
+    }
+    expect(state(ctx({ hasWorkspace: false }), 'new-dashboard')).toEqual([false, 'No workspace']);
+  });
+
+  // Creation opens the new Dashboard in Edit mode, so being in View mode is not
+  // a reason to refuse — unlike Import queries, which edits what is on screen.
+  it('is available in Dashboard View mode', () => {
+    expect(state(ctx({ surface: view('d1') }), 'new-dashboard')).toEqual([true, null]);
+    expect(state(ctx({ surface: view('d1') }), 'import-queries')).toEqual([false, 'Edit mode only']);
+  });
+});
+
 describe('fileMenuModel — Library operations', () => {
-  // Issue test 5: Dashboard View disables the active-workspace imports.
+  // Issue test 5: Dashboard View disables the active-workspace query import.
   it('Import queries is enabled on Query and Dashboard Edit, and Edit-mode-only in View', () => {
     expect(state(ctx({ surface: QUERY }), 'import-queries')).toEqual([true, null]);
     expect(state(ctx({ surface: edit('d1') }), 'import-queries')).toEqual([true, null]);
@@ -150,92 +202,163 @@ describe('fileMenuModel — Library operations', () => {
   it('a workspace full of Dashboard-owned queries still disables the downloads', () => {
     // The caller passes the ZERO-OWNER projection; a workspace whose every query
     // is owned projects to 0 here, which is what keeps the rows off.
-    expect(state(ctx({ libraryQueryCount: 0, dashboardCount: 3 }), 'download-sql'))
+    expect(state(ctx({ libraryQueryCount: 0, dashboardIds: ['d1', 'd2', 'd3'] }), 'download-sql'))
       .toEqual([false, 'No Library queries']);
   });
 });
 
-describe('fileMenuModel — Dashboard operations', () => {
-  // Issue test 3 + acceptance "Dashboard import/export remain visible while
-  // Query is open, with clear disabled reasons".
-  it('Query disables BOTH Dashboard rows rather than hiding them', () => {
-    const query = ctx({ surface: QUERY });
-    expect(state(query, 'import-dashboard')).toEqual([false, 'Open a dashboard']);
-    expect(state(query, 'export-dashboard')).toEqual([false, 'Open a dashboard']);
-    expect(fileMenuModel(query).items.map((item) => item.id)).toEqual(ORDER);
+describe('fileMenuModel — Import dashboard is additive (#463)', () => {
+  // Acceptance: "Import dashboard… is additive and does not require an open
+  // Dashboard." Every surface, every collection size, one rule.
+  it('is available on every surface whenever a workspace is writable', () => {
+    for (const [, surface] of SURFACES) {
+      for (const dashboardIds of [[], ['d1'], ['d1', 'd2']]) {
+        expect(state(ctx({ surface, dashboardIds }), 'import-dashboard')).toEqual([true, null]);
+      }
+    }
+    expect(state(ctx({ surface: view(null), dashboardIds: [] }), 'import-dashboard')).toEqual([true, null]);
   });
 
-  // Issue test 10: no implicit compatibility fallback from Query mode.
-  it('Query yields NO Dashboard target, even with Dashboards present', () => {
-    const model = fileMenuModel(ctx({ surface: QUERY, dashboardCount: 5 }));
-    expect(model.importDashboardTarget).toBeNull();
-    expect(model.exportDashboardTarget).toBeNull();
+  it('needs only a workspace', () => {
+    expect(state(ctx({ hasWorkspace: false }), 'import-dashboard')).toEqual([false, 'No workspace']);
   });
 
-  // Issue test 4.
-  it('Dashboard Edit enables both rows against the EXACT active Dashboard', () => {
-    const model = fileMenuModel(ctx({ surface: edit('d7'), dashboardCount: 3 }));
-    expect(state(ctx({ surface: edit('d7') }), 'import-dashboard')).toEqual([true, null]);
-    expect(state(ctx({ surface: edit('d7') }), 'export-dashboard')).toEqual([true, null]);
-    expect(model.importDashboardTarget).toEqual({ kind: 'exact', dashboardId: 'd7' });
-    expect(model.exportDashboardTarget).toEqual({ dashboardId: 'd7' });
+  // The three reasons #463 removes from this row. Asserted by absence over the
+  // whole product, because each one used to fire on a different surface.
+  it('never reports a surface-derived reason again', () => {
+    const gone = ['Open a dashboard', 'Edit mode only', 'Dashboard unavailable', 'No dashboard'];
+    for (const surface of [QUERY, edit('d1'), view('d1'), edit(null), view(null)]) {
+      for (const dashboardIds of [[], ['d1'], ['d1', 'd2']]) {
+        expect(gone).not.toContain(byId(ctx({ surface, dashboardIds }), 'import-dashboard').reason);
+      }
+    }
   });
 
-  // Issue test 5.
-  it('Dashboard View exports the exact Dashboard but refuses to import', () => {
-    const viewing = ctx({ surface: view('d7') });
-    expect(state(viewing, 'export-dashboard')).toEqual([true, null]);
-    expect(fileMenuModel(viewing).exportDashboardTarget).toEqual({ dashboardId: 'd7' });
-    expect(state(viewing, 'import-dashboard')).toEqual([false, 'Edit mode only']);
-    expect(fileMenuModel(viewing).importDashboardTarget).toBeNull();
+  // The model no longer carries an import target at all: there is nothing for a
+  // caller to aim, so nothing that can be aimed at `dashboards[0]`.
+  it('exposes no import target for any caller to retarget', () => {
+    expect(fileMenuModel(ctx({ surface: edit('d1') }))).not.toHaveProperty('importDashboardTarget');
+  });
+});
+
+describe('fileMenuModel — Export dashboard is workspace-aware (#463)', () => {
+  // "zero Dashboards: disabled with `No dashboards`".
+  it('is disabled with No dashboards for an empty collection, on every surface', () => {
+    for (const [, surface] of SURFACES) {
+      const empty = ctx({ surface, dashboardIds: [] });
+      expect(state(empty, 'export-dashboard')).toEqual([false, 'No dashboards']);
+      expect(fileMenuModel(empty).exportDashboardTarget).toBeNull();
+    }
   });
 
-  // Issue test 6.
-  it('the empty Dashboard placeholder imports (creating the first) and cannot export', () => {
-    const empty = ctx({ surface: edit(null), dashboardCount: 0 });
-    expect(state(empty, 'import-dashboard')).toEqual([true, null]);
-    expect(fileMenuModel(empty).importDashboardTarget).toEqual({ kind: 'create-first' });
-    expect(state(empty, 'export-dashboard')).toEqual([false, 'No dashboard']);
-    expect(fileMenuModel(empty).exportDashboardTarget).toBeNull();
+  // "one Dashboard: export that Dashboard directly" — including from Query,
+  // where nothing is open. The sole entry is named by id, never by position.
+  it('exports the sole Dashboard directly from any surface', () => {
+    for (const surface of [QUERY, edit(null), view(null)]) {
+      const one = ctx({ surface, dashboardIds: ['only'] });
+      expect(state(one, 'export-dashboard')).toEqual([true, null]);
+      expect(fileMenuModel(one).exportDashboardTarget).toEqual({ kind: 'exact', dashboardId: 'only' });
+    }
   });
 
-  // The C1 defect: the placeholder is ALSO reached when a selection stops
-  // resolving against a non-empty collection. `create-first` commits through the
-  // compatibility slot, so offering it there would overwrite Dashboard #1.
-  it('an unresolvable selection over a NON-empty collection refuses to import', () => {
-    const stale = ctx({ surface: edit(null), dashboardCount: 2 });
-    expect(state(stale, 'import-dashboard')).toEqual([false, 'Dashboard unavailable']);
-    expect(fileMenuModel(stale).importDashboardTarget).toBeNull();
-    expect(state(stale, 'export-dashboard')).toEqual([false, 'No dashboard']);
+  // Owner decision (#463): with a Dashboard on screen, Export exports THAT one
+  // directly — no chooser — in both modes.
+  it('exports the open Dashboard directly, in View as well as Edit', () => {
+    for (const surface of [edit('d7'), view('d7')]) {
+      const open = ctx({ surface, dashboardIds: ['d1', 'd7', 'd9'] });
+      expect(state(open, 'export-dashboard')).toEqual([true, null]);
+      expect(fileMenuModel(open).exportDashboardTarget).toEqual({ kind: 'exact', dashboardId: 'd7' });
+    }
   });
 
-  it('a read-only placeholder is Edit-mode-only before it is anything else', () => {
-    expect(state(ctx({ surface: view(null), dashboardCount: 0 }), 'import-dashboard'))
-      .toEqual([false, 'Edit mode only']);
+  // "multiple Dashboards with no exact Dashboard open: show a Dashboard chooser".
+  it('asks for a chooser from Query, and from an unresolved Dashboard selection', () => {
+    for (const surface of [QUERY, edit(null), view(null)]) {
+      const many = ctx({ surface, dashboardIds: ['d1', 'd2'] });
+      expect(state(many, 'export-dashboard')).toEqual([true, null]);
+      expect(fileMenuModel(many).exportDashboardTarget).toEqual({ kind: 'choose' });
+    }
   });
 
-  it('a Dashboard surface with no resolved workspace cannot import or export', () => {
-    const missing = ctx({ surface: edit(null), hasWorkspace: false, dashboardCount: 0 });
+  // The C1 defect, restated for export: a selection that stopped resolving must
+  // not silently export a different Dashboard.
+  it('falls through to the chooser when the open id is no longer in the collection', () => {
+    const stale = ctx({ surface: edit('gone'), dashboardIds: ['d1', 'd2'] });
+    expect(fileMenuModel(stale).exportDashboardTarget).toEqual({ kind: 'choose' });
+  });
+
+  // A stale selection over a ONE-Dashboard collection resolves that one — the
+  // single answer the workspace has — and still never reads `dashboardIds[0]`
+  // as a positional fallback.
+  it('never resolves a stale selection to the entry that happens to be first', () => {
+    const stale = ctx({ surface: edit('gone'), dashboardIds: ['survivor'] });
+    expect(fileMenuModel(stale).exportDashboardTarget).toEqual({ kind: 'exact', dashboardId: 'survivor' });
+  });
+
+  // A duplicate-id workspace is ambiguous, and the exactly-one-match rule is the
+  // same one `workspace-dashboards.ts` enforces on the write side.
+  it('refuses to resolve an ambiguous open id and asks for the chooser instead', () => {
+    const dup = ctx({ surface: edit('twin'), dashboardIds: ['twin', 'twin', 'other'] });
+    expect(fileMenuModel(dup).exportDashboardTarget).toEqual({ kind: 'choose' });
+  });
+
+  it('a Dashboard surface with no resolved workspace can still export what the workspace holds', () => {
+    // `hasWorkspace` gates the WRITES. Export reads, and the collection it reads
+    // is the caller's own list — so the two are independent by construction.
+    const missing = ctx({ surface: edit(null), hasWorkspace: false, dashboardIds: [] });
+    expect(state(missing, 'export-dashboard')).toEqual([false, 'No dashboards']);
+    expect(state(missing, 'new-dashboard')).toEqual([false, 'No workspace']);
     expect(state(missing, 'import-dashboard')).toEqual([false, 'No workspace']);
-    expect(state(missing, 'export-dashboard')).toEqual([false, 'No dashboard']);
-    expect(fileMenuModel(missing).importDashboardTarget).toBeNull();
-    expect(fileMenuModel(missing).exportDashboardTarget).toBeNull();
   });
 
   // The invariant `ui/file-menu.ts` relies on to dispatch without a null check.
-  it('a target is non-null exactly when its row is enabled', () => {
+  it('a target is non-null exactly when the row is enabled', () => {
     const surfaces = [QUERY, edit('d1'), view('d1'), edit(null), view(null)];
     for (const surface of surfaces) {
       for (const hasWorkspace of [true, false]) {
-        for (const dashboardCount of [0, 2]) {
-          const model = fileMenuModel({ surface, hasWorkspace, libraryQueryCount: 1, dashboardCount });
-          const enabled = (id: FileMenuActionId): boolean =>
-            model.items.find((item) => item.id === id)!.enabled;
-          expect(model.importDashboardTarget !== null).toBe(enabled('import-dashboard'));
-          expect(model.exportDashboardTarget !== null).toBe(enabled('export-dashboard'));
+        for (const dashboardIds of [[], ['d1'], ['d1', 'd2']]) {
+          const model = fileMenuModel({ surface, hasWorkspace, libraryQueryCount: 1, dashboardIds });
+          const enabled = model.items.find((item) => item.id === 'export-dashboard')!.enabled;
+          expect(model.exportDashboardTarget !== null).toBe(enabled);
         }
       }
     }
+  });
+});
+
+describe('shortIdFragments — telling duplicate-titled rows apart (#463)', () => {
+  it('shows a six-character tail when that is already unique', () => {
+    expect(shortIdFragments(['ws-dashboard-aaa111', 'ws-dashboard-bbb222']))
+      .toEqual(['aaa111', 'bbb222']);
+  });
+
+  // The defect a fixed-width tail has: `sales-abcdef` and `ops-abcdef` agree on
+  // their last six characters, so two rows with the same title and tile count
+  // would render identically.
+  it('grows the tail until every fragment differs', () => {
+    // Both collide through length 8 (`s-abcdef`); 9 is the first that separates.
+    expect(shortIdFragments(['sales-abcdef', 'ops-abcdef'])).toEqual(['es-abcdef', 'ps-abcdef']);
+  });
+
+  it('falls back to the whole id when no suffix separates them', () => {
+    // Genuinely duplicate ids — nothing can distinguish these, and the
+    // id-addressed reader fails closed on that workspace anyway.
+    expect(shortIdFragments(['same-id', 'same-id'])).toEqual(['same-id', 'same-id']);
+  });
+
+  it('never returns a fragment longer than its own id', () => {
+    for (const fragment of shortIdFragments(['ab', 'cd'])) expect(fragment).toHaveLength(2);
+  });
+
+  it('handles a single id and an empty list', () => {
+    expect(shortIdFragments(['only-one-id'])).toEqual(['one-id']);
+    expect(shortIdFragments([])).toEqual([]);
+  });
+
+  // One fragment per id, positionally — the caller zips these back onto rows.
+  it('returns one fragment per id, in order', () => {
+    const ids = ['ws-1-aaaaaa', 'ws-2-bbbbbb', 'ws-3-cccccc'];
+    expect(shortIdFragments(ids)).toHaveLength(ids.length);
   });
 });
 
@@ -243,20 +366,20 @@ describe('fileMenuFooter', () => {
   // Issue test 9 + "singular/plural forms remain grammatical", "zero counts are
   // displayed normally rather than changing the menu structure".
   it.each([
-    [0, 0, '0 Library queries · 0 dashboards'],
-    [1, 0, '1 Library query · 0 dashboards'],
-    [1, 1, '1 Library query · 1 dashboard'],
-    [2, 1, '2 Library queries · 1 dashboard'],
-    [7, 3, '7 Library queries · 3 dashboards'],
-  ])('reports %i Library queries and %i dashboards as "%s"', (libraryQueryCount, dashboardCount, expected) => {
-    const c = ctx({ libraryQueryCount, dashboardCount });
+    [0, [] as string[], '0 Library queries · 0 dashboards'],
+    [1, [], '1 Library query · 0 dashboards'],
+    [1, ['a'], '1 Library query · 1 dashboard'],
+    [2, ['a'], '2 Library queries · 1 dashboard'],
+    [7, ['a', 'b', 'c'], '7 Library queries · 3 dashboards'],
+  ])('reports %i Library queries and %o as "%s"', (libraryQueryCount, dashboardIds, expected) => {
+    const c = ctx({ libraryQueryCount, dashboardIds });
     expect(fileMenuFooter(c)).toBe(expected);
     expect(fileMenuModel(c).footer).toBe(expected);
   });
 
   it('reports the same counts whatever the surface', () => {
     for (const surface of [QUERY, edit('d1'), view('d1'), edit(null)]) {
-      expect(fileMenuFooter(ctx({ surface, libraryQueryCount: 4, dashboardCount: 2 })))
+      expect(fileMenuFooter(ctx({ surface, libraryQueryCount: 4, dashboardIds: ['a', 'b'] })))
         .toBe('4 Library queries · 2 dashboards');
     }
   });

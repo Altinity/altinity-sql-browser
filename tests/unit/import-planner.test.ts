@@ -366,13 +366,13 @@ describe('planImportDashboard', () => {
     })],
   });
 
-  it('copy mode rewrites tile.queryId, mints a fresh Dashboard id, and resets revision to 1', () => {
+  it('rewrites tile.queryId, mints a fresh Dashboard id, and resets revision to 1', () => {
     const ws = workspace({ queries: [panelQuery('p1', 'existing p1')] });
     const decisions: QueryDecision[] = [
       { sourceId: 'p1', action: 'copy', targetId: 'p1-copy' },
     ];
     const genId = counter('new-dash');
-    const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, 'copy', genId);
+    const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, genId);
     expect(plan.diagnostics).toEqual([]);
     const candidate = plan.candidateWorkspace!;
     expect(candidate.dashboards[0]!.id).toBe('new-dash-1');
@@ -388,12 +388,18 @@ describe('planImportDashboard', () => {
     expect(plan.sourceDashboardId).toBe('d1');
   });
 
-  it('replace mode keeps the imported Dashboard id and revision', () => {
+  // #463: the imported id is ALWAYS reminted, even when nothing collides. There
+  // is no mode that keeps the bundle's own id, because an additive import that
+  // did could seat two entries under one id by importing the same file twice.
+  it('remints even a non-conflicting bundle Dashboard id', () => {
     const ws = workspace(); // no existing queries — the incoming id is non-conflicting
-    const plan = planImportDashboard(ws, buildBundle(), 'd1', [], 'replace', counter());
+    const plan = planImportDashboard(ws, buildBundle(), 'd1', [], counter('fresh'));
     const candidate = plan.candidateWorkspace!;
-    expect(candidate.dashboards[0]!.id).toBe('d1');
-    expect(candidate.dashboards[0]!.revision).toBe(5);
+    expect(candidate.dashboards[0]!.id).toBe('fresh-1');
+    // #463: the caller has to OPEN what it imported, and the bundle's id is not
+    // it — the plan reports the local id it minted.
+    expect(plan.importedDashboardId).toBe('fresh-1');
+    expect(candidate.dashboards[0]!.revision).toBe(1);
     // The bundle's own query survives as a Library source; the member owns a copy.
     expect(ids(candidate.queries).slice(0, 1)).toEqual(['p1']);
     expect(candidate.dashboards[0]!.tiles[0].queryId).not.toBe('p1');
@@ -401,18 +407,37 @@ describe('planImportDashboard', () => {
     expect(candidate.dashboards[0]!.tiles[0].id).toBe('t1');
   });
 
+  // Acceptance: importing is additive, so the same bundle twice is two
+  // Dashboards — never a collision, never an overwrite.
+  it('imports the same bundle twice as two distinct Dashboards', () => {
+    const genId = counter('twice');
+    const first = planImportDashboard(workspace(), buildBundle(), 'd1', [], genId);
+    // The re-import's dependency is now canonically identical to the query the
+    // first one seated, which is exactly what `autoResolveConflicts` decides for
+    // the caller before this point.
+    const second = planImportDashboard(
+      first.candidateWorkspace!, buildBundle(), 'd1', [{ sourceId: 'p1', action: 'use-existing' }], genId,
+    );
+    const dashboards = second.candidateWorkspace!.dashboards;
+    expect(dashboards).toHaveLength(2);
+    expect(new Set(dashboards.map((d) => d.id)).size).toBe(2);
+    expect(second.diagnostics).toEqual([]);
+  });
+
   it('invalidates when skipping a required Dashboard dependency (candidate null, missingRequiredIds populated)', () => {
     const ws = workspace({ queries: [panelQuery('p1', 'existing p1')] });
     const decisions: QueryDecision[] = [{ sourceId: 'p1', action: 'skip' }];
-    const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, 'copy', counter());
+    const plan = planImportDashboard(ws, buildBundle(), 'd1', decisions, counter());
     expect(plan.candidateWorkspace).toBeNull();
     expect(plan.diagnostics).toHaveLength(1);
     expect(plan.diagnostics[0].code).toBe('dashboard-import-invalid');
     expect(plan.diagnostics[0].message).toContain('p1');
+    // Nothing was committed, so there is nothing to open.
+    expect(plan.importedDashboardId).toBeUndefined();
   });
 
   it('reports a not-found diagnostic for an unknown sourceDashboardId', () => {
-    const plan = planImportDashboard(workspace(), buildBundle(), 'missing', [], 'copy', counter());
+    const plan = planImportDashboard(workspace(), buildBundle(), 'missing', [], counter());
     expect(plan.candidateWorkspace).toBeNull();
     expect(plan.queryMappings).toEqual({});
     expect(plan.diagnostics).toEqual([
@@ -432,9 +457,10 @@ describe('planImportDashboard', () => {
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, ghost: {} } },
       })],
     });
-    const plan = planImportDashboard(ws, badBundle, 'd1', [], 'replace', counter());
+    const plan = planImportDashboard(ws, badBundle, 'd1', [], counter());
     expect(plan.candidateWorkspace).toBeNull();
     expect(plan.diagnostics.some((d) => d.code === 'layout-orphan-placement')).toBe(true);
+    expect(plan.importedDashboardId).toBeUndefined();
   });
 });
 
@@ -470,8 +496,12 @@ describe('imports preserve the non-compatibility Dashboards', () => {
     expect(plan.candidateWorkspace!.queries.find((q) => q.id === 'b')?.spec.favorite).toBe(true);
   });
 
-  it('planImportDashboard replaces the compatibility slot and preserves the rest', () => {
-    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
+  // #463: the imported Dashboard is APPENDED. Both stored entries survive in
+  // place, byte-for-byte, and neither the compatibility slot nor any other entry
+  // is written.
+  it('planImportDashboard appends after every stored Dashboard, replacing none', () => {
+    const compat = dashboardDoc({ id: 'visible', revision: 4 });
+    const ws = twoDashboards(compat);
     const incoming = bundle({
       queries: [panelQuery('a')],
       dashboards: [dashboardDoc({
@@ -480,89 +510,49 @@ describe('imports preserve the non-compatibility Dashboards', () => {
       })],
     });
     const plan = planImportDashboard(
-      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
+      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], counter('new'),
     );
     const dashboards = plan.candidateWorkspace!.dashboards;
-    // The imported document took slot 0 under a freshly minted id…
-    expect(dashboards.map((d) => d.id)).toEqual(['new-1', 'hidden']);
-    expect(dashboards[0].revision).toBe(1);
-    // …and the workspace's other Dashboard is untouched.
+    // The imported document is LAST, under a freshly minted id…
+    expect(dashboards.map((d) => d.id)).toEqual(['visible', 'hidden', 'new-1']);
+    expect(dashboards[2].revision).toBe(1);
+    expect(plan.importedDashboardId).toBe('new-1');
+    // …and both stored Dashboards are untouched.
+    expect(dashboards[0]).toEqual(compat);
     expect(dashboards[1]).toEqual(hidden());
   });
 
-  // #425: an import invoked from a Dashboard's own File menu must replace THAT
-  // Dashboard. Addressing the compatibility slot would import "into" a Dashboard
-  // the user is not looking at, once a non-first one can be open.
-  it('planImportDashboard replaces the TARGET Dashboard by id, preserving the first', () => {
-    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
-    const incoming = bundle({
-      queries: [panelQuery('a')],
-      dashboards: [dashboardDoc({
-        id: 'incoming', revision: 3, tiles: [{ id: 't1', queryId: 'a' }],
-        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-      })],
-    });
+  // The defect #452 spent a whole target type defending against: a Dashboard
+  // import must never write `dashboards[0]`. #463 makes it unrepresentable
+  // rather than guarded, so this pins the outcome for the case that used to
+  // reach the compatibility slot — no target named, non-empty collection.
+  it('planImportDashboard never writes dashboards[0]', () => {
+    const compat = dashboardDoc({ id: 'visible', revision: 4 });
+    const ws = twoDashboards(compat);
     const plan = planImportDashboard(
-      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
-      {}, 'hidden',
+      ws, bundle({ dashboards: [dashboardDoc({ id: 'incoming' })] }), 'incoming', [], counter('new'),
     );
-    const dashboards = plan.candidateWorkspace!.dashboards;
-    expect(dashboards.map((d) => d.id)).toEqual(['visible', 'new-1']);
-    // The first entry is byte-identical; only the addressed one was replaced.
-    expect(dashboards[0]).toEqual(dashboardDoc({ id: 'visible', revision: 4 }));
+    expect(plan.candidateWorkspace!.dashboards[0]).toEqual(compat);
   });
 
-  // #425: an explicit target FAILS CLOSED. Retargeting the compatibility slot
-  // would overwrite the collection's first Dashboard — silently retargeting the
-  // way #425 forbids, and destroying an entry the import never named.
-  it('planImportDashboard commits nothing when an explicit target was deleted', () => {
-    const ws = twoDashboards(dashboardDoc({ id: 'visible', revision: 4 }));
-    const incoming = bundle({
-      queries: [panelQuery('a')],
-      dashboards: [dashboardDoc({ id: 'incoming' })],
-    });
-    const plan = planImportDashboard(
-      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
-      {}, 'gone',
-    );
-    expect(plan.candidateWorkspace).toBeNull();
-    expect(plan.diagnostics.map((d) => d.code)).toEqual(['dashboard-import-target-stale']);
-    // Neither stored Dashboard was touched.
-    expect(ws.dashboards.map((d) => d.id)).toEqual(['visible', 'hidden']);
-  });
-
-  it('planImportDashboard commits nothing when an explicit target id is ambiguous', () => {
-    const duplicated = dashboardDoc({ id: 'twin', revision: 2 });
-    const ws = {
-      ...twoDashboards(dashboardDoc({ id: 'visible' })),
-      dashboards: [duplicated, { ...duplicated, revision: 3 }],
-    };
-    const incoming = bundle({
-      queries: [panelQuery('a')],
-      dashboards: [dashboardDoc({ id: 'incoming' })],
-    });
-    const plan = planImportDashboard(
-      ws, incoming, 'incoming', [{ sourceId: 'a', action: 'use-existing' }], 'copy', counter('new'),
-      {}, 'twin',
-    );
-    expect(plan.candidateWorkspace).toBeNull();
-    expect(plan.diagnostics.map((d) => d.code)).toEqual(['dashboard-import-target-stale']);
-    expect(ws.dashboards.map((d) => d.revision)).toEqual([2, 3]);
-  });
-
-  it('planImportDashboard diagnoses a replace-mode id that collides with a hidden Dashboard', () => {
+  // A bundle Dashboard whose id equals a STORED Dashboard's used to be a
+  // duplicate-id diagnostic in replace mode. Appending remints, so the same
+  // bundle now imports cleanly beside the entry it collided with.
+  it('planImportDashboard remints past a bundle id that collides with a stored Dashboard', () => {
     const ws = twoDashboards(dashboardDoc({ id: 'visible' }));
     const incoming = bundle({
       queries: [panelQuery('a')],
-      // Same id as the workspace's HIDDEN Dashboard — taking the compatibility
-      // slot under it would leave two entries sharing one id.
       dashboards: [dashboardDoc({ id: 'hidden', title: 'Colliding' })],
     });
     const plan = planImportDashboard(
-      ws, incoming, 'hidden', [{ sourceId: 'a', action: 'use-existing' }], 'replace', counter(),
+      ws, incoming, 'hidden', [{ sourceId: 'a', action: 'use-existing' }], counter('new'),
     );
-    expect(plan.candidateWorkspace).toBeNull();
-    expect(plan.diagnostics.some((d) => d.code === 'workspace-duplicate-dashboard-id')).toBe(true);
+    expect(plan.diagnostics).toEqual([]);
+    const dashboards = plan.candidateWorkspace!.dashboards;
+    expect(dashboards.map((d) => d.id)).toEqual(['visible', 'hidden', 'new-1']);
+    expect(dashboards[2].title).toBe('Colliding');
+    // The stored Dashboard that shared the bundle's id is byte-identical.
+    expect(dashboards[1]).toEqual(hidden());
   });
 });
 

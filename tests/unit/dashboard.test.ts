@@ -4256,8 +4256,9 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     openFileMenuBtn(app.root);
     expect(menuItems()).toEqual([
-      'New workspace…', 'Import workspace…', 'Export workspace…',
-      'Import queries…', 'Import Dashboard…', 'Export Dashboard…',
+      'New workspace…', 'New dashboard…',
+      'Import workspace…', 'Import queries…', 'Import dashboard…',
+      'Export workspace…', 'Export dashboard…',
       'Download Library as Markdown', 'Download Library as SQL',
     ]);
     expect(qsa(fileMenuEl(), '.fm-section')).toHaveLength(0);
@@ -4266,12 +4267,13 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     expect(document.querySelector('.dash-file-btn')).toBeNull();
   });
 
-  it('Dashboard Edit enables both Dashboard rows against the rendered document', async () => {
+  it('Dashboard Edit enables all three Dashboard rows against the rendered document', async () => {
     const { app } = editApp();
     await render(app);
     openFileMenuBtn(app.root);
-    expect(menuRow('Import Dashboard…').getAttribute('aria-disabled')).toBeNull();
-    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+      expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
+    }
   });
 
   it('the trigger toggles, Escape closes and restores aria, the overlay closes', async () => {
@@ -4307,12 +4309,15 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     openFileMenuBtn(app.root);
     // The row is still THERE, in position — View disables, it does not remove.
-    expect(menuItems()).toContain('Import Dashboard…');
-    const importRow = menuRow('Import Dashboard…');
+    expect(menuItems()).toContain('Import queries…');
+    const importRow = menuRow('Import queries…');
     expect(importRow.getAttribute('aria-disabled')).toBe('true');
     expect(importRow.querySelector('.fm-reason')!.textContent).toBe('Edit mode only');
-    // Export is safe in View: it reads.
-    expect(menuRow('Export Dashboard…').getAttribute('aria-disabled')).toBeNull();
+    // #463: the three Dashboard commands are workspace operations, so View — a
+    // presentation choice, not an authorization boundary — does not gate them.
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+      expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
+    }
   });
 
   it('the empty-Dashboard placeholder still renders the shared menu', async () => {
@@ -4321,8 +4326,8 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-empty')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(8);
-    expect(menuRow('Export Dashboard…').querySelector('.fm-reason')!.textContent).toBe('No dashboard');
+    expect(menuItems()).toHaveLength(9);
+    expect(menuRow('Export dashboard…').querySelector('.fm-reason')!.textContent).toBe('No dashboards');
   });
 
   it('the workspace-not-found fallback renders the shared menu with no workspace', async () => {
@@ -4330,7 +4335,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-notfound')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(8);
+    expect(menuItems()).toHaveLength(9);
     expect(menuRow('Export workspace…').querySelector('.fm-reason')!.textContent).toBe('No workspace');
   });
 

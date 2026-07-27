@@ -42,6 +42,24 @@ export function createNewWorkspace(
   };
 }
 
+/**
+ * Append ONE Dashboard to the end of the collection (#463), preserving every
+ * existing entry and their order byte-for-byte. Never mutates `workspace`.
+ *
+ * The additive counterpart to `withCompatibilityDashboard`/`replaceDashboard` in
+ * workspace-dashboards.ts, and deliberately unconditional: both File-menu
+ * callers (New dashboard, Import dashboard) are ADDING a document that has just
+ * been minted a fresh id, so there is no existing entry to name, no ambiguity to
+ * fail closed on, and nothing that can be overwritten. Duplicate TITLES are
+ * allowed — identity is the id — and a duplicate ID would be rejected by the
+ * candidate's own schema validation rather than silently deduplicated here.
+ */
+export function appendDashboard(
+  workspace: StoredWorkspaceV5, dashboard: DashboardDocumentV2,
+): StoredWorkspaceV5 {
+  return { ...workspace, dashboards: [...workspace.dashboards, dashboard] };
+}
+
 /** Replace only the active workspace's query collection — every Dashboard is
  *  carried through untouched. */
 export function importQueries(
