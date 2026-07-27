@@ -185,12 +185,21 @@ export interface DashboardTreeRow {
   /** The query a primary click would open, when one resolves. */
   queryId: string | null;
   group: DashboardTreeGroup | null;
-  /** Primary click (deferred through the click arbiter for member and Dashboard
-   *  rows; run immediately for a group row, which has no competing gesture). */
+  /** Primary click. Deferred through the click arbiter exactly when this row also
+   *  has a `double` — which, since #429/#472 split the Dashboard row, means a
+   *  PANEL row only. Every other row runs its primary press immediately, having
+   *  no competing gesture to wait out. */
   single: DashboardTreeCommand | null;
+  /** The double-click action, and thereby the view's arbitration switch: a row
+   *  with no `double` needs no double-click window. Only a panel row has one — a
+   *  Dashboard row's expansion moved to its chevron (#429/#472), so its primary
+   *  press can open at once. */
   double: DashboardTreeCommand | null;
   shift: DashboardTreeCommand | null;
-  /** The keyboard-reachable equivalent of every gesture this row offers. EMPTY
+  /** The keyboard-reachable equivalent of every gesture this row offers that a
+   *  pointer-only affordance would otherwise HIDE. A Dashboard row therefore
+   *  offers *Open in Edit* only (#429/#472): plain View is its primary press, so
+   *  it is not hidden, while Edit exists only as Shift-click/Shift+Enter. EMPTY
    *  for a variable row: #447 forbids the `…` menu there, and a variable row has
    *  no double/Shift gesture for it to expose — its single activation (open the
    *  option-SQL editor) is already reachable with Enter. */
@@ -433,11 +442,21 @@ export function deriveDashboardTree(
       member: null,
       queryId: null,
       group: null,
-      single: dashboardForced ? null : { kind: 'toggle' },
-      double: openDashboardCommand(dashboard.id, 'view'),
+      // #429/#472 — the Dashboard row's THREE independent targets. The primary
+      // press now OPENS (it used to expand, deferred through the double-click
+      // window); expansion moved to the chevron alone, which is why there is no
+      // `double` action left to arbitrate against. Unconditional, unlike the
+      // toggle it replaced: a row a search is holding open cannot change its
+      // expansion (`toggleable`), but it can always be opened.
+      single: openDashboardCommand(dashboard.id, 'view'),
+      double: null,
       shift: openDashboardCommand(dashboard.id, 'edit'),
+      // *Open in View* is gone: it IS the primary press now, and the menu existed
+      // only to keep a pointer-hidden gesture discoverable. *Open in Edit* stays
+      // for exactly that reason — its only forms are Shift-click and Shift+Enter,
+      // both hidden modifiers, so this row is where a keyboard or first-time user
+      // finds Edit mode at all.
       menu: [
-        { label: 'Open in View', command: openDashboardCommand(dashboard.id, 'view') },
         { label: 'Open in Edit', command: openDashboardCommand(dashboard.id, 'edit') },
       ],
       dropTarget: { kind: 'panel', dashboardId: dashboard.id },

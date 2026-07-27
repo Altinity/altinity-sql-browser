@@ -88,6 +88,9 @@ const rowFor = (list: HTMLElement, key: string): HTMLElement =>
   list.querySelector<HTMLElement>('[data-key="' + key.replace(/"/g, '\\"') + '"]')!;
 const labels = (list: HTMLElement): string[] =>
   rows(list).map((row) => row.querySelector('.label')!.textContent!);
+/** #429/#472: the row's disclosure BUTTON — one of its three independent targets. */
+const chevron = (list: HTMLElement, rowKey: string): HTMLButtonElement =>
+  rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-chev')!;
 const click = (el: Element, over: MouseEventInit = {}): void => {
   el.dispatchEvent(new MouseEvent('click', { bubbles: true, ...over }));
 };
@@ -135,6 +138,13 @@ describe('renderDashboardTree — structure and ARIA', () => {
     expect(tabbable[0].dataset.key).toBe('w1:sales');
     expect(rows(list).filter((row) => row.getAttribute('tabindex') === '-1'))
       .toHaveLength(rows(list).length - 1);
+    // #429/#472: the disclosure BUTTON roves with its row, so the tree stays one
+    // composite tab stop — Tab walks the focused row's targets and then leaves,
+    // instead of offering a stop per chevron for the whole collection.
+    const tabbableChevrons = [...list.querySelectorAll<HTMLElement>('.dash-tree-chev')]
+      .filter((chev) => chev.getAttribute('tabindex') === '0');
+    expect(tabbableChevrons).toHaveLength(1);
+    expect(tabbableChevrons[0].closest('.dash-tree-row')!.getAttribute('data-key')).toBe('w1:sales');
   });
 
   it('indents by level', () => {
@@ -267,35 +277,61 @@ describe('renderDashboardTree — mouse gestures', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   const settle = (): void => { vi.advanceTimersByTime(400); };
 
-  it('a Dashboard row click toggles expansion ONCE, after the double-click window', () => {
+  // #429/#472 — the row's primary target NAVIGATES now. It used to expand, deferred
+  // behind the double-click window; expansion belongs to the chevron alone.
+  it('a Dashboard row click opens View by stable id, with NO delay', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
     click(rowFor(list, 'w1:sales'));
-    // Deferred: the double-click action must be able to cancel it.
+    // Before `settle()`: there is no double-click action left to wait out.
+    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'view' });
+    settle();
+    expect(app.openDashboard).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Dashboard row click leaves expansion EXACTLY as it was, open or closed', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    click(rowFor(list, 'w1:sales'));
+    settle();
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+
+    // And the same on an EXPANDED row — opening must not collapse it either.
+    setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
+    renderDashboardTree(app);
+    click(rowFor(list, 'w1:sales'));
     settle();
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
-    expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
-  it('a Dashboard double-click opens View once and leaves expansion EXACTLY as it was', () => {
+  // The row dispatches the SAME idempotent command twice rather than a second,
+  // different action; `app.openDashboard` is what collapses a repeat into a no-op
+  // (proved against the real controller in `app.test.ts` — a repeated open pushes no
+  // second history entry). Suppressing it here as well would duplicate that guard in
+  // a layer that cannot see the route.
+  it('a Dashboard double-click repeats one command and never a second action', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
     click(rowFor(list, 'w1:sales'));
     click(rowFor(list, 'w1:sales'));
     settle();
-    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'view' });
-    // The scheduled expansion was cancelled, not merely re-toggled.
+    const calls = (app.openDashboard as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toEqual([
+      [{ dashboardId: 'sales', mode: 'view' }],
+      [{ dashboardId: 'sales', mode: 'view' }],
+    ]);
+    // No focus navigation, no mode change, and still no expansion write.
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
-  it('a Dashboard Shift-click opens Edit immediately, cancelling a pending single', () => {
+  it('a Dashboard Shift-click opens Edit, and only Edit', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
-    click(rowFor(list, 'w1:sales'));
     click(rowFor(list, 'w1:sales'), { shiftKey: true });
     expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'edit' });
     settle();
+    expect(app.openDashboard).toHaveBeenCalledTimes(1);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
   });
 
@@ -387,24 +423,32 @@ describe('renderDashboardTree — mouse gestures', () => {
     expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
-  it('a chevron click expands immediately and does NOT run the row action', () => {
+  it('a chevron click expands, then collapses, and NEVER navigates', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
-    click(rowFor(list, 'w1:sales').querySelector('.chev')!);
-    // Instant, because the chevron is the deliberate no-delay path.
+    click(chevron(list, 'w1:sales'));
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
+    click(chevron(list, 'w1:sales'));
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
     settle();
+    // The one thing the chevron must never do, now that the row itself opens.
     expect(app.openDashboard).not.toHaveBeenCalled();
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
-  it('a chevron click cancels a pending single from a prior row click', () => {
+  // #426's rule, retained through the split: a control on one row cancels no OTHER
+  // row's pending operation. (Its own row has none to cancel any more — only a panel
+  // row is arbitrated, and a panel row has no chevron.)
+  it('a chevron click leaves another row\'s pending action alone', () => {
     const { app, list } = treeApp();
+    openAll(app, 'sales');
     renderDashboardTree(app);
-    click(rowFor(list, 'w1:sales'));
-    click(rowFor(list, 'w1:sales').querySelector('.chev')!);
+    click(rowFor(list, 'w1:sales:tile:t1'));
+    click(chevron(list, 'w1:sales:group:panels'));
     settle();
-    // Expanded exactly once — by the chevron, not also by the abandoned single.
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedGroups.has(groupStateKey('sales', 'panels')))
+      .toBe(false); // toggled CLOSED, since `openAll` had opened it
+    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
   });
 
   it('cancelDashboardTreeClicks drops a deferred action (role or workspace change)', () => {
@@ -468,17 +512,143 @@ describe('renderDashboardTree — mouse gestures', () => {
   });
 });
 
+// #429/#472 — the Dashboard row is THREE independent targets. The chevron half of
+// that contract: it is a real control with its own name, state and keyboard, and it
+// does nothing but expand.
+describe('renderDashboardTree — the disclosure control (#472)', () => {
+  const pressKey = (el: Element, k: string): boolean =>
+    !el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+
+  it('is a button that announces its state and what it will do, collapsed and expanded', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const collapsed = chevron(list, 'w1:sales');
+    expect(collapsed.tagName).toBe('BUTTON');
+    expect(collapsed.type).toBe('button');
+    expect(collapsed.getAttribute('aria-expanded')).toBe('false');
+    expect(collapsed.getAttribute('aria-label')).toBe('Expand Sales');
+
+    setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
+    renderDashboardTree(app);
+    const expanded = chevron(list, 'w1:sales');
+    expect(expanded.getAttribute('aria-expanded')).toBe('true');
+    // The verb flips: a screen-reader user must hear what activating it DOES, not
+    // merely that the row is open.
+    expect(expanded.getAttribute('aria-label')).toBe('Collapse Sales');
+    // The treeitem keeps its own `aria-expanded`, and the two agree by construction.
+    expect(rowFor(list, 'w1:sales').getAttribute('aria-expanded')).toBe('true');
+    // Group rows are disclosure controls on the same footing.
+    expect(chevron(list, 'w1:sales:group:panels').getAttribute('aria-label')).toBe('Expand Panels');
+  });
+
+  it('names the CURRENT Dashboard\'s control the same way — the row being open changes nothing', () => {
+    const surface: MainSurfaceState = {
+      kind: 'dashboard', dashboardId: 'sales', mode: 'view',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    const { app, list } = treeApp({ mainSurface: surface });
+    renderDashboardTree(app);
+    expect(rowFor(list, 'w1:sales').classList.contains('is-current')).toBe(true);
+    expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Expand Sales');
+    click(chevron(list, 'w1:sales'));
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('Enter and Space toggle expansion and open NOTHING', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    // The trap this guards: the tree's key handler lives on the LIST, and its Enter
+    // runs the row's primary action — which is now "open this Dashboard". A chevron
+    // that let the key bubble would navigate instead of expanding.
+    expect(pressKey(chevron(list, 'w1:sales'), 'Enter')).toBe(true);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+
+    expect(pressKey(chevron(list, 'w1:sales'), ' ')).toBe(true);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('ignores every other key, leaving them to the tree', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    // ArrowDown must still reach the list handler and move the keyboard row.
+    chevron(list, 'w1:sales').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }),
+    );
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:ops');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+  });
+
+  it('keeps focus on itself across the repaint its own toggle causes', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    chevron(list, 'w1:sales').focus();
+    pressKey(chevron(list, 'w1:sales'), 'Enter');
+    // `commitUi` rebuilt every row, so this is the NEW button. Landing on the row
+    // instead would mean the next Enter navigates rather than collapsing.
+    expect(document.activeElement).toBe(chevron(list, 'w1:sales'));
+    expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
+    // ...and pressing again really does collapse, which is the point of staying put.
+    pressKey(document.activeElement!, 'Enter');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('moves the keyboard owner to its own row, so Tab and the arrow keys continue there', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    click(chevron(list, 'w1:ops'));
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:ops');
+    expect(rowFor(list, 'w1:ops').getAttribute('tabindex')).toBe('0');
+    expect(chevron(list, 'w1:ops').getAttribute('tabindex')).toBe('0');
+    expect(chevron(list, 'w1:sales').getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('rows that cannot expand keep the plain spacer span, with no name and no state', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const leaf = rowFor(list, 'w1:sales:tile:t1').querySelector('.chev')!;
+    expect(leaf.tagName).toBe('SPAN');
+    expect(leaf.hasAttribute('aria-label')).toBe(false);
+    expect(leaf.hasAttribute('aria-expanded')).toBe(false);
+    expect(leaf.innerHTML).toBe('');
+  });
+
+  it('is isolated from the trailing action, which expands and navigates neither', () => {
+    vi.useFakeTimers();
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const row = rowFor(list, 'w1:sales');
+    click(row.querySelector<HTMLElement>('.dash-tree-menu-btn')!);
+    vi.advanceTimersByTime(400);
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    // Three targets, three outcomes, from one row.
+    expect(row.querySelectorAll('.dash-tree-chev')).toHaveLength(1);
+    expect(row.querySelectorAll('.dash-tree-menu-btn')).toHaveLength(1);
+    vi.useRealTimers();
+  });
+});
+
 describe('renderDashboardTree — action menu', () => {
   const menuButton = (list: HTMLElement, rowKey: string): HTMLButtonElement =>
     rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-menu-btn')!;
   const menuLabels = (): string[] =>
     [...document.querySelectorAll('.dash-tree-menu .fm-label')].map((n) => n.textContent!);
 
-  it('exposes the Dashboard row\'s View/Edit alternatives', () => {
+  // #429/#472 — the redundant-menu-item reconcile. *Open in View* is gone because it
+  // IS the row's primary press now; *Open in Edit* stays because its only gestures
+  // are Shift-click and Shift+Enter, so the menu is where it is discoverable at all.
+  it('offers the Dashboard row Open in Edit only, and runs it', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
     click(menuButton(list, 'w1:sales'));
-    expect(menuLabels()).toEqual(['Open in View', 'Open in Edit']);
+    expect(menuLabels()).toEqual(['Open in Edit']);
+    click(document.querySelector<HTMLElement>('.dash-tree-menu .fm-item')!);
+    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'edit' });
   });
 
   it('exposes a panel row\'s three operations and runs the chosen one', () => {
@@ -700,15 +870,21 @@ describe('renderDashboardTree — keyboard', () => {
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales');
   });
 
-  it('Enter performs the primary action and Shift+Enter the Edit action', () => {
+  // #429/#472: on a Dashboard row Enter now OPENS (it used to expand), matching the
+  // primary click — and expansion is reachable independently, by Right/Left or by the
+  // disclosure button. Both operations, neither hidden behind the other.
+  it('Enter opens View, Shift+Enter opens Edit, and neither touches expansion', () => {
     const { app, list } = treeApp();
-    openAll(app, 'sales');
     renderDashboardTree(app);
-    // On a Dashboard row, Enter is the primary action: expansion.
     key(list, 'Enter');
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'view' });
     key(list, 'Enter', { shiftKey: true });
-    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'edit' });
+    expect(app.openDashboard).toHaveBeenLastCalledWith({ dashboardId: 'sales', mode: 'edit' });
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+    // ...and the keyboard can still expand the hierarchy, independently.
+    key(list, 'ArrowRight');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(true);
+    expect(app.openDashboard).toHaveBeenCalledTimes(2);
   });
 
   it('Enter on a panel row opens its query with no double-click delay', () => {
@@ -879,26 +1055,38 @@ describe('renderDashboardTree — search', () => {
     expect(rowFor(list, 'w1:sales').classList.contains('match')).toBe(false);
   });
 
-  it('a search-forced row cannot be toggled, by chevron or by click', () => {
+  it('a search-forced row cannot be toggled — but its name still opens it', () => {
     vi.useFakeTimers();
     const { app, list } = treeApp();
     setUi(app, (ui) => setTreeSearch(ui, 'revenue'));
     renderDashboardTree(app);
     const dashboardRow = rowFor(list, 'w1:sales');
-    // No chevron handler at all, rather than an affordance that lies.
-    expect(dashboardRow.querySelector('.chev')!.getAttribute('onclick')).toBeNull();
-    click(dashboardRow.querySelector('.chev')!);
-    click(dashboardRow);
-    // The forced GROUP row likewise offers no action to run at all — a group whose
-    // expansion the search owns must not write the user's own expansion set.
+    // No BUTTON at all, rather than a control that lies about what it can do: the
+    // row genuinely is open (`aria-expanded`), the search owns that, and clicking
+    // must not write the user's own expansion set.
+    const spacer = dashboardRow.querySelector('.chev')!;
+    expect(spacer.tagName).toBe('SPAN');
+    expect(spacer.hasAttribute('aria-label')).toBe(false);
+    expect(dashboardRow.getAttribute('aria-expanded')).toBe('true');
+    // The forced GROUP row offers no action to run at all.
     click(rowFor(list, 'w1:sales:group:panels'));
     vi.advanceTimersByTime(400);
-    // Nothing was written, so clearing the search restores the untouched state.
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedGroups.size).toBe(0);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+
+    // #429/#472: the row's own press is NAVIGATION now, and navigation was never
+    // what the search forced — so a forced row opens like any other, where before it
+    // was a dead click. With no button in the chevron slot, that spacer is ordinary
+    // primary row content and the press bubbles to the row, as it does from the icon.
+    click(spacer);
+    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'view' });
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+
     setUi(app, (ui) => setTreeSearch(ui, ''));
     renderDashboardTree(app);
     expect(labels(list)).toEqual(['Sales', 'Ops']);
+    vi.useRealTimers();
   });
 
   it('Left/Right cannot collapse a search-forced row either', () => {
@@ -1424,17 +1612,19 @@ describe('Library-query drop targets (#428)', () => {
       expect(tiles[2].id).not.toBe(tiles[3].id);
     });
 
-    it('cancels a pending row click so the drop does not also navigate', async () => {
+    // #428 opens the assigned COPY, never the Dashboard. Its original form armed a
+    // deferred row click first, to prove the drop cancelled it; #429/#472 removed
+    // that hazard at the source (a Dashboard row is no longer arbitrated), so what
+    // is left to hold is that a drop navigates nowhere on its own — not even after
+    // the old double-click window would have elapsed.
+    it('does not navigate to the Dashboard, then or 350ms later', async () => {
       const { app, list } = dropApp();
       renderDashboardTree(app);
-      const row = rowFor(list, 'w1:sales');
-      // A deferred single-click waiting out the double-click window.
-      click(row);
-
-      row.dispatchEvent(dragEvent('drop'));
+      rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop'));
       await flush();
       await new Promise((resolve) => setTimeout(resolve, 350));
       expect(app.openDashboard).not.toHaveBeenCalled();
+      expect(app.openSavedQuery).toHaveBeenCalledTimes(1);
     });
 
     it('reports a declined assignment and commits nothing', async () => {

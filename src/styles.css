@@ -1757,6 +1757,32 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row:focus-within .dash-tree-menu-btn,
 .dash-tree-menu-btn[aria-expanded="true"] { display: inline-flex; }
 .dash-tree-menu-btn:hover { color: var(--fg); background: var(--bg-hover); }
+/* #429/#472 — the disclosure control is its own BUTTON, because expansion is now
+   the only thing this target does (the row itself opens the Dashboard). Box, width
+   and colour still come from the shared `.tree-row .chev` rule below, so the two
+   trees keep one chevron vocabulary; this only strips the user-agent button chrome
+   and gives the glyph a hit area worth aiming at. */
+.dash-tree-chev {
+  appearance: none;
+  border: none; background: none; padding: 0; margin: 0;
+  font: inherit; cursor: pointer;
+  /* A 10px glyph is a poor target: stretching to the row's full height buys a
+     10×24 hit area without changing where the chevron appears. */
+  align-self: stretch;
+  align-items: center; justify-content: center;
+}
+/* Three targets, three distinguishable focus treatments (#472 asks for exactly
+   this): the ROW is the wide `--ring-nav` box-shadow, the TRAILING buttons tint
+   their own background, and the disclosure control is a tight accent outline around
+   the glyph — the outline channel being free on the row itself except during a
+   drag. Two classes, so this wins against `.tree-row .chev`'s equal-specificity
+   colour rule further down the file. */
+.dash-tree-row .dash-tree-chev:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--r-xs);
+}
+.dash-tree-row .dash-tree-chev:hover { color: var(--fg); }
 .dash-tree-menu { min-width: 220px; }
 /* An unavailable operation still renders, so the row's vocabulary stays
    discoverable — it just cannot be invoked. */
