@@ -32,7 +32,10 @@ import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } fro
 import { isKpiPanel, panelExecution } from '../../core/panel-execution.js';
 import { newResult } from '../../core/stream.js';
 import { buildResultSource } from '../../core/query-source.js';
-import { compileOptionProbe, optionSqlDiagnostics, validateOptionColumns } from '../../core/variable-options.js';
+import {
+  VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
+  compileOptionProbe, optionSqlDiagnostics, validateOptionColumns,
+} from '../../core/variable-options.js';
 import type { QueryResult, ScriptResult, ScriptEntry } from '../results.js';
 import type { QueryExecutionService } from '../../application/query-execution-service.js';
 
@@ -413,11 +416,16 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
   // keeps it auditable on its own rather than threading a second mode through
   // every branch of `run()` above.
   //
-  // A variable document is not a query (#457, mirrored by `saveVariableTab` in
-  // app.ts): a probe run is never added to History, never records bound params
-  // (option SQL can have none), never captures a detached-result `source`
-  // (there is no saved query to attach one to), and never touches
-  // `lastSuccessfulResultColumns` (a variable tab has no Spec for that to feed).
+  // A shape-INVALID response is never treated as a successful run: no History
+  // entry, no detached-result `source`. A genuinely valid one gets both —
+  // #465 requires the validation, not the removal of a variable tab's
+  // existing successful-run affordances (History predates the #457 document
+  // split entirely; it is not a saved-query concept). Bound-param recording
+  // and `lastSuccessfulResultColumns` are the two `run()`-success fields this
+  // path does NOT mirror: option SQL can never carry a `{name:Type}` param
+  // (`optionSqlDiagnostics` rejects one locally) and a variable tab has no
+  // Spec for dynamic-source completion to read `lastSuccessfulResultColumns`
+  // from, so both would be silent no-ops here.
   async function runVariableSql(tab: QueryTab, sql: string): Promise<void> {
     // Every locally-detectable problem — blank, comment-only, non-SELECT,
     // multi-statement (so a multi-statement input NEVER reaches runScript()),
@@ -440,8 +448,16 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     hooks.cancelSchemaGraph();
     state.forceExplain = false;
 
+    // The SAME bounded, read-only transport the option batch itself runs under
+    // (dashboard-viewer-session.ts's `runOptionBatch`) — `state.resultRowLimit`
+    // (the user's ordinary display cap) is the WRONG bound here: it can cut the
+    // client off before the probe's own per-branch limit, hiding a
+    // `max_result_bytes` failure the full batch would hit later, and without
+    // `max_result_bytes`/`readonly` at all, an unbounded response is exactly
+    // what "cannot pass SQL the batch would reject" is supposed to rule out.
+    const rowLimit = VARIABLE_OPTION_CAP + 1;
     const t0 = deps.now();
-    const result: QueryResult = newResult('Table', state.resultRowLimit);
+    const result: QueryResult = newResult('Table', rowLimit);
     Object.assign(tab, { result });
     state.resultSort = { col: null, dir: 'asc' };
     runT0 = t0;
@@ -454,10 +470,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       await deps.exec.executeRead(result, {
         sql: compileOptionProbe(sql),
         format: 'Table',
-        rowLimit: state.resultRowLimit,
+        rowLimit,
         queryId: runQueryId,
         signal: abortController.signal,
-        params: {},
+        params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
         onChunk: () => hooks.renderResults(),
       });
       // Only the probe's own transport succeeding makes its response metadata
@@ -475,7 +491,16 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       runQueryId = null;
       runT0 = null;
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
+      // #185, same ordering `run()` uses and for the same reason: this MUST
+      // run before the `running` flip below, which fires the results effect
+      // that renders the Expand affordance gated on `result.source`.
+      if (!result.error && !result.cancelled && result.rows.length > 0) {
+        result.source = buildResultSource({
+          srcSql: sql, tabId: tab.id, rowLimit, tabName: tab.name, savedEntry: savedForTab(state, tab),
+        });
+      }
       state.running.value = false;
+      if (!result.error && !result.cancelled) hooks.recordHistory(tab, sql);
     }
   }
 

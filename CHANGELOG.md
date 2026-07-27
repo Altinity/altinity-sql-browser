@@ -125,14 +125,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   or comment, the reserved batch-tag column name — is reported with no request
   sent, before authentication. (A multi-statement query is rejected by name
   rather than silently handed to the ordinary script runner, which has no concept
-  of this contract.) A query that passes runs through the same bounded
-  single-branch probe the option batch's own branches use, so Run can never
-  accept SQL the batch would reject. Its response is then checked against the
-  same shape the batch requires — exactly two non-nullable `String`-compatible
-  columns (`String`, `LowCardinality(String)`, `FixedString(N)`) — and a
-  shape failure is never recorded as a successful run: no history entry, no
-  bound-parameter recording, no detached-result source, no `lastSuccessfulResultColumns`
-  update. Ordinary query-tab Run behaviour is unchanged.
+  of this contract.) A query that passes runs through the same bounded,
+  read-only single-branch probe (row cap, `max_result_bytes`, `readonly: 2`)
+  the option batch's own branches run under, so Run can never accept SQL the
+  batch would reject, nor pull an unbounded result of its own. Its response is
+  then checked against the same shape the batch requires — exactly two
+  non-nullable `String`-compatible columns (`String`, `LowCardinality(String)`,
+  `FixedString(N)`) — and a shape failure is never recorded as a successful
+  run (no history entry, no detached-result source); a genuinely valid run
+  keeps both, exactly as it did before this fix. Ordinary query-tab Run
+  behaviour is unchanged.
 
   The Explain button/view-switch now say so instead of silently doing the
   wrong thing on this tab: EXPLAIN has no meaning for a two-column option-SQL

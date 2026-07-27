@@ -792,15 +792,27 @@ batch-level failure.
   option SQL is reported explicitly rather than silently doing nothing the way an
   ordinary tab's blank Run does.
 
-- **Execution reuses the batch's own bounded probe, not a new transport.**
-  `compileOptionProbe` — restored alongside `isOptionColumnType` and
-  `validateOptionColumns`, the exact three helpers the #457 addendum named as
-  Test's own — embeds the SQL through the same `nestBounded` subquery and
+- **Execution reuses the batch's own bounded, read-only probe, not a new
+  transport.** `compileOptionProbe` — restored alongside `isOptionColumnType`
+  and `validateOptionColumns`, the exact three helpers the #457 addendum named
+  as Test's own — embeds the SQL through the same `nestBounded` subquery and
   per-branch `LIMIT` the batch compiler uses, so Run can never accept SQL the
   combined batch would reject. It drops the branch tag `compileVariableOptionBatch`
   adds, which is what makes the two-column rule checkable at all: a `UNION ALL`
   reports one merged column list for every branch, but a lone probe's response
   describes only that query's own columns.
+
+  A pre-ship review caught the transport CAPS as a separate, real mismatch: an
+  earlier revision passed `state.resultRowLimit` (the user's ordinary display
+  cap) and no `params` at all, rather than `VARIABLE_OPTION_CAP + 1` and
+  `{readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP}` — the exact bound
+  and safeguards `dashboard-viewer-session.ts`'s `runOptionBatch` sends, and the
+  removed Test path (`app.runOptionQuery`, e75bfc6) sent before it. A display
+  cap lower than the batch's own bound could cut the client off before hitting
+  the failure the full batch would hit later, and no `max_result_bytes` at all
+  left Run able to pull an unbounded response of unusually large String values
+  — precisely what "cannot pass SQL the batch would reject" is supposed to
+  rule out. Fixed to match both reference points exactly.
 
 - **A shape failure borrows the ordinary run's own success gate, rather than a
   parallel one.** `runVariableSql` (a new function beside `run()`/`runScript()`,
@@ -816,12 +828,21 @@ batch-level failure.
   verdict about a response that
   never fully arrived.
 
-- **A variable document still is not a query.** Mirroring `saveVariableTab`'s
-  exclusion from History/Library/favourites/Panels, a variable tab's Run —
-  success or failure — is never added to History, never records bound params
-  (option SQL can have none), never captures a detached-result `source` (there
-  is no saved query to attach one to), and never updates
-  `lastSuccessfulResultColumns` (a variable tab has no Spec for that to feed).
+- **Only a shape-invalid run loses History/Expand — a genuinely valid one
+  keeps them.** This PR's first pushed revision excluded a
+  variable tab's Run from History and detached-result `source` capture
+  UNCONDITIONALLY, reasoning by analogy to `saveVariableTab`'s exclusion from
+  History/Library/favourites/Panels — but Save's exclusion is about never
+  creating a `SavedQueryV2` or Library entry, not about a tab's own execution
+  history, which an ordinary UNSAVED query tab still records. A second
+  pre-ship review finding: #465 only requires that a shape failure not be
+  MISTAKEN for success; it never asks for a valid run's existing affordances to
+  be removed. Corrected to match `run()` exactly on the success path
+  (`result.source` when `result.rows.length > 0`, `hooks.recordHistory`
+  unconditionally) and to still skip only the two fields that are provably
+  inert for this document kind: bound-parameter recording (option SQL can
+  never carry one) and `lastSuccessfulResultColumns` (a variable tab has no
+  Spec for dynamic-source completion to read it from).
 
 - **EXPLAIN is refused where it is invoked, not silently swallowed where it
   would land.** `run()` dispatches to `runVariableSql` unconditionally for a

@@ -13,6 +13,7 @@ import type {
 } from '../../src/application/query-execution-service.js';
 import type { StreamResult } from '../../src/core/stream.js';
 import type { PreparedSource, PreparedStatement, BoundParamSnapshot } from '../../src/core/param-pipeline.js';
+import { VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
 
 // ── Small deferred helper (mirrors the pattern query-execution-service.test.ts
 // uses for scripting async runQuery behaviors, adapted to a single promise a
@@ -765,8 +766,12 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(h.tab.lastSuccessfulResultColumns).toEqual([]);
   });
 
-  it('a validated success is also never added to History — a variable document is not a query (#457)', async () => {
-    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+  it('a validated success records History and a detached-result source, same as an ordinary run', async () => {
+    // #465 only requires that a shape-INVALID response not be mistaken for a
+    // successful run — it does not ask for a variable tab's existing
+    // successful-run affordances (History, Expand) to be removed, and History
+    // predates the #457 document split (it is not a saved-query concept).
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t', name: 'Variable: zone' }) });
     h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
       Object.assign(result, {
         columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [['v', 'l']],
@@ -775,9 +780,47 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     });
     const session = createWorkbenchSession(h.deps);
     await session.run();
-    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect(h.hooks.recordHistory).toHaveBeenCalledWith(h.tab, 'SELECT a, b FROM t');
+    const result = h.tab.result as { source?: { title: string; sql: string } } | null;
+    expect(result?.source?.title).toBe('Variable: zone');
+    expect(result?.source?.sql).toBe('SELECT a, b FROM t');
+    // Still no bound-param recording (option SQL can have none) and no
+    // lastSuccessfulResultColumns update (a variable tab has no Spec to feed).
     expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
     expect(h.tab.lastSuccessfulResultColumns).toEqual([]);
+  });
+
+  it('a validated success with zero rows records History but captures no detached-result source', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    expect(h.hooks.recordHistory).toHaveBeenCalledWith(h.tab, 'SELECT a, b FROM t');
+    const result = h.tab.result as { source?: unknown } | null;
+    expect(result?.source).toBeUndefined();
+  });
+
+  it('executes through the SAME bounded, read-only transport the option batch itself uses', async () => {
+    // Regression coverage: the user's ordinary display cap (`resultRowLimit`)
+    // must never be substituted for the probe's own per-branch bound — it can
+    // cut the client off before that bound and hides the batch's own
+    // `max_result_bytes`/`readonly` safeguards entirely.
+    const h = makeHarness({
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+      state: { resultRowLimit: 50 },
+    });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }], rows: [] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+    expect(req.rowLimit).toBe(VARIABLE_OPTION_CAP + 1);
+    expect(req.params).toEqual({ readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP });
   });
 
   it('auth failure (getToken → null): no exec call, fires onAuthFailed, never reaches shape validation', async () => {
