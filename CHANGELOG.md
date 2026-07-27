@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-27
+
 ### Added
 - **Every tagged release now mirrors `sql.html` to
   `docs.altinity.com/altinity-sql-browser/sql.html`** (`docs/sql.html`,
