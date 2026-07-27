@@ -109,6 +109,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no row appears, disappears or moves when the work surface changes.
 
 ### Fixed
+- **Opening a saved query resolves it before it navigates** (#443, #429). Handing
+  `openSavedQuery` an id that names nothing used to switch to the Query surface
+  and push a history entry first, then discover the query was missing — opening
+  no tab, showing no diagnostic, and leaving the user somewhere they never asked
+  to be. It now resolves first: a miss reports *"That query is no longer part of
+  this workspace."* and changes no surface, no route and no tab, while a resolving id
+  behaves exactly as before.
+
+- **A whitespace-only tile title no longer blanks a heading or a screen-reader
+  name** (#476, #429). `tile.title` carries no `minLength`, so a hand-authored or
+  imported `"   "` is a legal document — and being truthy it beat the query-name
+  fallback, leaving the visible `.dash-tile-name` empty and composing accessible
+  names like *"Open, — , in Workbench"*. The Dashboard viewer now trims the
+  authored title before the fallback, so such a title behaves exactly like an
+  absent one and shows the query name instead. A title with surrounding
+  whitespace is kept, trimmed. This changes what existing documents carrying such
+  a title display; no shipped UI writes `tile.title`, so only hand-authored and
+  imported documents are affected.
+
 - **A degraded workspace export no longer loses a Dashboard** (#463). When the
   committed read is unavailable — blocked, over-quota or private-mode IndexedDB —
   the File menu rebuilds the workspace from its live projection. That projection

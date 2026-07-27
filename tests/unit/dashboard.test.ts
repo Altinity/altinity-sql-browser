@@ -5294,6 +5294,38 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(button.getAttribute('aria-label')).toBe('Open Revenue by day in Workbench');
   });
 
+  // #476 (via #429 phase 1) — a whitespace-only `tile.title` is schema-legal and
+  // used to win the fallback chain, so the heading rendered blank and every
+  // composed name announced as "Open, — , in Workbench". Asserted at the RENDER
+  // layer, not just at the session that resolves the title, because these three
+  // strings are the user-visible consequence the acceptance criterion names.
+  it('a whitespace-only tile title reaches neither the heading nor any composed name', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT 1', { name: 'Revenue by day' })],
+      tiles: [{ id: 't1', queryId: 'q1', title: '   ' }],
+      layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } },
+    });
+    // Edit mode, so the destructive control's label is in the render too.
+    const { app } = modeApp({ workspace: ws, mode: 'edit' });
+    await render(app);
+    expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Revenue by day');
+    expect(qs(app.root, '.dash-tile-name')?.getAttribute('title')).toBe('Revenue by day');
+    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Revenue by day in Workbench');
+    expect(qs(app.root, '.dash-gg-del')?.getAttribute('aria-label'))
+      .toBe('Remove Revenue by day from the dashboard');
+  });
+
+  it('keeps an authored title, trimmed of surrounding whitespace', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT 1', { name: 'Revenue by day' })],
+      tiles: [{ id: 't1', queryId: 'q1', title: '  Q3 revenue  ' }],
+    });
+    const { app } = modeApp({ workspace: ws, mode: 'view' });
+    await render(app);
+    expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Q3 revenue');
+    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Q3 revenue in Workbench');
+  });
+
   it('opens the tile\'s own document — same-named copies in different tiles are different ids', async () => {
     // The #464/#471 hazard, at its sharpest: `cloneQueryForDashboardOwner` copies
     // the source NAME verbatim, so two Dashboard copies of one Library query are

@@ -23,6 +23,7 @@ import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { decodeShare } from '../../src/core/share.js';
+import { flashToast } from '../../src/ui/toast.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type {
   WorkspaceCommitResult, WorkspaceLoadResult, WorkspaceMarkOpenedResult,
@@ -5658,6 +5659,33 @@ describe('unified /sql routing', () => {
       app.openSavedQuery('owned');
       expect(app.mainSurface).toEqual({ kind: 'query' });
       expect(app.state.tabs.value.some((tab) => tab.savedId === 'owned')).toBe(true);
+    });
+
+    // #443: the id used to be handed to `showQuerySurface` before anything knew
+    // whether it resolved, so a dead click threw the user off the surface they
+    // were on, pushed a history entry, opened no tab and said nothing. It stays
+    // put now, and says so once.
+    it('an unresolved saved-query id changes no surface, no route and no tab, and reports once', () => {
+      const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+      app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      const surface = app.mainSurface;
+      const route = app.sqlRoute;
+      const tabs = app.state.tabs.value.length;
+      app.state.savedQueries = [savedQuery({ id: 'q1', name: 'Sales', sql: 'SELECT 1' })];
+      // `flashToast` REUSES one `.share-toast` element per document, so counting
+      // elements can never distinguish one report from two. Materialise the
+      // element, then count how many times a report RAISES it.
+      flashToast('seed', { document });
+      const toastEl = document.querySelector('.share-toast')!;
+      const raised = vi.spyOn(toastEl.classList, 'add');
+
+      app.openSavedQuery('gone');
+
+      expect(app.mainSurface).toEqual(surface);
+      expect(app.sqlRoute).toEqual(route);
+      expect(app.state.tabs.value.length).toBe(tabs);
+      expect(raised).toHaveBeenCalledExactlyOnceWith('show');
+      expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
     });
 
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {

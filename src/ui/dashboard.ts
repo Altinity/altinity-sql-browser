@@ -2182,8 +2182,9 @@ export async function renderDashboard(
     tileEl.card.classList.toggle('is-kpi', ts.isKpi);
     if (ts.isKpi) {
       tileEl.card.setAttribute('role', 'group');
-      // (`ts.title` is never empty — the session falls back through query
-      // name → queryId → tile id when the tile has no explicit title.)
+      // (`ts.title` is never blank — the session trims the authored title (#476)
+      // and falls back through query name → queryId → tile id when the tile has
+      // no explicit title, or only whitespace for one.)
       tileEl.card.setAttribute('aria-label', ts.title);
     } else {
       tileEl.card.removeAttribute('role');
