@@ -92,7 +92,15 @@ export function openDialogShell(
   const doc = app.document;
   const releaseKeyboard = app.acquireKeyboardOwner('modal');
   let backdrop: HTMLElement;
+  // One teardown per dialog, however many times its handle is closed. Since a
+  // new dialog force-closes the previous one, a caller can legitimately still
+  // hold — and call — a handle whose dialog is already gone; without this,
+  // that second call would restore focus (stealing it from behind the modal
+  // that replaced it) and run the caller's `onClose` a second time.
+  let torndown = false;
   const close = (): void => {
+    if (torndown) return;
+    torndown = true;
     doc.removeEventListener('keydown', onKey, true);
     detachBackdrop();
     // Guard against a STALE dialog's close clobbering a newer one's tracked

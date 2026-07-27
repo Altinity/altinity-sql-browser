@@ -1113,4 +1113,29 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
     expect(panel.single).not.toBeNull();
     expect(panel.double).not.toBeNull();
   });
+
+  it('withholds edit and delete when TWO query documents carry the panel\'s query id', () => {
+    // The commit paths refuse this state, so the model must not offer a
+    // control that opens a dialog only to refuse at the end of it. The
+    // projection collapses duplicates into one map entry, so cardinality is
+    // counted separately.
+    const query = { id: 'q1', sql: 'SELECT 1', spec: { name: 'Twin' } };
+    const tree = deriveDashboardTree({
+      workspace: {
+        id: 'w1',
+        queries: [query, query],
+        dashboards: [{ id: 'd1', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] }],
+      },
+      surface: QUERY_SURFACE,
+      ui: allOpen(['d1']),
+    });
+    const panel = tree.rows.find((row) => row.kind === 'panel')!;
+    expect(panel.actions.map((action) => action.kind)).toEqual(['edit-panel', 'delete-panel']);
+    for (const action of panel.actions) {
+      expect(action.target).toBeNull();
+      expect(action.unavailable).toBe(
+        'Two saved queries in this workspace share this panel’s query id, so it cannot be edited or removed here.',
+      );
+    }
+  });
 });

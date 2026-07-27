@@ -1060,7 +1060,14 @@ function openPanelMetadataDialog(
   const tile = app.currentWorkspace?.dashboards
     ?.find((dashboard) => dashboard.id === target.dashboardId)
     ?.tiles?.find((entry) => entry.id === target.tileId);
-  const overridden = (tile?.title ?? '').trim() !== '';
+  // BOTH overrides mask, and independently: the viewer resolves a tile's
+  // heading as `tile.title || query name` and its body text as
+  // `tile.description || query description`
+  // (`dashboard-viewer-session.ts`). An imported tile carrying only a
+  // description would otherwise let the user edit a query description that
+  // the rendered tile goes on ignoring, with nothing said.
+  const maskedName = (tile?.title ?? '').trim() !== '';
+  const maskedDescription = (tile?.description ?? '').trim() !== '';
   openMetadataDialog({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, {
     title: 'Edit panel',
     nameLabel: 'Query name',
@@ -1069,9 +1076,7 @@ function openPanelMetadataDialog(
     description: query?.spec?.description ?? '',
     confirmLabel: 'Save',
     idPrefix: 'panel-metadata',
-    note: overridden
-      ? 'This tile was imported with its own title, which keeps priority over the query name here.'
-      : null,
+    note: overrideNote(maskedName, maskedDescription),
     returnFocusTo: returnFocusAfterDialog(app, trigger, row.key),
     onClose: () => trigger.setAttribute('aria-expanded', 'false'),
     onConfirm: async ({ name, description }) => panelMetadataMessage(
@@ -1079,6 +1084,20 @@ function openPanelMetadataDialog(
     ),
   });
 }
+
+/** What to warn about when an imported tile carries its own title and/or
+ *  description: those keep display precedence over the query fields this
+ *  dialog edits, so the commit will not change what the tile renders. `null`
+ *  when neither is overridden — the ordinary case. */
+const overrideNote = (maskedName: boolean, maskedDescription: boolean): string | null => {
+  if (!maskedName && !maskedDescription) return null;
+  const masked = maskedName && maskedDescription ? 'title and description'
+    : (maskedName ? 'title' : 'description');
+  const fields = maskedName && maskedDescription ? 'these fields'
+    : (maskedName ? 'the query name' : 'the query description');
+  return 'This tile was imported with its own ' + masked
+    + ', which keeps priority over ' + fields + ' here.';
+};
 
 /** The tree's slice of `PanelMetadataDeps`. `refreshCommittedSurfaces` is the
  *  same poke every other tree write sends — a rendered Dashboard reads its

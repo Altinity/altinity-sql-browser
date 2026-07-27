@@ -46,11 +46,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Not yet included: the **Open in Dashboard** focus button, which is held back
   until #438 fixes tile focus on flow-layout KPI tiles.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
-  Revealed on hover/focus-within next to the existing `⋯`, it opens a small
-  dialog prefilled from the Dashboard's own committed document — Cancel and
-  Escape commit nothing, a blank title disables Save, and a real commit bumps
-  only that Dashboard's revision and refreshes the tree and any open Dashboard
-  surface. There is still no Dashboard **trash** action.
+  It opens a small dialog prefilled from the Dashboard's own committed
+  document — Cancel and Escape commit nothing, a blank title disables Save, and
+  a real commit bumps only that Dashboard's revision and refreshes the tree and
+  any open Dashboard surface. (Phase 3 put this pencil beside the row's `⋯`
+  menu and shipped no Dashboard trash; #494 above then removed that menu and
+  added the trash, so what ships in this release is the pencil as part of the
+  direct-action cluster.)
 - **Drag a Library query onto a Dashboard to assign it** (#428). One drag from the
   lower Library list now has three destination-dependent meanings, and the row
   publishes two independent payloads to serve them:

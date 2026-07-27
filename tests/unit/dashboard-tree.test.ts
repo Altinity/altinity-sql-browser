@@ -1041,7 +1041,29 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     // …while the field it edits is still the query's own name.
     expect(nameInput().value).toBe('Revenue');
     expect(document.querySelector('.fm-dialog-note')!.textContent)
-      .toContain('keeps priority over the query name');
+      .toBe('This tile was imported with its own title, which keeps priority over the query name here.');
+    expect(list).toBeDefined();
+  });
+
+  // The viewer resolves a tile's body text as `tile.description || query
+  // description`, exactly as it resolves the heading — so an imported
+  // DESCRIPTION masks the field being edited just as a title does, and used to
+  // do it silently.
+  it.each<[string, { title?: string; description?: string }, string]>([
+    ['description only', { description: 'Imported blurb' },
+      'This tile was imported with its own description, which keeps priority over the query description here.'],
+    ['both', { title: 'Imported heading', description: 'Imported blurb' },
+      'This tile was imported with its own title and description, which keeps priority over these fields here.'],
+  ])('warns about an imported %s override', (_name, over, expected) => {
+    const { app } = treeApp();
+    const dashboards = (app.currentWorkspace as unknown as TreeWorkspace).dashboards!;
+    dashboards[0]!.tiles = [{ id: 't1', queryId: 'q1', ...over }];
+    app.state.savedQueries = [query('q1', 'Revenue')];
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const label = 'Edit ' + (over.title ?? 'Revenue');
+    click(actionBtn(app.dom.dashboardTreeList!, 'w1:sales:tile:t1', label)!);
+    expect(document.querySelector('.fm-dialog-note')!.textContent).toBe(expected);
   });
 
   it('commits name and description onto the owned query and closes', async () => {

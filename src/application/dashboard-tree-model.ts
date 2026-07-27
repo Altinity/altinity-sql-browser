@@ -422,6 +422,12 @@ const MISSING_PANEL_QUERY_REASON =
   'This panel’s query is not in this workspace, so there is nothing to edit or remove.';
 const UNPROVEN_OWNERSHIP_REASON =
   'This panel’s query is shared with another panel, so it cannot be edited or removed here.';
+/** Two saved-query documents carry this id (`workspace-duplicate-query-id`).
+ *  Which one the pencil would edit has no answer, so neither control is
+ *  offered — and the commit paths refuse the same state, which is the point:
+ *  a control must not open a dialog only to refuse at the end of it. */
+const AMBIGUOUS_QUERY_REASON =
+  'Two saved queries in this workspace share this panel’s query id, so it cannot be edited or removed here.';
 /** A tile may only reference a PANEL-role query (`dashboard-setup-reference` /
  *  `dashboard-tile-role-incompatible` in the semantic validator). Editing or
  *  deleting through a tile that references, say, a Setup query would silently
@@ -458,6 +464,13 @@ export function deriveDashboardTree(
   // Tiles with no `queryId` are dropped on the way in because ownership is
   // exactly the set of tile→query references; a tile that references nothing
   // owns nothing, and its panel row's edit/delete are unavailable anyway.
+  // How many DOCUMENTS carry each id — not the same question as how many
+  // owners reference it. `queryMap` above collapses duplicates (last wins), so
+  // the availability rule below cannot read cardinality off it.
+  const documentsById = new Map<string, number>();
+  for (const query of workspace?.queries ?? []) {
+    documentsById.set(query.id, (documentsById.get(query.id) ?? 0) + 1);
+  }
   const ownership = buildQueryOwnershipIndex({
     queries: workspace?.queries ?? [],
     dashboards: dashboards.map((dashboard) => ({
@@ -485,10 +498,12 @@ export function deriveDashboardTree(
     const owned = owners.length === 1
       && owners[0].dashboardId === dashboardId && owners[0].tileId === tileId;
     const rightRole = queryId !== null && queryDashboardRole(queries.get(queryId)) === 'panel';
-    if (queryId === null || !owned || !rightRole) {
+    const unique = queryId !== null && documentsById.get(queryId) === 1;
+    if (queryId === null || !owned || !unique || !rightRole) {
       const reason = queryId === null
         ? MISSING_PANEL_QUERY_REASON
-        : (owned ? WRONG_ROLE_REASON : UNPROVEN_OWNERSHIP_REASON);
+        : (!owned ? UNPROVEN_OWNERSHIP_REASON
+          : (!unique ? AMBIGUOUS_QUERY_REASON : WRONG_ROLE_REASON));
       return [
         unavailableAction('edit-panel', 'Edit ' + label, reason),
         unavailableAction('delete-panel', 'Remove ' + label + ' from dashboard', reason),

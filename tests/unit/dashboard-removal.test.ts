@@ -299,4 +299,18 @@ describe('removeDashboardDocument — ambiguous ids (#494)', () => {
     expect(result.removedQueryIds).toEqual([]);
     expect(result.workspace.queries.map((query) => query.id)).toEqual(['p1', 'p1', 'lib']);
   });
+
+  it('keeps a non-PANEL query its tile referenced, rather than cascading into it', () => {
+    // The single-panel delete refuses such a tile outright; removing the whole
+    // Dashboard must not quietly do what the narrower command declines to.
+    const setup = { ...panelQuery('s1'), spec: { name: 's1', dashboard: { role: 'setup' } } };
+    const input = workspace({
+      queries: [panelQuery('p1'), setup as typeof input.queries[number]],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 's1' }] })],
+    });
+    const result = removeDashboardDocument({ workspace: input, dashboardId: 'dash' });
+    if (result.status !== 'ok') throw new Error(`expected ok, got ${result.status}`);
+    expect(result.removedQueryIds).toEqual(['p1']);
+    expect(result.workspace.queries.map((query) => query.id)).toEqual(['s1']);
+  });
 });

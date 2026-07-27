@@ -399,6 +399,30 @@ describe('closeOpenDialogShell', () => {
     // points at B.
     handleA.close();
     expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('B');
+  });
+
+  it('a stale close is inert: no focus move, no second onClose', () => {
+    // The teardown is per-handle idempotent. Without that, closing an
+    // already-replaced dialog would restore focus — stealing it from behind
+    // the modal that replaced it — and run the caller's own cleanup twice.
+    const app = makeApp();
+    const trigger = h('button', {}, 'A trigger') as HTMLButtonElement;
+    document.body.appendChild(trigger);
+    const onClose = vi.fn();
+    const handleA = openDialogShell(app, 'A', [h('button', {}, 'a')], {
+      returnFocusTo: trigger, onClose,
+    });
+    track(openDialogShell(app, 'B', [h('button', {}, 'b')], { returnFocusTo: null }));
+    // Opening B tore A down exactly once.
+    expect(onClose).toHaveBeenCalledTimes(1);
+    const bButton = document.querySelector<HTMLButtonElement>('.fm-dialog-card button')!;
+    bButton.focus();
+
+    handleA.close();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(bButton);
+    trigger.remove();
 
     // The slot still resolves to B, so a surface-transition teardown reaches it.
     closeOpenDialogShell();

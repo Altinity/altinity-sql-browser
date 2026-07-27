@@ -154,9 +154,9 @@ export type DashboardRemovalResult =
  * Remove ONE whole Dashboard document and, recursively, the queries its own
  * tiles own — the document-level counterpart to `removeDashboardPanel` above.
  *
- * A tile's `queryId` joins the delete set only when BOTH hold: the query
- * still exists in `workspace.queries`, and every owner `ownersOfQuery` reports
- * for it belongs to THIS Dashboard. The second half is what protects the
+ * A tile's `queryId` joins the delete set only when ALL of these hold: exactly
+ * one query document carries it, every owner `ownersOfQuery` reports for it
+ * belongs to THIS Dashboard, and it is a PANEL query. The second half is what protects the
  * invalid multi-owner state (a query some other Dashboard's tile also
  * references) rather than trusting that this Dashboard's own reference is the
  * only one — deleting a query another Dashboard still renders would trade one
@@ -199,7 +199,14 @@ export function removeDashboardDocument(input: {
     // filter, so deleting "it" would delete both. Keep them, and let the
     // Dashboard go without them — an orphaned copy is recoverable, a
     // destroyed one is not.
-    if (workspace.queries.filter((query) => query.id === queryId).length > 1) continue;
+    const documents = workspace.queries.filter((query) => query.id === queryId);
+    if (documents.length > 1) continue;
+    // Same rule the single-panel delete applies: only a PANEL query is a
+    // dedicated copy this Dashboard may take with it. A tile referencing a
+    // Setup- or other-role query is malformed data, and destroying that query
+    // as a side effect of removing the Dashboard would be the cascade #494's
+    // fail-closed rule forbids — it survives as a Library query instead.
+    if (queryDashboardRole(documents[0]) !== 'panel') continue;
 
     // Present by construction: `dashboardOwnedQueryIds` is exactly the ids
     // `ownersByQueryId` carries an owner list for.
