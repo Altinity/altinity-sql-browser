@@ -47,6 +47,11 @@ describe('loadConfigDoc', () => {
     }]);
     expect(f.mock.calls[0][0]).toBe('/sql/config.json');
   });
+  it('fetches config.json from the containing directory when basePath is a static file (e.g. sql.html)', async () => {
+    const f = fetcher([[/config\.json$/, resp(true, { idps: [] })]]);
+    await loadConfigDoc(asFetch(f), '/altinity-sql-browser/sql.html');
+    expect(f.mock.calls[0][0]).toBe('/altinity-sql-browser/config.json');
+  });
   it('parses a list and honours explicit id/label', async () => {
     const idps = await docOf({ idps: [
       { id: 'g', label: 'Google', issuer: 'https://accounts.google.com', client_id: 'c1' },

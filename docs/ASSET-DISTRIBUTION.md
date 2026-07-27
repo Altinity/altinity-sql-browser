@@ -6,6 +6,11 @@ real design question on a multi-node cluster, because **ClickHouse does not
 replicate the `user_files/` directory**: it is a node-local folder.
 
 This doc explains the trade-offs and what `deploy/install.sh` ships today.
+(A `docs/sql.html` mirror is also published to GitHub Pages on every tagged
+release, for an unauthenticated try-it-now demo — see `release.yml` — but
+that's a separate distribution channel from the cluster-serving problem
+below, not a replacement for it: a real deployment still needs the bytes on
+every ClickHouse node.)
 
 ## What has to reach every node
 
