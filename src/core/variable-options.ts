@@ -8,11 +8,12 @@
 // `UNION ALL` request per refresh, so N configured variables still cost one round
 // trip.
 //
-// Three separable jobs, all pure:
+// Four separable jobs, all pure:
 //
 //   optionSqlDiagnostics   what can be rejected WITHOUT a server, per variable
 //   compileVariableOptionBatch   the deterministic one-request compiler
 //   readVariableOptionBatch      positional response reader + partitioner
+//   compileOptionProbe/validateOptionColumns   the single-variable Run path (#465)
 //
 // The division of labour between local and server-side rejection is the issue's
 // own: a problem the app can see in the SQL text is a per-variable diagnostic
@@ -22,7 +23,11 @@
 // batch-level failure. Narrowing a batch-level failure to the branch at fault
 // means running that one variable's query on its own, where the response
 // metadata describes that query alone — which is what a variable's own
-// main-editor tab and the ordinary Run action are for (#457).
+// main-editor tab and the ordinary Run action are for (#457/#465):
+// `compileOptionProbe` embeds the SQL exactly as a batch branch would (so Run
+// cannot pass what the batch would reject) but drops the branch tag, and
+// `validateOptionColumns` reads that probe's own, unmerged response metadata —
+// the one place the "exactly two String columns" rule is checkable at all.
 //
 // Deliberately NOT here: cascading/dependent option queries. Option SQL may not
 // reference `{name:Type}` parameters at all in this issue, which is what keeps
@@ -34,6 +39,7 @@ import { detectSqlFormat, detectSqlOutfile, sqlString, stripTrailingTrivia } fro
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
 import { hasOptionalBlocks } from './optional-blocks.js';
+import { parseClickHouseType, analyzeTypeModifiers } from './clickhouse-type.js';
 import { isCompoundParamType, multiSelectElementType } from './param-type.js';
 import type { DashboardVariable } from './dashboard-variables.types.js';
 import type {
@@ -301,18 +307,74 @@ export function compileVariableOptionBatch(
   return { sql, branches, rowLimit: branches.length * BRANCH_LIMIT + 1 };
 }
 
-// #457 removed `compileOptionProbe`, `isOptionColumnType` and
-// `validateOptionColumns`. All three existed for the per-variable drawer's Test
-// action — a single-variable probe whose response metadata describes the user's
-// own columns, which is the only place the "exactly two String columns" rule is
-// checkable (a combined `UNION ALL` reports one merged column list for every
-// branch). Deleting that drawer left them with no caller in `src/`. Re-hosting the
-// check on the variable tab's Run is deferred to #465, which names the commit they
-// can be recovered from.
+/**
+ * The query a `dashboard-variable` tab's Run action executes (#465): ONE
+ * variable's option SQL, embedded exactly as a batch branch embeds it but
+ * without the branch tag.
+ *
+ * Sharing `nestBounded` with the compiler is the point — Run must not pass SQL
+ * the batch would reject, and the nesting is the one transformation that can
+ * make an otherwise-valid query fail. Dropping the tag column keeps the response
+ * metadata describing the USER's own columns, which is what makes the "exactly
+ * two String columns" rule checkable here and nowhere else: in the combined batch
+ * `UNION ALL` reports one merged column list for every branch.
+ *
+ * Bounded like a branch, so Run cannot pull an unbounded result either.
+ */
+export const compileOptionProbe = (sql: string): string =>
+  `SELECT * FROM ${nestBounded(normalizeOptionSql(sql))}`;
 
 // ── The response reader ──────────────────────────────────────────────────────
 
 const cell = (value: unknown): string => (value == null ? '' : String(value));
+
+/**
+ * Is `type` acceptable for an option value/label column?
+ *
+ * `String` and the wrappers that are transparent to VALUE handling —
+ * `LowCardinality(String)`, `FixedString(N)` — all qualify: a low-cardinality
+ * dimension column is the single most common real source of option values, and
+ * rejecting it would reject the contract's own example. `Nullable(...)` does NOT:
+ * the streaming transport renders a null cell as ClickHouse's literal `ᴺᵁᴸᴸ`
+ * marker, which is meaningless as either a bound value or a label, so it is
+ * better refused with its type named than silently offered as an option.
+ */
+export function isOptionColumnType(type?: string | null): boolean {
+  const node = parseClickHouseType(String(type ?? '').trim());
+  if (!node) return false;
+  const mods = analyzeTypeModifiers(node);
+  if (mods.nullable) return false;
+  const base = mods.valueType.name;
+  return base === 'String' || base === 'FixedString';
+}
+
+/**
+ * Validate the response METADATA of a SINGLE variable's option query — the
+ * variable tab's Run path (#465), where the columns describe that one query
+ * rather than a compiled batch.
+ *
+ * This is where the contract's column rules are actually enforceable: exactly two
+ * columns, both String. In the combined batch the same rules cannot be checked
+ * from metadata at all, because `UNION ALL` reports one merged column list for
+ * every branch (names from the first branch, types promoted to a supertype) — so
+ * the batch relies on ClickHouse rejecting a branch whose arity disagrees, and
+ * Run is how a user finds out precisely which variable is wrong and why.
+ */
+export function validateOptionColumns(
+  columns: readonly { name: string; type: string }[],
+): VariableOptionDiagnostic | null {
+  if (columns.length !== 2) {
+    return diagnostic('variable-option-column-count',
+      `Option SQL must return exactly two columns (value, then label); this returns ${columns.length}.`);
+  }
+  const bad = columns.filter((column) => !isOptionColumnType(column.type));
+  if (bad.length) {
+    return diagnostic('variable-option-column-type',
+      'Both option columns must be String; '
+      + `this returns ${bad.map((column) => column.type).join(' and ')}.`);
+  }
+  return null;
+}
 
 /**
  * Turn one option-batch response into per-variable option lists.

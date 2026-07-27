@@ -765,7 +765,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     // display-only and doesn't grey out the button while still focused.
     const tab = app.activeTab();
     if (gate == null) {
-      gate = running || !tab
+      // #465 review: a dashboard-variable tab's text is option SQL, not an
+      // ordinary parameterised query — the {name:Type} gate never applies to
+      // it (optionSqlDiagnostics, surfaced on Run, is its complete policy).
+      gate = running || !tab || variableDoc(tab) !== null
         ? { missing: [], invalid: [], errors: [] }
         : params.inputGate(params.tabAnalysis(tab.sqlDraft));
     }
@@ -803,6 +806,17 @@ export function createApp(env: CreateAppEnv = {}): App {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
+    // #465 review: a dashboard-variable tab's own text is option SQL, not an
+    // ordinary parameterised query — the {name:Type} strip/gate never applies
+    // to it. A `{name:Type}` inside it is optionSqlDiagnostics' story to tell
+    // (surfaced in the results pane on Run), not an input field to fill in.
+    if (tab && variableDoc(tab) !== null) {
+      app.dom.varStripSig = '';
+      strip.replaceChildren();
+      strip.style.display = 'none';
+      setRunBtn(app.state.running.value);
+      return;
+    }
     // One analysis per repaint (review F9): fieldControls, the #172 v2
     // comparison scan, a rebuild's initial field paint, and the tail's Run-
     // button gate all feed off this single pass instead of re-analyzing the
@@ -1136,16 +1150,30 @@ export function createApp(env: CreateAppEnv = {}): App {
     flashToast('Explain isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
     return true;
   }
+  // #465: a `dashboard-variable` tab's Run validates and executes the SQL as a
+  // variable option query — `workbench.run()` dispatches to that path
+  // unconditionally for such a tab and never reaches the EXPLAIN machinery at
+  // all, so forwarding `{explain: true}`/`{explainView}` there would silently
+  // run an ordinary probe with no indication Explain was ignored. The Explain
+  // toolbar button has no variable-specific hiding (same as the multi-statement
+  // case above: it stays visible and this toasts on click) — checked first
+  // since option SQL is always one statement, so the multi-statement message
+  // would never even apply.
+  function explainVariableBlocked(): boolean {
+    if (variableDoc(app.activeTab()) === null) return false;
+    flashToast('Explain isn’t available for a Dashboard variable’s option SQL.', { document: doc });
+    return true;
+  }
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
   function explainQuery(): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
-    return explainMultiBlocked() ? undefined : workbench.run({ explain: true });
+    return explainVariableBlocked() || explainMultiBlocked() ? undefined : workbench.run({ explain: true });
   }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
   function setExplainView(id: string): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
-    return explainMultiBlocked() ? undefined : workbench.run({ explainView: id });
+    return explainVariableBlocked() || explainMultiBlocked() ? undefined : workbench.run({ explainView: id });
   }
   // Change the global result-row cap: persist the (normalized) preference and
   // re-run the current query so a raise genuinely fetches more (server-side cap),

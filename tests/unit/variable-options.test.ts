@@ -9,8 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
-  compileVariableOptionBatch, normalizeOptionSql,
-  optionBatchVariables, optionSqlDiagnostics, readVariableOptionBatch,
+  compileOptionProbe, compileVariableOptionBatch, isOptionColumnType, normalizeOptionSql,
+  optionBatchVariables, optionSqlDiagnostics, readVariableOptionBatch, validateOptionColumns,
 } from '../../src/core/variable-options.js';
 import type { DashboardVariable } from '../../src/core/dashboard-variables.js';
 
@@ -288,6 +288,70 @@ describe('compileVariableOptionBatch', () => {
 
   it('keeps the byte cap available to the caller', () => {
     expect(VARIABLE_OPTION_BYTE_CAP).toBe(10_000_000);
+  });
+});
+
+describe('compileOptionProbe', () => {
+  it('embeds the normalized SQL as a bounded subquery selecting every column, no branch tag', () => {
+    expect(compileOptionProbe('SELECT a, b FROM t;'))
+      .toBe(`SELECT * FROM (\nSELECT a, b FROM t\n) LIMIT ${VARIABLE_OPTION_CAP + 1}`);
+  });
+
+  it('closes the subquery on its own line, same as the batch compiler', () => {
+    expect(compileOptionProbe('SELECT a, b FROM t -- note'))
+      .toBe(`SELECT * FROM (\nSELECT a, b FROM t\n) LIMIT ${VARIABLE_OPTION_CAP + 1}`);
+  });
+});
+
+describe('isOptionColumnType', () => {
+  it('accepts String and the wrappers transparent to value handling', () => {
+    expect(isOptionColumnType('String')).toBe(true);
+    expect(isOptionColumnType('LowCardinality(String)')).toBe(true);
+    expect(isOptionColumnType('FixedString(4)')).toBe(true);
+  });
+
+  it('rejects Nullable, because a null cell arrives as a literal marker string', () => {
+    expect(isOptionColumnType('Nullable(String)')).toBe(false);
+    expect(isOptionColumnType('LowCardinality(Nullable(String))')).toBe(false);
+  });
+
+  it('rejects every other type', () => {
+    expect(isOptionColumnType('UInt64')).toBe(false);
+    expect(isOptionColumnType('Date')).toBe(false);
+    expect(isOptionColumnType('Array(String)')).toBe(false);
+    expect(isOptionColumnType('')).toBe(false);
+    expect(isOptionColumnType(null)).toBe(false);
+    expect(isOptionColumnType('Tuple(')).toBe(false);
+  });
+});
+
+describe('validateOptionColumns', () => {
+  it('accepts exactly two String columns', () => {
+    expect(validateOptionColumns([
+      { name: 'v', type: 'String' }, { name: 'l', type: 'LowCardinality(String)' },
+    ])).toBeNull();
+  });
+
+  it('rejects the wrong column count, naming it', () => {
+    expect(validateOptionColumns([{ name: 'v', type: 'String' }])!.code)
+      .toBe('variable-option-column-count');
+    expect(validateOptionColumns([])!.message).toContain('this returns 0');
+    expect(validateOptionColumns([
+      { name: 'a', type: 'String' }, { name: 'b', type: 'String' }, { name: 'c', type: 'String' },
+    ])!.message).toContain('this returns 3');
+  });
+
+  it('rejects a non-String column, naming every offending type', () => {
+    const found = validateOptionColumns([
+      { name: 'v', type: 'UInt64' }, { name: 'l', type: 'Nullable(String)' },
+    ])!;
+    expect(found.code).toBe('variable-option-column-type');
+    expect(found.message).toContain('UInt64 and Nullable(String)');
+  });
+
+  it('accepts zero returned rows — the count check is on columns, not rows', () => {
+    expect(validateOptionColumns([{ name: 'v', type: 'String' }, { name: 'l', type: 'String' }]))
+      .toBeNull();
   });
 });
 

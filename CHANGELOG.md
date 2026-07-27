@@ -109,6 +109,38 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no row appears, disappears or moves when the work surface changes.
 
 ### Fixed
+- **A Dashboard variable's Run action validates its option SQL again** (#465,
+  follow-up to #457). #457 moved option SQL into a `dashboard-variable` main-editor
+  tab and deleted the drawer's **Test** action along with it, but nothing replaced
+  the check it performed — the ordinary Run action executed the SQL raw and
+  reported a plain success even when it returned the wrong number or type of
+  columns. The break surfaced later and further away: only when the Dashboard-wide
+  option batch failed, as one merged `UNION ALL` column list that cannot say which
+  variable's branch was at fault.
+
+  Run on a `dashboard-variable` tab is now validated as a variable option query
+  end to end. Every locally-detectable problem — blank or comment-only SQL, a
+  non-`SELECT`, more than one statement, a `FORMAT` or `INTO OUTFILE` clause, a
+  `{name:Type}` parameter, an optional `/*[ … ]*/` block, an unterminated string
+  or comment, the reserved batch-tag column name — is reported with no request
+  sent, before authentication. (A multi-statement query is rejected by name
+  rather than silently handed to the ordinary script runner, which has no concept
+  of this contract.) A query that passes runs through the same bounded,
+  read-only single-branch probe (row cap, `max_result_bytes`, `readonly: 2`)
+  the option batch's own branches run under, so Run can never accept SQL the
+  batch would reject, nor pull an unbounded result of its own. Its response is
+  then checked against the same shape the batch requires — exactly two
+  non-nullable `String`-compatible columns (`String`, `LowCardinality(String)`,
+  `FixedString(N)`) — and a shape failure is never recorded as a successful
+  run (no history entry, no detached-result source); a genuinely valid run
+  keeps both, exactly as it did before this fix. Ordinary query-tab Run
+  behaviour is unchanged.
+
+  The Explain button/view-switch now say so instead of silently doing the
+  wrong thing on this tab: EXPLAIN has no meaning for a two-column option-SQL
+  contract, and forwarding it into the new validated Run path would have run
+  an ordinary probe with no indication Explain was ignored.
+
 - **Opening a saved query resolves it before it navigates** (#443, #429). Handing
   `openSavedQuery` an id that names nothing used to switch to the Query surface
   and push a history entry first, then discover the query was missing — opening
@@ -216,7 +248,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   option-backed control unavailable, one banner, no automatic fall-back to N
   separate queries), because `UNION ALL` reports one merged column list for every
   branch and so cannot say which one is at fault. Narrowing it down means running
-  a single variable's SQL on its own, which its own editor tab does (#457).
+  a single variable's SQL on its own, which its own editor tab's Run action does
+  (#457/#465).
 
   Cascading option queries are rejected outright, and `Array`/`Tuple`/`Map`/
   `Nested` variables are marked as having no inferred control — they keep their
@@ -356,8 +389,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   narrow drawer duplicated that machinery, shrank the working area and ran its own
   editor lifecycle. The drawer, its editor seam, its textarea fallback and its
   drawer-local **Test** action are all gone — running a variable's SQL is now the
-  ordinary Run action. Re-hosting Test's two-`String`-column check on that Run is
-  tracked in #465.
+  ordinary Run action. Re-hosting Test's two-`String`-column check on that Run
+  shipped as #465, below.
 
 - **One File menu for the whole application** (#452). Query, Dashboard Edit,
   Dashboard View, the empty-Dashboard placeholder and the Dashboard

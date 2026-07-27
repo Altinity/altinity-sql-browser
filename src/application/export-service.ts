@@ -55,6 +55,7 @@ import { prepareExportSql, isSchemaMutatingSql } from '../core/format.js';
 import { formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { findExceptionFrame } from '../core/stream.js';
 import type { QueryTab } from '../state.js';
+import { variableDoc } from '../state.js';
 import type { ResultSort } from '../core/sort.js';
 import type { ChCtx, exportQuery, runQuery, killQuery } from '../net/ch-client.js';
 import type { WorkbenchParameterSession } from './workbench-parameter-session.js';
@@ -261,6 +262,17 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   function exportEntry(): Promise<void> | undefined {
     if (deps.activeTab().editorMode !== 'sql') return undefined;
     if (deps.state.exporting.value) return undefined;
+    // #465 review: Export's whole feature is a full, UNCAPPED stream of a
+    // query's raw SQL — exactly what a Dashboard variable's option SQL must
+    // never get (it's validated and run only through the bounded probe,
+    // compileOptionProbe, with its own row/byte caps). Blocked outright, same
+    // precedent as Explain's own `explainVariableBlocked` (app.ts): the button
+    // stays visible and this toasts on click rather than silently exporting
+    // unvalidated, uncapped option SQL past optionSqlDiagnostics entirely.
+    if (variableDoc(deps.activeTab()) !== null) {
+      deps.hooks.toast('Export isn’t available for a Dashboard variable’s option SQL.');
+      return undefined;
+    }
     const waveMs = deps.wallNow(); // one wall clock for this export wave (gate + args)
     if (deps.params.varGateBlocked(waveMs)) return undefined; // don't export with unfilled variables (#134)
     const input = deps.activeTab().sqlDraft;

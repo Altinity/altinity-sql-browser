@@ -122,6 +122,34 @@ test('typing marks the tab dirty, and Spec mode is refused with a variable-speci
     .toHaveAttribute('title', 'A dashboard variable has no Spec.');
 });
 
+test('Run executes a valid variable query through the bounded probe and displays its rows', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type("SELECT 'v1', 'Label 1'");
+
+  await page.locator('.run-btn').click();
+
+  await expect.poll(() => page.evaluate(() => window.__runResult())).toEqual({
+    error: null, rows: [['v1', 'Label 1']], columns: [{ name: 'value', type: 'String' }, { name: 'label', type: 'String' }],
+  });
+  await expect(page.locator('.results-error')).toHaveCount(0);
+});
+
+test('Run reports a column-shape problem, never a successful result', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('SELECT 1');
+
+  await page.locator('.run-btn').click();
+
+  await expect(page.locator('.results-error')).toContainText('exactly two columns');
+  expect(await page.evaluate(() => window.__runResult().error)).toContain('exactly two columns');
+});
+
 test('a long variable name never widens the tab strip or scrolls the page', async ({ page }) => {
   // `Variable: is_initial_query` (the issue's own example) is a far longer tab
   // title than any query tab normally carries, and a tab strip whose children are
