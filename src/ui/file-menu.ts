@@ -64,7 +64,8 @@ import type {
 import {
   appendDashboard, createNewWorkspace, renameWorkspace,
 } from '../workspace/workspace-operations.js';
-import { DEFAULT_DASHBOARD_TITLE, createEmptyDashboard } from '../dashboard/application/empty-dashboard.js';
+import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
+import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
@@ -709,27 +710,34 @@ function newDashboardAction(app: App): void {
 /**
  * Append one empty Dashboard to the workspace and open it in Edit mode (#463).
  *
- * Additive by construction: `appendDashboard` preserves every existing Dashboard
- * and query in place, so nothing here can reach `dashboards[0]` or the
- * compatibility slot.
+ * The mint/append/report half is `application/dashboard-create.ts` — the ONE
+ * creation command, shared with the empty-workspace placeholder since #495
+ * review 3, so the two entry points cannot disagree about what a rejected
+ * commit means. What stays here is this entry point's own reveal policy.
  *
- * The document is minted BEFORE the commit is queued, unlike the imports — which
- * must re-plan against the dequeue-time baseline because their content depends
- * on it. An empty Dashboard's content does not: it is a self-contained value
- * with a freshly minted id, and only the APPEND has to see `latest`. That is
- * what lets the navigation below name exactly what was committed without reading
- * anything back out of the aggregate.
- *
- * A rejected commit leaves navigation and local state untouched —
- * `commitWorkspace` toasts the diagnostic and answers `false`.
+ * A rejected commit leaves navigation and local state untouched, and reports
+ * through the same `dashboardCreateMessage` the placeholder uses. The success
+ * toast fires here rather than inside `commitWorkspace` because this path no
+ * longer goes through it — `afterLibraryChange` is still owed, since a new
+ * Dashboard changes what the sidebar renders.
  */
 async function doNewDashboard(app: App, name: string): Promise<void> {
-  const created: DashboardDocumentV2 = createEmptyDashboard(app.genId(), name);
-  const committed = await commitWorkspace(
-    app, (latest) => appendDashboard(latest ?? currentWorkspace(app), created), 'Created dashboard',
-  );
-  if (!committed) return;
-  revealDashboard(app, created.id);
+  const outcome = await createDashboard({
+    mutateWorkspace: app.mutateWorkspace,
+    genId: app.genId,
+    // The one path that reaches a workspace with no persisted aggregate at
+    // all: `currentWorkspace` synthesizes the envelope from projected state
+    // (and folds in the live in-memory Dashboard), which is what lets the
+    // very first Dashboard of a fresh workspace be created here.
+    baseline: () => currentWorkspace(app),
+  }, name);
+  const message = dashboardCreateMessage(outcome);
+  if (message !== null) flashToast(message, { document: app.document });
+  if (!outcome.ok) return;
+  // #343 §2: `mutateWorkspace` already projected the committed workspace; this
+  // is the local re-render every file-menu commit owes afterwards.
+  afterLibraryChange(app);
+  revealDashboard(app, outcome.data!);
 }
 
 /**

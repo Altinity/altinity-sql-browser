@@ -56,6 +56,11 @@ export interface OpenDialogShellOpts {
 
 let openHandle: { backdrop: Element; close: () => void } | null = null;
 
+/** Distinguishes one dialog's `aria-labelledby` target from the next one's.
+ *  Module-local and monotonic — never reset — so a stale dialog being torn
+ *  down cannot collide with the one replacing it. */
+let dialogSeq = 0;
+
 /** Force-close whatever dialog `openDialogShell` currently has open, if any —
  *  the same teardown every surface transition already runs for anchored
  *  popovers and the doc pane. A no-op when nothing is open. */
@@ -99,14 +104,141 @@ export function openDialogShell(
     if (doc.activeElement === edge) { e.preventDefault(); wrapTo.focus(); }
     else if (!card.contains(doc.activeElement)) { e.preventDefault(); items[0].focus(); }
   };
-  const card = h('div', { class: opts.extraCardClass ? `fm-dialog-card ${opts.extraCardClass}` : 'fm-dialog-card' },
-    h('div', { class: 'fm-dialog-title' }, title), content);
+  // #495 review 4: a modal that only LOOKS modal is invisible to assistive
+  // technology — the Tab trap above keeps a keyboard user inside the card, but
+  // without these three attributes a screen reader is never told a dialog
+  // opened, never reads its name, and still exposes the page behind it. The id
+  // is minted per dialog (never a constant) because two shells can briefly
+  // coexist while a stale one is being force-closed, and a duplicated id would
+  // point `aria-labelledby` at whichever heading the document happened to
+  // match first.
+  const titleId = 'fm-dialog-title-' + (++dialogSeq);
+  const card = h('div', {
+    class: opts.extraCardClass ? `fm-dialog-card ${opts.extraCardClass}` : 'fm-dialog-card',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': titleId,
+  }, h('div', { class: 'fm-dialog-title', id: titleId }, title), content);
   backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
   const detachBackdrop = attachBackdropClose(backdrop, close);
   const handle: DialogHandle = { close };
   openHandle = { backdrop, close };
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
+  return handle;
+}
+
+// ── the two-field name/description metadata dialog ──────────────────────────
+
+export interface MetadataDialogValues {
+  /** Already trimmed — the dialog refuses to commit a blank name. */
+  name: string;
+  /** Verbatim; each commit path decides what an empty description means. */
+  description: string;
+}
+
+export interface MetadataDialogOpts {
+  /** Heading, and the dialog's accessible name (`Edit dashboard`). */
+  title: string;
+  nameLabel: string;
+  descriptionLabel: string;
+  name: string;
+  description: string;
+  confirmLabel: string;
+  /** Prefix for the two field ids, so a `for`/`id` pair is unique per caller. */
+  idPrefix: string;
+  returnFocusTo: HTMLElement | null;
+  onClose?: () => void;
+  /**
+   * Commit the edit. Resolve `null` when it succeeded — the dialog closes —
+   * or a message to show, keeping the dialog open with the user's text intact.
+   */
+  onConfirm(values: MetadataDialogValues): Promise<string | null>;
+}
+
+/**
+ * Edit one resource's name + description (#429 phase 3 for a Dashboard
+ * document, #494 for a panel's owned query — the second consumer that earns
+ * this its place beside `openNameDialog` rather than staying colocated in
+ * `ui/dashboard-tree.ts`).
+ *
+ * The commit is AWAITED, and that is the whole point of the shape (#495
+ * review 2). The first version closed the dialog and dropped the returned
+ * promise on the floor, so a concurrently deleted target, a duplicate id, a
+ * validation rejection or a storage failure all presented as "the dialog
+ * vanished" — with the text the user had typed gone with it. Here every
+ * unsuccessful outcome keeps the card open, restores its controls and shows
+ * ONE diagnostic; only a real commit closes it.
+ *
+ * While a commit is in flight both buttons are disabled, so the same mutation
+ * cannot be submitted twice by an impatient second Enter. If the shell was
+ * force-closed underneath us (a surface transition runs
+ * `closeOpenDialogShell()`), the late resolution is dropped rather than
+ * writing a diagnostic into a detached card.
+ */
+export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts): DialogHandle {
+  const nameId = opts.idPrefix + '-name';
+  const descriptionId = opts.idPrefix + '-description';
+  const nameInput = h('input', {
+    class: 'fm-dialog-input', type: 'text', id: nameId, spellcheck: 'false', value: opts.name,
+  }) as HTMLInputElement;
+  const descInput = h('textarea', {
+    class: 'fm-dialog-input fm-dialog-textarea', id: descriptionId, spellcheck: 'false',
+  }) as HTMLTextAreaElement;
+  descInput.value = opts.description;
+  // `role="alert"` rather than a bare paragraph: the message appears long
+  // after the dialog opened, in response to a Save the user has already made,
+  // so it has to be announced rather than merely be present.
+  const error = h('p', { class: 'fm-dialog-error', role: 'alert', hidden: true }) as HTMLParagraphElement;
+  const cancel = h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel') as HTMLButtonElement;
+  const confirm = h('button', {
+    class: 'fm-dialog-confirm',
+    onclick: () => { void commit(); },
+  }, opts.confirmLabel) as HTMLButtonElement;
+
+  let closed = false;
+  let inFlight = false;
+  const sync = (): void => {
+    confirm.disabled = inFlight || nameInput.value.trim() === '';
+    cancel.disabled = inFlight;
+  };
+  const commit = async (): Promise<void> => {
+    const name = nameInput.value.trim();
+    if (!name || inFlight) return;
+    inFlight = true;
+    sync();
+    const message = await opts.onConfirm({ name, description: descInput.value });
+    // Force-closed while the write was queued: whatever it answered belongs to
+    // a dialog that is no longer on screen, and its own commit path reports.
+    if (closed) return;
+    inFlight = false;
+    sync();
+    if (message === null) { handle.close(); return; }
+    error.textContent = message;
+    error.hidden = false;
+    nameInput.focus();
+  };
+  nameInput.addEventListener('input', sync);
+  nameInput.addEventListener('keydown', (e) => {
+    // Enter commits from the NAME field only — the description is a
+    // `<textarea>`, where Enter legitimately inserts a newline.
+    if (e.key === 'Enter') { e.preventDefault(); void commit(); }
+  });
+
+  const handle = openDialogShell(app, opts.title, [
+    h('div', { class: 'fm-dialog-body' },
+      h('label', { class: 'fm-dialog-label', for: nameId }, opts.nameLabel),
+      nameInput,
+      h('label', { class: 'fm-dialog-label', for: descriptionId }, opts.descriptionLabel),
+      descInput,
+      error),
+    h('div', { class: 'fm-dialog-actions' }, cancel, confirm),
+  ], {
+    returnFocusTo: opts.returnFocusTo,
+    onClose: () => { closed = true; opts.onClose?.(); },
+  });
+  sync();
+  setTimeout(() => { nameInput.focus(); nameInput.select(); });
   return handle;
 }
 

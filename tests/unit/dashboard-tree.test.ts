@@ -842,10 +842,13 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
   const pencil = (list: HTMLElement, rowKey: string): HTMLButtonElement | null =>
     rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-rename-btn');
   const dialogTitleInput = (): HTMLInputElement =>
-    document.querySelector<HTMLInputElement>('#dash-rename-title')!;
+    document.querySelector<HTMLInputElement>('#dash-rename-name')!;
   const dialogDescInput = (): HTMLTextAreaElement =>
     document.querySelector<HTMLTextAreaElement>('#dash-rename-description')!;
   const dialogSave = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+  /** Let the awaited commit chain (`mutateWorkspace` → the reprojection poke →
+   *  the dialog's own resolution) run to completion. */
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
   it('renders the pencil on every Dashboard row', () => {
     const { app, list } = treeApp();
@@ -893,7 +896,7 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     expect(dialogDescInput().value).toBe('Quarterly figures');
   });
 
-  it('commits the edited title and description, and closes', async () => {
+  it('commits the edited title and description, and closes once the commit lands', async () => {
     const { app, list, committed } = treeApp();
     renderDashboardTree(app);
     click(pencil(list, 'w1:sales')!);
@@ -901,8 +904,13 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     dialogTitleInput().dispatchEvent(new Event('input', { bubbles: true }));
     dialogDescInput().value = 'Quarterly figures';
     dialogSave().click();
+    // #495 review 2: the card stays up until the write ANSWERS — it used to be
+    // torn down first, which is how a rejected commit lost the typed values
+    // with nothing said.
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    expect(dialogSave().disabled).toBe(true);
+    await settle();
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
-    await Promise.resolve(); await Promise.resolve();
     expect(committed).toHaveLength(1);
     expect(committed[0]!.dashboards[0].title).toBe('Sales revenue');
     expect(committed[0]!.dashboards[0].description).toBe('Quarterly figures');
@@ -963,6 +971,63 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
+  // ── #495 review 2: every unsuccessful outcome is HANDLED ─────────────────
+  // The dialog used to close before starting the mutation and then discard the
+  // promise, so each of these presented as "the dialog vanished" while the
+  // typed values went with it.
+
+  /** Mount the pencil dialog over a `mutateWorkspace` that answers `outcome`. */
+  const dialogOver = (outcome: unknown) => {
+    const mutateWorkspace = vi.fn(async () => outcome) as unknown as App['mutateWorkspace'];
+    const { app, list } = treeApp({ mutateWorkspace });
+    renderDashboardTree(app);
+    click(pencil(list, 'w1:sales')!);
+    dialogTitleInput().value = 'Sales revenue';
+    dialogTitleInput().dispatchEvent(new Event('input', { bubbles: true }));
+    dialogDescInput().value = 'Quarterly figures';
+    return { app, list };
+  };
+  const dialogError = (): HTMLElement | null => document.querySelector<HTMLElement>('.fm-dialog-error');
+
+  it('keeps the dialog, the typed values and a targeted diagnostic when the Dashboard no longer resolves', async () => {
+    dialogOver({ ok: false, aborted: true, data: 'declined' });
+    dialogSave().click();
+    await settle();
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    expect(dialogTitleInput().value).toBe('Sales revenue');
+    expect(dialogDescInput().value).toBe('Quarterly figures');
+    expect(dialogError()!.hidden).toBe(false);
+    expect(dialogError()!.textContent).toBe('That dashboard is no longer part of this workspace.');
+    // Recoverable from: the controls come back, so Cancel is reachable and a
+    // second Save is possible.
+    expect(dialogSave().disabled).toBe(false);
+  });
+
+  it('reports the aggregate\'s own diagnostic when the commit is rejected', async () => {
+    dialogOver({ ok: false, diagnostics: [{ path: [], severity: 'error', code: 'x', message: 'Storage is full' }] });
+    dialogSave().click();
+    await settle();
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    expect(dialogError()!.textContent).toBe('Storage is full');
+  });
+
+  it('falls back to one sentence when a rejection carries no diagnostic', async () => {
+    dialogOver({ ok: false, diagnostics: [] });
+    dialogSave().click();
+    await settle();
+    expect(dialogError()!.textContent).toBe('Could not save this dashboard.');
+  });
+
+  it('cannot submit the same rename twice while the first write is in flight', async () => {
+    const { app } = dialogOver({ ok: true, workspace: workspace(), dashboardRevision: null });
+    dialogSave().click();
+    // Both the button and the Enter shortcut are refused until it answers.
+    dialogSave().click();
+    dialogTitleInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await settle();
+    expect(app.mutateWorkspace).toHaveBeenCalledTimes(1);
+  });
+
   it('does not also run the row\'s own navigation, and cancels only its own row\'s pending click', () => {
     vi.useFakeTimers();
     const { app, list } = treeApp();
@@ -976,6 +1041,81 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     expect(app.openDashboard).not.toHaveBeenCalled();
     expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
     vi.useRealTimers();
+  });
+});
+
+/**
+ * #495 review 1 — every nested action control owns its own activation keys.
+ *
+ * The tree's `keydown` handler is on the LIST, and its Enter arm calls
+ * `preventDefault()` and runs the FOCUSED ROW's command. Before this, Enter on
+ * the pencil opened the Dashboard instead of the dialog (and the
+ * `preventDefault()` could suppress the button's own activation on the way
+ * out), which the `⋯` and the orphan-variable trash shared.
+ *
+ * Two independent layers are asserted here: each button stops Enter/Space from
+ * propagating, AND the list handler ignores an Enter that originated on a
+ * button — either alone would fix the bug, and a later control that forgets
+ * the first is still covered by the second.
+ */
+describe('renderDashboardTree — nested action buttons own their activation keys (#495)', () => {
+  /** Dispatch a real bubbling keydown, and report whether anything called
+   *  `preventDefault()` — the signal that the tree handler claimed the key. */
+  const press = (el: Element, k: string): boolean =>
+    !el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+
+  it('Enter on the Dashboard pencil opens the dialog and does NOT open the Dashboard', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-rename-btn')!;
+    // The browser's own key-to-click synthesis is what opens the dialog; what
+    // matters here is that nothing prevented it and the row did not act.
+    expect(press(trigger, 'Enter')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    // ...and the click the browser then synthesizes opens exactly one dialog.
+    click(trigger);
+    expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('Space on the Dashboard pencil neither navigates nor is swallowed', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-rename-btn')!;
+    expect(press(trigger, ' ')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('Enter on the ⋯ menu button does not run the row\'s primary action', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-menu-btn')!;
+    expect(press(trigger, 'Enter')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+  });
+
+  it('Enter on an orphaned variable\'s trash does not open its option-SQL tab', () => {
+    const { app, list } = treeApp();
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    const trigger = rowFor(list, 'w1:sales:variable:region')
+      .querySelector<HTMLButtonElement>('.dash-tree-del-btn')!;
+    expect(press(trigger, 'Enter')).toBe(false);
+    expect(app.openVariableTab).not.toHaveBeenCalled();
+  });
+
+  it('the list handler itself refuses an Enter that came from a button, even one that let it bubble', () => {
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    // A control with NO `isolateActivationKeys` of its own: the second layer.
+    const naive = document.createElement('button');
+    rowFor(list, 'w1:sales').appendChild(naive);
+    expect(press(naive, 'Enter')).toBe(false);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    // The row itself still activates on Enter — the guard is about the target,
+    // not about Enter.
+    expect(press(rowFor(list, 'w1:sales'), 'Enter')).toBe(true);
+    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'view' });
   });
 });
 

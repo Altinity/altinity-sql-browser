@@ -41,7 +41,8 @@ import {
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { commitDashboardRename } from '../application/dashboard-title.js';
-import { openDialogShell } from './dialog-shell.js';
+import type { DashboardRenameOutcome } from '../application/dashboard-title.js';
+import { openMetadataDialog } from './dialog-shell.js';
 import {
   assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
 } from '../application/library-assignment-service.js';
@@ -158,6 +159,32 @@ const rowAccessibleName = (row: DashboardTreeRow): string => [
   row.meta,
   row.invalid === null ? '' : STATUS_LABELS[row.invalid],
 ].filter((part) => part !== '').join(' ');
+
+/**
+ * Keep Enter/Space on a nested action button from ALSO reaching the tree's own
+ * keyboard handler (#495 review 1).
+ *
+ * The tree's `keydown` listener lives on the LIST, and its Enter arm calls
+ * `preventDefault()` and runs the focused ROW's primary command. A button
+ * inside that row is a descendant, so without this its Enter bubbled up and
+ * did two wrong things at once: it ran the row's action (for a Dashboard row,
+ * navigating away), and the `preventDefault()` suppressed the browser's own
+ * key-to-click synthesis, so the button's actual job might never happen.
+ *
+ * Propagation is stopped but the default is NOT prevented, which is the whole
+ * point: native activation still fires — exactly once, on keydown for Enter
+ * and on keyup for Space — so each control keeps standard button semantics
+ * instead of re-implementing them. The chevron is the one exception and wires
+ * its own handler: it must also `preventDefault()`, because it toggles
+ * directly and would otherwise be re-toggled by the synthesized click.
+ *
+ * `handleTreeKeydown` independently ignores anything that did not originate on
+ * a row. Two layers, deliberately: this one keeps each button self-contained,
+ * that one holds even for a control that forgets to install this.
+ */
+const isolateActivationKeys = (event: KeyboardEvent): void => {
+  if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
+};
 
 /** One arbiter per app instance, surviving the repaints that replace every row. */
 function arbiterFor(app: DashboardTreeApp): ClickArbiter {
@@ -786,6 +813,7 @@ function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardT
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     'aria-label': 'Delete the stored option SQL for ' + row.label,
     title: 'Delete stored option SQL',
+    onkeydown: isolateActivationKeys,
     onclick: (event: MouseEvent) => {
       event.stopPropagation();
       app._dashTreeArbiter?.cancelFor(row.key);
@@ -831,6 +859,7 @@ function buildRenameButton(app: DashboardTreeApp, doc: Document, row: DashboardT
     'aria-haspopup': 'dialog', 'aria-expanded': 'false',
     'aria-label': 'Edit dashboard ' + row.label,
     title: 'Edit dashboard title & description',
+    onkeydown: isolateActivationKeys,
     onclick: (event: MouseEvent) => {
       event.stopPropagation();
       app._dashTreeArbiter?.cancelFor(row.key);
@@ -840,12 +869,18 @@ function buildRenameButton(app: DashboardTreeApp, doc: Document, row: DashboardT
   return trigger;
 }
 
-/** Two-field (title + description) metadata dialog — distinct from the
- *  single-field `openNameDialog` (`dialog-shell.ts`) the create flows use, so
- *  that shared primitive stays single-purpose. Built directly on
- *  `openDialogShell` (colocated here rather than in the shared module: it has
- *  exactly one consumer today, matching hard rule 5's "extract a shared
- *  primitive only when a SECOND consumer appears"). */
+/**
+ * The Dashboard document's own title/description dialog, on the shared
+ * two-field `openMetadataDialog` (`dialog-shell.ts` — the panel pencil below
+ * is its second consumer, which is what moved it out of this module).
+ *
+ * Every unsuccessful outcome keeps the dialog open with the typed text intact
+ * and reports inside it (#495 review 2). The first version closed the card
+ * before starting the mutation and discarded the promise, so a Dashboard
+ * deleted in another tab, a duplicate id, a validation rejection or a storage
+ * failure all read as "the dialog just disappeared" — and took the user's
+ * edits with it.
+ */
 function openDashboardMetadataDialog(
   app: DashboardTreeApp, doc: Document, trigger: HTMLButtonElement, row: DashboardTreeRow,
 ): void {
@@ -857,48 +892,35 @@ function openDashboardMetadataDialog(
   // enforces no CSS layout at all).
   trigger.setAttribute('aria-expanded', 'true');
   const current = app.currentWorkspace?.dashboards?.find((d) => d.id === row.dashboardId);
-  const titleInput = h('input', {
-    class: 'fm-dialog-input', type: 'text', id: 'dash-rename-title', spellcheck: 'false',
-    value: current?.title ?? row.label,
-  }) as HTMLInputElement;
-  const descInput = h('textarea', {
-    class: 'fm-dialog-input fm-dialog-textarea', id: 'dash-rename-description', spellcheck: 'false',
-  }) as HTMLTextAreaElement;
-  descInput.value = current?.description ?? '';
-  const confirm = h('button', {
-    class: 'fm-dialog-confirm',
-    onclick: () => commit(),
-  }, 'Save') as HTMLButtonElement;
-  const commit = (): void => {
-    const title = titleInput.value.trim();
-    if (!title) return;
-    handle.close();
-    // Fire-and-forget: a successful commit reprojects the workspace and
-    // repaints the tree/any open Dashboard surface on its own; an aborted one
-    // (the Dashboard was deleted/duplicated concurrently) leaves nothing here
-    // to undo.
-    void commitDashboardRename(app, row.dashboardId, title, descInput.value);
-  };
-  const sync = (): void => { confirm.disabled = titleInput.value.trim() === ''; };
-  titleInput.addEventListener('input', sync);
-  titleInput.addEventListener('keydown', (e) => {
-    // Enter commits from the TITLE field only — the description is a
-    // `<textarea>`, where Enter legitimately inserts a newline.
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+  openMetadataDialog({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, {
+    title: 'Edit dashboard',
+    nameLabel: 'Dashboard title',
+    descriptionLabel: 'Dashboard description',
+    name: current?.title ?? row.label,
+    description: current?.description ?? '',
+    confirmLabel: 'Save',
+    idPrefix: 'dash-rename',
+    returnFocusTo: trigger,
+    onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+    onConfirm: async ({ name, description }) =>
+      renameMessage(await commitDashboardRename(app, row.dashboardId, name, description)),
   });
-  const handle = openDialogShell({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, 'Edit dashboard', [
-    h('div', { class: 'fm-dialog-body' },
-      h('label', { class: 'fm-dialog-label', for: 'dash-rename-title' }, 'Dashboard title'),
-      titleInput,
-      h('label', { class: 'fm-dialog-label', for: 'dash-rename-description' }, 'Dashboard description'),
-      descInput),
-    h('div', { class: 'fm-dialog-actions' },
-      h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel'),
-      confirm),
-  ], { returnFocusTo: trigger, onClose: () => trigger.setAttribute('aria-expanded', 'false') });
-  sync();
-  setTimeout(() => { titleInput.focus(); titleInput.select(); });
 }
+
+/** What a Dashboard rename attempt has to say for itself — `null` when it
+ *  committed and the dialog should close.
+ *
+ *  The two failures are deliberately different sentences: `declined` is the
+ *  transform refusing because the Dashboard no longer resolves (deleted or
+ *  duplicated while the dialog was open), which no retry can fix, and a
+ *  rejection carries the aggregate's own validation/persistence diagnostic,
+ *  which is about the values just entered. The missing-resource wording
+ *  matches the one #429 phase 1 settled for `openSavedQuery`. */
+const renameMessage = (outcome: DashboardRenameOutcome): string | null => {
+  if (outcome.ok) return null;
+  if (outcome.aborted) return 'That dashboard is no longer part of this workspace.';
+  return outcome.diagnostics[0]?.message || 'Could not save this dashboard.';
+};
 
 /** The keyboard-reachable, DISCOVERABLE equivalent of the gestures a pointer-only
  *  affordance would otherwise hide — a panel row's double-click and Shift-click, and
@@ -910,6 +932,7 @@ function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTre
     'aria-haspopup': 'menu', 'aria-expanded': 'false',
     'aria-label': 'Actions for ' + row.label,
     title: 'Actions',
+    onkeydown: isolateActivationKeys,
     onclick: (event: MouseEvent) => {
       // Never the row's own gesture, and never a pending single of its own — but
       // #426 is explicit that this must cancel no UNRELATED row operation.
@@ -981,6 +1004,20 @@ function handleTreeKeydown(
   // handler when there are no rows, so it can only ever run against a painted
   // tree. `clampKeyboardRow` ran during that paint, so the roving-tabindex owner
   // is always one of `rows` by the time any key arrives.
+  // #495 review 1: this handler speaks for the ROW. A key pressed while one of
+  // the row's nested action buttons has focus belongs to that button — running
+  // the row's command as well would open a Dashboard the user was only trying
+  // to rename, and the `preventDefault()` below would swallow the button's own
+  // activation on the way. Every such control also stops propagation
+  // (`isolateActivationKeys`); this is the guard that does not depend on each
+  // of them remembering to.
+  // Scoped to Enter: the arrow keys, Home and End still work while a nested
+  // control has focus, because the chevron and the action buttons rove WITH
+  // their row and are part of the same composite tab stop — walking the tree
+  // from them is correct. It is only ACTIVATION that belongs to whichever
+  // target has focus. (The target is always an element inside the list this
+  // handler is assigned to, so there is no null case to defend against.)
+  if (event.key === 'Enter' && (event.target as Element).closest('button') !== null) return;
   const ui = readUi(app);
   const index = rows.findIndex((row) => row.key === ui.keyboardRowKey);
   const row = rows[index];

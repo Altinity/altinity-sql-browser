@@ -794,6 +794,15 @@ h1, h2, h3, h4, h5, h6 {
    given breathing room above the title field it follows. */
 .fm-dialog-textarea { min-height: 64px; resize: vertical; font-family: inherit; }
 .fm-dialog-input + .fm-dialog-label { margin-top: 12px; }
+/* #495 review 2: a rename/edit that could not commit reports INSIDE the dialog
+   it failed in, right above the actions, while the card keeps the text the
+   user typed — a toast fired from a dialog that simultaneously vanished was
+   how the entered title used to be lost. */
+.fm-dialog-error {
+  margin: 12px 0 0; color: var(--error-fg);
+  font-size: var(--text-label); line-height: var(--lh-body);
+}
+.fm-dialog-cancel:disabled { opacity: .45; cursor: default; }
 
 /* ------------ main row ------------ */
 /* position:relative so the mobile sidebar overlay + backdrop (#126) can anchor
