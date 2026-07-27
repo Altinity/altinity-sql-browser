@@ -855,6 +855,25 @@ describe('app workspace refresh + conflict UI (#343)', () => {
   // `removeEventListener` are spied (not mocked away) so the real attach/
   // detach happens and the captured listener reference is the genuine one.
   describe('syncBeforeUnload — install/remove as the aggregate dirty state flips', () => {
+    // Several tests below deliberately leave a tab dirty right up to their own
+    // assertions, which means a REAL `beforeunload` listener is attached to
+    // the shared `window` (not a fake — `spyOn` here wraps, it never replaces
+    // the implementation) when the test body ends. `addEventListener.
+    // mockRestore()` only removes the SPY wrapper, not any listener already
+    // registered through it — restoring real timers/mocks elsewhere in this
+    // file doesn't touch it either. Left alone, that listener outlives the
+    // test, keeps its `app` (and everything the closure reaches) reachable,
+    // and would make a later real `window.dispatchEvent(new Event(
+    // 'beforeunload'))` test order-dependent. Every app created here is
+    // tracked and put back to a clean, listener-free state afterward.
+    const dirtiedApps: App[] = [];
+    afterEach(() => {
+      for (const app of dirtiedApps.splice(0)) {
+        for (const tab of app.state.tabs.value) { tab.dirtySql = false; tab.dirtySpec = false; }
+        app.syncBeforeUnload();
+      }
+    });
+
     it('does not install while every tab is clean', () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const app = createApp(env());
@@ -867,6 +886,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     it('installs on a clean→dirty flip, and the listener warns via preventDefault + a truthy returnValue', () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const app = createApp(env());
+      dirtiedApps.push(app);
       addEventListener.mockClear();
 
       app.state.tabs.value[0].dirtySql = true;
@@ -889,6 +909,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     it('does not duplicate the registration while additional dirty changes happen', () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const app = createApp(env());
+      dirtiedApps.push(app);
       app.state.tabs.value[0].dirtySql = true;
       app.syncBeforeUnload();
       addEventListener.mockClear();
@@ -899,19 +920,26 @@ describe('app workspace refresh + conflict UI (#343)', () => {
       addEventListener.mockRestore();
     });
 
-    it('removes the listener once the tab goes fully clean again', () => {
+    it('removes EXACTLY the function it added once the tab goes fully clean again', () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const removeEventListener = vi.spyOn(window, 'removeEventListener');
       const app = createApp(env());
       app.state.tabs.value[0].dirtySql = true;
       app.syncBeforeUnload();
       expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      const [, added] = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')!;
 
       app.state.tabs.value[0].dirtySql = false;
       app.syncBeforeUnload();
-      expect(removeEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      // Not just "some function" — `removeEventListener` only un-registers a
+      // listener passed the SAME reference it was added with, so this also
+      // proves `syncBeforeUnload` reuses one stable closure across calls
+      // rather than minting a fresh (and therefore un-removable) one each time.
+      expect(removeEventListener).toHaveBeenCalledWith('beforeunload', added);
       addEventListener.mockRestore();
       removeEventListener.mockRestore();
+      // Genuinely removed above — nothing left for the shared afterEach to do,
+      // but harmless if it runs anyway (syncBeforeUnload is idempotent).
     });
 
     // The two real WIRING call sites — never called directly by a test above,
@@ -922,6 +950,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     it('actions.rerenderTabs re-syncs the guard for an in-place dirty mutation', () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const app = createApp(env());
+      dirtiedApps.push(app);
       addEventListener.mockClear();
 
       app.state.tabs.value[0].dirtySql = true;
@@ -933,6 +962,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     it("renderApp's tab-list effect re-syncs the guard on a tabs-signal change", () => {
       const addEventListener = vi.spyOn(window, 'addEventListener');
       const app = createApp(env());
+      dirtiedApps.push(app);
       app.renderApp();
       addEventListener.mockClear();
 
