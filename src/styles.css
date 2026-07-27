@@ -707,6 +707,10 @@ h1, h2, h3, h4, h5, h6 {
    required: `.fm-item:hover` above still matches a disabled <button>. */
 .fm-item[aria-disabled="true"] { opacity: .45; cursor: default; }
 .fm-item[aria-disabled="true"]:hover { background: transparent; }
+/* The example-dashboard dialog's single-select rows (#506): a `role="radio"`
+   `.fm-item`, marked with the accent color it shares with `.fm-dialog-confirm`
+   so the selected row reads the same way the primary action does. */
+.fm-item[aria-checked="true"] { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
 /* Why a row is unavailable — its own line inside the row, indented to the label.
    Not `.fm-meta` (a monospace slot sized for `.json`/`.md`) and not beside the
    label: at 252px, "Download Library as Markdown" + "No Library queries" clipped

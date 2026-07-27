@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>File menu — Import example dashboard (#506)</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body data-theme="dark">
+  <div id="root"></div>
+  <script type="importmap">
+    { "imports": {
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+      "marked": "/node_modules/marked/lib/marked.esm.js",
+      "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
+      "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
+      "@codemirror/commands": "/node_modules/@codemirror/commands/dist/index.js",
+      "@codemirror/lang-json": "/node_modules/@codemirror/lang-json/dist/index.js",
+      "@codemirror/language": "/node_modules/@codemirror/language/dist/index.js",
+      "@codemirror/lang-sql": "/node_modules/@codemirror/lang-sql/dist/index.js",
+      "@codemirror/lang-xml": "/node_modules/@codemirror/lang-xml/dist/index.js",
+      "@codemirror/autocomplete": "/node_modules/@codemirror/autocomplete/dist/index.js",
+      "@codemirror/search": "/node_modules/@codemirror/search/dist/index.js",
+      "@lezer/common": "/node_modules/@lezer/common/dist/index.js",
+      "@lezer/highlight": "/node_modules/@lezer/highlight/dist/index.js",
+      "@lezer/lr": "/node_modules/@lezer/lr/dist/index.js",
+      "@lezer/json": "/node_modules/@lezer/json/dist/index.js",
+      "@lezer/xml": "/node_modules/@lezer/xml/dist/index.js",
+      "style-mod": "/node_modules/style-mod/src/style-mod.js",
+      "w3c-keyname": "/node_modules/w3c-keyname/index.js",
+      "crelt": "/node_modules/crelt/index.js",
+      "@marijn/find-cluster-break": "/node_modules/@marijn/find-cluster-break/src/index.js"
+    } }
+  </script>
+  <script type="module">
+    // #506: mounts the real application shell (header + File menu), the same
+    // way dashboard-tree.html does, but this fixture is about the File menu's
+    // new "Import example dashboard…" row, not the sidebar tree — the
+    // workbench/editor are left out (never needed here).
+    import { createApp } from '/src/ui/app.js';
+    import { mountAppShell } from '/src/ui/app-shell.js';
+    import { buildAppHeader } from '/src/ui/app-header.js';
+    import { startDrag } from '/src/ui/splitters.js';
+
+    const dash = (id, title, over = {}) => ({
+      documentVersion: 2, id, title, revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      tiles: [], ...over,
+    });
+    const seed = {
+      storageVersion: 5, id: 'workspace', key: 'workspace', name: 'Workspace',
+      queries: [],
+      // One pre-existing Dashboard — proves an example import APPENDS beside
+      // it rather than replacing or merging into it (#506 acceptance).
+      dashboards: [dash('existing', 'Existing dashboard')],
+    };
+
+    const root = document.querySelector('#root');
+    const app = createApp({ root, broadcastChannel: () => null });
+    app.conn.ensureFreshToken = async () => true;
+    app.conn.chCtx.onSignedOut = () => {};
+    app.catalog.loadSchema = async () => {};
+    app.catalog.loadReference = async () => {};
+
+    // Record navigation instead of performing it — this fixture verifies the
+    // FILE MENU + import pipeline, not the Dashboard renderer.
+    window.__opened = [];
+    app.openDashboard = (request) => { window.__opened.push({ kind: 'dashboard', ...request }); };
+    // Normally assigned by `app.renderApp()`'s first paint — this fixture
+    // skips the workbench/editor entirely (never needed here), so the file
+    // menu's post-commit repaint hook needs its own no-op stub.
+    app.updateEditorModeUi = () => {};
+
+    const loaded = await app.workspace.loadById(seed.id);
+    let workspace = loaded.status === 'ok' ? loaded.workspace : null;
+    if (!sessionStorage.getItem('import-example-seeded')) {
+      await app.workspace.delete(seed.id);
+      const committed = await app.workspace.create(seed);
+      if (!committed.ok) throw new Error(committed.diagnostics[0]?.message || 'seed failed');
+      workspace = committed.workspace;
+      sessionStorage.setItem('import-example-seeded', '1');
+    }
+    if (!workspace) throw new Error('seeded workspace missing');
+
+    const mounted = mountAppShell({
+      app, root, document, state: app.state, catalog: app.catalog, prefs: app.prefs,
+      matchMedia: (q) => window.matchMedia(q), updateBanner: () => {}, startDrag,
+    });
+    // The header (including the File ▾ button this fixture is about) is built
+    // by the caller and spliced in via `setHeader` — `mountAppShell` alone
+    // only builds the sidebar/workbench shell (app-shell.ts's own header-slot
+    // comment).
+    mounted.setHeader(buildAppHeader(app));
+    app.applyCommittedWorkspace(workspace);
+    app.rewriteWorkspaceRoute(workspace.key);
+
+    // Read COMMITTED truth back out of the store, so an import test asserts
+    // what was actually persisted rather than what the projection shows.
+    window.__committed = async () => {
+      const result = await app.workspace.loadById(seed.id);
+      return result.status === 'ok' ? result.workspace : null;
+    };
+    window.__ready = true;
+  </script>
+</body>
+</html>

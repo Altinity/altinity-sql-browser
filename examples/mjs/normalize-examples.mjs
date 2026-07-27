@@ -107,7 +107,9 @@ function normalizeDocument(name, document, config) {
 }
 
 const changed = [];
-for (const name of readdirSync(examples).filter((item) => item.endsWith('.json')).sort()) {
+// #506: `dashboard-manifest.json` names the example catalogue — it is not
+// itself a portable-bundle document, so it carries no normalization config.
+for (const name of readdirSync(examples).filter((item) => item.endsWith('.json') && item !== 'dashboard-manifest.json').sort()) {
   const path = resolve(examples, name);
   const source = readFileSync(path, 'utf8');
   const document = JSON.parse(source);

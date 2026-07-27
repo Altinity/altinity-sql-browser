@@ -1,0 +1,5 @@
+[
+  { "file": "clickhouse-operations.json", "name": "ClickHouse Operations" },
+  { "file": "shop-charts.json", "name": "Shop Charts" },
+  { "file": "ontime-charts.json", "name": "OnTime Charts" }
+]

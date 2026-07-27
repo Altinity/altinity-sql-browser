@@ -12,14 +12,14 @@ import type {
 // surface nobody re-fixtured.
 const ORDER: FileMenuActionId[] = [
   'new-workspace', 'new-dashboard',
-  'import-workspace', 'import-queries', 'import-dashboard',
+  'import-workspace', 'import-queries', 'import-dashboard', 'import-example-dashboard',
   'export-workspace', 'export-dashboard',
   'download-md', 'download-sql',
 ];
 
 const LABELS = [
   'New workspace…', 'New dashboard…',
-  'Import workspace…', 'Import queries…', 'Import dashboard…',
+  'Import workspace…', 'Import queries…', 'Import dashboard…', 'Import example dashboard…',
   'Export workspace…', 'Export dashboard…',
   'Download Library as Markdown', 'Download Library as SQL',
 ];
@@ -54,7 +54,7 @@ const SURFACES: [name: string, surface: FileMenuSurface][] = [
 describe('fileMenuModel — one stable structure on every surface', () => {
   // Issue test 1: Query, Dashboard Edit, Dashboard View and the empty Dashboard
   // render the same labels in the same order.
-  it.each(SURFACES)('%s renders all nine rows, same ids, same labels, same order', (_name, surface) => {
+  it.each(SURFACES)('%s renders all ten rows, same ids, same labels, same order', (_name, surface) => {
     const model = fileMenuModel(ctx({ surface }));
     expect(model.items.map((item) => item.id)).toEqual(ORDER);
     expect(model.items.map((item) => item.label)).toEqual(LABELS);
@@ -238,6 +238,30 @@ describe('fileMenuModel — Import dashboard is additive (#463)', () => {
   // caller to aim, so nothing that can be aimed at `dashboards[0]`.
   it('exposes no import target for any caller to retarget', () => {
     expect(fileMenuModel(ctx({ surface: edit('d1') }))).not.toHaveProperty('importDashboardTarget');
+  });
+});
+
+describe('fileMenuModel — Import example dashboard (#506)', () => {
+  // Acceptance: available from every surface that uses the File menu, needing
+  // only a writable workspace — the same rule as Import dashboard, since it is
+  // the same additive append with a different source.
+  it('is available on every surface whenever a workspace is writable', () => {
+    for (const [, surface] of SURFACES) {
+      for (const dashboardIds of [[], ['d1'], ['d1', 'd2']]) {
+        expect(state(ctx({ surface, dashboardIds }), 'import-example-dashboard')).toEqual([true, null]);
+      }
+    }
+  });
+
+  it('needs only a workspace', () => {
+    expect(state(ctx({ hasWorkspace: false }), 'import-example-dashboard')).toEqual([false, 'No workspace']);
+  });
+
+  it('sits immediately after Import dashboard on every surface', () => {
+    for (const [, surface] of SURFACES) {
+      const ids = fileMenuModel(ctx({ surface })).items.map((item) => item.id);
+      expect(ids.indexOf('import-example-dashboard')).toBe(ids.indexOf('import-dashboard') + 1);
+    }
   });
 });
 
