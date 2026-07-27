@@ -50,7 +50,7 @@ const pokeMock = () => vi.fn<(info: WorkspaceExternallyChangedInfo) => void>();
  */
 const deps = (
   latest: StoredWorkspaceV5 | null,
-  opts: { tabs?: QueryTab[]; beforeTransform?: () => void } = {},
+  opts: { tabs?: QueryTab[]; beforeTransform?: () => void; duringCommit?: () => void } = {},
 ) => {
   const committed: (StoredWorkspaceV5 | null)[] = [];
   const tabs = opts.tabs ?? [];
@@ -63,6 +63,11 @@ const deps = (
     if (candidate === null) {
       return { ok: false, aborted: true, data: input === null ? undefined : input.data };
     }
+    // The real primitive awaits `workspace.commit(candidate)` HERE, after the
+    // transform has already returned. Anything the user does in this window is
+    // past every gate the transform could have applied.
+    if (opts.duringCommit) opts.duringCommit();
+    await Promise.resolve();
     return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
   }) as MutateWorkspace;
   const onWorkspaceExternallyChanged = pokeMock();
@@ -127,7 +132,9 @@ describe('assignLibraryQuerySqlToVariable', () => {
     expect(outcome.ok).toBe(true);
     // The command reports the SQL it committed, so the caller never has to
     // re-derive it from a projection that may not have landed yet.
-    expect(outcome.data).toEqual({ status: 'ok', sql: 'SELECT country FROM t' });
+    expect(outcome.data).toEqual({
+      status: 'ok', sql: 'SELECT country FROM t', draftDiverged: false,
+    });
     expect(app.committed[0]!.dashboards[0].variableConfigs).toEqual({
       country: { sql: 'SELECT country FROM t', lastKnownType: 'String' },
     });
@@ -178,6 +185,32 @@ describe('assignLibraryQuerySqlToVariable', () => {
 
     expect(outcome).toMatchObject({ data: { status: 'declined', reason: 'variable-tab-dirty' } });
     expect(app.committed).toEqual([null]);
+  });
+
+  it('reports draftDiverged when the tab turns dirty DURING the commit', async () => {
+    // The gate inside the transform cannot close this window: `mutateWorkspace`
+    // awaits `workspace.commit(candidate)` after the transform returns, and a
+    // slow or blocked IndexedDB transaction makes that window materially wider.
+    // The write IS durable, so the honest outcome is "committed, and your draft
+    // now disagrees" — not a clean success the caller reports as done.
+    const tab = varTab('d1', 'country', false);
+    const app = deps(ws(), { tabs: [tab], duringCommit: () => { tab.dirtySql = true; } });
+
+    const outcome = await assignLibraryQuerySqlToVariable(app, payload, 'd1', 'country');
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.data).toEqual({
+      status: 'ok', sql: 'SELECT country FROM t', draftDiverged: true,
+    });
+    // The assignment really did land — this is not a rollback.
+    expect(app.committed[0]!.dashboards[0].variableConfigs!.country.sql)
+      .toBe('SELECT country FROM t');
+  });
+
+  it('reports draftDiverged: false on the ordinary clean path', async () => {
+    const app = deps(ws(), { tabs: [varTab('d1', 'country', false)] });
+    const outcome = await assignLibraryQuerySqlToVariable(app, payload, 'd1', 'country');
+    expect(outcome.data).toMatchObject({ draftDiverged: false });
   });
 
   it('declines with the transform\'s reason for a variable that is no longer inferred', async () => {

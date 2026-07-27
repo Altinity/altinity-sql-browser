@@ -48,6 +48,17 @@ export interface VariableAssignmentData {
    *  before this promise resolves, and if that ordering ever changed it would
    *  silently reconcile an open variable tab to the PREVIOUS value. */
   sql: string;
+  /**
+   * The commit landed, but the matching variable tab holds an unsaved draft that
+   * disagrees with what was just written.
+   *
+   * Only reachable through the commit-window race the function's own doc
+   * describes: the in-transform gate refuses a tab that is already dirty, so this
+   * means the user typed while persistence was in flight. The assignment is
+   * durable and the draft is untouched — but they now disagree, and the caller
+   * must tell the user rather than reporting a clean success.
+   */
+  draftDiverged: boolean;
 }
 
 export type AssignmentDeclined = { status: 'declined'; reason: LibraryAssignmentDecline };
@@ -133,6 +144,16 @@ export async function assignLibraryQueryToPanel(
  * `readTabs` is therefore called here, at dequeue time, not captured by the
  * caller. (The caller may still check first as a cheap fast path — that is an
  * optimisation, not the gate.)
+ *
+ * **The gate is not, and cannot be, the whole story.** It runs inside the
+ * transform, but `mutateWorkspace` then awaits `workspace.commit(candidate)`, and
+ * a keystroke landing in THAT window passes the gate and diverges anyway — a
+ * blocked or slow IndexedDB transaction makes the window materially wider. No
+ * check can close it: the commit is the repository's atomic write and UI state
+ * cannot be held still across it. So the outcome reports `draftDiverged`, read
+ * after the commit resolves, and the caller is expected to surface it rather than
+ * treat the assignment as quietly complete. Refusing to adopt while saying
+ * nothing is exactly the silent divergence this issue exists to prevent.
  */
 export async function assignLibraryQuerySqlToVariable(
   deps: LibraryAssignmentDeps,
@@ -153,12 +174,28 @@ export async function assignLibraryQuerySqlToVariable(
       variableName,
     });
     if (!result.ok) return declined(result.reason);
-    return { candidate: result.workspace, data: { status: 'ok', sql: result.data.sql } };
+    // `draftDiverged` is provisional here — the commit has not run yet. It is
+    // re-read below, once it has.
+    return {
+      candidate: result.workspace,
+      data: { status: 'ok', sql: result.data.sql, draftDiverged: false },
+    };
   });
   // `queriesChanged: false`: this write touches exactly one Dashboard's
   // `variableConfigs` and can never add, remove or edit a query.
-  if (outcome.ok) deps.onWorkspaceExternallyChanged({ workspace: outcome.workspace, queriesChanged: false });
-  return outcome;
+  if (!outcome.ok) return outcome;
+  deps.onWorkspaceExternallyChanged({ workspace: outcome.workspace, queriesChanged: false });
+  // Re-read AFTER the commit resolved. `true` means the durable write landed but
+  // the open tab now holds a draft that disagrees with it — the caller must say
+  // so, because the next Save on that tab would silently revert the assignment.
+  const data = outcome.data as VariableAssignmentData;
+  return {
+    ...outcome,
+    data: {
+      ...data,
+      draftDiverged: tabSaveDirty(findVariableTab(deps.readTabs(), dashboardId, variableName)),
+    },
+  };
 }
 
 const DECLINE_MESSAGES: Record<LibraryAssignmentDecline, string> = {

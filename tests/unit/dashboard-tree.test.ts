@@ -997,14 +997,15 @@ describe('Library-query drop targets (#428)', () => {
    * PROJECTS its commit back onto `app.currentWorkspace` — as the real primitive
    * does — so post-commit reads (the variable reconcile) see committed truth.
    */
-  const dropApp = (over: Partial<DashboardTreeApp> = {}) => {
-    const base = treeApp(over);
+  const dropApp = (over: Partial<DashboardTreeApp> & { duringCommit?: () => void } = {}) => {
+    const { duringCommit, ...appOver } = over;
+    const base = treeApp(appOver);
     const { app } = base;
     const ws = app.currentWorkspace as unknown as StoredWorkspaceV5;
     ws.storageVersion = 5; ws.key = 'w'; ws.name = 'W';
     ws.queries = [...ws.queries, query('q-lib', 'Countries', 'SELECT c, c FROM countries')];
     const committed: StoredWorkspaceV5[] = [];
-    if (!('mutateWorkspace' in over)) {
+    if (!('mutateWorkspace' in appOver)) {
       app.mutateWorkspace = (async (transform) => {
         const input = await transform(app.currentWorkspace as StoredWorkspaceV5);
         const candidate = input === null ? null : input.candidate;
@@ -1013,6 +1014,10 @@ describe('Library-query drop targets (#428)', () => {
         }
         committed.push(candidate);
         app.currentWorkspace = candidate as never;
+        // The real primitive awaits persistence HERE, after the transform has
+        // returned — past every gate the transform could apply.
+        if (duringCommit) duringCommit();
+        await Promise.resolve();
         return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
       }) as App['mutateWorkspace'];
     }
@@ -1360,17 +1365,22 @@ describe('Library-query drop targets (#428)', () => {
       expect(dashboard.tiles).toHaveLength(3);
       const added = dashboard.tiles[2];
       expect(committed[0].queries.some((q) => q.id === added.queryId)).toBe(true);
-      // The tree revealed and selected it, without opening the Dashboard.
+      // The tree revealed and selected it, without opening the DASHBOARD…
       expect(labels(list)).toContain('Countries');
       expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey)
         .toBe('w1:sales:tile:' + added.id);
       expect(app.openDashboard).not.toHaveBeenCalled();
+      // …and the new panel's OWNED COPY opens in the editor, not the Library
+      // original: editing the original would not touch the panel.
+      expect(app.openSavedQuery).toHaveBeenCalledWith(added.queryId);
+      expect(added.queryId).not.toBe('q-lib');
       expect(list.classList.contains('dash-dragging')).toBe(false);
     });
 
-    it('moves the roving keyboard row to the new panel but does NOT steal focus', async () => {
-      // A mouse drop leaves focus on the drag source. The tree makes the new row
-      // the arrow-key/Tab origin without yanking focus out of the gesture.
+    it('puts the tree position ON the new panel row, scrolled into view', async () => {
+      // Not just `tabindex="0"`: `renderDashboardTree` restores focus only when
+      // the tree already held it, and after a mouse drop it does not — so the row
+      // is focused explicitly or it is the arrow-key origin while off-screen.
       const { app, list, committed } = dropApp();
       renderDashboardTree(app);
       const elsewhere = document.createElement('button');
@@ -1380,10 +1390,12 @@ describe('Library-query drop targets (#428)', () => {
       rowFor(list, 'w1:sales').dispatchEvent(dragEvent('drop'));
       await flush();
 
-      const added = committed[0].dashboards.find((d) => d.id === 'sales').tiles[2];
-      const newRow = rowFor(list, 'w1:sales:tile:' + added.id);
+      const sales = committed[0].dashboards.find((d) => d.id === 'sales');
+      expect(sales).toBeDefined();
+      const newRow = rowFor(list, 'w1:sales:tile:' + sales!.tiles[2].id);
       expect(newRow.getAttribute('tabindex')).toBe('0');
-      expect(document.activeElement).toBe(elsewhere);
+      expect(document.activeElement).toBe(newRow);
+      expect(document.activeElement).not.toBe(elsewhere);
     });
 
     it('drops onto the Panels group with the same result', async () => {
@@ -1466,20 +1478,59 @@ describe('Library-query drop targets (#428)', () => {
         .toBe('w1:sales:variable:country');
     });
 
-    it('adopts the SQL into a CLEAN open variable tab without leaving the surface', async () => {
+    it('adopts the committed SQL into a CLEAN open variable tab, and opens it', async () => {
       const { app, list } = dropApp();
       const tab = {
         id: 'vt', doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'country' },
         dirtySql: false, sqlDraft: 'SELECT stale',
       };
       app.state.tabs.value = [...app.state.tabs.value, tab as never];
-      const activeBefore = app.state.activeTabId.value;
 
       await dropOnCountry(app, list);
 
       expect(tab.sqlDraft).toBe('SELECT c, c FROM countries');
-      expect(app.state.activeTabId.value).toBe(activeBefore);
-      expect(app.openVariableTab).not.toHaveBeenCalled();
+      // Owner decision: the assigned option SQL opens for editing.
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+    });
+
+    it('opens the variable tab even when none was open', async () => {
+      const { app, list } = dropApp();
+      await dropOnCountry(app, list);
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+    });
+
+    it('says so — and offers a way out — when the tab turns dirty during the commit', async () => {
+      // The in-transform gate cannot close the persistence window. Reporting a
+      // clean success here is what would leave the next Save silently reverting
+      // the assignment, so the toast persists (an action suppresses auto-dismiss)
+      // and carries the one-click resolution.
+      const tab = {
+        id: 'vt', doc: { kind: 'dashboard-variable', dashboardId: 'sales', variableName: 'country' },
+        dirtySql: false, sqlDraft: 'SELECT mine',
+      };
+      const { app, list, committed } = dropApp({
+        duringCommit: () => { tab.dirtySql = true; },
+      });
+      app.state.tabs.value = [...app.state.tabs.value, tab as never];
+
+      await dropOnCountry(app, list);
+
+      // The write landed…
+      expect(committed[0].dashboards.find((d) => d.id === 'sales')!.variableConfigs!.country.sql)
+        .toBe('SELECT c, c FROM countries');
+      // …the draft is untouched, and NOT silently adopted…
+      expect(tab.sqlDraft).toBe('SELECT mine');
+      // …the user is told, and the tab is opened so they can see both.
+      const toast = document.querySelector('.share-toast')!;
+      expect(toast.textContent).toContain('unsaved changes that differ');
+      expect(app.openVariableTab).toHaveBeenCalledWith('sales', 'country');
+
+      // The escape hatch actually resolves it.
+      const action = toast.querySelector('button')!;
+      expect(action.textContent).toBe('Discard draft');
+      action.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(tab.sqlDraft).toBe('SELECT c, c FROM countries');
+      expect(tab.dirtySql).toBe(false);
     });
 
     it('refuses to overwrite a DIRTY variable tab, and focuses it instead', async () => {

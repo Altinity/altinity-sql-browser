@@ -41,14 +41,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   writes. The Variables *group* is deliberately not a target (it does not say
   which variable), nor is an individual panel row or an orphaned variable.
 
-  A drop can never silently overwrite an unsaved variable draft: if the matching
-  `Variable: <name>` tab has unsaved changes the assignment is refused and that
-  tab is focused instead, and the check runs inside the write transaction rather
-  than before it, so a keystroke landing while the commit is queued cannot slip
-  past. A clean open tab quietly adopts the newly committed SQL without pulling
-  you off the Dashboard. Dropping a blank query is refused as a no-op rather than
-  treated as a deletion — clearing option SQL stays the variable tab's explicit
-  blank-Save.
+  A successful drop **lands on what it created**: the tree expands to the new
+  panel or variable row and focuses it, and the assigned document opens in the
+  editor — for a panel the new owned copy (not the Library original), for a
+  variable its `Variable: <name>` tab. The Dashboard itself is still never opened
+  in View/Edit, and nothing is executed.
+
+  A drop can never silently overwrite an unsaved variable draft. If the matching
+  `Variable: <name>` tab has unsaved changes the assignment is refused outright
+  and that tab is focused, and the check runs inside the write transaction rather
+  than before it, so a keystroke landing while the commit is *queued* cannot slip
+  past. A keystroke landing while the commit is *persisting* is a window no check
+  can close — the write is already durable — so that case is reported instead of
+  hidden: a toast that stays until you act on it explains that the tab's unsaved
+  changes now differ from what was assigned, and offers **Discard draft** to adopt
+  the assigned SQL. Nothing discards your typing on its own. Dropping a blank query
+  is refused as a no-op rather than treated as a deletion — clearing option SQL
+  stays the variable tab's explicit blank-Save.
 
   The empty-Dashboard message now names this route. The keyboard-accessible
   **Add to dashboard…** equivalent is tracked separately in #483; until it lands,

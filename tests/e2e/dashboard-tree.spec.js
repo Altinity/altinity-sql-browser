@@ -349,9 +349,14 @@ test.describe('Library → Dashboard assignment (#428)', () => {
     // The source stays in the Library, untouched.
     expect(workspace.queries.find((q) => q.id === 'q-lib').sql).toBe("SELECT 'eu' AS v, 'Europe' AS l");
     await expect(libraryRow(page)).toBeVisible();
-    // The new panel row is revealed and selected, without opening the Dashboard.
-    await expect(page.locator('.dash-tree-row[data-key^="workspace:ops:tile:"]')).toHaveCount(1);
-    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    // The new panel row is revealed and is the tree's position…
+    const newRow = page.locator('.dash-tree-row[data-key^="workspace:ops:tile:"]');
+    await expect(newRow).toHaveCount(1);
+    await expect(newRow).toHaveAttribute('tabindex', '0');
+    // …and the panel's OWNED COPY opens in the editor, while the DASHBOARD does
+    // not open (this fixture records navigation instead of performing it).
+    expect(await page.evaluate(() => window.__opened))
+      .toEqual([{ kind: 'query', queryId: clone.id }]);
   });
 
   test('dropping on an inferred Variables row copies only the SQL', async ({ page }) => {

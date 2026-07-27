@@ -27,10 +27,10 @@ import { Icon } from './icons.js';
 import { openMenu } from './menu.js';
 import { flashToast } from './toast.js';
 import { LIBRARY_QUERY_MIME } from './dnd-mime.js';
-import { reconcileVariableTab } from './tabs.js';
+import { discardVariableDraft, reconcileVariableTab } from './tabs.js';
 import { createClickArbiter, type ClickArbiter } from '../core/tree-click-arbiter.js';
 import {
-  UNUSED_VARIABLE_STATUS, dashboardVariables, deriveDashboardTree, tileRowKey,
+  UNUSED_VARIABLE_STATUS, deriveDashboardTree, tileRowKey,
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
@@ -295,23 +295,27 @@ function runCommand(app: DashboardTreeApp, row: DashboardTreeRow, command: Dashb
 }
 
 /**
- * After a committed assignment: reveal what was written and put the roving
- * keyboard row on it.
+ * Land the tree on what a committed assignment just created: expand down to it,
+ * make it the keyboard row, and scroll/focus it.
  *
- * Two deliberate non-actions. It does not set `row.current` — that follows
- * `mainSurface`, so marking it would mean opening the Dashboard, which #428
- * forbids. And it does not pull DOM focus: `renderDashboardTree` only restores
- * focus when the tree already held it, so after a mouse drop the roving row moves
- * (the next Tab into the tree, and every arrow key, starts there) while focus
- * stays wherever the pointer gesture left it. Yanking focus out from under a
- * completed drag would be the more surprising of the two.
+ * The row is focused rather than merely given `tabindex="0"`, because
+ * `renderDashboardTree` restores focus only when the tree ALREADY held it — after
+ * a mouse drop it does not, so without this the new row would be the arrow-key
+ * origin while being invisible and off-screen. The caller opens the assigned
+ * document straight afterwards, which moves focus on to the editor; what this
+ * leaves behind is the row scrolled into view and armed as the tree's position.
+ *
+ * It deliberately does NOT set `row.current`: that follows `mainSurface`, so
+ * marking it would mean opening the Dashboard, which #428 rules out.
  */
-function revealAssigned(app: DashboardTreeApp, dashboardId: string, rowKey: string): void {
+function revealAssigned(app: DashboardTreeApp, dashboardId: string, rowKey: string, group: 'panels' | 'variables'): void {
   const ui = readUi(app);
   commitUi(app, setKeyboardRow(
-    setGroupExpanded(setDashboardExpanded(ui, dashboardId, true), dashboardId, 'panels', true),
+    setGroupExpanded(setDashboardExpanded(ui, dashboardId, true), dashboardId, group, true),
     rowKey,
   ));
+  const list = app.dom.dashboardTreeList;
+  if (list) focusRow(list, rowKey);
 }
 
 /**
@@ -337,7 +341,13 @@ async function dispatchDrop(
     const outcome = await assignLibraryQueryToPanel(deps, payload, target.dashboardId);
     if (outcome.ok && outcome.data && outcome.data.status === 'ok') {
       revealAssigned(app, target.dashboardId,
-        tileRowKey(app.currentWorkspace?.id ?? '', target.dashboardId, outcome.data.tileId));
+        tileRowKey(app.currentWorkspace?.id ?? '', target.dashboardId, outcome.data.tileId), 'panels');
+      // Owner decision (2026-07-27), replacing #428's "do not automatically
+      // open": the point of dropping a query onto a Dashboard is to work on the
+      // panel you just made, so its OWNED COPY opens in the editor. The copy, not
+      // the Library original — editing the original would not touch the panel.
+      // The Dashboard itself is still not opened, and nothing is executed.
+      app.openSavedQuery(outcome.data.queryId);
     }
     const message = libraryAssignmentMessage(outcome);
     if (message !== null && doc) flashToast(message, { document: doc });
@@ -348,13 +358,31 @@ async function dispatchDrop(
     deps, payload, target.dashboardId, target.variableName,
   );
   if (outcome.ok && outcome.data && outcome.data.status === 'ok') {
+    const { sql, draftDiverged } = outcome.data;
+    revealAssigned(app, target.dashboardId, row.key, 'variables');
     // Adopt the SQL the commit actually wrote — reported by the command, never
-    // re-derived from the projection — into a clean open tab, WITHOUT selecting
-    // it: a successful drop must not leave the Dashboard surface.
-    reconcileVariableTab(app, target.dashboardId, target.variableName, outcome.data.sql);
-    // Expansion is left exactly as it is; only the roving row moves.
-    commitUi(app, setKeyboardRow(readUi(app), row.key));
-  } else if (outcome.data && outcome.data.status === 'declined'
+    // re-derived from the projection.
+    if (!draftDiverged) reconcileVariableTab(app, target.dashboardId, target.variableName, sql);
+    // Owner decision (2026-07-27): open the variable's own tab, so the assigned
+    // option SQL is there to edit and run.
+    app.openVariableTab(target.dashboardId, target.variableName);
+    if (draftDiverged && doc) {
+      // The in-transform gate passed and the user then typed while the commit was
+      // in flight (see the service's own note — no check can close that window).
+      // The write is durable and the draft is untouched, and they disagree. Saying
+      // nothing would leave the next Save silently reverting the assignment, so
+      // this toast persists until acted on and offers the one-click resolution.
+      flashToast('Assigned, but this tab has unsaved changes that differ. Saving it will replace the assigned SQL.', {
+        document: doc,
+        action: {
+          label: 'Discard draft',
+          onClick: () => discardVariableDraft(app, target.dashboardId, target.variableName, sql),
+        },
+      });
+    }
+    return;
+  }
+  if (outcome.data && outcome.data.status === 'declined'
     && outcome.data.reason === 'variable-tab-dirty') {
     // The one rejection that names a place to go: focus the draft we refused to
     // overwrite, so the user can save or discard it and try again.

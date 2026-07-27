@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab, reconcileVariableTab,
+  discardVariableDraft,
 } from '../../src/ui/tabs.js';
 import { tabPanel, variableDoc } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
@@ -374,5 +375,42 @@ describe('reconcileVariableTab (#428)', () => {
     expect(reconcileVariableTab(app, 'sales', 'other', 'SELECT new')).toBe(false);
     // The same NAME under a different Dashboard is a different document.
     expect(reconcileVariableTab(app, 'ops', 'zone', 'SELECT new')).toBe(false);
+  });
+});
+
+describe('discardVariableDraft (#428)', () => {
+  const withVariableTab = (sql: string) => {
+    const app = makeApp();
+    app.sqlEditor.focus = vi.fn();
+    const tab = openVariableTab(app, { dashboardId: 'sales', variableName: 'zone' }, sql);
+    return { app, tab };
+  };
+
+  it('replaces a dirty draft with the committed SQL and clears the dirty flag', () => {
+    // The explicit, user-invoked counterpart to `reconcileVariableTab` — the
+    // "Discard draft" action on the assignment-diverged toast.
+    const { app, tab } = withVariableTab('SELECT old');
+    tab.sqlDraft = 'SELECT mine';
+    tab.dirtySql = true;
+    const before = app.state.tabs.value;
+
+    expect(discardVariableDraft(app, 'sales', 'zone', 'SELECT assigned')).toBe(true);
+    expect(tab.sqlDraft).toBe('SELECT assigned');
+    expect(tab.dirtySql).toBe(false);
+    // The editor syncs off the tabs signal, so the identity must be poked.
+    expect(app.state.tabs.value).not.toBe(before);
+  });
+
+  it('does nothing when no tab edits that variable', () => {
+    const { app } = withVariableTab('SELECT old');
+    expect(discardVariableDraft(app, 'sales', 'other', 'SELECT assigned')).toBe(false);
+    expect(discardVariableDraft(app, 'ops', 'zone', 'SELECT assigned')).toBe(false);
+  });
+
+  it('is never called automatically — reconcile refuses a dirty tab instead', () => {
+    const { app, tab } = withVariableTab('SELECT old');
+    tab.dirtySql = true;
+    expect(reconcileVariableTab(app, 'sales', 'zone', 'SELECT assigned')).toBe(false);
+    expect(tab.sqlDraft).toBe('SELECT old');
   });
 });

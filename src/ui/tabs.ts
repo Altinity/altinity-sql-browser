@@ -171,6 +171,27 @@ export function reconcileVariableTab(
 }
 
 /**
+ * Throw away a variable tab's unsaved draft and adopt `sql` instead — the
+ * explicit, user-invoked counterpart to `reconcileVariableTab`, which refuses a
+ * dirty tab (#428).
+ *
+ * The only caller is the "Discard draft" action on the toast shown when an
+ * assignment commits while the user is typing in that variable's tab: the write
+ * is durable, the draft is untouched, and the two disagree. Nothing calls this
+ * automatically — discarding someone's typing is a choice they have to make.
+ */
+export function discardVariableDraft(
+  app: Pick<TabsApp, 'state'>, dashboardId: string, variableName: string, sql: string,
+): boolean {
+  const existing = findVariableTab(app.state.tabs.value, dashboardId, variableName);
+  if (!existing) return false;
+  existing.sqlDraft = sql;
+  existing.dirtySql = false;
+  app.state.tabs.value = [...app.state.tabs.value];
+  return true;
+}
+
+/**
  * Open — or re-select — the tab that edits ONE Dashboard variable's option SQL
  * (#457).
  *

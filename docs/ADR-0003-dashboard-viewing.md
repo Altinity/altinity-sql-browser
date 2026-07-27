@@ -731,6 +731,40 @@ each producing an independent query and tile. Ids come from the injected
 `q-own-…` form exists to keep migration and import idempotent — a user drag is
 neither, and a content-derived id would actively fight repeated drops.
 
+### Addendum to the addendum (2026-07-27, owner): a drop opens what it created
+
+#428's "After success" list says the drop must not switch surfaces. That was
+reversed on review of the shipped behaviour: the point of dropping a query onto a
+Dashboard is to *work on* the thing you just made, and landing on a Dashboard with
+no visible change read as "did anything happen?". So a successful drop now:
+
+- expands down to the created object, makes it the tree's keyboard row, and
+  **focuses** that row (`renderDashboardTree` restores focus only when the tree
+  already held it, and after a mouse drop it does not — so without an explicit
+  focus the row was the arrow-key origin while being off-screen); then
+- **opens the assigned document in the editor** — for a panel, the new OWNED COPY
+  (never the Library original, editing which would not touch the panel); for a
+  variable, its `Variable: <name>` tab.
+
+What did NOT change: the Dashboard itself is still never opened in View/Edit, and
+nothing is executed.
+
+**The dirty-draft gate has a second half, because a gate alone cannot be enough.**
+The in-transform check closes the queue-and-load window, but `mutateWorkspace` then
+awaits `workspace.commit(candidate)`, and a keystroke landing in *that* window
+passes every check and diverges anyway — a blocked or slow IndexedDB transaction
+widens it materially. No check can close it: the commit is the repository's atomic
+write and UI state cannot be held still across it. Refusing to adopt while
+reporting a clean success was the actual bug — the write is durable, the draft
+survives, they disagree, and the next Save silently reverts the assignment.
+
+So the outcome carries `draftDiverged`, re-read after the commit resolves, and the
+drop surfaces it: a toast that does not auto-dismiss (an `action` suppresses the
+timer) saying the tab's unsaved changes now differ, with a **Discard draft**
+action wired to `discardVariableDraft` — the explicit, user-invoked counterpart to
+`reconcileVariableTab`, which still refuses a dirty tab. Nothing discards typing
+automatically.
+
 The keyboard-accessible **Add to dashboard…** command (#428 acceptance bullet 9)
 is deferred to **#483** by owner decision; this addendum covers the drag path
 only. Mobile is out of scope for the gesture as a whole, so no `isMobile`
