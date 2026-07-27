@@ -223,6 +223,39 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
   });
 
+  // Caught in a real browser and nowhere else: the control is 10 wide by 24 tall so
+  // the glyph is worth aiming at, and hit-testing uses the TRANSFORMED box — so if
+  // the collapsed row's `rotate(-90deg)` were applied to the button instead of to
+  // the glyph inside it, its clickable band would become 24 wide and 10 tall,
+  // overlapping the row icon and expanding when the user meant to open. happy-dom
+  // has no layout and cannot see any of this.
+  test('the chevron\'s hit area stays in its own slot, collapsed and expanded', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const boxes = async () => page.evaluate(() => {
+      const row = document.querySelector('.dash-tree-row[data-key="workspace:sales"]');
+      const b = (el) => { const r = el.getBoundingClientRect(); return { w: +r.width.toFixed(1), h: +r.height.toFixed(1), left: r.left, right: r.right }; };
+      return { chev: b(row.querySelector('.dash-tree-chev')), icon: b(row.querySelector('.icon')), row: b(row) };
+    });
+    const collapsed = await boxes();
+    // Upright box, not a rotated band.
+    expect(collapsed.chev.w).toBeLessThanOrEqual(11);
+    expect(collapsed.chev.h).toBeGreaterThan(11);
+    // ...and it does not reach the icon beside it, so the icon's clicks still open.
+    expect(collapsed.chev.right).toBeLessThanOrEqual(collapsed.icon.left);
+    expect(collapsed.chev.left).toBeGreaterThanOrEqual(collapsed.row.left);
+
+    await page.locator('.dash-tree-row[data-key="workspace:sales"] .dash-tree-chev').click();
+    const expanded = await boxes();
+    expect(expanded.chev.w).toBeLessThanOrEqual(11);
+    expect(expanded.chev.right).toBeLessThanOrEqual(expanded.icon.left);
+    // Clicking the ICON is row content and therefore opens, proving the slot is clean.
+    await page.locator('.dash-tree-row[data-key="workspace:sales"] .icon').click();
+    await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([
+      { kind: 'dashboard', dashboardId: 'sales', mode: 'view' },
+    ]);
+  });
+
   test('Enter and Space on the chevron toggle expansion and never navigate', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();

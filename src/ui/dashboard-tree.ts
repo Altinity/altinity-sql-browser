@@ -657,13 +657,20 @@ function buildRow(
 function buildChevron(
   app: DashboardTreeApp, row: DashboardTreeRow, ui: DashboardTreeUiState,
 ): HTMLElement {
-  const style = row.expandable ? { transform: row.expanded ? OPEN_ROTATE : CLOSED_ROTATE } : null;
+  // The rotation goes on the GLYPH, never on the control. Hit-testing and
+  // `getBoundingClientRect` both use the TRANSFORMED box, and this control is a
+  // 10×24 button (it stretches to the row's height so a 10px glyph is still worth
+  // aiming at) — rotating that by 90° would turn its clickable band into 24 wide by
+  // 10 tall, spilling 7px each side and swallowing clicks meant for the row icon
+  // beside it. The schema tree's chevron gets away with rotating its own box only
+  // because it is a 10×10 square, which rotation leaves unchanged. Asserted in a
+  // real browser (`tests/e2e/dashboard-tree.spec.js`) — happy-dom has no layout.
   const glyph = row.expandable ? Icon.chevDown() : null;
-  if (!row.toggleable) return h('span', { class: 'chev', style }, glyph);
+  if (glyph !== null) glyph.style.transform = row.expanded ? OPEN_ROTATE : CLOSED_ROTATE;
+  if (!row.toggleable) return h('span', { class: 'chev' }, glyph);
   return h('button', {
     class: 'chev ' + CHEVRON_CLASS,
     type: 'button',
-    style,
     'aria-expanded': row.expanded ? 'true' : 'false',
     'aria-label': (row.expanded ? 'Collapse ' : 'Expand ') + row.label,
     // Roving with its own row, exactly like the row element: the tree is ONE

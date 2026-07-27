@@ -1767,10 +1767,16 @@ body.detached-tab .graph-overlay-panel {
   border: none; background: none; padding: 0; margin: 0;
   font: inherit; cursor: pointer;
   /* A 10px glyph is a poor target: stretching to the row's full height buys a
-     10×24 hit area without changing where the chevron appears. */
+     10×24 hit area without changing where the chevron appears. Because this box is
+     no longer square, the open/closed ROTATION lives on the glyph inside it — a
+     rotated box is hit-tested rotated, so spinning this one would spill its
+     clickable band sideways over the row icon (see `ui/dashboard-tree.ts`). */
   align-self: stretch;
   align-items: center; justify-content: center;
 }
+/* …which also means the transition follows the glyph. `.tree-row .chev`'s own
+   transition still serves the schema tree, whose chevron rotates its own box. */
+.dash-tree-row .chev > svg { transition: transform .15s; }
 /* Three targets, three distinguishable focus treatments (#472 asks for exactly
    this): the ROW is the wide `--ring-nav` box-shadow, the TRAILING buttons tint
    their own background, and the disclosure control is a tight accent outline around
