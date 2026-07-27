@@ -49,14 +49,18 @@ export interface VariableAssignmentData {
    *  silently reconcile an open variable tab to the PREVIOUS value. */
   sql: string;
   /**
-   * The commit landed, but the matching variable tab holds an unsaved draft that
-   * disagrees with what was just written.
+   * The commit landed, but the matching variable tab holds an unsaved draft whose
+   * TEXT differs from what was just written.
    *
    * Only reachable through the commit-window race the function's own doc
    * describes: the in-transform gate refuses a tab that is already dirty, so this
    * means the user typed while persistence was in flight. The assignment is
    * durable and the draft is untouched — but they now disagree, and the caller
    * must tell the user rather than reporting a clean success.
+   *
+   * Deliberately stricter than "the tab is dirty": typing and undoing back to the
+   * assigned text leaves the flag set with identical content, and a warning there
+   * would be about a Save that could not change anything.
    */
   draftDiverged: boolean;
 }
@@ -188,12 +192,18 @@ export async function assignLibraryQuerySqlToVariable(
   // Re-read AFTER the commit resolved. `true` means the durable write landed but
   // the open tab now holds a draft that disagrees with it — the caller must say
   // so, because the next Save on that tab would silently revert the assignment.
+  //
+  // Dirtiness alone is NOT the test. A user who types and then undoes back to the
+  // assigned text leaves the tab flagged dirty while its content matches exactly;
+  // warning there would be a false alarm about a Save that could not change
+  // anything. Both conditions are required: the draft is unsaved AND it differs.
   const data = outcome.data as VariableAssignmentData;
+  const tab = findVariableTab(deps.readTabs(), dashboardId, variableName);
   return {
     ...outcome,
     data: {
       ...data,
-      draftDiverged: tabSaveDirty(findVariableTab(deps.readTabs(), dashboardId, variableName)),
+      draftDiverged: tab !== undefined && tabSaveDirty(tab) && tab.sqlDraft !== data.sql,
     },
   };
 }

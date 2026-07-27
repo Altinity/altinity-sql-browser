@@ -36,8 +36,11 @@ const ws = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
 const payload = { kind: 'library-query' as const, workspaceId: 'w1', queryId: 'q-lib' };
 
 /** A variable tab for `(dashboardId, variableName)`, dirty or clean. */
-const varTab = (dashboardId: string, variableName: string, dirtySql: boolean): QueryTab =>
-  ({ id: 'tab-1', doc: { kind: 'dashboard-variable', dashboardId, variableName }, dirtySql } as QueryTab);
+const varTab = (
+  dashboardId: string, variableName: string, dirtySql: boolean, sqlDraft = 'SELECT draft',
+): QueryTab => ({
+  id: 'tab-1', doc: { kind: 'dashboard-variable', dashboardId, variableName }, dirtySql, sqlDraft,
+} as QueryTab);
 
 const pokeMock = () => vi.fn<(info: WorkspaceExternallyChangedInfo) => void>();
 
@@ -205,6 +208,17 @@ describe('assignLibraryQuerySqlToVariable', () => {
     // The assignment really did land — this is not a rollback.
     expect(app.committed[0]!.dashboards[0].variableConfigs!.country.sql)
       .toBe('SELECT country FROM t');
+  });
+
+  it('does NOT report divergence for a dirty draft that MATCHES the assigned SQL', async () => {
+    // Typing and undoing back to the assigned text leaves the tab flagged dirty
+    // with identical content. Warning there would be a false alarm about a Save
+    // that could not change anything.
+    const tab = varTab('d1', 'country', false, 'SELECT country FROM t');
+    const app = deps(ws(), { tabs: [tab], duringCommit: () => { tab.dirtySql = true; } });
+
+    const outcome = await assignLibraryQuerySqlToVariable(app, payload, 'd1', 'country');
+    expect(outcome.data).toMatchObject({ draftDiverged: false });
   });
 
   it('reports draftDiverged: false on the ordinary clean path', async () => {
