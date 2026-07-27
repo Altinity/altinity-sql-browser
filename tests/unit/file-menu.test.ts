@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   libraryControls, renderLibraryTitle, openFileMenu,
-  exportDashboardAction, disposeFileMenuOverlays,
+  exportDashboardAction, disposeFileMenuOverlays, startImportExampleDashboard,
 } from '../../src/ui/file-menu.js';
+import { EXAMPLE_DASHBOARDS } from '../../src/generated/example-dashboards.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { makeApp, statefulWorkspaceRepo } from '../helpers/fake-app.js';
@@ -140,6 +141,18 @@ const pickDashboardImport = (
   pickFile(input, name);
 };
 
+/** Open the example-dashboard dialog (#506) the way a user does: open the
+ *  shared menu, click the row. Returns the dialog card for the caller to
+ *  drive further (select a row, click Import/Cancel). */
+const openExampleDialog = (app: App, context?: FileMenuSurfaceContext): HTMLElement => {
+  openFileMenu(app, context);
+  click(row('Import example dashboard…'));
+  return document.querySelector('.fm-dialog-card')!;
+};
+const exampleRadio = (name: string): HTMLButtonElement =>
+  [...document.querySelectorAll<HTMLButtonElement>('.fm-dialog-card [role="radio"]')]
+    .find((b) => b.textContent === name)!;
+
 afterEach(() => document.body.replaceChildren());
 
 describe('header File control', () => {
@@ -207,7 +220,7 @@ describe('workspace title', () => {
 // (#452, regrouped by verb in #463).
 const ROWS = [
   'New workspace…', 'New dashboard…',
-  'Import workspace…', 'Import queries…', 'Import dashboard…',
+  'Import workspace…', 'Import queries…', 'Import dashboard…', 'Import example dashboard…',
   'Export workspace…', 'Export dashboard…',
   'Download Library as Markdown', 'Download Library as SQL',
 ];
@@ -260,10 +273,10 @@ describe('file menu structure', () => {
     // The three menu-parented hidden file pickers are not rows.
     const rows = [...document.querySelector('.file-menu')!.children]
       .filter((r) => !(r instanceof HTMLInputElement));
-    // The rendered sequence: item×2, sep, item×3, sep, item×2, sep, item×2, sep, count.
+    // The rendered sequence: item×2, sep, item×4, sep, item×2, sep, item×2, sep, count.
     const shape = rows.map((r) => (r.classList.contains('fm-sep') ? '|'
       : r.classList.contains('fm-count') ? '#' : '.'));
-    expect(shape.join('')).toBe('..|...|..|..|#');
+    expect(shape.join('')).toBe('..|....|..|..|#');
     expect(rows.filter((r) => r.classList.contains('fm-item'))
       .map((r) => r.querySelector('.fm-label')!.textContent)).toEqual(ROWS);
     // Keyboard focus order matches the visual row order exactly — a separator
@@ -333,15 +346,15 @@ describe('file menu availability (#452)', () => {
   it('Query enables New/Import dashboard, and exports what the workspace holds', () => {
     openOn({ surface: 'query' }, withDashboards('a'));
     expect(menuLabels()).toEqual(ROWS); // still there, still in position
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(row(label).getAttribute('aria-disabled')).toBeNull();
       expect(reasonOf(label)).toBeNull();
     }
   });
 
-  it('Dashboard Edit enables all three Dashboard rows', () => {
+  it('Dashboard Edit enables all four Dashboard rows', () => {
     openOn(dashEdit('d1'), withDashboards('d1'));
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(row(label).getAttribute('aria-disabled')).toBeNull();
       expect(reasonOf(label)).toBeNull();
     }
@@ -352,7 +365,7 @@ describe('file menu availability (#452)', () => {
   it('Dashboard View still refuses Import queries, but not the Dashboard rows', () => {
     openOn(dashView('d1'), withDashboards('d1'));
     expect(reasonOf('Import queries…')).toBe('Edit mode only');
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(reasonOf(label)).toBeNull();
     }
   });
@@ -360,6 +373,7 @@ describe('file menu availability (#452)', () => {
   it('the empty Dashboard placeholder imports and creates, and cannot export', () => {
     openOn(dashEdit(null));
     expect(row('Import dashboard…').getAttribute('aria-disabled')).toBeNull();
+    expect(row('Import example dashboard…').getAttribute('aria-disabled')).toBeNull();
     expect(row('New dashboard…').getAttribute('aria-disabled')).toBeNull();
     expect(reasonOf('Export dashboard…')).toBe('No dashboards');
   });
@@ -370,6 +384,7 @@ describe('file menu availability (#452)', () => {
   it('an unresolvable selection over a non-empty collection still imports and exports', () => {
     openOn(dashEdit(null), withDashboards('a', 'b'));
     expect(reasonOf('Import dashboard…')).toBeNull();
+    expect(reasonOf('Import example dashboard…')).toBeNull();
     expect(reasonOf('Export dashboard…')).toBeNull();
   });
 
@@ -390,6 +405,7 @@ describe('file menu availability (#452)', () => {
     expect(menuLabels()).toEqual(ROWS);
     expect(reasonOf('Export workspace…')).toBe('No workspace');
     expect(reasonOf('Import dashboard…')).toBe('No workspace');
+    expect(reasonOf('Import example dashboard…')).toBe('No workspace');
     expect(reasonOf('New dashboard…')).toBe('No workspace');
     // New/Import workspace need nothing at all — they stay reachable.
     expect(row('New workspace…').getAttribute('aria-disabled')).toBeNull();
@@ -1409,6 +1425,111 @@ describe('Import dashboard', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [] })) });
     pickDashboardImport(app);
     expect(toast()).toBe('✕ No dashboard in file');
+  });
+});
+
+describe('Import example dashboard (#506)', () => {
+  it('lists exactly the manifest entries, in manifest order, using their stored names', () => {
+    const app = mount();
+    const dialog = openExampleDialog(app);
+    expect(dialog.textContent).toContain('Import example dashboard');
+    const radios = [...dialog.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(radios.map((b) => b.textContent)).toEqual(EXAMPLE_DASHBOARDS.map((e) => e.name));
+    expect(dialog.querySelector('[role="radiogroup"]')).not.toBeNull();
+  });
+
+  it('Import starts disabled with no selection', () => {
+    const app = mount();
+    openExampleDialog(app);
+    const confirm = document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+    expect(confirm.disabled).toBe(true);
+  });
+
+  it('selecting a row enables Import and marks exactly that row aria-checked', () => {
+    const app = mount();
+    openExampleDialog(app);
+    const confirm = document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+    const [first, second] = EXAMPLE_DASHBOARDS.map((e) => e.name);
+    click(exampleRadio(first));
+    expect(confirm.disabled).toBe(false);
+    expect(exampleRadio(first).getAttribute('aria-checked')).toBe('true');
+    expect(exampleRadio(second).getAttribute('aria-checked')).toBe('false');
+    // Selecting a second row moves the mark rather than adding to it.
+    click(exampleRadio(second));
+    expect(exampleRadio(first).getAttribute('aria-checked')).toBe('false');
+    expect(exampleRadio(second).getAttribute('aria-checked')).toBe('true');
+    expect(confirm.disabled).toBe(false);
+  });
+
+  it('Cancel, Escape, and an outside click all leave the workspace unchanged', () => {
+    for (const dismiss of [
+      () => click(document.querySelector('.fm-dialog-cancel')!),
+      () => key(document, 'Escape'),
+      // `attachBackdropClose` only closes on a press that STARTED on the
+      // backdrop, so a bare click is not the gesture.
+      () => {
+        const backdrop = document.querySelector('.fm-dialog-backdrop')!;
+        backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        click(backdrop);
+      },
+    ]) {
+      document.body.replaceChildren();
+      const app = mount();
+      openExampleDialog(app);
+      click(exampleRadio(EXAMPLE_DASHBOARDS[0].name));
+      dismiss();
+      expect(document.querySelector('.fm-dialog-card')).toBeNull();
+      expect(app.state.dashboard).toBeNull();
+    }
+  });
+
+  it('Import decodes the selected example through the SAME additive pipeline a file import uses, then opens it', async () => {
+    const shop = EXAMPLE_DASHBOARDS.find((e) => e.file === 'shop-charts.json')!;
+    const app = mount();
+    app.openDashboard = vi.fn();
+    openExampleDialog(app);
+    click(exampleRadio(shop.name));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull(); // closes immediately, like the file picker
+    await flush();
+    expect(toast()).toBe('Imported dashboard');
+    expect(app.state.dashboard).not.toBeNull();
+    expect(app.state.dashboard!.title).toBe('Shop analytics'); // the bundle Dashboard's own title, not the catalogue's display name
+    expect(app.state.dashboard!.id).not.toBe('shop-analytics'); // reminted, like a file import
+    expect(app.state.savedQueries.length).toBeGreaterThan(0);
+    expect(app.state.upperRole.value).toBe('dashboards');
+  });
+
+  // Acceptance: "An existing Dashboard is never silently replaced or merged."
+  it('appends beside every existing Dashboard, with no confirm', async () => {
+    const shop = EXAMPLE_DASHBOARDS.find((e) => e.file === 'shop-charts.json')!;
+    const committed: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W',
+      queries: [], dashboards: [dashboardDoc({ id: 'first', title: 'First' })],
+    };
+    const app = mountOn(dashEdit('first'), {
+      currentWorkspace: committed,
+      workspace: statefulWorkspaceRepo(committed),
+    });
+    app.state.workspaceId = 'w';
+    openExampleDialog(app, dashEdit('first'));
+    click(exampleRadio(shop.name));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    const saved = await loadActiveWorkspace(app);
+    expect(saved.dashboards.map((d) => d.title)).toEqual(['First', 'Shop analytics']);
+    expect(saved.dashboards[0]).toEqual(committed.dashboards[0]);
+  });
+
+  // A build-time-validated example should always decode, but the wiring must
+  // fail the same safe way a corrupt FILE would (#506 acceptance: "malformed
+  // example… reports an error and leaves the workspace unchanged") — asserted
+  // directly against the exported action, independent of the dialog.
+  it('a malformed embedded example toasts and leaves the workspace unchanged', () => {
+    const app = mount();
+    startImportExampleDashboard(app, { file: 'bad.json', name: 'Bad', json: 'not json' });
+    expect(toast()).toContain('✕');
+    expect(app.state.dashboard).toBeNull();
   });
 });
 

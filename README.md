@@ -40,8 +40,11 @@ fixtures:
   investigation, with the remaining operational queries kept in the saved-query
   collection.
 
-Load the corresponding portable bundle from `examples/` with
-**File ▾ → Import workspace…**.
+Open any of the three directly from **File ▾ → Import example dashboard…** — no
+download needed, and it never disturbs a Dashboard already in the workspace
+(#506). The same three bundles are also the `examples/` files the catalogue's
+manifest names, loadable the traditional way with **File ▾ → Import
+workspace…** if you want the exact file on disk.
 The [**Iceberg catalog explorer**](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md) is a
 distributable installer + two dashboards for Iceberg data-lake catalogs:
 [`examples/iceberg-install.json`](examples/iceberg-install.json) generates the
@@ -468,7 +471,7 @@ workspace, not on whichever Dashboard happens to be open: **New** and **Import**
 resolves an **exact** Dashboard by id — never a fallback to the first in the
 collection.
 
-The nine rows are grouped by verb — create, import, export, download — behind
+The ten rows are grouped by verb — create, import, export, download — behind
 three dividers, in this order:
 
 - **New workspace…** — creates and activates a new empty, default-named
@@ -495,6 +498,20 @@ three dividers, in this order:
   never replaced or merged into, so there is nothing to confirm. Available from
   every surface, including Query, whenever a workspace is writable
   (*No workspace*).
+- **Import example dashboard…** (#506) — the same additive import, sourced from
+  the shipped example catalogue instead of a file: a dialog lists the three
+  flagship dashboards, in catalogue order —
+  [**ClickHouse Operations**](docs/CLICKHOUSE-OPERATIONS-DEMO.md),
+  [**Shop analytics**](docs/SHOP-ANALYTICS-DEMO.md),
+  [**On-time flights**](docs/ONTIME-CHART-DEMO.md) — by their
+  catalogue name; Import stays disabled until one is selected, and Cancel,
+  Escape, or closing the dialog changes nothing. The catalogue is
+  `examples/dashboard-manifest.json` plus the three files it names, embedded at
+  build time (`build/compile-example-dashboards.mjs` →
+  `src/generated/example-dashboards.ts`, checked by `npm run check:examples`) —
+  the same portable-bundle decode/validate/commit path as a file import, never
+  a second importer. Available under the same condition as **Import
+  dashboard…** (*No workspace*).
 
 - **Export workspace…** (`.json`) — write the one canonical
   **`altinity-sql-browser/portable-bundle`** interchange format: every saved

@@ -27,7 +27,9 @@ describe('schema artifacts and examples', () => {
   // still present as a Library entry.
   it('migrates every shipped example bundle to a valid V5 workspace', () => {
     const examples = resolve(root, 'examples');
-    const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
+    // #506: `dashboard-manifest.json` is the example-catalogue manifest, not a
+    // portable bundle itself — it names bundles, it isn't one.
+    const names = readdirSync(examples).filter((item) => item.endsWith('.json') && item !== 'dashboard-manifest.json').sort();
     for (const name of names) {
       const bundle = decodeExample(readFileSync(resolve(examples, name), 'utf8'), name);
       const migrated = migrateStoredWorkspaceV3ToV5({
@@ -67,7 +69,8 @@ describe('schema artifacts and examples', () => {
 
   it('keeps every checked-in JSON example on its pinned portable bundle version with explicit Dashboard documents', () => {
     const examples = resolve(root, 'examples');
-    const names = readdirSync(examples).filter((item) => item.endsWith('.json')).sort();
+    // #506: same manifest exclusion as above — it is not a portable bundle.
+    const names = readdirSync(examples).filter((item) => item.endsWith('.json') && item !== 'dashboard-manifest.json').sort();
     expect(names.filter((name) => !name.startsWith('iceberg'))).toEqual([
       'clickhouse-operations.json', 'ontime-charts.json', 'shop-charts.json',
     ]);

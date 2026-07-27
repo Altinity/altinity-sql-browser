@@ -9,6 +9,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **File ▾ → Import example dashboard…** (#506): a modal dialog lists the three
+  flagship example dashboards (ClickHouse Operations, Shop Charts, OnTime
+  Charts) by their catalogue name; Import is disabled until one is selected,
+  and Cancel/Escape/close leave the workspace untouched. Selecting one runs it
+  through the exact same portable-bundle decode/validate/dependency-closure/
+  commit path a file-based **Import dashboard…** uses — purely additive, so an
+  existing Dashboard is never replaced or merged into. The catalogue is
+  `examples/dashboard-manifest.json` (the ordered `{file, name}` source of
+  truth) plus the three referenced `examples/*.json` files, compiled by the new
+  `build/compile-example-dashboards.mjs` into the checked-in
+  `src/generated/example-dashboards.ts` (mirroring the JSON-Schema generation
+  pipeline) so the catalogue ships inside the single build artifact; `npm run
+  check:examples` (wired into `prebuild`/`pretest`) fails the build on a
+  missing, malformed, or stale example so one cannot ship unnoticed.
+
 ### Changed
 - **`shop-charts.json` and `ontime-charts.json` moved to portable-bundle v2 /
   Dashboard document v2**, dropping their curated `filters` arrays in favor of

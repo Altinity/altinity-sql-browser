@@ -4309,7 +4309,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     openFileMenuBtn(app.root);
     expect(menuItems()).toEqual([
       'New workspace…', 'New dashboard…',
-      'Import workspace…', 'Import queries…', 'Import dashboard…',
+      'Import workspace…', 'Import queries…', 'Import dashboard…', 'Import example dashboard…',
       'Export workspace…', 'Export dashboard…',
       'Download Library as Markdown', 'Download Library as SQL',
     ]);
@@ -4319,11 +4319,11 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     expect(document.querySelector('.dash-file-btn')).toBeNull();
   });
 
-  it('Dashboard Edit enables all three Dashboard rows against the rendered document', async () => {
+  it('Dashboard Edit enables all four Dashboard rows against the rendered document', async () => {
     const { app } = editApp();
     await render(app);
     openFileMenuBtn(app.root);
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
     }
   });
@@ -4365,9 +4365,9 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     const importRow = menuRow('Import queries…');
     expect(importRow.getAttribute('aria-disabled')).toBe('true');
     expect(importRow.querySelector('.fm-reason')!.textContent).toBe('Edit mode only');
-    // #463: the three Dashboard commands are workspace operations, so View — a
+    // #463: the four Dashboard commands are workspace operations, so View — a
     // presentation choice, not an authorization boundary — does not gate them.
-    for (const label of ['New dashboard…', 'Import dashboard…', 'Export dashboard…']) {
+    for (const label of ['New dashboard…', 'Import dashboard…', 'Import example dashboard…', 'Export dashboard…']) {
       expect(menuRow(label).getAttribute('aria-disabled')).toBeNull();
     }
   });
@@ -4378,7 +4378,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-empty')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(9);
+    expect(menuItems()).toHaveLength(10);
     expect(menuRow('Export dashboard…').querySelector('.fm-reason')!.textContent).toBe('No dashboards');
   });
 
@@ -4387,7 +4387,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
     await render(app);
     expect(qs(app.root, '.dash-notfound')).not.toBeNull();
     openFileMenuBtn(app.root);
-    expect(menuItems()).toHaveLength(9);
+    expect(menuItems()).toHaveLength(10);
     expect(menuRow('Export workspace…').querySelector('.fm-reason')!.textContent).toBe('No workspace');
   });
 
