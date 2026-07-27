@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **A fresh time-range pair seeds to an active "-1d" → "now" range instead of
+  empty.** Most panel queries declare their `from`/`to` (or `start`/`end`,
+  `from_time`/`to_time`, `start_time`/`end_time`) variables directly in a
+  required `WHERE` clause, never behind an optional `/*[ … ]*/` block — so on
+  first load, before #447's curated `defaultValue` was removed, every one of
+  those panels was blocked until the user set a range by hand. A
+  never-persisted time-range bound (no committed value in this browser for
+  this Dashboard yet) now starts at a real, running `-1d` → `now`, active from
+  the first render; a variable outside every resolvable pair, or one with ANY
+  already-persisted value (even a deliberately cleared one), is untouched.
 - **An error toast now stays up long enough to read.** `flashToast` defaulted
   every toast — success or failure — to the same 1.6s auto-dismiss, so a
   failed open/import/save (`✕ …`, the app's established failure marker) could

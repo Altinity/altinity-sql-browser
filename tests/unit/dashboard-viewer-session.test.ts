@@ -1201,8 +1201,10 @@ describe('applyVariables batch commit (#335)', () => {
       { variableId: 'to', value: 'now-nope', active: true },
     ]);
     expect(result).toMatchObject({ ok: false });
+    // A rejected batch mutates nothing — state stays at the fresh "-1d" → "now"
+    // default `from`/`to` (a resolved time-range pair) seed to on first load.
     expect(session.state.value.variableStates).toMatchObject([
-      { value: '', active: false }, { value: '', active: false },
+      { value: '-1d', active: true }, { value: 'now', active: true },
     ]);
     expect(calls).toHaveLength(base);
   });
