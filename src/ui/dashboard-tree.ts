@@ -935,10 +935,6 @@ function confirmDestructive(
     document: doc,
     trigger,
     menuClass: 'dash-tree-confirm',
-    // Cancel, not the destructive item: this menu exists to interpose a
-    // deliberate second act, and `openMenu`'s default first-row focus would
-    // put an out-of-momentum Enter straight through it.
-    initialFocus: 'last',
     rows: [
       { kind: 'section', label: act.confirm! },
       {
@@ -947,7 +943,14 @@ function confirmDestructive(
         extraClass: 'dash-tree-confirm-go',
         onClick: go,
       },
-      { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
+      // #501: the destructive row is listed FIRST (this app's visual
+      // convention — the action reads top, Cancel second), but `openMenu`
+      // autofocuses whichever row asks for it. A keyboard user who opens a
+      // confirmation and presses Enter out of momentum must land on Cancel.
+      {
+        kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', autofocus: true,
+        onClick: () => {},
+      },
     ],
   });
 }

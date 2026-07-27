@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab, reconcileVariableTab,
-  discardVariableDraft,
+  renderTabs, selectTab, newTab, closeTab, requestCloseTab, loadIntoNewTab, openVariableTab,
+  reconcileVariableTab, discardVariableDraft,
 } from '../../src/ui/tabs.js';
 import { tabPanel, variableDoc } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
@@ -19,6 +19,14 @@ const qs = <T extends Element = Element>(root: ParentNode, selector: string): T 
 // `unknown` bridge.
 const asRecord = (v: object): Record<string, unknown> => v as Record<string, unknown>;
 const sq = (over: SavedQueryFixture): Record<string, unknown> => asRecord(savedQuery(over));
+// `openMenu`'s initial-focus `setTimeout` (menu.ts) — same helper as menu.test.ts.
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
+
+// #466: `requestCloseTab`'s confirm popover is the first thing in this file
+// that mounts into the REAL document.body (`renderTabs`'s own DOM lives in a
+// detached `qtabsInner` fixture div) — clear it between tests, same
+// convention as dashboard-tree.test.ts's own `openMenu`-confirm suite.
+beforeEach(() => { document.body.innerHTML = ''; });
 
 describe('renderTabs', () => {
   it('no-ops without a mount point', () => {
@@ -169,6 +177,111 @@ describe('closeTab', () => {
     app.state.activeTabId.value = 't2';
     closeTab(app, 't2');
     expect(app.state.activeTabId.value).toBe('t1');
+  });
+});
+
+// #466 — the tab strip's own close button goes through this, not `closeTab`
+// directly, so a dirty draft (query OR variable) gets a chance to be kept.
+describe('requestCloseTab', () => {
+  const trigger = () => document.createElement('button');
+
+  it('closes a clean tab immediately — no popover', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: false, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
+    expect(document.querySelector('.qtab-close-confirm')).toBeNull();
+  });
+
+  it('a dirty query tab (savedId null — never saved anywhere) still confirms', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'Untitled', dirtySql: true, dirtySpec: false, savedId: null } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t1', 't2']); // not closed yet
+    const popover = document.querySelector('.qtab-close-confirm')!;
+    expect(popover.querySelector('.fm-section')!.textContent).toContain('Close “Untitled”?');
+  });
+
+  it('a dirty Spec (no SQL change) on a non-variable tab also confirms', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: false, dirtySpec: true, savedId: 's1' } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    expect(document.querySelector('.qtab-close-confirm')).not.toBeNull();
+  });
+
+  it('a dirty dashboard-variable tab confirms too (its Spec dirtiness never counts)', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      {
+        id: 't1', name: 'Variable: zone', dirtySql: true, dirtySpec: true,
+        doc: { kind: 'dashboard-variable', dashboardId: 'd1', variableName: 'zone' },
+      } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    expect(document.querySelector('.qtab-close-confirm')).not.toBeNull();
+  });
+
+  it('a clean dashboard-variable tab (dirtySpec alone) closes immediately', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      {
+        id: 't1', name: 'Variable: zone', dirtySql: false, dirtySpec: true,
+        doc: { kind: 'dashboard-variable', dashboardId: 'd1', variableName: 'zone' },
+      } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
+  });
+
+  // #466 review finding: the destructive row is listed FIRST (matching the
+  // Dashboard tree's own delete-confirm), so `openMenu`'s default "focus the
+  // first focusable row" would otherwise hand a keyboard user's immediate
+  // Enter straight to it. Cancel must be the one that ends up focused.
+  it('opening the confirm focuses Cancel, not the destructive action', async () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    await flush();
+    expect(document.activeElement).toBe(document.querySelector('.qtab-close-confirm-cancel'));
+  });
+
+  it('Cancel leaves the tab open', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    const cancel = document.querySelector<HTMLElement>('.qtab-close-confirm-cancel')!;
+    cancel.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(document.querySelector('.qtab-close-confirm')).toBeNull();
+  });
+
+  it('confirming closes the tab', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    requestCloseTab(app, 't1', trigger());
+    const go = document.querySelector<HTMLElement>('.qtab-close-confirm-go')!;
+    go.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
   });
 });
 

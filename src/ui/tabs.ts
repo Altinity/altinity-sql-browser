@@ -3,6 +3,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
+import { openMenu } from './menu.js';
 import {
   activeTab, allocTabId, findVariableTab, newTabObj, setTabSpecDraft, tabSaveDirty,
 } from '../state.js';
@@ -27,6 +28,9 @@ export interface TabsApp {
   /** #447 narrowed this: `actions.setEditorMode` + `specEditor.revealOffset`
    *  were read ONLY by the removed Filter-role badge. */
   sqlEditor: Pick<EditorPort, 'focus'>;
+  /** #466: the confirm-before-close popover mounts into this document — same
+   *  injected-document convention every other body-mounted overlay uses. */
+  document: Document;
 }
 
 // #447 removed `filterRoleBadge` (and its `FilterRoleTarget`): it was the shared
@@ -59,7 +63,7 @@ export function renderTabs(app: TabsApp): void {
       app.state.tabs.value.length > 1
         ? h('button', {
             class: 'close',
-            onclick: (e: Event) => { e.stopPropagation(); closeTab(app, t.id); },
+            onclick: (e: Event) => { e.stopPropagation(); requestCloseTab(app, t.id, e.currentTarget as HTMLElement); },
           }, Icon.close())
         : null,
     );
@@ -248,6 +252,48 @@ export function openVariableTab(
   });
   app.sqlEditor.focus();
   return tab;
+}
+
+/**
+ * The tab strip's own close-button entry point (#466) — confirms before
+ * discarding a dirty draft, anchored on the button that was clicked, the same
+ * `openMenu`-confirm idiom the Dashboard tree's orphaned-variable trash button
+ * uses (`dashboard-tree.ts`'s `buildDeleteButton`). `tabSaveDirty` is the SAME
+ * predicate the dirty dot and the Save button already read — a variable tab's
+ * Spec is never saved, so only its `dirtySql` counts; every other tab counts
+ * `dirtySpec` too, `savedId` or not, so a never-saved scratch tab's unsaved
+ * SQL gets the same protection as a saved query's.
+ *
+ * A clean tab (nothing to lose) closes immediately, exactly as `closeTab`
+ * always has — this only gates the destructive path.
+ *
+ * Cancel carries `autofocus: true` (`menu.ts`): the destructive row is still
+ * listed FIRST, matching the Dashboard tree's own delete-confirm, but a
+ * keyboard user who opens this and immediately presses Enter — the browser's
+ * native focused-button activation — must land on Cancel, not on the row
+ * that discards their draft.
+ */
+export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement): void {
+  const tab = app.state.tabs.value.find((t) => t.id === id)!;
+  if (!tabSaveDirty(tab)) { closeTab(app, id); return; }
+  openMenu({
+    document: app.document,
+    trigger,
+    menuClass: 'qtab-close-confirm',
+    rows: [
+      { kind: 'section', label: 'Close “' + tab.name + '”? Unsaved changes will be lost.' },
+      {
+        kind: 'item',
+        label: 'Close without saving',
+        extraClass: 'qtab-close-confirm-go',
+        onClick: () => closeTab(app, id),
+      },
+      {
+        kind: 'item', label: 'Cancel', extraClass: 'qtab-close-confirm-cancel', autofocus: true,
+        onClick: () => {},
+      },
+    ],
+  });
 }
 
 /** Close a tab (never the last one), re-selecting a neighbour if needed. */

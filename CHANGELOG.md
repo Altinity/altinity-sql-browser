@@ -21,7 +21,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   each isolated from the row's own click/Shift-click/expand gestures.
 
   Deleting anything **confirms first**, naming both the panel and the Dashboard
-  and saying that the dedicated query copy goes too. A panel delete removes the
+  and saying that the dedicated query copy goes too — with keyboard focus on
+  Cancel, through the same `autofocus` row #501 added for the orphaned-variable
+  confirm. A panel delete removes the
   tile, every layout placement (including the grafana-grid flow fallback) and
   exactly its owned query, bumps that Dashboard's revision once, and moves
   keyboard focus to the next panel row — then the previous, then the Panels
@@ -45,6 +47,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
   Not yet included: the **Open in Dashboard** focus button, which is held back
   until #438 fixes tile focus on flow-layout KPI tiles.
+- **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
+  tab strip's close button asks before discarding an unsaved draft — a normal
+  query tab or a Dashboard-variable's option SQL, saved-linked or never saved
+  anywhere — instead of dropping it unconditionally; Cancel keeps the tab open
+  exactly as it was. Reloading or closing the browser tab/window while any tab
+  still holds an unsaved draft now shows the browser's own native confirmation
+  too. Both read the same dirty predicate the tab's own dirty-dot indicator
+  already used, so nothing needed reclassifying — a never-saved scratch tab
+  gets the same protection as a saved query. The confirm's default keyboard
+  focus is Cancel, not the destructive action, so pressing Enter right after
+  opening it never discards the draft — the Dashboard tree's own orphaned-
+  variable delete confirm gets the same fix (#501), same root cause. The
+  page-leave warning installs and removes itself as tabs go dirty/clean
+  rather than staying permanently registered, since Firefox (and older
+  Chromium) exclude a page from the back/forward cache merely for having a
+  `beforeunload` listener attached at all — including re-syncing immediately
+  after a save that clears a draft's dirty flags while navigating away from
+  its surface mid-write, rather than only on the next unrelated tab repaint.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   It opens a small dialog prefilled from the Dashboard's own committed
   document — Cancel and Escape commit nothing, a blank title disables Save, and

@@ -38,9 +38,23 @@ import type { KeyboardOwner } from './app.types.js';
  *  - `custom` — an arbitrary caller-built node spliced in as-is. `focusable:
  *    true` makes it a stop in the ArrowUp/ArrowDown roving-focus order — the
  *    focus target is the row's own first focusable descendant (an `<input>`/
- *    `<button>`/etc.), or the node itself when it can take focus directly. */
+ *    `<button>`/etc.), or the node itself when it can take focus directly.
+ *
+ *  An item's `autofocus: true` overrides which row gets the initial focus on
+ *  open (default: the first focusable row) — for a destructive-vs-cancel
+ *  confirm where the destructive action is listed FIRST (matching this app's
+ *  existing visual convention: the action reads top, Cancel reads second),
+ *  the row order and the initial-focus row are different questions. Without
+ *  it, a keyboard user who opens the confirm and immediately presses Enter
+ *  (the browser's native focused-button activation, not anything this module
+ *  handles) fires the destructive action by default. At most one row should
+ *  set it; if more than one does, the LAST one wins (rows are built in
+ *  order, so the last write to the tracked element stands). */
 export type MenuRow =
-  | { kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null; reason?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean }
+  | {
+      kind: 'item'; leading?: Node; icon?: Node; label: string; trailing?: Node; meta?: string | null;
+      reason?: string | null; onClick: () => void; extraClass?: string; disabled?: boolean; autofocus?: boolean;
+    }
   | { kind: 'section'; label: string }
   | { kind: 'sep' }
   | { kind: 'custom'; node: HTMLElement; focusable?: boolean };
@@ -61,17 +75,6 @@ export interface MenuOptions {
    *  lets the caller clear its own open/closed bookkeeping. */
   onClose?: () => void;
   onKeyboardOwnerChange?: (owner: KeyboardOwner | null) => void;
-  /**
-   * Which focusable row takes focus when the menu opens. Defaults to the
-   * FIRST, which is right for a menu of ordinary operations — a keyboard user
-   * arrives on the thing they most likely came for.
-   *
-   * A destructive CONFIRMATION inverts that: its whole purpose is to interpose
-   * a deliberate second act, and landing on "Delete" means an Enter pressed
-   * out of momentum — the reflex right after opening any other menu — destroys
-   * something. Those pass `'last'`, which is Cancel.
-   */
-  initialFocus?: 'first' | 'last';
 }
 
 export interface MenuHandle {
@@ -109,6 +112,9 @@ export function openMenu(opts: MenuOptions): MenuHandle {
 
   const { document: doc, trigger, rows, menuClass, onClose } = opts;
   const focusable: HTMLElement[] = [];
+  // An item's `autofocus: true` wins over "the first focusable row" for
+  // initial focus — see `MenuRow`'s own doc comment.
+  let autofocusEl: HTMLElement | null = null;
 
   const buildRow = (row: MenuRow): Node => {
     if (row.kind === 'section') return h('div', { class: 'fm-section' }, row.label);
@@ -147,6 +153,7 @@ export function openMenu(opts: MenuOptions): MenuHandle {
       row.reason ? h('span', { class: 'fm-reason' }, row.reason) : null);
     // Disabled rows stay in the order on purpose — see the comment above.
     focusable.push(btn);
+    if (row.autofocus) autofocusEl = btn;
     return btn;
   };
 
@@ -195,10 +202,8 @@ export function openMenu(opts: MenuOptions): MenuHandle {
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';
   doc.addEventListener('keydown', onKey, true);
-  if (focusable.length) {
-    const initial = opts.initialFocus === 'last' ? focusable[focusable.length - 1] : focusable[0];
-    setTimeout(() => initial.focus());
-  }
+  const initialFocus = autofocusEl || focusable[0];
+  if (initialFocus) setTimeout(() => initialFocus.focus());
 
   const handle: MenuHandle = { el: menu, close };
   openByTrigger.set(trigger, handle);

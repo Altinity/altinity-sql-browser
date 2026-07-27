@@ -141,6 +141,19 @@ describe('openMenu — autofocus', () => {
     await flush(); // no focusable[0] to focus — must not throw
     expect(document.querySelector('.file-menu')).not.toBeNull();
   });
+
+  // #466: a destructive-vs-cancel confirm lists the destructive row FIRST
+  // (matching this app's existing visual convention) but must not hand a
+  // keyboard user's immediate Enter to it by default.
+  it('an item with autofocus:true wins the initial focus over "first row", however it is ordered', async () => {
+    const btn = trigger();
+    const handle = openMenu({
+      document, trigger: btn,
+      rows: [itemRow('Destructive'), itemRow('Cancel', vi.fn(), { autofocus: true })],
+    });
+    await flush();
+    expect(document.activeElement).toBe(handle.el.querySelectorAll('.fm-item')[1]);
+  });
 });
 
 describe('openMenu — Escape + focus-restore', () => {

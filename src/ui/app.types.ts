@@ -166,6 +166,13 @@ export interface ActionsRegistry {
   cancel(): void;
   newTab(): void;
   selectTab(id: string): void;
+  /** The UNCONDITIONAL primitive (`tabs.ts`'s own `closeTab`) — never asks
+   *  first, even for a dirty draft. The tab strip's own close button does NOT
+   *  call this: it goes through `tabs.ts`'s `requestCloseTab`, which confirms
+   *  a dirty tab before delegating here (#466). Wiring a future trigger
+   *  (keybinding, command palette, context menu) to this action directly
+   *  would silently skip that guard — prefer `requestCloseTab` for anything
+   *  reachable from user interaction. */
   closeTab(id: string): void;
   loadIntoNewTab(queryOrName: string | Json, sql?: string): void;
   login(idpId?: string, targetOrigin?: string): Promise<void>;
@@ -434,6 +441,12 @@ export interface App {
   renderApp(): void;
   renderDashboard(): void;
   renderCurrentSurface(): void;
+  /** #466/#501-review: re-syncs the `beforeunload` listener to whether ANY
+   *  tab is currently `tabSaveDirty` — installs it on a clean→dirty flip,
+   *  removes it on dirty→clean, idempotent otherwise. Called from the tab-list
+   *  reactive effect (`workbench-shell.ts`) and `actions.rerenderTabs`; see
+   *  `createApp`'s own definition for why both are needed. */
+  syncBeforeUnload(): void;
   /** #425 — which main work surface owns the right-hand work area, and, for a
    *  Dashboard, WHICH stored Dashboard is selected in which presentation mode,
    *  plus (#426) the member currently navigated to inside it and any focus

@@ -1443,6 +1443,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
     // wrapper needed (it would only double-queue).
     const result = await saved.commit(tab, evaluated);
+    // #466/#501-review: `saved.commit` already cleared `dirtySql`/`dirtySpec`
+    // on a real commit (`commitSavedQuery`, state.ts) — BEFORE the staleness
+    // bracket below, which can return early on a navigation that began
+    // mid-write. `rerenderTabs()` (which re-syncs this too) only runs past
+    // that bracket, so without this the guard stays installed for a tab that
+    // is, by now, genuinely clean and durably written.
+    if (result.ok) app.syncBeforeUnload();
     if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
       return result.ok ? result.entry : null;
     }
@@ -1519,6 +1526,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       // the result toolbar's panel-type picker can still set it. Clearing it here
       // keeps a saved variable tab from carrying a flag nothing else ever resets.
       tab.dirtySpec = false;
+      // #466/#501-review: re-sync the `beforeunload` guard for THIS tab-side
+      // clear too — `rerenderTabs()` below the staleness bracket also does it,
+      // but that bracket can return early on a navigation that began mid-write.
+      app.syncBeforeUnload();
     }
     // Same staleness bracket every other async save uses: a navigation that began
     // mid-write must not be REPAINTED or TOASTED over.
@@ -1622,6 +1633,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       // which already serializes + reads the latest committed aggregate — no
       // outer `serializeWrite` wrapper needed.
       const result = await saved.create(tab, input.value, descInput.value);
+      // #466/#501-review: `saved.create` already cleared `dirtySql`/`dirtySpec`
+      // on success (`createSavedQuery`, state.ts) — before the staleness
+      // bracket, which can return early on a navigation that began mid-write.
+      if (result.ok) app.syncBeforeUnload();
       if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
@@ -2165,6 +2180,48 @@ export function createApp(env: CreateAppEnv = {}): App {
   if (typeof doc.addEventListener === 'function') {
     doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
   }
+  // #466/#501-review: warn on a whole-page reload/close too, not just a
+  // tab-strip close — the same `tabSaveDirty` predicate the tab strip's dirty
+  // dot and its own close-confirm (tabs.ts's `requestCloseTab`) already read.
+  //
+  // The listener itself is installed/removed as the aggregate dirty state
+  // flips, rather than registered once and left checking inside — an earlier
+  // version of this comment argued a permanent listener "costs nothing" and
+  // that this app has no bfcache-restore path to give up. Both were wrong:
+  // Firefox (and older Chromium) disqualify a page from bfcache merely for
+  // HAVING a `beforeunload` listener attached, independent of what the
+  // callback does or whether it ever calls `preventDefault()`; bfcache
+  // restoration itself needs no `pageshow`/`event.persisted` handling on this
+  // app's part — the browser thaws the whole in-memory page, `bootstrap()`
+  // and all, without a reload ever happening. `returnValue` must be a TRUTHY
+  // value (lib.dom.d.ts's own doc comment: "when set to a truthy value,
+  // triggers a browser-generated confirmation dialog") — its own default is
+  // the empty string, so assigning that back would be a no-op for the legacy
+  // UAs that key off it rather than `preventDefault()`.
+  const beforeUnload = (e: BeforeUnloadEvent): void => {
+    e.preventDefault();
+    e.returnValue = true;
+  };
+  let beforeUnloadInstalled = false;
+  const canToggleBeforeUnload = typeof win.addEventListener === 'function'
+    && typeof win.removeEventListener === 'function';
+  // Called from every place that can change the aggregate dirty state: the
+  // tab-list reactive effect (`workbench-shell.ts`, for a new/closed/switched
+  // tab — anything that touches the `tabs` SIGNAL's own identity) and
+  // `actions.rerenderTabs` (for an in-place `dirtySql`/`dirtySpec` mutation,
+  // which never touches that signal at all — the SQL editor's `onDocChange`
+  // already calls `rerenderTabs()` right after setting `dirtySql = true`, so
+  // this reuses that existing repaint path rather than a new aggregate
+  // signal). Idempotent: a redundant call when the aggregate hasn't actually
+  // flipped is a no-op, never a duplicate registration.
+  app.syncBeforeUnload = (): void => {
+    if (!canToggleBeforeUnload) return;
+    const needed = app.state.tabs.value.some(tabSaveDirty);
+    if (needed === beforeUnloadInstalled) return;
+    beforeUnloadInstalled = needed;
+    if (needed) win.addEventListener('beforeunload', beforeUnload);
+    else win.removeEventListener('beforeunload', beforeUnload);
+  };
 
   const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
     const listed = await app.workspace.list();
@@ -2643,7 +2700,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
     replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
     loadColumns,
-    rerenderTabs: () => renderTabs(app),
+    // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
+    // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
+    // (no new array), so this is also the one place that re-syncs the
+    // `beforeunload` guard for that case — the tab-list reactive effect
+    // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
+    // tabs) on its own.
+    rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
     rerenderResults: () => renderResults(app),
     updateSaveBtn: () => app.updateSaveBtn(),
   };

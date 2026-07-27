@@ -119,6 +119,13 @@ const key = (list: HTMLElement, k: string, over: KeyboardEventInit = {}): void =
   list.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...over }));
 };
 
+// Fake timers never outlive the test that installed them. `main` fixed one
+// leak of this kind in passing (#501): a single `vi.useFakeTimers()` with no
+// restore left every LATER test on fake timers, and a real `setTimeout`-based
+// await then hung to the 5s timeout. A blanket restore closes the class rather
+// than the one instance — it is a no-op when timers are already real.
+afterEach(() => { vi.useRealTimers(); });
+
 beforeEach(() => {
   // #457: no per-document teardown any more. The variable DRAWER registered itself
   // per document and leaked into the next case if left open; a variable row now
@@ -1332,6 +1339,29 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
       .toEqual(['Delete option SQL', 'Cancel']);
     await Promise.resolve();
     expect(committed).toEqual([]);
+  });
+
+  // #501 — the destructive row is listed FIRST (openMenu otherwise autofocuses
+  // whichever row is listed first), so a keyboard user pressing Enter right
+  // after opening this must land on Cancel, not on the row that deletes the
+  // stored SQL.
+  it('focuses Cancel by default, not the destructive action', async () => {
+    const { list } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    await new Promise((r) => setTimeout(r)); // openMenu's own deferred autofocus
+    expect(document.activeElement).toBe(confirmItems()[1]);
+    expect(document.activeElement!.textContent).toBe('Cancel');
+  });
+
+  // #501 — the destructive row is listed FIRST (`openMenu` autofocuses
+  // whichever row asks for it), so a keyboard user pressing Enter right after
+  // opening this must land on Cancel, not on the row that deletes the SQL.
+  it('focuses Cancel by default, not the destructive action', async () => {
+    const { list } = open();
+    click(trash(list, 'w1:sales:variable:region')!);
+    await new Promise((resolve) => { setTimeout(resolve); }); // openMenu's deferred autofocus
+    expect(document.activeElement).toBe(confirmItems()[1]);
+    expect(document.activeElement!.textContent).toBe('Cancel');
   });
 
   it('deletes nothing when the confirmation is refused', async () => {
