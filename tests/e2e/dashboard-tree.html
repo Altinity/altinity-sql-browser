@@ -58,6 +58,10 @@
         // Dashboard's variables — `zone` and `region`. Nothing declares them.
         query('q-rev', 'Revenue', 'SELECT 1 AS v, {zone:String} AS z, {region:String} AS r'),
         query('q-cost', 'Cost'),
+        // #428: a LIBRARY query — referenced by no tile, so it is the only entry
+        // the lower pane renders and the only draggable assignment source. Both
+        // queries above are tiled, which left this fixture's Library empty.
+        query('q-lib', 'Countries', "SELECT 'eu' AS v, 'Europe' AS l"),
       ],
       dashboards: [
         dash('sales', 'Sales revenue', {
@@ -134,6 +138,12 @@
         ? { kind: 'query' }
         : { kind: 'dashboard', dashboardId, mode: 'edit', currentMember: member, pendingFocus: null };
       app.invalidateDashboardTree();
+    };
+    // #428: read COMMITTED truth back out of the store, so an assignment test
+    // asserts what was persisted rather than what the projection happens to show.
+    window.__committed = async () => {
+      const loaded = await app.workspace.loadById(seed.id);
+      return loaded.status === 'ok' ? loaded.workspace : null;
     };
     window.__ready = true;
   </script>

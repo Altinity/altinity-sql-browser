@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab,
+  renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab, reconcileVariableTab,
 } from '../../src/ui/tabs.js';
 import { tabPanel, variableDoc } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
@@ -317,5 +317,62 @@ describe('openVariableTab', () => {
 
     expect([...app.dom.qtabsInner!.querySelectorAll('.qtab .name')].map((n) => n.textContent))
       .toEqual(['Untitled', 'Variable: zone']);
+  });
+});
+
+describe('reconcileVariableTab (#428)', () => {
+  /** An open, clean variable tab on `sql`, with a second tab active. */
+  const withVariableTab = (sql: string) => {
+    const app = makeApp();
+    app.sqlEditor.focus = vi.fn();
+    const tab = openVariableTab(app, { dashboardId: 'sales', variableName: 'zone' }, sql);
+    // Park the selection somewhere else so "did it navigate?" is observable.
+    newTab(app);
+    const otherId = app.state.activeTabId.value;
+    app.sqlEditor.focus = vi.fn();
+    return { app, tab, otherId };
+  };
+
+  it('adopts newly committed SQL without selecting the tab or focusing the editor', () => {
+    const { app, tab, otherId } = withVariableTab('SELECT old');
+
+    expect(reconcileVariableTab(app, 'sales', 'zone', 'SELECT new')).toBe(true);
+    expect(tab.sqlDraft).toBe('SELECT new');
+    // #428: a successful drop must not switch to the Query surface.
+    expect(app.state.activeTabId.value).toBe(otherId);
+    expect(app.sqlEditor.focus).not.toHaveBeenCalled();
+  });
+
+  it('pokes the tabs signal, or the editor keeps painting the stale document', () => {
+    const { app } = withVariableTab('SELECT old');
+    const before = app.state.tabs.value;
+
+    reconcileVariableTab(app, 'sales', 'zone', 'SELECT new');
+    expect(app.state.tabs.value).not.toBe(before);
+    expect(app.state.tabs.value).toHaveLength(before.length);
+  });
+
+  it('leaves a DIRTY tab alone — the draft is the user\'s only copy', () => {
+    const { app, tab } = withVariableTab('SELECT old');
+    tab.dirtySql = true;
+
+    expect(reconcileVariableTab(app, 'sales', 'zone', 'SELECT new')).toBe(false);
+    expect(tab.sqlDraft).toBe('SELECT old');
+  });
+
+  it('does nothing when the committed SQL already matches', () => {
+    const { app } = withVariableTab('SELECT same');
+    const before = app.state.tabs.value;
+
+    expect(reconcileVariableTab(app, 'sales', 'zone', 'SELECT same')).toBe(false);
+    expect(app.state.tabs.value).toBe(before);
+  });
+
+  it('does nothing when no tab edits that variable', () => {
+    const { app } = withVariableTab('SELECT old');
+
+    expect(reconcileVariableTab(app, 'sales', 'other', 'SELECT new')).toBe(false);
+    // The same NAME under a different Dashboard is a different document.
+    expect(reconcileVariableTab(app, 'ops', 'zone', 'SELECT new')).toBe(false);
   });
 });

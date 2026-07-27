@@ -31,6 +31,7 @@ import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard
 import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
 import { inferDashboardVariables } from '../core/dashboard-variables.js';
 import type { DashboardVariable } from '../core/dashboard-variables.js';
+import type { LibraryDropTarget } from '../core/library-drag.js';
 
 // ── Deliberately loosened input shapes ──────────────────────────────────────
 // The persisted-workspace validator normally rejects broken references, but the
@@ -194,6 +195,25 @@ export interface DashboardTreeRow {
    *  no double/Shift gesture for it to expose — its single activation (open the
    *  option-SQL editor) is already reachable with Enter. */
   menu: readonly DashboardTreeMenuItem[];
+  /**
+   * #428: what a Library-query drop on THIS row would write, or `null` when the
+   * row rejects assignment. Resolved here for the same reason every other
+   * structural decision is — the view must not re-derive it. That keeps the whole
+   * "Rejected destinations" list one pure, exhaustively-tested rule instead of a
+   * pile of `kind`/`group`/`invalid` branches inside the drop handler, which
+   * `ui/dashboard-tree.ts` could not hold at its coverage gate.
+   *
+   * Accepting rows are the Dashboard row, its Panels group (both mean "add a
+   * panel to this Dashboard" and persist identically), and an INFERRED variable
+   * row. Everything else is `null`: an individual panel row, the Variables group
+   * (it does not identify WHICH variable receives the SQL), and an orphaned
+   * variable (a configuration no panel declares any more is not a destination,
+   * though it stays editable and deletable through its own affordances).
+   *
+   * A CONFLICTED variable still accepts: it is inferred, it names a real
+   * variable, and its type conflict is orthogonal to where option SQL is stored.
+   */
+  dropTarget: LibraryDropTarget | null;
 }
 
 export interface DashboardTree {
@@ -216,6 +236,12 @@ const MISSING_QUERY_DIAGNOSTIC = 'This panel\'s query is not in this workspace, 
 /** The word a warning-severity variable row shows next to its name. Rendered as
  *  TEXT, not only as a colour or an icon. */
 export const UNUSED_VARIABLE_STATUS = 'unused';
+
+/** The tree row key for one Dashboard tile. Exported — and used by the row
+ *  builder below, so the two cannot drift — because #428 has to address the row
+ *  it just created without re-deriving the key format by hand. */
+export const tileRowKey = (workspaceId: string, dashboardId: string, tileId: string): string =>
+  encodeKeyPart(workspaceId) + ':' + encodeKeyPart(dashboardId) + ':tile:' + encodeKeyPart(tileId);
 
 /** A fully-resolved Dashboard-open command. A member target makes it a FOCUS
  *  navigation; omitting one opens the Dashboard row itself. */
@@ -414,6 +440,7 @@ export function deriveDashboardTree(
         { label: 'Open in View', command: openDashboardCommand(dashboard.id, 'view') },
         { label: 'Open in Edit', command: openDashboardCommand(dashboard.id, 'edit') },
       ],
+      dropTarget: { kind: 'panel', dashboardId: dashboard.id },
     });
 
     if (!dashboardExpanded) continue;
@@ -459,6 +486,13 @@ export function deriveDashboardTree(
         double: null,
         shift: null,
         menu: [],
+        // #428: an ORPHAN is not an assignment destination. A configuration no
+        // panel declares any more has nothing to bind to, though it stays
+        // editable and deletable through its own affordances — which is why this
+        // reads the same `status === 'orphaned'` that `deletable` above does.
+        dropTarget: variable.status === 'orphaned'
+          ? null
+          : { kind: 'variable', dashboardId: dashboard.id, variableName: variable.name },
       };
     });
 
@@ -472,7 +506,7 @@ export function deriveDashboardTree(
       const focusView = openDashboardCommand(dashboard.id, 'view', member);
       const focusEdit = openDashboardCommand(dashboard.id, 'edit', member);
       return {
-        key: dashboardKey + ':tile:' + encodeKeyPart(tile.id),
+        key: tileRowKey(workspaceId, dashboard.id, tile.id),
         kind: 'panel',
         level: 3,
         parentKey: groupKeyFor('panels'),
@@ -503,6 +537,10 @@ export function deriveDashboardTree(
           { label: PANEL_MENU_LABELS.view, command: focusView },
           { label: PANEL_MENU_LABELS.edit, command: focusEdit },
         ],
+        // #428 rejects an individual panel row: sharing one query between panels
+        // and moving members between Dashboards are both out of scope, so there
+        // is no assignment a panel row could mean.
+        dropTarget: null,
       };
     });
 
@@ -555,6 +593,10 @@ export function deriveDashboardTree(
         double: null,
         shift: null,
         menu: [],
+        // #428: Panels means the same thing as the Dashboard row itself. The
+        // VARIABLES group never accepts — it does not identify which variable
+        // would receive the SQL, and guessing is worse than rejecting.
+        dropTarget: group === 'panels' ? { kind: 'panel', dashboardId: dashboard.id } : null,
       });
       if (groupExpanded) rows.push(...members);
     }

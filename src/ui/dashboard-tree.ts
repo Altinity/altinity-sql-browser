@@ -25,12 +25,20 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { openMenu } from './menu.js';
+import { flashToast } from './toast.js';
+import { LIBRARY_QUERY_MIME } from './dnd-mime.js';
+import { reconcileVariableTab } from './tabs.js';
 import { createClickArbiter, type ClickArbiter } from '../core/tree-click-arbiter.js';
 import {
-  UNUSED_VARIABLE_STATUS, deriveDashboardTree,
+  UNUSED_VARIABLE_STATUS, dashboardVariables, deriveDashboardTree, tileRowKey,
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
+import {
+  assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
+} from '../application/library-assignment-service.js';
+import type { LibraryAssignmentDeps } from '../application/library-assignment-service.js';
+import { decodeLibraryQueryPayload, type LibraryDropTarget } from '../core/library-drag.js';
 import {
   clampKeyboardRow, readTreeUi, setDashboardExpanded, setGroupExpanded, setKeyboardRow,
   setTreeScroll, toggleDashboardExpanded, toggleGroupExpanded,
@@ -65,12 +73,21 @@ export interface DashboardTreeApp {
    *  `commitVariableConfig`, which reports its commit — the tree never calls it
    *  directly. `app.ts` always binds it (a no-op outside the Dashboard surface). */
   onWorkspaceExternallyChanged: App['onWorkspaceExternallyChanged'];
+  /** #428: mints the ids a panel assignment needs, through the same injected
+   *  `crypto.randomUUID` seam every other producer uses. */
+  genId: App['genId'];
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
   /** Module-private mutable state stashed per app instance (so tests stay
    *  isolated), matching `ui/schema.ts`'s `_schemaClick` precedent. */
   _dashTreeArbiter?: ClickArbiter | null;
+  /** #428: the row key currently under a Library drag, so the active-target
+   *  class survives the repaint an auto-expand causes. */
+  _dashTreeDropKey?: string | null;
+  /** #428: the pending hover auto-expand, with the row that armed it — so one
+   *  row's departure cannot cancel another row's timer. */
+  _dashTreeHover?: { key: string; handle: number } | null;
 }
 
 /** Indent per level, on top of `.tree-row`'s own 10px padding. */
@@ -119,7 +136,102 @@ function arbiterFor(app: DashboardTreeApp): ClickArbiter {
  *  fire against a tree the user has navigated away from. */
 export function cancelDashboardTreeClicks(app: DashboardTreeApp): void {
   app._dashTreeArbiter?.cancel();
+  // #428: a pending hover auto-expand is deferred tree state on exactly the same
+  // footing, and must not outlive the workspace/role it was armed against.
+  endLibraryDrag(app);
 }
+
+// ── #428: Library-query drop targets ────────────────────────────────────────
+// Which rows accept a drop is the MODEL's decision (`row.dropTarget`); this
+// section owns only the gestures — hover feedback, bounded auto-expand, and
+// dispatching the two application commands.
+//
+// Feedback deliberately avoids app state and therefore avoids repaints. A
+// repaint calls `list.replaceChildren()`, which during a drag destroys the row
+// under the pointer: `dragleave` never fires for a removed node, and Firefox
+// stops delivering `dragover` until the pointer moves again. So eligibility is
+// STATIC markup (`data-droptarget`, emitted every paint whether or not a drag is
+// happening) switched on by one class on the list, and the active target is a
+// class re-applied from `app._dashTreeDropKey` after any paint.
+
+/** Class on the tree list while a Library drag is in flight; CSS uses it to
+ *  reveal the eligible rows that are already marked in the markup. */
+const DRAGGING_CLASS = 'dash-dragging';
+/** Class on the one row the pointer is currently over. */
+const DROP_TARGET_CLASS = 'dash-drop-target';
+/** How long the pointer must rest on a collapsed row before it opens. Long
+ *  enough not to fire while crossing rows on the way somewhere else, short
+ *  enough not to feel stuck. */
+const HOVER_EXPAND_MS = 600;
+
+const treeWindow = (app: DashboardTreeApp): Pick<Window, 'setTimeout' | 'clearTimeout'> =>
+  app.window ?? globalThis;
+
+/**
+ * Drop a pending hover expansion. `key` scopes it to one row's own timer, the
+ * way `ClickArbiter.cancelFor` does — and for the same reason: per the HTML drag
+ * model `dragenter` on the NEW target fires before `dragleave` on the old one, so
+ * an unscoped cancel would let row B arm its timer and then have row A's
+ * departure immediately cancel it, costing a whole `dragover` tick before B
+ * re-arms. Omit `key` to cancel whatever is pending.
+ */
+function cancelHoverExpand(app: DashboardTreeApp, key?: string): void {
+  const pending = app._dashTreeHover;
+  if (!pending || (key !== undefined && pending.key !== key)) return;
+  treeWindow(app).clearTimeout(pending.handle);
+  app._dashTreeHover = null;
+}
+
+/** Paint the active-target class on exactly one row, clearing any previous one.
+ *  Re-run after every paint, since the class lives on a node the paint replaced. */
+function paintDropTarget(app: DashboardTreeApp): void {
+  const list = app.dom.dashboardTreeList;
+  if (!list) return;
+  for (const marked of list.querySelectorAll('.' + DROP_TARGET_CLASS)) {
+    marked.classList.remove(DROP_TARGET_CLASS);
+  }
+  const key = app._dashTreeDropKey;
+  if (key == null) return;
+  list.querySelector('[data-key="' + CSS.escape(key) + '"]')?.classList.add(DROP_TARGET_CLASS);
+}
+
+/** A Library row started dragging: reveal every eligible destination (#428).
+ *  Clears first, because `dragend` is not guaranteed — a source row removed
+ *  mid-drag by a background `renderSavedHistory` repaint can swallow it, which
+ *  would otherwise leave the previous drag's state painted here forever. */
+export function beginLibraryDrag(app: DashboardTreeApp): void {
+  endLibraryDrag(app);
+  app.dom.dashboardTreeList?.classList.add(DRAGGING_CLASS);
+}
+
+/**
+ * Drop every trace of an assignment drag: the eligible-target reveal, the active
+ * row mark, and any pending hover expansion.
+ *
+ * Called from the Library row's `dragend` — which covers a drop, a cancel, and
+ * Escape, since the browser consumes keydown during a native drag and delivers
+ * `dragend` instead — and from `cancelDashboardTreeClicks`, which is the tree's
+ * existing "this state must not outlive the thing it belonged to" hook (workspace
+ * switch, sidebar role change, dispose).
+ *
+ * That second caller is not belt-and-braces. A pending hover timer holds a row
+ * captured before the change: firing it after a workspace refresh would write
+ * expansion for a Dashboard the refresh had just pruned, resurrecting exactly the
+ * state `applyCommittedWorkspace` removed — the same class of bug the click
+ * arbiter is cancelled there to prevent.
+ */
+export function endLibraryDrag(app: DashboardTreeApp): void {
+  cancelHoverExpand(app);
+  app._dashTreeDropKey = null;
+  app.dom.dashboardTreeList?.classList.remove(DRAGGING_CLASS);
+  paintDropTarget(app);
+}
+
+/** Whether this drag is one we accept. Only `types` is readable during
+ *  `dragover` — the payload itself stays sealed until `drop` — so eligibility
+ *  can never depend on the payload's contents. */
+const carriesLibraryQuery = (event: DragEvent): boolean =>
+  !!event.dataTransfer && [...event.dataTransfer.types].includes(LIBRARY_QUERY_MIME);
 
 const readUi = (app: DashboardTreeApp): DashboardTreeUiState =>
   readTreeUi(app.state.dashboardTreeUi, app.currentWorkspace?.id ?? '');
@@ -140,6 +252,35 @@ function toggleRow(app: DashboardTreeApp, row: DashboardTreeRow): void {
 }
 
 /**
+ * Open a collapsed row the pointer has rested on, so its members become
+ * reachable without dropping first (#428).
+ *
+ * A Dashboard row opens BOTH of its groups as well as itself. Expansion is
+ * deliberately not gated on eligibility: the Variables group is not a valid drop
+ * target (it does not identify which variable), yet a variable row only exists
+ * once that group is open — so gating would make variable rows unreachable by
+ * drag, which is exactly what the issue's "so Panels and Variables rows become
+ * reachable" rules out.
+ *
+ * UI state only: no navigation, no workspace write. `setDashboardExpanded` and
+ * `setGroupExpanded` return the same object when already in the wanted state, so
+ * the identity check keeps a rested pointer from repainting on every `dragover`.
+ */
+function hoverExpand(app: DashboardTreeApp, row: DashboardTreeRow): void {
+  const ui = readUi(app);
+  const next = row.group === null
+    ? setGroupExpanded(
+      setGroupExpanded(setDashboardExpanded(ui, row.dashboardId, true), row.dashboardId, 'variables', true),
+      row.dashboardId, 'panels', true,
+    )
+    : setGroupExpanded(ui, row.dashboardId, row.group, true);
+  if (next === ui) return;
+  commitUi(app, next);
+  // `commitUi` repainted, so the row the pointer is over is a new node.
+  paintDropTarget(app);
+}
+
+/**
  * The ONE command dispatcher. Four exhaustive branches with no null guards: the
  * model resolves every argument, so there is nothing here to defend against.
  */
@@ -151,6 +292,154 @@ function runCommand(app: DashboardTreeApp, row: DashboardTreeRow, command: Dashb
     return;
   }
   app.openDashboard(command.request);
+}
+
+/**
+ * After a committed assignment: reveal what was written and put the roving
+ * keyboard row on it.
+ *
+ * Two deliberate non-actions. It does not set `row.current` — that follows
+ * `mainSurface`, so marking it would mean opening the Dashboard, which #428
+ * forbids. And it does not pull DOM focus: `renderDashboardTree` only restores
+ * focus when the tree already held it, so after a mouse drop the roving row moves
+ * (the next Tab into the tree, and every arrow key, starts there) while focus
+ * stays wherever the pointer gesture left it. Yanking focus out from under a
+ * completed drag would be the more surprising of the two.
+ */
+function revealAssigned(app: DashboardTreeApp, dashboardId: string, rowKey: string): void {
+  const ui = readUi(app);
+  commitUi(app, setKeyboardRow(
+    setGroupExpanded(setDashboardExpanded(ui, dashboardId, true), dashboardId, 'panels', true),
+    rowKey,
+  ));
+}
+
+/**
+ * Run one accepted drop. The tree never writes a workspace document itself: it
+ * decodes, dispatches to the application command, and then reports.
+ */
+async function dispatchDrop(
+  app: DashboardTreeApp, row: DashboardTreeRow, target: LibraryDropTarget, raw: string,
+): Promise<void> {
+  const payload = decodeLibraryQueryPayload(raw);
+  if (payload === null) return;
+  const doc = app.document ?? app.dom.dashboardTreeList?.ownerDocument;
+  const deps: LibraryAssignmentDeps = {
+    mutateWorkspace: app.mutateWorkspace,
+    onWorkspaceExternallyChanged: app.onWorkspaceExternallyChanged,
+    genId: app.genId,
+    // A function, not a snapshot: the dirty-draft gate re-reads the tabs INSIDE
+    // the transform, after the write queue and the store round-trip.
+    readTabs: () => app.state.tabs.value,
+  };
+
+  if (target.kind === 'panel') {
+    const outcome = await assignLibraryQueryToPanel(deps, payload, target.dashboardId);
+    if (outcome.ok && outcome.data && outcome.data.status === 'ok') {
+      revealAssigned(app, target.dashboardId,
+        tileRowKey(app.currentWorkspace?.id ?? '', target.dashboardId, outcome.data.tileId));
+    }
+    const message = libraryAssignmentMessage(outcome);
+    if (message !== null && doc) flashToast(message, { document: doc });
+    return;
+  }
+
+  const outcome = await assignLibraryQuerySqlToVariable(
+    deps, payload, target.dashboardId, target.variableName,
+  );
+  if (outcome.ok && outcome.data && outcome.data.status === 'ok') {
+    // Adopt the SQL the commit actually wrote — reported by the command, never
+    // re-derived from the projection — into a clean open tab, WITHOUT selecting
+    // it: a successful drop must not leave the Dashboard surface.
+    reconcileVariableTab(app, target.dashboardId, target.variableName, outcome.data.sql);
+    // Expansion is left exactly as it is; only the roving row moves.
+    commitUi(app, setKeyboardRow(readUi(app), row.key));
+  } else if (outcome.data && outcome.data.status === 'declined'
+    && outcome.data.reason === 'variable-tab-dirty') {
+    // The one rejection that names a place to go: focus the draft we refused to
+    // overwrite, so the user can save or discard it and try again.
+    app.openVariableTab(target.dashboardId, target.variableName);
+  }
+  const message = libraryAssignmentMessage(outcome);
+  if (message !== null && doc) flashToast(message, { document: doc });
+}
+
+/** Every drag handler one row needs, or nothing at all for a row that rejects
+ *  assignment — an ineligible row installs no listeners and never calls
+ *  `preventDefault`, so the drag falls through to native behaviour instead of
+ *  looking droppable and silently doing nothing. */
+function dropProps(app: DashboardTreeApp, row: DashboardTreeRow): Record<string, unknown> {
+  const target = row.dropTarget;
+  // A collapsed row still hover-expands even when it rejects drops (the
+  // Variables group is the case that matters), so the two are wired separately.
+  const expandable = row.expandable && !row.expanded;
+  if (target === null && !expandable) return {};
+
+  const armHover = (): void => {
+    if (!expandable) return;
+    // Already counting down for THIS row: `dragover` repeats every ~350ms while
+    // the pointer rests, and re-arming per event would push the expansion out
+    // forever.
+    if (app._dashTreeHover?.key === row.key) return;
+    // Counting down for a DIFFERENT row: take over. Per the HTML drag model
+    // `dragenter` here fires before the old row's `dragleave`, so leaving the old
+    // timer in place would make this row wait a whole extra `dragover` tick.
+    cancelHoverExpand(app);
+    app._dashTreeHover = {
+      key: row.key,
+      handle: treeWindow(app).setTimeout(() => {
+        app._dashTreeHover = null;
+        hoverExpand(app, row);
+      }, HOVER_EXPAND_MS) as unknown as number,
+    };
+  };
+
+  const over = (event: DragEvent): void => {
+    if (!carriesLibraryQuery(event)) return;
+    armHover();
+    if (target === null) return;
+    // Accepting the drop. Without this the browser rejects it and no `drop`
+    // event is delivered at all.
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    if (app._dashTreeDropKey === row.key) return;
+    app._dashTreeDropKey = row.key;
+    paintDropTarget(app);
+  };
+
+  return {
+    ondragenter: over,
+    ondragover: over,
+    ondragleave: (event: DragEvent) => {
+      // The row has eight child spans and drag events bubble, so a bare
+      // `dragleave` fires every time the pointer crosses onto one of them.
+      const to = event.relatedTarget;
+      const rowEl = event.currentTarget as HTMLElement;
+      if (to instanceof Node && rowEl.contains(to)) return;
+      cancelHoverExpand(app, row.key);
+      if (app._dashTreeDropKey !== row.key) return;
+      app._dashTreeDropKey = null;
+      paintDropTarget(app);
+    },
+    // Installed ONLY on a row that accepts: a row whose `dragover` never called
+    // `preventDefault` is never sent a `drop` by the browser, so a handler with
+    // an "am I a target?" guard inside it would carry a branch nothing but a
+    // synthesized event could reach.
+    ...(target === null ? {} : {
+      ondrop: (event: DragEvent) => {
+        if (!carriesLibraryQuery(event)) return;
+        event.preventDefault();
+        // A drop must not also register as a click on the row: the arbiter may be
+        // holding a deferred "open this dashboard" that would otherwise fire
+        // ~300ms later and navigate away from the tree.
+        event.stopPropagation();
+        app._dashTreeArbiter?.cancelFor(row.key);
+        const raw = event.dataTransfer!.getData(LIBRARY_QUERY_MIME);
+        endLibraryDrag(app);
+        void dispatchDrop(app, row, target, raw);
+      },
+    }),
+  };
 }
 
 export function renderDashboardTree(app: DashboardTreeApp): void {
@@ -193,6 +482,9 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
 
   list.scrollTop = ui.scrollTop;
   if (keptFocus) focusRow(list, ui.keyboardRowKey);
+  // #428: the active drop target is a class on a node this paint just replaced,
+  // so it has to be re-applied. A no-op unless a drag is in flight.
+  paintDropTarget(app);
 
   // Assigned (not added) every paint, so this is idempotent across repaints.
   list.onkeydown = (event: KeyboardEvent) => handleTreeKeydown(app, tree.rows, event);
@@ -253,6 +545,11 @@ function buildRow(
       + (row.severity === 'error' ? ' is-invalid' : '')
       + (row.severity === 'warning' ? ' is-warning' : ''),
     'data-key': row.key,
+    // #428: eligibility is STATIC markup, present whether or not a drag is in
+    // flight, so revealing it costs one class on the list instead of a repaint
+    // that would destroy the row under the pointer mid-drag.
+    ...(row.dropTarget === null ? {} : { 'data-droptarget': row.dropTarget.kind }),
+    ...dropProps(app, row),
     role: 'treeitem',
     'aria-level': String(row.level),
     ...(row.expandable ? { 'aria-expanded': row.expanded ? 'true' : 'false' } : {}),
