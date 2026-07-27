@@ -31,6 +31,7 @@ import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard
 import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
 import { inferDashboardVariables } from '../core/dashboard-variables.js';
 import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
+import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import type { DashboardVariable } from '../core/dashboard-variables.js';
 import type { LibraryDropTarget } from '../core/library-drag.js';
 
@@ -49,7 +50,7 @@ export interface TreeQuery {
    *  Optional here for the same reason the collections are — a real
    *  `SavedQueryV2` always carries it. */
   sql?: string;
-  spec?: { name?: string; description?: string } | null;
+  spec?: { name?: string; description?: string; dashboard?: { role?: string } | null } | null;
 }
 
 export interface TreeTile {
@@ -421,6 +422,12 @@ const MISSING_PANEL_QUERY_REASON =
   'This panel’s query is not in this workspace, so there is nothing to edit or remove.';
 const UNPROVEN_OWNERSHIP_REASON =
   'This panel’s query is shared with another panel, so it cannot be edited or removed here.';
+/** A tile may only reference a PANEL-role query (`dashboard-setup-reference` /
+ *  `dashboard-tile-role-incompatible` in the semantic validator). Editing or
+ *  deleting through a tile that references, say, a Setup query would silently
+ *  repair the workspace by destroying the evidence — fail closed instead. */
+const WRONG_ROLE_REASON =
+  'This panel references a query that is not a panel query, so it cannot be edited or removed here.';
 
 /** One trailing control, available. */
 const action = (
@@ -477,8 +484,11 @@ export function deriveDashboardTree(
     const owners = queryId === null ? [] : ownership.ownersByQueryId.get(queryId) ?? [];
     const owned = owners.length === 1
       && owners[0].dashboardId === dashboardId && owners[0].tileId === tileId;
-    if (queryId === null || !owned) {
-      const reason = queryId === null ? MISSING_PANEL_QUERY_REASON : UNPROVEN_OWNERSHIP_REASON;
+    const rightRole = queryId !== null && queryDashboardRole(queries.get(queryId)) === 'panel';
+    if (queryId === null || !owned || !rightRole) {
+      const reason = queryId === null
+        ? MISSING_PANEL_QUERY_REASON
+        : (owned ? WRONG_ROLE_REASON : UNPROVEN_OWNERSHIP_REASON);
       return [
         unavailableAction('edit-panel', 'Edit ' + label, reason),
         unavailableAction('delete-panel', 'Remove ' + label + ' from dashboard', reason),

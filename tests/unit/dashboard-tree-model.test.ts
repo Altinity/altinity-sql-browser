@@ -1087,4 +1087,30 @@ describe('deriveDashboardTree — Library-query drop targets (#428)', () => {
     expect(row(derive(cased, allOpen(['d1'])).rows, 'w1:d1:variable:Country').dropTarget)
       .toEqual({ kind: 'variable', dashboardId: 'd1', variableName: 'Country' });
   });
+
+  it('withholds edit and delete from a tile whose query is not a PANEL query', () => {
+    // The semantic validator calls this out (`dashboard-setup-reference` /
+    // `dashboard-tile-role-incompatible`). Offering the controls anyway would
+    // let a delete "repair" the workspace by destroying the evidence.
+    const tree = deriveDashboardTree({
+      workspace: {
+        id: 'w1',
+        queries: [{ id: 'q1', sql: 'SELECT 1', spec: { name: 'Setup', dashboard: { role: 'setup' } } }],
+        dashboards: [{ id: 'd1', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] }],
+      },
+      surface: QUERY_SURFACE,
+      ui: allOpen(['d1']),
+    });
+    const panel = tree.rows.find((row) => row.kind === 'panel')!;
+    expect(panel.actions.map((action) => action.kind)).toEqual(['edit-panel', 'delete-panel']);
+    for (const action of panel.actions) {
+      expect(action.target).toBeNull();
+      expect(action.unavailable).toBe(
+        'This panel references a query that is not a panel query, so it cannot be edited or removed here.',
+      );
+    }
+    // The row itself still navigates — only the WRITES are withheld.
+    expect(panel.single).not.toBeNull();
+    expect(panel.double).not.toBeNull();
+  });
 });

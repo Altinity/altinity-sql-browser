@@ -77,11 +77,11 @@ describe('commitPanelRemoval', () => {
         layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, t2: {} } },
       })],
     });
-    const expected = removeDashboardPanel({ workspace: latest, dashboardId: 'dash', tileId: 't1' });
+    const expected = removeDashboardPanel({ workspace: latest, dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
     if (expected.status !== 'ok') throw new Error(`expected ok, got ${expected.status}`);
 
     const app = deps(latest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
     if (!outcome.ok) throw new Error(`expected ok, got aborted/rejected`);
 
     // The wrapper never reimplements the transform — it hands `mutateWorkspace`
@@ -114,7 +114,7 @@ describe('commitPanelRemoval', () => {
       })],
     });
     const app = deps(dequeueLatest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
     if (!outcome.ok) throw new Error(`expected ok, got aborted/rejected`);
 
     // t3/p3 — wholly absent from `staleBelief` — survives, and the revision
@@ -127,7 +127,7 @@ describe('commitPanelRemoval', () => {
 
   it('aborts with no-workspace, threaded through data, and commits nothing when nothing is loaded', async () => {
     const app = deps(null);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
 
     expect(outcome).toEqual({ ok: false, aborted: true, data: 'no-workspace' });
     expect(app.committed).toEqual([null]);
@@ -137,7 +137,7 @@ describe('commitPanelRemoval', () => {
   it('aborts dashboard-missing, threaded through data, and commits nothing', async () => {
     const latest = ws({ dashboards: [dash({ id: 'ops' })] });
     const app = deps(latest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
 
     expect(outcome).toEqual({ ok: false, aborted: true, data: 'dashboard-missing' });
     expect(app.committed).toEqual([null]);
@@ -150,7 +150,7 @@ describe('commitPanelRemoval', () => {
       queries: [panelQuery('p1')],
     });
     const app = deps(latest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dup', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dup', tileId: 't1', queryId: 'p1' });
 
     expect(outcome).toEqual({ ok: false, aborted: true, data: 'dashboard-duplicate' });
     expect(app.committed).toEqual([null]);
@@ -160,7 +160,7 @@ describe('commitPanelRemoval', () => {
   it('aborts tile-missing, threaded through data, and commits nothing', async () => {
     const latest = ws({ dashboards: [dash({ tiles: [{ id: 't1', queryId: 'p1' }] })], queries: [panelQuery('p1')] });
     const app = deps(latest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 'ghost' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 'ghost', queryId: 'p1' });
 
     expect(outcome).toEqual({ ok: false, aborted: true, data: 'tile-missing' });
     expect(app.committed).toEqual([null]);
@@ -170,7 +170,7 @@ describe('commitPanelRemoval', () => {
   it('aborts ownership-unproven, threaded through data, and commits nothing', async () => {
     const latest = ws({ dashboards: [dash({ tiles: [{ id: 't1', queryId: 'ghost' }] })], queries: [] });
     const app = deps(latest);
-    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1' });
+    const outcome = await commitPanelRemoval(app, { dashboardId: 'dash', tileId: 't1', queryId: 'ghost' });
 
     expect(outcome).toEqual({ ok: false, aborted: true, data: 'ownership-unproven' });
     expect(app.committed).toEqual([null]);
@@ -290,7 +290,7 @@ describe('dashboardDeleteMessage', () => {
 
   it('reports the ownership-unproven sentence', () => {
     expect(dashboardDeleteMessage(aborted('ownership-unproven')))
-      .toBe('This panel’s query is shared or missing, so nothing was deleted.');
+      .toBe('This panel’s query is shared, missing or not a panel query, so nothing was deleted.');
   });
 
   it('reports the dashboard-duplicate sentence', () => {
@@ -317,5 +317,15 @@ describe('dashboardDeleteMessage', () => {
 
   it('falls back to a generic sentence when a rejection carries no diagnostics', () => {
     expect(dashboardDeleteMessage(rejected([]))).toBe('✕ Could not save workspace');
+  });
+
+  it('names the two identity refusals distinctly', () => {
+    // Both mean "nothing was deleted", but they are different situations: one
+    // is a panel that changed under the user, the other a workspace whose ids
+    // are ambiguous and must never be written through a guess.
+    expect(dashboardDeleteMessage({ ok: false, aborted: true, data: 'tile-retargeted' }))
+      .toBe('That panel now shows a different query, so nothing was deleted.');
+    expect(dashboardDeleteMessage({ ok: false, aborted: true, data: 'tile-duplicate' }))
+      .toBe('This workspace has two resources with the same id, so nothing was deleted.');
   });
 });

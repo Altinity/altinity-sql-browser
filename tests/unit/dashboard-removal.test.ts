@@ -43,7 +43,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
     });
     const before = snapshot(input);
 
-    const result = removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1' });
+    const result = removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
     if (result.status !== 'ok') throw new Error(`expected ok, got ${result.status}`);
 
     expect(result.queryId).toBe('p1');
@@ -77,7 +77,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
       })],
     });
 
-    const result = removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1' });
+    const result = removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' });
     if (result.status !== 'ok') throw new Error(`expected ok, got ${result.status}`);
 
     const layout = result.workspace.dashboards[0].layout as {
@@ -90,7 +90,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
   it('refuses dashboard-missing and commits nothing', () => {
     const input = workspace({ dashboards: [dashboard()] });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'nope', tileId: 't1' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'nope', tileId: 't1', queryId: 'p1' }))
       .toEqual({ status: 'refused', reason: 'dashboard-missing' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -101,7 +101,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
       queries: [panelQuery('p1')],
     });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dup', tileId: 't1' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dup', tileId: 't1', queryId: 'p1' }))
       .toEqual({ status: 'refused', reason: 'dashboard-duplicate' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -112,7 +112,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
       queries: [panelQuery('p1')],
     });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 'missing' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 'missing', queryId: 'p1' }))
       .toEqual({ status: 'refused', reason: 'tile-missing' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -123,7 +123,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
       queries: [],
     });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'ghost' }))
       .toEqual({ status: 'refused', reason: 'ownership-unproven' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -136,7 +136,7 @@ describe('removeDashboardPanel (#429, #494)', () => {
       queries: [panelQuery('p1')],
     });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
       .toEqual({ status: 'refused', reason: 'ownership-unproven' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -150,7 +150,70 @@ describe('removeDashboardPanel (#429, #494)', () => {
       queries: [panelQuery('p1')],
     });
     const before = snapshot(input);
-    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1' }))
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
+      .toEqual({ status: 'refused', reason: 'ownership-unproven' });
+    expect(snapshot(input)).toEqual(before);
+  });
+});
+
+/**
+ * #494 review round 2 — the identity the CONFIRMATION named must still be the
+ * identity being destroyed.
+ *
+ * The transform used to resolve the tile and then delete "whatever query it
+ * points at now", by `filter`, which meant three ways to destroy the wrong
+ * thing. All three inputs below are states the codec forbids (a duplicate id
+ * or a Setup-role reference cannot be loaded OR committed) except the FIRST,
+ * which is two perfectly valid states with a re-point in between — so this
+ * transform must not be the thing that assumes it is safe.
+ */
+describe('removeDashboardPanel — the captured identity is re-proven (#494)', () => {
+  it('refuses a tile that was re-pointed at a DIFFERENT query while the confirmation was open', () => {
+    const input = workspace({
+      queries: [panelQuery('p1'), panelQuery('p2')],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p2' }] })],
+    });
+    const before = snapshot(input);
+    // The user confirmed removing the panel backed by `p1`.
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
+      .toEqual({ status: 'refused', reason: 'tile-retargeted' });
+    expect(snapshot(input)).toEqual(before);
+  });
+
+  it('refuses an ambiguous TILE id rather than removing both tiles', () => {
+    // The removal is a `filter` by id: resolving "the first match" and then
+    // filtering would take the other tile out too, and orphan its query.
+    const input = workspace({
+      queries: [panelQuery('p1'), panelQuery('p2')],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }, { id: 't1', queryId: 'p2' }] })],
+    });
+    const before = snapshot(input);
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
+      .toEqual({ status: 'refused', reason: 'tile-duplicate' });
+    expect(snapshot(input)).toEqual(before);
+  });
+
+  it('refuses an ambiguous QUERY id rather than deleting every document carrying it', () => {
+    const input = workspace({
+      queries: [panelQuery('p1'), panelQuery('p1')],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] })],
+    });
+    const before = snapshot(input);
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
+      .toEqual({ status: 'refused', reason: 'tile-duplicate' });
+    expect(snapshot(input)).toEqual(before);
+  });
+
+  it('refuses a tile referencing a query that is not a PANEL query', () => {
+    // `dashboard-setup-reference` is malformed data. Deleting through it would
+    // "repair" the workspace by destroying the evidence — fail closed.
+    const setup = { ...panelQuery('s1'), spec: { name: 's1', dashboard: { role: 'setup' } } } as typeof input.queries[number];
+    const input = workspace({
+      queries: [setup],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 's1' }] })],
+    });
+    const before = snapshot(input);
+    expect(removeDashboardPanel({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 's1' }))
       .toEqual({ status: 'refused', reason: 'ownership-unproven' });
     expect(snapshot(input)).toEqual(before);
   });
@@ -219,5 +282,21 @@ describe('removeDashboardDocument (#429, #494)', () => {
     expect(removeDashboardDocument({ workspace: input, dashboardId: 'dup' }))
       .toEqual({ status: 'refused', reason: 'dashboard-duplicate' });
     expect(snapshot(input)).toEqual(before);
+  });
+});
+
+describe('removeDashboardDocument — ambiguous ids (#494)', () => {
+  it('keeps a query id carried by two documents rather than deleting both', () => {
+    const input = workspace({
+      queries: [panelQuery('p1'), panelQuery('p1'), panelQuery('lib')],
+      dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] })],
+    });
+    const result = removeDashboardDocument({ workspace: input, dashboardId: 'dash' });
+    if (result.status !== 'ok') throw new Error(`expected ok, got ${result.status}`);
+    // The Dashboard goes; the ambiguous pair stays. An orphaned copy is
+    // recoverable, a destroyed one is not.
+    expect(result.workspace.dashboards).toEqual([]);
+    expect(result.removedQueryIds).toEqual([]);
+    expect(result.workspace.queries.map((query) => query.id)).toEqual(['p1', 'p1', 'lib']);
   });
 });

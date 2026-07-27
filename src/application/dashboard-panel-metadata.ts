@@ -24,6 +24,7 @@
 import { renameSaved } from '../state.js';
 import type { AppState, MutateWorkspace, SpecValidationService } from '../state.js';
 import { ownersOfQuery } from '../dashboard/model/query-ownership.js';
+import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 
 /** Which owned query to edit, addressed the way #430 requires — Dashboard id +
@@ -73,10 +74,19 @@ export function ownedByPanel(
   workspace: StoredWorkspaceV5, target: PanelMetadataTarget,
 ): boolean {
   const owners = ownersOfQuery(workspace, target.queryId);
+  const matching = workspace.queries.filter((query) => query.id === target.queryId);
   return owners.length === 1
     && owners[0].dashboardId === target.dashboardId
     && owners[0].tileId === target.tileId
-    && workspace.queries.some((query) => query.id === target.queryId);
+    // Exactly one document, and a PANEL one: an ambiguous id would make
+    // "which query am I editing" unanswerable, and a Setup- or other-role
+    // reference is malformed data this must not quietly write over.
+    && matching.length === 1
+    && queryDashboardRole(matching[0]) === 'panel'
+    // The tile must still point AT it — the pair is the identity, and a tile
+    // re-pointed while the dialog was open is a different resource.
+    && workspace.dashboards.some((dashboard) => dashboard.id === target.dashboardId
+      && dashboard.tiles.some((tile) => tile.id === target.tileId && tile.queryId === target.queryId));
 }
 
 /**

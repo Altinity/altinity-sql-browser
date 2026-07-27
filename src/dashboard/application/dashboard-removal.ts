@@ -35,6 +35,7 @@ import { removeTileMembership } from './tile-membership.js';
 import type { TileRemovalResult } from './tile-membership.js';
 import { findDashboardStrict, replaceDashboard } from '../../workspace/workspace-dashboards.js';
 import { buildQueryOwnershipIndex, ownersOfQuery } from '../model/query-ownership.js';
+import { queryDashboardRole } from '../model/workspace-semantics.js';
 import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../generated/json-schema.types.js';
 
 /** Why a single-panel delete refused, as a value rather than a thrown error —
@@ -44,6 +45,14 @@ export type PanelRemovalRefusal =
   | 'dashboard-missing'
   | 'dashboard-duplicate'
   | 'tile-missing'
+  /** Two tiles carry this id, or two query documents do. An ambiguous id is
+   *  never resolved by picking one: `tiles.filter(id !== target)` would take
+   *  BOTH tiles out, and the query filter would drop both documents. */
+  | 'tile-duplicate'
+  /** The tile no longer references the query the caller captured — it was
+   *  re-pointed while the confirmation was open. The caller confirmed removing
+   *  a specific panel's specific query copy; this is a different one now. */
+  | 'tile-retargeted'
   | 'ownership-unproven';
 
 export type PanelRemovalResult =
@@ -82,8 +91,12 @@ export function removeDashboardPanel(input: {
   workspace: StoredWorkspaceV5;
   dashboardId: string;
   tileId: string;
+  /** The query the CALLER resolved when it built the confirmation. Re-checked
+   *  against the tile's own reference below rather than trusted: it is what
+   *  the user was told would be deleted. */
+  queryId: string;
 }): PanelRemovalResult {
-  const { workspace, dashboardId, tileId } = input;
+  const { workspace, dashboardId, tileId, queryId } = input;
 
   const lookup = findDashboardStrict(workspace, dashboardId);
   if (lookup.status !== 'ok') {
@@ -91,13 +104,29 @@ export function removeDashboardPanel(input: {
   }
   const dashboard = lookup.dashboard;
 
-  const tile = dashboard.tiles.find((candidate) => candidate.id === tileId);
-  if (!tile) return { status: 'refused', reason: 'tile-missing' };
+  // Exactly one match, the same rule `findDashboardStrict` applies one level
+  // up. The removal below is a `filter` by id, so an ambiguous id would take
+  // out every match — which is precisely why this refuses instead.
+  const tiles = dashboard.tiles.filter((candidate) => candidate.id === tileId);
+  if (tiles.length === 0) return { status: 'refused', reason: 'tile-missing' };
+  if (tiles.length > 1) return { status: 'refused', reason: 'tile-duplicate' };
+  const tile = tiles[0];
 
-  const { queryId } = tile;
-  const queryExists = workspace.queries.some((query) => query.id === queryId);
+  // The tile still has to reference the query the caller confirmed. Both the
+  // before and after states of a re-pointed tile are perfectly valid, so
+  // nothing else in this transform would notice.
+  if (tile.queryId !== queryId) return { status: 'refused', reason: 'tile-retargeted' };
+
+  const matching = workspace.queries.filter((query) => query.id === queryId);
+  if (matching.length > 1) return { status: 'refused', reason: 'tile-duplicate' };
   const owners = ownersOfQuery(workspace, queryId);
-  if (!queryExists || owners.length !== 1) {
+  // Owned by exactly this tile, and a PANEL query — the role the tile
+  // contract requires. A Setup- or other-role reference is malformed data
+  // (`dashboard-setup-reference` / `dashboard-tile-role-incompatible`), and
+  // deleting it here would silently "repair" the workspace by destroying the
+  // evidence, which #494's fail-closed rule forbids.
+  if (matching.length === 0 || owners.length !== 1
+    || queryDashboardRole(matching[0]) !== 'panel') {
     return { status: 'refused', reason: 'ownership-unproven' };
   }
 
@@ -166,6 +195,11 @@ export function removeDashboardDocument(input: {
     // `dashboardOwnedQueryIds` holds only ids that EXIST and have an owner, so
     // it answers the dangling-reference case as well.
     if (!dashboardOwnedQueryIds.has(queryId)) continue;
+    // An id carried by two query documents is ambiguous: the removal is a
+    // filter, so deleting "it" would delete both. Keep them, and let the
+    // Dashboard go without them — an orphaned copy is recoverable, a
+    // destroyed one is not.
+    if (workspace.queries.filter((query) => query.id === queryId).length > 1) continue;
 
     // Present by construction: `dashboardOwnedQueryIds` is exactly the ids
     // `ownersByQueryId` carries an owner list for.

@@ -44,6 +44,10 @@ export interface DashboardDeleteDeps {
 export interface PanelDeleteTarget {
   dashboardId: string;
   tileId: string;
+  /** The owned query the confirmation named. Carried all the way into the
+   *  transform so the delete can refuse a tile that was re-pointed at a
+   *  DIFFERENT query while the confirmation was open. */
+  queryId: string;
 }
 
 /**
@@ -107,7 +111,11 @@ export function dashboardDeleteMessage(outcome: DashboardDeleteOutcome): string 
     case 'tile-missing':
       return 'That panel is no longer part of this dashboard.';
     case 'ownership-unproven':
-      return 'This panel’s query is shared or missing, so nothing was deleted.';
+      return 'This panel’s query is shared, missing or not a panel query, so nothing was deleted.';
+    case 'tile-retargeted':
+      return 'That panel now shows a different query, so nothing was deleted.';
+    case 'tile-duplicate':
+      return 'This workspace has two resources with the same id, so nothing was deleted.';
     case 'dashboard-duplicate':
       return 'This workspace has two dashboards with the same id, so nothing was deleted.';
     // `no-workspace` — nothing is loaded, so nothing was lost and there is

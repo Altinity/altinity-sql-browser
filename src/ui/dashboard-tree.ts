@@ -620,6 +620,7 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
   const keptFocus = list.contains(doc.activeElement);
 
   list.replaceChildren();
+  app._dashTreeRows = tree.rows;
   if (tree.rows.length === 0) {
     list.appendChild(h('div', { class: 'schema-empty' }, tree.empty === 'no-dashboards'
       ? 'No dashboards in this workspace.'
@@ -627,7 +628,6 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
     return;
   }
 
-  app._dashTreeRows = tree.rows;
   for (const row of tree.rows) {
     list.appendChild(buildRow(app, doc, row, ui));
   }
@@ -871,11 +871,21 @@ function buildActionButton(
  */
 const returnFocusAfterDialog = (
   app: DashboardTreeApp, trigger: HTMLButtonElement, rowKey: string,
-) => (): HTMLElement | null => (trigger.isConnected
-  ? trigger
-  : app.dom.dashboardTreeList?.querySelector<HTMLElement>(
-    '[data-key="' + CSS.escape(rowKey) + '"]',
-  ) ?? null);
+) => (): HTMLElement | null => {
+  if (trigger.isConnected) return trigger;
+  const list = app.dom.dashboardTreeList;
+  const byKey = (key: string | null): HTMLElement | null => (key === null
+    ? null
+    : list?.querySelector<HTMLElement>('[data-key="' + CSS.escape(key) + '"]') ?? null);
+  // The row the dialog belonged to, if it survived; else the tree's current
+  // roving row — the resource can have been deleted from another tab while
+  // this dialog was open, which is exactly when a stale dialog is closed;
+  // else the search box, the one control the tree always has.
+  return byKey(rowKey)
+    ?? byKey(readUi(app).keyboardRowKey)
+    ?? app.dom.dashboardSearchInput
+    ?? null;
+};
 
 /** The confirm menu's own go-ahead label, per action. Short and specific: the
  *  question above it already named the resource, and "OK" next to a sentence
@@ -966,7 +976,10 @@ function runDestructive(
     void reportRemoval(app, doc, commitDashboardRemoval(app, target.dashboardId), successor);
     return;
   }
-  void reportRemoval(app, doc, commitPanelRemoval(app, target as PanelActionTarget), successor);
+  const panel = target as PanelActionTarget;
+  void reportRemoval(app, doc, commitPanelRemoval(app, {
+    dashboardId: panel.dashboardId, tileId: panel.tileId, queryId: panel.queryId,
+  }), successor);
 }
 
 /**
@@ -1108,9 +1121,6 @@ async function reportRemoval(
   const message = dashboardDeleteMessage(outcome);
   if (message !== null) flashToast(message, { document: doc });
   if (!outcome.ok) return;
-  // The commit reprojected and repainted the tree already, so this addresses
-  // rows that exist NOW.
-  //
   // Focus is NOT optional here. The confirmation's own menu closes by removing
   // the item that was just activated, without restoring the trigger — and the
   // trigger is on its way out with the row anyway — so at this moment DOM focus
@@ -1118,9 +1128,16 @@ async function reportRemoval(
   // conditional on the tree ALREADY holding focus, so it will not step in.
   // Without this, deleting from the keyboard drops the user at the top of the
   // page with no ring anywhere.
-  if (successorKey !== null) { moveTo(app, successorKey); return; }
-  // Nothing is left to stand on (the last Dashboard just went): the search box
-  // is the tree's own always-present landing spot.
+  //
+  // The successor was chosen against the rows painted BEFORE the write, and the
+  // repaint can have dropped it too — a search matching only the deleted panel
+  // takes its group and Dashboard off screen with it. So the pre-commit choice
+  // is a preference, re-checked against what is actually rendered now, and the
+  // search box is the landing spot when the tree has nothing left to offer.
+  const painted = app._dashTreeRows ?? [];
+  const landing = painted.find((row) => row.key === successorKey)
+    ?? painted[0];
+  if (landing !== undefined) { moveTo(app, landing.key); return; }
   app.dom.dashboardSearchInput?.focus();
 }
 

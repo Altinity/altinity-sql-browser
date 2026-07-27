@@ -80,6 +80,15 @@ export function closeOpenDialogShell(): void {
 export function openDialogShell(
   app: DialogHostApp, title: string, content: unknown[], opts: OpenDialogShellOpts,
 ): DialogHandle {
+  // ONE modal at a time — the invariant this module's header always claimed,
+  // now enforced rather than assumed. #494 requires that repeated activation
+  // cannot open duplicate dialogs, and a second shell would otherwise mount a
+  // second modal keyboard owner, a second capture-phase key listener, and a
+  // duplicate of every `id` the caller's fields carry (two `panel-metadata-name`
+  // elements break `label for` and `getById` alike). The trigger's own
+  // `aria-expanded` does not close this window: a keyboard autorepeat fires
+  // again while focus is still on the trigger, before the deferred focus move.
+  closeOpenDialogShell();
   const doc = app.document;
   const releaseKeyboard = app.acquireKeyboardOwner('modal');
   let backdrop: HTMLElement;

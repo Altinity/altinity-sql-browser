@@ -72,6 +72,15 @@ const treeApp = (over: Partial<DashboardTreeApp> = {}) => {
       // threads it: #494's panel-metadata write reads back the entry it
       // committed, and a delete reads back the refusal reason.
       if (candidate === null) return { ok: false, aborted: true, data: input?.data };
+      // A real commit PROJECTS what it wrote before it resolves — which is how
+      // a deleted row actually leaves the tree. Without this the fixture's
+      // projection never changes, and every post-delete assertion would be
+      // made against rows the write was supposed to have removed.
+      app.currentWorkspace = candidate as never;
+      // …and REPAINTS from it (production: `applyCommittedWorkspace` →
+      // `invalidateDashboardTree` → the app-shell effect), so anything reading
+      // the painted rows after a commit sees what the write actually left.
+      renderDashboardTree(app);
       return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
     }) as App['mutateWorkspace'];
   }
@@ -844,6 +853,7 @@ describe('renderDashboardTree — panel trash (#494)', () => {
   };
   const trash = (list: HTMLElement): HTMLButtonElement =>
     actionBtn(list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!;
+  const list0 = (app: DashboardTreeApp): HTMLElement => app.dom.dashboardTreeList!;
   const confirmItems = (): HTMLElement[] =>
     [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
   const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
@@ -881,6 +891,32 @@ describe('renderDashboardTree — panel trash (#494)', () => {
     expect(dashboard.variableConfigs!.region).toBeDefined();
   });
 
+  it('hands the command the query id the confirmation named, not just the tile', async () => {
+    // The transform re-proves that the tile still points at THIS query; a
+    // target without it would delete whatever the tile references by then.
+    const mutateWorkspace = vi.fn(async (transform: (latest: unknown) => unknown) => {
+      transform(workspace());
+      return { ok: false, aborted: true, data: 'tile-missing' };
+    }) as unknown as App['mutateWorkspace'];
+    const { app } = treeApp({ mutateWorkspace });
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    // A tile re-pointed at another query between paint and dequeue is refused
+    // rather than silently deleting the new one.
+    const retargeted = workspace();
+    retargeted.dashboards![0]!.tiles = [{ id: 't1', queryId: 'q-other' }];
+    (mutateWorkspace as unknown as { mockImplementation: (fn: unknown) => void })
+      .mockImplementation(async (transform: (latest: unknown) => { data?: unknown }) => {
+        const input = transform(retargeted);
+        return { ok: false, aborted: true, data: input?.data };
+      });
+    click(trash(list0(app)));
+    click(confirmItems()[0]);
+    await settle();
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toBe('That panel now shows a different query, so nothing was deleted.');
+  });
+
   it('reports a refused delete and commits nothing', async () => {
     const mutateWorkspace = vi.fn(async () => (
       { ok: false, aborted: true, data: 'tile-missing' }
@@ -916,6 +952,25 @@ describe('renderDashboardTree — panel trash (#494)', () => {
     await settle();
     expect(readTreeUi(fixture.app.state.dashboardTreeUi, 'w1').keyboardRowKey)
       .toBe('w1:sales:tile:t-broken');
+  });
+
+  it('lands on the search box when the delete empties the FILTERED tree', async () => {
+    // A search matching only this panel takes its group and its Dashboard off
+    // screen with it, so the successor chosen before the write (the Panels
+    // group) does not exist afterwards — and `focusRow` on a missing key is a
+    // silent no-op that would strand the keyboard on `<body>`.
+    const fixture = treeApp();
+    const dashboards = (fixture.app.currentWorkspace as unknown as TreeWorkspace).dashboards!;
+    dashboards[0]!.tiles = [{ id: 't1', queryId: 'q1' }];
+    setUi(fixture.app, (ui) => setTreeSearch(ui, 'Revenue'));
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    expect(rows(fixture.list).length).toBeGreaterThan(0);
+    click(actionBtn(fixture.list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!);
+    click(confirmItems()[0]);
+    await settle();
+    expect(rows(fixture.list)).toHaveLength(0);
+    expect(document.activeElement).toBe(fixture.app.dom.dashboardSearchInput);
   });
 
   it('falls back to the Panels GROUP when the deleted row was the only panel', async () => {
@@ -1039,15 +1094,9 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     // keyboard on `<body>`.
     const fixture = treeApp();
     fixture.app.state.savedQueries = [query('q1', 'Revenue')];
-    // The production ordering, which the plain fixture does not reproduce: the
-    // commit projects and REPAINTS before it resolves, so by the time the
-    // dialog closes the button it captured is gone.
-    const inner = fixture.app.mutateWorkspace;
-    fixture.app.mutateWorkspace = (async (transform) => {
-      const outcome = await inner(transform);
-      renderDashboardTree(fixture.app);
-      return outcome;
-    }) as App['mutateWorkspace'];
+    // The fixture's `mutateWorkspace` projects and repaints before it
+    // resolves, exactly as a real commit does — which is what detaches the
+    // button this dialog captured.
     openAll(fixture.app, 'sales');
     renderDashboardTree(fixture.app);
     const trigger = actionBtn(fixture.list, 'w1:sales:tile:t1', 'Edit Revenue')!;
@@ -1500,6 +1549,37 @@ describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () 
     dialogTitleInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await settle();
     expect(app.mutateWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('repeated activation opens exactly ONE dialog', () => {
+    // #494: "repeated activation cannot open duplicate dialogs". A keyboard
+    // autorepeat fires again while focus is still on the trigger, before the
+    // dialog's own deferred focus move — and two shells would mean two modal
+    // keyboard owners and a duplicate of every field id.
+    const { list } = treeApp();
+    renderDashboardTree(treeApp().app);
+    const { app } = treeApp();
+    renderDashboardTree(app);
+    const trigger = actionBtn(app.dom.dashboardTreeList!, 'w1:sales', 'Edit dashboard Sales')!;
+    click(trigger);
+    click(trigger);
+    click(trigger);
+    expect(document.querySelectorAll('.fm-dialog-card')).toHaveLength(1);
+    expect(document.querySelectorAll('#dash-rename-name')).toHaveLength(1);
+    expect(list).toBeDefined();
+  });
+
+  it('still restores focus when the row the dialog belonged to is gone', async () => {
+    // Another tab deletes the Dashboard while its rename dialog is open. The
+    // trigger AND its row are detached by the time the user cancels.
+    const { app, list } = treeApp();
+    renderDashboardTree(app);
+    click(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!);
+    (app.currentWorkspace as unknown as TreeWorkspace).dashboards = [];
+    renderDashboardTree(app);
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    await settle();
+    expect(document.activeElement).toBe(app.dom.dashboardSearchInput);
   });
 
   it('does not also run the row\'s own navigation, and cancels only its own row\'s pending click', () => {

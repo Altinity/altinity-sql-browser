@@ -187,16 +187,29 @@ describe('openDialogShell — dialog semantics', () => {
     expect(title.textContent).toBe('Edit dashboard');
   });
 
-  it('gives two coexisting dialogs distinct title ids', () => {
-    // A stale dialog can still be mounted while a newer one opens; a shared
-    // constant id would make both `aria-labelledby`s resolve to the first.
+  it('mounts ONE modal: a second open replaces the first', () => {
+    // #494 forbids repeated activation opening duplicate dialogs, and two
+    // shells would mean two modal keyboard owners, two capture-phase key
+    // listeners, and a duplicate of every `id` the caller's fields carry.
     const app = makeApp();
     track(openDialogShell(app, 'A', [h('span', {}, 'a')], { returnFocusTo: null }));
     track(openDialogShell(app, 'B', [h('span', {}, 'b')], { returnFocusTo: null }));
-    const [a, b] = [...document.querySelectorAll('.fm-dialog-card')];
-    expect(a.getAttribute('aria-labelledby')).not.toBe(b.getAttribute('aria-labelledby'));
-    expect(document.getElementById(a.getAttribute('aria-labelledby')!)!.textContent).toBe('A');
-    expect(document.getElementById(b.getAttribute('aria-labelledby')!)!.textContent).toBe('B');
+    const cards = [...document.querySelectorAll('.fm-dialog-card')];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].querySelector('.fm-dialog-title')!.textContent).toBe('B');
+  });
+
+  it('gives successive dialogs distinct title ids', () => {
+    // Never a constant: a stale card can still be in the document while its
+    // replacement mounts, and a shared id would make both `aria-labelledby`s
+    // resolve to whichever the document matched first.
+    const app = makeApp();
+    track(openDialogShell(app, 'A', [h('span', {}, 'a')], { returnFocusTo: null }));
+    const first = document.querySelector('.fm-dialog-card')!.getAttribute('aria-labelledby');
+    track(openDialogShell(app, 'B', [h('span', {}, 'b')], { returnFocusTo: null }));
+    const second = document.querySelector('.fm-dialog-card')!.getAttribute('aria-labelledby');
+    expect(second).not.toBe(first);
+    expect(document.getElementById(second!)!.textContent).toBe('B');
   });
 });
 
@@ -373,18 +386,18 @@ describe('closeOpenDialogShell', () => {
     expect(backdropOf()).toBeNull();
   });
 
-  it('a STALE dialog closing on its own does not clobber a NEWER one\'s tracked slot', () => {
+  it('a STALE dialog closing again does not clobber the NEWER one\'s tracked slot', () => {
     const app = makeApp();
     const handleA = openDialogShell(app, 'A', [h('span', {}, 'A body')], { returnFocusTo: null });
-    // A second dialog opens without the first being closed first (the modal
-    // keyboard-owner stack does not itself prevent this).
+    // Opening B force-closes A (one modal at a time) …
     openDialogShell(app, 'B', [h('span', {}, 'B body')], { returnFocusTo: null });
-    expect(document.querySelectorAll('.fm-dialog-backdrop').length).toBe(2);
-
-    // A's own close must remove only ITS backdrop, and must not null out the
-    // module's "currently open" slot — which by now points at B, not A.
-    handleA.close();
     expect(document.querySelectorAll('.fm-dialog-backdrop').length).toBe(1);
+    expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('B');
+
+    // … and a caller still holding A's handle may close it again. That second
+    // close must not null the module's "currently open" slot, which by now
+    // points at B.
+    handleA.close();
     expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('B');
 
     // The slot still resolves to B, so a surface-transition teardown reaches it.

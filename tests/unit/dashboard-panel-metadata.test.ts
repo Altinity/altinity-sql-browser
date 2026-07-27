@@ -286,4 +286,27 @@ describe('commitPanelQueryMetadata', () => {
 
     expect(outcome).toEqual({ status: 'rejected', message: 'Could not save this panel.' });
   });
+
+  it('refuses a query that is not a PANEL query, an ambiguous id, and a re-pointed tile', () => {
+    const q1 = savedQuery({ id: 'q1', name: 'Q' });
+    const target = { dashboardId: 'dash', tileId: 't1', queryId: 'q1' };
+
+    // Wrong role — malformed data the semantic validator rejects; editing it
+    // here would quietly write over the evidence.
+    const setup = { ...q1, spec: { ...q1.spec, dashboard: { role: 'setup' } } } as typeof q1;
+    expect(ownedByPanel(
+      ws([dash({ id: 'dash', tiles: [{ id: 't1', queryId: 'q1' }] })], [setup]), target,
+    )).toBe(false);
+
+    // Two documents carrying the id: "which query am I editing" has no answer.
+    expect(ownedByPanel(
+      ws([dash({ id: 'dash', tiles: [{ id: 't1', queryId: 'q1' }] })], [q1, q1]), target,
+    )).toBe(false);
+
+    // The tile no longer points at it — the pair IS the identity.
+    expect(ownedByPanel(
+      ws([dash({ id: 'dash', tiles: [{ id: 't1', queryId: 'q2' }] })], [q1, savedQuery({ id: 'q2', name: 'Other' })]),
+      target,
+    )).toBe(false);
+  });
 });

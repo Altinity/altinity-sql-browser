@@ -35,6 +35,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   re-resolves its target inside the write queue, so one that went stale while it
   was open commits nothing and says so.
 
+  Every one of those operations re-proves the **exact identity** the user
+  confirmed, inside the write queue: the Dashboard, the tile, the query the
+  confirmation named, that the tile still references it, that exactly one
+  document carries that id, and that it is a panel-role query. A tile
+  re-pointed while the confirmation was open, an ambiguous id, or a reference
+  to a non-panel query all refuse and say why, rather than deleting whatever
+  the tile happens to point at by then.
+
   Not yet included: the **Open in Dashboard** focus button, which is held back
   until #438 fixes tile focus on flow-layout KPI tiles.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
