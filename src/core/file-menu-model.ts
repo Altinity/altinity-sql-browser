@@ -168,6 +168,34 @@ function exportDashboardTargetOf(ctx: FileMenuContext): DashboardExportTarget | 
   return { kind: 'choose' };
 }
 
+/** The shortest id tail a chooser is willing to show. Long enough to read as an
+ *  identifier rather than noise; `shortIdFragments` grows it when it has to. */
+const MIN_ID_FRAGMENT = 6;
+
+/**
+ * A distinguishing tail per id: the SHORTEST suffix length at which every listed
+ * id is unique, falling back to the whole id when no suffix separates them.
+ *
+ * A Dashboard chooser lists titles, and duplicate titles are legitimate —
+ * identity is the id — so each row needs a tiebreaker. A fixed-width tail is not
+ * one: `sales-abcdef` and `ops-abcdef` share their last six characters, and two
+ * rows that agree on title, tile count and fragment are indistinguishable to the
+ * user picking between them. Growing the tail until the set is unique keeps the
+ * short, readable case short without ever rendering two identical rows.
+ *
+ * Genuinely duplicate ids (the ambiguous-workspace case) return the full id and
+ * still match — nothing can separate them, and the id-addressed reader fails
+ * closed on that workspace anyway.
+ */
+export function shortIdFragments(ids: readonly string[]): string[] {
+  const longest = Math.max(0, ...ids.map((id) => id.length));
+  for (let length = MIN_ID_FRAGMENT; length < longest; length += 1) {
+    const fragments = ids.map((id) => id.slice(-length));
+    if (new Set(fragments).size === ids.length) return fragments;
+  }
+  return [...ids];
+}
+
 /** The footer line: both counts, always, grammatical at every value. Zero is
  *  reported normally rather than collapsing the row into an "empty" message —
  *  the structure must not change with the data. */

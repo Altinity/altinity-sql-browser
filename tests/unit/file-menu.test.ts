@@ -436,7 +436,7 @@ describe('Export', () => {
   // export download the collection's first entry.
   it('exportDashboardAction fails closed when the target resolves to nothing', async () => {
     const app = mount();
-    await exportDashboardAction(app, { kind: 'exact', dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('✕ That dashboard is no longer available');
   });
@@ -445,7 +445,7 @@ describe('Export', () => {
     const app = mount();
     app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
     app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
-    await exportDashboardAction(app, { kind: 'exact', dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Ops.json');
     expect(mime).toBe('application/json');
@@ -469,7 +469,7 @@ describe('Export', () => {
     // catches the role mismatch.
     app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
     app.state.savedQueries = [setupQuery];
-    await exportDashboardAction(app, { kind: 'exact', dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);
   });
@@ -504,7 +504,7 @@ describe('Export', () => {
     const app = mount({ workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) } });
     app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
     app.state.savedQueries = [panelQuery('stale', 'Stale')];
-    await exportDashboardAction(app, { kind: 'exact', dashboardId: 'd1' });
+    await exportDashboardAction(app, { workspaceId: app.state.workspaceId, dashboardId: 'd1' });
     const [fname, , content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Committed.json'); // committed title, not the stale one
     const decoded = decodePortableBundleJson(content as string);
@@ -893,6 +893,61 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     if (decoded.ok) expect(decoded.value.dashboards[0].id).toBe('ws-dashboard-bbb222');
   });
 
+  // P1: a Dashboard id is unique WITHIN a workspace, and an imported workspace
+  // keeps the ids it was exported with — so the same id in two workspaces is
+  // realistic. The export awaits the write queue, and the user can switch
+  // workspace across that await.
+  it('refuses to export after the workspace changed mid-flush, even when the id resolves there', async () => {
+    const other: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'workspace-b', key: 'b', name: 'B',
+      queries: [], dashboards: [dashboardDoc({ id: 'main', title: 'B main' })],
+    };
+    const mine: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'workspace-a', key: 'a', name: 'A',
+      queries: [], dashboards: [dashboardDoc({ id: 'main', title: 'A main' })],
+    };
+    let released: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { released = resolve; });
+    const app = mount({
+      currentWorkspace: mine,
+      // The flush is the await the switch happens across.
+      flushWorkspaceWrites: () => gate,
+      workspace: {
+        loadById: async (id: string) => (
+          id === 'workspace-b'
+            ? { status: 'ok' as const, workspace: other }
+            : { status: 'empty' as const }   // A is gone from this browser
+        ),
+      },
+    });
+    app.state.workspaceId = 'workspace-a';
+    openFileMenu(app);
+    click(row('Export dashboard…'));           // resolves { workspace-a, main }
+    app.state.workspaceId = 'workspace-b';     // …and the user moves to B
+    app.state.dashboard = other.dashboards[0]; // whose projection has the SAME id
+    released();
+    await flush();
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('✕ That dashboard is no longer available');
+  });
+
+  it('refuses to export the WORKSPACE after the workspace changed mid-flush', async () => {
+    let released: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { released = resolve; });
+    const app = mount({
+      flushWorkspaceWrites: () => gate,
+      workspace: { loadById: async () => ({ status: 'empty' as const }) },
+    });
+    app.state.workspaceId = 'workspace-a';
+    openFileMenu(app);
+    click(row('Export workspace…'));
+    app.state.workspaceId = 'workspace-b';
+    released();
+    await flush();
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toBe('✕ That workspace is no longer available');
+  });
+
   it('cancelling the export chooser downloads nothing', () => {
     const committed = wsWithDashboards(dashboardDoc({ id: 'a' }), dashboardDoc({ id: 'b' }));
     const app = mount({ currentWorkspace: committed });
@@ -945,6 +1000,7 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     // collection the user may not have open. Opening it is what separates a
     // successful additive import from a silent no-op.
     expect(app.openDashboard).toHaveBeenCalledWith({ dashboardId: saved.dashboards[2].id, mode: 'edit' });
+    expect(app.state.upperRole.value).toBe('dashboards');
     // The Dashboard that was OPEN is byte-identical — the import did not merge
     // into it, and the reminted id proves the appended entry is a new document.
     expect(saved.dashboards[1]).toEqual(committed.dashboards[1]);
@@ -1067,6 +1123,52 @@ describe('Import dashboard', () => {
     await flush();
     expect(app.state.dashboard!.title).toBe('Beta');
     expect(app.state.savedQueries.map((q) => q.id)).toContain('p2');
+  });
+
+  // P2: a chooser reached from a keyboard-driven menu row must not leave the
+  // user behind the modal.
+  it('focuses the first Dashboard row, so Enter picks it', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({
+      dashboards: [dashboardDoc({ id: 'a', title: 'Alpha' }), dashboardDoc({ id: 'b', title: 'Beta' })],
+    })) });
+    pickDashboardImport(app);
+    await flush();
+    const first = document.querySelector('.fm-picker-list .fm-item');
+    expect(document.activeElement).toBe(first);
+    click(first!);
+    await flush();
+    expect(app.state.dashboard!.title).toBe('Alpha');
+  });
+
+  // The shell mounts a modal but nothing makes the page behind it unreachable,
+  // so Tab has to wrap inside the card rather than walk out of it.
+  it('keeps Tab inside the dialog', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({
+      dashboards: [dashboardDoc({ id: 'a', title: 'Alpha' }), dashboardDoc({ id: 'b', title: 'Beta' })],
+    })) });
+    pickDashboardImport(app);
+    await flush();
+    const items = [...document.querySelectorAll<HTMLElement>('.fm-dialog-card button')];
+    const [first] = items;
+    const last = items[items.length - 1];      // Cancel
+    expect(document.activeElement).toBe(first);
+
+    // Shift+Tab off the front wraps to the back…
+    key(document, 'Tab', { shiftKey: true });
+    expect(document.activeElement).toBe(last);
+    // …Tab off the back wraps to the front…
+    key(document, 'Tab');
+    expect(document.activeElement).toBe(first);
+    // …a Tab in the middle is left to the browser…
+    items[1].focus();
+    const middle = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.dispatchEvent(middle);
+    expect(middle.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(items[1]);
+    // …and a Tab from OUTSIDE the card is pulled back in.
+    app.dom.fileBtn!.focus();
+    key(document, 'Tab');
+    expect(document.activeElement).toBe(first);
   });
 
   it('cancelling the multi-dashboard picker imports nothing', () => {
@@ -1366,7 +1468,32 @@ describe('New dashboard (#463)', () => {
     expect(saved.dashboards[1].variableConfigs).toBeUndefined();
     expect(saved.dashboards[1].revision).toBe(1);
     expect(app.openDashboard).toHaveBeenCalledWith({ dashboardId: saved.dashboards[1].id, mode: 'edit' });
+    // Owner feedback: opening the surface is only half the switch — the upper
+    // sidebar has to show the Dashboards tree, or the Dashboard you just made is
+    // on screen while the list that marks it selected stays behind the other tab.
+    expect(app.state.upperRole.value).toBe('dashboards');
     expect(toast()).toBe('Created dashboard');
+  });
+
+  it('leaves the sidebar alone when the commit is refused', async () => {
+    const committed = wsWith();
+    const repo = statefulWorkspaceRepo(committed);
+    const app = mount({
+      currentWorkspace: committed,
+      workspace: {
+        ...repo,
+        commit: async () => ({
+          ok: false as const,
+          diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'nope' }],
+        }),
+      },
+    });
+    app.state.workspaceId = 'w';
+    app.openDashboard = vi.fn();
+    expect(app.state.upperRole.value).toBe('databases');
+    create(app, 'Doomed');
+    await flush();
+    expect(app.state.upperRole.value).toBe('databases');
   });
 
   it('trims the name', async () => {

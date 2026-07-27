@@ -474,9 +474,10 @@ three dividers, in this order:
 - **New workspace…** — creates and activates a new empty, default-named
   workspace without deleting the previous one. Open editor tabs are unaffected.
 - **New dashboard…** — asks for a name, appends a new empty Dashboard to the
-  current workspace, and opens it in **Edit** mode. Duplicate names are allowed
-  (identity is the Dashboard id); Cancel and Escape commit nothing. Needs a
-  writable workspace (*No workspace*).
+  current workspace, opens it in **Edit** mode, and switches the upper sidebar to
+  the **Dashboards** tree so the new Dashboard is visible and marked selected.
+  Duplicate names are allowed (identity is the Dashboard id); Cancel and Escape
+  commit nothing. Needs a writable workspace (*No workspace*).
 
 - **Import workspace…** — creates and activates a new local workspace from a
   portable bundle; imported identity is reminted and made unique. Every bundled
@@ -489,10 +490,11 @@ three dividers, in this order:
   add tiles). Read-only in Dashboard View (*Edit mode only*).
 - **Import dashboard…** — imports one Dashboard from a file as a **new**
   Dashboard in the current workspace (a multi-Dashboard file asks which one),
-  bringing precisely its referenced queries through the same conflict dialog, and
-  opens it in Edit mode. Additive: existing Dashboards are never replaced or
-  merged into, so there is nothing to confirm. Available from every surface,
-  including Query, whenever a workspace is writable (*No workspace*).
+  bringing precisely its referenced queries through the same conflict dialog, then
+  opens it the same way **New dashboard…** does. Additive: existing Dashboards are
+  never replaced or merged into, so there is nothing to confirm. Available from
+  every surface, including Query, whenever a workspace is writable
+  (*No workspace*).
 
 - **Export workspace…** (`.json`) — write the one canonical
   **`altinity-sql-browser/portable-bundle`** interchange format: every saved
@@ -503,8 +505,14 @@ three dividers, in this order:
   dependency-closure of queries. The Dashboard on screen exports in one click
   (View as well as Edit), as does a workspace's only Dashboard from any surface;
   otherwise a chooser lists each Dashboard with its tile count and an id fragment
-  so duplicate names stay distinguishable. Disabled only when the workspace holds
-  none (*No dashboards*).
+  — widened until every row differs — so duplicate names stay distinguishable.
+  Disabled only when the workspace holds none (*No dashboards*). Both choosers
+  focus their first row on open and keep Tab inside the dialog.
+
+  An export is bound to the workspace it was chosen in: Dashboard ids are unique
+  within a workspace, not across them, so switching workspace while the export
+  flushes pending writes cancels it rather than exporting a same-id Dashboard
+  from the new one.
 
 Below a separator, the two one-way Library downloads — **Download Library as
 Markdown** (`.md`, a `### heading` + fenced ` ```sql ` cookbook) and **Download

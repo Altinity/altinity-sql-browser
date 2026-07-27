@@ -39,7 +39,7 @@ import { h, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { closeOpenMenus, openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
-import { fileMenuModel } from '../core/file-menu-model.js';
+import { fileMenuModel, shortIdFragments } from '../core/file-menu-model.js';
 import type {
   DashboardExportTarget, FileMenuActionId, FileMenuSurface,
 } from '../core/file-menu-model.js';
@@ -57,7 +57,7 @@ import {
   detectQueryConflicts, autoResolveConflicts, listBundleDashboards,
 } from '../workspace/import-planner.js';
 import type {
-  QueryDecision, QueryConflict, QueryConflictAction, DashboardSummary, PortableBundleImportPlan,
+  QueryDecision, QueryConflict, QueryConflictAction, PortableBundleImportPlan,
 } from '../workspace/import-planner.js';
 import {
   appendDashboard, createNewWorkspace, renameWorkspace,
@@ -572,9 +572,9 @@ function openConflictDialog(
 
 // ── multi-dashboard picker ───────────────────────────────────────────────────
 
-/** One choosable Dashboard. `meta` is the secondary identity line the caller
- *  decides: duplicate TITLES are legitimate (identity is the id), so a chooser
- *  that showed names alone would offer two indistinguishable rows. */
+/** One choosable Dashboard. `meta` is the secondary identity line: duplicate
+ *  TITLES are legitimate (identity is the id), so a chooser that showed names
+ *  alone would offer two indistinguishable rows. */
 interface DashboardPickerRow {
   readonly id: string;
   readonly title: string;
@@ -582,6 +582,25 @@ interface DashboardPickerRow {
 }
 
 const tiles = (n: number): string => `${n} ${n === 1 ? 'tile' : 'tiles'}`;
+
+/**
+ * Picker rows for a list of Dashboards, each carrying a tile count and an id
+ * fragment wide enough to be unique across THIS list (`shortIdFragments`).
+ *
+ * Tile count alone is not a tiebreaker — two empty Dashboards called `Ops` are
+ * one row rendered twice — and neither is a fixed-width id tail, which two ids
+ * can share. Both choosers use this, including the import one: the bundle's ids
+ * are reminted on import, but they are still what tells two SOURCE documents
+ * apart at the moment the user is choosing between them.
+ */
+function pickerRows(
+  dashboards: readonly { id: string; title: string; tileCount: number }[],
+): DashboardPickerRow[] {
+  const fragments = shortIdFragments(dashboards.map((d) => d.id));
+  return dashboards.map((d, index) => ({
+    id: d.id, title: d.title, meta: `${tiles(d.tileCount)} · ${fragments[index]}`,
+  }));
+}
 
 /** Show a picker over `dashboards` in the caller's array order — presentation
  *  order, never re-sorted. Both callers must resolve exactly one Dashboard, so
@@ -604,6 +623,11 @@ function openDashboardPicker(
     h('div', { class: 'fm-dialog-actions' },
       h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel')),
   ], 'fm-dialog-card--wide');
+  // Land ON the first Dashboard, not behind the modal: a chooser reached from a
+  // keyboard-driven menu row is one Enter away from done. Both callers only open
+  // this for two or more Dashboards, so there is always a row to focus. Deferred
+  // like the name dialog's — the card is in the document by then.
+  setTimeout(() => rows[0].focus());
 }
 
 // ── actions: New workspace ───────────────────────────────────────────────────
@@ -679,7 +703,22 @@ async function doNewDashboard(app: App, name: string): Promise<void> {
     app, (latest) => appendDashboard(latest ?? currentWorkspace(app), created), 'Created dashboard',
   );
   if (!committed) return;
-  app.openDashboard({ dashboardId: created.id, mode: 'edit' });
+  revealDashboard(app, created.id);
+}
+
+/**
+ * Show a Dashboard the File menu has just added: open it in Edit mode AND swap
+ * the upper sidebar to the Dashboards tree (#463 owner feedback).
+ *
+ * `openDashboard` alone changes the work surface but not the sidebar, so a user
+ * who was on the Query surface with Databases showing got the new Dashboard on
+ * screen while the tree that lists it — and marks it selected — stayed hidden
+ * behind the other tab. The command's promise is "here is the Dashboard you just
+ * made"; half a surface switch does not keep it.
+ */
+function revealDashboard(app: App, dashboardId: string): void {
+  app.openDashboard({ dashboardId, mode: 'edit' });
+  app.state.upperRole.value = 'dashboards';
 }
 
 // ── actions: rename ──────────────────────────────────────────────────────────
@@ -734,16 +773,11 @@ function onImportDashboardFile(app: App, file: File): void {
 // keeping a second entry point would have left two implementations of one
 // operation.
 
-/** Bundle Dashboards as picker rows. A bundle's ids are the EXPORTER's, and are
- *  reminted on import, so the tile count is the only identity worth showing. */
-const bundleRows = (dashboards: readonly DashboardSummary[]): DashboardPickerRow[] =>
-  dashboards.map((d) => ({ id: d.id, title: d.title, meta: tiles(d.tileCount) }));
-
 function startImportDashboard(app: App, bundle: PortableBundleV2): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
   if (dashboards.length === 1) { doImportDashboard(app, bundle, dashboards[0].id); return; }
-  openDashboardPicker(app, 'Import which dashboard?', bundleRows(dashboards), (id) => {
+  openDashboardPicker(app, 'Import which dashboard?', pickerRows(dashboards), (id) => {
     doImportDashboard(app, bundle, id);
   });
 }
@@ -787,7 +821,7 @@ function doImportDashboard(app: App, bundle: PortableBundleV2, dashboardId: stri
     ).then((committed) => {
       // `lastPlan!` / `importedDashboardId!` — a COMMITTED plan is a valid plan,
       // and a valid `planImportDashboard` always reports the id it minted.
-      if (committed) app.openDashboard({ dashboardId: lastPlan!.importedDashboardId!, mode: 'edit' });
+      if (committed) revealDashboard(app, lastPlan!.importedDashboardId!);
     });
   });
 }
@@ -851,43 +885,62 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV2, baseName: str
   flashToast('Exported → .json', { document: app.document });
 }
 
+/**
+ * An export bound to BOTH immutable identities it depends on.
+ *
+ * A Dashboard id is unique within a workspace, not globally — and an imported
+ * workspace keeps the ids it was exported with, so two workspaces sharing one
+ * really does happen. Every export awaits the write queue before it reads
+ * anything, and the user can switch workspace during that await, so the
+ * workspace has to be pinned when the export is CHOSEN rather than re-read from
+ * `state` on the other side of the wait. Without the pin, an exact-id lookup
+ * against the new workspace succeeds and quietly downloads the wrong Dashboard.
+ */
+interface DashboardExportRequest {
+  readonly workspaceId: string;
+  readonly dashboardId: string;
+}
+
 /** #341: flush every write already queued through `serializeWrite` (a Dashboard
  *  command, a saved-query mutation, an import) then read the latest COMMITTED
  *  aggregate — the truth an export must build from, never mid-flight `state`.
+ *  Reads `workspaceId` as it was when the export was chosen, NOT `state` after
+ *  the flush, which the user may have repointed in the meantime.
  *  Returns `null` when no aggregate is persisted (legacy/degraded install) OR
  *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
  *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
  *  export never becomes a silent no-op on an unhandled rejection. */
-async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV5 | null> {
+async function flushAndLoadCommitted(app: App, workspaceId: string): Promise<StoredWorkspaceV5 | null> {
   try {
     await app.flushWorkspaceWrites();
-    const result = await app.workspace.loadById(app.state.workspaceId);
+    const result = await app.workspace.loadById(workspaceId);
     return result.status === 'ok' ? result.workspace : null;
   } catch {
     return null;
   }
 }
 
-/** An export that has resolved to one id — what actually reads a document.
- *  `choose` never reaches this far: `resolveExportDashboard` converts it. */
-type ExactDashboardExport = Extract<DashboardExportTarget, { kind: 'exact' }>;
+/** The workspace the user is in RIGHT NOW is still the one this export was
+ *  chosen in. The degraded `state` reads are only meaningful under that. */
+const stillCurrent = (app: App, workspaceId: string): boolean =>
+  app.state.workspaceId === workspaceId;
 
 /** The target as committed truth holds it — `null` when it was removed, or when
  *  the id became ambiguous (never resolved by a guess). */
 function committedDashboard(
-  ws: StoredWorkspaceV5, target: ExactDashboardExport,
+  ws: StoredWorkspaceV5, request: DashboardExportRequest,
 ): DashboardDocumentV2 | null {
-  const lookup = findDashboardStrict(ws, target.dashboardId);
+  const lookup = findDashboardStrict(ws, request.dashboardId);
   return lookup.status === 'ok' ? lookup.dashboard : null;
 }
 
 /** The degraded (no readable aggregate) fallback: the live projection, but only
- *  if it IS the requested Dashboard. */
+ *  if it IS the requested Dashboard, in the workspace it was requested from. */
 function degradedDashboard(
-  app: App, target: ExactDashboardExport,
+  app: App, request: DashboardExportRequest,
 ): DashboardDocumentV2 | null {
   const live = app.state.dashboard;
-  return live && live.id === target.dashboardId ? live : null;
+  return live && live.id === request.dashboardId && stillCurrent(app, request.workspaceId) ? live : null;
 }
 
 /**
@@ -904,20 +957,19 @@ function degradedDashboard(
  * through the same fail-closed lookup.
  */
 function resolveExportDashboard(app: App, target: DashboardExportTarget): void {
+  // Pinned HERE, synchronously, while the menu row is still the user's last
+  // action — for the chooser too, so a workspace switch made while it is open
+  // fails the export closed instead of retargeting into the new workspace.
+  const workspaceId = app.state.workspaceId;
   if (target.kind === 'exact') {
-    void exportDashboardAction(app, { kind: 'exact', dashboardId: target.dashboardId });
+    void exportDashboardAction(app, { workspaceId, dashboardId: target.dashboardId });
     return;
   }
-  const rows = workspaceDashboards(app).map((dashboard) => ({
-    id: dashboard.id,
-    title: dashboard.title,
-    // Duplicate titles are allowed, so the tile count alone can still leave two
-    // identical rows. The id tail is the tiebreaker of last resort — it is the
-    // only thing guaranteed to differ.
-    meta: `${tiles(dashboard.tiles.length)} · ${dashboard.id.slice(-6)}`,
-  }));
-  openDashboardPicker(app, 'Export which dashboard?', rows, (id) => {
-    void exportDashboardAction(app, { kind: 'exact', dashboardId: id });
+  const rows = pickerRows(workspaceDashboards(app).map((dashboard) => ({
+    id: dashboard.id, title: dashboard.title, tileCount: dashboard.tiles.length,
+  })));
+  openDashboardPicker(app, 'Export which dashboard?', rows, (dashboardId) => {
+    void exportDashboardAction(app, { workspaceId, dashboardId });
   });
 }
 
@@ -935,22 +987,32 @@ function resolveExportDashboard(app: App, target: DashboardExportTarget): void {
  * legacy/no-aggregate install, or an IndexedDB read that rejected
  * (blocked/quota/private mode). #341 deliberately keeps exporting from `state`
  * there rather than becoming a silent no-op — but only when `state` is holding
- * the very Dashboard that was asked for, so the degraded path still cannot
- * retarget.
+ * the very Dashboard that was asked for, IN the workspace it was asked from, so
+ * the degraded path still cannot retarget.
  */
 export async function exportDashboardAction(
-  app: App, target: ExactDashboardExport,
+  app: App, request: DashboardExportRequest,
 ): Promise<void> {
-  const ws = await flushAndLoadCommitted(app);
-  const dashboard = ws ? committedDashboard(ws, target) : degradedDashboard(app, target);
+  const ws = await flushAndLoadCommitted(app, request.workspaceId);
+  const dashboard = ws ? committedDashboard(ws, request) : degradedDashboard(app, request);
   if (!dashboard) { flashToast('✕ That dashboard is no longer available', { document: app.document }); return; }
   const queryList = ws ? ws.queries : app.state.savedQueries;
   const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
 }
 
+/** The same workspace pin as the Dashboard export, for the same reason: the
+ *  flush is an await the user can switch workspace across, and the `state`
+ *  fallback would then describe the workspace they moved TO. A switch mid-flush
+ *  fails closed rather than exporting the wrong workspace under the right
+ *  name. */
 async function exportWorkspaceAction(app: App): Promise<void> {
-  const ws = await flushAndLoadCommitted(app);
+  const workspaceId = app.state.workspaceId;
+  const ws = await flushAndLoadCommitted(app, workspaceId);
+  if (!ws && !stillCurrent(app, workspaceId)) {
+    flashToast('✕ That workspace is no longer available', { document: app.document });
+    return;
+  }
   const bundle = buildWorkspaceExportBundle(ws ?? currentWorkspace(app), new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, app.state.libraryName.value);
 }
@@ -1014,7 +1076,24 @@ function openDialogShell(app: App, title: string, content: unknown[], extraCardC
     releaseKeyboard();
     app.dom.fileBtn!.focus();
   };
-  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  /** Everything inside the card a Tab can land on, in DOM order. Disabled
+   *  controls are excluded — the name dialog's confirm is disabled while the
+   *  name is empty, and tabbing onto an inert button is a dead stop. */
+  const focusables = (): HTMLElement[] =>
+    [...card.querySelectorAll<HTMLElement>('button, input, select')]
+      .filter((el) => !(el as HTMLButtonElement).disabled);
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+    if (e.key !== 'Tab') return;
+    // Keep Tab inside the card. `openDialogShell` mounts a MODAL, but nothing
+    // else makes the page behind it unreachable — so without this a keyboard
+    // user tabs straight out of a dialog they cannot see they have left.
+    const items = focusables();
+    const edge = e.shiftKey ? items[0] : items[items.length - 1];
+    const wrapTo = e.shiftKey ? items[items.length - 1] : items[0];
+    if (doc.activeElement === edge) { e.preventDefault(); wrapTo.focus(); }
+    else if (!card.contains(doc.activeElement)) { e.preventDefault(); items[0].focus(); }
+  };
   const card = h('div', { class: extraCardClass ? `fm-dialog-card ${extraCardClass}` : 'fm-dialog-card' },
     h('div', { class: 'fm-dialog-title' }, title), content);
   backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);

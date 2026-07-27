@@ -22,24 +22,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   All three are now workspace operations:
 
   - **New dashboard…** — a new row, immediately after **New workspace…**. It
-    asks for a name, appends an empty Dashboard to the current workspace, and
-    opens it in Edit mode. Duplicate names are allowed (identity is the id);
-    Cancel and Escape commit nothing, and a rejected commit leaves navigation
-    and local state untouched.
+    asks for a name, appends an empty Dashboard to the current workspace, opens
+    it in Edit mode, and switches the upper sidebar to the Dashboards tree so
+    the new Dashboard is actually visible in the list that marks it selected.
+    Duplicate names are allowed (identity is the id); Cancel and Escape commit
+    nothing, and a rejected commit leaves navigation, the sidebar and local
+    state untouched.
   - **Import dashboard…** is **additive** and available from Query, Dashboard
     View, Dashboard Edit and the empty-Dashboard placeholder whenever a writable
     workspace exists. The imported Dashboard is appended under a freshly minted
-    id, so it can never merge into or replace the one you are looking at — and
-    the destructive *Import and replace current Dashboard?* confirm is gone with
-    the replacement it gated. Dependent queries still go through the existing
-    conflict planner.
+    id and opened the same way a created one is, so it can never merge into or
+    replace the one you are looking at — and the destructive *Import and replace
+    current Dashboard?* confirm is gone with the replacement it gated. Dependent
+    queries still go through the existing conflict planner.
   - **Export dashboard…** is workspace-aware rather than surface-gated. Zero
     Dashboards disables it with *No dashboards*; the Dashboard on screen (in
     View as well as Edit) exports in one click; a sole Dashboard exports
     directly from Query too; anything else opens a chooser listing each
-    Dashboard's tile count and an id fragment, so duplicate names stay
-    distinguishable. Every export resolves an **exact id** — there is no
-    fallback to `dashboards[0]` left to reach.
+    Dashboard's tile count and an id fragment — widened until no two rows read
+    alike — so duplicate names stay distinguishable. Both choosers focus their
+    first row and keep Tab inside the dialog. Every export resolves an **exact
+    id** in the workspace it was chosen from: ids are unique within a workspace,
+    not across them, so switching workspace while the export flushes pending
+    writes cancels it instead of exporting a same-id Dashboard from the new one.
+    There is no fallback to `dashboards[0]` left to reach.
 
   The menu regroups by verb — create / import / export / download — behind three
   dividers, and the two Dashboard rows drop to sentence case. Row order,

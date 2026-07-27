@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  fileMenuModel, fileMenuFooter,
+  fileMenuModel, fileMenuFooter, shortIdFragments,
 } from '../../src/core/file-menu-model.js';
 import type {
   FileMenuActionId, FileMenuContext, FileMenuItemSpec, FileMenuSurface,
@@ -323,6 +323,42 @@ describe('fileMenuModel — Export dashboard is workspace-aware (#463)', () => {
         }
       }
     }
+  });
+});
+
+describe('shortIdFragments — telling duplicate-titled rows apart (#463)', () => {
+  it('shows a six-character tail when that is already unique', () => {
+    expect(shortIdFragments(['ws-dashboard-aaa111', 'ws-dashboard-bbb222']))
+      .toEqual(['aaa111', 'bbb222']);
+  });
+
+  // The defect a fixed-width tail has: `sales-abcdef` and `ops-abcdef` agree on
+  // their last six characters, so two rows with the same title and tile count
+  // would render identically.
+  it('grows the tail until every fragment differs', () => {
+    // Both collide through length 8 (`s-abcdef`); 9 is the first that separates.
+    expect(shortIdFragments(['sales-abcdef', 'ops-abcdef'])).toEqual(['es-abcdef', 'ps-abcdef']);
+  });
+
+  it('falls back to the whole id when no suffix separates them', () => {
+    // Genuinely duplicate ids — nothing can distinguish these, and the
+    // id-addressed reader fails closed on that workspace anyway.
+    expect(shortIdFragments(['same-id', 'same-id'])).toEqual(['same-id', 'same-id']);
+  });
+
+  it('never returns a fragment longer than its own id', () => {
+    for (const fragment of shortIdFragments(['ab', 'cd'])) expect(fragment).toHaveLength(2);
+  });
+
+  it('handles a single id and an empty list', () => {
+    expect(shortIdFragments(['only-one-id'])).toEqual(['one-id']);
+    expect(shortIdFragments([])).toEqual([]);
+  });
+
+  // One fragment per id, positionally — the caller zips these back onto rows.
+  it('returns one fragment per id, in order', () => {
+    const ids = ['ws-1-aaaaaa', 'ws-2-bbbbbb', 'ws-3-cccccc'];
+    expect(shortIdFragments(ids)).toHaveLength(ids.length);
   });
 });
 
