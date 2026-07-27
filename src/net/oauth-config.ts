@@ -181,10 +181,14 @@ function normalizeHost(h: RawHostEntry | null | undefined): HostDescriptor {
  * describes a credentials-only deployment, so `idps` comes back empty rather
  * than throwing. `basicLogin` (top-level `basic_login`, default true) lets an
  * SSO-only deployment hide the username/password path.
- * @param basePath  e.g. location.pathname ('/sql')
+ * @param basePath  e.g. location.pathname ('/sql', or '/sql/sql.html' for a
+ *   static-file deployment — the last segment is dropped when it looks like a
+ *   file (has a dot), so config.json is fetched from its containing directory
+ *   either way)
  */
 export async function loadConfigDoc(fetchFn: typeof fetch, basePath = ''): Promise<ConfigDoc> {
-  const cfgUrl = basePath.replace(/\/$/, '') + '/config.json';
+  const dir = basePath.replace(/\/[^/]*\.[^/]*$/, '').replace(/\/$/, '');
+  const cfgUrl = dir + '/config.json';
   const cfgResp = await fetchFn(cfgUrl, { cache: 'no-store' });
   if (!cfgResp.ok) throw new Error('GET ' + cfgUrl + ': ' + cfgResp.status);
   const cfg = await cfgResp.json() as RawConfigDoc;

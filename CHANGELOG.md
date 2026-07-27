@@ -9,6 +9,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Every tagged release now mirrors `sql.html` to
+  `docs.altinity.com/altinity-sql-browser/sql.html`** (`docs/sql.html`,
+  published by a new `release.yml` step, alongside a demo `docs/config.json`
+  offering the Antalya/github.demo clusters) — a try-it-now link independent
+  of any ClickHouse-served deployment. Fixed `loadConfigDoc` (`src/net/oauth-config.ts`)
+  to resolve `config.json` from the containing directory when `basePath` is a
+  static filename (e.g. `sql.html`) rather than a route (e.g. `/sql`), which
+  this static hosting case needs and the ClickHouse route did not exercise.
+
 ### Changed
 - **`shop-charts.json` and `ontime-charts.json` moved to portable-bundle v2 /
   Dashboard document v2**, dropping their curated `filters` arrays in favor of
