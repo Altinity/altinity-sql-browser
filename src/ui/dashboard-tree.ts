@@ -37,11 +37,20 @@ import { discardVariableDraft, reconcileVariableTab } from './tabs.js';
 import { createClickArbiter, type ClickArbiter } from '../core/tree-click-arbiter.js';
 import {
   UNUSED_VARIABLE_STATUS, deriveDashboardTree, tileRowKey,
+  type DashboardTreeAction, type DashboardTreeActionKind, type DashboardTreeActionTarget,
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { commitDashboardRename } from '../application/dashboard-title.js';
 import type { DashboardRenameOutcome } from '../application/dashboard-title.js';
+import {
+  commitDashboardRemoval, commitPanelRemoval, dashboardDeleteMessage,
+} from '../application/dashboard-delete.js';
+import type { DashboardDeleteOutcome } from '../application/dashboard-delete.js';
+import { commitPanelQueryMetadata } from '../application/dashboard-panel-metadata.js';
+import type {
+  PanelMetadataDeps, PanelMetadataOutcome,
+} from '../application/dashboard-panel-metadata.js';
 import { openMetadataDialog } from './dialog-shell.js';
 import {
   assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
@@ -89,6 +98,10 @@ export interface DashboardTreeApp {
    *  pencil's dialog acquires — the same seam every other body-mounted
    *  overlay (File menu's dialogs, the shortcuts sheet) uses. */
   acquireKeyboardOwner: App['acquireKeyboardOwner'];
+  /** #494: the Spec validation service a panel-metadata write runs the patched
+   *  entry AND every linked draft through, inside the commit transform — the
+   *  same injected seam the Library row's pencil passes to `renameSaved`. */
+  specValidators: App['specValidators'];
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
@@ -101,6 +114,11 @@ export interface DashboardTreeApp {
   /** #428: the pending hover auto-expand, with the row that armed it — so one
    *  row's departure cannot cancel another row's timer. */
   _dashTreeHover?: { key: string; handle: number } | null;
+  /** #494: the rows this app last PAINTED. A panel delete has to decide where
+   *  keyboard focus goes next (next sibling → previous → the Panels group),
+   *  and "next" means next on screen — a search can be filtering siblings out,
+   *  and focus must never land on a row the user cannot see. */
+  _dashTreeRows?: readonly DashboardTreeRow[];
 }
 
 /** Indent per level, on top of `.tree-row`'s own 10px padding. */
@@ -609,6 +627,7 @@ export function renderDashboardTree(app: DashboardTreeApp): void {
     return;
   }
 
+  app._dashTreeRows = tree.rows;
   for (const row of tree.rows) {
     list.appendChild(buildRow(app, doc, row, ui));
   }
@@ -692,9 +711,9 @@ function buildRow(
     },
   }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
     h('span', { class: 'meta' }, row.meta), marker,
-    row.deletable ? buildDeleteButton(app, doc, row) : null,
-    row.renamable ? buildRenameButton(app, doc, row) : null,
-    row.menu.length === 0 ? null : buildMenuButton(app, doc, row));
+    // #494: the trailing DIRECT controls, in the model's own order — edit
+    // before delete, destructive rightmost. There is no `⋯` any more.
+    row.actions.map((act) => buildActionButton(app, doc, row, act)));
 
   return rowEl;
 }
@@ -787,86 +806,139 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
 }
 
 /**
- * #447 — the trailing trash affordance, rendered for an ORPHANED variable only.
+ * #494 — one trailing direct control, built from the model's resolved action.
  *
- * Deleting drops stored SQL nothing else holds, so it CONFIRMS first. The
- * confirmation is `openMenu` (ui/menu.ts) anchored on the trash button itself —
- * the same primitive this row's own action menu uses, so no new dialog is
- * invented: it gives the destructive action a real `<button role="menuitem">`, an
- * explicit Cancel, Escape/outside-click dismissal, and focus restored to the
- * trigger. (`file-menu.ts`'s `.fm-dialog-*` shell is module-private to that
- * file — and #463 retired its one confirm dialog with the destructive import
- * that needed it — while `window.confirm` is browser chrome this stylesheet
- * cannot reach.)
+ * Every Dashboard/Panel operation is its own real `<button>` now: the `⋯`
+ * overflow menu is gone from both, so nothing a row can do is hidden behind a
+ * second press. The orphaned-variable trash (#447) came along, because it was
+ * already exactly this shape and keeping it separate would have meant two ways
+ * of saying "a trailing control".
  *
- * Like the menu button, it stops propagation and calls `cancelFor` rather than
- * going through the arbiter: clicking trash must NOT also open the variable's
- * tab, and it must cancel no OTHER row's pending click.
+ * Availability is the MODEL's answer, never re-derived here (#494 forbids
+ * reading capability off DOM classes): an unavailable action still renders, so
+ * a Panel row's vocabulary does not silently shrink when its data is
+ * malformed, but it announces `aria-disabled` and does nothing when pressed.
+ * `aria-disabled` rather than `disabled` on purpose — the control stays
+ * focusable, so a keyboard user can reach it and hear WHY.
  */
-function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
-  // `row.label` IS the variable's exact name by construction — the model sets a
-  // variable row's label to its name precisely because that name is the variable's
-  // whole identity (see `dashboard-tree-model.ts`). Reading it here needs no null
-  // check, unlike `row.member`, which is nullable for the row kinds that have none.
+function buildActionButton(
+  app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
+): HTMLElement {
+  const destructive = act.confirm !== null;
   const trigger: HTMLButtonElement = h('button', {
-    class: 'dash-tree-del-btn', type: 'button',
-    'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    'aria-label': 'Delete the stored option SQL for ' + row.label,
-    title: 'Delete stored option SQL',
+    class: 'dash-tree-act'
+      + (destructive ? ' dash-tree-act-danger' : '')
+      // #447's control was always visible, and stays so: on a variable row the
+      // trash IS the affordance that says an orphaned configuration can be
+      // dropped, and #494 asks for that one to be preserved rather than
+      // rebuilt. The Dashboard/Panel controls are revealed on hover and
+      // `:focus-within`, matching the Library Query row.
+      + (act.kind === 'delete-variable-config' ? ' dash-tree-act-static' : ''),
+    type: 'button',
+    'aria-haspopup': destructive ? 'menu' : 'dialog',
+    'aria-expanded': 'false',
+    'aria-label': act.label,
+    title: act.tooltip,
+    ...(act.unavailable === null ? {} : { 'aria-disabled': 'true' }),
     onkeydown: isolateActivationKeys,
     onclick: (event: MouseEvent) => {
+      // Never the row's own gesture, and never a pending single of its own —
+      // but #426 is explicit that this must cancel no UNRELATED row operation.
       event.stopPropagation();
       app._dashTreeArbiter?.cancelFor(row.key);
-      openMenu({
-        document: doc,
-        trigger,
-        menuClass: 'dash-tree-confirm',
-        rows: [
-          {
-            kind: 'section',
-            label: 'Delete the stored option SQL for “' + row.label + '”? The SQL is lost.',
-          },
-          {
-            kind: 'item',
-            label: 'Delete option SQL',
-            extraClass: 'dash-tree-confirm-go',
-            // Removes ONLY this key from `variableConfigs` (both `sql` and
-            // `lastKnownType` go with it). No panel query is touched — a
-            // variable's name and type live in the panel SQL, not here.
-            // Fire-and-forget: the delete has no per-row UI to settle against —
-            // a successful commit reprojects the workspace and repaints the tree
-            // on its own, and an aborted one leaves nothing to undo.
-            onClick: () => { void commitVariableConfig(app, row.dashboardId, row.label, null); },
-          },
-          { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
-        ],
-      });
+      runAction(app, doc, row, act, trigger);
     },
-  }, Icon.trash());
+  }, act.kind === 'edit-dashboard' || act.kind === 'edit-panel' ? Icon.pencil() : Icon.trash());
   return trigger;
 }
 
+/** The confirm menu's own go-ahead label, per action. Short and specific: the
+ *  question above it already named the resource, and "OK" next to a sentence
+ *  full of names is where a destructive click gets made by accident. */
+const CONFIRM_LABELS: Record<DashboardTreeActionKind, string> = {
+  'edit-dashboard': '',
+  'edit-panel': '',
+  'delete-dashboard': 'Delete dashboard',
+  'delete-panel': 'Remove panel',
+  'delete-variable-config': 'Delete option SQL',
+};
+
 /**
- * The Dashboard row's rename pencil (#429 phase 3): edit title + description
- * on the promoted `openDialogShell` (`dialog-shell.ts`), prefilled from the
- * current committed document. Revealed on hover/focus-within like the `⋯`
- * button below — renaming is routine, not destructive, unlike the
- * always-visible trash above.
+ * Run one trailing control.
+ *
+ * An unavailable action does nothing at all — the model already said why, and
+ * the button carries that reason as its tooltip and `aria-disabled` state.
+ * Destructive actions never run straight from the press: they open the
+ * confirmation this repo already uses for the same job (`openMenu`, anchored
+ * on the trigger), which gives them a real `role="menuitem"`, an explicit
+ * Cancel, Escape/outside-click dismissal and focus restored to the trigger.
  */
-function buildRenameButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
-  const trigger: HTMLButtonElement = h('button', {
-    class: 'dash-tree-rename-btn', type: 'button',
-    'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-    'aria-label': 'Edit dashboard ' + row.label,
-    title: 'Edit dashboard title & description',
-    onkeydown: isolateActivationKeys,
-    onclick: (event: MouseEvent) => {
-      event.stopPropagation();
-      app._dashTreeArbiter?.cancelFor(row.key);
-      openDashboardMetadataDialog(app, doc, trigger, row);
-    },
-  }, Icon.pencil());
-  return trigger;
+function runAction(
+  app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
+  trigger: HTMLButtonElement,
+): void {
+  const target = act.target;
+  if (target === null) return;
+  if (act.kind === 'edit-dashboard') { openDashboardMetadataDialog(app, doc, trigger, row); return; }
+  if (act.kind === 'edit-panel') {
+    openPanelMetadataDialog(app, doc, trigger, row, target as PanelActionTarget);
+    return;
+  }
+  confirmDestructive(doc, trigger, act, () => runDestructive(app, doc, row, act, target));
+}
+
+/** The `panel` arm of `DashboardTreeActionTarget`, which the two panel actions
+ *  are the only carriers of. Narrowed once here rather than with a guard at
+ *  each use: the model pairs kind and target by construction. */
+type PanelActionTarget = Extract<DashboardTreeActionTarget, { kind: 'panel' }>;
+
+/** Ask before destroying something, anchored on the control that asked. */
+function confirmDestructive(
+  doc: Document, trigger: HTMLButtonElement, act: DashboardTreeAction, go: () => void,
+): void {
+  openMenu({
+    document: doc,
+    trigger,
+    menuClass: 'dash-tree-confirm',
+    rows: [
+      { kind: 'section', label: act.confirm! },
+      {
+        kind: 'item',
+        label: CONFIRM_LABELS[act.kind],
+        extraClass: 'dash-tree-confirm-go',
+        onClick: go,
+      },
+      { kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', onClick: () => {} },
+    ],
+  });
+}
+
+/**
+ * Dispatch a confirmed destructive action.
+ *
+ * All three are fire-and-forget for the same reason: a successful commit
+ * reprojects the workspace and repaints the tree (and any rendered Dashboard)
+ * on its own, and a refused one leaves nothing here to undo. What they do NOT
+ * share is what happens to keyboard focus afterwards — removing the row the
+ * user is standing on is the one case with somewhere specific to go.
+ */
+function runDestructive(
+  app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
+  target: DashboardTreeActionTarget,
+): void {
+  if (target.kind === 'variable-config') {
+    void commitVariableConfig(app, target.dashboardId, target.name, null);
+    return;
+  }
+  if (act.kind === 'delete-dashboard') {
+    void reportRemoval(app, doc, commitDashboardRemoval(app, target.dashboardId));
+    return;
+  }
+  const panel = target as PanelActionTarget;
+  // Decided BEFORE the commit, against the rows currently painted: once the
+  // write lands, the row this focus decision is relative to no longer exists.
+  const successor = focusSuccessorKey(app, row);
+  void reportRemoval(app, doc, commitPanelRemoval(app, panel), successor);
 }
 
 /**
@@ -922,39 +994,116 @@ const renameMessage = (outcome: DashboardRenameOutcome): string | null => {
   return outcome.diagnostics[0]?.message || 'Could not save this dashboard.';
 };
 
-/** The keyboard-reachable, DISCOVERABLE equivalent of the gestures a pointer-only
- *  affordance would otherwise hide — a panel row's double-click and Shift-click, and
- *  (since #429/#472 dropped the now-redundant *Open in View*) a Dashboard row's
- *  Shift-click alone. */
-function buildMenuButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
-  const trigger: HTMLButtonElement = h('button', {
-    class: 'dash-tree-menu-btn', type: 'button',
-    'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    'aria-label': 'Actions for ' + row.label,
-    title: 'Actions',
-    onkeydown: isolateActivationKeys,
-    onclick: (event: MouseEvent) => {
-      // Never the row's own gesture, and never a pending single of its own — but
-      // #426 is explicit that this must cancel no UNRELATED row operation.
-      event.stopPropagation();
-      app._dashTreeArbiter?.cancelFor(row.key);
-      openMenu({
-        document: doc,
-        trigger,
-        menuClass: 'dash-tree-menu',
-        rows: row.menu.map((item) => ({
-          kind: 'item' as const,
-          label: item.label,
-          // An unavailable operation still RENDERS, so the row's vocabulary stays
-          // discoverable — but disabled semantically, not merely greyed out.
-          ...(item.command === null
-            ? { extraClass: 'is-disabled', disabled: true, onClick: () => {} }
-            : { onClick: () => runCommand(app, row, item.command!) }),
-        })),
-      });
-    },
-  }, Icon.more());
-  return trigger;
+/**
+ * The panel pencil's dialog (#494): the same two fields, the same shell and
+ * the same awaited-outcome contract as the Dashboard pencil above — but
+ * editing the tile's dedicated OWNED QUERY, which is where a panel's displayed
+ * name and description actually live.
+ *
+ * Prefilled from the committed query, never from the row's label: the label is
+ * a resolved DISPLAY string, and for an imported tile that carries a local
+ * `title` override it is the override rather than the query's own name. Typing
+ * over it would silently rewrite the query to match a title it does not own.
+ * When such an override exists the dialog says so instead, because the commit
+ * genuinely will not change what the tile renders.
+ */
+function openPanelMetadataDialog(
+  app: DashboardTreeApp, doc: Document, trigger: HTMLButtonElement, row: DashboardTreeRow,
+  target: PanelActionTarget,
+): void {
+  // Same hover-reveal trap as the Dashboard pencil: the trigger is
+  // `display: none` unless the row is hovered or holds focus, and `focus()` on
+  // a `display: none` element is a silent no-op in a real browser.
+  trigger.setAttribute('aria-expanded', 'true');
+  const query = app.currentWorkspace?.queries?.find((entry) => entry.id === target.queryId);
+  const tile = app.currentWorkspace?.dashboards
+    ?.find((dashboard) => dashboard.id === target.dashboardId)
+    ?.tiles?.find((entry) => entry.id === target.tileId);
+  const overridden = (tile?.title ?? '').trim() !== '';
+  openMetadataDialog({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, {
+    title: 'Edit panel',
+    nameLabel: 'Query name',
+    descriptionLabel: 'Query description',
+    name: query?.spec?.name ?? '',
+    description: query?.spec?.description ?? '',
+    confirmLabel: 'Save',
+    idPrefix: 'panel-metadata',
+    note: overridden
+      ? 'This tile was imported with its own title, which keeps priority over the query name here.'
+      : null,
+    returnFocusTo: trigger,
+    onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+    onConfirm: async ({ name, description }) => panelMetadataMessage(
+      await commitPanelQueryMetadata(panelMetadataDeps(app), target, name, description),
+    ),
+  });
+}
+
+/** The tree's slice of `PanelMetadataDeps`. `refreshCommittedSurfaces` is the
+ *  same poke every other tree write sends — a rendered Dashboard reads its
+ *  document at construction, so a renamed tile would otherwise keep its old
+ *  heading until something unrelated repainted it. */
+const panelMetadataDeps = (app: DashboardTreeApp): PanelMetadataDeps => ({
+  state: app.state,
+  mutateWorkspace: app.mutateWorkspace,
+  specValidators: app.specValidators,
+  refreshCommittedSurfaces: () => app.onWorkspaceExternallyChanged(
+    { workspace: null, queriesChanged: true },
+  ),
+});
+
+/** What a panel-metadata attempt has to say — `null` closes the dialog. */
+const panelMetadataMessage = (outcome: PanelMetadataOutcome): string | null => {
+  if (outcome.status === 'ok') return null;
+  if (outcome.status === 'stale') return 'That panel is no longer part of this dashboard.';
+  if (outcome.status === 'invalid-draft') {
+    // The same patch has to apply to the entry AND to every linked draft; an
+    // unparseable Spec draft blocks both, and the tab is the only place it can
+    // be fixed.
+    return 'This panel’s query has invalid Spec JSON in an open tab. Fix it there first.';
+  }
+  return outcome.message;
+};
+
+/**
+ * Report a delete, and — for a panel — put keyboard focus somewhere sensible.
+ *
+ * The successor is chosen BEFORE the write (the row it is relative to is gone
+ * afterwards) but only APPLIED on success, so a refused delete leaves the tree
+ * exactly as it was, focus included.
+ */
+async function reportRemoval(
+  app: DashboardTreeApp, doc: Document,
+  pending: Promise<DashboardDeleteOutcome>, successorKey?: string,
+): Promise<void> {
+  const outcome = await pending;
+  const message = dashboardDeleteMessage(outcome);
+  if (message !== null) flashToast(message, { document: doc });
+  if (!outcome.ok || successorKey === undefined) return;
+  // The commit reprojected and repainted the tree already, so this addresses
+  // rows that exist NOW.
+  moveTo(app, successorKey);
+}
+
+/**
+ * Where keyboard focus goes when a Panel row is deleted: the next Panel row,
+ * else the previous one, else the Panels group that contained it (#494).
+ *
+ * Resolved from the CURRENTLY PAINTED rows rather than from the model, because
+ * "next" means next on screen — a search may be filtering siblings out, and
+ * focus must not jump to a row the user cannot see. A row whose parent group
+ * is collapsed is not painted at all, so the parent key is the floor.
+ */
+function focusSuccessorKey(app: DashboardTreeApp, row: DashboardTreeRow): string {
+  const painted = app._dashTreeRows ?? [];
+  const index = painted.findIndex((candidate) => candidate.key === row.key);
+  const sibling = (candidate: DashboardTreeRow): boolean => candidate.parentKey === row.parentKey;
+  const after = painted.slice(index + 1).find(sibling);
+  if (after !== undefined) return after.key;
+  const before = painted.slice(0, index).reverse().find(sibling);
+  // A panel row always HAS a parent group — it is level 3 by construction — so
+  // the fallback is never the empty string in practice.
+  return before?.key ?? row.parentKey!;
 }
 
 // A positive guard, not an early `return`: `clampKeyboardRow` has already made the

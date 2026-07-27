@@ -703,7 +703,7 @@ h1, h2, h3, h4, h5, h6 {
 .fm-item:hover { background: var(--bg-hover); }
 /* #452: an unavailable operation still renders in its settled position — the
    menu's vocabulary must not change with the work surface, only its reachability.
-   Same treatment as `.dash-tree-menu .is-disabled`. The `:hover` override is
+   Same treatment as the tree's own disabled controls. The `:hover` override is
    required: `.fm-item:hover` above still matches a disabled <button>. */
 .fm-item[aria-disabled="true"] { opacity: .45; cursor: default; }
 .fm-item[aria-disabled="true"]:hover { background: transparent; }
@@ -800,6 +800,13 @@ h1, h2, h3, h4, h5, h6 {
    how the entered title used to be lost. */
 .fm-dialog-error {
   margin: 12px 0 0; color: var(--error-fg);
+  font-size: var(--text-label); line-height: var(--lh-body);
+}
+/* #494: a standing caveat (an imported tile's own title outranks the query
+   name being edited), present from the moment the dialog opens — quieter than
+   the failure diagnostic above, which answers a Save. */
+.fm-dialog-note {
+  margin: 12px 0 0; color: var(--fg-mute);
   font-size: var(--text-label); line-height: var(--lh-body);
 }
 .fm-dialog-cancel:disabled { opacity: .45; cursor: default; }
@@ -1739,25 +1746,10 @@ body.detached-tab .graph-overlay-panel {
   border-radius: var(--r-pill);
   padding: 0 6px;
 }
-/* #447: the orphan-only delete affordance. Unlike the action-menu button it is
-   ALWAYS visible — it is the only way to remove stored SQL nothing references, and
-   a hover-only affordance would hide the row's whole point. */
-.dash-tree-del-btn {
-  width: 18px; height: 18px; padding: 0;
-  border: none; background: transparent;
-  color: var(--fg-faint); cursor: pointer;
-  border-radius: var(--r-xs); flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.dash-tree-del-btn:hover { color: var(--error-fg); background: var(--bg-hover); }
-/* The delete CONFIRMATION, built from the shared menu primitive (ui/menu.ts) and
-   anchored on the trash button. Wider than the action menu because its heading is
-   a sentence stating what is lost. */
-.dash-tree-confirm { min-width: 268px; }
-.dash-tree-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
-.dash-tree-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
-.dash-tree-confirm-cancel { color: var(--fg-mute); }
-.dash-tree-menu-btn, .dash-tree-rename-btn {
+/* #494 — the trailing DIRECT action cluster: pencil + trash on Dashboard and
+   Panel rows, and #447's orphan-variable trash, all one control vocabulary now
+   that the `⋯` overflow button is gone from every production row. */
+.dash-tree-act {
   width: 18px; height: 18px; padding: 0;
   border: none; background: transparent;
   color: var(--fg-faint); cursor: pointer;
@@ -1765,21 +1757,41 @@ body.detached-tab .graph-overlay-panel {
   display: none; align-items: center; justify-content: center;
 }
 /* Revealed on hover like the Library row actions, but ALWAYS present for the
-   keyboard: focus-within keeps it visible while it or the row owns focus, so the
-   double-click-only operations (and #429 phase 3's rename pencil — renaming is
-   routine, not destructive like the always-visible trash above) are never
-   keyboard-unreachable. */
-.dash-tree-row:hover .dash-tree-menu-btn,
-.dash-tree-row:focus-within .dash-tree-menu-btn,
-.dash-tree-menu-btn[aria-expanded="true"],
-.dash-tree-row:hover .dash-tree-rename-btn,
-.dash-tree-row:focus-within .dash-tree-rename-btn,
-/* #429 phase 3: stays visible for its OWN dialog's whole lifetime, not just
-   hover/focus-within — the dialog is body-mounted, so once its own controls are
-   interacted with, the pointer and focus both leave the row, and a `display:
-   none` trigger could not receive the focus the dialog returns to it on close. */
-.dash-tree-rename-btn[aria-expanded="true"] { display: inline-flex; }
-.dash-tree-menu-btn:hover, .dash-tree-rename-btn:hover { color: var(--fg); background: var(--bg-hover); }
+   keyboard: `:focus-within` keeps the cluster visible while the row or one of
+   its controls owns focus, so no operation is keyboard-unreachable.
+   `[aria-expanded="true"]` holds it visible for its own dialog/confirmation's
+   whole lifetime — both are body-mounted, so by the time one closes the
+   pointer and focus have left the row, and `focus()` on a `display: none`
+   trigger is a silent no-op in a real browser. */
+.dash-tree-row:hover .dash-tree-act,
+.dash-tree-row:focus-within .dash-tree-act,
+.dash-tree-act[aria-expanded="true"] { display: inline-flex; }
+/* #447's orphan-variable trash stays ALWAYS visible: it is the only way to
+   remove stored SQL nothing references any more, and a hover-only affordance
+   would hide that row's whole point. #494 preserves that control as it was. */
+.dash-tree-act-static { display: inline-flex; }
+.dash-tree-act:hover { color: var(--fg); background: var(--bg-hover); }
+/* Destructive treatment on hover/focus, so the rightmost control of the
+   cluster reads as the one that removes something. */
+.dash-tree-act-danger:hover,
+.dash-tree-act-danger:focus-visible { color: var(--error-fg); background: var(--bg-hover); }
+/* An operation the DATA does not permit (a panel whose owned query cannot be
+   proven): rendered, focusable and announced — `aria-disabled`, not
+   `disabled` — but visibly inert, with the reason in its tooltip. */
+.dash-tree-act[aria-disabled="true"] { opacity: .4; cursor: default; }
+.dash-tree-act[aria-disabled="true"]:hover { color: var(--fg-faint); background: transparent; }
+/* Each control carries its OWN focus ring, in a channel the row does not use —
+   #472's "three independent targets" now being up to four. */
+.dash-tree-row .dash-tree-act:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
+/* The delete CONFIRMATION, built from the shared menu primitive (ui/menu.ts) and
+   anchored on the trash button. Wider than the action menu because its heading is
+   a sentence stating what is lost. */
+.dash-tree-confirm { min-width: 268px; }
+.dash-tree-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
+.dash-tree-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
+.dash-tree-confirm-cancel { color: var(--fg-mute); }
 /* #429/#472 — the disclosure control is its own BUTTON, because expansion is now
    the only thing this target does (the row itself opens the Dashboard). Box, width
    and colour still come from the shared `.tree-row .chev` rule below, so the two
@@ -1813,12 +1825,6 @@ body.detached-tab .graph-overlay-panel {
   border-radius: var(--r-xs);
 }
 .dash-tree-row .dash-tree-chev:hover { color: var(--fg); }
-.dash-tree-menu { min-width: 220px; }
-/* An unavailable operation still renders, so the row's vocabulary stays
-   discoverable — it just cannot be invoked. */
-.dash-tree-menu .is-disabled {
-  opacity: .45; cursor: default; pointer-events: none;
-}
 
 .tree-row {
   display: flex; align-items: center; gap: 6px;

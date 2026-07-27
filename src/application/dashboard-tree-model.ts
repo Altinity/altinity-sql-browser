@@ -30,6 +30,7 @@ import type { DashboardFocusTarget, MainSurfaceState, OpenDashboardRequest } fro
 import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard-tree-ui-state.js';
 import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
 import { inferDashboardVariables } from '../core/dashboard-variables.js';
+import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
 import type { DashboardVariable } from '../core/dashboard-variables.js';
 import type { LibraryDropTarget } from '../core/library-drag.js';
 
@@ -126,12 +127,60 @@ export type DashboardTreeCommand =
    *  drawer; the command itself is unchanged, since the identity is the same. */
   | { kind: 'open-variable'; dashboardId: string; name: string };
 
-export interface DashboardTreeMenuItem {
+/**
+ * #494 — the trailing DIRECT controls a row offers, replacing the `⋯` overflow
+ * menu on Dashboard and Panel rows alike.
+ *
+ * A row's operations are stated here, fully resolved, for the same reason its
+ * commands are: `ui/dashboard-tree.ts` must not re-derive capability from row
+ * kind, DOM classes or — worst of all — ownership. Which panel may be edited
+ * or deleted is a data-integrity question about the whole workspace, and it is
+ * answered exactly once, here.
+ */
+export type DashboardTreeActionKind =
+  | 'edit-dashboard'
+  | 'delete-dashboard'
+  | 'edit-panel'
+  | 'delete-panel'
+  /** #447's orphaned-variable trash, now expressed as one of these rather
+   *  than as its own `deletable` boolean. */
+  | 'delete-variable-config';
+
+/** What an action acts ON, by stable ids only — never a title, a label or a
+ *  collection position (#430). A panel action carries the owned query's id as
+ *  well as the tile's: both are re-resolved inside the write's transform, and
+ *  the pair is what proves the write is aimed at the intended resource. */
+export type DashboardTreeActionTarget =
+  | { kind: 'dashboard'; dashboardId: string }
+  | { kind: 'panel'; dashboardId: string; tileId: string; queryId: string }
+  | { kind: 'variable-config'; dashboardId: string; name: string };
+
+export interface DashboardTreeAction {
+  kind: DashboardTreeActionKind;
+  /** The control's accessible name. Always identifies the target RESOURCE —
+   *  a screen-reader user hears the buttons of many rows in sequence, and
+   *  "Edit" alone names none of them. */
   label: string;
-  /** `null` when the operation is unavailable — a source-less or broken member's
-   *  query-open. The item still renders, disabled, so the row's full vocabulary
-   *  stays discoverable and keyboard-reachable. */
-  command: DashboardTreeCommand | null;
+  /** The pointer tooltip, which may be shorter than the accessible name. */
+  tooltip: string;
+  /** `null` when the operation belongs to this row's vocabulary but cannot be
+   *  performed right now (#494's malformed-ownership rule). The control still
+   *  renders — disabled semantically, not merely greyed out — so the row's
+   *  vocabulary stays stable and discoverable. */
+  target: DashboardTreeActionTarget | null;
+  /** Why it is unavailable, for the tooltip and the accessible description.
+   *  Non-null exactly when `target` is `null`. */
+  unavailable: string | null;
+  /**
+   * The question a DESTRUCTIVE action asks before it runs; `null` for an
+   * editing one, which needs no confirmation.
+   *
+   * Composed here rather than in the view because it names the resources by
+   * their resolved display titles — the panel's label AND its owning
+   * Dashboard's — and the view holds only the row it is painting. It is the
+   * same reason a row's `diagnostic` is composed by the model.
+   */
+  confirm: string | null;
 }
 
 export interface DashboardTreeRow {
@@ -174,16 +223,16 @@ export interface DashboardTreeRow {
    *  variable this is the variable's OWN diagnostic, verbatim from
    *  `core/dashboard-variables.ts` — never re-composed here. */
   diagnostic: string | null;
-  /** #447: whether this row offers a trailing destructive affordance. True for
-   *  an ORPHANED variable only — deleting it drops stored SQL that nothing else
-   *  holds. An active or conflicted variable is inferred from the panel queries,
-   *  so there is nothing about it a tree row could delete. */
-  deletable: boolean;
-  /** #429 phase 3: whether this row offers a trailing rename affordance (title
-   *  + description). True for the DASHBOARD row only — a panel row's own
-   *  metadata pencil is phase 4's, and a variable/group row has no document of
-   *  its own to rename. */
-  renamable: boolean;
+  /**
+   * #494: the row's trailing direct controls, in paint order — edit before
+   * delete, so the destructive one is rightmost and never where the pointer
+   * lands by habit.
+   *
+   * This replaced three separate expressions of the same idea: `renamable`
+   * (#429 phase 3's Dashboard pencil), `deletable` (#447's orphaned-variable
+   * trash) and the `menu` list. A group row has none.
+   */
+  actions: readonly DashboardTreeAction[];
   dashboardId: string;
   /** The member this row addresses, by Dashboard-local id — never by query id. */
   member: DashboardFocusTarget | null;
@@ -201,14 +250,6 @@ export interface DashboardTreeRow {
    *  press can open at once. */
   double: DashboardTreeCommand | null;
   shift: DashboardTreeCommand | null;
-  /** The keyboard-reachable equivalent of every gesture this row offers that a
-   *  pointer-only affordance would otherwise HIDE. A Dashboard row therefore
-   *  offers *Open in Edit* only (#429/#472): plain View is its primary press, so
-   *  it is not hidden, while Edit exists only as Shift-click/Shift+Enter. EMPTY
-   *  for a variable row: #447 forbids the `…` menu there, and a variable row has
-   *  no double/Shift gesture for it to expose — its single activation (open the
-   *  option-SQL editor) is already reachable with Enter. */
-  menu: readonly DashboardTreeMenuItem[];
   /**
    * #428: what a Library-query drop on THIS row would write, or `null` when the
    * row rejects assignment. Resolved here for the same reason every other
@@ -367,19 +408,90 @@ const variableAnnotation = (
   return { invalid: null, severity: null };
 };
 
-/** A panel row's action vocabulary. #447 removed the filter half: a variable row
- *  has no menu at all. */
-const PANEL_MENU_LABELS = {
-  open: 'Open query',
-  view: 'Open Dashboard in View and focus panel',
-  edit: 'Open Dashboard in Edit and focus panel',
-};
+/**
+ * Why a panel's pencil and trash are rendered but unavailable (#494).
+ *
+ * Both say what is wrong with the DATA rather than "not allowed": the row is
+ * showing a tile whose dedicated query cannot be proven, and the user's next
+ * move is to look at the panel, not to try again. Repairing such a workspace
+ * is #429's repair-planner phase, deliberately not something these controls
+ * attempt — a guessed owner is how one delete becomes two.
+ */
+const MISSING_PANEL_QUERY_REASON =
+  'This panel’s query is not in this workspace, so there is nothing to edit or remove.';
+const UNPROVEN_OWNERSHIP_REASON =
+  'This panel’s query is shared with another panel, so it cannot be edited or removed here.';
+
+/** One trailing control, available. */
+const action = (
+  kind: DashboardTreeActionKind, label: string, tooltip: string,
+  target: DashboardTreeActionTarget, confirm: string | null = null,
+): DashboardTreeAction => ({ kind, label, tooltip, target, unavailable: null, confirm });
+
+/** One trailing control the data does not permit right now. It still renders:
+ *  a row whose vocabulary silently shrinks teaches the user that panels
+ *  sometimes have no pencil, which is a worse lie than a disabled one. */
+const unavailableAction = (
+  kind: DashboardTreeActionKind, label: string, reason: string,
+): DashboardTreeAction => ({
+  kind, label, tooltip: reason, target: null, unavailable: reason, confirm: null,
+});
+
+/** Quoted for a confirmation sentence, in the typographic quotes this UI uses
+ *  everywhere else. */
+const quoted = (name: string): string => '“' + name + '”';
 
 export function deriveDashboardTree(
   { workspace, surface, ui }: DashboardTreeInput,
 ): DashboardTree {
   const dashboards = workspace?.dashboards ?? [];
   const queries = queryMap(workspace);
+  // #494: ONE ownership index per paint, from the #427 module that defines the
+  // rule — the tree does not get its own private notion of who owns a query.
+  // Tiles with no `queryId` are dropped on the way in because ownership is
+  // exactly the set of tile→query references; a tile that references nothing
+  // owns nothing, and its panel row's edit/delete are unavailable anyway.
+  const ownership = buildQueryOwnershipIndex({
+    queries: workspace?.queries ?? [],
+    dashboards: dashboards.map((dashboard) => ({
+      id: dashboard.id,
+      tiles: (dashboard.tiles ?? [])
+        .filter((tile): tile is TreeTile & { queryId: string } => typeof tile.queryId === 'string')
+        .map((tile) => ({ id: tile.id, queryId: tile.queryId })),
+    })),
+  });
+
+  /**
+   * The pencil + trash a panel row offers, and whether the data permits them.
+   *
+   * Availability is the #427 exactly-one-owner rule, checked against THIS
+   * Dashboard and THIS tile: a query with several owners, one owned by a
+   * different member, or a reference to a query the workspace does not carry
+   * all leave both controls rendered and unavailable. `facts.queryId` is
+   * already `null` for a reference that resolves to nothing, which is what
+   * separates the two reasons.
+   */
+  const panelActions = (
+    dashboardId: string, dashboardLabel: string, tileId: string, label: string, queryId: string | null,
+  ): DashboardTreeAction[] => {
+    const owners = queryId === null ? [] : ownership.ownersByQueryId.get(queryId) ?? [];
+    const owned = owners.length === 1
+      && owners[0].dashboardId === dashboardId && owners[0].tileId === tileId;
+    if (queryId === null || !owned) {
+      const reason = queryId === null ? MISSING_PANEL_QUERY_REASON : UNPROVEN_OWNERSHIP_REASON;
+      return [
+        unavailableAction('edit-panel', 'Edit ' + label, reason),
+        unavailableAction('delete-panel', 'Remove ' + label + ' from dashboard', reason),
+      ];
+    }
+    const target: DashboardTreeActionTarget = { kind: 'panel', dashboardId, tileId, queryId };
+    return [
+      action('edit-panel', 'Edit ' + label, 'Edit name & description', target),
+      action('delete-panel', 'Remove ' + label + ' from dashboard', 'Remove panel', target,
+        'Remove panel ' + quoted(label) + ' from ' + quoted(dashboardLabel)
+        + '? This also deletes its dedicated query copy.'),
+    ];
+  };
 
   const search = ui.searchText.trim().toLowerCase();
   const hits = (haystack: readonly string[]): boolean =>
@@ -442,8 +554,18 @@ export function deriveDashboardTree(
       invalid: null,
       severity: null,
       diagnostic: null,
-      deletable: false,
-      renamable: true,
+      // #494: the Dashboard row's own two direct controls. Its `⋯` menu is
+      // gone — *Open in Edit* was its last item, and a menu button that opens
+      // a one-item menu beside two real controls is chrome, not vocabulary.
+      // Shift-click / Shift+Enter remain the Edit gesture (`shift` below).
+      actions: [
+        action('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
+          'Edit dashboard title & description', { kind: 'dashboard', dashboardId: dashboard.id }),
+        action('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
+          'Delete dashboard', { kind: 'dashboard', dashboardId: dashboard.id },
+          'Delete dashboard ' + quoted(title || UNTITLED_DASHBOARD)
+          + '? This also deletes every query its panels own.'),
+      ],
       dashboardId: dashboard.id,
       member: null,
       queryId: null,
@@ -457,14 +579,6 @@ export function deriveDashboardTree(
       single: openDashboardCommand(dashboard.id, 'view'),
       double: null,
       shift: openDashboardCommand(dashboard.id, 'edit'),
-      // *Open in View* is gone: it IS the primary press now, and the menu existed
-      // only to keep a pointer-hidden gesture discoverable. *Open in Edit* stays
-      // for exactly that reason — its only forms are Shift-click and Shift+Enter,
-      // both hidden modifiers, so this row is where a keyboard or first-time user
-      // finds Edit mode at all.
-      menu: [
-        { label: 'Open in Edit', command: openDashboardCommand(dashboard.id, 'edit') },
-      ],
       dropTarget: { kind: 'panel', dashboardId: dashboard.id },
     });
 
@@ -502,8 +616,15 @@ export function deriveDashboardTree(
         severity,
         // Verbatim from the inference service — never re-composed here.
         diagnostic: variable.diagnostic,
-        deletable: variable.status === 'orphaned',
-        renamable: false,
+        // #447's trash, unchanged in behaviour: an ORPHANED configuration is
+        // the only variable state with anything of its own to delete — an
+        // active or conflicted variable is inferred from the panel SQL.
+        actions: variable.status === 'orphaned'
+          ? [action('delete-variable-config',
+            'Delete the stored option SQL for ' + variable.name, 'Delete stored option SQL',
+            { kind: 'variable-config', dashboardId: dashboard.id, name: variable.name },
+            'Delete the stored option SQL for ' + quoted(variable.name) + '? The SQL is lost.')]
+          : [],
         dashboardId: dashboard.id,
         member,
         queryId: null,
@@ -511,7 +632,6 @@ export function deriveDashboardTree(
         single: { kind: 'open-variable', dashboardId: dashboard.id, name: variable.name },
         double: null,
         shift: null,
-        menu: [],
         // #428: an ORPHAN is not an assignment destination. A configuration no
         // panel declares any more has nothing to bind to, though it stays
         // editable and deletable through its own affordances — which is why this
@@ -547,8 +667,7 @@ export function deriveDashboardTree(
         invalid: facts.invalid,
         severity: facts.invalid === null ? null : 'error',
         diagnostic: facts.invalid === null ? null : MISSING_QUERY_DIAGNOSTIC,
-        deletable: false,
-        renamable: false,
+        actions: panelActions(dashboard.id, title || UNTITLED_DASHBOARD, tile.id, facts.label, facts.queryId),
         dashboardId: dashboard.id,
         member,
         queryId: facts.queryId,
@@ -559,11 +678,6 @@ export function deriveDashboardTree(
         single: openQuery,
         double: focusView,
         shift: focusEdit,
-        menu: [
-          { label: PANEL_MENU_LABELS.open, command: openQuery },
-          { label: PANEL_MENU_LABELS.view, command: focusView },
-          { label: PANEL_MENU_LABELS.edit, command: focusEdit },
-        ],
         // #428 rejects an individual panel row: sharing one query between panels
         // and moving members between Dashboards are both out of scope, so there
         // is no assignment a panel row could mean.
@@ -609,8 +723,7 @@ export function deriveDashboardTree(
         invalid: null,
         severity: null,
         diagnostic: null,
-        deletable: false,
-        renamable: false,
+        actions: [],
         dashboardId: dashboard.id,
         member: null,
         queryId: null,
@@ -620,7 +733,6 @@ export function deriveDashboardTree(
         single: groupForced ? null : { kind: 'toggle' },
         double: null,
         shift: null,
-        menu: [],
         // #428: Panels means the same thing as the Dashboard row itself. The
         // VARIABLES group never accepts — it does not identify which variable
         // would receive the SQL, and guessing is worse than rejecting.

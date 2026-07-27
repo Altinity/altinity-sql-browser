@@ -67,8 +67,11 @@ const treeApp = (over: Partial<DashboardTreeApp> = {}) => {
       const input = await transform(app.currentWorkspace as StoredWorkspaceV5);
       const candidate = input === null ? null : input.candidate;
       committed.push(candidate);
-      if (candidate === null) return { ok: false, aborted: true };
-      return { ok: true, workspace: candidate, dashboardRevision: null };
+      // `data` rides through BOTH outcomes, exactly as the real primitive
+      // threads it: #494's panel-metadata write reads back the entry it
+      // committed, and a delete reads back the refusal reason.
+      if (candidate === null) return { ok: false, aborted: true, data: input?.data };
+      return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
     }) as App['mutateWorkspace'];
   }
   const upper = buildSidebarUpper(app, []);
@@ -91,6 +94,14 @@ const labels = (list: HTMLElement): string[] =>
 /** #429/#472: the row's disclosure BUTTON — one of its three independent targets. */
 const chevron = (list: HTMLElement, rowKey: string): HTMLButtonElement =>
   rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-chev')!;
+/** #494: one of the row's trailing DIRECT controls, addressed the way a user
+ *  finds it — by its accessible name, not by a per-operation class. */
+const actionBtn = (list: HTMLElement, rowKey: string, label: string): HTMLButtonElement | null =>
+  rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-act[aria-label="' + label + '"]');
+/** Every trailing control on a row, in paint order, by accessible name. */
+const actionNames = (list: HTMLElement, rowKey: string): string[] =>
+  [...rowFor(list, rowKey).querySelectorAll<HTMLButtonElement>('.dash-tree-act')]
+    .map((button) => button.getAttribute('aria-label')!);
 const click = (el: Element, over: MouseEventInit = {}): void => {
   el.dispatchEvent(new MouseEvent('click', { bubbles: true, ...over }));
 };
@@ -195,10 +206,15 @@ describe('renderDashboardTree — structure and ARIA', () => {
     const variable = rowFor(list, 'w1:sales:variable:country');
     expect(variable.querySelector('.label')!.textContent).toBe('country');
     expect(variable.querySelector('.meta')!.textContent).toBe('String');
-    // #447 explicitly forbids the `…` overflow menu on a variable row.
-    expect(variable.querySelector('.dash-tree-menu-btn')).toBeNull();
-    // Panel rows keep theirs.
-    expect(rowFor(list, 'w1:sales:tile:t1').querySelector('.dash-tree-menu-btn')).not.toBeNull();
+    // #447 forbade the `…` overflow menu on a variable row; #494 removed it
+    // from every other row too, so no production row renders one at all.
+    expect(list.querySelectorAll('.dash-tree-menu-btn')).toHaveLength(0);
+    // An ACTIVE variable has nothing of its own to delete — only an orphaned
+    // configuration does.
+    expect(actionNames(list, 'w1:sales:variable:country')).toEqual([]);
+    // A panel row exposes its two direct operations instead of a menu.
+    expect(actionNames(list, 'w1:sales:tile:t1'))
+      .toEqual(['Edit Revenue', 'Remove Revenue from dashboard']);
   });
 
   it('labels the Variables group with the brace glyph and a count', () => {
@@ -461,29 +477,29 @@ describe('renderDashboardTree — mouse gestures', () => {
     expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
-  it('an action-menu click cancels its OWN row\'s pending single but no other row\'s', () => {
+  it('an action click cancels its OWN row\'s pending single but no other row\'s', () => {
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
     // Pending single belongs to the PANEL row...
     click(rowFor(list, 'w1:sales:tile:t1'));
-    // ...and the menu button clicked here belongs to a DIFFERENT row.
-    click(rowFor(list, 'w1:sales:tile:t-broken').querySelector('.dash-tree-menu-btn')!);
+    // ...and the control clicked here belongs to a DIFFERENT row.
+    click(actionBtn(list, 'w1:sales:tile:t-broken', 'Edit Untitled panel')!);
     settle();
     // #426: "action-menu/button clicks … cancel no unrelated row operation".
     expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
   });
 
-  it('uses a menu glyph distinct from the row\'s disclosure chevron', () => {
+  it('uses action glyphs distinct from the row\'s disclosure chevron', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
     const row = rowFor(list, 'w1:sales');
     // #426 requires the two not be confusable; an expanded row would otherwise
     // carry two identical chevrons at opposite ends.
     const chevronPaths = row.querySelector('.chev')!.innerHTML;
-    const menuPaths = row.querySelector('.dash-tree-menu-btn')!.innerHTML;
-    expect(menuPaths).not.toBe(chevronPaths);
-    expect(menuPaths).toContain('circle');
+    for (const act of row.querySelectorAll('.dash-tree-act')) {
+      expect(act.innerHTML).not.toBe(chevronPaths);
+    }
   });
 
   it('moves the roving tabindex in the DOM immediately on click, not 300ms later', () => {
@@ -646,110 +662,459 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     expect(name('w1:sales:variable:region')).toBe('region unused String Unused');
     expect(name('w1:sales:variable:country')).toBe('country String');
     expect(name('w1:sales:tile:t-broken')).toBe('Untitled panel Broken reference');
-    // The chevron and the menu keep their own, distinct names (`openAll` expanded
-    // this row, so its verb is Collapse).
+    // The chevron and every trailing control keep their own, distinct names
+    // (`openAll` expanded this row, so its verb is Collapse).
     expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
-    expect(rowFor(list, 'w1:sales').querySelector('.dash-tree-menu-btn')!.getAttribute('aria-label'))
-      .toBe('Actions for Sales');
+    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
+    // …and none of those four names leaks into the row's own (#494 adds three
+    // more labelled buttons per row than #472 measured this against).
+    for (const label of ['Edit dashboard', 'Delete dashboard', 'Collapse']) {
+      expect(name('w1:sales')).not.toContain(label);
+    }
+    expect(name('w1:sales:tile:t1')).toBe('Revenue');
+    expect(name('w1:sales:variable:region')).not.toContain('Delete the stored option SQL');
   });
 
-  it('is isolated from the trailing action, which expands and navigates neither', () => {
+  it('is isolated from the trailing actions, which expand and navigate neither', () => {
     vi.useFakeTimers();
     const { app, list } = treeApp();
     renderDashboardTree(app);
     const row = rowFor(list, 'w1:sales');
-    click(row.querySelector<HTMLElement>('.dash-tree-menu-btn')!);
+    click(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!);
     vi.advanceTimersByTime(400);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
     expect(app.openDashboard).not.toHaveBeenCalled();
-    // Three targets, three outcomes, from one row.
+    // #472's three targets became four (#494): chevron, row, pencil, trash.
     expect(row.querySelectorAll('.dash-tree-chev')).toHaveLength(1);
-    expect(row.querySelectorAll('.dash-tree-menu-btn')).toHaveLength(1);
+    expect(row.querySelectorAll('.dash-tree-act')).toHaveLength(2);
     vi.useRealTimers();
   });
 });
 
-describe('renderDashboardTree — action menu', () => {
-  const menuButton = (list: HTMLElement, rowKey: string): HTMLButtonElement =>
-    rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-menu-btn')!;
-  const menuLabels = (): string[] =>
-    [...document.querySelectorAll('.dash-tree-menu .fm-label')].map((n) => n.textContent!);
+/**
+ * #494 — the trailing DIRECT controls that replaced the `⋯` overflow menu on
+ * Dashboard and Panel rows.
+ *
+ * The menu's own coverage moved here rather than being deleted: what it used to
+ * prove (a row's whole vocabulary is reachable, an unavailable operation is
+ * rendered-but-inert, activating one never runs the row's gesture) is exactly
+ * what the buttons must prove now. What is GONE is the indirection — no row
+ * renders a menu button at all any more, and the commands the menu mirrored
+ * (`single`/`double`/`shift`) are untouched.
+ */
+describe('renderDashboardTree — direct row actions (#494)', () => {
+  const open = () => {
+    const fixture = treeApp();
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+  const confirmItems = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
 
-  // #429/#472 — the redundant-menu-item reconcile. *Open in View* is gone because it
-  // IS the row's primary press now; *Open in Edit* stays because its only gestures
-  // are Shift-click and Shift+Enter, so the menu is where it is discoverable at all.
-  it('offers the Dashboard row Open in Edit only, and runs it', () => {
-    const { app, list } = treeApp();
-    renderDashboardTree(app);
-    click(menuButton(list, 'w1:sales'));
-    expect(menuLabels()).toEqual(['Open in Edit']);
-    click(document.querySelector<HTMLElement>('.dash-tree-menu .fm-item')!);
-    expect(app.openDashboard).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'sales', mode: 'edit' });
+  it('renders no overflow menu on ANY row, and no menu markup at all', () => {
+    const { list } = open();
+    expect(list.querySelectorAll('.dash-tree-menu-btn')).toHaveLength(0);
+    expect(document.querySelectorAll('.dash-tree-menu')).toHaveLength(0);
+    expect(list.querySelectorAll('[aria-label^="Actions for"]')).toHaveLength(0);
   });
 
-  it('exposes a panel row\'s three operations and runs the chosen one', () => {
-    const { app, list } = treeApp();
-    openAll(app, 'sales');
-    renderDashboardTree(app);
-    click(menuButton(list, 'w1:sales:tile:t1'));
-    expect(menuLabels()).toEqual([
-      'Open query',
-      'Open Dashboard in View and focus panel',
-      'Open Dashboard in Edit and focus panel',
-    ]);
-    const edit = [...document.querySelectorAll<HTMLElement>('.dash-tree-menu .fm-item')]
-      .find((item) => item.textContent!.includes('Edit'))!;
-    click(edit);
-    expect(app.openDashboard).toHaveBeenCalledWith({
-      dashboardId: 'sales', mode: 'edit', focus: { kind: 'tile', id: 't1' },
-    });
+  it('gives the Dashboard row a pencil and a trash, in that order', () => {
+    const { list } = open();
+    // Destructive rightmost — never where the pointer lands by habit.
+    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
   });
 
-  it('renders an unavailable operation as disabled rather than hiding it', () => {
-    const { app, list } = treeApp();
-    openAll(app, 'sales');
-    renderDashboardTree(app);
-    click(menuButton(list, 'w1:sales:tile:t-broken'));
-    expect(menuLabels()[0]).toBe('Open query');
-    const disabled = document.querySelector<HTMLButtonElement>('.dash-tree-menu .is-disabled')!;
-    expect(disabled.textContent).toContain('Open query');
-    // Disabled SEMANTICALLY, not merely greyed out: assistive technology would
-    // otherwise announce an enabled action, and keyboard activation would silently
-    // do nothing.
-    // #452: `aria-disabled`, not the native attribute — a natively disabled
-    // button is dropped from the accessibility tree, so the row would never be
-    // announced. It stays reachable and inert instead.
-    expect(disabled.disabled).toBe(false);
-    expect(disabled.getAttribute('aria-disabled')).toBe('true');
-    // Clicking it does nothing at all.
-    click(disabled);
+  it('gives a Panel row a pencil and a trash that name the panel', () => {
+    const { list } = open();
+    expect(actionNames(list, 'w1:sales:tile:t1'))
+      .toEqual(['Edit Revenue', 'Remove Revenue from dashboard']);
+  });
+
+  it('gives group rows none', () => {
+    const { list } = open();
+    expect(actionNames(list, 'w1:sales:group:panels')).toEqual([]);
+    expect(actionNames(list, 'w1:sales:group:variables')).toEqual([]);
+  });
+
+  it('makes every control a real, individually named button with a tooltip', () => {
+    const { list } = open();
+    for (const button of rowFor(list, 'w1:sales:tile:t1').querySelectorAll<HTMLButtonElement>('.dash-tree-act')) {
+      expect(button.tagName).toBe('BUTTON');
+      expect(button.type).toBe('button');
+      expect(button.getAttribute('aria-label')).not.toBe('');
+      expect(button.getAttribute('title')).not.toBe('');
+      expect(button.getAttribute('aria-expanded')).toBe('false');
+    }
+    expect(actionBtn(list, 'w1:sales:tile:t1', 'Edit Revenue')!.getAttribute('aria-haspopup'))
+      .toBe('dialog');
+    expect(actionBtn(list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!
+      .getAttribute('aria-haspopup')).toBe('menu');
+  });
+
+  it('marks the destructive one so it can be styled apart from the pencil', () => {
+    const { list } = open();
+    expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.classList.contains('dash-tree-act-danger'))
+      .toBe(false);
+    expect(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!.classList.contains('dash-tree-act-danger'))
+      .toBe(true);
+  });
+
+  // A panel whose query cannot be proven to be its own: the controls stay, so
+  // the row's vocabulary does not silently shrink, but they are inert and say
+  // why. `t-broken` references a query this workspace does not carry.
+  it('renders an unprovable panel\'s controls disabled rather than hiding them', () => {
+    const { app, list } = open();
+    const names = actionNames(list, 'w1:sales:tile:t-broken');
+    expect(names).toEqual(['Edit Untitled panel', 'Remove Untitled panel from dashboard']);
+    const pencil = actionBtn(list, 'w1:sales:tile:t-broken', 'Edit Untitled panel')!;
+    // `aria-disabled`, not the native attribute — a natively disabled button is
+    // dropped from the accessibility tree, so the reason would never be heard.
+    expect(pencil.disabled).toBe(false);
+    expect(pencil.getAttribute('aria-disabled')).toBe('true');
+    expect(pencil.getAttribute('title')).toContain('not in this workspace');
+    click(pencil);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
-  it('labels the trigger accessibly and never runs the row\'s own gesture', () => {
-    vi.useFakeTimers();
-    const { app, list } = treeApp();
-    renderDashboardTree(app);
-    const trigger = menuButton(list, 'w1:sales');
-    expect(trigger.getAttribute('aria-label')).toBe('Actions for Sales');
-    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
-    click(trigger);
-    vi.advanceTimersByTime(400);
-    expect(app.openDashboard).not.toHaveBeenCalled();
-    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.has('sales')).toBe(false);
+  it('does nothing at all when an unavailable trash is activated', async () => {
+    const { list, committed } = open();
+    click(actionBtn(list, 'w1:sales:tile:t-broken', 'Remove Untitled panel from dashboard')!);
+    await Promise.resolve();
+    expect(document.querySelector('.dash-tree-confirm')).toBeNull();
+    expect(committed).toEqual([]);
   });
 
-  it('gives a group row no menu button at all', () => {
-    const { app, list } = treeApp();
-    setUi(app, (ui) => toggleDashboardExpanded(ui, 'sales'));
+  it('an action never expands, never navigates, and cancels no other row\'s pending click', () => {
+    vi.useFakeTimers();
+    const { app, list } = open();
+    click(rowFor(list, 'w1:sales:tile:t1'));            // a pending single on ANOTHER row
+    click(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!);
+    vi.advanceTimersByTime(400);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    expect(app.openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    vi.useRealTimers();
+  });
+});
+
+/** #494 — removing one panel: the tile AND its dedicated owned query, once. */
+describe('renderDashboardTree — panel trash (#494)', () => {
+  const open = () => {
+    const fixture = treeApp();
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+  const trash = (list: HTMLElement): HTMLButtonElement =>
+    actionBtn(list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!;
+  const confirmItems = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+  it('CONFIRMS first, naming both the panel and the Dashboard, and the query copy it takes with it', async () => {
+    const { list, committed } = open();
+    click(trash(list));
+    expect(document.querySelector('.dash-tree-confirm .fm-section')!.textContent)
+      .toBe('Remove panel “Revenue” from “Sales”? This also deletes its dedicated query copy.');
+    expect(confirmItems().map((item) => item.textContent)).toEqual(['Remove panel', 'Cancel']);
+    await settle();
+    expect(committed).toEqual([]);
+  });
+
+  it('commits nothing when the confirmation is refused', async () => {
+    const { list, committed } = open();
+    click(trash(list));
+    click(confirmItems()[1]);
+    await settle();
+    expect(committed).toEqual([]);
+  });
+
+  it('removes the tile and exactly its owned query, in one commit', async () => {
+    const { list, committed } = open();
+    click(trash(list));
+    click(confirmItems()[0]);
+    await settle();
+    expect(committed).toHaveLength(1);
+    const dashboard = committed[0]!.dashboards[0];
+    expect(dashboard.tiles.map((tile) => tile.id)).toEqual(['t-broken']);
+    expect(committed[0]!.queries).toEqual([]);
+    // The other Dashboard is untouched, and the orphaned variable config
+    // survives — #494's non-goals forbid deleting one as a side effect.
+    expect(committed[0]!.dashboards[1]).toEqual(workspace().dashboards![1]);
+    expect(dashboard.variableConfigs!.region).toBeDefined();
+  });
+
+  it('reports a refused delete and commits nothing', async () => {
+    const mutateWorkspace = vi.fn(async () => (
+      { ok: false, aborted: true, data: 'tile-missing' }
+    )) as unknown as App['mutateWorkspace'];
+    const { app } = treeApp({ mutateWorkspace });
+    openAll(app, 'sales');
     renderDashboardTree(app);
-    expect(rowFor(list, 'w1:sales:group:panels').querySelector('.dash-tree-menu-btn')).toBeNull();
+    click(trash(app.dom.dashboardTreeList!));
+    click(confirmItems()[0]);
+    await settle();
+    expect(document.querySelector('.share-toast')!.textContent)
+      .toBe('That panel is no longer part of this dashboard.');
+  });
+
+  it('moves keyboard focus to the NEXT panel row when there is one', async () => {
+    const { app, list } = open();
+    click(trash(list));
+    click(confirmItems()[0]);
+    await settle();
+    // `t1` is gone; the next sibling panel row takes the keyboard.
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales:tile:t-broken');
+  });
+
+  it('falls back to the PREVIOUS panel row when the deleted one was last', async () => {
+    const fixture = treeApp();
+    // Make the healthy panel the LAST row of the group, so there is no next.
+    const dashboards = (fixture.app.currentWorkspace as unknown as TreeWorkspace).dashboards!;
+    dashboards[0]!.tiles = [{ id: 't-broken', queryId: 'q-gone' }, { id: 't1', queryId: 'q1' }];
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    click(actionBtn(fixture.list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!);
+    click(confirmItems()[0]);
+    await settle();
+    expect(readTreeUi(fixture.app.state.dashboardTreeUi, 'w1').keyboardRowKey)
+      .toBe('w1:sales:tile:t-broken');
+  });
+
+  it('falls back to the Panels GROUP when the deleted row was the only panel', async () => {
+    const fixture = treeApp();
+    const dashboards = (fixture.app.currentWorkspace as unknown as TreeWorkspace).dashboards!;
+    dashboards[0]!.tiles = [{ id: 't1', queryId: 'q1' }];
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    click(actionBtn(fixture.list, 'w1:sales:tile:t1', 'Remove Revenue from dashboard')!);
+    click(confirmItems()[0]);
+    await settle();
+    // Never nowhere: the group that contained it keeps the keyboard, so the
+    // arrow keys still have an origin and the focus ring stays visible.
+    expect(readTreeUi(fixture.app.state.dashboardTreeUi, 'w1').keyboardRowKey)
+      .toBe('w1:sales:group:panels');
+  });
+});
+
+/**
+ * #494 — the Panel row's pencil, which edits the tile's dedicated OWNED QUERY.
+ *
+ * The Dashboard pencil above edits a document; this one edits the query the
+ * tile owns, because that is where a panel's displayed name and description
+ * actually live. Everything else about the two is deliberately identical: the
+ * same shell, the same awaited-outcome contract, the same hover-reveal
+ * `aria-expanded` treatment.
+ */
+describe('renderDashboardTree — panel metadata pencil (#494)', () => {
+  const open = () => {
+    const fixture = treeApp();
+    // `state.savedQueries` is what `renameSaved` resolves the target against
+    // before it queues anything.
+    fixture.app.state.savedQueries = [
+      query('q1', 'Revenue', 'SELECT * FROM rev WHERE c = {country:String}'),
+    ];
+    openAll(fixture.app, 'sales');
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+  const pencil = (list: HTMLElement): HTMLButtonElement =>
+    actionBtn(list, 'w1:sales:tile:t1', 'Edit Revenue')!;
+  const nameInput = (): HTMLInputElement =>
+    document.querySelector<HTMLInputElement>('#panel-metadata-name')!;
+  const descInput = (): HTMLTextAreaElement =>
+    document.querySelector<HTMLTextAreaElement>('#panel-metadata-description')!;
+  const save = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+  it('prefills from the OWNED QUERY, not from the row label', () => {
+    const { list } = open();
+    click(pencil(list));
+    expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('Edit panel');
+    expect(nameInput().value).toBe('Revenue');
+    expect(descInput().value).toBe('');
+    // No standing caveat: this tile carries no imported title override.
+    expect(document.querySelector('.fm-dialog-note')).toBeNull();
+  });
+
+  it('warns when an imported tile title outranks the query name being edited', () => {
+    const { app, list } = treeApp();
+    const dashboards = (app.currentWorkspace as unknown as TreeWorkspace).dashboards!;
+    dashboards[0]!.tiles = [{ id: 't1', queryId: 'q1', title: 'Imported heading' }];
+    app.state.savedQueries = [query('q1', 'Revenue')];
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    // The row shows the OVERRIDE, so the pencil is named after it…
+    click(actionBtn(app.dom.dashboardTreeList!, 'w1:sales:tile:t1', 'Edit Imported heading')!);
+    // …while the field it edits is still the query's own name.
+    expect(nameInput().value).toBe('Revenue');
+    expect(document.querySelector('.fm-dialog-note')!.textContent)
+      .toContain('keeps priority over the query name');
+  });
+
+  it('commits name and description onto the owned query and closes', async () => {
+    const { list, committed } = open();
+    click(pencil(list));
+    nameInput().value = 'Revenue by region';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    descInput().value = 'Monthly';
+    save().click();
+    await settle();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(committed).toHaveLength(1);
+    const written = committed[0]!.queries[0];
+    expect(written.spec.name).toBe('Revenue by region');
+    expect(written.spec.description).toBe('Monthly');
+    // The SQL, the id and the Dashboard document are untouched — a
+    // metadata-only edit must not move a Dashboard revision.
+    expect(written.id).toBe('q1');
+    expect(written.sql).toBe('SELECT * FROM rev WHERE c = {country:String}');
+    expect(committed[0]!.dashboards).toEqual(workspace().dashboards);
+  });
+
+  it('keeps the dialog open and reports when the tile no longer owns the query', async () => {
+    const { app, list } = open();
+    // The commit re-resolves ownership at DEQUEUE time: by then this tile is
+    // gone, so nothing is written and the typed values survive.
+    app.mutateWorkspace = (async (transform) => {
+      const latest = workspace() as unknown as StoredWorkspaceV5;
+      latest.dashboards[0].tiles = [];
+      return transform(latest) === null ? { ok: false, aborted: true } : { ok: false, aborted: true };
+    }) as App['mutateWorkspace'];
+    click(pencil(list));
+    nameInput().value = 'Kept';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    save().click();
+    await settle();
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    expect(nameInput().value).toBe('Kept');
+    expect(document.querySelector('.fm-dialog-error')!.textContent)
+      .toBe('That panel is no longer part of this dashboard.');
+  });
+
+  it('keeps the trigger revealed for the dialog\'s whole lifetime', () => {
+    const { list } = open();
+    const trigger = pencil(list);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('Cancel commits nothing', async () => {
+    const { list, committed } = open();
+    click(pencil(list));
+    nameInput().value = 'Not saved';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    await settle();
+    expect(committed).toEqual([]);
+  });
+
+  it('sends the user to the tab when a linked draft\'s Spec JSON will not parse', async () => {
+    const { app, list, committed } = open();
+    // The same patch has to apply to the persisted entry AND to every linked
+    // draft; an unparseable draft blocks both, and only the tab can fix it.
+    const tab = app.state.tabs.value[0];
+    tab.savedId = 'q1';
+    tab.specText = '{"name":';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ severity: 'error', code: 'invalid-json', message: 'invalid JSON' }];
+    click(pencil(list));
+    nameInput().value = 'Revenue by region';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    save().click();
+    await settle();
+    expect(committed).toEqual([]);
+    expect(document.querySelector('.fm-dialog-error')!.textContent)
+      .toBe('This panel’s query has invalid Spec JSON in an open tab. Fix it there first.');
+  });
+
+  it('shows the aggregate\'s own diagnostic when the commit is rejected', async () => {
+    const mutateWorkspace = vi.fn(async () => ({
+      ok: false,
+      diagnostics: [{ path: [], severity: 'error', code: 'x', message: 'Storage is full' }],
+    })) as unknown as App['mutateWorkspace'];
+    const { app } = treeApp({ mutateWorkspace });
+    app.state.savedQueries = [query('q1', 'Revenue')];
+    openAll(app, 'sales');
+    renderDashboardTree(app);
+    click(pencil(app.dom.dashboardTreeList!));
+    nameInput().value = 'Revenue by region';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    save().click();
+    await settle();
+    expect(document.querySelector('.fm-dialog-error')!.textContent).toBe('Storage is full');
+  });
+});
+
+/** #494 — removing a whole Dashboard, with the queries its panels own. */
+describe('renderDashboardTree — Dashboard trash (#494)', () => {
+  const confirmItems = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+  const open = () => {
+    const fixture = treeApp();
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+  const trash = (list: HTMLElement): HTMLButtonElement =>
+    actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!;
+
+  it('CONFIRMS, naming the Dashboard and the cascade', async () => {
+    const { list, committed } = open();
+    click(trash(list));
+    expect(document.querySelector('.dash-tree-confirm .fm-section')!.textContent)
+      .toBe('Delete dashboard “Sales”? This also deletes every query its panels own.');
+    expect(confirmItems().map((item) => item.textContent)).toEqual(['Delete dashboard', 'Cancel']);
+    await settle();
+    expect(committed).toEqual([]);
+  });
+
+  it('removes the document and the queries its panels own, keeping every other Dashboard', async () => {
+    const { list, committed } = open();
+    click(trash(list));
+    click(confirmItems()[0]);
+    await settle();
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.dashboards.map((dashboard) => dashboard.id)).toEqual(['ops']);
+    // `q1` was owned by `sales`'s panel tile, so it goes with the document.
+    expect(committed[0]!.queries).toEqual([]);
+  });
+
+  it('does not navigate, expand, or delete anything when refused', async () => {
+    const { app, list, committed } = open();
+    click(trash(list));
+    click(confirmItems()[1]);
+    await settle();
+    expect(committed).toEqual([]);
+    expect(app.openDashboard).not.toHaveBeenCalled();
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
+  });
+
+  it('reports a rejected commit', async () => {
+    const mutateWorkspace = vi.fn(async () => ({
+      ok: false,
+      diagnostics: [{ path: [], severity: 'error', code: 'x', message: 'Storage is full' }],
+    })) as unknown as App['mutateWorkspace'];
+    const { app } = treeApp({ mutateWorkspace });
+    renderDashboardTree(app);
+    click(trash(app.dom.dashboardTreeList!));
+    click(confirmItems()[0]);
+    await settle();
+    expect(document.querySelector('.share-toast')!.textContent).toBe('✕ Storage is full');
   });
 });
 
 describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
+  /** #494 folded this control into the shared action cluster; it is still the
+   *  only one addressed by THIS name, and still the only one always visible. */
   const trash = (list: HTMLElement, rowKey: string): HTMLButtonElement | null =>
-    rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-del-btn');
+    rowFor(list, rowKey)
+      .querySelector<HTMLButtonElement>('.dash-tree-act[aria-label^="Delete the stored option SQL"]');
   const confirmItems = (): HTMLElement[] =>
     [...document.querySelectorAll<HTMLElement>('.dash-tree-confirm .fm-item')];
   const open = () => {
@@ -759,14 +1124,21 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
     return fixture;
   };
 
-  it('renders the trash affordance on an ORPHAN row only', () => {
+  it('renders the stored-option-SQL trash on an ORPHAN row only', () => {
     const { list } = open();
-    expect(trash(list, 'w1:sales:variable:region')).not.toBeNull();
-    // Never on an active variable, a panel, a group or the Dashboard row.
+    const button = trash(list, 'w1:sales:variable:region')!;
+    expect(button).not.toBeNull();
+    // #447's control stays ALWAYS visible, unlike #494's hover-revealed
+    // cluster: it is the only way to remove SQL nothing references any more.
+    expect(button.classList.contains('dash-tree-act-static')).toBe(true);
+    // Never on an active variable or a group. Panel and Dashboard rows have a
+    // trash of their OWN now (#494) — it deletes a different thing, and says so.
     expect(trash(list, 'w1:sales:variable:country')).toBeNull();
     expect(trash(list, 'w1:sales:tile:t1')).toBeNull();
     expect(trash(list, 'w1:sales:group:variables')).toBeNull();
     expect(trash(list, 'w1:sales')).toBeNull();
+    expect(actionNames(list, 'w1:sales:variable:region'))
+      .toEqual(['Delete the stored option SQL for region']);
   });
 
   it('names what it deletes, for the keyboard and for assistive technology', () => {
@@ -817,7 +1189,7 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
     const { app, list } = open();
     click(trash(list, 'w1:sales:variable:region')!);
     vi.advanceTimersByTime(400);
-    // The trash button bypasses row activation entirely (like the action menu).
+    // The trash button bypasses row activation entirely.
     expect(app.openVariableTab).not.toHaveBeenCalled();
     click(confirmItems()[0]);
     vi.advanceTimersByTime(400);
@@ -840,7 +1212,8 @@ describe('renderDashboardTree — deleting an orphaned variable (#447)', () => {
 
 describe('renderDashboardTree — Dashboard metadata pencil (#429 phase 3)', () => {
   const pencil = (list: HTMLElement, rowKey: string): HTMLButtonElement | null =>
-    rowFor(list, rowKey).querySelector<HTMLButtonElement>('.dash-tree-rename-btn');
+    rowFor(list, rowKey)
+      .querySelector<HTMLButtonElement>('.dash-tree-act[aria-label^="Edit dashboard"]');
   const dialogTitleInput = (): HTMLInputElement =>
     document.querySelector<HTMLInputElement>('#dash-rename-name')!;
   const dialogDescInput = (): HTMLTextAreaElement =>
@@ -1067,7 +1440,7 @@ describe('renderDashboardTree — nested action buttons own their activation key
   it('Enter on the Dashboard pencil opens the dialog and does NOT open the Dashboard', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
-    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-rename-btn')!;
+    const trigger = actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!;
     // The browser's own key-to-click synthesis is what opens the dialog; what
     // matters here is that nothing prevented it and the row did not act.
     expect(press(trigger, 'Enter')).toBe(false);
@@ -1081,15 +1454,15 @@ describe('renderDashboardTree — nested action buttons own their activation key
   it('Space on the Dashboard pencil neither navigates nor is swallowed', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
-    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-rename-btn')!;
+    const trigger = actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!;
     expect(press(trigger, ' ')).toBe(false);
     expect(app.openDashboard).not.toHaveBeenCalled();
   });
 
-  it('Enter on the ⋯ menu button does not run the row\'s primary action', () => {
+  it('Enter on the Dashboard trash does not run the row\'s primary action', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
-    const trigger = rowFor(list, 'w1:sales').querySelector<HTMLButtonElement>('.dash-tree-menu-btn')!;
+    const trigger = actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!;
     expect(press(trigger, 'Enter')).toBe(false);
     expect(app.openDashboard).not.toHaveBeenCalled();
   });
@@ -1098,8 +1471,8 @@ describe('renderDashboardTree — nested action buttons own their activation key
     const { app, list } = treeApp();
     openAll(app, 'sales');
     renderDashboardTree(app);
-    const trigger = rowFor(list, 'w1:sales:variable:region')
-      .querySelector<HTMLButtonElement>('.dash-tree-del-btn')!;
+    const trigger = actionBtn(list, 'w1:sales:variable:region',
+      'Delete the stored option SQL for region')!;
     expect(press(trigger, 'Enter')).toBe(false);
     expect(app.openVariableTab).not.toHaveBeenCalled();
   });

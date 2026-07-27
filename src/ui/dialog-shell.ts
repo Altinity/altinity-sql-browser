@@ -42,7 +42,7 @@ export interface OpenDialogShellOpts {
   /** Runs on every close path (Escape, outside-click, and whatever the caller's
    *  own content wires up) — AFTER `returnFocusTo` is focused, never before. A
    *  trigger that is only revealed on hover/`:focus-within` (the Dashboard-tree
-   *  pencil, `.dash-tree-rename-btn`) must stay revealed (e.g. `aria-expanded`
+   *  action cluster, `.dash-tree-act`) must stay revealed (e.g. `aria-expanded`
    *  kept `"true"` by the caller) right up through the `focus()` call below —
    *  by the time a dialog closes the pointer has typically moved onto the
    *  dialog's own controls, so neither `:hover` nor `:focus-within` still holds
@@ -147,6 +147,12 @@ export interface MetadataDialogOpts {
   confirmLabel: string;
   /** Prefix for the two field ids, so a `for`/`id` pair is unique per caller. */
   idPrefix: string;
+  /** A standing caveat about what this edit will and will not change, shown
+   *  from the moment the dialog opens — unlike the failure diagnostic, which
+   *  appears only after a Save. #494's imported tile-title override is the
+   *  case: the query name is editable, but the tile keeps rendering its own
+   *  imported title, and a dialog that said nothing would look broken. */
+  note?: string | null;
   returnFocusTo: HTMLElement | null;
   onClose?: () => void;
   /**
@@ -190,6 +196,7 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
   // after the dialog opened, in response to a Save the user has already made,
   // so it has to be announced rather than merely be present.
   const error = h('p', { class: 'fm-dialog-error', role: 'alert', hidden: true }) as HTMLParagraphElement;
+  const note = opts.note ? h('p', { class: 'fm-dialog-note' }, opts.note) : null;
   const cancel = h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel') as HTMLButtonElement;
   const confirm = h('button', {
     class: 'fm-dialog-confirm',
@@ -231,6 +238,7 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
       nameInput,
       h('label', { class: 'fm-dialog-label', for: descriptionId }, opts.descriptionLabel),
       descInput,
+      note,
       error),
     h('div', { class: 'fm-dialog-actions' }, cancel, confirm),
   ], {

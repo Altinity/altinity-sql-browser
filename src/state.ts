@@ -451,7 +451,16 @@ export type PatchDraftResult =
  *  dead Library row until the next activation refresh. */
 export type PatchSavedResult =
   | { ok: true; invalidTab: null; entry: SavedQueryV2 }
-  | { ok: false; invalidTab: QueryTab | null; entry: null; diagnostics?: SpecDiagnostic[]; deletedExternally?: true };
+  | {
+    ok: false; invalidTab: QueryTab | null; entry: null;
+    diagnostics?: SpecDiagnostic[]; deletedExternally?: true;
+    /** #494: the caller's own dequeue-time precondition no longer holds — for
+     *  the Dashboard tree's panel pencil, the tile that owned this query was
+     *  deleted or re-pointed while the dialog was open. Distinct from
+     *  `deletedExternally` (the QUERY itself is gone): the query is still
+     *  there, it is simply no longer the resource the caller meant to edit. */
+    guardRefused?: true;
+  };
 
 /**
  * A tab's complete `spec.panel` payload, cloned for safe use/persistence. The
@@ -1155,9 +1164,17 @@ export async function patchSavedSpec(
   id: string, patch: SpecPatch,
   mutate: MutateWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
+  guard?: (base: StoredWorkspaceV5) => boolean,
 ): Promise<PatchSavedResult> {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
+  // #494: a caller-supplied precondition, re-checked against DEQUEUE-TIME truth
+  // rather than against whatever the caller saw when it opened its dialog. The
+  // Dashboard tree's panel pencil is the first user: the query id alone does not
+  // say which tile owns it, so "still owned by the tile I was opened for" is a
+  // fact only `latest` can settle, and settling it out here would leave exactly
+  // the race the write queue exists to close.
+  let guardRefused = false;
   // The PERSISTED entry patch folds into the LATEST workspace (#343): resolve
   // the entry by id against `latest.queries` (not stale `state`) and preserve
   // every other latest query. #427 removed the Dashboard-membership half — a
@@ -1175,6 +1192,7 @@ export async function patchSavedSpec(
   let prePatchToken: string | null = null;
   const outcome = await mutate((latest) => {
     const base = baselineWorkspace(state, latest);
+    if (guard !== undefined && !guard(base)) { guardRefused = true; return null; }
     const index = base.queries.findIndex((query) => query.id === id);
     if (index < 0) return null;
     prePatchToken = queryToken(base.queries[index]);
@@ -1205,6 +1223,7 @@ export async function patchSavedSpec(
     // (invalidTab null); a blocking linked draft identifies its tab; an entry no
     // longer present in `latest` (deleted externally) aborts flagged so the
     // caller can refresh the tab association (#343 review).
+    if (guardRefused) return { ok: false, invalidTab: null, entry: null, guardRefused: true };
     if (entryDiagnostics) return { ok: false, invalidTab: null, entry: null, diagnostics: entryDiagnostics };
     // `blockedDraft` is assigned inside a `for` loop nested in the `mutate`
     // closure above; TS's control-flow narrowing loses the loop-nested closure
@@ -1258,11 +1277,17 @@ export async function patchSavedSpec(
  * Rename a saved query, keeping any linked tab's name in sync. When
  * `description` is provided (not undefined) it is set/cleared too; pass
  * undefined to leave the existing description untouched (name-only rename).
+ *
+ * `guard` (#494) is an extra precondition evaluated against the dequeue-time
+ * workspace: the Dashboard tree's panel pencil uses it to re-prove that the
+ * tile it was opened for still owns this query. A refusal commits nothing and
+ * answers `guardRefused`.
  */
 export async function renameSaved(
   state: AppState, id: string, name: unknown, description: string | null | undefined,
   mutate: MutateWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
+  guard?: (base: StoredWorkspaceV5) => boolean,
 ): Promise<PatchSavedResult | undefined> {
   const nm = String(name || '').trim();
   const index = state.savedQueries.findIndex((q) => q.id === id);
@@ -1273,7 +1298,7 @@ export async function renameSaved(
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
     patch.description = desc || undefined;
   }
-  return patchSavedSpec(state, id, patch, mutate, validationService);
+  return patchSavedSpec(state, id, patch, mutate, validationService, guard);
 }
 
 /**
