@@ -40,6 +40,8 @@ import {
   type DashboardTreeCommand, type DashboardTreeInvalid, type DashboardTreeRow, type TreeWorkspace,
 } from '../application/dashboard-tree-model.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
+import { commitDashboardRename } from '../application/dashboard-title.js';
+import { openDialogShell } from './dialog-shell.js';
 import {
   assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
 } from '../application/library-assignment-service.js';
@@ -82,6 +84,10 @@ export interface DashboardTreeApp {
   /** #428: mints the ids a panel assignment needs, through the same injected
    *  `crypto.randomUUID` seam every other producer uses. */
   genId: App['genId'];
+  /** #429 phase 3: the modal keyboard-owner stack the Dashboard-row rename
+   *  pencil's dialog acquires — the same seam every other body-mounted
+   *  overlay (File menu's dialogs, the shortcuts sheet) uses. */
+  acquireKeyboardOwner: App['acquireKeyboardOwner'];
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
@@ -660,6 +666,7 @@ function buildRow(
   }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
     h('span', { class: 'meta' }, row.meta), marker,
     row.deletable ? buildDeleteButton(app, doc, row) : null,
+    row.renamable ? buildRenameButton(app, doc, row) : null,
     row.menu.length === 0 ? null : buildMenuButton(app, doc, row));
 
   return rowEl;
@@ -809,6 +816,88 @@ function buildDeleteButton(app: DashboardTreeApp, doc: Document, row: DashboardT
     },
   }, Icon.trash());
   return trigger;
+}
+
+/**
+ * The Dashboard row's rename pencil (#429 phase 3): edit title + description
+ * on the promoted `openDialogShell` (`dialog-shell.ts`), prefilled from the
+ * current committed document. Revealed on hover/focus-within like the `⋯`
+ * button below — renaming is routine, not destructive, unlike the
+ * always-visible trash above.
+ */
+function buildRenameButton(app: DashboardTreeApp, doc: Document, row: DashboardTreeRow): HTMLElement {
+  const trigger: HTMLButtonElement = h('button', {
+    class: 'dash-tree-rename-btn', type: 'button',
+    'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+    'aria-label': 'Edit dashboard ' + row.label,
+    title: 'Edit dashboard title & description',
+    onclick: (event: MouseEvent) => {
+      event.stopPropagation();
+      app._dashTreeArbiter?.cancelFor(row.key);
+      openDashboardMetadataDialog(app, doc, trigger, row);
+    },
+  }, Icon.pencil());
+  return trigger;
+}
+
+/** Two-field (title + description) metadata dialog — distinct from the
+ *  single-field `openNameDialog` (`dialog-shell.ts`) the create flows use, so
+ *  that shared primitive stays single-purpose. Built directly on
+ *  `openDialogShell` (colocated here rather than in the shared module: it has
+ *  exactly one consumer today, matching hard rule 5's "extract a shared
+ *  primitive only when a SECOND consumer appears"). */
+function openDashboardMetadataDialog(
+  app: DashboardTreeApp, doc: Document, trigger: HTMLButtonElement, row: DashboardTreeRow,
+): void {
+  // Kept visible for the dialog's whole lifetime, exactly like `buildMenuButton`'s
+  // `[aria-expanded="true"]` CSS hook — by the time the dialog closes, the pointer
+  // has typically moved onto the dialog's own controls, so neither `:hover` nor
+  // `:focus-within` still holds on the row, and a `display: none` trigger cannot
+  // receive the focus this dialog returns to it (only e2e catches this; happy-dom
+  // enforces no CSS layout at all).
+  trigger.setAttribute('aria-expanded', 'true');
+  const current = app.currentWorkspace?.dashboards?.find((d) => d.id === row.dashboardId);
+  const titleInput = h('input', {
+    class: 'fm-dialog-input', type: 'text', id: 'dash-rename-title', spellcheck: 'false',
+    value: current?.title ?? row.label,
+  }) as HTMLInputElement;
+  const descInput = h('textarea', {
+    class: 'fm-dialog-input fm-dialog-textarea', id: 'dash-rename-description', spellcheck: 'false',
+  }) as HTMLTextAreaElement;
+  descInput.value = current?.description ?? '';
+  const confirm = h('button', {
+    class: 'fm-dialog-confirm',
+    onclick: () => commit(),
+  }, 'Save') as HTMLButtonElement;
+  const commit = (): void => {
+    const title = titleInput.value.trim();
+    if (!title) return;
+    handle.close();
+    // Fire-and-forget: a successful commit reprojects the workspace and
+    // repaints the tree/any open Dashboard surface on its own; an aborted one
+    // (the Dashboard was deleted/duplicated concurrently) leaves nothing here
+    // to undo.
+    void commitDashboardRename(app, row.dashboardId, title, descInput.value);
+  };
+  const sync = (): void => { confirm.disabled = titleInput.value.trim() === ''; };
+  titleInput.addEventListener('input', sync);
+  titleInput.addEventListener('keydown', (e) => {
+    // Enter commits from the TITLE field only — the description is a
+    // `<textarea>`, where Enter legitimately inserts a newline.
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+  });
+  const handle = openDialogShell({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, 'Edit dashboard', [
+    h('div', { class: 'fm-dialog-body' },
+      h('label', { class: 'fm-dialog-label', for: 'dash-rename-title' }, 'Dashboard title'),
+      titleInput,
+      h('label', { class: 'fm-dialog-label', for: 'dash-rename-description' }, 'Dashboard description'),
+      descInput),
+    h('div', { class: 'fm-dialog-actions' },
+      h('button', { class: 'fm-dialog-cancel', onclick: () => handle.close() }, 'Cancel'),
+      confirm),
+  ], { returnFocusTo: trigger, onClose: () => trigger.setAttribute('aria-expanded', 'false') });
+  sync();
+  setTimeout(() => { titleInput.focus(); titleInput.select(); });
 }
 
 /** The keyboard-reachable, DISCOVERABLE equivalent of the gestures a pointer-only

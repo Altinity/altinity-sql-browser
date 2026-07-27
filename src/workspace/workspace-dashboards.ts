@@ -142,6 +142,46 @@ export function withVariableConfig(
 }
 
 /**
+ * Rename ONE Dashboard's title/description, addressed by its stable id (#429
+ * phase 3). Modeled directly on `withVariableConfig`: find → build the next
+ * document with `revision + 1` → delegate the write to `replaceDashboard`,
+ * which re-validates the exactly-one-match rule at write time.
+ *
+ * `title` is trimmed at this boundary — the same "blank means blank" rule
+ * #476 settled for the read side — and a whitespace-only result REFUSES the
+ * write (`null`, commits nothing) rather than persisting an empty title the
+ * schema itself would accept (`dashboardTileV1`/Dashboard `title` carries no
+ * `minLength`). In practice this is unreachable through the pencil dialog,
+ * whose own confirm stays disabled on a blank name — this is defense in
+ * depth, not a UX path. `description: undefined` (the argument omitted)
+ * leaves the STORED description untouched; passing an explicit string trims
+ * it and OMITS the field once it would be empty, matching `renameSaved`'s
+ * `patch.description = desc || undefined` convention.
+ *
+ * Returns `null` for the same two reasons `replaceDashboard` does: the id
+ * names no entry (deleted concurrently) or names more than one (ambiguous).
+ * Never mutates `workspace`.
+ */
+export function renameDashboard(
+  workspace: StoredWorkspaceV5,
+  dashboardId: string,
+  title: string,
+  description?: string,
+): StoredWorkspaceV5 | null {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) return null;
+  const base = findDashboard(workspace, dashboardId);
+  if (base === null) return null;
+  const next: DashboardDocumentV2 = { ...base, title: trimmedTitle, revision: base.revision + 1 };
+  if (description !== undefined) {
+    const trimmedDescription = description.trim();
+    if (trimmedDescription) next.description = trimmedDescription;
+    else delete next.description;
+  }
+  return replaceDashboard(workspace, dashboardId, next);
+}
+
+/**
  * Write back the compatibility SLOT — the position the current UI edits — while
  * preserving every later Dashboard:
  *   - a document + a non-empty collection → replaces entry 0 (the imported

@@ -217,18 +217,22 @@ test.describe('Dashboard hierarchy tree', () => {
   // was folded into it ("Expand Sales revenue Sales revenue 2"). Asserted through
   // `getByRole`, which resolves names with Playwright's own accname implementation in
   // every engine — happy-dom cannot compute an accessible name at all.
-  test('the row announces itself, its chevron and its trailing action separately', async ({ page }) => {
+  test('the row announces itself, its chevron and its trailing actions separately', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     const tree = page.getByRole('tree', { name: 'Dashboards' });
     await expect(tree.getByRole('treeitem', { name: 'Sales revenue 2', exact: true })).toHaveCount(1);
     // No row's own name may contain a control's verb.
-    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
-    // The controls keep those names for themselves.
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for|Edit dashboard/ })).toHaveCount(0);
+    // The controls keep those names for themselves. The pencil is `display:
+    // none` (and thus absent from the accessibility tree) until the row is
+    // hovered or holds focus, like the trailing `⋯` it sits beside.
     await expect(tree.getByRole('button', { name: 'Expand Sales revenue' })).toHaveCount(1);
+    await treeRow(page, 'workspace:sales').hover();
+    await expect(tree.getByRole('button', { name: 'Edit dashboard Sales revenue' })).toHaveCount(1);
     await tree.getByRole('button', { name: 'Expand Sales revenue' }).click();
     await expect(tree.getByRole('button', { name: 'Collapse Sales revenue' })).toHaveCount(1);
-    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for/ })).toHaveCount(0);
+    await expect(tree.getByRole('treeitem', { name: /Expand|Collapse|Actions for|Edit dashboard/ })).toHaveCount(0);
   });
 
   test('a Dashboard Shift-click on the name opens Edit', async ({ page }) => {
@@ -306,9 +310,10 @@ test.describe('Dashboard hierarchy tree', () => {
   // #472: "focus styling must visibly distinguish the disclosure control from the
   // navigation target from the trailing action". happy-dom can see none of this, and
   // `:focus-visible` only applies under real keyboard modality — so it has to be a
-  // real Tab walk in a real browser. Which doubles as proof that all three targets
-  // are keyboard-reachable, in row order, within ONE composite tab stop.
-  test('Tab walks the row, its chevron and its trailing action, each ringed differently', async ({ page }) => {
+  // real Tab walk in a real browser. Which doubles as proof that all four targets
+  // (#429 phase 3 added the rename pencil) are keyboard-reachable, in row order,
+  // within ONE composite tab stop.
+  test('Tab walks the row, its chevron and its trailing actions, each ringed differently', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     const ring = () => page.evaluate(() => {
@@ -316,8 +321,9 @@ test.describe('Dashboard hierarchy tree', () => {
       const style = getComputedStyle(el);
       return {
         what: el.classList.contains('dash-tree-chev') ? 'chevron'
-          : el.classList.contains('dash-tree-menu-btn') ? 'menu'
-            : el.dataset.key ?? el.tagName,
+          : el.classList.contains('dash-tree-rename-btn') ? 'pencil'
+            : el.classList.contains('dash-tree-menu-btn') ? 'menu'
+              : el.dataset.key ?? el.tagName,
         outline: style.outlineStyle === 'none' ? 'none' : style.outlineWidth + ' ' + style.outlineStyle,
         shadow: style.boxShadow,
       };
@@ -331,16 +337,19 @@ test.describe('Dashboard hierarchy tree', () => {
     await page.keyboard.press('Tab');
     const chevron = await ring();
     await page.keyboard.press('Tab');
+    const pencil = await ring();
+    await page.keyboard.press('Tab');
     const menu = await ring();
 
-    expect([row.what, chevron.what, menu.what]).toEqual(['workspace:sales', 'chevron', 'menu']);
+    expect([row.what, chevron.what, pencil.what, menu.what]).toEqual(['workspace:sales', 'chevron', 'pencil', 'menu']);
     // The row rings with a box-shadow and no outline; the chevron with an outline and
-    // no shadow. Different channels, so neither reads as the other — and the trailing
-    // button matches neither.
+    // no shadow. Different channels, so neither reads as the other — and neither
+    // trailing button matches the chevron's channel.
     expect(row.shadow).not.toBe('none');
     expect(row.outline).toBe('none');
     expect(chevron.outline).toContain('solid');
     expect(chevron.shadow).toBe('none');
+    expect(pencil.outline).not.toBe(chevron.outline);
     expect(menu.outline).not.toBe(chevron.outline);
     // Nothing was opened or expanded by walking the row.
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
@@ -437,6 +446,87 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(result.overflowY).toBe('auto');
     expect(result.scrollable).toBe(true);
     expect(result.pageOverflow).toBeLessThanOrEqual(0);
+  });
+});
+
+// #429 phase 3 — the Dashboard row's rename pencil, real-browser only for the
+// same reason the Tab-order test above is: `:focus-visible` and a real
+// accessible name (`getByRole`) need a real browser, and happy-dom cannot
+// compute either.
+test.describe('Dashboard metadata pencil (#429 phase 3)', () => {
+  // `display: none` (and thus unclickable/absent from the a11y tree) until the
+  // row is hovered or holds focus, like the trailing `⋯` it sits beside —
+  // every interaction here hovers the row first, matching how the existing
+  // `.dash-tree-menu-btn` tests above reach that button.
+  const pencil = async (page, key) => {
+    const row = treeRow(page, key);
+    await row.hover();
+    return row.locator('.dash-tree-rename-btn');
+  };
+  const dialog = (page) => page.locator('.fm-dialog-card');
+
+  test('opens prefilled, edits, and commits — the tree label updates', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await (await pencil(page, 'workspace:sales')).click();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page).locator('#dash-rename-title')).toHaveValue('Sales revenue');
+    await expect(dialog(page).locator('#dash-rename-description')).toHaveValue('');
+
+    await dialog(page).locator('#dash-rename-title').fill('Sales revenue (EMEA)');
+    await dialog(page).locator('#dash-rename-description').fill('Quarterly figures');
+    await dialog(page).getByRole('button', { name: 'Save' }).click();
+    await expect(dialog(page)).toHaveCount(0);
+
+    await expect(treeRow(page, 'workspace:sales').locator('.label')).toHaveText('Sales revenue (EMEA)');
+    const committed = await page.evaluate(() => window.__committed());
+    const renamed = committed.dashboards.find((d) => d.id === 'sales');
+    expect(renamed.title).toBe('Sales revenue (EMEA)');
+    expect(renamed.description).toBe('Quarterly figures');
+    // The other Dashboard and every query are untouched.
+    expect(committed.dashboards.find((d) => d.id === 'ops').title).toBe('Ops latency');
+    expect(committed.queries).toHaveLength(3);
+  });
+
+  test('Escape and Cancel commit nothing', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await (await pencil(page, 'workspace:sales')).click();
+    await dialog(page).locator('#dash-rename-title').fill('Should not be saved');
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(treeRow(page, 'workspace:sales').locator('.label')).toHaveText('Sales revenue');
+
+    await (await pencil(page, 'workspace:sales')).click();
+    await dialog(page).locator('#dash-rename-title').fill('Should not be saved either');
+    await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(treeRow(page, 'workspace:sales').locator('.label')).toHaveText('Sales revenue');
+    const committed = await page.evaluate(() => window.__committed());
+    expect(committed.dashboards.find((d) => d.id === 'sales').title).toBe('Sales revenue');
+  });
+
+  test('a blank title disables Save, and never navigates or expands the row', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await (await pencil(page, 'workspace:sales')).click();
+    await dialog(page).locator('#dash-rename-title').fill('   ');
+    await expect(dialog(page).getByRole('button', { name: 'Save' })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  test('the trigger is accessibly labelled and returns focus to itself on close', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const trigger = await pencil(page, 'workspace:sales');
+    const tree = page.getByRole('tree', { name: 'Dashboards' });
+    await expect(tree.getByRole('button', { name: 'Edit dashboard Sales revenue' })).toHaveCount(1);
+    await trigger.click();
+    await expect(dialog(page)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
   });
 });
 

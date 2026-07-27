@@ -88,7 +88,6 @@ export interface SchemaFocus {
  * here since AppDom is the one place `app.dom`'s shape is described). */
 export interface AppDom {
   fileBtn?: HTMLElement;
-  fileDialog?: HTMLElement;
   libraryTitle?: HTMLElement;
   /** #426 — the upper sidebar pane's `Databases | Dashboards` role tab row. */
   upperRoleTabs?: HTMLElement;
