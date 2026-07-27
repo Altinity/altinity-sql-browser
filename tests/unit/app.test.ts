@@ -847,6 +847,34 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  // #466: the SAME `tabSaveDirty` predicate the tab strip's dirty dot and its
+  // own close-confirm (tabs.ts's `requestCloseTab`) read — a whole-page
+  // reload/close is the bigger version of the same data-loss gap. The
+  // listener is invoked directly (the `popstate` test's own pattern below) —
+  // every `createApp()` call in this file registers its own permanent
+  // `beforeunload` listener on the real shared `window`, so dispatching a
+  // real event would also trip every earlier test's still-attached listener.
+  it('beforeunload warns when any tab has an unsaved draft, and not otherwise', () => {
+    let listener: EventListener | null = null;
+    const addEventListener = vi.spyOn(window, 'addEventListener').mockImplementation(
+      ((type: string, callback: EventListenerOrEventListenerObject) => {
+        if (type === 'beforeunload' && typeof callback === 'function') listener = callback;
+      }) as typeof window.addEventListener,
+    );
+    const app = createApp(env());
+    addEventListener.mockRestore();
+    expect(listener).not.toBeNull();
+
+    const clean = new Event('beforeunload', { cancelable: true });
+    listener!(clean);
+    expect(clean.defaultPrevented).toBe(false);
+
+    app.state.tabs.value[0].dirtySql = true;
+    const dirty = new Event('beforeunload', { cancelable: true });
+    listener!(dirty);
+    expect(dirty.defaultPrevented).toBe(true);
+  });
+
   it('a corrupt reload warns and keeps the projection without wedging the queue', async () => {
     const app = createApp(env());
     await seedActiveWorkspace(app, q1ws());

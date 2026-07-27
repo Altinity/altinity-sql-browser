@@ -2165,6 +2165,18 @@ export function createApp(env: CreateAppEnv = {}): App {
   if (typeof doc.addEventListener === 'function') {
     doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
   }
+  // #466: warn on a whole-page reload/close too, not just a tab-strip close —
+  // the same `tabSaveDirty` predicate the tab strip's dirty dot and its own
+  // close-confirm (tabs.ts's `requestCloseTab`) already read. Setting
+  // `returnValue` is the legacy incantation browsers still require to show
+  // their own native prompt; the prompt's own text is never user-controllable.
+  if (typeof win.addEventListener === 'function') {
+    win.addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
+      if (!app.state.tabs.value.some(tabSaveDirty)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+  }
 
   const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
     const listed = await app.workspace.list();

@@ -122,6 +122,37 @@ test('typing marks the tab dirty, and Spec mode is refused with a variable-speci
     .toHaveAttribute('title', 'A dashboard variable has no Spec.');
 });
 
+// #466 — closing a dirty tab (either kind) confirms first, through a REAL click
+// → popover → click round trip happy-dom cannot render at all.
+test('closing a dirty variable tab confirms first; Cancel keeps the draft open', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.type('x');
+
+  await page.locator('.qtab.active .close').click();
+  await expect(page.locator('.qtab-close-confirm')).toBeVisible();
+  await expect(page.locator('.qtab-close-confirm .fm-section')).toContainText('Close “Variable: zone”?');
+  await page.locator('.qtab-close-confirm-cancel').click();
+
+  await expect(page.locator('.qtab-close-confirm')).toHaveCount(0);
+  await expect(tabNames(page)).toHaveText(['Untitled', 'Variable: zone']);
+  await expect(page.locator('.qtab.active .dirty')).toHaveCount(1); // draft untouched
+});
+
+test('confirming the close discards the dirty tab', async ({ page }) => {
+  await open(page);
+  await openVariable(page, 'sales', 'zone');
+  await sqlEditor(page).click();
+  await page.keyboard.type('x');
+
+  await page.locator('.qtab.active .close').click();
+  await page.locator('.qtab-close-confirm-go').click();
+
+  await expect(page.locator('.qtab-close-confirm')).toHaveCount(0);
+  await expect(tabNames(page)).toHaveText(['Untitled']);
+});
+
 test('Run executes a valid variable query through the bounded probe and displays its rows', async ({ page }) => {
   await open(page);
   await openVariable(page, 'sales', 'zone');

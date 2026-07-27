@@ -166,6 +166,13 @@ export interface ActionsRegistry {
   cancel(): void;
   newTab(): void;
   selectTab(id: string): void;
+  /** The UNCONDITIONAL primitive (`tabs.ts`'s own `closeTab`) — never asks
+   *  first, even for a dirty draft. The tab strip's own close button does NOT
+   *  call this: it goes through `tabs.ts`'s `requestCloseTab`, which confirms
+   *  a dirty tab before delegating here (#466). Wiring a future trigger
+   *  (keybinding, command palette, context menu) to this action directly
+   *  would silently skip that guard — prefer `requestCloseTab` for anything
+   *  reachable from user interaction. */
   closeTab(id: string): void;
   loadIntoNewTab(queryOrName: string | Json, sql?: string): void;
   login(idpId?: string, targetOrigin?: string): Promise<void>;

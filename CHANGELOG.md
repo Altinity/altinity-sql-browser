@@ -10,6 +10,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Closing a dirty tab, or leaving the page, now confirms first** (#466). The
+  tab strip's close button asks before discarding an unsaved draft — a normal
+  query tab or a Dashboard-variable's option SQL, saved-linked or never saved
+  anywhere — instead of dropping it unconditionally; Cancel keeps the tab open
+  exactly as it was. Reloading or closing the browser tab/window while any tab
+  still holds an unsaved draft now shows the browser's own native confirmation
+  too. Both read the same dirty predicate the tab's own dirty-dot indicator
+  already used, so nothing needed reclassifying — a never-saved scratch tab
+  gets the same protection as a saved query.
 - **A Dashboard row's pencil edits its title and description** (#429 phase 3).
   Revealed on hover/focus-within next to the existing `⋯`, it opens a small
   dialog prefilled from the Dashboard's own committed document — Cancel and
