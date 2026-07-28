@@ -892,8 +892,6 @@ export async function exportQuery(ctx: ChCtx, sql: string, opts: ExportQueryOpti
  *   (e.g. multiquery SELECTs pass their own cap + session_id)
  * @param onLine  called per parsed stream object in streaming mode
  * @param onChunk  called once per read chunk in streaming mode
- * @param onRaw  unused by `runQuery` itself — the caller reads `.raw` off the
- *   returned result instead; kept for parity with the original docstring
  */
 export interface RunQueryOptions {
   format?: string;
@@ -903,7 +901,6 @@ export interface RunQueryOptions {
   params?: Record<string, string | number>;
   onLine?: (line: StreamLine) => void;
   onChunk?: () => void;
-  onRaw?: (text: string) => void;
 }
 
 /** `runQuery`'s result: a query error, a raw-mode body, or a completed stream. */
@@ -916,12 +913,12 @@ export interface RunQueryResult {
 /**
  * Run a query in streaming mode (JSONStringsEachRowWithProgress) or raw mode
  * (TSV/JSON). `onLine(parsedObj)` is called per stream object in streaming
- * mode; `onRaw(text)` once for raw mode. Returns { error } or { raw } shape via
+ * mode. Returns { error } or { raw } shape via
  * the result object the caller passes in `apply`.
  *
  * @param ctx
  * @param sql
- * @param o  { format, signal, resultRowLimit, params, onLine(json), onChunk(), onRaw(text) }
+ * @param o  { format, signal, resultRowLimit, params, onLine(json), onChunk() }
  *           `resultRowLimit` caps a normal result server-side (max_result_rows +
  *           result_overflow_mode); `params` are extra query-string options that ride
  *           alongside query_id (e.g. multiquery SELECTs pass their own cap + session_id).

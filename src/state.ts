@@ -9,7 +9,6 @@ import {
 } from './core/saved-query.js';
 import type { QueryRoot } from './core/saved-query.js';
 import { decodeStoredSavedQueries as decodeStoredSavedQueriesUntyped } from './core/library-codec.js';
-import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import {
   loadJSON as loadJSONUntyped, saveJSON as saveJSONUntyped,
   loadStr as loadStrUntyped,
@@ -351,8 +350,6 @@ export interface AppState {
   theme: string;
   density: string;
   resultRowLimit: number;
-  dashLayout: string;
-  dashCols: number;
   sidebarPx: number;
   editorPct: number;
   sideSplitPct: number;
@@ -495,8 +492,6 @@ export const KEYS = {
    *  on purpose: the concept it names is still live, it is not a Dashboard
    *  variable, and this is a persisted key besides. */
   filterActive: 'asb:filterActive',
-  dashLayout: 'asb:dashLayout',
-  dashCols: 'asb:dashCols',
   varRecent: 'asb:varRecent',
   varRecentDisabled: 'asb:varRecentDisabled',
   /** Isolated per-dashboard Dashboard-variable persistence (#303 Option B) — a
@@ -634,11 +629,6 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // One persisted preference, default 500; a non-option stored value snaps
     // back to the default so the selector always reflects a real choice.
     resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),
-    // Dashboard layout prefs (#149 D2), persisted per browser. Plain (non-signal)
-    // like theme/density — the standalone dashboard page reads them at build time
-    // and mutates + re-saves on the Arrange/Report + column-count controls.
-    dashLayout: normalizeDashLayout(read.loadStr(KEYS.dashLayout, 'arrange')),
-    dashCols: normalizeDashCols(parseInt(read.loadStr(KEYS.dashCols, '3'), 10)),
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),

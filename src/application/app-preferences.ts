@@ -8,9 +8,8 @@
 // Narrow scope (plan review): this service owns ONLY the persist half of
 // each preference. Every write site except `toggleTheme` already mutates its
 // own state field itself (splitters.ts sets `ctx.state.sidebarPx` before
-// calling `ctx.save(...)`; dashboard.ts sets `state.dashLayout`/`dashCols`
-// before calling `app.prefs.save(...)` directly — #276 Phase 5 deleted the
-// flat `App.savePref` delegate; app.ts's `setResultRowLimit` sets
+// calling `ctx.save(...)`; #276 Phase 5 deleted the flat `App.savePref`
+// delegate; app.ts's `setResultRowLimit` sets
 // `state.resultRowLimit` first) — so `save(name, value)` is a pure typed
 // persist call, no state slice needed. `toggleTheme` is the one exception
 // (issue ruling): the state flip AND the persist happen together here: the
@@ -29,7 +28,7 @@ import { KEYS } from '../state.js';
  *  untouched by this service. */
 export type PreferenceKey =
   | 'theme' | 'sidebarPx' | 'editorPct' | 'sideSplitPct' | 'cellDrawerPx'
-  | 'sidePanel' | 'resultRowLimit' | 'dashLayout' | 'dashCols'
+  | 'sidePanel' | 'resultRowLimit'
   // #313 — the documentation pane's own persisted resize width, a sibling of
   // cellDrawerPx (never shared with it — see splitters.ts's 'docPane' axis).
   | 'docPanePx';
@@ -48,7 +47,7 @@ export interface AppPreferencesDeps {
 export interface AppPreferences {
   /** Generic persist-only setter — the exact `(name, value)` shape app.ts's
    *  former `App.savePref` delegate used to expose (#276 Phase 5 deleted it;
-   *  dashboard.ts/saved-history.ts/splitters.ts's callers call `app.prefs.save`
+   *  saved-history.ts/splitters.ts's callers call `app.prefs.save`
    *  directly now). This IS the service's write API: per-key typed setters
    *  were considered and dropped (review) — every real call site already
    *  holds a validated `{name, value}` pair, so a per-key surface would ship

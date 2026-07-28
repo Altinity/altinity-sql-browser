@@ -152,8 +152,6 @@ describe('KEYS — persisted localStorage key names (#459)', () => {
       resultRowLimit: 'asb:resultRowLimit',
       varValues: 'asb:varValues',
       filterActive: 'asb:filterActive',
-      dashLayout: 'asb:dashLayout',
-      dashCols: 'asb:dashCols',
       varRecent: 'asb:varRecent',
       varRecentDisabled: 'asb:varRecentDisabled',
       dashFilters: 'asb:dashFilters',
@@ -211,8 +209,6 @@ describe('createState', () => {
     // real committed id once resolved.
     expect(s.dashboard).toBeNull();
     expect(s.workspaceId).toMatch(/^ws-/);
-    expect(s.dashLayout).toBe('arrange');
-    expect(s.dashCols).toBe(3);
     expect(s.varValues).toEqual({});
     expect(s.filterActive).toEqual({}); // #165: own key, defaults empty
     expect(s.varRecent).toEqual({ version: 1, nextSeq: 1, byName: {} }); // #171: own key, defaults empty
@@ -230,8 +226,6 @@ describe('createState', () => {
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
       [KEYS.libraryName]: 'My team queries',
-      [KEYS.dashLayout]: 'report',
-      [KEYS.dashCols]: '2',
       [KEYS.varValues]: { d: 'stale' },
       [KEYS.filterActive]: { d: false },
       [KEYS.varRecent]: { version: 1, nextSeq: 3, byName: { d: [{ value: 'x', seq: 2 }] } },
@@ -239,8 +233,6 @@ describe('createState', () => {
     }));
     expect(s.theme).toBe('light');
     expect(s.libraryName.value).toBe('My team queries');
-    expect(s.dashLayout).toBe('report');
-    expect(s.dashCols).toBe(2);
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);

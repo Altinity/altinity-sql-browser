@@ -47,13 +47,6 @@ describe('buildCardModel', () => {
     const cols: SchemaCardColumnRow[] = [{ name: 'id', type: 'UInt64', position: 1 }];
     const bare = buildCardModel({ label: 'db.t', kind: 'table' }, {}, cols);
     expect((bare as CardModelWithLegacyProbe).skipLine).toBeUndefined();
-    // Passing legacy skip-index rows (a heavily-indexed table) is ignored: the
-    // model — and therefore the card geometry — is byte-identical either way.
-    const idx = Array.from({ length: 20 }, (_, i) => ({ name: 'a_very_long_skip_index_name_' + i, type: 'bloom_filter(0.01)' }));
-    const withIdx = buildCardModel({ label: 'db.t', kind: 'table' }, {}, cols, idx);
-    expect((withIdx as CardModelWithLegacyProbe).skipLine).toBeUndefined();
-    expect(withIdx).toEqual(bare);
-    expect(cardSize(withIdx)).toEqual(cardSize(bare));
   });
   it('degrades to a header-only card for a leaf with no row/columns', () => {
     const leaf = buildCardModel({ id: 'ext:mysql', label: 'mysql', kind: 'external' });
