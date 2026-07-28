@@ -102,10 +102,43 @@ controls replace authenticated actions. In-place Basic login creates a fresh
 scope for the new credential epoch and reloads connection-scoped metadata
 without rebuilding the shell. Its inline form is reusable: a successful
 recovery resets submission state, clears the password, and hides password
-visibility, so a later loss can be recovered the same way. Inline OAuth is
-deliberately unavailable until the Phase 3 checkpoint. Explicit Log out is the
-separate destructive policy: it closes the scope, tears down the workbench and
-Dashboard, clears credentials, and renders the signed-out login surface.
+visibility, so a later loss can be recovered the same way.
+
+OAuth reauthentication must reload the page, so it crosses that boundary with
+a separate, versioned `sessionStorage` checkpoint. The checkpoint is written
+only for save-relevant dirty work and is bound to both the generated OAuth
+state and the current workspace id/key. It contains authored document state
+only: tab order and identity, query or Dashboard-variable bindings, SQL and raw
+Spec drafts, editor mode, dirty flags, and saved-query reconciliation metadata.
+It never contains credentials, results, ClickHouse session ids, result-column
+metadata, or running/export state. A retained checkpoint is rebound to a new
+OAuth state on retry without replacing its drafts. Retry authority is kept
+separately in a tab-scoped, TTL-bound validated-callback marker containing only
+the callback state and validation time; a checkpoint alone never authorizes an
+automatic restore. Starting a new OAuth attempt invalidates an older marker.
+
+After a successful callback, bootstrap restores the return route and loads the
+committed workspace normally. It then applies a matching checkpoint, reconciles
+linked tabs, and revalidates every raw Spec draft before the first signed-in
+render; invalid in-progress Spec text remains byte-for-byte authored while its
+diagnostics are rebuilt. Workspace-unavailable and prepublication storage or
+validator failures retain the recovery unpublished. A valid pending recovery
+suppresses legacy shared content and retries only after an authoritative
+workspace load; it never replaces newer save-relevant dirty work in RAM. Its
+validated-callback marker is retired before publication. The ordinary dirty
+unload guard is restored before the checkpoint is consumed. Malformed,
+unsupported, logically expired after 15 minutes, or workspace-mismatched
+checkpoints are ineligible and cleared best-effort while normal bootstrap
+continues; an OAuth-state mismatch is not consumed, so an older callback cannot
+apply or destroy a newer retry. TTL expiry controls restore eligibility and
+does not promise eager physical deletion from browser storage. The one-shot
+unload bypass is armed only after a durable checkpoint write; a write failure
+leaves navigation and the normal dirty guard untouched.
+
+Explicit Log out remains the separate destructive policy: it closes the scope,
+tears down the workbench and Dashboard, clears credentials and any pending
+OAuth document checkpoint and validated-callback marker, and renders the
+signed-out login surface.
 
 Connection lifecycle ownership follows the same rule. `ConnectionSession`
 publishes one read-only signal and assigns a monotonically increasing

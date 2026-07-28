@@ -17,11 +17,9 @@ import { createCodeViewer } from './editor/code-viewer.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
-import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
+import { queryPanel } from './core/saved-query.js';
 import { normalizeSqlRouteSearch, parseSqlRoute } from './core/sql-route.js';
-import { isQuerylessPanel } from './core/panel-cfg.js';
-import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
-import type { State } from './ui/app.types.js';
+import type { OAuthDocumentRecoveryApplyResult } from './ui/app.types.js';
 import type { BootstrapEnv } from './env.types.js';
 import type { ConnectionSession } from './application/connection-session.js';
 import type { SpecEditorApp } from './editor/spec-editor.js';
@@ -36,7 +34,6 @@ import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
  *  the flat `App` delegates were deleted; `loadConfig` is now `resolveConfig`,
  *  its real name on `ConnectionSession`). */
 export interface BootstrapApp {
-  state: Pick<State, 'tabs' | 'resultView'>;
   catalog: { loadVersion(): Promise<void> };
   conn: Pick<ConnectionSession,
     'basePath' | 'isSignedIn' | 'resolveConfig' | 'setTokens' | 'ensureConfig'>;
@@ -56,10 +53,18 @@ export interface BootstrapApp {
    *  return value is never read here (`Promise<unknown>` is enough for
    *  `bootstrap`'s own purposes). */
   loadWorkspaceOnBoot(): Promise<unknown>;
+  /** Restore an OAuth-state-bound document session after the committed
+   * workspace has loaded. The application owns validation and recovery-key
+   * lifecycle; bootstrap only decides whether legacy share seeding still runs.
+   */
+  restoreOAuthDocumentRecovery(callbackState: string): OAuthDocumentRecoveryApplyResult;
+  /** Retry a callback-marked pending recovery after an authoritative workspace
+   * load. A plain checkpoint without that marker returns a non-restored result. */
+  retryPendingOAuthDocumentRecovery(): OAuthDocumentRecoveryApplyResult;
+  /** Consume the one-shot shared-link handoff after workspace load. A restored
+   * OAuth document passes false so shared content is discarded, never merged. */
+  consumeLegacyShared(allowRestore: boolean, consumedHandoff: string | null): boolean;
 }
-
-/** `app.state.resultView`'s value union, reused at the one cast below. */
-type ResultView = State['resultView']['value'];
 
 export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{ callbackError: string | null; signedIn: boolean }> {
   const loc = env.location;
@@ -85,6 +90,10 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   const expectedState = ss.getItem('oauth_state');
   const errorParam = u.searchParams.get('error');
   let callbackError: string | null = null;
+  // Recovery is bound to a fully completed callback, not merely a matching
+  // state parameter. In particular, a failed callback must leave a retained
+  // checkpoint retryable and must not ask the application to consume it.
+  let successfulCallbackState: string | null = null;
 
   if (errorParam) {
     // The IdP bounced back with an error (e.g. ?error=access_denied) instead of
@@ -108,6 +117,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
         const bearer = bearerFromTokens(tokens, cfg.bearer);
         if (!bearer) throw new Error('Token response missing bearer token');
         app.conn.setTokens(bearer, tokens.refresh_token);
+        successfulCallbackState = stateParam;
       } catch (e) {
         callbackError = 'OAuth token exchange failed: ' + ((e instanceof Error && e.message) || e);
       }
@@ -152,62 +162,48 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   // The dashboard route has no editor tab to seed, so it skips this entirely.
   // Gates are `sql || panel` (#166): a text panel legitimately has no SQL, so
   // a sql-only check would silently drop its share link.
-  if (!dash) {
-    let shared = decodeShare(loc.hash);
-    if (shared.sql || queryPanel(shared)) ss.setItem('oauth_shared', JSON.stringify(shared));
-    else {
-      // The stash is a second deserialization point that bypasses decodeShare —
-      // it may hold a pre-#166 `{sql, chart}` stash, so upgrade applies here too.
-      try {
-        // `JSON.parse`'s own return is untyped; the ingress shape here is the
-        // same loosely-checked `Record<string, unknown>` saved-query.js's own
-        // helpers (isPlainObject et al.) treat arbitrary stored JSON as.
-        const raw = (JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '' }) as Record<string, unknown>;
-        shared = upgradeSavedQuery(raw.specVersion == null
-          ? { name: 'Shared query', ...raw }
-          : raw);
-      } catch { shared = decodeShare(''); }
-    }
-    const panel = queryPanel(shared);
-    if (shared.sql || panel) {
-      const t0 = app.state.tabs.value[0];
-      t0.sqlDraft = shared.sql;
-      t0.name = queryName(shared);
-      t0.specVersion = shared.specVersion;
-      setTabSpecDraft(t0, cloneJson(shared.spec));
-      // Restore the initial result view the share carries, regardless of whether
-      // it also carries SQL to run — a SQL-bearing share never auto-runs here,
-      // so this only pre-selects the drawer the recipient lands on before they
-      // click Run. (#447 dropped the role-owned transient preview that used to
-      // take precedence here: the Filter role was its only owner.)
-      const launchView = queryView(shared);
-      // Normalize a legacy `view: 'chart'` (pre-Panel shares) to 'panel', then
-      // validate against the resultView union before assigning (#266): the v2
-      // tagged decode passes `spec.view` through verbatim, so a crafted share
-      // link could otherwise set `resultView` to an arbitrary string. Mirrors
-      // ui/saved-history.ts's own `SAVED_VIEWS.has(...)` guard — a persisted
-      // table/json/panel restores, and any other value silently falls back to
-      // the default view. `as`: that check is the runtime proof `normalized` is
-      // a resultView member.
-      const normalized = launchView === 'chart' ? 'panel' : launchView;
-      if (SAVED_VIEWS.has(normalized ?? '')) app.state.resultView.value = normalized as ResultView;
-      // A queryless panel with no role/persisted view (no SQL to run) still
-      // needs the Panel drawer open, or the recipient lands on an empty Table
-      // view and sees nothing.
-      else if (!shared.sql && isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
-      hist.replaceState(null, '', loc.pathname + loc.search);
-    }
+  const sharedFromHash = !dash ? decodeShare(loc.hash) : null;
+  if (sharedFromHash && (sharedFromHash.sql || queryPanel(sharedFromHash))) {
+    ss.setItem('oauth_shared', JSON.stringify(sharedFromHash));
   }
 
   if (app.conn.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.
-    ss.removeItem('oauth_shared'); // consumed
     // Resolve config first so the header shows the real CH identity (the
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
     app.resumeAuthenticatedExecution();
-    await app.loadWorkspaceOnBoot();
+    const workspace = await app.loadWorkspaceOnBoot();
+    // A successful OAuth callback may restore its authored document session
+    // now that the committed workspace projection is ready. A valid recovery
+    // wins over (and deliberately never merges with) a legacy shared query.
+    const recovery = successfulCallbackState === null
+      ? (workspace ? app.retryPendingOAuthDocumentRecovery() : null)
+      : app.restoreOAuthDocumentRecovery(successfulCallbackState);
+    // Both paths consume the legacy handoff exactly once. Any application-level
+    // restored outcome (including retained finalization warnings), and a
+    // deferred validated recovery authority, suppress shared content. Deferred
+    // recovery remains unpublished, so the normal workspace renders while its
+    // checkpoint is retained for a later retry.
+    let legacyShared: string | null = null;
+    let legacySharedTaken = false;
+    try {
+      legacyShared = ss.getItem('oauth_shared');
+      ss.removeItem('oauth_shared');
+      legacySharedTaken = true;
+    } catch {
+      // Storage cleanup is independent finalization. In particular, a storage
+      // backend that also rejected recovery-checkpoint removal must not hide
+      // already-published tabs. Without a confirmed one-shot take, suppress
+      // rather than apply the legacy handoff.
+    }
+    app.consumeLegacyShared(
+      recovery?.kind !== 'restored'
+        && recovery?.kind !== 'retry-deferred-retained'
+        && legacySharedTaken,
+      legacyShared,
+    );
     app.renderCurrentSurface();
     void app.catalog.loadVersion();
   } else {

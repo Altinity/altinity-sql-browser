@@ -1,10 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
 import { bootstrap } from '../../src/main.js';
 import type { BootstrapApp } from '../../src/main.js';
-import { newTabObj, tabPanel } from '../../src/state.js';
+import { newTabObj, SAVED_VIEWS, setTabSpecDraft, tabPanel } from '../../src/state.js';
 import { signal } from '@preact/signals-core';
+import {
+  cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery,
+} from '../../src/core/saved-query.js';
+import { isQuerylessPanel } from '../../src/core/panel-cfg.js';
 import type { BootstrapEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig } from '../../src/net/oauth-config.js';
+import type { State } from '../../src/ui/app.types.js';
+import {
+  OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY,
+  OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
+  encodeOAuthDocumentRecoveryValidatedCallback,
+} from '../../src/core/oauth-document-recovery.js';
 
 // Node's own global (no `@types/node` in this project — see dashboard.test.ts's
 // own note on the same constraint); this suite runs under Vitest/Node, where
@@ -25,7 +35,10 @@ const valid = jwt({ email: 'me@x.com', exp: Math.floor(Date.now() / 1000) + 3600
 const asLocation = (v: object): Location => v as Location;
 const asFetch = (v: object): typeof fetch => v as typeof fetch;
 
-type FakeApp = BootstrapApp & { token: string | null };
+type FakeApp = BootstrapApp & {
+  token: string | null;
+  state: Pick<State, 'tabs' | 'resultView'>;
+};
 
 // `conn` overrides are merged onto the default stub (not a full-object
 // replace) so a test can override e.g. just `isSignedIn` without losing the
@@ -59,10 +72,48 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
     // behavior itself is app.test.ts's/state.test.ts's concern, not
     // bootstrap's own).
     loadWorkspaceOnBoot: vi.fn(async () => null),
+    // The real application owns recovery validation/consumption. Most bootstrap
+    // paths have no successful OAuth callback, and therefore never call this;
+    // the default result keeps successful-callback tests on the legacy-share
+    // fallback path unless they explicitly exercise recovery.
+    restoreOAuthDocumentRecovery: vi.fn(() => ({ kind: 'absent' })),
+    retryPendingOAuthDocumentRecovery: vi.fn(() => ({ kind: 'absent' })),
+    // Bootstrap owns handoff consumption; this fixture mirrors the real app's
+    // pure application step so the long-standing share compatibility cases
+    // remain bootstrap integration coverage rather than mock-only call checks.
+    consumeLegacyShared: vi.fn((allowRestore: boolean, encoded: string | null) => {
+      if (!allowRestore || encoded === null) return false;
+      let shared;
+      try {
+        const raw = JSON.parse(encoded) as Record<string, unknown>;
+        shared = upgradeSavedQuery(raw.specVersion == null
+          ? { name: 'Shared query', ...raw }
+          : raw);
+      } catch {
+        return false;
+      }
+      const panel = queryPanel(shared);
+      if (!shared.sql && !panel) return false;
+      const tab = self.state.tabs.value[0];
+      tab.sqlDraft = shared.sql;
+      tab.name = queryName(shared);
+      tab.specVersion = shared.specVersion;
+      setTabSpecDraft(tab, cloneJson(shared.spec));
+      const launchView = queryView(shared);
+      const normalized = launchView === 'chart' ? 'panel' : launchView;
+      if (SAVED_VIEWS.has(normalized ?? '')) {
+        self.state.resultView.value = normalized as State['resultView']['value'];
+      } else if (!shared.sql && isQuerylessPanel(panel)) {
+        self.state.resultView.value = 'panel';
+      }
+      return true;
+    }),
     ...rest,
   } as FakeApp;
   return self;
 }
+
+const signedInApp = (): FakeApp => fakeApp({ token: valid, conn: { isSignedIn: () => true } });
 
 // `over` only ever supplies `location`/`fetch`/`opener` at real call sites below;
 // each is merged explicitly (not spread) so `history.replaceState` keeps its
@@ -154,6 +205,126 @@ describe('bootstrap', () => {
     expect(out.signedIn).toBe(true);
   });
 
+  it('restores a marked pending recovery on token reload before render and suppresses shared content', async () => {
+    let renderedSql = '';
+    const app = fakeApp({
+      token: valid,
+      conn: { isSignedIn: () => true },
+      loadWorkspaceOnBoot: vi.fn(async () => ({ key: 'recovery' })),
+      renderCurrentSurface: vi.fn(() => { renderedSql = app.state.tabs.value[0].sqlDraft; }),
+    });
+    app.retryPendingOAuthDocumentRecovery = vi.fn(() => {
+      app.state.tabs.value[0].sqlDraft = 'SELECT pending recovery';
+      return {
+        kind: 'restored',
+        finalization: 'checkpoint-retained',
+        warning: 'checkpoint-remove-failed',
+      } as const;
+    });
+    const env = fakeEnv();
+    env.sessionStorage.setItem('oauth_document_recovery', 'marked checkpoint fixture');
+    env.sessionStorage.setItem(
+      OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY,
+      encodeOAuthDocumentRecoveryValidatedCallback({
+        version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
+        oauthState: 'pending-state',
+        validatedAt: Date.now(),
+      }),
+    );
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT shared must lose',
+      specVersion: 1,
+      spec: { name: 'Shared query', favorite: false },
+    }));
+
+    await bootstrap(app, env);
+
+    expect(renderedSql).toBe('SELECT pending recovery');
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
+    expect(app.restoreOAuthDocumentRecovery).not.toHaveBeenCalled();
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+    expect(vi.mocked(app.loadWorkspaceOnBoot).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0]);
+    expect(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
+  });
+
+  it('does not restore an ordinary checkpoint without the pending marker on token reload', async () => {
+    const app = fakeApp({
+      token: valid,
+      conn: { isSignedIn: () => true },
+      loadWorkspaceOnBoot: vi.fn(async () => ({ key: 'recovery' })),
+    });
+    app.retryPendingOAuthDocumentRecovery = vi.fn(() => ({ kind: 'absent' } as const));
+    const env = fakeEnv();
+    env.sessionStorage.setItem('oauth_document_recovery', 'unmarked checkpoint fixture');
+
+    await bootstrap(app, env);
+
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
+    expect(app.restoreOAuthDocumentRecovery).not.toHaveBeenCalled();
+    expect(app.state.tabs.value[0].sqlDraft).toBe('');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('discards the shared handoff when pending recovery is deferred before publication', async () => {
+    let renderedSql = '';
+    const app = fakeApp({
+      token: valid,
+      conn: { isSignedIn: () => true },
+      loadWorkspaceOnBoot: vi.fn(async () => ({ key: 'recovery' })),
+      renderCurrentSurface: vi.fn(() => { renderedSql = app.state.tabs.value[0].sqlDraft; }),
+    });
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
+    const env = fakeEnv();
+    env.sessionStorage.setItem('oauth_document_recovery', 'retained checkpoint');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT shared must never appear',
+      specVersion: 1,
+      spec: { name: 'Shared fallback', favorite: false },
+    }));
+
+    await expect(bootstrap(app, env)).resolves.toMatchObject({ signedIn: true });
+
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(renderedSql).toBe('');
+    expect(env.sessionStorage.getItem('oauth_document_recovery')).toBe('retained checkpoint');
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it('still renders deferred recovery authority when shared handoff cleanup fails', async () => {
+    const app = fakeApp({
+      token: valid,
+      conn: { isSignedIn: () => true },
+      loadWorkspaceOnBoot: vi.fn(async () => ({ key: 'recovery' })),
+    });
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
+    const env = fakeEnv();
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT retained handoff must not render',
+      specVersion: 1,
+      spec: { name: 'Suppressed share', favorite: false },
+    }));
+    const removeItem = env.sessionStorage.removeItem;
+    env.sessionStorage.removeItem = vi.fn((key: string) => {
+      if (key === 'oauth_shared') throw new Error('raw cleanup failure');
+      removeItem.call(env.sessionStorage, key);
+    });
+
+    await expect(bootstrap(app, env)).resolves.toMatchObject({ signedIn: true });
+
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(app.state.tabs.value[0].sqlDraft).toBe('');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
   it('exchanges the OAuth code on a valid callback', async () => {
     const app = fakeApp();
     const env = fakeEnv({
@@ -164,8 +335,155 @@ describe('bootstrap', () => {
     env.sessionStorage.setItem('oauth_verifier', 'v');
     await bootstrap(app, env);
     expect(app.conn.setTokens).toHaveBeenCalledWith(valid, undefined);
+    expect(app.restoreOAuthDocumentRecovery).toHaveBeenCalledWith('st');
+    expect(app.retryPendingOAuthDocumentRecovery).not.toHaveBeenCalled();
     expect(env.history.replaceState).toHaveBeenCalled();
     expect(app.renderCurrentSurface).toHaveBeenCalled();
+  });
+
+  it('loads the workspace, restores a successful callback recovery, then renders it before any shared placeholder', async () => {
+    let renderedSql = '';
+    const restore = vi.fn(() => {
+      const tab = app.state.tabs.value[0];
+      tab.sqlDraft = 'SELECT recovered';
+      tab.name = 'Recovered draft';
+      return { kind: 'restored', finalization: 'complete' } as const;
+    });
+    const app = fakeApp({
+      renderCurrentSurface: vi.fn(() => { renderedSql = app.state.tabs.value[0].sqlDraft; }),
+    });
+    app.restoreOAuthDocumentRecovery = restore;
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql',
+        search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({ ok: true, json: async () => ({ id_token: valid }), text: async () => '' }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_verifier', 'v');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT shared', specVersion: 1, spec: { name: 'Shared query', favorite: false },
+    }));
+
+    await bootstrap(app, env);
+
+    expect(restore).toHaveBeenCalledWith('st');
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT recovered');
+    expect(renderedSql).toBe('SELECT recovered');
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+    expect(vi.mocked(app.loadWorkspaceOnBoot).mock.invocationCallOrder[0])
+      .toBeLessThan(restore.mock.invocationCallOrder[0]);
+    expect(restore.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
+  });
+
+  it.each([
+    'spec-revalidation-failed',
+    'checkpoint-remove-failed',
+  ] as const)('renders published recovery when %s finalization fails and never falls back to shared content', async (warning) => {
+    let renderedSql = '';
+    const app = fakeApp({
+      renderCurrentSurface: vi.fn(() => { renderedSql = app.state.tabs.value[0].sqlDraft; }),
+    });
+    app.restoreOAuthDocumentRecovery = vi.fn(() => {
+      app.state.tabs.value[0].sqlDraft = 'SELECT recovered despite warning';
+      return { kind: 'restored', finalization: 'checkpoint-retained', warning } as const;
+    });
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql',
+        search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({
+        ok: true, json: async () => ({ id_token: valid }), text: async () => '',
+      }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_verifier', 'v');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT must not replace recovery',
+      specVersion: 1,
+      spec: { name: 'Shared query', favorite: false },
+    }));
+
+    await expect(bootstrap(app, env)).resolves.toMatchObject({ signedIn: true });
+
+    expect(renderedSql).toBe('SELECT recovered despite warning');
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+  });
+
+  it('renders recovered tabs when storage-wide removal also rejects legacy handoff cleanup', async () => {
+    let renderedSql = '';
+    const app = fakeApp({
+      renderCurrentSurface: vi.fn(() => { renderedSql = app.state.tabs.value[0].sqlDraft; }),
+    });
+    app.restoreOAuthDocumentRecovery = vi.fn(() => {
+      app.state.tabs.value[0].sqlDraft = 'SELECT retained recovery';
+      return {
+        kind: 'restored',
+        finalization: 'checkpoint-retained',
+        warning: 'checkpoint-remove-failed',
+      } as const;
+    });
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql',
+        search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({
+        ok: true, json: async () => ({ id_token: valid }), text: async () => '',
+      }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_verifier', 'v');
+    env.sessionStorage.setItem('oauth_document_recovery', 'retained-checkpoint');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT must remain suppressed',
+      specVersion: 1,
+      spec: { name: 'Shared query', favorite: false },
+    }));
+    env.sessionStorage.removeItem = vi.fn(() => {
+      throw new Error('storage removal unavailable');
+    });
+
+    await expect(bootstrap(app, env)).resolves.toMatchObject({ signedIn: true });
+
+    expect(renderedSql).toBe('SELECT retained recovery');
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(env.sessionStorage.getItem('oauth_document_recovery')).toBe('retained-checkpoint');
+    expect(env.sessionStorage.getItem('oauth_shared')).not.toBeNull();
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { kind: 'absent' } as const,
+    { kind: 'invalid-cleared', reason: 'expired' } as const,
+    { kind: 'workspace-unavailable-retained' } as const,
+    { kind: 'workspace-mismatch-cleared' } as const,
+    { kind: 'callback-mismatch' } as const,
+  ])('falls back to the legacy shared seed when recovery is $kind', async (result) => {
+    const restore = vi.fn(() => result);
+    const app = fakeApp();
+    app.restoreOAuthDocumentRecovery = restore;
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql',
+        search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({ ok: true, json: async () => ({ id_token: valid }), text: async () => '' }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT shared', specVersion: 1, spec: { name: 'Shared query', favorite: false },
+    }));
+
+    await bootstrap(app, env);
+
+    expect(restore).toHaveBeenCalledWith('st');
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT shared');
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
   });
 
   it('restores the state-bound pre-login route before resolving a workspace', async () => {
@@ -220,6 +538,7 @@ describe('bootstrap', () => {
     env.sessionStorage.setItem('oauth_state', 'expected');
     await bootstrap(app, env);
     expect(app.showLogin).toHaveBeenCalledWith('OAuth state mismatch — please try again.');
+    expect(app.restoreOAuthDocumentRecovery).not.toHaveBeenCalled();
   });
 
   it('surfaces an IdP error callback with its description', async () => {
@@ -229,6 +548,7 @@ describe('bootstrap', () => {
     });
     await bootstrap(app, env);
     expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: User denied');
+    expect(app.restoreOAuthDocumentRecovery).not.toHaveBeenCalled();
     expect(env.history.replaceState).toHaveBeenCalled();
     expect(app.renderCurrentSurface).not.toHaveBeenCalled();
   });
@@ -251,6 +571,7 @@ describe('bootstrap', () => {
     env.sessionStorage.setItem('oauth_state', 'st');
     await bootstrap(app, env);
     expect(app.showLogin).toHaveBeenCalledWith(expect.stringContaining('OAuth token exchange failed'));
+    expect(app.restoreOAuthDocumentRecovery).not.toHaveBeenCalled();
   });
 
   it('errors when the token response has no bearer', async () => {
@@ -275,7 +596,7 @@ describe('bootstrap', () => {
   });
 
   it('seeds the first tab from a legacy (SQL-only) share-link hash', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash }) });
@@ -283,13 +604,11 @@ describe('bootstrap', () => {
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
     expect(tabPanel(app.state.tabs.value[0])).toBeNull();
-    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared') ?? 'null')).toEqual({
-      sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false },
-    });
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
   });
 
   it('seeds SQL + chart config from a tagged share-link hash', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
     const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT a, b FROM t', chart }))));
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash }) });
@@ -300,7 +619,7 @@ describe('bootstrap', () => {
   });
 
   it('seeds a text panel from a share link with EMPTY SQL (#166 — the gate is sql || panel)', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const panel = { cfg: { type: 'text', content: '# Note' } };
     const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: '', panel }))));
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash }) });
@@ -309,10 +628,7 @@ describe('bootstrap', () => {
     expect(app.state.tabs.value[0].sqlDraft).toBe('');
     expect(tabPanel(app.state.tabs.value[0])).toEqual(panel);
     expect(app.state.resultView.value).toBe('panel');
-    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared') ?? 'null')).toEqual({
-      sql: '', specVersion: 1,
-      spec: { name: 'Shared query', favorite: false, panel },
-    });
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
   });
 
   // v2 share hash: { __asb: 2, query: { sql, specVersion, spec } } (src/core/share.js).
@@ -329,7 +645,7 @@ describe('bootstrap', () => {
   // view is the only thing that selects the drawer — even alongside a non-panel
   // role, and even when that role would once have overridden it.
   it('restores the persisted view of a shared query that also carries a non-panel role', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const panelCfg = { cfg: { type: 'kpi' } };
     const env = v2Env({
       sql: 'SELECT 1',
@@ -343,7 +659,7 @@ describe('bootstrap', () => {
   });
 
   it('leaves the default view alone for a share carrying a non-panel role and NO persisted view', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'setup' } } });
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
@@ -351,7 +667,7 @@ describe('bootstrap', () => {
   });
 
   it('restores a SQL-bearing shared Panel query\'s persisted view:"panel" (no role)', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const panelCfg = { cfg: { type: 'kpi' } };
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'panel', panel: panelCfg } });
     await bootstrap(app, env);
@@ -359,14 +675,14 @@ describe('bootstrap', () => {
   });
 
   it.each(['table', 'json'])('restores a SQL-bearing shared query\'s persisted %s preference', async (view) => {
-    const app = fakeApp();
+    const app = signedInApp();
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view } });
     await bootstrap(app, env);
     expect(app.state.resultView.value).toBe(view);
   });
 
   it('leaves the default result view alone for a share with no role and no persisted view', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const env = v2Env({ sql: 'SELECT 1' });
     await bootstrap(app, env);
     expect(app.state.resultView.value).toBe('table'); // fakeApp()'s untouched default
@@ -383,7 +699,7 @@ describe('bootstrap', () => {
   });
 
   it('maps a legacy persisted view:"chart" through the Panel compatibility path in a share', async () => {
-    const app = fakeApp();
+    const app = signedInApp();
     const panelCfg = { cfg: { type: 'pie', x: 0, y: [1], series: null } };
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'chart', panel: panelCfg } });
     await bootstrap(app, env);
@@ -393,7 +709,7 @@ describe('bootstrap', () => {
   it('ignores an out-of-enum spec.view from a crafted share, keeping the default (#266)', async () => {
     // The v2 tagged decode passes `spec.view` through verbatim, so a share link
     // can carry any string; it must not reach the resultView signal.
-    const app = fakeApp();
+    const app = signedInApp();
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'javascript:alert(1)' } });
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1'); // the share still seeds

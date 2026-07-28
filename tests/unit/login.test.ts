@@ -574,8 +574,8 @@ describe('mountInlineLogin', () => {
     expect(host.querySelector('.login-screen')).toBeNull();
     expect(host.querySelector('.login-inline')).not.toBeNull();
     expect(qsa(host, '.login-input')).toHaveLength(qsa(full.root, '.login-input').length);
-    expect(host.querySelector('.login-sso .login-btn')).toBeNull();
-    expect(qs(host, '.login-inline-oauth-unavailable').textContent).toContain('Single sign-on');
+    expect(qsa(host, '.login-sso .login-btn').map((button) => button.textContent))
+      .toEqual(qsa(full.root, '.login-sso .login-btn').map((button) => button.textContent));
     expect([...qs<HTMLSelectElement>(host, '.login-picker').options].map((o) => o.textContent))
       .toEqual([...qs<HTMLSelectElement>(full.root, '.login-picker').options].map((o) => o.textContent));
     expect(qs(host, '.login-brand-name').textContent).toBe(qs(full.root, '.login-brand-name').textContent);
@@ -614,7 +614,7 @@ describe('mountInlineLogin', () => {
     expect(host.querySelector('.login-error')).toBeNull();
   });
 
-  it('keeps inline OAuth unavailable without replacing the surrounding root', async () => {
+  it('keeps the surrounding root while exposing an actionable inline SSO provider', async () => {
     const showLogin = vi.fn();
     const login = vi.fn(async () => { throw new Error('redirect blocked'); });
     const app = appWith({
@@ -629,9 +629,12 @@ describe('mountInlineLogin', () => {
     await tick();
     expect(app.root.firstElementChild).toBe(sentinel);
     expect(showLogin).not.toHaveBeenCalled();
-    expect(host.querySelector('.login-sso .login-btn')).toBeNull();
-    expect(qs(host, '.login-inline-oauth-unavailable').getAttribute('role')).toBe('status');
-    expect(login).not.toHaveBeenCalled();
+    const sso = qs<HTMLButtonElement>(host, '.login-sso .login-btn');
+    expect(sso.textContent).toBe('Continue with Google');
+    click(sso);
+    await tick();
+    expect(login).toHaveBeenCalledWith('g');
+    expect(app.root.firstElementChild).toBe(sentinel);
   });
 
   it('prefills and reuses the exact prior Basic target during inline recovery', async () => {
@@ -756,7 +759,100 @@ describe('mountInlineLogin', () => {
     expect(button.disabled).toBe(false);
   });
 
-  it('does not expose OAuth navigation inline before the recovery checkpoint exists', async () => {
+  it('does not let a stale SSO failure overwrite or leave a newer recovery presentation redirecting', async () => {
+    let rejectFirst: ((reason?: unknown) => void) | undefined;
+    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }));
+    const app = appWith({
+      actions: { login },
+      loadIdps: async () => ({ idps, basicLogin: true }),
+    });
+    const host = document.createElement('div');
+    const handle = mountInlineLogin(app, host);
+    await tick();
+    const button = qs<HTMLButtonElement>(host, '.login-sso .login-btn');
+
+    click(button);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('Redirecting…');
+    handle.hide();
+    handle.show('Credentials expired again');
+
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Continue with Google');
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('Credentials expired again');
+
+    rejectFirst?.(new Error('old redirect failed'));
+    await tick();
+
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Continue with Google');
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('Credentials expired again');
+  });
+
+  it('keeps the current inline SSO presentation retryable after a redirect failure', async () => {
+    const login = vi.fn(async () => { throw new Error('redirect blocked'); });
+    const app = appWith({
+      actions: { login },
+      loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: false }),
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const handle = mountInlineLogin(app, host);
+    await tick();
+    const button = qs<HTMLButtonElement>(host, '.login-sso .login-btn');
+
+    click(button);
+    await tick();
+
+    expect(login).toHaveBeenCalledOnce();
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Continue with Google');
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('redirect blocked');
+    handle.focus();
+    expect(document.activeElement).toBe(button);
+
+    click(button);
+    await tick();
+    expect(login).toHaveBeenCalledTimes(2);
+    handle.dispose();
+  });
+
+  it('re-enables a pending certificate-gated OAuth action for a new inline recovery cycle', async () => {
+    const login = vi.fn(() => new Promise<void>(() => {}));
+    const app = appWith({
+      actions: { login },
+      loadIdps: async () => ({
+        idps,
+        basicLogin: false,
+        hosts: [{
+          label: 'audit-oauth',
+          url: 'https://support-a.tenant-a.dev.altinity.cloud',
+          auth: 'oauth',
+          user: '',
+          password: '',
+          idp: 'g',
+          insecure: true,
+        }],
+      }),
+    });
+    const host = document.createElement('div');
+    const handle = mountInlineLogin(app, host);
+    await tick();
+    selectHost(host, '0');
+    const go = qs<HTMLButtonElement>(host, '.login-cert-go');
+
+    click(go);
+    expect(go.disabled).toBe(true);
+    expect(login).toHaveBeenCalledOnce();
+
+    handle.hide();
+    handle.show('Credentials expired again');
+    expect(go.disabled).toBe(false);
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('Credentials expired again');
+    handle.dispose();
+  });
+
+  it('offers saved OAuth hosts inline now that recovery is checkpointed before navigation', async () => {
     const login = vi.fn(async () => {});
     const app = appWith({
       actions: { login },
@@ -773,12 +869,13 @@ describe('mountInlineLogin', () => {
     await tick();
 
     expect(host.querySelector('.login-sso button')).toBeNull();
-    expect(qs<HTMLElement>(host, '.login-picker-field').style.display).toBe('none');
+    expect(qs<HTMLElement>(host, '.login-picker-field').style.display).toBe('');
     expect(host.querySelector('.login-creds')).toBeNull();
-    const message = qs<HTMLElement>(host, '.login-inline-oauth-unavailable');
-    expect(message.getAttribute('role')).toBe('status');
-    expect(message.textContent).toContain('Single sign-on');
-    expect(login).not.toHaveBeenCalled();
+    expect([...qs<HTMLSelectElement>(host, '.login-picker').options].map((option) => option.textContent))
+      .toEqual(['Choose a connection…', 'oauth-only (OAuth)']);
+    selectHost(host, '0');
+    await tick();
+    expect(login).toHaveBeenCalledWith('g', 'https://db.example');
   });
 
   it('hides, shows, and focuses the existing mount without rebuilding it', () => {

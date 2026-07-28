@@ -63,6 +63,16 @@ export interface ConnectionSessionDeps {
    *  valid login). The session never renders — it calls this and lets the
    *  shell decide how to show the login screen. */
   onAuthLost: (detail?: string, lease?: AuthenticatedCancellationLease) => void;
+  /** Persist an OAuth-state-bound document recovery snapshot after this
+   * session has written its PKCE attempt. `true` means that snapshot is
+   * durable and the intentional redirect may bypass the dirty unload guard. */
+  prepareOAuthRedirect?(oauthState: string): boolean;
+  /** Arm a one-shot dirty-unload bypass for the immediately following OAuth
+   * navigation. The returned callback undoes the arm if navigation fails. */
+  armOAuthRedirectUnloadBypass?(): () => void;
+  /** Explicit logout is terminal for any persisted document-recovery payload.
+   * Auth loss deliberately does not call this: reauthentication needs it. */
+  clearOAuthDocumentRecovery?(): void;
 }
 
 // ── The ClickHouse auth context ──────────────────────────────────────────────
@@ -163,6 +173,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   const connectionSignal = signal<ConnectionLifecycleState>(
     hasRestoredCredentials ? { kind: 'starting', epoch: 0 } : { kind: 'signed-out', epoch: 0 },
   );
+  let interactiveAuthenticationPrior: AuthenticationPriorState | null = null;
   const transition = (event: ConnectionLifecycleEvent): ConnectionLifecycleState => {
     const next = reduceConnectionLifecycle(connectionSignal.value, event);
     if (next !== connectionSignal.value) connectionSignal.value = next;
@@ -230,6 +241,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     storeTokens(id, refresh);
     chCtx.authConfirmed = false;
     transition({ type: 'credentials-installed' });
+    interactiveAuthenticationPrior = null;
   }
   function clearTokens(preserveBasicRecovery = false): void {
     token = null;
@@ -247,15 +259,49 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // shell's job now, done by whatever caller notices signOut() was called.)
   const signOut = (): void => {
     transition({ type: 'signed-out' });
-    clearTokens();
+    interactiveAuthenticationPrior = null;
+    let authClearFailed = false;
+    let authClearError: unknown;
+    try {
+      clearTokens();
+    } catch (error) {
+      authClearFailed = true;
+      authClearError = error;
+    } finally {
+      try {
+        deps.clearOAuthDocumentRecovery?.();
+      } catch (error) {
+        // Preserve a credential-storage failure as the primary sign-out error.
+        // With no earlier failure, the recovery cleanup error remains visible.
+        if (!authClearFailed) throw error;
+      }
+    }
+    if (authClearFailed) throw authClearError;
   };
 
   function authenticationPrior(): AuthenticationPriorState {
     const current = connectionSignal.value;
-    if (current.kind === 'auth-required' || current.kind === 'signed-out') return current;
+    if (current.kind === 'auth-required' || current.kind === 'signed-out') {
+      interactiveAuthenticationPrior = current;
+      return current;
+    }
+    if (current.kind === 'reauthenticating' && interactiveAuthenticationPrior) {
+      return interactiveAuthenticationPrior;
+    }
     // Interactive authentication is entered from the login surface today.
     // Keep this fail-safe explicit in case a future caller opens it elsewhere.
-    return { kind: 'signed-out', epoch: current.epoch };
+    const prior: AuthenticationPriorState = { kind: 'signed-out', epoch: current.epoch };
+    interactiveAuthenticationPrior = prior;
+    return prior;
+  }
+  function failAuthentication(
+    epoch: number,
+    prior: AuthenticationPriorState,
+  ): void {
+    const failed = transition({ type: 'failed-authentication', epoch, prior });
+    if (failed.epoch === epoch && failed.kind !== 'reauthenticating') {
+      interactiveAuthenticationPrior = null;
+    }
   }
   function assertCurrentAuthentication(epoch: number): void {
     const current = connectionSignal.value;
@@ -268,34 +314,119 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   async function beginOAuth(idpArg?: string, targetOrigin?: string): Promise<void> {
     const prior = authenticationPrior();
     const authenticating = transition({ type: 'start-authentication' });
+    const attemptKeys = ['oauth_verifier', 'oauth_state', 'oauth_return_route'] as const;
+    type AttemptValues = Record<typeof attemptKeys[number], string | null>;
+    let priorAttemptValues: AttemptValues | null = null;
+    let ownedAttemptValues: AttemptValues | null = null;
+    let disarmUnloadBypass: (() => void) | undefined;
+    const ownsStoredAttempt = (): boolean => {
+      const current = connectionSignal.value;
+      if (!ownedAttemptValues
+        || current.epoch !== authenticating.epoch
+        || current.kind !== 'reauthenticating') return false;
+      try {
+        return attemptKeys.every((key) => ss.getItem(key) === ownedAttemptValues![key]);
+      } catch {
+        return false;
+      }
+    };
+    const assertAttemptOwnership = (): void => {
+      if (!ownsStoredAttempt()) throw new Error('Authentication attempt superseded');
+    };
     try {
-      if (idpArg) selectIdp(idpArg);
+      // Keep these three legacy keys as the one canonical OAuth attempt. A
+      // failed post-PKCE preparation must leave a previous callback/retry
+      // attempt exactly as it was, including absent keys.
+      priorAttemptValues = {
+        oauth_verifier: ss.getItem('oauth_verifier'),
+        oauth_state: ss.getItem('oauth_state'),
+        oauth_return_route: ss.getItem('oauth_return_route'),
+      };
+      ownedAttemptValues = { ...priorAttemptValues };
+      if (idpArg) {
+        selectIdp(idpArg);
+        assertAttemptOwnership();
+      }
       // A picked saved-connection can target another cluster: stash its origin so
       // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
       // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
       if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
       else ss.removeItem('oauth_origin');
+      assertAttemptOwnership();
       const cfg = await resolveConfig();
       assertCurrentAuthentication(authenticating.epoch);
       const { verifier, challenge } = await generatePKCE(cryptoObj);
-      assertCurrentAuthentication(authenticating.epoch);
       const state = randomState(cryptoObj);
-      ss.setItem('oauth_verifier', verifier);
-      ss.setItem('oauth_state', state);
       const returnParams = new URLSearchParams(loc.search);
       ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
         .forEach((key) => returnParams.delete(key));
       const returnSearch = returnParams.toString();
-      ss.setItem('oauth_return_route', JSON.stringify({
+      const returnRoute = JSON.stringify({
         state, search: returnSearch ? `?${returnSearch}` : '',
-      }));
-      loc.href = buildAuthorizeUrl(cfg, {
+      });
+      const redirectUrl = buildAuthorizeUrl(cfg, {
         redirectUri: loc.origin + basePath,
         challenge,
         state,
       });
+      // From this ownership check through navigation there is no asynchronous
+      // yield. Each successful write advances the exact triplet this attempt
+      // owns so a stale/reentrant failure cannot roll back a newer attempt.
+      assertCurrentAuthentication(authenticating.epoch);
+      ss.setItem('oauth_verifier', verifier);
+      ownedAttemptValues.oauth_verifier = verifier;
+      assertAttemptOwnership();
+      ss.setItem('oauth_state', state);
+      ownedAttemptValues.oauth_state = state;
+      assertAttemptOwnership();
+      ss.setItem('oauth_return_route', returnRoute);
+      ownedAttemptValues.oauth_return_route = returnRoute;
+      assertAttemptOwnership();
+      const hasRecoverySnapshot = deps.prepareOAuthRedirect
+        ? deps.prepareOAuthRedirect(state)
+        : false;
+      assertAttemptOwnership();
+      // Deliberately adjacent to navigation: no unrelated asynchronous work
+      // may run after the one-shot bypass is armed.
+      if (hasRecoverySnapshot) {
+        if (!deps.armOAuthRedirectUnloadBypass) {
+          throw new Error('OAuth recovery redirect requires an unload bypass');
+        }
+        disarmUnloadBypass = deps.armOAuthRedirectUnloadBypass();
+        assertAttemptOwnership();
+      }
+      loc.href = redirectUrl;
+      assertAttemptOwnership();
     } catch (error) {
-      transition({ type: 'failed-authentication', epoch: authenticating.epoch, prior });
+      // A failed location assignment is observable in tests and can happen in
+      // embedded/browser-hosted surfaces. Always return the unload guard to
+      // its normal state before preserving the prior OAuth attempt.
+      try {
+        disarmUnloadBypass?.();
+      } catch {
+        // The original redirect failure is the actionable error. Continue
+        // cleanup even when a host-provided disarm callback misbehaves.
+      }
+      if (priorAttemptValues && ownsStoredAttempt()) {
+        for (const key of attemptKeys) {
+          try {
+            const value = priorAttemptValues[key];
+            if (value === null) ss.removeItem(key);
+            else ss.setItem(key, value);
+            ownedAttemptValues![key] = value;
+          } catch {
+            // A failed restore may have mutated storage before throwing. Stop
+            // rather than risk overwriting a reentrant/newer attempt.
+            break;
+          }
+          // Storage callbacks are externally supplied and may synchronously
+          // sign out or start another attempt. Advance this attempt's expected
+          // triplet one key at a time and never mutate the next key after it
+          // loses lifecycle or exact-storage ownership.
+          if (!ownsStoredAttempt()) break;
+        }
+      }
+      failAuthentication(authenticating.epoch, prior);
       throw error;
     }
   }
@@ -491,7 +622,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       await queryJsonFn(probeCtx, 'SELECT 1');
       assertCurrentAuthentication(authenticating.epoch);
     } catch (error) {
-      transition({ type: 'failed-authentication', epoch: authenticating.epoch, prior });
+      failAuthentication(authenticating.epoch, prior);
       throw error;
     }
     // Probe passed → commit the session and switch the live ctx to the target.
@@ -503,6 +634,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     chCtx.origin = target;
     chCtx.authConfirmed = false;
     transition({ type: 'credentials-installed' });
+    interactiveAuthenticationPrior = null;
   }
 
   // --- dashboard (#149 D1) -------------------------------------------------

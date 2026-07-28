@@ -482,12 +482,6 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 7px; font-size: var(--text-label); color: var(--fg-faint);
 }
 .login-sso-note .mono { color: var(--fg-mute); }
-.login-inline-oauth-unavailable {
-  padding: 10px 12px;
-  background: var(--warn-bg); border: 1px solid var(--warn-bd);
-  border-radius: var(--r-md); color: var(--warn-fg);
-  font-size: var(--text-body); line-height: var(--lh-body);
-}
 
 /* Buttons (primary / ghost) */
 .login-btn {

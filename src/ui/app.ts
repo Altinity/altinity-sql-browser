@@ -10,7 +10,7 @@ import {
   createState, activeTab,
   savedForTab, tabPanel, tabSaveDirty, variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
-  adoptSavedIntoTab, reconcileLinkedTabsToLatest,
+  adoptSavedIntoTab, reconcileLinkedTabsToLatest, setTabSpecDraft, SAVED_VIEWS,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
@@ -31,6 +31,9 @@ import {
 import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
 import type { SpecDiagnostic } from '../editor/spec-editor.types.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
+import {
+  cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery,
+} from '../core/saved-query.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
@@ -70,10 +73,17 @@ import type { InlineLoginHandle } from './login.js';
 import { openShortcuts, resetShortcutChord } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
-import type { App, ActionsRegistry, KeyboardOwner, SchemaFocus, WorkspaceChangedMessage } from './app.types.js';
+import type {
+  App, ActionsRegistry, KeyboardOwner, OAuthDocumentRecoveryApplyResult,
+  SchemaFocus, WorkspaceChangedMessage,
+} from './app.types.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import {
+  createOAuthDocumentRecoverySession,
+  type OAuthDocumentRecoveryRestoreResult,
+} from '../application/oauth-document-recovery-session.js';
 import {
   createAuthenticatedExecutionScope,
   type AuthenticatedExecutionScope,
@@ -399,6 +409,156 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
   });
   app.queryDoc = queryDoc;
+  // The persisted OAuth checkpoint is deliberately below this shell: it can
+  // replace authored tab state, but does not know how the mounted document
+  // service rebuilds parsed Spec/diagnostic transients or owns the dirty-page
+  // guard. Keep the coordinator private; bootstrap receives only this
+  // transaction-shaped restore entry point.
+  const oauthDocumentRecovery = createOAuthDocumentRecoverySession({
+    storage: ss,
+    now: wallNow,
+    state: app.state,
+    specValidators,
+  });
+  const finalizeOAuthDocumentRecovery = (
+    restored: OAuthDocumentRecoveryRestoreResult,
+  ): OAuthDocumentRecoveryApplyResult => {
+    if (restored.kind !== 'restored') return restored;
+    // Publication is the commit point: from here on bootstrap must render these
+    // tabs even if parser or storage finalization fails. Arm the ordinary dirty
+    // guard first so the authored document is protected on every exit path.
+    app.syncBeforeUnload();
+    // The checkpoint intentionally carries raw authored text, never derived
+    // parser state. Rebuild every draft's diagnostics without rendering before
+    // bootstrap's first signed-in surface. A failure retains the checkpoint
+    // and surfaces a safe warning, but cannot make the published tabs
+    // unreachable or allow legacy shared content to replace them.
+    try {
+      queryDoc.revalidateSpecDrafts({ refreshUi: false });
+    } catch {
+      flashToast(
+        'Drafts were restored, but Spec validation is temporarily unavailable. The recovery copy was retained.',
+        { document: doc },
+      );
+      return {
+        kind: 'restored',
+        finalization: 'checkpoint-retained',
+        warning: 'spec-revalidation-failed',
+      };
+    }
+    try {
+      oauthDocumentRecovery.consume();
+    } catch {
+      flashToast(
+        'Drafts were restored, but recovery cleanup could not finish. The recovery copy was retained.',
+        { document: doc },
+      );
+      return {
+        kind: 'restored',
+        finalization: 'checkpoint-retained',
+        warning: 'checkpoint-remove-failed',
+      };
+    }
+    return { kind: 'restored', finalization: 'complete' };
+  };
+  let deferredRecoveryWarningShown = false;
+  const deferOAuthDocumentRecovery = (): OAuthDocumentRecoveryApplyResult => {
+    if (!deferredRecoveryWarningShown) {
+      deferredRecoveryWarningShown = true;
+      flashToast(
+        'Unsaved drafts remain safely stored. Recovery will retry automatically.',
+        { document: doc },
+      );
+    }
+    return { kind: 'retry-deferred-retained' };
+  };
+  app.restoreOAuthDocumentRecovery = (callbackState: string): OAuthDocumentRecoveryApplyResult => {
+    // A fresh validated callback starts a new authority decision; a later
+    // deferred retry deserves its own single safe notice.
+    deferredRecoveryWarningShown = false;
+    try {
+      const restored = oauthDocumentRecovery.restore(callbackState, app.currentWorkspace);
+      if (restored.kind === 'retry-deferred-retained') {
+        return deferOAuthDocumentRecovery();
+      }
+      return finalizeOAuthDocumentRecovery(restored);
+    } catch {
+      // The session normally converts storage failures into explicit retained
+      // outcomes. Keep this boundary defensive: an unexpected pre-publication
+      // failure must not abort the signed-in shell or expose backend details.
+      return deferOAuthDocumentRecovery();
+    }
+  };
+  app.retryPendingOAuthDocumentRecovery = (): OAuthDocumentRecoveryApplyResult => {
+    let pending: OAuthDocumentRecoveryRestoreResult;
+    try {
+      pending = oauthDocumentRecovery.retryPending(app.currentWorkspace);
+    } catch {
+      return deferOAuthDocumentRecovery();
+    }
+    if (pending.kind === 'retry-deferred-retained') {
+      // Nothing was published: do not arm the dirty guard, revalidate, consume,
+      // or replace the current workspace. The retained recovery nevertheless
+      // owns callback precedence, so callers discard the legacy share handoff.
+      return deferOAuthDocumentRecovery();
+    }
+    deferredRecoveryWarningShown = false;
+    return finalizeOAuthDocumentRecovery(pending);
+  };
+  app.consumeLegacyShared = (allowRestore: boolean, consumedHandoff?: string | null): boolean => {
+    let encoded: string | null;
+    try {
+      encoded = consumedHandoff === undefined
+        ? ss.getItem('oauth_shared')
+        : consumedHandoff;
+    } catch {
+      return false;
+    }
+    if (encoded === null) return false;
+    // In-page Basic login owns the storage handoff here. Bootstrap passes its
+    // already-consumed value so the same parser/application path is reused.
+    if (consumedHandoff === undefined) {
+      try {
+        ss.removeItem('oauth_shared');
+      } catch {
+        // Handoff cleanup is best-effort. Recovery precedence still suppresses
+        // the payload, and a storage backend failure must not abort rendering.
+      }
+    }
+    // The handoff is one-shot regardless of whether recovery suppresses it,
+    // its payload is malformed, or the current route has no Query surface.
+    if (!allowRestore || app.sqlRoute.surface !== 'workspace') return false;
+
+    let shared;
+    try {
+      const raw = JSON.parse(encoded) as Record<string, unknown>;
+      // Pre-#166 OAuth handoffs stored `{sql, chart}` directly; the normal
+      // upgrader preserves that compatibility while current v2 payloads pass
+      // through with their authored Spec intact.
+      shared = upgradeSavedQuery(raw.specVersion == null
+        ? { name: 'Shared query', ...raw }
+        : raw);
+    } catch {
+      return false;
+    }
+    const panel = queryPanel(shared);
+    if (!shared.sql && !panel) return false;
+
+    const tab = app.state.tabs.value[0];
+    tab.sqlDraft = shared.sql;
+    tab.name = queryName(shared);
+    tab.specVersion = shared.specVersion;
+    setTabSpecDraft(tab, cloneJson(shared.spec));
+    const launchView = queryView(shared);
+    const normalized = launchView === 'chart' ? 'panel' : launchView;
+    if (SAVED_VIEWS.has(normalized ?? '')) {
+      app.state.resultView.value = normalized as App['state']['resultView']['value'];
+    } else if (!shared.sql && isQuerylessPanel(panel)) {
+      app.state.resultView.value = 'panel';
+    }
+    win.history.replaceState(null, '', loc.pathname + routeSearch);
+    return true;
+  };
   // The saved-query create/commit policy, history recording, and share-URL
   // building (#276 Phase 4C) now live in `application/saved-query-service.ts`,
   // constructible without App/AppState/DOM — this shell sequences Spec
@@ -489,6 +649,10 @@ export function createApp(env: CreateAppEnv = {}): App {
   // constructible without App/AppState/DOM; this module wires it to the real
   // browser env and to `renderLoginApp` (the one piece that IS this shell's
   // job — the session only ever calls `onAuthLost`, never renders).
+  // Assigned below beside the single beforeunload listener. ConnectionSession
+  // invokes this only after createApp has completed, so this closure can keep
+  // its lifecycle wiring near the listener it controls.
+  let armOAuthRedirectUnloadBypass: () => () => void;
   const conn = createConnectionSession({
     fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
@@ -498,6 +662,9 @@ export function createApp(env: CreateAppEnv = {}): App {
       closing?.close(lease);
       revealAuthenticationRequired(detail);
     },
+    prepareOAuthRedirect: (state) => oauthDocumentRecovery.prepare(state),
+    clearOAuthDocumentRecovery: () => oauthDocumentRecovery.clear(),
+    armOAuthRedirectUnloadBypass: () => armOAuthRedirectUnloadBypass(),
   });
   app.conn = conn;
   app.executionScope = () => activeExecutionScope;
@@ -2347,9 +2514,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   // triggers a browser-generated confirmation dialog") — its own default is
   // the empty string, so assigning that back would be a no-op for the legacy
   // UAs that key off it rather than `preventDefault()`.
+  // A successful OAuth checkpoint authorizes precisely one intentional
+  // navigation. The listener remains attached (so all ordinary unloads retain
+  // their warning); ownership tokens ensure an older failed redirect cannot
+  // disarm a newer arm.
+  let nextUnloadBypassGeneration = 0;
+  let armedUnloadBypassGeneration: number | null = null;
   const beforeUnload = (e: BeforeUnloadEvent): void => {
+    if (armedUnloadBypassGeneration !== null) {
+      armedUnloadBypassGeneration = null;
+      return;
+    }
     e.preventDefault();
     e.returnValue = true;
+  };
+  armOAuthRedirectUnloadBypass = (): (() => void) => {
+    const generation = ++nextUnloadBypassGeneration;
+    armedUnloadBypassGeneration = generation;
+    return () => {
+      if (armedUnloadBypassGeneration === generation) armedUnloadBypassGeneration = null;
+    };
   };
   let beforeUnloadInstalled = false;
   const canToggleBeforeUnload = typeof win.addEventListener === 'function'
@@ -2395,15 +2579,18 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   const resetCorruptWorkspace = async (id: string): Promise<void> => {
+    const expectedGeneration = routeLoadGeneration;
     const deleted = await app.workspace.delete(id);
     if (!deleted.ok) return;
     const result = await resolveImplicitOrProvision();
-    if (result.status === 'ok') {
+    if (result.status === 'ok' && routeLoadGeneration === expectedGeneration) {
       applyCommittedWorkspace(result.workspace);
       await recordOpened(result.workspace);
+      if (routeLoadGeneration !== expectedGeneration) return;
       app.sqlRoute = routeForWorkspace(app.sqlRoute, result.workspace.key);
       routeSearch = buildSqlRouteSearch(app.sqlRoute, routeSearch);
       win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
+      app.retryPendingOAuthDocumentRecovery();
       app.renderCurrentSurface();
     }
   };
@@ -2496,15 +2683,20 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.closeShortcutDialog();
     resetShortcutChord(app);
     const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
+    const needsWorkspaceLoad = workspaceChanged || app.currentWorkspace === null;
     writeRoute(route, method);
-    if (workspaceChanged) {
+    if (needsWorkspaceLoad) {
       app.workspaceRouteStatus = 'loading';
       app.currentWorkspace = null;
       renderWorkspaceLoading();
       const expectedGeneration = routeLoadGeneration + 1;
-      await app.loadWorkspaceOnBoot();
+      const workspace = await app.loadWorkspaceOnBoot();
       if (routeLoadGeneration !== expectedGeneration) return;
-    } else adoptRouteMainSurface();
+      if (workspace) app.retryPendingOAuthDocumentRecovery();
+    } else {
+      adoptRouteMainSurface();
+      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
+    }
     app.renderCurrentSurface();
   };
 
@@ -2514,13 +2706,14 @@ export function createApp(env: CreateAppEnv = {}): App {
     const previousKey = app.sqlRoute.workspaceKey;
     routeSearch = loc.search;
     app.sqlRoute = parseSqlRoute(routeSearch);
-    if (app.sqlRoute.workspaceKey === previousKey) {
+    if (app.sqlRoute.workspaceKey === previousKey && app.currentWorkspace !== null) {
       // #425: Back/Forward between surfaces of the SAME workspace is a surface
       // transition, not a teardown — the shell and the query column stay mounted
       // so the editor state survives it. (It used to run `disposeCurrentSurface`,
       // whose blanket control-disable would now inert the still-mounted editor
       // toolbar, tabs, and sidebar inputs permanently.)
       adoptRouteMainSurface();
+      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
       app.renderCurrentSurface();
       return;
     }
@@ -2528,8 +2721,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.currentWorkspace = null;
     renderWorkspaceLoading();
     const expectedGeneration = routeLoadGeneration + 1;
-    await app.loadWorkspaceOnBoot();
+    const workspace = await app.loadWorkspaceOnBoot();
     if (routeLoadGeneration !== expectedGeneration) return;
+    if (workspace) app.retryPendingOAuthDocumentRecovery();
     app.renderCurrentSurface();
   };
   app.syncSqlRoute = (search) => {
@@ -2819,7 +3013,14 @@ export function createApp(env: CreateAppEnv = {}): App {
         void catalog.loadVersion();
         return;
       }
-      await app.loadWorkspaceOnBoot();
+      const workspace = await app.loadWorkspaceOnBoot();
+      const pendingRecovery = workspace
+        ? app.retryPendingOAuthDocumentRecovery()
+        : null;
+      app.consumeLegacyShared(
+        pendingRecovery?.kind !== 'restored'
+          && pendingRecovery?.kind !== 'retry-deferred-retained',
+      );
       app.renderCurrentSurface();
       void app.catalog.loadVersion();
     },

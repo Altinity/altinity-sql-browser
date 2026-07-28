@@ -29,6 +29,50 @@ on your IdP and threat model. Common, all valid, variants:
 The code treats `client_secret` as optional, so any of these is a config-only
 choice.
 
+### Reauthentication and unsaved work
+
+Temporary ClickHouse authentication loss does not end the document session.
+The editor, tabs, drafts, navigation, dirty state, and completed results remain
+mounted while the same authentication controls appear in the application
+shell. A successful Basic sign-in resumes that exact in-memory session without
+a page reload; the inline form clears its password and resets password
+visibility after success so it is safe to reuse after another loss.
+
+OAuth requires a page redirect. Before navigating, the browser writes a
+versioned recovery checkpoint to this tab's `sessionStorage`, but only when
+there is save-relevant dirty work. The checkpoint is bound to the OAuth
+attempt's random state and the current workspace id/key. It contains authored
+tab state (including SQL and raw Spec drafts and Dashboard-variable bindings),
+not OAuth tokens, passwords, query results, ClickHouse session ids, result
+columns, or running/export state. Like the OAuth token itself,
+`sessionStorage` is tab-scoped browser storage, not encryption: script running
+in the same origin can read it.
+
+The intentional redirect bypasses the dirty-page warning exactly once, and
+only after that checkpoint write succeeds. If serialization or storage fails,
+the redirect does not start, the warning remains armed, and the inline controls
+show the failure so sign-in can be retried. A failed IdP callback keeps the
+draft checkpoint; a retry binds the same authored payload to its new OAuth
+state. A separate tab-scoped, TTL-bound validated-callback marker contains only
+that state and its validation time; the checkpoint alone never authorizes an
+automatic restore. Starting another OAuth attempt invalidates the older marker.
+
+After a successful callback, the app restores the route, loads the committed
+workspace, validates the checkpoint against that workspace and callback state,
+reconciles linked saved-query tabs, and reparses every raw Spec before the first
+signed-in render. Invalid JSON drafts survive as authored and regain normal
+diagnostics. If the workspace is unavailable, or storage/validation fails
+before publication, recovery remains unpublished and retryable. A valid pending
+recovery suppresses legacy shared content and retries automatically only after
+an authoritative workspace load; it never overwrites newer save-relevant dirty
+work in memory, and its marker is retired before publication. Results and other
+execution state do not survive an OAuth reload. Malformed, unsupported,
+logically expired (after 15 minutes), or workspace-mismatched checkpoints are
+ineligible and the normal signed-in flow continues; expiry does not promise
+eager physical removal from browser storage. A stale callback cannot consume a
+newer retry's checkpoint. Explicit **Log out** clears any pending checkpoint
+and validated-callback marker.
+
 ### Multiple IdPs
 
 `config.json` may instead list several providers, and the login screen shows

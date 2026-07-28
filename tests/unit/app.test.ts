@@ -3,6 +3,7 @@ import type { Mock } from 'vitest';
 import type { Signal } from '@preact/signals-core';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
+import { bootstrap } from '../../src/main.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { createSpecEditor } from '../../src/editor/spec-editor.js';
 import type { SpecEditorApp } from '../../src/editor/spec-editor.js';
@@ -20,6 +21,12 @@ import type { DashboardFocusOutcome } from '../../src/ui/shortcuts.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { libraryQueries } from '../../src/dashboard/model/query-ownership.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
+import {
+  OAUTH_DOCUMENT_RECOVERY_KEY,
+  OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY,
+  OAUTH_DOCUMENT_RECOVERY_VERSION,
+  encodeOAuthDocumentRecovery,
+} from '../../src/core/oauth-document-recovery.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
@@ -443,6 +450,540 @@ afterEach(() => {
 });
 
 describe('createApp basics', () => {
+  it('restores a matching OAuth document checkpoint into the loaded workspace, revalidates raw Specs, arms dirty unload, and consumes only after success', () => {
+    const now = 1_700_000_000_000;
+    const store = memSession({
+      [OAUTH_DOCUMENT_RECOVERY_KEY]: encodeOAuthDocumentRecovery({
+        version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+        createdAt: now,
+        workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+        tabs: [
+          {
+            id: 't1', doc: { kind: 'query' }, name: 'Invalid draft', sqlDraft: 'SELECT draft',
+            specText: '{"name":', specVersion: 1, editorMode: 'sql', dirtySql: true,
+            dirtySpec: true, savedId: null,
+          },
+          {
+            id: 't2', doc: { kind: 'dashboard-variable', dashboardId: 'd1', variableName: 'region' },
+            name: 'Region', sqlDraft: 'SELECT region', specText: 'verbatim variable draft',
+            specVersion: 1, editorMode: 'sql', dirtySql: false, dirtySpec: true, savedId: null,
+          },
+        ],
+        activeTabId: 't2', nextTabId: 3,
+      }),
+    });
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+
+    expect(app.restoreOAuthDocumentRecovery('callback-state')).toEqual({
+      kind: 'restored', finalization: 'complete',
+    });
+    expect(app.state.tabs.value.map((tab) => tab.id)).toEqual(['t1', 't2']);
+    expect(app.state.activeTabId.value).toBe('t2');
+    expect(app.state.nextTabId).toBe(3);
+    expect(app.state.tabs.value[0]).toMatchObject({ sqlDraft: 'SELECT draft', specText: '{"name":', dirtySql: true, dirtySpec: true });
+    expect(app.state.tabs.value[0].specParsed).toBeNull();
+    expect(app.state.tabs.value[0].specDiagnostics.length).toBeGreaterThan(0);
+    expect(app.state.tabs.value[1].doc).toEqual({ kind: 'dashboard-variable', dashboardId: 'd1', variableName: 'region' });
+    for (const tab of app.state.tabs.value) {
+      expect(tab.result).toBeNull();
+      expect(tab.chSession).toBeUndefined();
+      expect(tab.lastSuccessfulResultColumns).toEqual([]);
+    }
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+
+    for (const tab of app.state.tabs.value) { tab.dirtySql = false; tab.dirtySpec = false; }
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
+  it('retains a restored checkpoint if post-restore Spec revalidation fails', () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Draft', sqlDraft: 'SELECT 1', specText: '{}',
+        specVersion: 1, editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    vi.spyOn(app.queryDoc, 'revalidateSpecDrafts').mockImplementation(() => { throw new Error('validator unavailable'); });
+
+    expect(app.restoreOAuthDocumentRecovery('callback-state')).toEqual({
+      kind: 'restored',
+      finalization: 'checkpoint-retained',
+      warning: 'spec-revalidation-failed',
+    });
+    expect(app.activeTab()).toMatchObject({ sqlDraft: 'SELECT 1', dirtySql: true });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(qs(document, '.share-toast').textContent).toContain('Spec validation');
+    expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    expect(() => app.renderCurrentSurface()).not.toThrow();
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    expect(app.activeTab().sqlDraft).toBe('SELECT 1');
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
+  it('leaves the restored document dirty and guarded when checkpoint consumption cannot remove storage', () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Draft', sqlDraft: 'SELECT retained', specText: '{}',
+        specVersion: 1, editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const removeItem = store.removeItem;
+    store.removeItem = (key) => {
+      if (key === OAUTH_DOCUMENT_RECOVERY_KEY) throw new Error('storage removal failed');
+      removeItem(key);
+    };
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+
+    expect(app.restoreOAuthDocumentRecovery('callback-state')).toEqual({
+      kind: 'restored',
+      finalization: 'checkpoint-retained',
+      warning: 'checkpoint-remove-failed',
+    });
+    expect(app.activeTab()).toMatchObject({ sqlDraft: 'SELECT retained', dirtySql: true });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(qs(document, '.share-toast').textContent).toContain('recovery cleanup');
+    const beforeUnload = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')?.[1] as EventListener;
+    const ordinaryUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnload(ordinaryUnload);
+    expect(ordinaryUnload.defaultPrevented).toBe(true);
+    expect(() => app.renderCurrentSurface()).not.toThrow();
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+    expect(app.activeTab().sqlDraft).toBe('SELECT retained');
+
+    store.removeItem = removeItem;
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
+  it('retries a callback-marked recovery after a same-tab route loads its authoritative workspace', async () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Pending route draft',
+        sqlDraft: 'SELECT pending route', specText: '{}', specVersion: 1,
+        editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const location = {
+      host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=recovery', hash: '', href: 'https://ch.example/sql?ws=recovery',
+    } as Location;
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now, location }));
+
+    expect(app.restoreOAuthDocumentRecovery('callback-state'))
+      .toEqual({ kind: 'workspace-unavailable-retained' });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
+    expect(app.sqlRoute.workspaceKey).toBe('recovery');
+    expect(app.currentWorkspace).toBeNull();
+
+    const workspace: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    };
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const, workspace }));
+    let renderedSql = '';
+    app.renderCurrentSurface = vi.fn(() => { renderedSql = app.activeTab().sqlDraft; });
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'recovery' }, 'push');
+
+    expect(renderedSql).toBe('SELECT pending route');
+    expect(app.currentWorkspace).toBe(workspace);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+    expect(vi.mocked(app.workspace.loadByKey).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+  });
+
+  it('does not retry an ordinary recovery checkpoint without validated callback authority', () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Inert draft',
+        sqlDraft: 'SELECT must stay inert', specText: '{}', specVersion: 1,
+        editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+
+    expect(app.retryPendingOAuthDocumentRecovery()).toEqual({ kind: 'absent' });
+    expect(app.activeTab().sqlDraft).toBe('');
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+  });
+
+  it('a fresh successful callback supersedes older pending authority before a later retry', () => {
+    const now = 1_700_000_000_000;
+    const snapshot = (oauthState: string, sqlDraft: string) => encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState,
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Draft', sqlDraft,
+        specText: '{}', specVersion: 1, editorMode: 'sql',
+        dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({
+      [OAUTH_DOCUMENT_RECOVERY_KEY]: snapshot('older-state', 'SELECT older'),
+    });
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+
+    expect(app.restoreOAuthDocumentRecovery('older-state'))
+      .toEqual({ kind: 'workspace-unavailable-retained' });
+    store.setItem(
+      OAUTH_DOCUMENT_RECOVERY_KEY,
+      snapshot('fresh-state', 'SELECT fresh callback'),
+    );
+    expect(app.restoreOAuthDocumentRecovery('fresh-state'))
+      .toEqual({ kind: 'workspace-unavailable-retained' });
+    expect(JSON.parse(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY) ?? '{}'))
+      .toMatchObject({ oauthState: 'fresh-state' });
+
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    expect(app.retryPendingOAuthDocumentRecovery())
+      .toEqual({ kind: 'restored', finalization: 'complete' });
+    expect(app.activeTab().sqlDraft).toBe('SELECT fresh callback');
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+  });
+
+  it('defers an unsafe pending retry without publishing, guarding, or exposing raw storage errors', () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Deferred draft',
+        sqlDraft: 'SELECT deferred', specText: '{}', specVersion: 1,
+        editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const callbackApp = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    expect(callbackApp.restoreOAuthDocumentRecovery('callback-state'))
+      .toEqual({ kind: 'workspace-unavailable-retained' });
+
+    const getItem = store.getItem;
+    store.getItem = (key) => {
+      if (key === OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY) {
+        throw new Error('raw marker backend failure');
+      }
+      return getItem(key);
+    };
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+
+    expect(app.retryPendingOAuthDocumentRecovery())
+      .toEqual({ kind: 'retry-deferred-retained' });
+    expect(app.retryPendingOAuthDocumentRecovery())
+      .toEqual({ kind: 'retry-deferred-retained' });
+    expect(app.activeTab()).toMatchObject({ sqlDraft: '', dirtySql: false, dirtySpec: false });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(addEventListener).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    expect(qs(document, '.share-toast').textContent)
+      .toBe('Unsaved drafts remain safely stored. Recovery will retry automatically.');
+    expect(qs(document, '.share-toast').textContent).not.toContain('raw marker backend failure');
+    expect(() => app.renderCurrentSurface()).not.toThrow();
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+
+    store.getItem = getItem;
+    addEventListener.mockRestore();
+  });
+
+  it('contains unexpected prepublication restore exceptions behind the safe deferred outcome', () => {
+    const app = createApp(env({ sessionStorage: memSession({}) }));
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+
+    Object.defineProperty(app, 'currentWorkspace', {
+      configurable: true,
+      get: () => { throw new Error('raw fresh restore failure'); },
+    });
+    expect(app.restoreOAuthDocumentRecovery('callback-state'))
+      .toEqual({ kind: 'retry-deferred-retained' });
+
+    Object.defineProperty(app, 'currentWorkspace', {
+      configurable: true,
+      get: () => { throw new Error('raw pending retry failure'); },
+    });
+    expect(app.retryPendingOAuthDocumentRecovery())
+      .toEqual({ kind: 'retry-deferred-retained' });
+
+    Object.defineProperty(app, 'currentWorkspace', {
+      configurable: true, writable: true, value: null,
+    });
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    expect(addEventListener).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    expect(qs(document, '.share-toast').textContent)
+      .toBe('Unsaved drafts remain safely stored. Recovery will retry automatically.');
+    expect(qs(document, '.share-toast').textContent).not.toContain('raw');
+    expect(() => app.renderCurrentSurface()).not.toThrow();
+    expect(qs(app.root, '.workbench')).not.toBeNull();
+
+    addEventListener.mockRestore();
+  });
+
+  it('preserves a newer dirty in-memory edit across automatic route retries, then restores once clean', async () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Recovered draft',
+        sqlDraft: 'SELECT recovered', specText: '{}', specVersion: 1,
+        editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const callbackApp = createApp(env({ sessionStorage: store, wallNow: () => now }));
+    expect(callbackApp.restoreOAuthDocumentRecovery('callback-state'))
+      .toEqual({ kind: 'workspace-unavailable-retained' });
+
+    const location = {
+      host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=recovery', hash: '', href: 'https://ch.example/sql?ws=recovery',
+    } as Location;
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now, location }));
+    const workspace: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    };
+    app.applyCommittedWorkspace(workspace);
+
+    const removeItem = store.removeItem;
+    let failMarkerRetirementOnce = true;
+    store.removeItem = (key) => {
+      if (key === OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY
+        && failMarkerRetirementOnce) {
+        failMarkerRetirementOnce = false;
+        throw new Error('temporary marker failure');
+      }
+      removeItem(key);
+    };
+    expect(app.retryPendingOAuthDocumentRecovery())
+      .toEqual({ kind: 'retry-deferred-retained' });
+    expect(app.activeTab().sqlDraft).toBe('');
+
+    app.activeTab().sqlDraft = 'SELECT newer in-memory edit';
+    app.activeTab().dirtySql = true;
+    await app.navigateSqlRoute({
+      surface: 'dashboard', workspaceKey: 'recovery', mode: 'view',
+    }, 'push');
+    expect(app.activeTab().sqlDraft).toBe('SELECT newer in-memory edit');
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
+
+    location.search = '?ws=recovery';
+    await app.handleSqlPopState();
+    expect(app.activeTab().sqlDraft).toBe('SELECT newer in-memory edit');
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
+
+    // Saving/cleaning the newer edit makes publication safe on the next
+    // automatic retry; the retained callback recovery can now take over.
+    app.activeTab().dirtySql = false;
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'recovery' }, 'replace');
+    expect(app.activeTab()).toMatchObject({
+      name: 'Recovered draft', sqlDraft: 'SELECT recovered', dirtySql: true,
+    });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+  });
+
+  it('retains fresh callback authority after a one-shot checkpoint read failure and restores on route retry', async () => {
+    const now = 1_700_000_000_000;
+    const checkpoint = encodeOAuthDocumentRecovery({
+      version: OAUTH_DOCUMENT_RECOVERY_VERSION,
+      createdAt: now,
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: 'callback-state',
+      tabs: [{
+        id: 't1', doc: { kind: 'query' }, name: 'Read retry draft',
+        sqlDraft: 'SELECT after retry', specText: '{}', specVersion: 1,
+        editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+      }],
+      activeTabId: 't1', nextTabId: 2,
+    });
+    const store = memSession({ [OAUTH_DOCUMENT_RECOVERY_KEY]: checkpoint });
+    const getItem = store.getItem;
+    let failCheckpointReadOnce = true;
+    store.getItem = (key) => {
+      if (key === OAUTH_DOCUMENT_RECOVERY_KEY && failCheckpointReadOnce) {
+        failCheckpointReadOnce = false;
+        throw new Error('raw checkpoint read failure');
+      }
+      return getItem(key);
+    };
+    const location = {
+      host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+      search: '?ws=recovery', hash: '', href: 'https://ch.example/sql?ws=recovery',
+    } as Location;
+    const app = createApp(env({ sessionStorage: store, wallNow: () => now, location }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery',
+      queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+
+    expect(app.restoreOAuthDocumentRecovery('callback-state'))
+      .toEqual({ kind: 'retry-deferred-retained' });
+    expect(qs(document, '.share-toast').textContent)
+      .toBe('Unsaved drafts remain safely stored. Recovery will retry automatically.');
+    expect(qs(document, '.share-toast').textContent).not.toContain('raw checkpoint read failure');
+    expect(() => app.renderCurrentSurface()).not.toThrow();
+    expect(app.activeTab().sqlDraft).toBe('');
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'recovery' }, 'replace');
+    expect(app.activeTab()).toMatchObject({
+      name: 'Read retry draft', sqlDraft: 'SELECT after retry', dirtySql: true,
+    });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+  });
+
+  it('consumes a suppressed legacy share once without replacing the current document', () => {
+    const handoff = JSON.stringify({
+      sql: 'SELECT shared',
+      specVersion: 1,
+      spec: { name: 'Shared query', favorite: false },
+    });
+    const store = memSession({ oauth_shared: handoff });
+    const app = createApp(env({ sessionStorage: store }));
+
+    expect(app.consumeLegacyShared(false)).toBe(false);
+    expect(store.getItem('oauth_shared')).toBeNull();
+    expect(app.activeTab().sqlDraft).toBe('');
+    expect(app.consumeLegacyShared(true)).toBe(false);
+
+    const dashboard = createApp(env({
+      location: {
+        host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+        search: '?surface=dashboard', hash: '', href: 'https://ch.example/sql?surface=dashboard',
+      } as Location,
+    }));
+    expect(dashboard.consumeLegacyShared(true, handoff)).toBe(false);
+    expect(dashboard.activeTab().sqlDraft).toBe('');
+  });
+
+  it('leaves the current document untouched when the legacy handoff cannot be read', () => {
+    const store = memSession({
+      oauth_shared: JSON.stringify({
+        sql: 'SELECT unavailable handoff',
+        specVersion: 1,
+        spec: { name: 'Unavailable handoff', favorite: false },
+      }),
+    });
+    const app = createApp(env({ sessionStorage: store }));
+    const getItem = store.getItem;
+    store.getItem = (key) => {
+      if (key === 'oauth_shared') throw new Error('session storage read unavailable');
+      return getItem(key);
+    };
+
+    expect(app.consumeLegacyShared(true)).toBe(false);
+    expect(app.activeTab()).toMatchObject({ sqlDraft: '', name: 'Untitled' });
+    expect(store._map.get('oauth_shared')).toBeTruthy();
+  });
+
+  it('fails closed for malformed/contentless shared handoffs and preserves queryless Panel compatibility', () => {
+    const app = createApp(env());
+
+    expect(app.consumeLegacyShared(true, '{not json')).toBe(false);
+    expect(app.consumeLegacyShared(true, JSON.stringify({
+      sql: '', specVersion: 1, spec: { name: 'Empty', favorite: false },
+    }))).toBe(false);
+    expect(app.consumeLegacyShared(true, JSON.stringify({
+      sql: '',
+      specVersion: 1,
+      spec: {
+        name: 'Text panel', favorite: false,
+        panel: { cfg: { type: 'text', content: '# Restored' } },
+      },
+    }))).toBe(true);
+    expect(app.activeTab().name).toBe('Text panel');
+    expect(app.state.resultView.value).toBe('panel');
+  });
+
+  it('normalizes legacy chart view while consuming an already-taken bootstrap handoff', () => {
+    const app = createApp(env());
+    expect(app.consumeLegacyShared(true, JSON.stringify({
+      sql: 'SELECT 1',
+      specVersion: 1,
+      spec: {
+        name: 'Legacy chart view', favorite: false, view: 'chart',
+        panel: { cfg: { type: 'pie', x: 0, y: [1], series: null } },
+      },
+    }))).toBe(true);
+    expect(app.state.resultView.value).toBe('panel');
+    expect(app.activeTab().name).toBe('Legacy chart view');
+  });
+
   it('env.specValidators accepts an already-built validator service as-is (not re-wrapped)', () => {
     const service = createSpecValidatorRegistry();
     const app = createApp(env({ specValidators: service }));
@@ -3612,6 +4153,123 @@ describe('openCreateInNewTab (#180)', () => {
 });
 
 describe('auth flows', () => {
+  it('checkpoints dirty authored tabs before OAuth navigation and bypasses exactly one dirty unload event', async () => {
+    const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' } as Location;
+    const store = memSession({});
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const app = createApp(env({
+      location: loc, sessionStorage: store, wallNow: () => 1_700_000_000_000,
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid' } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://accounts.google.com/auth', token_endpoint: 'https://t' } })],
+      ]),
+    }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    const tab = app.activeTab();
+    tab.sqlDraft = 'SELECT unsaved'; tab.specText = '{raw'; tab.dirtySql = true; tab.dirtySpec = true;
+    app.syncBeforeUnload();
+    const beforeUnload = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')?.[1] as EventListener;
+
+    await app.actions.login();
+
+    const checkpoint = JSON.parse(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY) ?? 'null');
+    expect(checkpoint).toMatchObject({
+      workspaceId: 'w-recovery', workspaceKey: 'recovery', oauthState: store.getItem('oauth_state'),
+      tabs: [expect.objectContaining({ sqlDraft: 'SELECT unsaved', specText: '{raw', dirtySql: true, dirtySpec: true })],
+    });
+    expect(loc.href).toContain('https://accounts.google.com/auth?');
+    const intendedRedirect = new Event('beforeunload', { cancelable: true });
+    beforeUnload(intendedRedirect);
+    expect(intendedRedirect.defaultPrevented).toBe(false);
+    const ordinaryUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnload(ordinaryUnload);
+    expect(ordinaryUnload.defaultPrevented).toBe(true);
+
+    tab.dirtySql = false; tab.dirtySpec = false;
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
+  it('does not navigate or bypass the dirty guard when the OAuth recovery write fails', async () => {
+    const href = 'https://ch/sql';
+    const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href } as Location;
+    const store = memSession({});
+    const setItem = store.setItem;
+    store.setItem = (key, value) => {
+      if (key === OAUTH_DOCUMENT_RECOVERY_KEY) throw new Error('storage full');
+      setItem(key, value);
+    };
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const app = createApp(env({
+      location: loc, sessionStorage: store,
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid' } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://accounts.google.com/auth', token_endpoint: 'https://t' } })],
+      ]),
+    }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    app.activeTab().dirtySql = true;
+    app.syncBeforeUnload();
+    const beforeUnload = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')?.[1] as EventListener;
+
+    await expect(app.actions.login()).rejects.toThrow('storage full');
+    expect(loc.href).toBe(href);
+    const ordinaryUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnload(ordinaryUnload);
+    expect(ordinaryUnload.defaultPrevented).toBe(true);
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
+  it('does not let a stale redirect disarm clear the newer app-owned unload bypass', async () => {
+    let href = 'https://ch/sql';
+    let app!: App;
+    let newer: Promise<void> | null = null;
+    const loc = {
+      host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '',
+      get href() { return href; },
+      set href(value: string) {
+        href = value;
+        if (newer === null) newer = app.actions.login();
+      },
+    } as Location;
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    app = createApp(env({
+      location: loc, sessionStorage: memSession({}),
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid' } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://accounts.google.com/auth', token_endpoint: 'https://t' } })],
+      ]),
+    }));
+    app.applyCommittedWorkspace({
+      storageVersion: 5, id: 'w-recovery', key: 'recovery', name: 'Recovery', queries: [], dashboards: [],
+    } as StoredWorkspaceV5);
+    app.activeTab().dirtySql = true;
+    app.syncBeforeUnload();
+    const beforeUnload = addEventListener.mock.calls.find(([type]) => type === 'beforeunload')?.[1] as EventListener;
+
+    await expect(app.actions.login()).rejects.toThrow('Authentication attempt superseded');
+    expect(newer).not.toBeNull();
+    await expect(newer!).resolves.toBeUndefined();
+
+    const newerRedirect = new Event('beforeunload', { cancelable: true });
+    beforeUnload(newerRedirect);
+    expect(newerRedirect.defaultPrevented).toBe(false);
+    const ordinaryUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnload(ordinaryUnload);
+    expect(ordinaryUnload.defaultPrevented).toBe(true);
+
+    app.activeTab().dirtySql = false;
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+
   it('login builds the redirect URL and stashes pkce/state', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' } as Location;
     const e = env({
@@ -3770,6 +4428,129 @@ describe('credentials (basic) sign-in', () => {
     expect(qs(app.root, '.app-header')).not.toBeNull();
     const probe = asMock(e.fetch!).mock.calls.find(([, init]) => init && init.body === 'SELECT 1')!;
     expect(probe[1].headers.Authorization).toBe('Basic ' + creds);
+  });
+  it('preserves a logged-out hash share through successful in-page Basic login and consumes it after workspace load', async () => {
+    const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({
+      __asb: 2,
+      query: {
+        sql: 'SELECT shared after login',
+        specVersion: 1,
+        spec: { name: 'Basic share', favorite: false, view: 'json' },
+      },
+    }))));
+    const location = {
+      host: 'ch.example', origin: 'https://ch.example', pathname: '/sql',
+      search: '', hash, href: 'https://ch.example/sql' + hash,
+    } as Location;
+    const store = memSession({});
+    const e = env({
+      location,
+      sessionStorage: store,
+      fetch: makeFetch([
+        [(u, sql) => /SELECT 1/.test(sql), resp({ json: { data: [{ '1': 1 }] } })],
+      ]),
+    });
+    const app = createApp(e);
+    const loadWorkspace = vi.spyOn(app, 'loadWorkspaceOnBoot');
+    const retryPending = vi.spyOn(app, 'retryPendingOAuthDocumentRecovery');
+    const consumeShared = vi.spyOn(app, 'consumeLegacyShared');
+    const renderSurface = vi.spyOn(app, 'renderCurrentSurface');
+
+    await bootstrap(app, {
+      location,
+      sessionStorage: store,
+      history: window.history,
+      fetch: e.fetch!,
+    });
+    expect(app.conn.isSignedIn()).toBe(false);
+    expect(store.getItem('oauth_shared')).not.toBeNull();
+
+    await app.actions.connect({ username: 'demo', password: 'demo', host: '' });
+
+    expect(app.activeTab()).toMatchObject({
+      sqlDraft: 'SELECT shared after login',
+      name: 'Basic share',
+    });
+    expect(app.state.resultView.value).toBe('json');
+    expect(store.getItem('oauth_shared')).toBeNull();
+    expect(loadWorkspace.mock.invocationCallOrder[0])
+      .toBeLessThan(retryPending.mock.invocationCallOrder[0]);
+    expect(retryPending.mock.invocationCallOrder[0])
+      .toBeLessThan(consumeShared.mock.invocationCallOrder[0]);
+    expect(consumeShared.mock.invocationCallOrder[0])
+      .toBeLessThan(renderSurface.mock.invocationCallOrder[0]);
+  });
+  it('lets a pending recovery win over the legacy share during defensive Basic login', async () => {
+    const store = memSession({
+      oauth_shared: JSON.stringify({
+        sql: 'SELECT shared must lose',
+        specVersion: 1,
+        spec: { name: 'Shared query', favorite: false },
+      }),
+    });
+    const e = env({
+      sessionStorage: store,
+      fetch: makeFetch([
+        [(u, sql) => /SELECT 1/.test(sql), resp({ json: { data: [{ '1': 1 }] } })],
+      ]),
+    });
+    const app = createApp(e);
+    const loadWorkspace = vi.spyOn(app, 'loadWorkspaceOnBoot');
+    app.retryPendingOAuthDocumentRecovery = vi.fn(() => {
+      app.activeTab().sqlDraft = 'SELECT pending Basic recovery';
+      return { kind: 'restored', finalization: 'complete' } as const;
+    });
+    const consumeShared = vi.spyOn(app, 'consumeLegacyShared');
+    const renderSurface = vi.spyOn(app, 'renderCurrentSurface');
+
+    await app.actions.connect({ username: 'demo', password: 'demo', host: '' });
+
+    expect(app.activeTab().sqlDraft).toBe('SELECT pending Basic recovery');
+    expect(store.getItem('oauth_shared')).toBeNull();
+    expect(consumeShared).toHaveBeenCalledWith(false);
+    expect(loadWorkspace.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0]);
+    expect(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0])
+      .toBeLessThan(consumeShared.mock.invocationCallOrder[0]);
+    expect(consumeShared.mock.invocationCallOrder[0])
+      .toBeLessThan(renderSurface.mock.invocationCallOrder[0]);
+  });
+  it('keeps Basic login usable but discards the shared handoff when recovery is deferred', async () => {
+    const store = memSession({
+      oauth_shared: JSON.stringify({
+        sql: 'SELECT deferred Basic share must never appear',
+        specVersion: 1,
+        spec: { name: 'Deferred fallback', favorite: false },
+      }),
+    });
+    const e = env({
+      sessionStorage: store,
+      fetch: makeFetch([
+        [(u, sql) => /SELECT 1/.test(sql), resp({ json: { data: [{ '1': 1 }] } })],
+      ]),
+    });
+    const app = createApp(e);
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
+    const removeItem = store.removeItem;
+    store.removeItem = vi.fn((key: string) => {
+      if (key === 'oauth_shared') throw new Error('raw handoff cleanup failure');
+      removeItem(key);
+    });
+    const consumeShared = vi.spyOn(app, 'consumeLegacyShared');
+    const renderSurface = vi.spyOn(app, 'renderCurrentSurface');
+
+    await expect(app.actions.connect({
+      username: 'demo', password: 'demo', host: '',
+    })).resolves.toBeUndefined();
+
+    expect(app.activeTab().sqlDraft).toBe('');
+    expect(store.getItem('oauth_shared')).not.toBeNull();
+    expect(store.removeItem).toHaveBeenCalledWith('oauth_shared');
+    expect(consumeShared).toHaveBeenCalledWith(false);
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
+    expect(renderSurface).toHaveBeenCalledOnce();
   });
   it('connect() targets a custom host via resolveTarget', async () => {
     const e = env({
@@ -4211,6 +4992,8 @@ describe('share + star + columns', () => {
     );
     const deleteSpy = vi.spyOn(app.workspace, 'delete')
       .mockResolvedValueOnce({ ok: true, deleted: true });
+    const retryPending = vi.fn(() => ({ kind: 'retry-deferred-retained' } as const));
+    app.retryPendingOAuthDocumentRecovery = retryPending;
 
     const workspace = await app.loadWorkspaceOnBoot();
     expect(workspace).toBeNull();
@@ -4234,6 +5017,7 @@ describe('share + star + columns', () => {
     });
 
     expect(deleteSpy).toHaveBeenCalledWith('corrupt-workspace');
+    expect(retryPending).toHaveBeenCalledOnce();
     const rebuilt = await loadActiveWorkspace(app);
     expect(rebuilt).not.toBeNull();
     expect(app.state.workspaceId).toBe(rebuilt!.id);
@@ -4263,6 +5047,50 @@ describe('share + star + columns', () => {
     await flush();
     expect(app.workspace.delete).toHaveBeenCalledWith('corrupt-workspace');
     expect(app.state.workspaceId).toBe(beforeId);
+  });
+  it('does not finish a corrupt-workspace reset over a newer route while recording its replacement', async () => {
+    const app = createApp(env());
+    const replacement: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'replacement', key: 'replacement', name: 'Replacement',
+      queries: [], dashboards: [],
+    };
+    const newer: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'newer', key: 'newer', name: 'Newer',
+      queries: [], dashboards: [],
+    };
+    app.workspace.resolveImplicit = vi.fn()
+      .mockResolvedValueOnce({
+        status: 'corrupt' as const,
+        id: 'corrupt-workspace',
+        key: 'corrupt_workspace',
+        diagnostics: [{
+          path: [], severity: 'error' as const,
+          code: 'workspace-version-unsupported', message: 'Unsupported version',
+        }],
+      })
+      .mockResolvedValueOnce({ status: 'ok' as const, workspace: replacement });
+    app.workspace.delete = vi.fn(async () => ({ ok: true as const, deleted: true }));
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace: newer }));
+    let releaseReplacement!: () => void;
+    app.workspace.markOpened = vi.fn((key: string): Promise<WorkspaceMarkOpenedResult> =>
+      key === replacement.key
+        ? new Promise((resolve) => {
+          releaseReplacement = () => resolve({ ok: true as const });
+        })
+        : Promise.resolve({ ok: true as const }));
+    app.renderCurrentSurface = vi.fn();
+
+    await app.loadWorkspaceOnBoot();
+    qs<HTMLButtonElement>(document, '.share-toast-action').click();
+    await vi.waitFor(() => expect(app.workspace.markOpened).toHaveBeenCalledWith(replacement.key));
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: newer.key }, 'push');
+    releaseReplacement();
+    await flush();
+
+    expect(app.sqlRoute.workspaceKey).toBe(newer.key);
+    expect(app.currentWorkspace).toBe(newer);
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
   });
   it('#300: the empty and ok load-result cases behave exactly as before (no toast, migrate-then-project runs as usual)', async () => {
     const app = createApp(env());
@@ -6518,6 +7346,9 @@ describe('unified /sql routing', () => {
     };
     app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace: second }));
     app.workspace.markOpened = vi.fn(async () => ({ ok: true as const, workspace: second }));
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
     app.renderCurrentSurface = vi.fn();
     location.search = '?ws=second&surface=dashboard&mode=view';
     await app.handleSqlPopState();
@@ -6525,7 +7356,10 @@ describe('unified /sql routing', () => {
       surface: 'dashboard', workspaceKey: 'second', mode: 'view',
     });
     expect(app.currentWorkspace).toBe(second);
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
     expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+    expect(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
   });
 
   it('reloadDashboardRoute also handles a missing current projection', () => {
@@ -6807,6 +7641,9 @@ describe('unified /sql routing', () => {
       },
     }));
     app.renderCurrentSurface = vi.fn();
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
     const toB = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
     const toC = app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'c' }, 'push');
     const c: StoredWorkspaceV5 = {
@@ -6822,6 +7659,7 @@ describe('unified /sql routing', () => {
     expect(app.sqlRoute.workspaceKey).toBe('c');
     expect(app.currentWorkspace).toBe(c);
     expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
   });
 
   it('discards a route whose last-used write finishes after a newer navigation', async () => {
@@ -6927,16 +7765,44 @@ describe('unified /sql routing', () => {
     app.applyCommittedWorkspace(a);
     app.renderApp();
     const loadByKey = vi.spyOn(app.workspace, 'loadByKey');
+    app.retryPendingOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'retry-deferred-retained' } as const),
+    );
     location.search = '?ws=a&surface=dashboard&mode=view';
 
     await app.handleSqlPopState();
 
     expect(loadByKey).not.toHaveBeenCalled();
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'a', mode: 'view',
     });
     expect(qs(app.root, '.dash-page')).not.toBeNull();
     expect(qs(app.root, '.workspace-loading')).toBeNull();
+  });
+
+  it('same-key popstate reloads and retries pending recovery when no workspace projection is available', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=a',
+      hash: '', host: 'ch.example', href: 'https://ch.example/sql?ws=a',
+    } as Location;
+    const app = createApp(env({ location }));
+    const workspace: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
+    };
+    app.currentWorkspace = null;
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace }));
+    app.workspace.markOpened = vi.fn(async () => ({ ok: true as const, workspace }));
+    app.retryPendingOAuthDocumentRecovery = vi.fn(() => ({ kind: 'absent' } as const));
+    app.renderCurrentSurface = vi.fn();
+
+    await app.handleSqlPopState();
+
+    expect(app.workspace.loadByKey).toHaveBeenCalledWith('a');
+    expect(app.currentWorkspace).toBe(workspace);
+    expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
+    expect(vi.mocked(app.retryPendingOAuthDocumentRecovery).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
   });
 
   it('closes Dashboard shortcut help before a Dashboard-to-Workbench popstate', async () => {

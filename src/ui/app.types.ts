@@ -37,6 +37,7 @@ import type { WorkbenchParameterSession } from '../application/workbench-paramet
 import type { ExportService } from '../application/export-service.js';
 import type { QueryDocumentSession } from '../application/query-document-session.js';
 import type { SavedQueryService } from '../application/saved-query-service.js';
+import type { OAuthDocumentRecoveryRestoreResult } from '../application/oauth-document-recovery-session.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 // #457: the `mutateWorkspace` contract types are DECLARED in `state.ts`, beside
@@ -51,6 +52,21 @@ export type {
 } from '../state.js';
 
 type Json = Record<string, unknown>;
+
+/** Application-shell recovery outcome. `kind: 'restored'` means bootstrap must
+ * render the published tabs; `kind: 'retry-deferred-retained'` means the normal
+ * workspace remains visible while validated recovery authority is retained.
+ * Both suppress legacy shared content. A retained finalization warning means
+ * the authored document is live and guarded, but its checkpoint remains
+ * available because revalidation or storage cleanup could not complete. */
+export type OAuthDocumentRecoveryApplyResult =
+  | Exclude<OAuthDocumentRecoveryRestoreResult, { kind: 'restored' }>
+  | { kind: 'restored'; finalization: 'complete' }
+  | {
+    kind: 'restored';
+    finalization: 'checkpoint-retained';
+    warning: 'spec-revalidation-failed' | 'checkpoint-remove-failed';
+  };
 
 /** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
  *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
@@ -459,6 +475,26 @@ export interface App {
    *  reactive effect (`workbench-shell.ts`) and `actions.rerenderTabs`; see
    *  `createApp`'s own definition for why both are needed. */
   syncBeforeUnload(): void;
+  /** Restore a callback-state-bound OAuth document checkpoint into the
+   * already-loaded authoritative workspace. The shell revalidates raw Spec
+   * drafts, reinstalls the ordinary dirty guard, then consumes only a fully
+   * restored checkpoint. Once tabs have been published, finalization failures
+   * remain a restored outcome so bootstrap cannot hide them behind a shared
+   * placeholder or abort first render. */
+  restoreOAuthDocumentRecovery(callbackState: string): OAuthDocumentRecoveryApplyResult;
+  /** Retry only a recovery explicitly marked pending by a successful callback
+   * whose authoritative workspace was temporarily unavailable. Ordinary
+   * checkpoints without that marker remain inert. An unsafe authority-retire
+   * attempt stays unpublished, retains recovery data, and surfaces one safe
+   * retry notice through the application shell. */
+  retryPendingOAuthDocumentRecovery(): OAuthDocumentRecoveryApplyResult;
+  /** Consume the one-shot legacy `oauth_shared` handoff. When `allowRestore`
+   * is false (a recovered OAuth document won precedence), discard it without
+   * applying; otherwise seed the loaded Query workspace before first render.
+   * Bootstrap may pass the already-consumed serialized value; in-page Basic
+   * login omits it and lets the app take its own sessionStorage handoff.
+   * Returns whether authored shared content was applied. */
+  consumeLegacyShared(allowRestore: boolean, consumedHandoff?: string | null): boolean;
   /** #425 — which main work surface owns the right-hand work area, and, for a
    *  Dashboard, WHICH stored Dashboard is selected in which presentation mode,
    *  plus (#426) the member currently navigated to inside it and any focus
