@@ -30,7 +30,7 @@ import type { ConnectionSession } from '../application/connection-session.js';
  *  composes rendering, not a pure forward. */
 export interface LoginApp {
   root: Element;
-  conn: Pick<ConnectionSession, 'host' | 'hostHint' | 'loadIdps'>;
+  conn: Pick<ConnectionSession, 'host' | 'hostHint' | 'loadIdps' | 'basicRecoveryOrigin'>;
   actions: Pick<ActionsRegistry, 'login' | 'connect'>;
   showLogin(msg?: string): void;
 }
@@ -113,7 +113,12 @@ function mountLoginControls(
   // A `?host=` URL param pre-fills the credential server address. A non-empty
   // host means credential-only (SSO can only target the serving host), so
   // Advanced opens and the SSO buttons disable.
-  const hostHint = app.conn.hostHint || '';
+  // During in-shell Basic recovery use the exact prior target. `chCtx.origin`
+  // is intentionally reset once the loss is reported, so `host()` alone is
+  // insufficient (and drops the scheme/port the reconnect must reuse).
+  const hostHint = mode === 'inline'
+    ? (app.conn.basicRecoveryOrigin() || app.conn.hostHint || '')
+    : (app.conn.hostHint || '');
   let advOpen = !!hostHint;
   let ssoBtns: HTMLButtonElement[] = [];
 
@@ -188,6 +193,7 @@ function mountLoginControls(
 
   // --- saved-connection picker (populated async; shown only when config lists hosts) ---
   let pickHosts: HostDescriptor[] = [];
+  let inlineOAuthConfigured = false;
   const hostPicker = h('select', { class: 'login-picker mono', onchange: onPickHost });
   // Shown only for an `insecure` (accept-invalid-certificate) connection — the
   // browser can't be reached until its cert is trusted (see showCertWarn).
@@ -266,6 +272,19 @@ function mountLoginControls(
     // targets that host's origin); don't also offer it as a serving-host SSO button —
     // that would query the serving origin (e.g. localhost), not the chosen cluster.
     const standalone = (idps || []).filter((i) => !pickHosts.some((hh) => hh.auth === 'oauth' && hh.idp === i.id));
+    // Phase 2 keeps the document shell mounted during recovery, but does not
+    // yet have the redirect-resume checkpoint needed to make an OAuth round
+    // trip safe. Full-screen login retains the normal OAuth controls.
+    if (mode === 'inline') {
+      if (standalone.length || inlineOAuthConfigured) {
+        ssoSection.replaceChildren(h('div', {
+          class: 'login-inline-oauth-unavailable',
+          role: 'status',
+          'aria-live': 'polite',
+        }, 'Single sign-on is temporarily unavailable while this session is paused. Your work remains open.'));
+      }
+      return;
+    }
     if (!standalone.length) return;
     const mk = (idpId: string, label: string): HTMLButtonElement => {
       const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b, label) },
@@ -285,7 +304,10 @@ function mountLoginControls(
   // Fill the picker from config.json's `hosts` (npm run local supplies them from
   // ~/.clickhouse-client/config.xml). Hidden when none are configured.
   function populateHosts(hosts: HostDescriptor[] | undefined): void {
-    pickHosts = hosts || [];
+    // OAuth saved connections also redirect away from the mounted document.
+    // Only credential targets are safe to offer in Phase 2 inline recovery.
+    inlineOAuthConfigured = mode === 'inline' && (hosts || []).some((hh) => hh.auth === 'oauth');
+    pickHosts = (hosts || []).filter((hh) => mode === 'full' || hh.auth === 'basic');
     if (!pickHosts.length) return;
     hostPicker.replaceChildren(
       h('option', { value: '' }, 'Choose a connection…'),

@@ -112,6 +112,10 @@ export interface ConnectionSession {
   idpId(): string | null;
   chAuth(): ChAuthKind;
   basicUserClaim(): string;
+  /** The exact Basic target retained for an in-place reauthentication after an
+   * involuntary credential loss. It is deliberately separate from `chCtx`:
+   * the live context resets to the serving origin once credentials are cleared. */
+  basicRecoveryOrigin(): string | null;
   isSignedIn(): boolean;
   email(): string;
   host(): string;
@@ -145,6 +149,12 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   let token: string | null = ss.getItem('oauth_id_token');
   let refreshTok: string | null = ss.getItem('oauth_refresh_token');
   let authMode: 'oauth' | 'basic' = ss.getItem('ch_basic_auth') ? 'basic' : 'oauth';
+  // `requireAuthentication` clears storage and returns the live request ctx to
+  // the serving origin. Keep the previous Basic target separately so the
+  // in-shell recovery form cannot accidentally reconnect to that serving host.
+  let basicRecoveryTarget: string | null = authMode === 'basic'
+    ? (ss.getItem('ch_basic_origin') || loc.origin)
+    : null;
   const basicCreds = (): string | null => ss.getItem('ch_basic_auth');
   const currentCredential = (): string | null => (authMode === 'basic' ? basicCreds() : token);
   const basicUser = (): string => ss.getItem('ch_basic_user') || '';
@@ -216,15 +226,17 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   }
   function setTokens(id: string, refresh?: string): void {
     authMode = 'oauth';
+    basicRecoveryTarget = null;
     storeTokens(id, refresh);
     chCtx.authConfirmed = false;
     transition({ type: 'credentials-installed' });
   }
-  function clearTokens(): void {
+  function clearTokens(preserveBasicRecovery = false): void {
     token = null;
     refreshTok = null;
     idpId = null;
     authMode = 'oauth';
+    if (!preserveBasicRecovery) basicRecoveryTarget = null;
     chCtx.origin = loc.origin;
     chCtx.authConfirmed = false; // a fresh sign-in starts unconfirmed again
     ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_return_route', 'oauth_idp', 'oauth_origin',
@@ -308,10 +320,11 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     const lease = captureCancellationLease(expectedEpoch);
     const next = transition({ type: 'auth-required', epoch: expectedEpoch, detail: message });
     authLossReportedEpoch = next.epoch;
+    const preserveBasicRecovery = authMode === 'basic';
     try {
       deps.onAuthLost(message, lease ?? undefined);
     } finally {
-      clearTokens();
+      clearTokens(preserveBasicRecovery);
     }
   }
 
@@ -475,6 +488,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     ss.setItem('ch_basic_auth', creds);
     ss.setItem('ch_basic_user', user);
     ss.setItem('ch_basic_origin', target);
+    basicRecoveryTarget = target;
     chCtx.origin = target;
     chCtx.authConfirmed = false;
     transition({ type: 'credentials-installed' });
@@ -502,6 +516,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     idpId: () => idpId,
     chAuth: () => chAuthVal,
     basicUserClaim: () => basicUserClaimVal,
+    basicRecoveryOrigin: () => basicRecoveryTarget,
     isSignedIn,
     email,
     // The host queries actually go to. chCtx.origin already resolves to the basic

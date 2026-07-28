@@ -17,8 +17,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   loads, formatting, SHOW CREATE, and detached-result refreshes. Closing it
   aborts local work before best-effort server cancellation with an immutable
   origin and `Authorization` lease, and stale completions cannot publish into
-  the next authenticated epoch. The mounted shell, exact editor/tab/result
-  objects, drafts, dirty state, route, and unload guard survive while the
+  the next authenticated epoch; stale preflight work is also rejected before
+  it can send a replacement epoch's credentials. The mounted shell, exact
+  editor/tab/result objects, drafts, dirty state, route, and unload guard survive while the
   header turns red and the existing authentication controls appear inline.
   Successful Basic reauthentication installs a fresh scope and reloads
   connection metadata in place; explicit Log out remains destructive.

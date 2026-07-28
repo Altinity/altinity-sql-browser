@@ -360,7 +360,7 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
       const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db || ''); // closure around focus.db, tags external nodes
       // Card metadata for every database the expansion reached (external nodes too).
       const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
-      const cards = await deps.loadSchemaCards(deps.ctx(), dbs);
+      const cards = await deps.loadSchemaCards(deps.ctx(), dbs, controller.signal);
       if (!current()) return null;
       const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
         { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
@@ -398,7 +398,7 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
         return null;
       }
       if (!current()) return null;
-      const detail = await deps.loadTableDetail(deps.ctx(), node.db, node.name);
+      const detail = await deps.loadTableDetail(deps.ctx(), node.db, node.name, controller.signal);
       if (!current() || latestDetailRequest.get(token) !== node) return null; // superseded by a later click
       return detail;
     } finally {

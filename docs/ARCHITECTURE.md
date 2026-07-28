@@ -108,7 +108,10 @@ Connection lifecycle ownership follows the same rule. `ConnectionSession`
 publishes one read-only signal and assigns a monotonically increasing
 credential epoch whenever credentials are installed or invalidated. Refresh is
 single-flight within an epoch; a late refresh or transport response cannot
-write tokens, report auth loss, or repaint the replacement epoch.
+write tokens, report auth loss, or repaint the replacement epoch. The network
+boundary rechecks that epoch after every credential await and immediately
+before each fetch attempt, so old work cannot execute under a replacement
+session's credentials.
 `net/ch-client` reports only successful 2xx transport settlement as connected
 and rejected, non-aborted `fetch` as offline. HTTP query failures — including a
 post-confirmation 401/403 — remain query outcomes, not connection state. The

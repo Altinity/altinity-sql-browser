@@ -50,6 +50,7 @@ interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'conn'>> {
   actions?: Partial<FakeApp['actions']>;
   host?: () => string;
   loadIdps?: () => Promise<TestIdpsResult>;
+  basicRecoveryOrigin?: () => string | null;
   // Not a base fake-app.js field (only ever supplied as an override, matching
   // the real app's optional `conn.hostHint` — app.types.ts / login.ts's
   // `LoginApp`).
@@ -58,13 +59,14 @@ interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'conn'>> {
 // makeApp defaults loadIdps → { idps: [], basicLogin: true }. Override per test.
 function appWith(over: AppOverrides = {}): FakeApp {
   const base = makeApp();
-  const { loadIdps, host, hostHint, ...rest } = over;
+  const { loadIdps, host, hostHint, basicRecoveryOrigin, ...rest } = over;
   return makeApp({
     ...rest,
     actions: { ...base.actions, ...(over.actions || {}) },
     conn: {
       ...(host ? { host } : {}),
       ...(hostHint !== undefined ? { hostHint } : {}),
+      ...(basicRecoveryOrigin ? { basicRecoveryOrigin } : {}),
       ...(loadIdps ? { loadIdps: asLoadIdps(loadIdps) } : {}),
     },
   });
@@ -217,6 +219,35 @@ describe('renderLogin — insecure (accept-invalid-certificate) hosts', () => {
     expect(go.disabled).toBe(true);
     click(go); // re-entry blocked by the busy guard in pickOAuth
     expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  it('oauth insecure host: restores its Continue control after a live redirect failure', async () => {
+    const login = vi.fn(async () => { throw new Error('certificate redirect failed'); });
+    const app = withInsecure({ actions: { login } });
+    app.showLogin = vi.fn();
+    renderLogin(app); await tick();
+    selectHost(app.root, '1');
+    const go = qs<HTMLButtonElement>(app.root, '.login-cert-go');
+    click(go);
+    expect(go.disabled).toBe(true);
+    await tick();
+
+    expect(go.disabled).toBe(false);
+    expect(app.showLogin).toHaveBeenCalledWith('certificate redirect failed');
+  });
+
+  it('fences a certificate-gated OAuth failure after its full-screen mount is replaced', async () => {
+    let rejectLogin: ((reason?: unknown) => void) | undefined;
+    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }));
+    const app = withInsecure({ actions: { login } });
+    renderLogin(app); await tick();
+    selectHost(app.root, '1');
+    click(qs(app.root, '.login-cert-go'));
+    renderLogin(app); // disposes the redirecting mount
+    rejectLogin?.(new Error('late certificate redirect failure'));
+    await tick();
+
+    expect(app.root.querySelector('.login-error')).toBeNull();
   });
 
   it('clears the cert step when switching to the placeholder or a normal connection', async () => {
@@ -484,6 +515,18 @@ describe('renderLogin — SSO flow', () => {
     await tick();
     expect(showLogin).toHaveBeenCalledWith('sso-raw');
   });
+  it('fences an SSO failure after its full-screen mount is replaced', async () => {
+    let rejectLogin: ((reason?: unknown) => void) | undefined;
+    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }));
+    const app = ssoApp({ actions: { login } });
+    renderLogin(app); await tick();
+    click(qs(app.root, '.login-sso .login-btn'));
+    renderLogin(app); // disposes the redirecting mount
+    rejectLogin?.(new Error('late redirect failure'));
+    await tick();
+
+    expect(app.root.querySelector('.login-error')).toBeNull();
+  });
   it('ignores a second SSO click while one is in flight', async () => {
     let resolve: (() => void) | undefined;
     const login = vi.fn(() => new Promise<void>((r) => { resolve = r; }));
@@ -511,7 +554,7 @@ describe('mountInlineLogin', () => {
     insecure: false,
   }];
 
-  it('mounts the same controls as the full renderer without replacing the app root', async () => {
+  it('mounts Basic recovery controls without replacing the app root', async () => {
     const loadIdps = async () => ({ idps, basicLogin: true, hosts });
     const full = appWith({ loadIdps });
     const inline = appWith({ loadIdps });
@@ -531,8 +574,8 @@ describe('mountInlineLogin', () => {
     expect(host.querySelector('.login-screen')).toBeNull();
     expect(host.querySelector('.login-inline')).not.toBeNull();
     expect(qsa(host, '.login-input')).toHaveLength(qsa(full.root, '.login-input').length);
-    expect(qsa<HTMLButtonElement>(host, '.login-sso .login-btn').map((b) => b.textContent))
-      .toEqual(qsa<HTMLButtonElement>(full.root, '.login-sso .login-btn').map((b) => b.textContent));
+    expect(host.querySelector('.login-sso .login-btn')).toBeNull();
+    expect(qs(host, '.login-inline-oauth-unavailable').textContent).toContain('Single sign-on');
     expect([...qs<HTMLSelectElement>(host, '.login-picker').options].map((o) => o.textContent))
       .toEqual([...qs<HTMLSelectElement>(full.root, '.login-picker').options].map((o) => o.textContent));
     expect(qs(host, '.login-brand-name').textContent).toBe(qs(full.root, '.login-brand-name').textContent);
@@ -566,7 +609,7 @@ describe('mountInlineLogin', () => {
     expect(host.querySelector('.login-error')).toBeNull();
   });
 
-  it('keeps OAuth failures local and restores the reusable control', async () => {
+  it('keeps inline OAuth unavailable without replacing the surrounding root', async () => {
     const showLogin = vi.fn();
     const login = vi.fn(async () => { throw new Error('redirect blocked'); });
     const app = appWith({
@@ -579,16 +622,58 @@ describe('mountInlineLogin', () => {
     const host = document.createElement('div');
     mountInlineLogin(app, host);
     await tick();
-    const sso = qs<HTMLButtonElement>(host, '.login-sso .login-btn');
-
-    click(sso);
-    await tick();
-
     expect(app.root.firstElementChild).toBe(sentinel);
     expect(showLogin).not.toHaveBeenCalled();
-    expect(qs(host, '.login-error').textContent).toBe('redirect blocked');
-    expect(sso.disabled).toBe(false);
-    expect(sso.textContent).toBe('Continue with Google');
+    expect(host.querySelector('.login-sso .login-btn')).toBeNull();
+    expect(qs(host, '.login-inline-oauth-unavailable').getAttribute('role')).toBe('status');
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  it('prefills and reuses the exact prior Basic target during inline recovery', async () => {
+    const connect = vi.fn(async () => {});
+    const app = appWith({
+      actions: { connect },
+      basicRecoveryOrigin: () => 'https://db.example:9440',
+    });
+    const host = document.createElement('div');
+    mountInlineLogin(app, host);
+    const [user, pass, target] = qsa<HTMLInputElement>(host, '.login-input');
+
+    expect(target.value).toBe('https://db.example:9440');
+    expect(qs(host, '.login-target .lt-host').textContent).toBe('https://db.example:9440');
+    type(user, 'alice');
+    type(pass, 'fresh-secret');
+    click(qs(host, '.login-creds .login-btn'));
+    await tick();
+
+    expect(connect).toHaveBeenCalledWith({
+      username: 'alice', password: 'fresh-secret', host: 'https://db.example:9440',
+    });
+  });
+
+  it('does not expose OAuth navigation inline before the recovery checkpoint exists', async () => {
+    const login = vi.fn(async () => {});
+    const app = appWith({
+      actions: { login },
+      loadIdps: async () => ({
+        idps: [{ id: 'g', label: 'Google' }], basicLogin: false,
+        hosts: [{
+          label: 'oauth-only', url: 'https://db.example', auth: 'oauth',
+          user: '', password: '', idp: 'g', insecure: false,
+        }],
+      }),
+    });
+    const host = document.createElement('div');
+    mountInlineLogin(app, host);
+    await tick();
+
+    expect(host.querySelector('.login-sso button')).toBeNull();
+    expect(qs<HTMLElement>(host, '.login-picker-field').style.display).toBe('none');
+    expect(host.querySelector('.login-creds')).toBeNull();
+    const message = qs<HTMLElement>(host, '.login-inline-oauth-unavailable');
+    expect(message.getAttribute('role')).toBe('status');
+    expect(message.textContent).toContain('Single sign-on');
+    expect(login).not.toHaveBeenCalled();
   });
 
   it('hides, shows, and focuses the existing mount without rebuilding it', () => {
@@ -635,13 +720,11 @@ describe('mountInlineLogin', () => {
     expect(host.firstElementChild).toBe(replacement);
   });
 
-  it('fences late credential and SSO failures after an inline mount is disposed', async () => {
+  it('fences a late credential failure after an inline mount is disposed', async () => {
     let rejectConnect: ((reason?: unknown) => void) | undefined;
-    let rejectSso: ((reason?: unknown) => void) | undefined;
     const connect = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectConnect = reject; }));
-    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSso = reject; }));
     const app = appWith({
-      actions: { connect, login },
+      actions: { connect },
       loadIdps: async () => ({ idps, basicLogin: true }),
     });
     const host = document.createElement('div');
@@ -654,67 +737,6 @@ describe('mountInlineLogin', () => {
     rejectConnect?.(new Error('late credential failure'));
     await tick();
     expect(host.querySelector('.login-error')).toBeNull();
-
-    const ssoHost = document.createElement('div');
-    const sso = mountInlineLogin(app, ssoHost);
-    await tick();
-    click(qs(ssoHost, '.login-sso .login-btn'));
-    await tick();
-    sso.dispose();
-    rejectSso?.(new Error('late redirect failure'));
-    await tick();
-    expect(ssoHost.querySelector('.login-error')).toBeNull();
-  });
-
-  it('fences a late certificate-gated OAuth failure after disposal', async () => {
-    let rejectLogin: ((reason?: unknown) => void) | undefined;
-    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }));
-    const app = appWith({
-      actions: { login },
-      loadIdps: async () => ({
-        idps: [], basicLogin: true,
-        hosts: [{
-          label: 'secure-demo', url: 'https://demo.example', auth: 'oauth',
-          user: '', password: '', idp: 'g', insecure: true,
-        }],
-      }),
-    });
-    const host = document.createElement('div');
-    const handle = mountInlineLogin(app, host);
-    await tick();
-    selectHost(host, '0');
-    click(qs(host, '.login-cert-go'));
-    await tick();
-    handle.dispose();
-    rejectLogin?.(new Error('late certificate redirect failure'));
-    await tick();
-    expect(host.querySelector('.login-error')).toBeNull();
-  });
-
-  it('restores the certificate-gated OAuth Continue control after a live redirect failure', async () => {
-    let rejectLogin: ((reason?: unknown) => void) | undefined;
-    const login = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }));
-    const app = appWith({
-      actions: { login },
-      loadIdps: async () => ({
-        idps: [], basicLogin: true,
-        hosts: [{
-          label: 'secure-demo', url: 'https://demo.example', auth: 'oauth',
-          user: '', password: '', idp: 'g', insecure: true,
-        }],
-      }),
-    });
-    const host = document.createElement('div');
-    mountInlineLogin(app, host);
-    await tick();
-    selectHost(host, '0');
-    const go = qs<HTMLButtonElement>(host, '.login-cert-go');
-    click(go);
-    expect(go.disabled).toBe(true);
-    rejectLogin?.(new Error('certificate redirect failed'));
-    await tick();
-    expect(go.disabled).toBe(false);
-    expect(qs(host, '.login-error').textContent).toContain('certificate redirect failed');
   });
 
   it('makes hidden and disposed inline handle methods inert', () => {

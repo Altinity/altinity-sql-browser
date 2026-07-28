@@ -482,6 +482,12 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 7px; font-size: var(--text-label); color: var(--fg-faint);
 }
 .login-sso-note .mono { color: var(--fg-mute); }
+.login-inline-oauth-unavailable {
+  padding: 10px 12px;
+  background: var(--warn-bg); border: 1px solid var(--warn-bd);
+  border-radius: var(--r-md); color: var(--warn-fg);
+  font-size: var(--text-body); line-height: var(--lh-body);
+}
 
 /* Buttons (primary / ghost) */
 .login-btn {
@@ -610,6 +616,13 @@ h1, h2, h3, h4, h5, h6 {
   font-family: var(--mono); color: var(--fg);
 }
 .connection-state { display: none; }
+.connection-chip.is-auth-required {
+  background: var(--error-bg); border-color: var(--error-bd);
+}
+.connection-chip.is-auth-required .connection-host { display: none; }
+.connection-chip.is-auth-required .connection-state {
+  display: inline; color: var(--error-fg); font-weight: var(--fw-semibold);
+}
 .conn-status::before {
   content: ''; width: 7px; height: 7px; border-radius: var(--r-xs);
   background: var(--fg-faint); box-shadow: none;

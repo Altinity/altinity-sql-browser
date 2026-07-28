@@ -270,6 +270,28 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     }) || null;
   }
 
+  /** Complete the auth/config preflight for a registered wave. A rejected
+   * preflight must remain visible to the caller, but it has no transport
+   * finally block to release the registration for it. */
+  async function preflightWave(registration: AuthenticatedExecutionRegistration | null): Promise<boolean> {
+    let continueWave = false;
+    try {
+      await deps.ensureConfig();
+      if (!isCurrent(registration)) return false;
+      if (!(await deps.getToken())) {
+        if (isCurrent(registration)) hooks.onAuthFailed();
+        return false;
+      }
+      if (!isCurrent(registration)) return false;
+      continueWave = true;
+      return true;
+    } finally {
+      // The transport finally owns a successfully preflighted registration.
+      // Every early return and rejected preflight is released here instead.
+      if (!continueWave) registration?.release();
+    }
+  }
+
   async function run(opts?: RunOpts): Promise<void> {
     if (state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = deps.activeTab();
@@ -297,14 +319,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const controller = new AbortController();
     let waveQueryId: string | null = null;
     const registration = registerWave('workbench run', controller, () => waveQueryId);
-    await deps.ensureConfig();
-    if (!isCurrent(registration)) { registration?.release(); return; }
-    if (!(await deps.getToken())) {
-      if (isCurrent(registration)) hooks.onAuthFailed();
-      registration?.release();
-      return;
-    }
-    if (!isCurrent(registration)) { registration?.release(); return; }
+    if (!(await preflightWave(registration))) return;
 
     hooks.cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
 
@@ -510,14 +525,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const controller = new AbortController();
     let waveQueryId: string | null = null;
     const registration = registerWave('workbench variable option', controller, () => waveQueryId);
-    await deps.ensureConfig();
-    if (!isCurrent(registration)) { registration?.release(); return; }
-    if (!(await deps.getToken())) {
-      if (isCurrent(registration)) hooks.onAuthFailed();
-      registration?.release();
-      return;
-    }
-    if (!isCurrent(registration)) { registration?.release(); return; }
+    if (!(await preflightWave(registration))) return;
 
     hooks.cancelSchemaGraph();
     state.forceExplain = false;
@@ -605,14 +613,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const controller = new AbortController();
     let waveQueryId: string | null = null;
     const registration = registerWave('workbench script', controller, () => waveQueryId);
-    await deps.ensureConfig();
-    if (!isCurrent(registration)) { registration?.release(); return; }
-    if (!(await deps.getToken())) {
-      if (isCurrent(registration)) hooks.onAuthFailed();
-      registration?.release();
-      return;
-    }
-    if (!isCurrent(registration)) { registration?.release(); return; }
+    if (!(await preflightWave(registration))) return;
 
     hooks.cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
     state.forceExplain = false;

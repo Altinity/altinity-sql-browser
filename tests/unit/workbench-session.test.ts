@@ -153,6 +153,25 @@ function executionScope(epoch = 1) {
   return createAuthenticatedExecutionScope({ epoch, cancelRemote: vi.fn() });
 }
 
+/** Lets preflight tests prove that a wave releases its registration without
+ * closing the containing authenticated scope. */
+function trackingExecutionScope(epoch = 1) {
+  const scope = executionScope(epoch);
+  const register = scope.register;
+  const release = vi.fn();
+  vi.spyOn(scope, 'register').mockImplementation((operation) => {
+    const registration = register(operation);
+    return {
+      ...registration,
+      release: () => {
+        release();
+        registration.release();
+      },
+    };
+  });
+  return { scope, release };
+}
+
 function cancellationLease(epoch = 1): AuthenticatedCancellationLease {
   return {
     epoch,
@@ -200,6 +219,18 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
+    const tracked = trackingExecutionScope();
+    const h = makeHarness({ executionScope: tracked.scope, tab: { sqlDraft: 'SELECT 1' } });
+    const failure = new Error(`${preflight} failed`);
+    if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
+    else h.deps.getToken = vi.fn(async () => { throw failure; });
+
+    await expect(createWorkbenchSession(h.deps).run()).rejects.toBe(failure);
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(tracked.scope.isOpen()).toBe(true);
   });
 
   it('auth loss during preflight leaves a completed result intact and never starts a request', async () => {
@@ -489,6 +520,18 @@ describe('createWorkbenchSession: runScript()', () => {
     await session.runScript(['SELECT 1'], 'SELECT 1');
     expect(h.execFakes.executeScript).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
+    const tracked = trackingExecutionScope();
+    const h = makeHarness({ executionScope: tracked.scope });
+    const failure = new Error(`${preflight} failed`);
+    if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
+    else h.deps.getToken = vi.fn(async () => { throw failure; });
+
+    await expect(createWorkbenchSession(h.deps).runScript(['SELECT 1'], 'SELECT 1')).rejects.toBe(failure);
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(tracked.scope.isOpen()).toBe(true);
   });
 
   it('reports a token failure while the captured script scope is still current', async () => {
@@ -1009,6 +1052,21 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
+    const tracked = trackingExecutionScope();
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+    });
+    const failure = new Error(`${preflight} failed`);
+    if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
+    else h.deps.getToken = vi.fn(async () => { throw failure; });
+
+    await expect(createWorkbenchSession(h.deps).run()).rejects.toBe(failure);
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(tracked.scope.isOpen()).toBe(true);
   });
 
   it('reports a current variable-scope token failure, but ignores a scope closed during token resolution', async () => {

@@ -233,6 +233,7 @@ const connDefaults: ConnectionSession = {
   idpId: () => null,
   chAuth: () => 'basic',
   basicUserClaim: () => 'sub',
+  basicRecoveryOrigin: () => null,
   isSignedIn: () => true,
   email: () => '',
   host: () => '',

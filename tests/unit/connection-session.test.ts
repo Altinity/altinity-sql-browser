@@ -713,6 +713,17 @@ describe('chCtx.onSignedOut', () => {
       expect.objectContaining({ authorization: `Bearer ${validToken}`, epoch: 0 }),
     );
   });
+  it('retains the exact prior Basic target for inline recovery, but not explicit sign-out', () => {
+    const { session } = setup({ storage: memStorage({
+      ch_basic_auth: 'YWJj', ch_basic_user: 'bob', ch_basic_origin: 'https://db.example:9440',
+    }) });
+    session.chCtx.onSignedOut('credentials rejected');
+    expect(session.chCtx.origin).toBe('https://ch.example');
+    expect(session.basicRecoveryOrigin()).toBe('https://db.example:9440');
+
+    session.signOut();
+    expect(session.basicRecoveryOrigin()).toBeNull();
+  });
   it('falls back to the default expired-session message', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut();

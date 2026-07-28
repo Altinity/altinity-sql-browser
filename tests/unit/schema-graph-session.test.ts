@@ -529,16 +529,21 @@ describe('expand()', () => {
   it('scope loss during expand drops the late card payload and does not write saved positions', async () => {
     const active = scope();
     const cards = deferred<{ columnsByKey: Record<string, unknown[]> }>();
+    let cardsSignal: AbortSignal | undefined;
     const tab = makeTab({ schemaGraph: { nodes: [], edges: [] } });
     const svc = createSchemaGraphSession(makeDeps({
       activeTab: () => tab,
       executionScope: () => active,
       loadLineageTransitive: fakeLoadLineageTransitive({ tables: [], dictionaries: [] }),
-      loadSchemaCards: vi.fn(() => cards.promise) as unknown as SchemaGraphDeps['loadSchemaCards'],
+      loadSchemaCards: vi.fn((_ctx: unknown, _dbs: readonly string[], signal?: AbortSignal) => {
+        cardsSignal = signal;
+        return cards.promise;
+      }) as unknown as SchemaGraphDeps['loadSchemaCards'],
     }));
     const pending = svc.expand({ db: 'd' });
     await flush();
     active.close();
+    expect(cardsSignal?.aborted).toBe(true);
     cards.resolve({ columnsByKey: {} });
     await expect(pending).resolves.toBeNull();
     expect(schemaGraphOf(tab).savedPositions).toBeUndefined();
@@ -698,13 +703,18 @@ describe('loadNodeDetail()', () => {
   it('scope loss while detail is loading fences its late completion', async () => {
     const active = scope();
     const gate = deferred<FakeTableDetail>();
+    let detailSignal: AbortSignal | undefined;
     const svc = createSchemaGraphSession(makeDeps({
       executionScope: () => active,
-      loadTableDetail: vi.fn(() => gate.promise) as unknown as SchemaGraphDeps['loadTableDetail'],
+      loadTableDetail: vi.fn((_ctx: unknown, _db: string, _table: string, signal?: AbortSignal) => {
+        detailSignal = signal;
+        return gate.promise;
+      }) as unknown as SchemaGraphDeps['loadTableDetail'],
     }));
     const pending = svc.loadNodeDetail({ db: 'd', name: 't' }, {});
     await flush();
     active.close();
+    expect(detailSignal?.aborted).toBe(true);
     gate.resolve(emptyDetail);
     await expect(pending).resolves.toBeNull();
   });
