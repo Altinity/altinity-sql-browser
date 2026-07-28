@@ -46,4 +46,14 @@ describe('connection lifecycle architecture', () => {
     const css = read('src/styles.css');
     expect(css).not.toMatch(/\.connection-chip\s*\{\s*display:\s*none\s*;\s*\}/);
   });
+
+  it('keeps in-place authentication recovery out of the mounted workspace layout', () => {
+    const css = read('src/styles.css');
+    const authHost = /\.auth-host\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+    expect(authHost).toMatch(/position:\s*fixed/);
+    expect(authHost).toMatch(/inset:\s*0/);
+    expect(authHost).toMatch(/z-index:\s*120/);
+    expect(authHost).toMatch(/background:\s*var\(--scrim\)/);
+    expect(authHost).not.toMatch(/max-height/);
+  });
 });

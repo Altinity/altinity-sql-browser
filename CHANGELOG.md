@@ -9,6 +9,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **In-place authentication recovery no longer compresses the mounted
+  workspace** (#512). The preserved editor or Dashboard now stays behind a
+  blocking viewport overlay, rather than being pushed below a second,
+  independently scrolling login region.
+
 ### Added
 - **OAuth reauthentication now preserves dirty document work across its page
   redirect** (#512 phase 3). Before navigation, a versioned, expiring

@@ -41,6 +41,7 @@
     import { createApp } from '/src/ui/app.js';
     import { mountAppShell } from '/src/ui/app-shell.js';
     import { startDrag } from '/src/ui/splitters.js';
+    import { createAuthenticatedExecutionScope } from '/src/application/authenticated-execution-scope.js';
 
     const query = (id, name, sql = 'SELECT 1', over = {}) => ({
       id, sql, specVersion: 1,
@@ -79,6 +80,12 @@
 
     const root = document.querySelector('#root');
     const app = createApp({ root, broadcastChannel: () => null });
+    // #524: expanding a schema row enters authenticated work. The fixture
+    // mounts the shell directly (without normal sign-in bootstrap), so keep an
+    // explicit open test epoch for those otherwise stubbed requests.
+    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote: () => {} });
+    app.executionScope = () => scope;
+    app.requireAuthenticatedExecution = () => scope;
     app.conn.ensureFreshToken = async () => true;
     app.conn.chCtx.onSignedOut = () => {};
     // The schema catalog is stubbed: this fixture is about the ROLE SWITCH, and a
@@ -89,7 +96,13 @@
         { db: 'system', comment: '', tables: [] },
       ];
     };
+    // The expansion assertion is about preserving the row, not fetching its
+    // columns. Keep that lazy request within the fixture's no-network seam.
+    app.catalog.loadColumns = async () => {};
     app.catalog.loadReference = async () => {};
+    // Expanding the database also offers the production schema-graph action;
+    // this tree-only fixture neither mounts nor asserts that graph.
+    app.actions.showSchemaGraph = () => {};
 
     // Record navigation instead of performing it: this fixture verifies the TREE,
     // not the Dashboard renderer (which has its own fixtures).
