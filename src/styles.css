@@ -577,13 +577,6 @@ h1, h2, h3, h4, h5, h6 {
   flex-shrink: 0;
 }
 .logo-name { font-size: var(--text-body); font-weight: var(--fw-semibold); color: var(--fg); }
-.env-chip {
-  font-size: var(--text-label); color: var(--fg-faint);
-  padding: 2px 6px;
-  background: var(--bg-chip);
-  border-radius: var(--r-sm);
-  font-family: var(--mono);
-}
 .conn-status {
   display: flex; align-items: center; gap: 6px;
   font-size: var(--text-label); color: var(--fg-mute);
@@ -605,11 +598,6 @@ h1, h2, h3, h4, h5, h6 {
   flex-shrink: 0;
 }
 .conn-status.dim::before { background: var(--fg-faint); box-shadow: none; }
-.user-email {
-  font-size: var(--text-label); color: var(--fg-mute);
-  font-family: var(--mono);
-  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .hd-btn {
   width: 26px; height: 26px;
   border: none; background: transparent;
@@ -657,7 +645,6 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ------------ header File menu + library title ------------ */
-.hd-divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
 .hd-file-btn {
   display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
   border: none; border-radius: var(--r-sm); background: transparent; color: var(--fg-mute);
@@ -3002,11 +2989,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    concern (side-by-side suits wide-but-short landscape). The hidden items are
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
-  .logo-name, .env-chip, .app-header .hd-divider, .hd-hide-mobile { display: none; }
+  .logo-name, .hd-hide-mobile { display: none; }
   .connection-chip .connection-host { display: none; }
   .connection-chip .connection-state { display: inline; }
-  /* Legacy header controls may still opt into hiding a nonessential label. */
-  .hd-hide-mobile-label { display: none; }
   /* Cap the user-menu label so a long local-part (`user ▾`) can't widen the
      header back past the viewport. */
   .hd-btn.user-btn .user-short { max-width: 90px; }
