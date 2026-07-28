@@ -514,25 +514,15 @@ export function createApp(env: CreateAppEnv = {}): App {
   // data + completions, hover-doc cache — now lives in
   // `application/schema-catalog-service.ts`, constructible without
   // App/AppState/DOM (see that file for the ported bodies, byte-identical to
-  // this file's history). `setConn`/`updateBanner` (DOM) and the schema/
-  // banner effects stay HERE, driven by the same `state.serverVersion`/
-  // `state.schemaError` the service writes — those signals/effects are
-  // exactly as before.
-  function setConn(online: boolean): void {
-    const chip = app.dom.connStatus;
-    if (!chip) return;
-    chip.classList.toggle('dim', !online);
-    const host = app.conn.host();
-    chip.title = online ? host : `${host} · offline`;
-    chip.setAttribute('aria-label', `ClickHouse connection: ${online ? 'connected' : 'offline'}`);
-    const state = chip.querySelector<HTMLElement>('.connection-state');
-    if (state) state.textContent = online ? 'Connected' : 'Offline';
+  // this file's history). `updateBanner` (DOM) and the schema/banner effects
+  // stay HERE. The header connection chip is driven exclusively by
+  // ConnectionSession's lifecycle signal; a metadata probe is not connection
+  // authority.
+  function updateOpenServerVersion(version: string): void {
     const server = app.dom.userMenu?.querySelector<HTMLElement>('.um-server');
-    if (server) {
-      const version = app.state.serverVersion;
-      server.hidden = !version;
-      server.textContent = version ? `CH ${shortVersion(version)}` : '';
-    }
+    if (!server) return;
+    server.hidden = false;
+    server.textContent = `CH ${shortVersion(version)}`;
   }
   const catalog = createSchemaCatalogService({
     loadServerVersion: ch.loadServerVersion,
@@ -548,7 +538,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     sqlString,
     state: app.state,
     hooks: {
-      onConnStatusChanged: setConn,
+      onServerVersionLoaded: updateOpenServerVersion,
       renderVarStrip: () => app.renderVarStrip(),
       refreshEditorReference: () => app.sqlEditor.refreshReference(),
     },

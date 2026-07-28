@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
+import type { Signal } from '@preact/signals-core';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
@@ -36,6 +37,7 @@ import type {
   DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
+import type { ConnectionLifecycleState } from '../../src/core/connection-lifecycle.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry, ResultSchemaGraph,
 } from '../../src/ui/results.js';
@@ -1145,14 +1147,54 @@ describe('renderApp shell', () => {
     expect(app.dom.userBtn!.getAttribute('title')).toBe('me@example.com');
     await Promise.resolve();
   });
-  it('keeps the Workbench header focused on the ClickHouse endpoint', () => {
+  it('keeps the Workbench header focused on the endpoint and projects the lifecycle reactively', () => {
     const app = createApp(env());
+    // Metadata is display-only and cannot make the connection green.
     app.state.serverVersion = '26.7.1.42';
     app.renderApp();
     expect(qs(app.root, '.connection-host').textContent).toBe('ch.example');
+    expect(qs(app.root, '.connection-state').textContent).toBe('Connecting…');
+    expect(qs(app.root, '.conn-status').classList.contains('is-starting')).toBe(true);
+    expect(qs(app.root, '.conn-status').dataset.connectionState).toBe('starting');
+    expect(qs(app.root, '.conn-status').getAttribute('aria-label')).toBe('ClickHouse connection: connecting');
+
+    app.conn.chCtx.onTransportConnected();
     expect(qs(app.root, '.connection-state').textContent).toBe('Connected');
     expect(qs(app.root, '.conn-status').getAttribute('title')).toBe('ch.example');
     expect(qs(app.root, '.conn-status').getAttribute('aria-label')).toBe('ClickHouse connection: connected');
+    expect(qs(app.root, '.conn-status').classList.contains('tone-success')).toBe(true);
+
+    app.state.serverVersion = null;
+    app.conn.chCtx.onTransportOffline(new TypeError('network down'));
+    expect(qs(app.root, '.connection-state').textContent).toBe('Offline');
+    expect(qs(app.root, '.conn-status').dataset.connectionState).toBe('offline');
+    expect(qs(app.root, '.conn-status').classList.contains('tone-offline')).toBe(true);
+  });
+  it('projects all seven lifecycle states into the mounted accessible header chip', () => {
+    const app = createApp(env());
+    app.renderApp();
+    const lifecycle = app.conn.connection as Signal<ConnectionLifecycleState>;
+    const cases: Array<[ConnectionLifecycleState, string, string, string]> = [
+      [{ kind: 'starting', epoch: 1 }, 'Connecting…', 'connecting', 'tone-warning'],
+      [{ kind: 'connected', epoch: 1 }, 'Connected', 'connected', 'tone-success'],
+      [{
+        kind: 'refreshing', epoch: 1, resume: { kind: 'connected', epoch: 1 },
+      }, 'Refreshing…', 'refreshing', 'tone-warning'],
+      [{ kind: 'offline', epoch: 1 }, 'Offline', 'offline', 'tone-offline'],
+      [{ kind: 'auth-required', epoch: 2 }, 'Sign in required', 'authentication required', 'tone-error'],
+      [{ kind: 'reauthenticating', epoch: 3 }, 'Signing in…', 'reauthenticating', 'tone-warning'],
+      [{ kind: 'signed-out', epoch: 4 }, 'Signed out', 'signed out', 'tone-neutral'],
+    ];
+    for (const [value, label, ariaState, tone] of cases) {
+      lifecycle.value = value;
+      const chip = qs<HTMLElement>(app.root, '.conn-status');
+      expect(chip.dataset.connectionState).toBe(value.kind);
+      expect(chip.classList.contains(`is-${value.kind}`)).toBe(true);
+      expect(chip.classList.contains(tone)).toBe(true);
+      expect(qs(chip, '.connection-state').textContent).toBe(label);
+      expect(chip.getAttribute('aria-label')).toBe(`ClickHouse connection: ${ariaState}`);
+      expect(chip.title).toBe('ch.example');
+    }
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
@@ -1227,15 +1269,15 @@ describe('loadVersion / loadSchema', () => {
     expect(app.dom.connStatus!.title).toBe(app.conn.host());
     expect(qs(app.dom.connStatus!, '.connection-state')?.textContent).toBe('Connected');
   });
-  it('marks offline when the version query fails', async () => {
+  it('does not misclassify an HTTP version-query failure as transport offline', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ ok: false, status: 500, text: 'err' })]]) });
     const app = createApp(e);
     app.renderApp();
     await app.catalog.loadVersion();
-    expect(app.dom.connStatus!.title).toBe(`${app.conn.host()} · offline`);
+    expect(app.dom.connStatus!.title).toBe(app.conn.host());
     expect(qs(app.dom.connStatus!, '.connection-host')?.textContent).toBe(app.conn.host());
-    expect(qs(app.dom.connStatus!, '.connection-state')?.textContent).toBe('Offline');
-    expect(app.dom.connStatus!.getAttribute('aria-label')).toBe('ClickHouse connection: offline');
+    expect(qs(app.dom.connStatus!, '.connection-state')?.textContent).toBe('Connected');
+    expect(app.dom.connStatus!.getAttribute('aria-label')).toBe('ClickHouse connection: connected');
   });
   it('updates an open user menu when the server-version probe finishes', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /version/.test(sql), resp({ json: { data: [{ v: '26.3.1.42' }] } })]]) });
@@ -3351,15 +3393,16 @@ describe('auth flows', () => {
     const app = createApp(e);
     expect(await app.conn.chCtx.getToken()).toBeNull();
   });
-  it('onSignedOut shows the given message, else a session-expired default', async () => {
+  it('onSignedOut reports the first auth loss once per credential epoch', async () => {
     const app = createApp(env());
     app.renderApp();
     // authorization denial: CH-supplied message is shown verbatim on the login screen
     app.conn.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
     expect(qs(app.root, '.login-error').textContent).toContain('denied your account');
-    // genuine expiry: no detail → the reworded default
+    // A duplicate signal from another concurrent request cannot replace the
+    // first, more useful explanation or trigger another teardown.
     app.conn.chCtx.onSignedOut();
-    expect(qs(app.root, '.login-error').textContent).toContain('session expired');
+    expect(qs(app.root, '.login-error').textContent).toContain('denied your account');
   });
   it('login(idp, origin) stashes oauth_origin for a cross-origin cluster; sign-out clears it', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' } as Location;

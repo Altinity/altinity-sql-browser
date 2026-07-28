@@ -75,28 +75,26 @@ export async function exchangeCodeForTokens(fetchFn: typeof fetch, cfg: Resolved
 }
 
 /**
- * Redeem a refresh_token for fresh tokens. Returns the token JSON, or null on
- * any failure (caller treats null as "must re-login").
+ * Redeem a refresh_token for fresh tokens. Returns null when the IdP rejects
+ * the refresh (caller treats that as "must re-login"). Transport failures are
+ * rethrown so the connection lifecycle can preserve credentials and report a
+ * recoverable offline state instead of misclassifying the network as auth loss.
  */
 export async function refreshTokens(fetchFn: typeof fetch, cfg: ResolvedIdpConfig, refreshToken: string | null | undefined): Promise<TokenResponse | null> {
   if (!refreshToken) return null;
-  try {
-    const body: Record<string, string> = {
-      grant_type: 'refresh_token',
-      client_id: cfg.clientId,
-      refresh_token: refreshToken,
-    };
-    if (cfg.clientSecret) body.client_secret = cfg.clientSecret;
-    const resp = await fetchFn(cfg.tokenUri, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(body),
-    });
-    if (!resp.ok) return null;
-    return await resp.json() as TokenResponse;
-  } catch {
-    return null;
-  }
+  const body: Record<string, string> = {
+    grant_type: 'refresh_token',
+    client_id: cfg.clientId,
+    refresh_token: refreshToken,
+  };
+  if (cfg.clientSecret) body.client_secret = cfg.clientSecret;
+  const resp = await fetchFn(cfg.tokenUri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(body),
+  });
+  if (!resp.ok) return null;
+  return await resp.json() as TokenResponse;
 }
 
 /**

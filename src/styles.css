@@ -594,10 +594,18 @@ h1, h2, h3, h4, h5, h6 {
 .connection-state { display: none; }
 .conn-status::before {
   content: ''; width: 7px; height: 7px; border-radius: var(--r-xs);
-  background: var(--success-fg); box-shadow: 0 0 6px var(--success-fg);
+  background: var(--fg-faint); box-shadow: none;
   flex-shrink: 0;
 }
-.conn-status.dim::before { background: var(--fg-faint); box-shadow: none; }
+.conn-status.tone-success::before {
+  background: var(--success-fg); box-shadow: 0 0 6px var(--success-fg);
+}
+.conn-status.tone-error::before {
+  background: var(--error-fg);
+}
+.conn-status.tone-offline::before {
+  background: var(--warn-fg);
+}
 .hd-btn {
   width: 26px; height: 26px;
   border: none; background: transparent;
@@ -3585,7 +3593,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-grid.is-report .dash-tile { min-height: 300px; }
 }
 @media (max-width: 520px) {
-  .connection-chip { display: none; }
+  .connection-chip { max-width: 132px; padding-inline: 5px; }
+  .connection-chip .connection-state {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  .app-header .user-btn .user-short { display: none; }
   .app-header .lib-name { max-width: 96px; }
 }
 @media (max-width: 520px) {

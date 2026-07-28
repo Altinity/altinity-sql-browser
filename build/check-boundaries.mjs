@@ -179,8 +179,49 @@ for (const rule of RULES) {
   }
 }
 
+// Issue #512 Phase 1: connection readiness has one authority. These are the
+// modules that own or project the lifecycle, and none may regain the retired
+// server-version shortcut. `serverVersion` remains legitimate catalog/query
+// capability metadata and user-menu display elsewhere.
+const connectionAuthorityFiles = [
+  'src/core/connection-lifecycle.ts',
+  'src/application/connection-session.ts',
+  'src/net/ch-client.ts',
+  'src/ui/app-header.ts',
+  'src/ui/app-shell.ts',
+];
+for (const relFile of connectionAuthorityFiles) {
+  const file = path.join(repoRoot, relFile);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  if (/\bserverVersion\b/.test(fs.readFileSync(file, 'utf8'))) {
+    violations.push(`${relFile} → serverVersion (issue #512: lifecycle/readiness must not be inferred from version metadata)`);
+  }
+}
+
+// The DOM projection is exclusive too. The retired bridge lived in app.ts:
+// catalog version metadata called back into the composition root, which then
+// mutated the chip. Keep the handle declaration in app.types.ts, but reject
+// every chip selector/projector reference outside its pure projector and
+// header renderer. This catches that exact regression without banning
+// legitimate server-version capability data or the user-menu version label.
+const connectionProjectionOwners = new Set([
+  'src/core/connection-lifecycle.ts',
+  'src/ui/app-header.ts',
+  'src/ui/app.types.ts',
+]);
+const connectionProjectionPattern =
+  /\bconnStatus\b|conn-status|connection-(?:state|chip)|data-connection-state|\bconnectionLifecyclePresentation\b/;
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  if (connectionProjectionOwners.has(relFile)) continue;
+  if (connectionProjectionPattern.test(fs.readFileSync(file, 'utf8'))) {
+    violations.push(`${relFile} → connection-chip projection (issue #512: only app-header may render lifecycle state)`);
+  }
+}
+
 if (violations.length) {
-  console.error('check-boundaries: layer-boundary violations (issue #276):');
+  console.error('check-boundaries: architecture violations:');
   for (const line of violations) console.error(`  ${line}`);
   process.exit(1);
 }

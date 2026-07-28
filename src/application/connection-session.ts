@@ -12,8 +12,16 @@
 // this module's job any more — see each call site below for the specific note).
 
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
+import {
+  reduceConnectionLifecycle,
+  type AuthenticationPriorState,
+  type ConnectionLifecycleEvent,
+  type ConnectionLifecycleState,
+} from '../core/connection-lifecycle.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import type { PkceCrypto } from '../core/pkce.js';
+import { signal } from '@preact/signals-core';
+import type { ReadonlySignal } from '@preact/signals-core';
 import { resolveTarget } from '../core/target.js';
 import { buildAuthorizeUrl, refreshTokens, bearerFromTokens } from '../net/oauth.js';
 import { memoizeConfig, loadConfigDoc, resolveIdp } from '../net/oauth-config.js';
@@ -74,7 +82,10 @@ export interface SessionChCtx {
   getToken(): Promise<string | null>;
   refresh(): Promise<boolean>;
   authHeader(token: string): string;
-  onSignedOut(detail?: string): void;
+  onSignedOut(detail?: string, expectedEpoch?: number): void;
+  currentEpoch(): number;
+  onTransportConnected(): void;
+  onTransportOffline(error?: unknown): void;
 }
 
 // ── The session ───────────────────────────────────────────────────────────
@@ -86,6 +97,9 @@ export interface ConnectionSession {
   readonly basePath: string;
   readonly hostHint: string;
   readonly chCtx: SessionChCtx;
+  /** Authoritative connection/auth lifecycle. Consumers may observe but never
+   * mutate it; all transitions flow through this session. */
+  readonly connection: ReadonlySignal<ConnectionLifecycleState>;
 
   // state accessors (test-support + shell display; do not log values)
   token(): string | null;
@@ -125,8 +139,18 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   let refreshTok: string | null = ss.getItem('oauth_refresh_token');
   let authMode: 'oauth' | 'basic' = ss.getItem('ch_basic_auth') ? 'basic' : 'oauth';
   const basicCreds = (): string | null => ss.getItem('ch_basic_auth');
+  const currentCredential = (): string | null => (authMode === 'basic' ? basicCreds() : token);
   const basicUser = (): string => ss.getItem('ch_basic_user') || '';
   const originHost = (o: string): string => { try { return new URL(o).host; } catch { return ''; } };
+  const hasRestoredCredentials = authMode === 'basic' ? !!basicCreds() : !!token;
+  const connectionSignal = signal<ConnectionLifecycleState>(
+    hasRestoredCredentials ? { kind: 'starting', epoch: 0 } : { kind: 'signed-out', epoch: 0 },
+  );
+  const transition = (event: ConnectionLifecycleEvent): ConnectionLifecycleState => {
+    const next = reduceConnectionLifecycle(connectionSignal.value, event);
+    if (next !== connectionSignal.value) connectionSignal.value = next;
+    return next;
+  };
 
   // config.json may list several IdPs. Fetch the doc once; resolve OIDC
   // discovery per selected IdP. The chosen IdP id is persisted so it survives
@@ -171,7 +195,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     ? basicUser()
     : chUsername(decodeJwtPayload(token)));
 
-  function setTokens(id: string, refresh?: string): void {
+  function storeTokens(id: string, refresh?: string): void {
     token = id;
     ss.setItem('oauth_id_token', id);
     if (refresh) {
@@ -182,6 +206,12 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     // tokens. (The refresh path also lands here; they're already gone → no-op.)
     ss.removeItem('oauth_verifier');
     ss.removeItem('oauth_state');
+  }
+  function setTokens(id: string, refresh?: string): void {
+    authMode = 'oauth';
+    storeTokens(id, refresh);
+    chCtx.authConfirmed = false;
+    transition({ type: 'credentials-installed' });
   }
   function clearTokens(): void {
     token = null;
@@ -196,46 +226,124 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // `signOut` is exactly today's app.ts `clearTokens()` — no render. (app.ts's
   // own `app.signOut` additionally re-renders the login screen; that's the
   // shell's job now, done by whatever caller notices signOut() was called.)
-  const signOut = (): void => clearTokens();
+  const signOut = (): void => {
+    transition({ type: 'signed-out' });
+    clearTokens();
+  };
+
+  function authenticationPrior(): AuthenticationPriorState {
+    const current = connectionSignal.value;
+    if (current.kind === 'auth-required' || current.kind === 'signed-out') return current;
+    // Interactive authentication is entered from the login surface today.
+    // Keep this fail-safe explicit in case a future caller opens it elsewhere.
+    return { kind: 'signed-out', epoch: current.epoch };
+  }
+  function assertCurrentAuthentication(epoch: number): void {
+    const current = connectionSignal.value;
+    if (current.epoch !== epoch || current.kind !== 'reauthenticating') {
+      throw new Error('Authentication attempt superseded');
+    }
+  }
 
   // --- OAuth -------------------------------------------------------------
   async function beginOAuth(idpArg?: string, targetOrigin?: string): Promise<void> {
-    if (idpArg) selectIdp(idpArg);
-    // A picked saved-connection can target another cluster: stash its origin so
-    // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
-    // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
-    if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
-    else ss.removeItem('oauth_origin');
-    const cfg = await resolveConfig();
-    const { verifier, challenge } = await generatePKCE(cryptoObj);
-    const state = randomState(cryptoObj);
-    ss.setItem('oauth_verifier', verifier);
-    ss.setItem('oauth_state', state);
-    const returnParams = new URLSearchParams(loc.search);
-    ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
-      .forEach((key) => returnParams.delete(key));
-    const returnSearch = returnParams.toString();
-    ss.setItem('oauth_return_route', JSON.stringify({
-      state, search: returnSearch ? `?${returnSearch}` : '',
-    }));
-    loc.href = buildAuthorizeUrl(cfg, {
-      redirectUri: loc.origin + basePath,
-      challenge,
-      state,
-    });
+    const prior = authenticationPrior();
+    const authenticating = transition({ type: 'start-authentication' });
+    try {
+      if (idpArg) selectIdp(idpArg);
+      // A picked saved-connection can target another cluster: stash its origin so
+      // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
+      // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
+      if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
+      else ss.removeItem('oauth_origin');
+      const cfg = await resolveConfig();
+      assertCurrentAuthentication(authenticating.epoch);
+      const { verifier, challenge } = await generatePKCE(cryptoObj);
+      assertCurrentAuthentication(authenticating.epoch);
+      const state = randomState(cryptoObj);
+      ss.setItem('oauth_verifier', verifier);
+      ss.setItem('oauth_state', state);
+      const returnParams = new URLSearchParams(loc.search);
+      ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
+        .forEach((key) => returnParams.delete(key));
+      const returnSearch = returnParams.toString();
+      ss.setItem('oauth_return_route', JSON.stringify({
+        state, search: returnSearch ? `?${returnSearch}` : '',
+      }));
+      loc.href = buildAuthorizeUrl(cfg, {
+        redirectUri: loc.origin + basePath,
+        challenge,
+        state,
+      });
+    } catch (error) {
+      transition({ type: 'failed-authentication', epoch: authenticating.epoch, prior });
+      throw error;
+    }
   }
 
-  async function refresh(): Promise<boolean> {
+  let refreshSlot: { epoch: number; promise: Promise<boolean> } | null = null;
+  let authLossReportedEpoch: number | null = null;
+
+  function requireAuthentication(expectedEpoch: number, detail?: string): void {
+    const current = connectionSignal.value;
+    const message = detail || 'Your session expired — please sign in again.';
+    if (current.epoch !== expectedEpoch) return;
+    if (current.kind === 'auth-required' || current.kind === 'signed-out') {
+      // An unexpected operation can discover an already-empty session. Keep
+      // explicit signed-out state intact, but still let the shell reveal its
+      // login surface once for this epoch.
+      if (authLossReportedEpoch !== current.epoch) {
+        authLossReportedEpoch = current.epoch;
+        deps.onAuthLost(message);
+      }
+      return;
+    }
+    const next = transition({ type: 'auth-required', epoch: expectedEpoch, detail: message });
+    clearTokens();
+    authLossReportedEpoch = next.epoch;
+    deps.onAuthLost(message);
+  }
+
+  function refresh(): Promise<boolean> {
     // Basic credentials don't expire and can't be refreshed; a surviving 401
     // means the password is wrong → authedFetch falls through to onSignedOut.
-    if (authMode === 'basic') return false;
-    const cfg = await resolveConfig();
-    const tokens = await refreshTokens(fetchFn, cfg, refreshTok);
-    const bearer = bearerFromTokens(tokens, cfg.bearer);
-    if (!bearer) return false;
-    // `bearer` is only ever truthy when `tokens` (its own source) is non-null.
-    setTokens(bearer, tokens?.refresh_token);
-    return true;
+    if (authMode === 'basic') return Promise.resolve(false);
+    const epoch = connectionSignal.value.epoch;
+    if (refreshSlot?.epoch === epoch) return refreshSlot.promise;
+
+    transition({ type: 'begin-refresh', epoch });
+    let promise!: Promise<boolean>;
+    promise = (async () => {
+      try {
+        const cfg = await resolveConfig();
+        const tokens = await refreshTokens(fetchFn, cfg, refreshTok);
+        const bearer = bearerFromTokens(tokens, cfg.bearer);
+        // A newer credential scope owns the session now. This settlement may
+        // neither write tokens nor publish lifecycle state.
+        if (connectionSignal.value.epoch !== epoch) return false;
+        if (!bearer) {
+          requireAuthentication(epoch);
+          return false;
+        }
+        // A same-session refresh does not create a new epoch.
+        storeTokens(bearer, tokens?.refresh_token);
+        transition({ type: 'refresh-succeeded', epoch });
+        return true;
+      } catch (error) {
+        // Config/discovery failure is not evidence that credentials are bad.
+        // Preserve them and expose a recoverable connectivity state.
+        if (connectionSignal.value.epoch === epoch) {
+          transition({ type: 'transport-offline', epoch, detail: 'Unable to refresh session' });
+          transition({ type: 'refresh-failed', epoch });
+        }
+        throw error;
+      }
+    })().finally(() => {
+      // A late old finally must not erase a newer epoch's refresh slot.
+      if (refreshSlot?.promise === promise) refreshSlot = null;
+    });
+    refreshSlot = { epoch, promise };
+    return promise;
   }
 
   async function getToken(): Promise<string | null> {
@@ -243,9 +351,11 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     if (authMode === 'basic') return basicCreds();
     if (!token) return null;
     if (!isTokenExpired(token)) return token;
+    const epoch = connectionSignal.value.epoch;
     if (await refresh()) return token;
-    clearTokens();
-    return null;
+    // An interactive sign-in may have superseded this refresh while it was in
+    // flight. Return the current credential; never invalidate the newer scope.
+    return connectionSignal.value.epoch !== epoch ? currentCredential() : null;
   }
 
   // --- ClickHouse context --------------------------------------------------
@@ -276,11 +386,19 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     getToken,
     refresh,
     authHeader,
+    currentEpoch: () => connectionSignal.value.epoch,
+    onTransportConnected: () => {
+      const epoch = connectionSignal.value.epoch;
+      transition({ type: 'transport-connected', epoch });
+    },
+    onTransportOffline: () => {
+      const epoch = connectionSignal.value.epoch;
+      transition({ type: 'transport-offline', epoch, detail: 'Network unavailable' });
+    },
     // detail is set when CH rejects a *valid* login (authorization denial); the
     // no-arg calls (no token / expired + refresh failed) fall back to expiry.
-    onSignedOut: (detail?: string) => {
-      clearTokens();
-      deps.onAuthLost(detail || 'Your session expired — please sign in again.');
+    onSignedOut: (detail?: string, expectedEpoch?: number) => {
+      requireAuthentication(expectedEpoch ?? connectionSignal.value.epoch, detail);
     },
   };
 
@@ -308,6 +426,8 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // throwaway ctx so a bad password surfaces CH's own reason here (rejected as
   // a thrown Error) instead of auto-triggering onAuthLost.
   async function connectBasic({ username, password, host }: { username: string; password: string; host?: string }): Promise<void> {
+    const prior = authenticationPrior();
+    const authenticating = transition({ type: 'start-authentication' });
     const user = String(username || '').trim();
     const target = resolveTarget(host, loc.origin);
     const creds = btoa(unescape(encodeURIComponent(user + ':' + (password || ''))));
@@ -319,13 +439,21 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       refresh: async () => false,
       onSignedOut: (detail?: string) => { throw new Error(detail || 'Authentication failed'); },
     };
-    await queryJsonFn(probeCtx, 'SELECT 1');
+    try {
+      await queryJsonFn(probeCtx, 'SELECT 1');
+      assertCurrentAuthentication(authenticating.epoch);
+    } catch (error) {
+      transition({ type: 'failed-authentication', epoch: authenticating.epoch, prior });
+      throw error;
+    }
     // Probe passed → commit the session and switch the live ctx to the target.
     authMode = 'basic';
     ss.setItem('ch_basic_auth', creds);
     ss.setItem('ch_basic_user', user);
     ss.setItem('ch_basic_origin', target);
     chCtx.origin = target;
+    chCtx.authConfirmed = false;
+    transition({ type: 'credentials-installed' });
   }
 
   // --- dashboard (#149 D1) -------------------------------------------------
@@ -343,6 +471,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     basePath,
     hostHint,
     chCtx,
+    connection: connectionSignal as ReadonlySignal<ConnectionLifecycleState>,
     token: () => token,
     refreshToken: () => refreshTok,
     authMode: () => authMode,

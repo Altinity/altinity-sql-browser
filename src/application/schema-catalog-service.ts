@@ -9,8 +9,8 @@
 // exact error handling (loadSchema's catch → `schemaError`), the
 // version-string handling, and the completions-rebuild trigger points. No
 // imports from `src/ui/**` or `src/editor/**` (a pretest check enforces
-// this) — DOM (`setConn`'s `app.dom.connStatus` write, the schemaError-driven
-// banner effect) stays in app.ts, driven by the same signals/hooks as today.
+// this). Connection status is owned by ConnectionSession rather than inferred
+// from this service's best-effort version probe.
 //
 // #313 Phase 1 deleted the old function-name-only `entityDoc(name)` hover-doc
 // seam (and its `docCache`) once the CM6 adapter's last caller moved onto the
@@ -91,12 +91,9 @@ export interface SchemaCatalogStateSlice {
 // ── Injected DOM/render hooks (used INSIDE the moved bodies) ────────────────
 
 export interface SchemaCatalogHooks {
-  /** Fired synchronously right after loadVersion's probe settles (success or
-   *  failure) — the shell's own `setConn(online)` DOM update (app.ts,
-   *  NOT moved here: it touches `app.dom.connStatus`/`app.state.serverVersion`
-   *  display formatting, not the catalog). Optional so a caller that doesn't
-   *  care about connection-status chrome (e.g. a test harness) can omit it. */
-  onConnStatusChanged?(online: boolean): void;
+  /** Display-only notification after the best-effort version probe succeeds.
+   * It must never be interpreted as connection authority. */
+  onServerVersionLoaded?(version: string): void;
   /** loadColumns' completion hook — app.ts's `app.renderVarStrip()` (the #172
    *  v2 upgrade path: a newly-loaded column may resolve a String var's
    *  schema-cache-inferred enum suggestion; renderVarStrip's own signature
@@ -651,10 +648,8 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     try {
       await deps.ensureConfig();
       state.serverVersion = await deps.loadServerVersion(deps.ctx());
-      hooks.onConnStatusChanged?.(true);
-    } catch {
-      hooks.onConnStatusChanged?.(false);
-    }
+      hooks.onServerVersionLoaded?.(state.serverVersion);
+    } catch { /* Best-effort metadata; ch-client reports transport lifecycle. */ }
   }
 
   async function loadSchemaImpl(): Promise<void> {

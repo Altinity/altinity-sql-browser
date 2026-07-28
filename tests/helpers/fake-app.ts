@@ -22,6 +22,7 @@
 // other sibling fields.
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
+import { signal } from '@preact/signals-core';
 import { createState, activeTab, reconcileTabsWithSavedQueries } from '../../src/state.js';
 import type { MutateWorkspace } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
@@ -212,6 +213,7 @@ export function statefulWorkspaceRepo(initial: StoredWorkspaceV5 | null = null):
 const chCtxDefaults: ChCtx = {
   fetch, origin: '', authConfirmed: true,
   getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
+  currentEpoch: () => 0, onTransportConnected: () => {}, onTransportOffline: () => {},
 };
 
 // A minimal `ConnectionSession` stub (#276 Phase 2) — most render-module
@@ -223,6 +225,7 @@ const connDefaults: ConnectionSession = {
   basePath: '',
   hostHint: '',
   chCtx: chCtxDefaults,
+  connection: signal({ kind: 'connected' as const, epoch: 0 }),
   token: () => null,
   refreshToken: () => null,
   authMode: () => 'basic',
