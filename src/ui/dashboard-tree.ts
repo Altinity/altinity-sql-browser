@@ -440,6 +440,19 @@ function revealAssigned(app: DashboardTreeApp, dashboardId: string, rowKey: stri
 }
 
 /**
+ * Reveal the Dashboard tree at one newly-created panel. Assignment callers use
+ * this shared settlement so drag/drop and the Library chooser both switch the
+ * upper sidebar role, expand the same ancestors, and arm the same keyboard row.
+ */
+export function revealAssignedPanel(
+  app: DashboardTreeApp, dashboardId: string, tileId: string,
+): void {
+  app.state.upperRole.value = 'dashboards';
+  revealAssigned(app, dashboardId,
+    tileRowKey(app.currentWorkspace?.id ?? '', dashboardId, tileId), 'panels');
+}
+
+/**
  * Run one accepted drop. The tree never writes a workspace document itself: it
  * decodes, dispatches to the application command, and then reports.
  */
@@ -461,8 +474,7 @@ async function dispatchDrop(
   if (target.kind === 'panel') {
     const outcome = await assignLibraryQueryToPanel(deps, payload, target.dashboardId);
     if (outcome.ok && outcome.data && outcome.data.status === 'ok') {
-      revealAssigned(app, target.dashboardId,
-        tileRowKey(app.currentWorkspace?.id ?? '', target.dashboardId, outcome.data.tileId), 'panels');
+      revealAssignedPanel(app, target.dashboardId, outcome.data.tileId);
       // Owner decision (2026-07-27), replacing #428's "do not automatically
       // open": the point of dropping a query onto a Dashboard is to work on the
       // panel you just made, so its OWNED COPY opens in the editor. The copy, not

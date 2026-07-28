@@ -19,6 +19,7 @@ import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
 import { libraryQueries } from '../dashboard/model/query-ownership.js';
+import { openLibraryAssignMenu } from './library-assign-menu.js';
 import type { App } from './app.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 
@@ -261,6 +262,13 @@ function renderSaved(app: App, list: HTMLElement): void {
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, name),
+        h('button', {
+          class: 'sv-act sv-assign', title: 'Add to dashboard…', 'aria-label': 'Add to dashboard…',
+          onclick: (e: Event) => {
+            e.stopPropagation();
+            openLibraryAssignMenu(app, q, e.currentTarget as HTMLElement);
+          },
+        }, Icon.plus()),
         h('button', {
           class: 'sv-act', title: 'Edit name & description',
           onclick: (e: Event) => {

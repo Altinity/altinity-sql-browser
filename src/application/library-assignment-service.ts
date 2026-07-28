@@ -72,8 +72,8 @@ export type PanelAssignmentOutcome =
 export type VariableAssignmentOutcome =
   WorkspaceMutationOutcome<VariableAssignmentData | AssignmentDeclined>;
 
-/** The narrow slice of the app an assignment needs. */
-export interface LibraryAssignmentDeps {
+/** The narrow slice of the app a panel assignment needs. */
+export interface PanelAssignmentDeps {
   /** The serialized, read-latest-at-dequeue write primitive every workspace
    *  producer commits through. */
   mutateWorkspace: MutateWorkspace;
@@ -85,6 +85,10 @@ export interface LibraryAssignmentDeps {
   /** The injected `crypto.randomUUID` seam — see the pure module's header for
    *  why assignment mints ids here instead of deriving them. */
   genId(): string;
+}
+
+/** A variable assignment additionally needs live editor tabs for its dirty gate. */
+export interface LibraryAssignmentDeps extends PanelAssignmentDeps {
   /**
    * The open tabs, read LIVE at commit time rather than captured at drop time.
    * A function, not an array, precisely so the dirty check below re-reads them
@@ -103,7 +107,7 @@ const declined = (reason: LibraryAssignmentDecline): { candidate: null; data: As
  * dequeue: a retry of the same drop must not silently become a second panel.
  */
 export async function assignLibraryQueryToPanel(
-  deps: LibraryAssignmentDeps,
+  deps: PanelAssignmentDeps,
   payload: LibraryQueryDragPayload,
   dashboardId: string,
 ): Promise<PanelAssignmentOutcome> {

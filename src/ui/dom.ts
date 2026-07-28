@@ -74,6 +74,7 @@ export function s(tag: string, props?: ElProps, ...children: unknown[]): SVGElem
 
 /** A DOMRect-like anchor rectangle — only the edges `fixedAnchor` reads. */
 export interface AnchorRect {
+  top?: number;
   bottom: number;
   left?: number;
   right?: number;
@@ -89,9 +90,15 @@ export interface FixedAnchorOptions {
    *  under the trigger but its left inset is lowered so `left + panelW` never
    *  crosses `viewportW - min`. `panelW` alone (no `viewportW`) is ignored. */
   panelW?: number;
+  /** Viewport/panel heights for bottom-edge placement. When both are present,
+   *  the panel stays below if it fits, flips above the anchor when possible,
+   *  and otherwise clamps inside the viewport gutter. */
+  viewportH?: number;
+  panelH?: number;
 }
 
-// Place a fixed-position popover anchored under a button. Returns
+// Place a fixed-position popover anchored to a button: below by default, above
+// when the supplied vertical geometry would cross the viewport bottom. Returns
 // `{ top, left }`, or `{ top, right }` when `viewportW` is given WITHOUT
 // `panelW` (right-align to the anchor's right edge). With BOTH `viewportW` and
 // `panelW` it left-aligns but clamps the left inset so a `panelW`-wide panel
@@ -104,7 +111,15 @@ export function fixedAnchor(
 ): { top: number; left: number } | { top: number; right: number } {
   const gap = opts.gap != null ? opts.gap : 6;
   const min = opts.min != null ? opts.min : 8;
-  const top = rect.bottom + gap;
+  const naturalTop = rect.bottom + gap;
+  let top = naturalTop;
+  if (opts.viewportH != null && opts.panelH != null) {
+    const maxTop = Math.max(min, opts.viewportH - opts.panelH - min);
+    if (naturalTop > maxTop) {
+      const above = rect.top == null ? min : rect.top - gap - opts.panelH;
+      top = above >= min ? above : maxTop;
+    }
+  }
   if (opts.viewportW != null && opts.panelW == null) {
     return { top, right: Math.max(min, opts.viewportW - rect.right!) };
   }

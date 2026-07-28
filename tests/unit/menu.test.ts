@@ -51,6 +51,15 @@ describe('openMenu — structure (every row kind)', () => {
     expect(handle.el.querySelector('.my-custom-row')).not.toBeNull();
   });
 
+  it('applies an optional accessible name to the role=menu popup', () => {
+    const btn = trigger();
+    const named = openMenu({
+      document, trigger: btn, ariaLabel: 'Choose a dashboard',
+      rows: [itemRow('Dashboard')],
+    });
+    expect(named.el.getAttribute('aria-label')).toBe('Choose a dashboard');
+  });
+
   it('an item with no icon/meta/reason renders no .fm-icon/.fm-meta/.fm-reason', () => {
     const btn = trigger();
     const handle = openMenu({ document, trigger: btn, rows: [itemRow('Plain')] });
@@ -91,6 +100,29 @@ describe('openMenu — structure (every row kind)', () => {
     const handle = openMenu({ document, trigger: btn, rows: [itemRow('X')] });
     expect(handle.el.parentElement).toBe(document.body);
     expect(handle.el.style.position).toBe('fixed');
+  });
+
+  it('measures and flips above a trigger near the viewport bottom', () => {
+    const btn = trigger();
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this === btn) {
+          return { top: 550, bottom: 570, left: 20, right: 40, width: 20, height: 20, x: 20, y: 550, toJSON: () => ({}) };
+        }
+        if (this.classList.contains('file-menu')) {
+          return { top: 0, bottom: 120, left: 0, right: 200, width: 200, height: 120, x: 0, y: 0, toJSON: () => ({}) };
+        }
+        return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) };
+      });
+    const viewport = vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(600);
+
+    const handle = openMenu({ document, trigger: btn, rows: [itemRow('X')] });
+    expect(handle.el.style.top).toBe('424px');
+    expect(handle.el.style.maxHeight).toBe('584px');
+    expect(handle.el.style.overflowY).toBe('auto');
+
+    rect.mockRestore();
+    viewport.mockRestore();
   });
 });
 

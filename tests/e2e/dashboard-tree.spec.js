@@ -599,6 +599,90 @@ test.describe('Library → Dashboard assignment (#428)', () => {
 
   const committed = (page) => page.evaluate(() => window.__committed());
 
+  test('Add to dashboard is fully keyboard-operable and restores focus on Escape', async ({ page }) => {
+    await open(page);
+    const add = libraryRow(page).getByRole('button', { name: 'Add to dashboard…' });
+    await expect(add).toHaveCSS('opacity', '0');
+    await libraryRow(page).hover();
+    await expect(add).toHaveCSS('opacity', '1');
+    await page.mouse.move(0, 0);
+    // Reach the action from the row's preceding native keyboard stop. A direct
+    // `add.focus()` would still pass if the control accidentally became
+    // `tabindex=-1`, which is exactly the regression this acceptance test guards.
+    await libraryRow(page).locator('.sv-star').focus();
+    await page.keyboard.press('Tab');
+    await expect(add).toBeFocused();
+    await expect(add).toBeVisible();
+    await expect(add).toHaveCSS('opacity', '1');
+
+    await page.keyboard.press('Enter');
+    const choose = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    await expect(choose).toBeVisible();
+    const destinations = choose.getByRole('menuitem');
+    await expect(destinations).toHaveCount(3);
+    await expect(destinations.first()).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(destinations.nth(1)).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const confirm = page.getByRole('menu', { name: 'Confirm adding Countries to Ops latency' });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByRole('menuitem', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(confirm).toBeHidden();
+    await expect(add).toBeFocused();
+
+    // Complete the same path without touching the pointer: select Ops again,
+    // move from the safe default Cancel to Add, and activate it.
+    await page.keyboard.press('Enter');
+    const chooseAgain = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    await expect(chooseAgain.getByRole('menuitem').first()).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const confirmAgain = page.getByRole('menu', { name: 'Confirm adding Countries to Ops latency' });
+    await expect(confirmAgain.getByRole('menuitem', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('ArrowUp');
+    await expect(confirmAgain.getByRole('menuitem', { name: 'Add' })).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    await expect.poll(async () => {
+      const current = await committed(page);
+      return current.dashboards.find((d) => d.id === 'ops').tiles.length;
+    }).toBe(1);
+    await expect(roleTab(page, 'Dashboards')).toHaveAttribute('aria-pressed', 'true');
+    const newPanel = page.locator('.dash-tree-row[data-key^="workspace:ops:tile:"]');
+    await expect(newPanel).toHaveCount(1);
+    await expect(newPanel).toHaveAttribute('tabindex', '0');
+    await expect(newPanel).toBeFocused();
+  });
+
+  test('the chooser flips above a Library row at the viewport bottom', async ({ page }) => {
+    await open(page);
+    const row = libraryRow(page);
+    await row.evaluate((element) => {
+      Object.assign(element.style, {
+        position: 'fixed', right: '4px', bottom: '4px', width: '300px', zIndex: '100',
+      });
+    });
+    const add = row.getByRole('button', { name: 'Add to dashboard…' });
+    await row.hover();
+    const triggerBox = await add.boundingBox();
+    await add.click();
+
+    const choose = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    const chooseBox = await choose.boundingBox();
+    expect(chooseBox.y + chooseBox.height).toBeLessThanOrEqual(triggerBox.y);
+    expect(chooseBox.y).toBeGreaterThanOrEqual(8);
+
+    await choose.getByRole('menuitem').first().click();
+    const confirm = page.getByRole('menu', { name: 'Confirm adding Countries to Sales revenue' });
+    const confirmBox = await confirm.boundingBox();
+    expect(confirmBox.y + confirmBox.height).toBeLessThanOrEqual(triggerBox.y);
+    expect(confirmBox.y).toBeGreaterThanOrEqual(8);
+    await expect(confirm.getByRole('menuitem', { name: 'Add' })).toBeVisible();
+    await expect(confirm.getByRole('menuitem', { name: 'Cancel' })).toBeVisible();
+  });
+
   test('one drag publishes both the subquery text and the Dashboard identity', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
