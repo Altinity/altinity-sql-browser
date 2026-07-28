@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { createConnectionSession } from '../../src/application/connection-session.js';
 import type { ConnectionSessionDeps, SessionStorageLike } from '../../src/application/connection-session.js';
-import type { ChCtx, queryJson } from '../../src/net/ch-client.js';
+import type {
+  AuthenticatedCancellationLease,
+  ChCtx,
+  queryJson,
+} from '../../src/net/ch-client.js';
 import { jwt, memStorage } from '../helpers/auth-fixtures.js';
 
 // ── Fakes / helpers ──────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ interface SetupOpts {
   location?: { origin: string; pathname: string; search: string; href: string };
   routes?: RouteFn[];
   queryJson?: QueryJsonFn;
-  onAuthLost?: (detail?: string) => void;
+  onAuthLost?: ConnectionSessionDeps['onAuthLost'];
 }
 function setup(opts: SetupOpts = {}) {
   const fetchMock = makeFetch(opts.routes || []);
@@ -677,12 +681,68 @@ describe('chCtx.onSignedOut', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut('you are not welcome');
     expect(session.token()).toBeNull();
-    expect(onAuthLost).toHaveBeenCalledWith('you are not welcome');
+    expect(onAuthLost).toHaveBeenCalledWith(
+      'you are not welcome',
+      expect.objectContaining({ authorization: `Bearer ${validToken}`, epoch: 0 }),
+    );
   });
   it('falls back to the default expired-session message', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut();
-    expect(onAuthLost).toHaveBeenCalledWith('Your session expired — please sign in again.');
+    expect(onAuthLost).toHaveBeenCalledWith(
+      'Your session expired — please sign in again.',
+      expect.objectContaining({ authorization: `Bearer ${validToken}` }),
+    );
+  });
+  it('supplies an immutable latest-credential cancellation lease before clearing storage', () => {
+    const storage = memStorage({ oauth_id_token: validToken });
+    let captured: AuthenticatedCancellationLease | undefined;
+    let tokenDuringCallback: string | null = null;
+    const { session, fetchMock } = setup({
+      storage,
+      onAuthLost: (_detail, lease) => {
+        captured = lease;
+        tokenDuringCallback = storage.getItem('oauth_id_token');
+      },
+    });
+    session.setTokens(expiringSoonToken, 'rotated-refresh');
+    const closingEpoch = session.connection.value.epoch;
+    session.chCtx.origin = 'https://rotated-cluster.example:9440';
+    session.chCtx.onSignedOut(undefined, closingEpoch);
+    expect(tokenDuringCallback).toBe(expiringSoonToken);
+    expect(captured).toEqual({
+      epoch: closingEpoch,
+      origin: 'https://rotated-cluster.example:9440',
+      authorization: `Bearer ${expiringSoonToken}`,
+      fetch: session.chCtx.fetch,
+    });
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(captured?.fetch).toBe(session.chCtx.fetch);
+    expect(fetchMock.calls).toEqual([]);
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+  });
+  it('prebuilds the Basic header and exact target origin into the lease', async () => {
+    const { session } = setup();
+    await session.connectBasic({ username: 'alice', password: 'secret', host: 'db.example:8443' });
+    const lease = session.captureCancellationLease();
+    expect(lease).toEqual({
+      epoch: session.connection.value.epoch,
+      origin: 'https://db.example:8443',
+      authorization: `Basic ${btoa('alice:secret')}`,
+      fetch: session.chCtx.fetch,
+    });
+  });
+  it('clears credentials even when the auth-loss consumer throws', () => {
+    const storage = memStorage({ oauth_id_token: validToken, oauth_refresh_token: 'refresh' });
+    const { session } = setup({
+      storage,
+      onAuthLost: () => { throw new Error('scope teardown failed'); },
+    });
+    expect(() => session.chCtx.onSignedOut()).toThrow('scope teardown failed');
+    expect(session.token()).toBeNull();
+    expect(session.refreshToken()).toBeNull();
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+    expect(storage.getItem('oauth_refresh_token')).toBeNull();
   });
 });
 

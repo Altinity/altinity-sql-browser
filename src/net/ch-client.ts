@@ -42,6 +42,17 @@ export interface ChCtx {
   onTransportOffline?: (error?: unknown) => void;
 }
 
+/** Immutable authority retained only long enough to cancel work owned by a
+ * closing authenticated execution scope. `authorization` is already complete
+ * (scheme + credential): cleanup must never consult mutable auth mode, refresh,
+ * token storage, or normal auth-loss callbacks. */
+export interface AuthenticatedCancellationLease {
+  readonly epoch: number;
+  readonly origin: string;
+  readonly authorization: string;
+  readonly fetch: typeof fetch;
+}
+
 /** The injected SQL-string-quoting function a few call sites take as a
  * parameter (matching core/format.js's `sqlString`) instead of using the
  * module-level import directly. */
@@ -280,6 +291,25 @@ export async function killQuery(ctx: ChCtx, queryId: string | null | undefined, 
   if (!queryId) return;
   try {
     await queryJson(ctx, 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC');
+  } catch { /* best-effort */ }
+}
+
+/** Best-effort server cancellation through a frozen execution-scope lease.
+ * Unlike `killQuery`, this deliberately bypasses `authedFetch`: no token read,
+ * refresh, retry, lifecycle callback, or mutable auth-scheme lookup is allowed
+ * while a dead scope is closing. */
+export async function killQueryWithLease(
+  lease: AuthenticatedCancellationLease,
+  queryId: string | null | undefined,
+  sqlString: SqlStringFn,
+): Promise<void> {
+  if (!queryId) return;
+  try {
+    await lease.fetch(chUrl(lease.origin, { format: 'JSON' }), {
+      method: 'POST',
+      body: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
+      headers: { Authorization: lease.authorization },
+    });
   } catch { /* best-effort */ }
 }
 

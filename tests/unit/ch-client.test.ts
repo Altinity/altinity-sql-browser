@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
+import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 import type { StreamLine } from '../../src/core/stream.js';
 
@@ -827,6 +827,56 @@ describe('killQuery', () => {
   it('swallows errors (cancellation must never throw)', async () => {
     const ctx = ctxWith(async () => { throw new Error('boom'); });
     await expect(killQuery(ctx, 'q', sqlString)).resolves.toBeUndefined();
+  });
+});
+
+describe('killQueryWithLease', () => {
+  const lease = (
+    fetchFn: typeof fetch, authorization = 'Basic frozen-value',
+  ): AuthenticatedCancellationLease => Object.freeze({
+    epoch: 7,
+    origin: 'https://old-cluster.example:8443',
+    authorization,
+    fetch: fetchFn,
+  });
+  const leaseFetch = (
+    impl: FetchImpl,
+    authorization = 'Basic frozen-value',
+  ) => {
+    const fetchMock = vi.fn(impl);
+    return { fetchMock, lease: lease(asFetch(fetchMock), authorization) };
+  };
+
+  it('uses the exact frozen origin and complete Authorization header', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
+    await killQueryWithLease(frozen, 'scope-q', sqlString);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://old-cluster.example:8443?default_format=JSON&enable_http_compression=1');
+    expect(init.headers).toEqual({ Authorization: 'Basic frozen-value' });
+    expect(init.body).toBe("KILL QUERY WHERE query_id = 'scope-q' ASYNC");
+  });
+
+  it('treats the frozen Authorization value as opaque for OAuth too', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(
+      async () => jsonResp({ data: [] }), 'Bearer old-token',
+    );
+    await killQueryWithLease(frozen, 'q', sqlString);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer old-token' });
+  });
+
+  it('does not retry and swallows cleanup transport failures', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => { throw new Error('offline'); });
+    await expect(killQueryWithLease(
+      frozen, 'q', sqlString,
+    )).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('no-ops without a query id', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
+    await killQueryWithLease(frozen, null, sqlString);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

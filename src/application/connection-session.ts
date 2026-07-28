@@ -26,7 +26,11 @@ import { resolveTarget } from '../core/target.js';
 import { buildAuthorizeUrl, refreshTokens, bearerFromTokens } from '../net/oauth.js';
 import { memoizeConfig, loadConfigDoc, resolveIdp } from '../net/oauth-config.js';
 import type { ConfigDoc, ResolvedIdpConfig, ChAuthKind } from '../net/oauth-config.js';
-import type { ChCtx as NetChCtx, queryJson } from '../net/ch-client.js';
+import type {
+  AuthenticatedCancellationLease,
+  ChCtx as NetChCtx,
+  queryJson,
+} from '../net/ch-client.js';
 
 // ── Injected dependency seam ─────────────────────────────────────────────────
 
@@ -58,7 +62,7 @@ export interface ConnectionSessionDeps {
   /** Auth was lost (no token / expired-and-unrefreshable / CH rejected a
    *  valid login). The session never renders — it calls this and lets the
    *  shell decide how to show the login screen. */
-  onAuthLost: (detail?: string) => void;
+  onAuthLost: (detail?: string, lease?: AuthenticatedCancellationLease) => void;
 }
 
 // ── The ClickHouse auth context ──────────────────────────────────────────────
@@ -125,7 +129,10 @@ export interface ConnectionSession {
   connectBasic(input: { username: string; password: string; host?: string }): Promise<void>;
   signOut(): void;
   ensureFreshToken(): Promise<boolean>;
-
+  /** Snapshot exact cancellation authority for the current credential epoch.
+   * The returned header already includes its scheme; consumers must treat it
+   * as opaque and never route it through normal auth/refresh code. */
+  captureCancellationLease(): AuthenticatedCancellationLease | null;
 }
 
 export function createConnectionSession(deps: ConnectionSessionDeps): ConnectionSession {
@@ -298,10 +305,15 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       }
       return;
     }
+    const lease = captureCancellationLease(expectedEpoch);
     const next = transition({ type: 'auth-required', epoch: expectedEpoch, detail: message });
-    clearTokens();
     authLossReportedEpoch = next.epoch;
-    deps.onAuthLost(message);
+    try {
+      if (lease) deps.onAuthLost(message, lease);
+      else deps.onAuthLost(message);
+    } finally {
+      clearTokens();
+    }
   }
 
   function refresh(): Promise<boolean> {
@@ -372,6 +384,19 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     if (chAuthVal !== 'basic') return 'Bearer ' + t;
     const user = chUsername(decodeJwtPayload(t));
     return 'Basic ' + btoa(unescape(encodeURIComponent(user + ':' + t)));
+  }
+  function captureCancellationLease(
+    expectedEpoch = connectionSignal.value.epoch,
+  ): AuthenticatedCancellationLease | null {
+    if (connectionSignal.value.epoch !== expectedEpoch) return null;
+    const credential = currentCredential();
+    if (!credential) return null;
+    return Object.freeze({
+      epoch: expectedEpoch,
+      origin: chCtx.origin,
+      authorization: authHeader(credential),
+      fetch: fetchFn,
+    });
   }
   const chCtx: SessionChCtx = {
     fetch: fetchFn,
@@ -495,5 +520,6 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     connectBasic,
     signOut,
     ensureFreshToken,
+    captureCancellationLease,
   };
 }

@@ -245,6 +245,7 @@ const connDefaults: ConnectionSession = {
   connectBasic: async () => {},
   signOut: () => {},
   ensureFreshToken: async () => true,
+  captureCancellationLease: () => null,
 };
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
