@@ -460,7 +460,6 @@ describe('bootstrap', () => {
   it.each([
     { kind: 'absent' } as const,
     { kind: 'invalid-cleared', reason: 'expired' } as const,
-    { kind: 'workspace-unavailable-retained' } as const,
     { kind: 'workspace-mismatch-cleared' } as const,
     { kind: 'callback-mismatch' } as const,
   ])('falls back to the legacy shared seed when recovery is $kind', async (result) => {
@@ -484,6 +483,38 @@ describe('bootstrap', () => {
     expect(restore).toHaveBeenCalledWith('st');
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT shared');
     expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+  });
+
+  it('suppresses the shared handoff when a fresh callback retains recovery for an unavailable workspace', async () => {
+    const app = fakeApp({
+      loadWorkspaceOnBoot: vi.fn(async () => null),
+    });
+    app.restoreOAuthDocumentRecovery = vi.fn(
+      () => ({ kind: 'workspace-unavailable-retained' } as const),
+    );
+    const env = fakeEnv({
+      location: asLocation({
+        href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql',
+        search: '?code=abc&state=st', hash: '',
+      }),
+      fetch: asFetch(vi.fn(async () => ({
+        ok: true, json: async () => ({ id_token: valid }), text: async () => '',
+      }))),
+    });
+    env.sessionStorage.setItem('oauth_state', 'st');
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT shared must not appear',
+      specVersion: 1,
+      spec: { name: 'Suppressed share', favorite: false },
+    }));
+
+    await expect(bootstrap(app, env)).resolves.toMatchObject({ signedIn: true });
+
+    expect(app.restoreOAuthDocumentRecovery).toHaveBeenCalledWith('st');
+    expect(app.consumeLegacyShared).toHaveBeenCalledWith(false, expect.any(String));
+    expect(app.state.tabs.value[0].sqlDraft).toBe('');
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull();
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
   });
 
   it('restores the state-bound pre-login route before resolving a workspace', async () => {

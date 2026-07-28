@@ -159,6 +159,12 @@ interface WindowExtras {
  *  `registerSpecValidator` action) that other modules never call directly. */
 type AppSpecValidators = QuerySpecValidationService;
 
+const recoveryOwnsLegacyShare = (
+  recovery: OAuthDocumentRecoveryApplyResult | null,
+): boolean => recovery?.kind === 'restored'
+  || recovery?.kind === 'retry-deferred-retained'
+  || recovery?.kind === 'workspace-unavailable-retained';
+
 export function createApp(env: CreateAppEnv = {}): App {
   const doc = env.document || document;
   const win = (env.window || window) as Window & WindowExtras;
@@ -3018,8 +3024,7 @@ export function createApp(env: CreateAppEnv = {}): App {
         ? app.retryPendingOAuthDocumentRecovery()
         : null;
       app.consumeLegacyShared(
-        pendingRecovery?.kind !== 'restored'
-          && pendingRecovery?.kind !== 'retry-deferred-retained',
+        !recoveryOwnsLegacyShare(pendingRecovery),
       );
       app.renderCurrentSurface();
       void app.catalog.loadVersion();

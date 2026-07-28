@@ -66,6 +66,12 @@ export interface BootstrapApp {
   consumeLegacyShared(allowRestore: boolean, consumedHandoff: string | null): boolean;
 }
 
+const recoveryOwnsLegacyShare = (
+  recovery: OAuthDocumentRecoveryApplyResult | null,
+): boolean => recovery?.kind === 'restored'
+  || recovery?.kind === 'retry-deferred-retained'
+  || recovery?.kind === 'workspace-unavailable-retained';
+
 export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{ callbackError: string | null; signedIn: boolean }> {
   const loc = env.location;
   const ss = env.sessionStorage;
@@ -182,10 +188,10 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       ? (workspace ? app.retryPendingOAuthDocumentRecovery() : null)
       : app.restoreOAuthDocumentRecovery(successfulCallbackState);
     // Both paths consume the legacy handoff exactly once. Any application-level
-    // restored outcome (including retained finalization warnings), and a
-    // deferred validated recovery authority, suppress shared content. Deferred
-    // recovery remains unpublished, so the normal workspace renders while its
-    // checkpoint is retained for a later retry.
+    // restored outcome (including retained finalization warnings), and either
+    // retained recovery-authority outcome, suppress shared content. Retained
+    // recovery remains unpublished, so the normal available workspace renders
+    // while its checkpoint is preserved for a later retry.
     let legacyShared: string | null = null;
     let legacySharedTaken = false;
     try {
@@ -199,9 +205,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       // rather than apply the legacy handoff.
     }
     app.consumeLegacyShared(
-      recovery?.kind !== 'restored'
-        && recovery?.kind !== 'retry-deferred-retained'
-        && legacySharedTaken,
+      !recoveryOwnsLegacyShare(recovery) && legacySharedTaken,
       legacyShared,
     );
     app.renderCurrentSurface();

@@ -4515,7 +4515,10 @@ describe('credentials (basic) sign-in', () => {
     expect(consumeShared.mock.invocationCallOrder[0])
       .toBeLessThan(renderSurface.mock.invocationCallOrder[0]);
   });
-  it('keeps Basic login usable but discards the shared handoff when recovery is deferred', async () => {
+  it.each([
+    { kind: 'retry-deferred-retained' } as const,
+    { kind: 'workspace-unavailable-retained' } as const,
+  ])('keeps Basic login usable but discards the shared handoff when recovery authority is $kind', async (recovery) => {
     const store = memSession({
       oauth_shared: JSON.stringify({
         sql: 'SELECT deferred Basic share must never appear',
@@ -4530,9 +4533,7 @@ describe('credentials (basic) sign-in', () => {
       ]),
     });
     const app = createApp(e);
-    app.retryPendingOAuthDocumentRecovery = vi.fn(
-      () => ({ kind: 'retry-deferred-retained' } as const),
-    );
+    app.retryPendingOAuthDocumentRecovery = vi.fn(() => recovery);
     const removeItem = store.removeItem;
     store.removeItem = vi.fn((key: string) => {
       if (key === 'oauth_shared') throw new Error('raw handoff cleanup failure');
