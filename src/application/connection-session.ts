@@ -278,9 +278,19 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     authHeader,
     // detail is set when CH rejects a *valid* login (authorization denial); the
     // no-arg calls (no token / expired + refresh failed) fall back to expiry.
+    // #502: `deps.onAuthLost` runs BEFORE `clearTokens()`, not after — its
+    // shell-owned teardown (aborting the workbench/graph/export requests and
+    // KILLing their server-side queries) is fire-and-forget, so each call's
+    // `authedFetch` only reaches its first `await ctx.getToken()` in THIS
+    // synchronous tick; clearing first (the old order) makes `getToken()`'s
+    // synchronous null check see an already-cleared token and every one of
+    // those best-effort authed calls silently no-op before ever reaching the
+    // server. (A Basic-mode session's later `authHeader()` call still reads
+    // `authMode` post-reset either way — same latent gap `signOut()` already
+    // had — tracked separately, not introduced here.)
     onSignedOut: (detail?: string) => {
-      clearTokens();
       deps.onAuthLost(detail || 'Your session expired — please sign in again.');
+      clearTokens();
     },
   };
 

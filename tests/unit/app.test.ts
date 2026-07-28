@@ -2142,6 +2142,55 @@ describe('query run', () => {
     expect(result(app.activeTab()).rows).toEqual([['ok']]);
     expect(app.state.running.value).toBe(false);
   });
+  // #502: `onAuthLost` (a 401/expired-token/failed-refresh — routed here via
+  // `chCtx.onSignedOut`) is the involuntary counterpart of `signOut()`
+  // above and must run the same mandatory teardown before login renders,
+  // not just the Dashboard-surface reset `renderLoginApp` already owns.
+  it('chCtx.onSignedOut() (involuntary auth loss) tears down the authenticated session exactly like signOut(), and the request that resolves afterward records nothing', async () => {
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => {
+      const sql = (init && init.body) || '';
+      if (/CREATE TABLE t\b/.test(sql)) return new Promise<FakeResponse>((res) => { resolveRunFetch = res; });
+      return Promise.resolve(resp({ json: { data: [] } })); // version/schema/reference background loads
+    }));
+    const { app, e } = appForRun([], { fetch });
+    const invalidateSpy = vi.spyOn(app.catalog, 'invalidate');
+    const loadSchemaSpy = vi.spyOn(app.catalog, 'loadSchema');
+    const graphCancelSpy = vi.spyOn(app.graph, 'cancel');
+    const cancelExportSpy = vi.spyOn(app.exports, 'cancelExport');
+    const cancelExportScriptSpy = vi.spyOn(app.exports, 'cancelExportScript');
+    const recordBoundParamsSpy = vi.spyOn(app.params, 'recordBoundParams');
+    app.openDocEntry({ kind: 'function', name: 'sum' }); // pane opens (lookup resolves unavailable — irrelevant here)
+    expect(document.querySelector('[role="complementary"]')).not.toBeNull();
+    // A schema-mutating statement (#502's own example) so a stray schema
+    // reload after resolution would show up as a spy call.
+    app.activeTab().sqlDraft = 'CREATE TABLE t (x UInt8) ENGINE=Memory';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r));
+    expect(app.state.running.value).toBe(true);
+    const runCall = asMock(fetch).mock.calls.find((c) => c[1] && /CREATE TABLE t\b/.test(c[1].body || ''))!;
+    app.conn.chCtx.onSignedOut(); // involuntary auth loss — NOT app.signOut()
+    // Teardown fired before login rendered, exactly as signOut()'s does.
+    expect((runCall[1].signal as AbortSignal).aborted).toBe(true);
+    expect(invalidateSpy).toHaveBeenCalled();
+    expect(graphCancelSpy).toHaveBeenCalled();
+    expect(cancelExportSpy).toHaveBeenCalled();
+    expect(cancelExportScriptSpy).toHaveBeenCalled();
+    expect(document.querySelector('[role="complementary"]')).toBeNull(); // doc pane closed
+    expect(qs(app.root!, '.login-card')).toBeTruthy();
+    await new Promise((r) => setTimeout(r));
+    const kill = asMock(e.fetch!).mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''));
+    expect(kill).toBeTruthy();
+    resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
+    // Resolving afterward must record nothing: no History entry, no bound
+    // params, no schema reload for the DDL that was in flight.
+    expect(app.state.history.length).toBe(0);
+    expect(recordBoundParamsSpy).not.toHaveBeenCalled();
+    expect(loadSchemaSpy).not.toHaveBeenCalled();
+    // Idempotent: a second concurrent report of auth loss must not throw.
+    expect(() => app.conn.chCtx.onSignedOut()).not.toThrow();
+  });
   it('surfaces a query error', async () => {
     const { app } = appForRun([
       [(u, sql) => /bad/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],

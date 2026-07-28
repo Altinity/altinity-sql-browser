@@ -19,6 +19,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flip above a row near the viewport bottom, and oversized menus scroll within
   the viewport instead of placing Add/Cancel off-screen.
 
+### Fixed
+- **An involuntary auth loss (expired/invalid token, failed refresh, or a
+  concurrent first-contact authentication failure) now runs the same
+  mandatory authenticated-session teardown as an explicit sign-out** (#502).
+  Previously only `app.signOut` cancelled the in-flight Workbench
+  request (and issued its server-side `KILL QUERY`), cancelled the schema
+  graph and both export modes, invalidated the catalog, and closed the
+  documentation pane before rendering login; the `onAuthLost` path skipped
+  all of it, so a mid-flight query/export/lineage stream — or a still-completing
+  request that would go on to record History, bound parameters, or a schema
+  reload — could survive past the login screen. The teardown is now a single
+  idempotent `teardownAuthenticatedSession()` helper shared by both paths, and
+  `chCtx.onSignedOut` now notifies it before clearing credentials (not after),
+  so the teardown's requests still carry valid credentials to the server
+  instead of silently no-op'ing on an already-cleared token.
+
 ### Removed
 - **The unused saved-query repair planner has been removed** (#429 phase 6 /
   #500). Direct, ownership-safe Panel and Dashboard trash actions are the

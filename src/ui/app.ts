@@ -455,6 +455,28 @@ export function createApp(env: CreateAppEnv = {}): App {
     disposeShell();
     renderLogin(app as App & { root: Element }, msg);
   };
+  // #502: cancel/tear down every in-flight authenticated operation BEFORE
+  // credentials are cleared and login renders — required for both an
+  // explicit sign-out AND an involuntary auth loss (expired/invalid token,
+  // failed refresh, or a first-contact auth failure via `onAuthLost` below),
+  // so a mid-flight query/export/lineage stream can never land (or repaint)
+  // after the login screen is showing; invalidating the catalog means a
+  // later sign-in (possibly a different server) never sees stale
+  // schema/reference caches. Idempotent: several concurrent requests may
+  // each report auth loss. The workbench session stays reusable after
+  // destroy() — the next renderApp re-attaches its shell effects.
+  const teardownAuthenticatedSession = (): void => {
+    workbench.destroy();
+    // Plain abort (no clearResult settle) — the login render replaces the
+    // whole DOM next, so settling the visible result would be a wasted paint.
+    graph.cancel();
+    exportService.cancelExport();
+    exportService.cancelExportScript();
+    catalog.invalidate();
+    // #313: pane content must never survive a connection change — closed
+    // alongside the catalog reset, before the login screen renders.
+    closeDocPane(app);
+  };
   // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
   // PKCE login/refresh, Basic probing, and IdP config resolution live in
   // `application/connection-session.ts`,
@@ -464,7 +486,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   const conn = createConnectionSession({
     fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
-    onAuthLost: (detail) => renderLoginApp(detail),
+    // #502: onAuthLost is the involuntary counterpart of signOut() below —
+    // same mandatory teardown ordering, before login replaces the DOM.
+    onAuthLost: (detail) => {
+      teardownAuthenticatedSession();
+      renderLoginApp(detail);
+    },
   });
   app.conn = conn;
   // THE single live ClickHouse context — owned by the session, aliased locally
@@ -478,28 +505,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // comment) — no flat `App` delegates (#276 Phase 5 deleted them).
   // `showLogin`/`signOut` stay app.ts-owned: they compose rendering, not
   // pure forwards.
-  // Sign-out is the one real end-of-session event in a single-route tab —
-  // the first production wiring of the sessions' teardown surfaces (#276
-  // Phase 5). Order matters: cancel/tear down every in-flight operation
-  // BEFORE clearing credentials and rendering login, so a mid-flight
-  // query/export/lineage stream can never land (or repaint) after the login
-  // screen is showing; invalidate the catalog so a later sign-in (possibly a
-  // different server) never sees stale schema/reference caches. The
-  // workbench session stays reusable after destroy(): the next renderApp
-  // re-attaches its shell effects.
+  // Sign-out is the one real explicit end-of-session event in a
+  // single-route tab (#276 Phase 5); `onAuthLost` above is its involuntary
+  // counterpart, sharing the same `teardownAuthenticatedSession()` (#502) —
+  // both must tear down before clearing credentials and rendering login.
   app.signOut = () => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    workbench.destroy();
-    // Plain abort (no clearResult settle) — the login render replaces the
-    // whole DOM next, so settling the visible result would be a wasted paint.
-    graph.cancel();
-    exportService.cancelExport();
-    exportService.cancelExportScript();
-    catalog.invalidate();
-    // #313: pane content must never survive a connection change — closed
-    // alongside the catalog reset, before the login screen renders.
-    closeDocPane(app);
+    teardownAuthenticatedSession();
     conn.signOut();
     // #425: the Dashboard teardown, the surface-generation bump and the
     // main-surface reset live in `renderLoginApp` — the one place that knows the
