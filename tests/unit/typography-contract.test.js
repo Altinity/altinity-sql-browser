@@ -322,6 +322,9 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // Dashboard tree's rename pencil can reuse them — listed here so the
       // `.fm-dialog-*` markup they build stays under this gate's view.
       'src/ui/dialog-shell.ts',
+      // #483: the Library assignment chooser renders confirmation prose and
+      // action rows outside saved-history.ts, so it must stay in this gate.
+      'src/ui/library-assign-menu.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
     const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));

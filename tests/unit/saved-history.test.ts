@@ -76,6 +76,25 @@ describe('renderSavedHistory', () => {
     expect(app.activeTab().editorMode).toBe('sql');
   });
 
+  it('saved: exposes Add to dashboard before Edit without opening the query row', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
+    renderSavedHistory(app);
+    const row = qs(savedList(app), '.saved-row');
+    const actions = qsa<HTMLButtonElement>(row, '.sv-act');
+
+    expect(actions.map((button) => button.title)).toEqual([
+      'Add to dashboard…', 'Edit name & description', 'Delete',
+    ]);
+    expect(actions[0].classList.contains('sv-assign')).toBe(true);
+    expect(actions[0].getAttribute('aria-label')).toBe('Add to dashboard…');
+    click(actions[0]);
+    expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
+    expect(document.querySelector('.library-assign-menu')?.textContent)
+      .toContain('Create or open a dashboard');
+  });
+
   it('stale saved-query mutations finish durably without settling into the obsolete Workbench renderer', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

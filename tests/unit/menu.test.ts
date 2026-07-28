@@ -51,6 +51,15 @@ describe('openMenu — structure (every row kind)', () => {
     expect(handle.el.querySelector('.my-custom-row')).not.toBeNull();
   });
 
+  it('applies an optional accessible name to the role=menu popup', () => {
+    const btn = trigger();
+    const named = openMenu({
+      document, trigger: btn, ariaLabel: 'Choose a dashboard',
+      rows: [itemRow('Dashboard')],
+    });
+    expect(named.el.getAttribute('aria-label')).toBe('Choose a dashboard');
+  });
+
   it('an item with no icon/meta/reason renders no .fm-icon/.fm-meta/.fm-reason', () => {
     const btn = trigger();
     const handle = openMenu({ document, trigger: btn, rows: [itemRow('Plain')] });

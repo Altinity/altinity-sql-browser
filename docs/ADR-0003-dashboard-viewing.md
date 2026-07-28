@@ -766,11 +766,13 @@ action wired to `discardVariableDraft` — the explicit, user-invoked counterpar
 automatically.
 
 The keyboard-accessible **Add to dashboard…** command (#428 acceptance bullet 9)
-is deferred to **#483** by owner decision; this addendum covers the drag path
-only. Mobile is out of scope for the gesture as a whole, so no `isMobile`
-branches were added — touch drag is a stated non-goal, and `draggable` stays
-unconditional on Library and History rows so the shipped editor drop is unchanged
-there.
+landed separately in **#483**. Each Library row now opens a named, two-stage
+Dashboard → panel chooser that calls the same `assignLibraryQueryToPanel`
+application command as drag/drop; it does not grow a second mutation path or a
+target-panel/configuration picker. The original drag addendum remains pointer
+specific: mobile is out of scope for the gesture as a whole, no `isMobile`
+branches were added, and `draggable` stays unconditional on Library and History
+rows so the shipped editor drop is unchanged there.
 
 ## Addendum (#465, 2026-07-27): Test's shape check is re-hosted on Run, not re-invented
 

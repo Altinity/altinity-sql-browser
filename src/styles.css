@@ -733,6 +733,17 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 4px; padding: 8px 12px; border-top: 1px solid var(--border-faint);
   font-size: var(--text-micro); color: var(--fg-faint); font-family: var(--mono);
 }
+/* Library row's two-stage Dashboard → panel chooser (#483). The confirmation
+   prose is a custom openMenu row; keep it in the same menu rhythm rather than
+   letting it fall back to unstyled user-agent text. */
+.library-assign-menu { width: 288px; }
+.library-assign-copy {
+  padding: 10px 12px; color: var(--fg-mute); font-size: var(--text-body);
+  line-height: var(--lh-body);
+}
+.library-assign-copy b { color: var(--fg); font-weight: var(--fw-semibold); }
+.library-assign-add { color: var(--accent); font-weight: var(--fw-semibold); }
+.library-assign-cancel { color: var(--fg-mute); }
 /* Variable history (#171): a `.fm-item`-styled <label> so the whole row
    toggles the checkbox, matching the rest of the File menu's row rhythm. */
 .fm-toggle { cursor: pointer; }
@@ -964,6 +975,7 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--fg-faint); cursor: pointer; border-radius: var(--r-xs); flex-shrink: 0;
   display: none; align-items: center; justify-content: center; padding: 0;
 }
+.saved-row .sv-assign { display: inline-flex; }
 .saved-row:hover .sv-act { display: inline-flex; }
 .sv-act:hover { color: var(--fg); background: var(--bg-hover); }
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }

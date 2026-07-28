@@ -9,6 +9,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Every Library query now has a keyboard-accessible “Add to dashboard…”
+  action** (#483). Its Dashboard → panel chooser uses the same assignment
+  command as drag/drop, creates the same independent owned query and tile, and
+  supports arrow navigation, Escape, Cancel, and focus restoration.
+
 ### Removed
 - **The unused saved-query repair planner has been removed** (#429 phase 6 /
   #500). Direct, ownership-safe Panel and Dashboard trash actions are the

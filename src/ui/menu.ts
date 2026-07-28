@@ -70,6 +70,9 @@ export interface MenuOptions {
   /** Extra class(es) appended to the mounted `.file-menu` element (e.g.
    *  `dash-style-menu` for the Dashboard style picker's width override). */
   menuClass?: string;
+  /** Accessible name for the popup's `role="menu"`. Callers with a visible
+   *  heading should still supply the interaction's concise purpose here. */
+  ariaLabel?: string;
   /** Called once the menu is fully torn down, however it closed (Escape,
    *  overlay click, an item's own click, or an explicit `handle.close()`) —
    *  lets the caller clear its own open/closed bookkeeping. */
@@ -157,7 +160,11 @@ export function openMenu(opts: MenuOptions): MenuHandle {
     return btn;
   };
 
-  const menu = h('div', { class: menuClass ? `file-menu ${menuClass}` : 'file-menu', role: 'menu' },
+  const menu = h('div', {
+    class: menuClass ? `file-menu ${menuClass}` : 'file-menu',
+    role: 'menu',
+    ...(opts.ariaLabel ? { 'aria-label': opts.ariaLabel } : {}),
+  },
     ...rows.map(buildRow));
   const overlay = h('div', { class: 'fm-overlay', onclick: () => close() });
 

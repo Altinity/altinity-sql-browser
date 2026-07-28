@@ -599,6 +599,53 @@ test.describe('Library → Dashboard assignment (#428)', () => {
 
   const committed = (page) => page.evaluate(() => window.__committed());
 
+  test('Add to dashboard is fully keyboard-operable and restores focus on Escape', async ({ page }) => {
+    await open(page);
+    const add = libraryRow(page).getByRole('button', { name: 'Add to dashboard…' });
+    // Reach the action from the row's preceding native keyboard stop. A direct
+    // `add.focus()` would still pass if the control accidentally became
+    // `tabindex=-1`, which is exactly the regression this acceptance test guards.
+    await libraryRow(page).locator('.sv-star').focus();
+    await page.keyboard.press('Tab');
+    await expect(add).toBeFocused();
+    await expect(add).toBeVisible();
+
+    await page.keyboard.press('Enter');
+    const choose = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    await expect(choose).toBeVisible();
+    const destinations = choose.getByRole('menuitem');
+    await expect(destinations).toHaveCount(3);
+    await expect(destinations.first()).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(destinations.nth(1)).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const confirm = page.getByRole('menu', { name: 'Confirm adding Countries to Ops latency' });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByRole('menuitem', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(confirm).toBeHidden();
+    await expect(add).toBeFocused();
+
+    // Complete the same path without touching the pointer: select Ops again,
+    // move from the safe default Cancel to Add, and activate it.
+    await page.keyboard.press('Enter');
+    const chooseAgain = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    await expect(chooseAgain.getByRole('menuitem').first()).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const confirmAgain = page.getByRole('menu', { name: 'Confirm adding Countries to Ops latency' });
+    await expect(confirmAgain.getByRole('menuitem', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('ArrowUp');
+    await expect(confirmAgain.getByRole('menuitem', { name: 'Add' })).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    await expect.poll(async () => {
+      const current = await committed(page);
+      return current.dashboards.find((d) => d.id === 'ops').tiles.length;
+    }).toBe(1);
+  });
+
   test('one drag publishes both the subquery text and the Dashboard identity', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
