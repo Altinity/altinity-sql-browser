@@ -14,6 +14,7 @@ import { formatRows } from '../../src/core/format.js';
 import { queryPanel } from '../../src/core/saved-query.js';
 import type { AppState, ResultSort } from '../../src/state.js';
 import type { App } from '../../src/ui/app.types.js';
+import type { AuthenticatedExecutionScope, AuthenticatedExecutionOperation } from '../../src/application/authenticated-execution-scope.js';
 
 // tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
 // double implementing exactly the members results.ts's own narrow `ResultsApp`
@@ -169,6 +170,21 @@ describe('renderResults states', () => {
     expect(qsa(app.dom.resultsRegion, '.res-table tbody tr')).toHaveLength(2);
     expect(qs(app.dom.resultsRegion, '.stream-strip')).not.toBeNull();
   });
+  it('destroys a prior live chart before rebuilding the results surface', () => {
+    const app = appWithResult(tableResult());
+    const chart = { destroy: vi.fn() };
+    app.chart = chart;
+    renderResults(app);
+    expect(chart.destroy).toHaveBeenCalledTimes(1);
+    expect(app.chart).toBeNull();
+  });
+  it('normalizes a persisted table panel to the ordinary Table result view', () => {
+    const app = appWithResult(tableResult(), { resultView: 'panel' });
+    app.activeTab().specParsed!.panel = { cfg: { type: 'table' } };
+    renderResults(app);
+    expect(app.state.resultView.value).toBe('table');
+    expect(qs(app.dom.resultsRegion, '.res-table')).not.toBeNull();
+  });
   it('clicking a live result cell opens its detail drawer through the result-view callback', () => {
     const app = appWithResult(tableResult(), { resultView: 'table' });
     renderResults(app);
@@ -211,6 +227,15 @@ describe('renderResults states', () => {
     expect(qs(region, '.panel-config')).toBeNull(); // no redundant full-width picker row
     expect(qs(region, '.chart-view canvas')).not.toBeNull();   // autoPanel picked a chart
     expect(queryPanel(app.activeTab())).toBeUndefined(); // preview never writes the tab spec
+  });
+  it('uses the panel-picker rerender callback after choosing a presentation from Table view', () => {
+    const app = appWithResult(tableResult(), { resultView: 'table' });
+    renderResults(app);
+    const picker = qs<HTMLSelectElement>(app.dom.resultsRegion, '.result-panel-select');
+    picker.value = [...picker.options].find((option) => option.value !== '' && option.value !== 'panel:auto')!.value;
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.state.resultView.value).toBe('panel');
+    expect(qs(app.dom.resultsRegion, '.panel-view')).not.toBeNull();
   });
   it('panel view with no result shows the run hint (query-backed types need a Run)', () => {
     const app = appWithResult(null, { resultView: 'panel' });
@@ -1046,8 +1071,114 @@ describe('expandDataPane', () => {
     click(refreshBtn(overlay));
     await tick();
     expect(app.exec.executeRead).not.toHaveBeenCalled();
-    expect(qs(overlay, '.detached-status').textContent).toBe('Not signed in');
+    expect(app.conn.chCtx.onSignedOut).toHaveBeenCalledTimes(1);
+    expect(qs(overlay, '.detached-status').textContent).toBe('Sign in required');
     expect(refreshBtn(overlay)!.disabled).toBe(false); // re-enabled after the blocked attempt
+  });
+
+  it('routes a detached refresh through the authentication gate before it registers transport', async () => {
+    const executeRead = vi.fn(async (result: QueryResult) => result);
+    const app = makeApp({
+      requireAuthenticatedExecution: () => null,
+      exec: { executeRead },
+    });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(executeRead).not.toHaveBeenCalled();
+    expect(qs(overlay, '.detached-status').textContent).toBe('Sign in required');
+    expect(refreshBtn(overlay)!.disabled).toBe(false);
+  });
+
+  it('aborts a detached refresh and preserves its committed snapshot when the execution scope closes', async () => {
+    let resolveRead: ((result: ExecuteReadResult) => void) | undefined;
+    let signal: AbortSignal | undefined;
+    let opts: ExecuteReadOpts | undefined;
+    const executeRead = vi.fn((result: ExecuteReadResult, request: ExecuteReadOpts = {} as ExecuteReadOpts) => {
+      signal = request.signal;
+      opts = request;
+      return new Promise<ExecuteReadResult>((resolve) => { resolveRead = resolve; });
+    });
+    const app = makeApp({ exec: { executeRead } });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+
+    expect(opts?.queryId).toMatch(/^detached-t1-1-/);
+    expect(opts?.isCurrent?.()).toBe(true);
+    expect(signal?.aborted).toBe(false);
+    app.executionScope()!.close();
+    expect(opts?.isCurrent?.()).toBe(false);
+    expect(signal?.aborted).toBe(true);
+    expect(qs(overlay, '.detached-status').textContent).toBe('Sign in required');
+    expect(refreshBtn(overlay)!.disabled).toBe(false);
+
+    // A late executor completion and progress callback must not replace the
+    // data pane's already committed snapshot after auth loss.
+    opts?.onChunk?.();
+    const late = newResult('Table');
+    late.columns = [{ name: 'late', type: 'String' }];
+    late.rows = [['discarded']];
+    resolveRead?.(late);
+    await tick();
+    expect(qsa(overlay, '.res-table tbody tr')).toHaveLength(2);
+  });
+
+  it('ignores an obsolete detached-scope abort callback after a newer refresh owns the pane', async () => {
+    const operations: AuthenticatedExecutionOperation[] = [];
+    const scope = {
+      register: vi.fn((operation: AuthenticatedExecutionOperation) => {
+        operations.push(operation);
+        return { name: operation.name, release: vi.fn(), isCurrent: () => true };
+      }),
+    } as unknown as AuthenticatedExecutionScope;
+    const requests: ExecuteReadOpts[] = [];
+    const executeRead = vi.fn((_result: ExecuteReadResult, request: ExecuteReadOpts = {} as ExecuteReadOpts) => {
+      requests.push(request);
+      return new Promise<ExecuteReadResult>(() => {});
+    });
+    const app = makeApp({
+      executionScope: () => scope,
+      requireAuthenticatedExecution: () => scope,
+      exec: { executeRead },
+    });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    click(refreshBtn(overlay));
+    await tick();
+    expect(operations).toHaveLength(2);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].signal?.aborted).toBe(true);
+    expect(requests[1].signal?.aborted).toBe(false);
+
+    operations[0].abort();
+    expect(requests[1].signal?.aborted).toBe(false);
+    expect(qs(overlay, '.detached-status').textContent).toBe('Running…');
+    expect(refreshBtn(overlay)!.disabled).toBe(true);
+  });
+
+  it('does not start executor transport when auth closes during the detached token check', async () => {
+    let resolveToken: ((value: boolean) => void) | undefined;
+    const ensureFreshToken = vi.fn(() => new Promise<boolean>((resolve) => { resolveToken = resolve; }));
+    const executeRead = vi.fn(async (result: QueryResult) => result);
+    const app = makeApp({ conn: { ensureFreshToken }, exec: { executeRead } });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    app.executionScope()!.close();
+    resolveToken?.(true);
+    await tick();
+    expect(executeRead).not.toHaveBeenCalled();
+    expect(qs(overlay, '.detached-status').textContent).toBe('Sign in required');
   });
 
   it('shows a status and keeps the previous result when the rerun errors', async () => {

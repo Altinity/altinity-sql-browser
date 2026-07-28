@@ -431,6 +431,24 @@ h1, h2, h3, h4, h5, h6 {
     var(--bg);
 }
 .login-screen .mono { font-family: var(--mono); }
+.auth-host {
+  flex: 0 1 auto;
+  max-height: 48vh;
+  overflow: auto;
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(620px 220px at 50% -30%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 72%),
+    var(--bg);
+}
+.auth-host[hidden] { display: none; }
+.login-inline {
+  display: flex;
+  justify-content: center;
+}
+.login-inline .login-card {
+  box-shadow: var(--shadow-popover);
+}
 .login-card {
   width: 380px; padding: 40px 36px 36px;
   background: var(--bg-header);
@@ -464,6 +482,12 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 7px; font-size: var(--text-label); color: var(--fg-faint);
 }
 .login-sso-note .mono { color: var(--fg-mute); }
+.login-inline-oauth-unavailable {
+  padding: 10px 12px;
+  background: var(--warn-bg); border: 1px solid var(--warn-bd);
+  border-radius: var(--r-md); color: var(--warn-fg);
+  font-size: var(--text-body); line-height: var(--lh-body);
+}
 
 /* Buttons (primary / ghost) */
 .login-btn {
@@ -592,6 +616,13 @@ h1, h2, h3, h4, h5, h6 {
   font-family: var(--mono); color: var(--fg);
 }
 .connection-state { display: none; }
+.connection-chip.is-auth-required {
+  background: var(--error-bg); border-color: var(--error-bd);
+}
+.connection-chip.is-auth-required .connection-host { display: none; }
+.connection-chip.is-auth-required .connection-state {
+  display: inline; color: var(--error-fg); font-weight: var(--fw-semibold);
+}
 .conn-status::before {
   content: ''; width: 7px; height: 7px; border-radius: var(--r-xs);
   background: var(--fg-faint); box-shadow: none;

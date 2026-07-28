@@ -10,6 +10,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Temporary ClickHouse authentication loss now suspends only authenticated
+  execution, not the in-memory document session** (#512 phase 2, absorbing
+  #502/#520/#522). A disposable, epoch-fenced execution scope coordinates
+  Workbench and Dashboard queries, exports, schema graphs, catalog/reference
+  loads, formatting, SHOW CREATE, and detached-result refreshes. Closing it
+  aborts local work before best-effort server cancellation with an immutable
+  origin and `Authorization` lease, and stale completions cannot publish into
+  the next authenticated epoch; stale preflight work is also rejected before
+  it can send a replacement epoch's credentials. The mounted shell, exact
+  editor/tab/result objects, drafts, dirty state, route, and unload guard survive while the
+  header turns red and the existing authentication controls appear inline.
+  Successful Basic reauthentication installs a fresh scope and reloads
+  connection metadata in place; its reusable inline form clears the password,
+  resets submission state, and hides password visibility after success, ready
+  for a later recovery. Inline OAuth deliberately remains unavailable until the
+  Phase 3 checkpoint; explicit Log out remains destructive.
+  Async error-body classification and config discovery are epoch-fenced; refresh
+  authority snapshots its epoch and rechecks it after config discovery before
+  token-endpoint I/O, so stale discovery cannot replace a newer auth-header
+  policy. Catalog, schema, reference, and docs transports share a
+  connection-generation abort signal: `invalidate()` aborts them synchronously,
+  while stale writes remain fenced.
 - **Connection state now has one explicit, epoch-fenced lifecycle** (#512
   phase 1). OAuth/Basic credentials, single-flight token refresh, transport
   success/failure, auth loss, reauthentication, and explicit sign-out flow

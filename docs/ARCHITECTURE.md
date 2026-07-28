@@ -47,9 +47,10 @@ module is tested with plain stubs at the per-file coverage gate.
 
 | Module | Owns |
 |---|---|
+| `authenticated-execution-scope` (`app.executionScope`) | one disposable, epoch-fenced registry for authenticated operation owners; closes local work synchronously and performs best-effort remote cancellation from an immutable credential lease |
 | `query-execution-service` (`app.exec`) | the shared request/stream/normalize read core + the script transport loop (retry classification, stop-on-first-failure, per-attempt `query_id`); stateless `kill(queryId)` — cancellation is caller-owned (`AbortController`s live with the owning session) |
 | `connection-session` (`app.conn`) | authoritative auth + connection lifecycle (`starting` / `connected` / `refreshing` / `offline` / `auth-required` / `reauthenticating` / `signed-out`), OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in — never reconstructed) |
-| `schema-catalog-service` (`app.catalog`) | server version, schema tree, lazy columns, SQL reference/completions, entity-doc cache, `invalidate()` |
+| `schema-catalog-service` (`app.catalog`) | server version, schema tree, lazy columns, SQL reference/completions, entity-doc cache; catalog/schema/reference/docs transports share a connection-generation abort signal, and `invalidate()` synchronously aborts them while generation fences reject stale writes |
 | `workbench-parameter-session` (`app.params`) | `{name:Type}` analysis/prepare/gate policy, input-vs-execute hardening, enum inference, recent values; reads the live shared `AppState` slices through accessors |
 | `export-service` (`app.exports`) | direct + script export behind an injectable `ExportSink` (`pickFile`/`pickDirectory`); hold-back exception inspection, `.partial` semantics, its own cancellation state |
 | `query-document-session` (`app.queryDoc`) | Spec evaluation/diagnostics/dirty flags over `QueryTab`s, editor-mode policy |
@@ -86,17 +87,37 @@ module is tested with plain stubs at the per-file coverage gate.
 
 Lifecycle ownership: **cancellation state always lives with the session that
 owns the operation** (issue #276 rule 5) — never in the transport service.
-`destroy()`/`invalidate()` are wired where a session really ends today:
-`signOut` tears down the workbench session, cancels graph/export work, and
-invalidates the catalog before the login screen renders. There is no
-route-remount mechanism — the dashboard is its own browser tab whose closure
-JS never observes — so no teardown theater beyond that.
+While authentication is valid, those owners register with the current
+`AuthenticatedExecutionScope`. An involuntary auth-loss transition closes that
+scope exactly once: owner aborts happen synchronously, old registrations become
+observationally stale, and query ids captured before each abort are cancelled
+best-effort through a frozen lease containing the exact origin and complete
+`Authorization` header. That cancellation path has no token refresh, retry, or
+auth-loss callback.
+
+The application shell and document session are deliberately outside the
+execution scope. Auth loss therefore preserves the mounted editor, tabs,
+drafts, dirty flags, navigation, and completed results while inline login
+controls replace authenticated actions. In-place Basic login creates a fresh
+scope for the new credential epoch and reloads connection-scoped metadata
+without rebuilding the shell. Its inline form is reusable: a successful
+recovery resets submission state, clears the password, and hides password
+visibility, so a later loss can be recovered the same way. Inline OAuth is
+deliberately unavailable until the Phase 3 checkpoint. Explicit Log out is the
+separate destructive policy: it closes the scope, tears down the workbench and
+Dashboard, clears credentials, and renders the signed-out login surface.
 
 Connection lifecycle ownership follows the same rule. `ConnectionSession`
 publishes one read-only signal and assigns a monotonically increasing
 credential epoch whenever credentials are installed or invalidated. Refresh is
 single-flight within an epoch; a late refresh or transport response cannot
-write tokens, report auth loss, or repaint the replacement epoch.
+write tokens, report auth loss, or repaint the replacement epoch. The network
+boundary rechecks that epoch after every credential await and immediately
+before each fetch attempt, so old work cannot execute under a replacement
+session's credentials. This includes async HTTP error-body classification and
+IdP config discovery: refresh authority snapshots its epoch, then rechecks it
+after discovery and before token-endpoint I/O. A stale discovery therefore
+cannot rewrite the replacement epoch's auth-header policy.
 `net/ch-client` reports only successful 2xx transport settlement as connected
 and rejected, non-aborted `fetch` as offline. HTTP query failures — including a
 post-confirmation 401/403 — remain query outcomes, not connection state. The

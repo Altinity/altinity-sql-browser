@@ -87,7 +87,7 @@ export interface SurfaceCommandPort {
 export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running' | 'workspaceKey'>;
-  conn: Pick<ConnectionSession, 'isSignedIn'>;
+  conn: Pick<ConnectionSession, 'isSignedIn' | 'connection'>;
   sqlRoute: Pick<SqlRoute, 'surface' | 'workspaceKey'> & { mode?: 'view' | 'edit' };
   workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
   surfaceCommands?: SurfaceCommandPort | null;
@@ -262,7 +262,14 @@ export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): strin
   if (!ready(app)) { resetShortcutChord(app); return null; }
   const mod = modKey(e);
   if (ownsKeyboard(app)) { resetShortcutChord(app); return null; }
-  if (!app.conn.isSignedIn()) { resetShortcutChord(app); return null; }
+  // A mounted auth-required document session keeps local commands alive;
+  // server-backed actions dispatch into their shared execution-scope gate,
+  // which reveals the in-shell auth controls. Only terminal explicit sign-out
+  // disables the entire application shortcut surface.
+  if (!app.conn.isSignedIn() && app.conn.connection.value.kind === 'signed-out') {
+    resetShortcutChord(app);
+    return null;
+  }
   if (e.key === 'Escape') resetShortcutChord(app);
   const command = visibleDefinitions(app).find((definition) => definition.matches?.(e, app));
   if (command?.run) return command.run(e, app);

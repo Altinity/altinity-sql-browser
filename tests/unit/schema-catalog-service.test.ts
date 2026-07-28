@@ -51,6 +51,13 @@ function makeHooks(): Mocked<Required<SchemaCatalogHooks>> {
   };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(reason?: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 function makeDeps(over: Partial<SchemaCatalogDeps> = {}): SchemaCatalogDeps {
   return {
     loadServerVersion: vi.fn(async () => '24.3.1.2603'),
@@ -197,6 +204,29 @@ describe('loadReference', () => {
     await svc.docEntry({ kind: 'function', name: 'count' }); // cache was cleared by loadReference → refetches
     expect(loadFunctionDocRow).toHaveBeenCalledTimes(2);
   });
+
+  it('swallows an AbortError only after invalidation, while unrelated reference failures reject', async () => {
+    const abortingLoad = vi.fn((_ctx: ChCtx, signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {
+      signal!.addEventListener('abort', () => {
+        const error = new Error('connection closed');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const abortingSvc = createSchemaCatalogService(makeDeps({
+      loadReferenceData: abortingLoad as unknown as SchemaCatalogDeps['loadReferenceData'],
+    }));
+    const aborting = abortingSvc.loadReference();
+    await Promise.resolve();
+    abortingSvc.invalidate();
+    await expect(aborting).resolves.toBeUndefined();
+
+    const transportFailure = new Error('reference transport failed');
+    const failingSvc = createSchemaCatalogService(makeDeps({
+      loadReferenceData: vi.fn(async () => { throw transportFailure; }) as unknown as SchemaCatalogDeps['loadReferenceData'],
+    }));
+    await expect(failingSvc.loadReference()).rejects.toBe(transportFailure);
+  });
 });
 
 describe('rebuildCompletions', () => {
@@ -239,6 +269,296 @@ describe('refData / completions setters', () => {
 
 
 // ── invalidate ───────────────────────────────────────────────────────────────
+
+describe('connection invalidation generation', () => {
+  it('stops before every metadata transport when invalidated during configuration, and never rebuilds stale data', async () => {
+    const config = deferred<null>();
+    const state = makeState(baseSchema());
+    const hooks = makeHooks();
+    const deps = makeDeps({ state, hooks, ensureConfig: vi.fn(() => config.promise) });
+    const svc = createSchemaCatalogService(deps);
+    const version = svc.loadVersion();
+    const schema = svc.loadSchema();
+    const columns = svc.loadColumns('d1', 't1');
+    const reference = svc.loadReference();
+    svc.invalidate();
+    config.resolve(null);
+    await Promise.all([version, schema, columns, reference]);
+    expect(deps.loadServerVersion).not.toHaveBeenCalled();
+    expect(deps.loadSchema).not.toHaveBeenCalled();
+    expect(deps.loadColumns).not.toHaveBeenCalled();
+    expect(deps.loadReferenceData).not.toHaveBeenCalled();
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+  });
+
+  it('synchronously aborts active schema, reference, and documentation work and gives the next connection a fresh signal', async () => {
+    const firstSchema = deferred<SchemaDb[]>();
+    const secondSchema = deferred<SchemaDb[]>();
+    const schemaLoads = [firstSchema, secondSchema];
+    const schemaSignals: AbortSignal[] = [];
+    const referenceSignals: AbortSignal[] = [];
+    const docSignals: AbortSignal[] = [];
+    const deps = makeDeps({
+      loadSchema: vi.fn((_ctx: ChCtx, signal?: AbortSignal) => {
+        schemaSignals.push(signal!);
+        return schemaLoads.shift()!.promise;
+      }) as unknown as SchemaCatalogDeps['loadSchema'],
+      loadReferenceData: vi.fn((_ctx: ChCtx, signal?: AbortSignal) => {
+        referenceSignals.push(signal!);
+        return new Promise((_resolve, reject) => {
+          signal!.addEventListener('abort', () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      }) as unknown as SchemaCatalogDeps['loadReferenceData'],
+      loadDocTableColumns: vi.fn((_ctx: ChCtx, _table, signal?: AbortSignal) => {
+        docSignals.push(signal!);
+        return new Promise<string[]>((_resolve, reject) => {
+          signal!.addEventListener('abort', () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      }) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const schema = svc.loadSchema();
+    const ref = svc.loadReference();
+    const doc = svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    await Promise.resolve();
+    svc.invalidate();
+
+    expect(schemaSignals[0].aborted).toBe(true);
+    expect(referenceSignals[0].aborted).toBe(true);
+    expect(docSignals[0].aborted).toBe(true);
+
+    firstSchema.resolve([]);
+    await Promise.all([schema, ref]);
+    await expect(doc).resolves.toEqual({ status: 'unavailable' });
+
+    const freshSchema = svc.loadSchema();
+    await Promise.resolve();
+    expect(schemaSignals[1]).not.toBe(schemaSignals[0]);
+    expect(schemaSignals[1].aborted).toBe(false);
+    secondSchema.resolve([]);
+    await freshSchema;
+  });
+
+  it('does not rebuild schema/columns after a loader itself invalidates the connection', async () => {
+    const state = makeState(baseSchema());
+    const hooks = makeHooks();
+    let svc!: ReturnType<typeof createSchemaCatalogService>;
+    const deps = makeDeps({
+      state,
+      hooks,
+      loadSchema: vi.fn(async () => { svc.invalidate(); return baseSchema(); }) as unknown as SchemaCatalogDeps['loadSchema'],
+      loadColumns: vi.fn(async () => { svc.invalidate(); throw new Error('connection replaced'); }),
+    });
+    svc = createSchemaCatalogService(deps);
+    await svc.loadSchema();
+    // invalidate() intentionally clears the whole connection projection;
+    // columns are normally only requested from a newly-rendered schema row.
+    state.schema.value = baseSchema();
+    await svc.loadColumns('d1', 't1');
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+  });
+
+  it('drops capability probes which complete after reconnect for function, structured, and Markdown documentation sources', async () => {
+    const functionColumns = deferred<string[]>();
+    const functionSvc = createSchemaCatalogService(makeDeps({
+      loadFunctionsDocColumns: vi.fn(() => functionColumns.promise),
+    }));
+    const functionLookup = functionSvc.docEntry({ kind: 'function', name: 'late' });
+    await Promise.resolve();
+    functionSvc.invalidate();
+    functionColumns.resolve(['name']);
+    await expect(functionLookup).resolves.toEqual({ status: 'unavailable' });
+
+    const structuredColumns = deferred<string[]>();
+    const structuredSvc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(() => structuredColumns.promise) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    const structuredLookup = structuredSvc.docEntry({ kind: 'table-engine', name: 'late' });
+    await Promise.resolve();
+    structuredSvc.invalidate();
+    structuredColumns.resolve(['name']);
+    await expect(structuredLookup).resolves.toEqual({ status: 'unavailable' });
+
+    const markdownColumns = deferred<string[]>();
+    const markdownSvc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(() => markdownColumns.promise) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    const markdownLookup = markdownSvc.docEntry({ kind: 'setting', name: 'late' });
+    await Promise.resolve();
+    markdownSvc.invalidate();
+    markdownColumns.resolve(['name', 'type', 'description']);
+    await expect(markdownLookup).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('fences a reconnect that happens during the post-capability configuration await of every documentation lookup', async () => {
+    const exercise = async (
+      warm: () => Promise<unknown>,
+      lookup: () => Promise<unknown>,
+      invalidate: () => void,
+      release: () => void,
+    ): Promise<void> => {
+      await warm();
+      const pending = lookup();
+      await Promise.resolve();
+      invalidate();
+      release();
+      await expect(pending).resolves.toEqual({ status: 'unavailable' });
+    };
+
+    let hold = false;
+    let config = deferred<null>();
+    const functionSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadFunctionsDocColumns: vi.fn(async () => ['name']),
+    }));
+    await exercise(() => functionSvc.docEntry({ kind: 'function', name: 'warm' }),
+      () => { hold = true; return functionSvc.docEntry({ kind: 'function', name: 'next' }); },
+      () => functionSvc.invalidate(), () => config.resolve(null));
+
+    hold = false; config = deferred<null>();
+    const structuredSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await exercise(() => structuredSvc.docEntry({ kind: 'table-engine', name: 'warm' }),
+      () => { hold = true; return structuredSvc.docEntry({ kind: 'table-engine', name: 'next' }); },
+      () => structuredSvc.invalidate(), () => config.resolve(null));
+
+    hold = false; config = deferred<null>();
+    const markdownSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await exercise(() => markdownSvc.docEntry({ kind: 'setting', name: 'warm' }),
+      () => { hold = true; return markdownSvc.docEntry({ kind: 'setting', name: 'next' }); },
+      () => markdownSvc.invalidate(), () => config.resolve(null));
+
+    // Name disambiguation has the same post-config fence but a separate
+    // in-flight map, so cover it as its own consumer of the cached capability.
+    hold = false; config = deferred<null>();
+    const disambiguateSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await disambiguateSvc.docEntry({ kind: 'setting', name: 'warm' });
+    hold = true;
+    const pending = disambiguateSvc.docDisambiguate('next');
+    await Promise.resolve();
+    disambiguateSvc.invalidate();
+    config.resolve(null);
+    await expect(pending).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('falls back from a durably unavailable structured source and aliases a canonical Markdown entry', async () => {
+    const fallback = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async (_ctx: ChCtx, table: string) => (
+        table === 'table_engines' ? [] : ['name', 'type', 'description']
+      )) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow: vi.fn(async () => [{ name: 'MergeTree', type: 'Table engine', description: 'fallback' }]),
+    }));
+    await expect(fallback.docEntry({ kind: 'table-engine', name: 'MergeTree' })).resolves.toMatchObject({ status: 'found' });
+
+    const markdown = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow: vi.fn(async () => [{ name: 'MAX_THREADS', type: 'Setting', description: 'canonical' }]),
+    }));
+    await expect(markdown.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
+  });
+
+  it('drops every stale metadata result, clears connection state, and permits a fresh generation', async () => {
+    const oldVersion = deferred<string>();
+    const oldSchema = deferred<SchemaDb[]>();
+    const oldColumns = deferred<{ name: string; type: string; comment: string }[]>();
+    const oldReference = deferred<{ keywords: string[]; functions: Record<string, unknown>; formats: string[] }>();
+    const freshSchema = [{ db: 'fresh', tables: [{ name: 'table' }] }];
+    const freshColumns = [{ name: 'fresh_column', type: 'String', comment: '' }];
+    const state = makeState(baseSchema());
+    state.serverVersion = 'old-version';
+    state.schemaError.value = 'old error';
+    const hooks = makeHooks();
+    const loadServerVersion = vi.fn().mockImplementationOnce(() => oldVersion.promise).mockResolvedValueOnce('fresh-version');
+    const loadSchema = vi.fn().mockImplementationOnce(() => oldSchema.promise).mockResolvedValueOnce(freshSchema);
+    const loadColumns = vi.fn().mockImplementationOnce(() => oldColumns.promise).mockResolvedValueOnce(freshColumns);
+    const loadReferenceData = vi.fn().mockImplementationOnce(() => oldReference.promise).mockResolvedValueOnce({ keywords: ['FRESH'], functions: {}, formats: [] });
+    const deps = makeDeps({
+      state,
+      hooks,
+      loadServerVersion,
+      loadSchema: loadSchema as unknown as SchemaCatalogDeps['loadSchema'],
+      loadColumns,
+      loadReferenceData: loadReferenceData as unknown as SchemaCatalogDeps['loadReferenceData'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    // loadReference resets only documentation state; all four loaders are now
+    // in the same connection generation and must be retired together by
+    // invalidate(), not by their own late result.
+    const reference = svc.loadReference();
+    const version = svc.loadVersion();
+    const schema = svc.loadSchema();
+    const columns = svc.loadColumns('d1', 't1');
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(loadServerVersion).toHaveBeenCalledTimes(1);
+    expect(loadSchema).toHaveBeenCalledTimes(1);
+    expect(loadColumns).toHaveBeenCalledTimes(1);
+    expect(loadReferenceData).toHaveBeenCalledTimes(1);
+
+    svc.invalidate();
+    expect(state.serverVersion).toBeNull();
+    expect(state.schema.value).toBeNull();
+    expect(state.schemaError.value).toBeNull();
+    expect(svc.refData.keywords).not.toContain('FRESH');
+
+    oldVersion.resolve('late-version');
+    oldSchema.resolve(baseSchema());
+    oldColumns.resolve([{ name: 'late_column', type: 'String', comment: '' }]);
+    oldReference.resolve({ keywords: ['LATE'], functions: {}, formats: [] });
+    await Promise.all([version, schema, columns, reference]);
+    expect(state.serverVersion).toBeNull();
+    expect(state.schema.value).toBeNull();
+    expect(svc.refData.keywords).not.toContain('LATE');
+    expect(hooks.onServerVersionLoaded).not.toHaveBeenCalled();
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+    expect(hooks.refreshEditorReference).not.toHaveBeenCalled();
+
+    await svc.loadVersion();
+    await svc.loadSchema();
+    await svc.loadColumns('fresh', 'table');
+    await svc.loadReference();
+    expect(state.serverVersion).toBe('fresh-version');
+    expect(state.schema.value).toMatchObject(freshSchema);
+    expect((state.schema.value as SchemaDb[])[0].tables![0].columns).toEqual(freshColumns);
+    expect(svc.refData.keywords).toContain('FRESH');
+    expect(hooks.onServerVersionLoaded).toHaveBeenCalledWith('fresh-version');
+    expect(hooks.renderVarStrip).toHaveBeenCalledTimes(1);
+    expect(hooks.refreshEditorReference).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish a stale schema failure after invalidation', async () => {
+    const schema = deferred<SchemaDb[]>();
+    const state = makeState();
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadSchema: vi.fn(() => schema.promise) as unknown as SchemaCatalogDeps['loadSchema'],
+    }));
+
+    const pending = svc.loadSchema();
+    await Promise.resolve();
+    svc.invalidate();
+    schema.reject(new Error('late schema failure'));
+    await pending;
+    expect(state.schemaError.value).toBeNull();
+  });
+});
 
 // ── docSummary / docEntry (#313) ────────────────────────────────────────────
 
@@ -495,7 +815,7 @@ describe('docEntry — #314 structured-source routing', () => {
       status: 'found',
       value: expect.objectContaining({ target: { kind: 'table-engine', name: 'MergeTree' }, title: 'MergeTree' }),
     });
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 
@@ -509,9 +829,9 @@ describe('docEntry — #314 structured-source routing', () => {
     await svc.docEntry({ kind: 'database-engine', name: 'Atomic' });
     await svc.docEntry({ kind: 'data-type', name: 'Int32' });
 
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(1, fakeCtx, 'formats');
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(2, fakeCtx, 'database_engines');
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(3, fakeCtx, 'data_type_families');
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(1, fakeCtx, 'formats', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(2, fakeCtx, 'database_engines', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(3, fakeCtx, 'data_type_families', expect.any(AbortSignal));
   });
 
   it('probes each structured kind independently, once per kind, and dedupes concurrent probes for the SAME kind', async () => {
@@ -941,7 +1261,7 @@ describe('#315 system.documentation capability + version policy', () => {
       value: expect.objectContaining({ target: { kind: 'setting', name: 'max_threads' }, renderMode: 'markdown-subset' }),
     });
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
 
     // A second lookup for a different name shares the cached capability.
@@ -1129,7 +1449,7 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     if (result.status === 'found') expect(result.value.sourceTable).not.toBe('documentation');
     // Only the table-engine probe/lookup ran — never a documentation probe.
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 
@@ -1144,7 +1464,7 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     expect(await svc.docEntry({ kind: 'table-engine', name: 'NopeTree' })).toEqual({ status: 'missing' });
     // Only the table-engine probe ran (once) — no documentation probe.
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
   });
 
   it('a durably-unavailable structured source falls back to system.documentation for the SAME target', async () => {
@@ -1169,8 +1489,8 @@ describe('#315 source preference — structured vs. system.documentation', () =>
         renderMode: 'markdown-subset',
       }),
     });
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
   });
 
   it('a kind with NO structured loader at all ("setting") goes straight to system.documentation', async () => {
@@ -1184,7 +1504,24 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
     expect(result.status).toBe('found');
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
+  });
+
+  it('converts a thrown compact-documentation transport failure to unavailable and clears the entry cache for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('compact documentation transport failed'))
+      .mockResolvedValueOnce([{ name: 'max_threads', type: 'Setting', description: 'x' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docEntry({ kind: 'setting', name: 'max_threads' })).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docEntry({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
   it('docKindAvailable("setting") reflects the documentation capability once probed (no structured loader exists for it)', async () => {
@@ -1267,7 +1604,7 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
       value: expect.objectContaining({ markdown: 'The full markdown body.', renderMode: 'markdown-subset' }),
     });
     // The structured table-engine loader was never consulted by docMarkdown.
-    expect(loadDocTableColumns).not.toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).not.toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
   });
 
   it('caches found/missing and dedupes concurrent lookups, separately from docEntry', async () => {
@@ -1316,6 +1653,23 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
     expect(await svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
     const second = await svc.docMarkdown({ kind: 'setting', name: 'max_threads' });
     expect(second.status).toBe('found');
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
+  });
+
+  it('converts a thrown transport failure to unavailable and clears the Markdown cache for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('markdown transport failed'))
+      .mockResolvedValueOnce([{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
     expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
@@ -1419,6 +1773,23 @@ describe('#315 docDisambiguate — name-only, all kinds', () => {
     expect(await svc.docDisambiguate('Log')).toEqual({ status: 'unavailable' });
     const second = await svc.docDisambiguate('Log');
     expect(second.status).toBe('found');
+  });
+
+  it('converts a thrown disambiguation transport failure to unavailable and releases the name for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('disambiguation transport failed'))
+      .mockResolvedValueOnce([{ name: 'Log', type: 'Table Engine', description: 'x' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docDisambiguate('Log')).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docDisambiguate('Log')).resolves.toMatchObject({ status: 'found' });
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
   it('invalidate() mid-flight (during the capability probe) drops a stale docDisambiguate response', async () => {

@@ -30,10 +30,34 @@ import type { ConnectionSession } from '../application/connection-session.js';
  *  composes rendering, not a pure forward. */
 export interface LoginApp {
   root: Element;
-  conn: Pick<ConnectionSession, 'host' | 'hostHint' | 'loadIdps'>;
+  conn: Pick<ConnectionSession, 'host' | 'hostHint' | 'loadIdps' | 'basicRecoveryOrigin'>;
   actions: Pick<ActionsRegistry, 'login' | 'connect'>;
   showLogin(msg?: string): void;
 }
+
+/** A reusable in-shell authentication mount. The host is stable for the life
+ *  of the app shell; showing, hiding, and reporting an authentication error
+ *  therefore never replaces the editor/results document tree around it. */
+export interface InlineLoginHandle {
+  /** Reveal the controls, replace any previous local error, and focus them. */
+  show(errorMsg?: string): void;
+  /** Hide the controls without discarding field values or async config. */
+  hide(): void;
+  /** Focus the first usable authentication control. */
+  focus(): void;
+  /** Fence pending config work and remove only this mount from its host. */
+  dispose(): void;
+}
+
+interface LoginMount extends InlineLoginHandle {
+  container: HTMLElement;
+}
+
+// `renderLogin()` historically has no disposer in its public API. Remember its
+// private mount so a re-render can still fence a late `loadIdps()` completion
+// from the screen it just replaced.
+const fullMounts = new WeakMap<Element, LoginMount>();
+const inlineMounts = new WeakMap<HTMLElement, LoginMount>();
 
 // `err` is `unknown` under strict catch typing; only a thrown `Error` has a
 // `.message` worth surfacing (every throw site in this module and its tests
@@ -52,13 +76,54 @@ function errMsg(err: unknown): string {
  *   showLogin(msg)             — re-render with an error message
  */
 export function renderLogin(app: LoginApp, errorMsg?: string): void {
+  fullMounts.get(app.root)?.dispose();
+  const mount = mountLoginControls(app, app.root, 'full', errorMsg);
+  fullMounts.set(app.root, mount);
+}
+
+/**
+ * Mount the same authentication card used by `renderLogin()` into a stable
+ * in-shell host. Unlike the full-screen renderer, failures are painted into
+ * this mount and neither `app.root` nor the surrounding shell is replaced.
+ *
+ * The mount starts visible and focused. Callers may retain it across lifecycle
+ * changes with `hide()`/`show()`, or tear it down permanently with `dispose()`.
+ */
+export function mountInlineLogin(
+  app: LoginApp,
+  host: HTMLElement,
+  errorMsg?: string,
+): InlineLoginHandle {
+  inlineMounts.get(host)?.dispose();
+  const mount = mountLoginControls(app, host, 'inline', errorMsg);
+  inlineMounts.set(host, mount);
+  return mount;
+}
+
+function mountLoginControls(
+  app: LoginApp,
+  target: Element,
+  mode: 'full' | 'inline',
+  initialError?: string,
+): LoginMount {
   const cur = app.conn.host();
+  let disposed = false;
   let busy: 'sso' | 'creds' | null = null; // guards against double-submit
+  // An inline mount can be retained while a credential sign-in still awaits
+  // its post-connect work. A second auth loss calls `show()` on that same
+  // mount, which must make the old attempt unable to repaint the new recovery
+  // presentation when it eventually settles.
+  let presentationGeneration = 0;
   let showPw = false;
   // A `?host=` URL param pre-fills the credential server address. A non-empty
   // host means credential-only (SSO can only target the serving host), so
   // Advanced opens and the SSO buttons disable.
-  const hostHint = app.conn.hostHint || '';
+  // During in-shell Basic recovery use the exact prior target. `chCtx.origin`
+  // is intentionally reset once the loss is reported, so `host()` alone is
+  // insufficient (and drops the scheme/port the reconnect must reuse).
+  const hostHint = mode === 'inline'
+    ? (app.conn.basicRecoveryOrigin() || app.conn.hostHint || '')
+    : (app.conn.hostHint || '');
   let advOpen = !!hostHint;
   let ssoBtns: HTMLButtonElement[] = [];
 
@@ -133,6 +198,7 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
 
   // --- saved-connection picker (populated async; shown only when config lists hosts) ---
   let pickHosts: HostDescriptor[] = [];
+  let inlineOAuthConfigured = false;
   const hostPicker = h('select', { class: 'login-picker mono', onchange: onPickHost });
   // Shown only for an `insecure` (accept-invalid-certificate) connection — the
   // browser can't be reached until its cert is trusted (see showCertWarn).
@@ -153,23 +219,51 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
         h('div', { class: 'login-brand-sub mono' }, 'ClickHouse® query console'))),
     pickerSection,
     ssoSection,
-    credSection,
-    errorMsg ? h('div', { class: 'login-error' }, errorMsg) : null);
+    credSection);
+  let errorEl: HTMLElement | null = null;
+  const setError = (msg?: string): void => {
+    if (!msg) {
+      errorEl?.remove();
+      errorEl = null;
+      return;
+    }
+    if (!errorEl) {
+      errorEl = h('div', {
+        class: 'login-error',
+        role: 'alert',
+        'aria-live': 'polite',
+      });
+      card.append(errorEl);
+    }
+    errorEl.textContent = msg;
+  };
+  setError(initialError);
 
-  app.root.replaceChildren(h('div', { class: 'login-screen' }, card));
+  const container = mode === 'full'
+    ? h('div', { class: 'login-screen' }, card)
+    : h('div', {
+      class: 'login-inline',
+      role: 'group',
+      'aria-label': 'Authentication required',
+    }, card);
+  target.replaceChildren(container);
+  if (mode === 'inline') (target as HTMLElement).hidden = false;
   update();
 
   // Resolve the configured IdPs (and the basic_login flag) and reconcile which
   // sections are shown. On failure keep credentials visible (fail-open — OAuth
   // can't work without config anyway) and show no SSO.
   app.conn.loadIdps().then(({ idps, basicLogin, hosts }) => {
+    if (disposed) return;
     const credsShown = basicLogin !== false;
     if (!credsShown) credSection.remove();
     populateHosts(hosts);
     populateSso(idps);
     applyChrome(ssoBtns.length > 0, credsShown);
     update();
-  }).catch(() => applyChrome(false, true)); // no config → credentials only
+  }).catch(() => {
+    if (!disposed) applyChrome(false, true);
+  }); // no config → credentials only
 
   // Show the "or use credentials" divider only when both sign-in methods
   // are actually offered.
@@ -183,9 +277,22 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
     // targets that host's origin); don't also offer it as a serving-host SSO button —
     // that would query the serving origin (e.g. localhost), not the chosen cluster.
     const standalone = (idps || []).filter((i) => !pickHosts.some((hh) => hh.auth === 'oauth' && hh.idp === i.id));
+    // Phase 2 keeps the document shell mounted during recovery, but does not
+    // yet have the redirect-resume checkpoint needed to make an OAuth round
+    // trip safe. Full-screen login retains the normal OAuth controls.
+    if (mode === 'inline') {
+      if (standalone.length || inlineOAuthConfigured) {
+        ssoSection.replaceChildren(h('div', {
+          class: 'login-inline-oauth-unavailable',
+          role: 'status',
+          'aria-live': 'polite',
+        }, 'Single sign-on is temporarily unavailable while this session is paused. Your work remains open.'));
+      }
+      return;
+    }
     if (!standalone.length) return;
     const mk = (idpId: string, label: string): HTMLButtonElement => {
-      const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b) },
+      const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b, label) },
         Icon.shield(), h('span', null, label));
       ssoBtns.push(b);
       return b;
@@ -202,7 +309,10 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
   // Fill the picker from config.json's `hosts` (npm run local supplies them from
   // ~/.clickhouse-client/config.xml). Hidden when none are configured.
   function populateHosts(hosts: HostDescriptor[] | undefined): void {
-    pickHosts = hosts || [];
+    // OAuth saved connections also redirect away from the mounted document.
+    // Only credential targets are safe to offer in Phase 2 inline recovery.
+    inlineOAuthConfigured = mode === 'inline' && (hosts || []).some((hh) => hh.auth === 'oauth');
+    pickHosts = (hosts || []).filter((hh) => mode === 'full' || hh.auth === 'basic');
     if (!pickHosts.length) return;
     hostPicker.replaceChildren(
       h('option', { value: '' }, 'Choose a connection…'),
@@ -266,15 +376,20 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
   }
 
   async function pickOAuth(hh: HostDescriptor): Promise<void> {
-    if (busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
+    if (disposed || busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
+    const generation = presentationGeneration;
     busy = 'sso';
     hostPicker.disabled = true;
     try {
       await app.actions.login(hh.idp, hh.url);
     } catch (err) {
+      if (!ownsPresentation(generation)) return;
       busy = null;
       hostPicker.disabled = false;
-      app.showLogin(errMsg(err));
+      const certGo = certWarn.querySelector<HTMLButtonElement>('.login-cert-go');
+      if (certGo) certGo.disabled = false;
+      reportError(errMsg(err));
+      if (ownsPresentation(generation)) update();
     }
   }
 
@@ -301,30 +416,104 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
 
   function onCredsKey(e: KeyboardEvent): void { if (e.key === 'Enter' && hasCreds()) doConnect(); }
 
+  function resetCredentialsAfterSuccess(): void {
+    busy = null;
+    passInput.value = '';
+    showPw = false;
+    passInput.type = 'password';
+    eyeBtn.title = 'Show password';
+    eyeBtn.replaceChildren(Icon.eye());
+    connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+    setError();
+    update();
+  }
+
+  function ownsPresentation(generation: number): boolean {
+    return !disposed && (mode === 'full' || generation === presentationGeneration);
+  }
+
+  function beginInlinePresentation(): void {
+    presentationGeneration += 1;
+    // The previous recovery action may still be awaiting metadata, but this
+    // presentation is a fresh opportunity to authenticate. Its completion is
+    // fenced by `presentationGeneration`, so release only the local UI here.
+    busy = null;
+    connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+    hostPicker.disabled = false;
+    update();
+  }
+
   async function doConnect(): Promise<void> {
-    if (busy || !hasCreds()) return;
+    if (disposed || busy || !hasCreds()) return;
+    const generation = presentationGeneration;
     busy = 'creds';
     connectBtn.disabled = true;
     connectBtn.replaceChildren(h('span', null, 'Connecting…'));
     try {
       await app.actions.connect({ username: userInput.value, password: passInput.value, host: hostInput.value });
-      // success → connect() renders the workbench, replacing this screen.
+      // Full login mounts the workbench; inline recovery hides this host while
+      // retaining the already-mounted document session.
+      if (ownsPresentation(generation)) resetCredentialsAfterSuccess();
     } catch (err) {
+      if (!ownsPresentation(generation)) return;
       busy = null;
-      app.showLogin(errMsg(err));
+      connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+      reportError(errMsg(err));
+      if (ownsPresentation(generation)) update();
     }
   }
 
-  async function doSso(idpId: string, btn: HTMLButtonElement): Promise<void> {
-    if (busy) return;
+  async function doSso(idpId: string, btn: HTMLButtonElement, label: string): Promise<void> {
+    if (disposed || busy) return;
+    const generation = presentationGeneration;
     busy = 'sso';
     btn.disabled = true;
     btn.replaceChildren(h('span', null, 'Redirecting…'));
     try {
       await app.actions.login(idpId);
     } catch (err) {
+      if (!ownsPresentation(generation)) return;
       busy = null;
-      app.showLogin(errMsg(err));
+      btn.replaceChildren(Icon.shield(), h('span', null, label));
+      reportError(errMsg(err));
+      if (ownsPresentation(generation)) update();
     }
   }
+
+  function reportError(msg: string): void {
+    if (mode === 'full') app.showLogin(msg);
+    else setError(msg);
+  }
+
+  function focus(): void {
+    if (disposed || mode === 'inline' && (target as HTMLElement).hidden) return;
+    const control = container.querySelector<HTMLElement>('input:not([disabled])')
+      ?? container.querySelector<HTMLElement>('.login-sso button:not([disabled])')
+      ?? container.querySelector<HTMLElement>('select:not([disabled])')
+      ?? container.querySelector<HTMLElement>('button:not([disabled])');
+    control?.focus();
+  }
+
+  const mount: LoginMount = {
+    container,
+    show: (msg?: string) => {
+      if (disposed) return;
+      if (mode === 'inline') beginInlinePresentation();
+      setError(msg);
+      if (mode === 'inline') (target as HTMLElement).hidden = false;
+      focus();
+    },
+    hide: () => {
+      if (!disposed && mode === 'inline') (target as HTMLElement).hidden = true;
+    },
+    focus,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (container.parentNode === target) container.remove();
+      if (mode === 'inline') (target as HTMLElement).hidden = true;
+    },
+  };
+  if (mode === 'inline') focus();
+  return mount;
 }

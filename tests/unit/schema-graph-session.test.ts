@@ -6,6 +6,8 @@ import type {
   SchemaGraphDeps, SchemaGraphHooks, SchemaGraphTab, SchemaGraphFocus,
 } from '../../src/application/schema-graph-session.js';
 import type { ChCtx } from '../../src/net/ch-client.js';
+import { createAuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
+import type { AuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
 
 // ── Small deferred + flush helpers (mirrors workbench-session.test.ts's own
 // pattern: a macrotask-boundary flush is simpler/more robust than counting
@@ -105,6 +107,7 @@ function makeDeps(over: Partial<SchemaGraphDeps> = {}): SchemaGraphDeps {
   return {
     ensureConfig: vi.fn(async () => null),
     getToken: vi.fn(async () => 'tok'),
+    executionScope: () => null,
     ctx: () => fakeCtx,
     loadSchemaLineage: fakeLoadSchemaLineage(async () => ({ tables: [], dictionaries: [] })),
     loadLineageTransitive: fakeLoadLineageTransitive({ tables: [], dictionaries: [] }),
@@ -121,6 +124,15 @@ function schemaGraphOf(tab: SchemaGraphTab): {
   loading?: boolean; progress?: { done: number; total: number }; partial?: boolean; savedPositions?: Record<string, unknown>;
 } {
   return (tab.result as { schemaGraph: ReturnType<typeof schemaGraphOf> }).schemaGraph;
+}
+
+function expanded(data: Awaited<ReturnType<ReturnType<typeof createSchemaGraphSession>['expand']>>): NonNullable<typeof data> {
+  expect(data).not.toBeNull();
+  return data!;
+}
+
+function scope(epoch = 1): AuthenticatedExecutionScope {
+  return createAuthenticatedExecutionScope({ epoch, cancelRemote: vi.fn() });
 }
 
 // ── show() ───────────────────────────────────────────────────────────────────
@@ -144,6 +156,26 @@ describe('show()', () => {
     await svc.show({ db: 'd' });
     expect(hooks.onAuthFailed).toHaveBeenCalledTimes(1);
     expect(tab.result).toBeNull();
+  });
+
+  it('registers before auth preflight; scope loss during it starts no lineage request or late auth transition', async () => {
+    const config = deferred<unknown>();
+    const hooks = makeHooks();
+    const loadSchemaLineage = fakeLoadSchemaLineage(async () => ({ tables: [], dictionaries: [] }));
+    const active = scope();
+    const deps = makeDeps({
+      hooks,
+      executionScope: () => active,
+      ensureConfig: vi.fn(() => config.promise),
+      loadSchemaLineage,
+    });
+    const svc = createSchemaGraphSession(deps);
+    const pending = svc.show({ db: 'd' });
+    active.close();
+    config.resolve(null);
+    await pending;
+    expect(loadSchemaLineage).not.toHaveBeenCalled();
+    expect(hooks.onAuthFailed).not.toHaveBeenCalled();
   });
 
   it('draws a Phase-A-only graph (no progressive callbacks) and reports tableCount', async () => {
@@ -238,6 +270,121 @@ describe('show()', () => {
     // The placeholder from show()'s own synchronous write is still there —
     // cancel() without clearResult never touches it.
     expect(schemaGraphOf(tab).loading).toBe(true);
+  });
+
+  it('scope loss during the request synchronously settles the graph and late callbacks cannot resurrect it', async () => {
+    const active = scope();
+    const tab = makeTab();
+    let onBase: ((base: FakeLineageResult) => void) | undefined;
+    const gate = deferred<FakeLineageResult>();
+    const deps = makeDeps({
+      activeTab: () => tab,
+      executionScope: () => active,
+      loadSchemaLineage: fakeLoadSchemaLineage((_focus, opts) => {
+        onBase = opts.onBase;
+        return gate.promise;
+      }),
+    });
+    const svc = createSchemaGraphSession(deps);
+    const pending = svc.show({ db: 'd' });
+    await flush();
+    active.close();
+    expect(schemaGraphOf(tab).loading).toBe(false);
+    expect(schemaGraphOf(tab).partial).toBe(true);
+    onBase?.({ tables: [{ database: 'd', name: 'late', engine: 'MergeTree' }], dictionaries: [] });
+    gate.resolve({ tables: [{ database: 'd', name: 'late', engine: 'MergeTree' }], dictionaries: [] });
+    await pending;
+    expect(schemaGraphOf(tab).nodes).toEqual([]);
+    expect(schemaGraphOf(tab).loading).toBe(false);
+  });
+
+  it('does not settle a graph that the tab has already replaced, or one which already finished loading', async () => {
+    const tab = makeTab();
+    const gate = deferred<FakeLineageResult>();
+    const svc = createSchemaGraphSession(makeDeps({
+      activeTab: () => tab,
+      loadSchemaLineage: fakeLoadSchemaLineage(() => gate.promise),
+    }));
+    const pending = svc.show({ db: 'd' });
+    await flush();
+    const original = tab.result;
+    tab.result = { replacement: true };
+    svc.suspend();
+    expect(tab.result).toEqual({ replacement: true });
+    gate.resolve({ tables: [], dictionaries: [] });
+    await pending;
+
+    const finished = makeTab();
+    const again = createSchemaGraphSession(makeDeps({
+      activeTab: () => finished,
+      loadSchemaLineage: hangsUntilAborted(),
+    }));
+    const second = again.show({ db: 'd' });
+    await flush();
+    const graph = schemaGraphOf(finished);
+    graph.loading = false;
+    again.suspend();
+    expect(schemaGraphOf(finished).partial).toBeUndefined();
+    await second;
+    expect(original).not.toBeNull();
+  });
+
+  it('drops a true token that arrives after its execution scope has closed', async () => {
+    const active = scope();
+    const token = deferred<string | null>();
+    const loadSchemaLineage = fakeLoadSchemaLineage(async () => ({ tables: [], dictionaries: [] }));
+    const svc = createSchemaGraphSession(makeDeps({
+      executionScope: () => active,
+      getToken: () => token.promise,
+      loadSchemaLineage,
+    }));
+    const pending = svc.show({ db: 'd' });
+    await flush();
+    active.close();
+    token.resolve('still-valid-but-stale');
+    await pending;
+    expect(loadSchemaLineage).not.toHaveBeenCalled();
+  });
+
+  it('suspend keeps the in-memory placeholder rather than applying manual-cancel clearing', async () => {
+    const tab = makeTab();
+    const gate = deferred<FakeLineageResult>();
+    const svc = createSchemaGraphSession(makeDeps({
+      activeTab: () => tab,
+      // Deliberately ignore AbortSignal: even a poorly behaved seam must not
+      // publish after the session has suspended.
+      loadSchemaLineage: fakeLoadSchemaLineage(() => gate.promise),
+    }));
+    const pending = svc.show({ db: 'd' });
+    await flush();
+    svc.suspend();
+    expect(schemaGraphOf(tab).loading).toBe(false);
+    expect(schemaGraphOf(tab).partial).toBe(true);
+    gate.resolve({ tables: [{ database: 'd', name: 'late', engine: 'MergeTree' }], dictionaries: [] });
+    await pending;
+    expect(schemaGraphOf(tab).nodes).toEqual([]);
+  });
+
+  it('allows a replacement execution scope to start a fresh graph after the prior one closes', async () => {
+    let active = scope(1);
+    const tab = makeTab();
+    const slow = deferred<FakeLineageResult>();
+    const deps = makeDeps({
+      activeTab: () => tab,
+      executionScope: () => active,
+      loadSchemaLineage: fakeLoadSchemaLineage((focus) => focus.db === 'old'
+        ? slow.promise
+        : Promise.resolve({ tables: [{ database: 'new', name: 't', engine: 'MergeTree' }], dictionaries: [] })),
+    });
+    const svc = createSchemaGraphSession(deps);
+    const old = svc.show({ db: 'old' });
+    await flush();
+    active.close();
+    active = scope(2);
+    await svc.show({ db: 'new' });
+    slow.resolve({ tables: [{ database: 'old', name: 't', engine: 'MergeTree' }], dictionaries: [] });
+    await old;
+    expect(schemaGraphOf(tab).focus?.db).toBe('new');
   });
 
   it('a genuine (non-abort) fetch failure sets an error result', async () => {
@@ -363,6 +510,82 @@ describe('expand()', () => {
     expect(hooks.onAuthFailed).toHaveBeenCalledTimes(2);
   });
 
+  it('scope loss during expand preflight returns null without beginning a lineage request', async () => {
+    const config = deferred<unknown>();
+    const active = scope();
+    const loadLineageTransitive = fakeLoadLineageTransitive({ tables: [], dictionaries: [] });
+    const svc = createSchemaGraphSession(makeDeps({
+      executionScope: () => active,
+      ensureConfig: vi.fn(() => config.promise),
+      loadLineageTransitive,
+    }));
+    const pending = svc.expand({ db: 'd' });
+    active.close();
+    config.resolve(null);
+    await expect(pending).resolves.toBeNull();
+    expect(loadLineageTransitive).not.toHaveBeenCalled();
+  });
+
+  it('scope loss during expand drops the late card payload and does not write saved positions', async () => {
+    const active = scope();
+    const cards = deferred<{ columnsByKey: Record<string, unknown[]> }>();
+    let cardsSignal: AbortSignal | undefined;
+    const tab = makeTab({ schemaGraph: { nodes: [], edges: [] } });
+    const svc = createSchemaGraphSession(makeDeps({
+      activeTab: () => tab,
+      executionScope: () => active,
+      loadLineageTransitive: fakeLoadLineageTransitive({ tables: [], dictionaries: [] }),
+      loadSchemaCards: vi.fn((_ctx: unknown, _dbs: readonly string[], signal?: AbortSignal) => {
+        cardsSignal = signal;
+        return cards.promise;
+      }) as unknown as SchemaGraphDeps['loadSchemaCards'],
+    }));
+    const pending = svc.expand({ db: 'd' });
+    await flush();
+    active.close();
+    expect(cardsSignal?.aborted).toBe(true);
+    cards.resolve({ columnsByKey: {} });
+    await expect(pending).resolves.toBeNull();
+    expect(schemaGraphOf(tab).savedPositions).toBeUndefined();
+  });
+
+  it('drops expand after a token or lineage continuation belongs to a closed scope', async () => {
+    const tokenScope = scope();
+    const token = deferred<string | null>();
+    const tokenLineage = fakeLoadLineageTransitive({ tables: [], dictionaries: [] });
+    const tokenSession = createSchemaGraphSession(makeDeps({
+      executionScope: () => tokenScope,
+      getToken: () => token.promise,
+      loadLineageTransitive: tokenLineage,
+    }));
+    const tokenPending = tokenSession.expand({ db: 'd' });
+    await flush();
+    tokenScope.close();
+    token.resolve('stale');
+    await expect(tokenPending).resolves.toBeNull();
+    expect(tokenLineage).not.toHaveBeenCalled();
+
+    const lineageScope = scope(2);
+    const lineage = deferred<FakeLineageResult>();
+    const cards = fakeLoadSchemaCards();
+    let transitiveSignal: AbortSignal | undefined;
+    const lineageSession = createSchemaGraphSession(makeDeps({
+      executionScope: () => lineageScope,
+      loadLineageTransitive: vi.fn((_ctx: unknown, _focus: unknown, opts: { signal?: AbortSignal }) => {
+        transitiveSignal = opts.signal;
+        return lineage.promise;
+      }) as unknown as SchemaGraphDeps['loadLineageTransitive'],
+      loadSchemaCards: cards,
+    }));
+    const lineagePending = lineageSession.expand({ db: 'd' });
+    await flush();
+    lineageScope.close();
+    expect(transitiveSignal?.aborted).toBe(true);
+    lineage.resolve({ tables: [], dictionaries: [] });
+    await expect(lineagePending).resolves.toBeNull();
+    expect(cards).not.toHaveBeenCalled();
+  });
+
   it('resolves the rich-card dataset (nodes/edges/focus/truncated/savedPositions)', async () => {
     const deps = makeDeps({
       loadLineageTransitive: fakeLoadLineageTransitive(
@@ -370,7 +593,7 @@ describe('expand()', () => {
       ),
     });
     const svc = createSchemaGraphSession(deps);
-    const data = await svc.expand({ kind: 'db', db: 'd' });
+    const data = expanded(await svc.expand({ kind: 'db', db: 'd' }));
     expect(data.focus).toEqual({ kind: 'db', db: 'd' });
     expect(data.nodes.length).toBe(1);
     expect(data.nodes[0].card).toBeDefined();
@@ -378,12 +601,24 @@ describe('expand()', () => {
     expect(data.savedPositions).toEqual({});
   });
 
+  it('copies fetched card-column rows into the card graph without retaining the transport row object', async () => {
+    const transportRow = { name: 'id', type: 'UInt64' };
+    const svc = createSchemaGraphSession(makeDeps({
+      loadLineageTransitive: fakeLoadLineageTransitive(
+        { tables: [{ database: 'd', name: 't', engine: 'MergeTree' }], dictionaries: [] },
+      ),
+      loadSchemaCards: fakeLoadSchemaCards({ 'd.t': [transportRow] }),
+    }));
+    const data = expanded(await svc.expand({ db: 'd' }));
+    expect(data.nodes[0].card.cols[0]).toEqual({ ...transportRow, fullType: 'UInt64', roles: [] });
+  });
+
   it('truncated is true when either the transitive load or the expansion truncated', async () => {
     const deps = makeDeps({
       loadLineageTransitive: fakeLoadLineageTransitive({ tables: [], dictionaries: [] }, true),
     });
     const svc = createSchemaGraphSession(deps);
-    const data = await svc.expand({ db: 'd' });
+    const data = expanded(await svc.expand({ db: 'd' }));
     expect(data.truncated).toBe(true);
   });
 
@@ -400,9 +635,9 @@ describe('expand()', () => {
     });
     const svc = createSchemaGraphSession(deps);
     await svc.show({ db: 'd' }); // sets tab.result.schemaGraph
-    const first = await svc.expand({ db: 'd' });
+    const first = expanded(await svc.expand({ db: 'd' }));
     expect(schemaGraphOf(tab).savedPositions).toBe(first.savedPositions);
-    const second = await svc.expand({ db: 'd' });
+    const second = expanded(await svc.expand({ db: 'd' }));
     expect(second.savedPositions).toBe(first.savedPositions); // same map reused
   });
 
@@ -440,6 +675,65 @@ describe('loadNodeDetail()', () => {
     const svc = createSchemaGraphSession(deps);
     const result = await svc.loadNodeDetail({ db: 'd', name: 't' }, {});
     expect(result).toEqual(detail);
+  });
+
+  it('registers detail before auth preflight and drops a late detail after scope loss', async () => {
+    const active = scope();
+    const config = deferred<unknown>();
+    const loadTableDetail = fakeLoadTableDetail(emptyDetail);
+    const svc = createSchemaGraphSession(makeDeps({
+      executionScope: () => active,
+      ensureConfig: vi.fn(() => config.promise),
+      loadTableDetail,
+    }));
+    const pending = svc.loadNodeDetail({ db: 'd', name: 't' }, {});
+    active.close();
+    config.resolve(null);
+    await expect(pending).resolves.toBeNull();
+    expect(loadTableDetail).not.toHaveBeenCalled();
+  });
+
+  it('calls onAuthFailed for a current detail request whose token cannot be refreshed', async () => {
+    const hooks = makeHooks();
+    const svc = createSchemaGraphSession(makeDeps({ hooks, getToken: vi.fn(async () => null) }));
+    await expect(svc.loadNodeDetail({ db: 'd', name: 't' }, {})).resolves.toBeNull();
+    expect(hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('scope loss while detail is loading fences its late completion', async () => {
+    const active = scope();
+    const gate = deferred<FakeTableDetail>();
+    let detailSignal: AbortSignal | undefined;
+    const svc = createSchemaGraphSession(makeDeps({
+      executionScope: () => active,
+      loadTableDetail: vi.fn((_ctx: unknown, _db: string, _table: string, signal?: AbortSignal) => {
+        detailSignal = signal;
+        return gate.promise;
+      }) as unknown as SchemaGraphDeps['loadTableDetail'],
+    }));
+    const pending = svc.loadNodeDetail({ db: 'd', name: 't' }, {});
+    await flush();
+    active.close();
+    expect(detailSignal?.aborted).toBe(true);
+    gate.resolve(emptyDetail);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('does not fetch node detail when a true token resolves after scope closure', async () => {
+    const active = scope();
+    const token = deferred<string | null>();
+    const loadTableDetail = fakeLoadTableDetail(emptyDetail);
+    const svc = createSchemaGraphSession(makeDeps({
+      executionScope: () => active,
+      getToken: () => token.promise,
+      loadTableDetail,
+    }));
+    const pending = svc.loadNodeDetail({ db: 'd', name: 't' }, {});
+    await flush();
+    active.close();
+    token.resolve('stale');
+    await expect(pending).resolves.toBeNull();
+    expect(loadTableDetail).not.toHaveBeenCalled();
   });
 
   it('last-clicked wins: a later click on the same token supersedes an earlier, slower one', async () => {

@@ -25,6 +25,7 @@ import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { fakeBroadcastBus } from '../helpers/fake-broadcast.js';
 import { decodeShare } from '../../src/core/share.js';
 import { flashToast } from '../../src/ui/toast.js';
+import { applyConnectionStatus } from '../../src/ui/app-header.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../../src/env.types.js';
 import type {
   WorkspaceCommitResult, WorkspaceLoadResult, WorkspaceMarkOpenedResult,
@@ -38,6 +39,9 @@ import type {
 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
 import type { ConnectionLifecycleState } from '../../src/core/connection-lifecycle.js';
+import type {
+  AuthenticatedExecutionRegistration, AuthenticatedExecutionScope,
+} from '../../src/application/authenticated-execution-scope.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry, ResultSchemaGraph,
 } from '../../src/ui/results.js';
@@ -220,6 +224,31 @@ const asFetch = (v: object): typeof globalThis.fetch => v as typeof globalThis.f
 // this reads back the mock-inspection surface (`.mock.calls`, `.mockClear()`)
 // the real `fetch` type doesn't carry.
 const asMock = (fn: typeof fetch): Mock => fn as Mock;
+
+/** A deterministic execution-scope double for controller race tests. Each
+ * registered operation gets its own scripted `isCurrent()` sequence, so tests
+ * can model a scope closing at a precise await boundary without exposing app
+ * internals merely for coverage. */
+function scriptedExecutionScope(...sequences: boolean[][]): AuthenticatedExecutionScope {
+  let registrationIndex = 0;
+  return {
+    epoch: 1,
+    closed: false,
+    isOpen: () => true,
+    isCurrent: (registration) => registration.isCurrent(),
+    register: ({ name }) => {
+      const sequence = sequences[registrationIndex++] ?? [true];
+      let call = 0;
+      const registration: AuthenticatedExecutionRegistration = {
+        name,
+        release: () => {},
+        isCurrent: () => sequence[Math.min(call++, sequence.length - 1)] ?? true,
+      };
+      return registration;
+    },
+    close: () => {},
+  };
+}
 // A general-purpose variant for a mock hiding behind a plain function-typed
 // interface member (e.g. `FakeWritable.write`, declared as a bare
 // `(chunk: Uint8Array) => Promise<void>` so the object literal satisfies the
@@ -849,6 +878,19 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('projects an externally deleted workspace as not-found during queued refresh', async () => {
+    const app = createApp(env());
+    await seedActiveWorkspace(app, q1ws());
+    app.renderCurrentSurface = vi.fn();
+    app.workspace.loadById = vi.fn(async () => ({ status: 'empty' as const }));
+
+    await app.refreshWorkspaceFromStore();
+
+    expect(app.currentWorkspace).toBeNull();
+    expect(app.workspaceRouteStatus).toBe('not-found');
+    expect(app.renderCurrentSurface).toHaveBeenCalledOnce();
+  });
+
   // #466/#501-review: `syncBeforeUnload` installs/removes the `beforeunload`
   // listener as the aggregate dirty state flips, rather than registering it
   // once and checking inside — Firefox (and older Chromium) disqualify a page
@@ -1195,6 +1237,131 @@ describe('renderApp shell', () => {
       expect(chip.getAttribute('aria-label')).toBe(`ClickHouse connection: ${ariaState}`);
       expect(chip.title).toBe('ch.example');
     }
+  });
+  it('suspends and resumes authentication without replacing the in-memory document session', async () => {
+    const { app } = rendered();
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const firstTab = app.activeTab();
+    firstTab.sqlDraft = 'SELECT 42';
+    firstTab.dirtySql = true;
+    firstTab.result = { marker: 'first retained result' };
+    app.actions.newTab();
+    const secondTab = app.activeTab();
+    app.sqlEditor.replaceDocument('SELECT 84');
+    app.dom.sqlEditorView!.dispatch({ selection: { anchor: 4 } });
+    await Promise.resolve(); // let CodeMirror's selection observer settle
+    secondTab.specText = '{"name":';
+    secondTab.specParsed = null;
+    secondTab.dirtySpec = true;
+    secondTab.result = { marker: 'second retained result' };
+    app.syncBeforeUnload();
+
+    const tabsRef = app.state.tabs.value;
+    const firstResultRef = firstTab.result;
+    const secondResultRef = secondTab.result;
+    const activeTabId = app.state.activeTabId.value;
+    const nextTabId = app.state.nextTabId;
+    const routeRef = app.sqlRoute;
+    const editorView = app.dom.sqlEditorView;
+    const selection = {
+      anchor: editorView!.state.selection.main.anchor,
+      head: editorView!.state.selection.main.head,
+    };
+    const beforeUnloadListener = addEventListener.mock.calls
+      .find(([type]) => type === 'beforeunload')?.[1] as EventListener | undefined;
+    expect(beforeUnloadListener).toBeTypeOf('function');
+    const editorHost = app.dom.sqlEditorHost;
+    const resultsRegion = app.dom.resultsRegion;
+    const workbench = qs(app.root, '.workbench');
+    const oldScope = app.executionScope();
+
+    app.conn.chCtx.onSignedOut('Session expired');
+
+    expect(oldScope?.closed).toBe(true);
+    expect(app.executionScope()).toBeNull();
+    expect(qs(app.root, '.login-screen')).toBeNull();
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
+    expect(qs(app.root, '.conn-status').classList.contains('tone-error')).toBe(true);
+    expect(app.state.tabs.value).toBe(tabsRef);
+    expect(app.state.tabs.value).toEqual([firstTab, secondTab]);
+    expect(app.state.activeTabId.value).toBe(activeTabId);
+    expect(app.state.nextTabId).toBe(nextTabId);
+    expect(app.sqlRoute).toBe(routeRef);
+    expect(app.activeTab()).toBe(secondTab);
+    expect(firstTab.sqlDraft).toBe('SELECT 42');
+    expect(firstTab.dirtySql).toBe(true);
+    expect(firstTab.result).toBe(firstResultRef);
+    expect(secondTab.sqlDraft).toBe('SELECT 84');
+    expect(secondTab.specText).toBe('{"name":');
+    expect(secondTab.dirtySql).toBe(true);
+    expect(secondTab.dirtySpec).toBe(true);
+    expect(secondTab.result).toBe(secondResultRef);
+    expect(app.dom.sqlEditorView).toBe(editorView);
+    expect(app.sqlEditor.getValue()).toBe('SELECT 84');
+    expect(editorView!.state.selection.main).toMatchObject(selection);
+    expect(app.dom.sqlEditorHost).toBe(editorHost);
+    expect(app.dom.resultsRegion).toBe(resultsRegion);
+    expect(qs(app.root, '.workbench')).toBe(workbench);
+    const suspendedUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnloadListener!(suspendedUnload);
+    expect(suspendedUnload.defaultPrevented).toBe(true);
+
+    // Server-backed documentation actions share the same auth gate while the
+    // local document shell remains usable.
+    expect(app.openDocEntry({ kind: 'function', name: 'sum' })).toBeUndefined();
+    expect(app.openDocDisambiguation('sum')).toBeUndefined();
+    expect(qs(app.root, '[role="complementary"]')).toBeNull();
+
+    await app.actions.connect({ username: 'demo', password: 'secret', host: '' });
+
+    expect(app.executionScope()).not.toBe(oldScope);
+    expect(app.executionScope()?.isOpen()).toBe(true);
+    expect(qs<HTMLElement>(app.root, '.auth-host').hidden).toBe(true);
+    expect(qs(app.root, '.conn-status').classList.contains('tone-success')).toBe(true);
+    expect(app.state.tabs.value).toBe(tabsRef);
+    expect(app.activeTab()).toBe(secondTab);
+    expect(firstTab.result).toBe(firstResultRef);
+    expect(secondTab.result).toBe(secondResultRef);
+    expect(secondTab.dirtySql).toBe(true);
+    expect(secondTab.dirtySpec).toBe(true);
+    expect(app.sqlRoute).toBe(routeRef);
+    expect(app.dom.sqlEditorView).toBe(editorView);
+    expect(app.sqlEditor.getValue()).toBe('SELECT 84');
+    expect(editorView!.state.selection.main).toMatchObject(selection);
+    expect(app.dom.sqlEditorHost).toBe(editorHost);
+    expect(app.dom.resultsRegion).toBe(resultsRegion);
+    expect(qs(app.root, '.workbench')).toBe(workbench);
+    expect(qs(app.dom.userBtn!, '.user-short').textContent).toBe('demo');
+
+    // Leave no real beforeunload listener behind for later tests.
+    for (const tab of tabsRef) { tab.dirtySql = false; tab.dirtySpec = false; }
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
+  });
+  it('reuses an already-open execution scope when resume is requested again', () => {
+    const { app } = rendered();
+    const scope = app.executionScope();
+    app.resumeAuthenticatedExecution();
+    expect(app.executionScope()).toBe(scope);
+    expect(scope?.isOpen()).toBe(true);
+  });
+  it('refreshes the mounted header identity defensively when Basic resume changes users', () => {
+    const { app } = rendered();
+    // The status projection can run while a shell is being torn down, before
+    // either optional identity node exists. It must still update the chip.
+    app.dom.userBtn = undefined;
+    expect(() => applyConnectionStatus(app)).not.toThrow();
+
+    const bareUserButton = document.createElement('button');
+    app.dom.userBtn = bareUserButton;
+    applyConnectionStatus(app);
+    expect(bareUserButton.title).toBe('me@example.com');
+  });
+  it('builds the dark header icon when the saved theme is dark', () => {
+    const app = createApp(env());
+    app.state.theme = 'dark';
+    app.renderApp();
+    expect(app.dom.themeBtn?.querySelector('svg')).not.toBeNull();
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
@@ -3117,11 +3284,25 @@ describe('formatQuery', () => {
     await app.actions.formatQuery();
     expect(e.fetch).not.toHaveBeenCalled();
   });
-  it('signs out when there is no usable token', async () => {
+  it('suspends in place when there is no usable token', async () => {
     const { app } = appFor([], { sessionStorage: memSession({}) }); // no token
     app.activeTab().sqlDraft = 'select 1';
     await app.actions.formatQuery();
-    expect(qs(app.root, '.login-screen')).not.toBeNull();
+    expect(qs(app.root, '.login-screen')).toBeNull();
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
+  });
+  it('suspends an already-started formatting scope when its token is no longer usable', async () => {
+    const { app, e } = appFor([], { sessionStorage: memSession({}) });
+    // This deliberately creates the disposable execution scope before the
+    // action reaches its token check, exercising the mid-operation path (not
+    // merely the outer action gate used by a fresh signed-out screen).
+    app.resumeAuthenticatedExecution();
+    app.activeTab().sqlDraft = 'select 1';
+    asMock(e.fetch!).mockClear();
+    await app.actions.formatQuery();
+    expect(app.executionScope()).toBeNull();
+    expect(e.fetch).not.toHaveBeenCalled();
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
   });
   it('shows a format error persistently in the results panel and moves the caret to it', async () => {
     const { app } = appFor([
@@ -3218,6 +3399,67 @@ describe('formatQuery', () => {
     const noRender = createApp(env()); // no renderApp → no fmtBtn
     expect(() => noRender.setFmtBtn(true)).not.toThrow();
   });
+  it('drops a late format completion after authentication closes its execution scope', async () => {
+    let resolveFormat: ((value: FakeResponse) => void) | undefined;
+    const { app } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), () => new Promise<FakeResponse>((resolve) => { resolveFormat = resolve; })],
+    ]);
+    app.activeTab().sqlDraft = 'select 1';
+    app.sqlEditor.replaceDocument('select 1');
+
+    const formatting = app.actions.formatQuery();
+    await new Promise<void>((resolve) => setTimeout(resolve));
+    expect(resolveFormat).toBeTypeOf('function');
+    app.conn.chCtx.onSignedOut('expired');
+    expect(app.dom.fmtBtn!.disabled).toBe(false);
+
+    resolveFormat?.(resp({ json: { data: [{ q: 'SELECT 1' }] } }));
+    await formatting;
+    expect(app.sqlEditor.getValue()).toBe('select 1');
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
+  });
+  it('fences every formatter await boundary when its execution scope turns stale', async () => {
+    const staleBeforeToken = appFor([]).app;
+    staleBeforeToken.activeTab().sqlDraft = 'select 1';
+    const firstScope = scriptedExecutionScope([false]);
+    staleBeforeToken.executionScope = () => firstScope;
+    staleBeforeToken.requireAuthenticatedExecution = () => firstScope;
+    await staleBeforeToken.actions.formatQuery(); // stale after config
+
+    const staleStatement = appFor([]).app;
+    staleStatement.activeTab().sqlDraft = 'select 1';
+    const secondScope = scriptedExecutionScope([true, true], [false]);
+    staleStatement.executionScope = () => secondScope;
+    staleStatement.requireAuthenticatedExecution = () => secondScope;
+    await staleStatement.actions.formatQuery(); // statement registers after closure
+
+    const staleScript = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
+    ]).app;
+    staleScript.activeTab().sqlDraft = 'select 1; select 2';
+    const thirdScope = scriptedExecutionScope([true, true, false], [true], [true]);
+    staleScript.executionScope = () => thirdScope;
+    staleScript.requireAuthenticatedExecution = () => thirdScope;
+    await staleScript.actions.formatQuery(); // stale after all statement requests settle
+    expect(staleScript.sqlEditor.getValue()).not.toContain('SELECT 1;\n\nSELECT 1');
+
+    const staleFailure = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"format fails"}' })],
+    ]).app;
+    staleFailure.activeTab().sqlDraft = 'select 1';
+    const fourthScope = scriptedExecutionScope([true, true, false], [true]);
+    staleFailure.executionScope = () => fourthScope;
+    staleFailure.requireAuthenticatedExecution = () => fourthScope;
+    await staleFailure.actions.formatQuery(); // a stale rejection must not paint a format error
+    expect(staleFailure.activeTab().result).toBeNull();
+
+    const staleAfterToken = appFor([]).app;
+    staleAfterToken.activeTab().sqlDraft = 'select 1';
+    const fifthScope = scriptedExecutionScope([true, false]);
+    staleAfterToken.executionScope = () => fifthScope;
+    staleAfterToken.requireAuthenticatedExecution = () => fifthScope;
+    await staleAfterToken.actions.formatQuery(); // stale after token acquisition
+  });
 });
 
 describe('insertCreate', () => {
@@ -3260,10 +3502,49 @@ describe('insertCreate', () => {
     expect(app.sqlEditor.getValue()).toBe('keep');
     expect(qs(document.body, '.share-toast')).not.toBeNull();
   });
-  it('signs out when there is no usable token', async () => {
+  it('suspends in place when there is no usable token', async () => {
     const { app } = appFor([], { sessionStorage: memSession({}) });
     await app.actions.insertCreate('db.t');
-    expect(qs(app.root, '.login-screen')).not.toBeNull();
+    expect(qs(app.root, '.login-screen')).toBeNull();
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
+  });
+  it('suspends an already-started SHOW CREATE scope when its token is no longer usable', async () => {
+    const { app, e } = appFor([], { sessionStorage: memSession({}) });
+    app.resumeAuthenticatedExecution();
+    app.sqlEditor.replaceDocument('keep');
+    asMock(e.fetch!).mockClear();
+    await app.actions.insertCreate('db.t');
+    expect(app.executionScope()).toBeNull();
+    expect(e.fetch).not.toHaveBeenCalled();
+    expect(app.sqlEditor.getValue()).toBe('keep');
+  });
+  it('discards a SHOW CREATE response that arrives after the scope closes', async () => {
+    let resolveShow: ((value: FakeResponse) => void) | undefined;
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), () => new Promise<FakeResponse>((resolve) => { resolveShow = resolve; })],
+    ]);
+    app.sqlEditor.replaceDocument('keep');
+    const inserting = app.actions.insertCreate('db.t');
+    await new Promise<void>((resolve) => setTimeout(resolve));
+    expect(resolveShow).toBeTypeOf('function');
+    app.conn.chCtx.onSignedOut('expired');
+    resolveShow?.(resp({ json: { data: [{ statement: 'CREATE TABLE db.t (a Int)' }] } }));
+    await inserting;
+    expect(app.sqlEditor.getValue()).toBe('keep');
+  });
+  it('fences SHOW CREATE before and after its token check when the scope turns stale', async () => {
+    const staleBeforeToken = appFor([]).app;
+    const firstScope = scriptedExecutionScope([false]);
+    staleBeforeToken.executionScope = () => firstScope;
+    staleBeforeToken.requireAuthenticatedExecution = () => firstScope;
+    await staleBeforeToken.actions.insertCreate('db.t');
+
+    const staleAfterToken = appFor([]).app;
+    const secondScope = scriptedExecutionScope([true, false]);
+    staleAfterToken.executionScope = () => secondScope;
+    staleAfterToken.requireAuthenticatedExecution = () => secondScope;
+    await staleAfterToken.actions.insertCreate('db.t');
+    expect(staleAfterToken.sqlEditor.getValue()).toBe('');
   });
 });
 
@@ -3320,11 +3601,12 @@ describe('openCreateInNewTab (#180)', () => {
     expect(app.sqlEditor.getValue()).toBe('keep');
     expect(qs(document.body, '.share-toast')).not.toBeNull();
   });
-  it('signs out when there is no usable token, creating no tab', async () => {
+  it('suspends in place when there is no usable token, creating no tab', async () => {
     const { app } = appFor([], { sessionStorage: memSession({}) });
     const priorCount = app.state.tabs.value.length;
     await app.actions.openCreateInNewTab('db1.events', 'db1.events');
-    expect(qs(app.root, '.login-screen')).not.toBeNull();
+    expect(qs(app.root, '.login-screen')).toBeNull();
+    expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
     expect(app.state.tabs.value.length).toBe(priorCount);
   });
 });
@@ -4900,6 +5182,15 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     const { app: app3 } = appForRun([[(u, sql) => /system\.tables/.test(sql), resp({ ok: false, status: 500, text: 'boom' })]]);
     await app3.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
     expect(qs(document.body, '.graph-overlay')).toBeNull();
+    // Auth can close after the action gate but before expand's first async
+    // continuation. The shell opened synchronously remains inert rather than
+    // rendering stale card data.
+    const { app: app4 } = appForRun(lineageRoutes, { openWindow: () => null });
+    const staleScope = scriptedExecutionScope([false]);
+    app4.executionScope = () => staleScope;
+    app4.requireAuthenticatedExecution = () => staleScope;
+    await app4.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    expect(qs(document.body, '.graph-overlay')).not.toBeNull();
   });
 
   it('openNodeDetail mounts the detail pane in the open overlay (and guards an incomplete node)', async () => {
@@ -6070,8 +6361,10 @@ describe('unified /sql routing', () => {
       const { app } = liveApp(['a'], '?ws=ops&surface=dashboard');
       app.renderCurrentSurface();
       expect(app.surfaceCommands).not.toBeNull();
-      // A 401 / expired token reaches `showLogin`, not `signOut` — the Dashboard's
-      // refresh and style shortcuts must not stay dispatchable from Login.
+      // This is the explicit full-screen `showLogin()` teardown API, not the
+      // ordinary onAuthLost path (which preserves the mounted document and
+      // reveals the inline reauthentication controls). Its Dashboard commands
+      // still must not remain dispatchable from the replacement Login screen.
       app.showLogin('Session expired');
       expect(app.surfaceCommands).toBeNull();
       expect(app.mainSurface).toEqual({ kind: 'query' });
@@ -6686,7 +6979,7 @@ describe('unified /sql routing', () => {
     expect(document.activeElement).not.toBe(oldFocus);
   });
 
-  it('authentication loss tears down shortcut help and leaves only Login', () => {
+  it('explicit full-screen login teardown closes shortcut help and leaves only Login', () => {
     const app = createApp(env());
     app.renderApp();
     app.actions.openShortcuts();

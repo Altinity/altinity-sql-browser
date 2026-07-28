@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { createConnectionSession } from '../../src/application/connection-session.js';
 import type { ConnectionSessionDeps, SessionStorageLike } from '../../src/application/connection-session.js';
-import type { ChCtx, queryJson } from '../../src/net/ch-client.js';
+import type {
+  AuthenticatedCancellationLease,
+  ChCtx,
+  queryJson,
+} from '../../src/net/ch-client.js';
 import { jwt, memStorage } from '../helpers/auth-fixtures.js';
 
 // ── Fakes / helpers ──────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ interface SetupOpts {
   location?: { origin: string; pathname: string; search: string; href: string };
   routes?: RouteFn[];
   queryJson?: QueryJsonFn;
-  onAuthLost?: (detail?: string) => void;
+  onAuthLost?: ConnectionSessionDeps['onAuthLost'];
 }
 function setup(opts: SetupOpts = {}) {
   const fetchMock = makeFetch(opts.routes || []);
@@ -159,6 +163,12 @@ describe('construction seeding', () => {
 });
 
 describe('connection lifecycle ownership', () => {
+  it('uses empty Basic storage as an empty display identity and never refreshes Basic credentials', async () => {
+    const { session } = setup({ storage: memStorage({ ch_basic_auth: 'YWJj' }) });
+    expect(session.email()).toBe('');
+    await expect(session.chCtx.refresh()).resolves.toBe(false);
+  });
+
   it('publishes only transport settlements as connected/offline', () => {
     const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onTransportConnected();
@@ -416,6 +426,31 @@ describe('refresh (via getToken)', () => {
     expect(onAuthLost).not.toHaveBeenCalled();
   });
 
+  it('does not send a replacement refresh token when config resolves after an epoch change', async () => {
+    const configResponse = deferred<FakeResponse>();
+    let tokenCalls = 0;
+    const { session, storage } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'old-refresh' }),
+      routes: [
+        (url) => (url.endsWith('/config.json') ? configResponse.promise : null),
+        (url) => {
+          if (!url.endsWith('/token')) return null;
+          tokenCalls += 1;
+          return jsonResponse(200, { id_token: 'must-not-be-used' });
+        },
+      ],
+    });
+    const oldGet = session.getToken();
+    await vi.waitFor(() => expect(session.connection.value.kind).toBe('refreshing'));
+    session.setTokens('replacement-token', 'replacement-refresh');
+    configResponse.resolve(jsonResponse(200, CONFIG_DOC_RAW));
+
+    await expect(oldGet).resolves.toBe('replacement-token');
+    expect(tokenCalls).toBe(0);
+    expect(storage.getItem('oauth_id_token')).toBe('replacement-token');
+    expect(storage.getItem('oauth_refresh_token')).toBe('replacement-refresh');
+  });
+
   it('does not let an old finally clear a newer epoch refresh slot', async () => {
     const oldResponse = deferred<FakeResponse>();
     const newResponse = deferred<FakeResponse>();
@@ -556,6 +591,27 @@ describe('ensureConfig', () => {
     await expect(session.ensureConfig()).resolves.toBeNull();
     expect(fetchMock.calls.length).toBe(0);
   });
+
+  it('does not let old discovery rewrite a replacement epoch auth-header policy', async () => {
+    const discovery = deferred<FakeResponse>();
+    const { session, fetchMock } = setup({
+      storage: memStorage({ oauth_id_token: validToken, oauth_idp: 'basicidp' }),
+      routes: [(url) => (url.includes('issuer2.example/.well-known/') ? discovery.promise : null)],
+    });
+    const oldEnsure = session.ensureConfig();
+    await vi.waitFor(() => expect(fetchMock.calls.some((url) => url.includes('issuer2.example/.well-known/'))).toBe(true));
+
+    session.selectIdp('g');
+    session.setTokens('replacement-token', 'replacement-refresh');
+    discovery.resolve(jsonResponse(200, {
+      authorization_endpoint: 'https://issuer2.example/authorize',
+      token_endpoint: 'https://issuer2.example/token',
+    }));
+
+    await expect(oldEnsure).resolves.toBeNull();
+    expect(session.chAuth()).toBe('bearer');
+    expect(session.basicUserClaim()).toBe('');
+  });
 });
 
 // ── connectBasic ─────────────────────────────────────────────────────────────
@@ -673,22 +729,142 @@ describe('signOut', () => {
 });
 
 describe('chCtx.onSignedOut', () => {
+  it('reports a discovered empty session once without converting explicit signed-out state', () => {
+    const { session, onAuthLost } = setup();
+    session.chCtx.onSignedOut('no credentials');
+    session.chCtx.onSignedOut('duplicate');
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 0 });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+    expect(onAuthLost).toHaveBeenCalledWith('no credentials');
+  });
+
+  it('captures the in-memory credential even if sessionStorage changes before a failure settles', () => {
+    const storage = memStorage({ oauth_id_token: validToken });
+    const { session, onAuthLost } = setup({ storage });
+    // OAuth's token is deliberately held in memory; a storage mutation must
+    // not weaken the exact cancellation authority captured for an in-flight
+    // operation.
+    storage.removeItem('oauth_id_token');
+    session.chCtx.onSignedOut('credential disappeared');
+    expect(session.connection.value).toMatchObject({ kind: 'auth-required', detail: 'credential disappeared' });
+    expect(onAuthLost).toHaveBeenCalledWith('credential disappeared', expect.objectContaining({ authorization: `Bearer ${validToken}` }));
+  });
+
   it('clears tokens and reports the given detail', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut('you are not welcome');
     expect(session.token()).toBeNull();
-    expect(onAuthLost).toHaveBeenCalledWith('you are not welcome');
+    expect(onAuthLost).toHaveBeenCalledWith(
+      'you are not welcome',
+      expect.objectContaining({ authorization: `Bearer ${validToken}`, epoch: 0 }),
+    );
+  });
+  it('retains the exact prior Basic target for inline recovery, but not explicit sign-out', () => {
+    const { session } = setup({ storage: memStorage({
+      ch_basic_auth: 'YWJj', ch_basic_user: 'bob', ch_basic_origin: 'https://db.example:9440',
+    }) });
+    session.chCtx.onSignedOut('credentials rejected');
+    expect(session.chCtx.origin).toBe('https://ch.example');
+    expect(session.basicRecoveryOrigin()).toBe('https://db.example:9440');
+
+    session.signOut();
+    expect(session.basicRecoveryOrigin()).toBeNull();
   });
   it('falls back to the default expired-session message', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut();
-    expect(onAuthLost).toHaveBeenCalledWith('Your session expired — please sign in again.');
+    expect(onAuthLost).toHaveBeenCalledWith(
+      'Your session expired — please sign in again.',
+      expect.objectContaining({ authorization: `Bearer ${validToken}` }),
+    );
+  });
+  it('supplies an immutable latest-credential cancellation lease before clearing storage', () => {
+    const storage = memStorage({ oauth_id_token: validToken });
+    let captured: AuthenticatedCancellationLease | undefined;
+    let tokenDuringCallback: string | null = null;
+    const { session, fetchMock } = setup({
+      storage,
+      onAuthLost: (_detail, lease) => {
+        captured = lease;
+        tokenDuringCallback = storage.getItem('oauth_id_token');
+      },
+    });
+    session.setTokens(expiringSoonToken, 'rotated-refresh');
+    const closingEpoch = session.connection.value.epoch;
+    session.chCtx.origin = 'https://rotated-cluster.example:9440';
+    session.chCtx.onSignedOut(undefined, closingEpoch);
+    expect(tokenDuringCallback).toBe(expiringSoonToken);
+    expect(captured).toEqual({
+      epoch: closingEpoch,
+      origin: 'https://rotated-cluster.example:9440',
+      authorization: `Bearer ${expiringSoonToken}`,
+      fetch: session.chCtx.fetch,
+    });
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(captured?.fetch).toBe(session.chCtx.fetch);
+    expect(fetchMock.calls).toEqual([]);
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+  });
+  it('prebuilds the Basic header and exact target origin into the lease', async () => {
+    const { session } = setup();
+    await session.connectBasic({ username: 'alice', password: 'secret', host: 'db.example:8443' });
+    const lease = session.captureCancellationLease();
+    expect(lease).toEqual({
+      epoch: session.connection.value.epoch,
+      origin: 'https://db.example:8443',
+      authorization: `Basic ${btoa('alice:secret')}`,
+      fetch: session.chCtx.fetch,
+    });
+  });
+  it('returns no cancellation lease for a superseded epoch or an empty current credential', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const captureAtEpoch = session.captureCancellationLease as (expectedEpoch?: number) =>
+      AuthenticatedCancellationLease | null;
+    expect(captureAtEpoch(session.connection.value.epoch + 1)).toBeNull();
+    session.signOut();
+    expect(session.captureCancellationLease()).toBeNull();
+  });
+  it('probes an empty Basic password as an intentional empty credential', async () => {
+    let auth = '';
+    const { session } = setup({
+      queryJson: fakeQueryJson(async (ctx) => {
+        const credential = await ctx.getToken();
+        if (credential === null || !ctx.authHeader) throw new Error('missing Basic credential');
+        auth = ctx.authHeader(credential);
+        return {};
+      }),
+    });
+    await session.connectBasic({ username: 'alice', password: '' });
+    expect(auth).toBe(`Basic ${btoa('alice:')}`);
+  });
+  it('clears credentials even when the auth-loss consumer throws', () => {
+    const storage = memStorage({ oauth_id_token: validToken, oauth_refresh_token: 'refresh' });
+    const { session } = setup({
+      storage,
+      onAuthLost: () => { throw new Error('scope teardown failed'); },
+    });
+    expect(() => session.chCtx.onSignedOut()).toThrow('scope teardown failed');
+    expect(session.token()).toBeNull();
+    expect(session.refreshToken()).toBeNull();
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+    expect(storage.getItem('oauth_refresh_token')).toBeNull();
   });
 });
 
 // ── ensureFreshToken ─────────────────────────────────────────────────────────
 
 describe('ensureFreshToken', () => {
+  it('returns null rather than invalidating a newer credential when a failed refresh is deliberately kept in its old epoch', async () => {
+    let session!: ReturnType<typeof createConnectionSession>;
+    const { session: created } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken }),
+      routes: [(url) => (url.endsWith('/token') ? jsonResponse(200, {}) : null)],
+      onAuthLost: () => session.signOut(),
+    });
+    session = created;
+    await expect(session.getToken()).resolves.toBeNull();
+  });
+
   it('resolves true when a valid token is available', async () => {
     const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     await expect(session.ensureFreshToken()).resolves.toBe(true);

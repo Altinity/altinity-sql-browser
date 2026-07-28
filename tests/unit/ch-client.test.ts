@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
+import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 import type { StreamLine } from '../../src/core/stream.js';
 
@@ -116,14 +116,47 @@ describe('authedFetch', () => {
     await expect(authedFetch(ctx, 'u', 'sql')).rejects.toThrow('not signed in');
     expect(ctx.onSignedOut).toHaveBeenCalled();
   });
-  it('does not signal auth loss when a missing-token request becomes stale', async () => {
+  it('cancels without signaling auth loss when a missing-token request becomes stale', async () => {
     let epoch = 1;
     const token = deferred<string | null>();
     const ctx = ctxWith(() => jsonResp({}), { currentEpoch: () => epoch, getToken: () => token.promise });
     const pending = authedFetch(ctx, 'u', 'sql');
     epoch = 2;
     token.resolve(null);
-    await expect(pending).rejects.toThrow('not signed in');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
+  it('does not fetch a replacement credential when the initial token lookup crosses an epoch', async () => {
+    let epoch = 1;
+    const token = deferred<string | null>();
+    const onTransportConnected = vi.fn();
+    const onTransportOffline = vi.fn();
+    const ctx = ctxWith(() => jsonResp({}), {
+      currentEpoch: () => epoch,
+      getToken: () => token.promise,
+      onTransportConnected,
+      onTransportOffline,
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    epoch = 2;
+    token.resolve('replacement-token');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(ctx.fetchMock).not.toHaveBeenCalled();
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+    expect(onTransportConnected).not.toHaveBeenCalled();
+    expect(onTransportOffline).not.toHaveBeenCalled();
+  });
+  it('rechecks the epoch after constructing authorization and immediately before fetch', async () => {
+    let epoch = 1;
+    const ctx = ctxWith(() => jsonResp({}), {
+      currentEpoch: () => epoch,
+      authHeader: (token) => {
+        epoch = 2;
+        return 'Bearer replacement-' + token;
+      },
+    });
+    await expect(authedFetch(ctx, 'u', 'sql')).rejects.toMatchObject({ name: 'AbortError' });
+    expect(ctx.fetchMock).not.toHaveBeenCalled();
     expect(ctx.onSignedOut).not.toHaveBeenCalled();
   });
   it('returns the response on success', async () => {
@@ -149,9 +182,14 @@ describe('authedFetch', () => {
     let epoch = 1;
     const failure = new Error('network unavailable');
     const rejectedFetch = deferred<FakeResponse>();
+    const fetchStarted = deferred<void>();
     const onTransportOffline = vi.fn();
-    const ctx = ctxWith(async () => rejectedFetch.promise, { currentEpoch: () => epoch, onTransportOffline });
+    const ctx = ctxWith(async () => {
+      fetchStarted.resolve();
+      return rejectedFetch.promise;
+    }, { currentEpoch: () => epoch, onTransportOffline });
     const pending = authedFetch(ctx, 'u', 'sql');
+    await fetchStarted.promise;
     epoch = 2;
     rejectedFetch.reject(failure);
     await expect(pending).rejects.toBe(failure);
@@ -207,9 +245,14 @@ describe('authedFetch', () => {
   it('fences a stale successful response from lifecycle and authentication state', async () => {
     let epoch = 1;
     const response = deferred<FakeResponse>();
+    const fetchStarted = deferred<void>();
     const onTransportConnected = vi.fn();
-    const ctx = ctxWith(async () => response.promise, { currentEpoch: () => epoch, onTransportConnected });
+    const ctx = ctxWith(async () => {
+      fetchStarted.resolve();
+      return response.promise;
+    }, { currentEpoch: () => epoch, onTransportConnected });
     const pending = authedFetch(ctx, 'u', 'sql');
+    await fetchStarted.promise;
     epoch = 2;
     response.resolve(jsonResp({ ok: 1 }));
     expect((await pending).ok).toBe(true);
@@ -219,17 +262,50 @@ describe('authedFetch', () => {
   it('fences a stale auth-failure response from refresh and sign-out', async () => {
     let epoch = 1;
     const onTransportOffline = vi.fn();
-    const ctx = ctxWith(async () => jsonResp({}, false, 401), {
+    const response = deferred<FakeResponse>();
+    const fetchStarted = deferred<void>();
+    const ctx = ctxWith(async () => {
+      fetchStarted.resolve();
+      return response.promise;
+    }, {
       currentEpoch: () => epoch,
       refresh: vi.fn(async () => true),
       onTransportOffline,
     });
     const pending = authedFetch(ctx, 'u', 'sql');
+    await fetchStarted.promise;
     epoch = 2;
+    response.resolve(jsonResp({}, false, 401));
     expect((await pending).status).toBe(401);
     expect(ctx.refresh).not.toHaveBeenCalled();
     expect(ctx.onSignedOut).not.toHaveBeenCalled();
     expect(onTransportOffline).not.toHaveBeenCalled();
+  });
+  it('does not refresh a replacement epoch after delayed body classification', async () => {
+    let epoch = 1;
+    const body = deferred<string>();
+    const bodyStarted = deferred<void>();
+    const response: FakeResponse = {
+      ok: false,
+      status: 500,
+      text: async () => {
+        bodyStarted.resolve();
+        return body.promise;
+      },
+      clone() { return this; },
+    };
+    const ctx = ctxWith(async () => response, {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => true),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await bodyStarted.promise;
+    epoch = 2;
+    body.resolve('jwt::token_verification_exception');
+
+    expect((await pending).status).toBe(500);
+    expect(ctx.refresh).not.toHaveBeenCalled();
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
   });
   it('does not retry or sign out when refresh settles after its request becomes stale', async () => {
     let epoch = 1;
@@ -247,7 +323,7 @@ describe('authedFetch', () => {
     expect(ctx.refresh).toHaveBeenCalledTimes(1);
     epoch = 2;
     refresh.resolve(true);
-    expect((await pending).status).toBe(401);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
     expect(ctx.onSignedOut).not.toHaveBeenCalled();
   });
@@ -270,7 +346,7 @@ describe('authedFetch', () => {
     await freshTokenStarted.promise;
     epoch = 2;
     freshToken.resolve('new');
-    expect((await pending).status).toBe(401);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
     expect(ctx.onSignedOut).not.toHaveBeenCalled();
   });
@@ -374,6 +450,37 @@ describe('loadServerVersion', () => {
   it('returns empty string when row/shape missing', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     expect(await loadServerVersion(ctx)).toBe('');
+  });
+});
+
+describe('catalog loader cancellation signals', () => {
+  it('forwards one caller signal through metadata, catalog fan-out, reference fallbacks, and documentation loaders', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(async (_url, init) => {
+      if (init.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      }
+      // Force loadReferenceData's syntax-query compatibility fallback.
+      if (init.body.includes('system.functions') && init.body.includes('syntax')) {
+        return textResp('Unknown identifier syntax', false, 500);
+      }
+      return jsonResp({ data: [] });
+    });
+
+    await loadServerVersion(ctx, controller.signal);
+    await loadSchema(ctx, controller.signal);
+    await loadColumns(ctx, 'ice', 'orders', sqlString, controller.signal);
+    await loadReferenceData(ctx, controller.signal);
+    await loadDocTableColumns(ctx, 'documentation', controller.signal);
+    await loadDocRow(ctx, 'SELECT 1 FORMAT JSON', controller.signal);
+    await loadFunctionsDocColumns(ctx, controller.signal);
+    await loadFunctionDocRow(ctx, 'SELECT 1 FORMAT JSON', controller.signal);
+
+    expect(ctx.fetchMock.mock.calls.every(([, init]) => init.signal === controller.signal)).toBe(true);
+    const referenceFunctionCalls = ctx.fetchMock.mock.calls.filter(([, init]) => init.body.includes('system.functions'));
+    expect(referenceFunctionCalls).toHaveLength(2);
+    expect(referenceFunctionCalls.every(([, init]) => init.signal === controller.signal)).toBe(true);
+    expect(ctx.fetchMock.mock.calls.some(([, init]) => init.body.includes("database = 'ice'"))).toBe(true);
   });
 });
 
@@ -520,6 +627,22 @@ describe('loadSchema', () => {
     expect(schema.find((d) => d.db === 'default')!.tables).toEqual([{ name: 't0', total_rows: '1', total_bytes: '2', comment: '', columns: null }]);
     expect(schema.find((d) => d.db === 'broken')!.tables).toEqual([]);
     expect(schema.find((d) => d.db === 'healthy')!.tables).toEqual([{ name: 't1', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
+  });
+  it('propagates an abort from a catalog-database fan-out instead of treating it as an empty database', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(async (_url, init) => {
+      if (init.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      }
+      if (init.body.includes("database = 'ice'")) {
+        controller.abort();
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return jsonResp({ data: [] });
+    });
+    await expect(loadSchema(ctx, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 
@@ -830,6 +953,56 @@ describe('killQuery', () => {
   });
 });
 
+describe('killQueryWithLease', () => {
+  const lease = (
+    fetchFn: typeof fetch, authorization = 'Basic frozen-value',
+  ): AuthenticatedCancellationLease => Object.freeze({
+    epoch: 7,
+    origin: 'https://old-cluster.example:8443',
+    authorization,
+    fetch: fetchFn,
+  });
+  const leaseFetch = (
+    impl: FetchImpl,
+    authorization = 'Basic frozen-value',
+  ) => {
+    const fetchMock = vi.fn(impl);
+    return { fetchMock, lease: lease(asFetch(fetchMock), authorization) };
+  };
+
+  it('uses the exact frozen origin and complete Authorization header', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
+    await killQueryWithLease(frozen, 'scope-q', sqlString);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://old-cluster.example:8443?default_format=JSON&enable_http_compression=1');
+    expect(init.headers).toEqual({ Authorization: 'Basic frozen-value' });
+    expect(init.body).toBe("KILL QUERY WHERE query_id = 'scope-q' ASYNC");
+  });
+
+  it('treats the frozen Authorization value as opaque for OAuth too', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(
+      async () => jsonResp({ data: [] }), 'Bearer old-token',
+    );
+    await killQueryWithLease(frozen, 'q', sqlString);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer old-token' });
+  });
+
+  it('does not retry and swallows cleanup transport failures', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => { throw new Error('offline'); });
+    await expect(killQueryWithLease(
+      frozen, 'q', sqlString,
+    )).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('no-ops without a query id', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
+    await killQueryWithLease(frozen, null, sqlString);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('exportQuery', () => {
   it('sets query_id + default_format, passes the signal, and returns the raw Response', async () => {
     const signal = new AbortController().signal;
@@ -1129,6 +1302,12 @@ describe('loadSchemaCards', () => {
     const colSql = seen.find((s) => /FROM system\.columns/.test(s));
     expect(colSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
   });
+  it('forwards a cancellation signal to its system.columns request', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(() => jsonResp({ data: [] }));
+    await loadSchemaCards(ctx, ['ice'], controller.signal);
+    expect(ctx.fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
   it('falls back to the plain system.columns query when an older ClickHouse rejects the setting', async () => {
     const ctx = ctxWith((url, init) => {
       const sql = init.body;
@@ -1162,6 +1341,16 @@ describe('loadLineageTransitive', () => {
     expect(dbs.has('a')).toBe(true);
     expect(dbs.has('b')).toBe(true); // pulled in transitively
     expect(out.truncated).toBe(false);
+  });
+
+  it('threads one cancellation signal through every transitive frontier request', async () => {
+    const controller = new AbortController();
+    const ctx = lineageCtx();
+    await loadLineageTransitive(ctx, { db: 'a' }, { signal: controller.signal });
+    expect(ctx.fetchMock).toHaveBeenCalled();
+    for (const [, init] of ctx.fetchMock.mock.calls) {
+      expect(init.signal).toBe(controller.signal);
+    }
   });
 
   it('flags truncated when the database cap is hit', async () => {
@@ -1266,6 +1455,13 @@ describe('loadTableDetail', () => {
     const ddlSql = seen.find((s) => /create_table_query/.test(s));
     expect(colSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
     expect(ddlSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+  });
+  it('forwards one cancellation signal to every detail request', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(() => jsonResp({ data: [] }));
+    await loadTableDetail(ctx, 'ice', 'orders', controller.signal);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(4);
+    for (const [, init] of ctx.fetchMock.mock.calls) expect(init.signal).toBe(controller.signal);
   });
   it('falls back to the plain system.columns/system.tables queries when an older ClickHouse rejects the setting', async () => {
     const ctx = ctxWith((url, init) => {

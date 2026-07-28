@@ -68,6 +68,9 @@ export interface ExecuteReadRequest {
   params?: Record<string, string | number>;
   signal?: AbortSignal;
   queryId?: string;
+  /** Epoch fence owned by the caller. When it turns false, this service must
+   * neither acquire a newer live auth context nor publish more stream data. */
+  isCurrent?: () => boolean;
   /** Per-read repaint hook — called with no arguments on each streamed chunk
    *  (the workbench repaints its pane; a tile/detached view repaints its own
    *  surface). Absent entirely when the caller passes none — no wrapper
@@ -102,6 +105,9 @@ export interface ScriptStatement {
 export interface ScriptExecutionRequest {
   statements: ScriptStatement[];
   signal?: AbortSignal;
+  /** Prevents a stale script (especially its delayed retry) from drifting
+   * into a replacement authenticated context. */
+  isCurrent?: () => boolean;
   onStatementStart: (index: number, info: { queryId: string; attempt: 1 | 2 }) => void;
   onStatementResult: (index: number, entry: ScriptEntry) => void;
 }
@@ -141,7 +147,12 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
   // Cancel → { aborted }; a connection-level fetch failure → { error:'Network
   // error', transient } (retryable); any other throw → { error }. Otherwise the
   // runQuery result itself ({ raw } | { error }).
-  async function attemptStatement(stmt: string, opts: RunQueryOptions): Promise<AttemptResult> {
+  async function attemptStatement(
+    stmt: string,
+    opts: RunQueryOptions,
+    isCurrent: () => boolean,
+  ): Promise<AttemptResult> {
+    if (!isCurrent()) return { aborted: true };
     try {
       return await deps.runQuery(deps.ctx(), stmt, opts);
     } catch (e) {
@@ -163,9 +174,10 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
   async function executeRead(
     result: StreamResult,
     {
-      sql, format = 'Table', rowLimit = 0, params, signal, queryId, onChunk,
+      sql, format = 'Table', rowLimit = 0, params, signal, queryId, isCurrent = () => true, onChunk,
     }: ExecuteReadRequest,
   ): Promise<StreamResult> {
+    if (!isCurrent()) return result;
     try {
       const out = await deps.runQuery(deps.ctx(), sql, {
         format,
@@ -173,15 +185,21 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
         queryId,
         signal,
         params,
-        onLine: (json) => applyStreamLine(json, result),
-        onChunk,
+        onLine: (json) => {
+          if (isCurrent()) applyStreamLine(json, result);
+        },
+        onChunk: onChunk
+          ? () => { if (isCurrent()) onChunk(); }
+          : undefined,
       });
+      if (!isCurrent()) return result;
       if (out.error != null) result.error = out.error;
       else if (out.raw != null) {
         result.rawText = out.raw;
         result.progress.bytes = out.raw.length;
       }
     } catch (e) {
+      if (!isCurrent()) return result;
       // Cancel = abort: keep whatever streamed in, flag it partial (no error).
       if (e instanceof Error && e.name === 'AbortError') result.cancelled = true;
       else if (e instanceof TypeError) result.error = 'Network error';
@@ -196,10 +214,14 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
   // (SELECT/WITH/SHOW/…) are fetched as JSONCompact capped at
   // SELECT_ROW_CAP; everything else runs for effect and reports OK.
   async function executeScript(req: ScriptExecutionRequest): Promise<ScriptExecutionResult> {
-    const { statements, signal, onStatementStart, onStatementResult } = req;
+    const {
+      statements, signal, onStatementStart, onStatementResult,
+      isCurrent = () => true,
+    } = req;
     const entries: ScriptEntry[] = [];
     let aborted = false;
     for (let i = 0; i < statements.length; i++) {
+      if (!isCurrent()) { aborted = true; break; }
       const stmt = statements[i];
       const rowReturning = isRowReturning(stmt.sql);
       // Over-fetch SELECTs by one past the display cap so a truncated result is
@@ -213,8 +235,10 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
       // Fresh query_id per attempt, published before the request so Cancel
       // issues KILL QUERY against the statement that's actually running.
       let queryId = deps.uid('q');
+      if (!isCurrent()) { aborted = true; break; }
       onStatementStart(i, { queryId, attempt: 1 });
-      let out = await attemptStatement(stmt.execSql, { ...opts, queryId });
+      let out = await attemptStatement(stmt.execSql, { ...opts, queryId }, isCurrent);
+      if (!isCurrent()) { aborted = true; break; }
       // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
       // rejected before running → safe to retry (any statement). A connection
       // reset (fetch TypeError → "Network error") leaves it UNKNOWN whether the
@@ -223,9 +247,11 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
       const locked = out.error != null && SESSION_BUSY.test(out.error);
       if (!out.aborted && (locked || (out.transient && rowReturning))) {
         await deps.sleep(deps.retryMs);
+        if (!isCurrent()) { aborted = true; break; }
         queryId = deps.uid('q');
         onStatementStart(i, { queryId, attempt: 2 });
-        out = await attemptStatement(stmt.execSql, { ...opts, queryId });
+        out = await attemptStatement(stmt.execSql, { ...opts, queryId }, isCurrent);
+        if (!isCurrent()) { aborted = true; break; }
       }
       if (out.aborted) { aborted = true; break; }
       // A connection reset on a non-idempotent statement: don't silently retry —
@@ -236,7 +262,7 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
       if (out.error != null) {
         entry = { sql: stmt.sql, status: 'error', error: out.error, ms };
         entries.push(entry);
-        onStatementResult(i, entry);
+        if (isCurrent()) onStatementResult(i, entry);
         break; // stop-on-first-failure: skip the remaining statements
       }
       if (rowReturning) {
@@ -248,7 +274,7 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
         entry = { sql: stmt.sql, status: 'ok', ms };
       }
       entries.push(entry);
-      onStatementResult(i, entry);
+      if (isCurrent()) onStatementResult(i, entry);
     }
     return { entries, aborted };
   }

@@ -13,6 +13,10 @@ import type { QueryTab } from '../../src/state.js';
 import type { ChCtx, RunQueryResult } from '../../src/net/ch-client.js';
 import type { PreparedSource, PreparedStatement } from '../../src/core/param-pipeline.js';
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
+import {
+  createAuthenticatedExecutionScope,
+} from '../../src/application/authenticated-execution-scope.js';
+import type { AuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
 
 // ── Small deferred/flush helpers (mirrors workbench-session.test.ts's own
 // convention for scripting async picker/fetch behaviors on a test's own
@@ -29,6 +33,17 @@ function flush(): Promise<void> {
 }
 function abortError(): Error {
   return Object.assign(new Error('x'), { name: 'AbortError' });
+}
+function executionScope(epoch = 1): ReturnType<typeof createAuthenticatedExecutionScope> {
+  return createAuthenticatedExecutionScope({ epoch, cancelRemote: vi.fn() });
+}
+function scopeWithChecks(values: boolean[]): AuthenticatedExecutionScope {
+  return {
+    epoch: 1,
+    isOpen: () => true,
+    register: () => ({ release: vi.fn(), isCurrent: () => values.shift() ?? false }),
+    close: vi.fn(async () => {}),
+  } as unknown as AuthenticatedExecutionScope;
 }
 
 function preparedStatement(over: Partial<PreparedStatement> = {}): PreparedStatement {
@@ -179,6 +194,7 @@ function makeHarness(opts: {
   canExportScript?: () => boolean;
   ensureConfig?: () => Promise<unknown>;
   getToken?: () => Promise<string | null>;
+  executionScope?: () => AuthenticatedExecutionScope | null;
   sessionParamsFor?: (tab: QueryTab, sqls: string[]) => Record<string, string>;
 } = {}): Harness {
   const state = makeState(opts.state);
@@ -195,6 +211,7 @@ function makeHarness(opts: {
   const deps: ExportServiceDeps = {
     exportQuery: ch.exportQuery, runQuery: ch.runQuery, killQuery: ch.killQuery,
     ctx: () => ctx,
+    executionScope: opts.executionScope || (() => null),
     ensureConfig: opts.ensureConfig || vi.fn(async () => undefined),
     getToken: opts.getToken || vi.fn(async () => 'tok'),
     sqlString,
@@ -561,6 +578,303 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(h.hooks.showExportProgress).toHaveBeenCalledTimes(1);
     expect(progress.update).toHaveBeenCalled();
     expect(progress.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createExportService: authenticated execution scope', () => {
+  it('fences each direct-export continuation independently when its epoch has closed', async () => {
+    // The explicit sequences model a loss at: entry, picker settlement,
+    // configuration settlement, token settlement, progress construction, and
+    // request settlement.  None may move work into a replacement scope.
+    const runs = [
+      [false], [true, false], [true, true, false],
+      [true, true, true, false], [true, true, true, true, false],
+      [true, true, true, true, true, false],
+    ];
+    for (const checks of runs) {
+      const { handle } = fakeFileHandle();
+      const h = makeHarness({
+        executionScope: () => scopeWithChecks([...checks]),
+        sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
+      });
+      await createExportService(h.deps).exportDirect('SELECT 1', 0);
+      expect(h.state.exporting.value).toBe(false);
+    }
+  });
+
+  it('fences script-export preflight and its internal loop at each epoch boundary', async () => {
+    const runs = [
+      [false], [true, false], [true, true, false], [true, true, true, false],
+      [true, true, true, true, false], [true, true, true, true, true, false],
+      [true, true, true, true, true, true, false],
+      [true, true, true, true, true, true, true, false],
+      [true, true, true, true, true, true, true, true, false],
+      [true, true, true, true, true, true, true, true, true, false],
+    ];
+    for (const checks of runs) {
+      const { dir } = fakeDirHandle();
+      const h = makeHarness({
+        executionScope: () => scopeWithChecks([...checks]),
+        sink: { pickDirectory: vi.fn(async () => dir) },
+        tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      });
+      await createExportService(h.deps).exportEntry();
+      expect(h.state.exporting.value).toBe(false);
+    }
+  });
+
+  it('suppresses stale picker failures and a stale signed-out callback', async () => {
+    const pickerFailure = makeHarness({
+      executionScope: () => scopeWithChecks([true, false]),
+      sink: { pickFile: vi.fn(async () => { throw new Error('late picker'); }) },
+    });
+    await createExportService(pickerFailure.deps).exportDirect('SELECT 1', 0);
+    expect(pickerFailure.hooks.toast).not.toHaveBeenCalled();
+
+    const tokenLoss = makeHarness({
+      executionScope: () => scopeWithChecks([true, true, true, false]),
+      getToken: async () => null,
+    });
+    await createExportService(tokenLoss.deps).exportDirect('SELECT 1', 0);
+    expect(tokenLoss.ctx.onSignedOut).not.toHaveBeenCalled();
+  });
+
+  it('fences stale direct-export progress and final completion independently', async () => {
+    const many = 'x'.repeat(33 * 1024);
+    const progress = makeHarness({ executionScope: () => scopeWithChecks([true, true, true, true, true, true, false, true]) });
+    progress.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
+    await createExportService(progress.deps).exportDirect('SELECT 1', 0);
+    expect(progress.hooks.toast).not.toHaveBeenCalled();
+
+    const final = makeHarness({ executionScope: () => scopeWithChecks([true, true, true, true, true, true, true, false]) });
+    final.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
+    await createExportService(final.deps).exportDirect('SELECT 1', 0);
+    expect(final.hooks.toast).not.toHaveBeenCalled();
+  });
+
+  it('suppresses stale script picker and per-statement settlements', async () => {
+    const pickerFailure = makeHarness({
+      executionScope: () => scopeWithChecks([true, false]),
+      tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      sink: { pickDirectory: vi.fn(async () => { throw new Error('late picker'); }) },
+    });
+    await createExportService(pickerFailure.deps).exportEntry();
+    expect(pickerFailure.hooks.toast).not.toHaveBeenCalled();
+
+    const afterEffect = makeHarness({
+      executionScope: () => scopeWithChecks([true, true, true, true, true, true, true, true, false]),
+      tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
+    });
+    await createExportService(afterEffect.deps).exportEntry();
+    expect(afterEffect.hooks.renderResults).toHaveBeenCalled();
+
+    const failedEffect = makeHarness({
+      executionScope: () => scopeWithChecks([true, true, true, true, true, true, true, true, false]),
+      tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
+    });
+    failedEffect.ch.runQuery.mockRejectedValue(new Error('late failure'));
+    await createExportService(failedEffect.deps).exportEntry();
+    expect(failedEffect.hooks.renderResults).toHaveBeenCalled();
+  });
+
+  it('stops effect-script settlement and final bookkeeping when its owning scope closes', async () => {
+    const afterTransport = deferred<RunQueryResult>();
+    const transportScope = executionScope();
+    const transport = makeHarness({
+      executionScope: () => transportScope,
+      tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
+    });
+    transport.ch.runQuery.mockImplementation(() => afterTransport.promise);
+    const pending = createExportService(transport.deps).exportEntry();
+    await flush();
+    transportScope.close();
+    afterTransport.resolve({});
+    await pending;
+    expect(transport.hooks.loadSchema).not.toHaveBeenCalled();
+
+    const failedTransport = deferred<RunQueryResult>();
+    const failedScope = executionScope();
+    const failed = makeHarness({
+      executionScope: () => failedScope,
+      tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
+    });
+    failed.ch.runQuery.mockImplementation(() => failedTransport.promise);
+    const failedPending = createExportService(failed.deps).exportEntry();
+    await flush();
+    failedScope.close();
+    failedTransport.reject(new Error('late failure'));
+    await failedPending;
+
+    const finalScope = executionScope();
+    let renders = 0;
+    const final = makeHarness({
+      executionScope: () => finalScope,
+      tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      hooks: { renderResults: vi.fn(() => { renders += 1; if (renders === 5) finalScope.close(); }) },
+    });
+    await createExportService(final.deps).exportEntry();
+    expect(final.state.exporting.value).toBe(false);
+  });
+
+  it('retains a partial file when cancellation races exactly with end-of-stream', async () => {
+    const scope = executionScope();
+    let reads = 0;
+    const body: FakeBody = {
+      getReader: () => ({
+        read: async () => {
+          reads += 1;
+          if (reads === 1) return { done: false, value: new TextEncoder().encode('tail') };
+          scope.close();
+          return { done: true };
+        },
+        releaseLock: () => {},
+      }),
+    };
+    const { handle, writable } = fakeFileHandle();
+    const h = makeHarness({
+      executionScope: () => scope,
+      sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
+    });
+    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body })));
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(writable.close).toHaveBeenCalled();
+  });
+
+  it('stops a direct export during the picker preflight; its late resolution cannot configure, authenticate, or toast', async () => {
+    const picker = deferred<FileHandleLike>();
+    const scope = executionScope();
+    const h = makeHarness({ executionScope: () => scope, sink: { pickFile: vi.fn(() => picker.promise) } });
+    const run = createExportService(h.deps).exportDirect('SELECT 1', 0);
+    await flush();
+    expect(h.state.exporting.value).toBe(true);
+
+    scope.close();
+    expect(h.state.exporting.value).toBe(false);
+    picker.resolve(asFileHandleLike(fakeFileHandle().handle));
+    await run;
+
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.deps.getToken).not.toHaveBeenCalled();
+    expect(h.ch.exportQuery).not.toHaveBeenCalled();
+    expect(h.hooks.toast).not.toHaveBeenCalled();
+  });
+
+  it('closes a direct request with its captured query id and fences its late success/progress settlement', async () => {
+    const cancelRemote = vi.fn();
+    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote });
+    const pending = deferred<Response>();
+    const progress = { update: vi.fn(), remove: vi.fn() };
+    const { handle } = fakeFileHandle();
+    const h = makeHarness({
+      executionScope: () => scope,
+      sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
+      hooks: { showExportProgress: vi.fn(() => progress) },
+    });
+    h.ch.exportQuery.mockImplementation(async () => pending.promise);
+    const run = createExportService(h.deps).exportDirect('SELECT 1', 0);
+    await flush();
+    const queryId = h.ch.exportQuery.mock.calls[0][2].queryId as string;
+
+    scope.close({ epoch: 1, origin: 'https://ch.example', authorization: 'Bearer old', fetch: h.ctx.fetch });
+    expect(h.state.exporting.value).toBe(false);
+    expect(progress.remove).toHaveBeenCalledTimes(1);
+    expect(cancelRemote).toHaveBeenCalledWith(expect.objectContaining({ authorization: 'Bearer old' }), queryId);
+    pending.resolve(asResponse(fakeExportResponse({ body: streamBody(['late']) })));
+    await run;
+
+    expect(progress.update).not.toHaveBeenCalled();
+    expect(h.hooks.toast).not.toHaveBeenCalled();
+  });
+
+  it('fences a direct export that loses auth while its writable is still opening', async () => {
+    const scope = executionScope();
+    const writableDeferred = deferred<FakeWritable>();
+    const { writable } = fakeFileHandle();
+    const handle: FakeFileHandle = {
+      name: 'late.tsv',
+      createWritable: vi.fn(() => writableDeferred.promise),
+    };
+    const h = makeHarness({
+      executionScope: () => scope,
+      sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
+    });
+    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['late']) })));
+    const run = createExportService(h.deps).exportDirect('SELECT 1', 0);
+    await flush();
+    scope.close();
+    writableDeferred.resolve(writable);
+    await run;
+
+    expect(writable.write).not.toHaveBeenCalled();
+    expect(h.hooks.toast).not.toHaveBeenCalled();
+    expect(h.state.exporting.value).toBe(false);
+  });
+
+  it('allows a replacement scope to start a fresh export after a lost picker wave settles', async () => {
+    const picker = deferred<FileHandleLike>();
+    let scope = executionScope();
+    const h = makeHarness({ executionScope: () => scope, sink: { pickFile: vi.fn(() => picker.promise) } });
+    const service = createExportService(h.deps);
+    const oldRun = service.exportDirect('SELECT 1', 0);
+    await flush();
+    scope.close();
+    scope = executionScope(2);
+    picker.resolve(asFileHandleLike(fakeFileHandle().handle));
+    await oldRun;
+
+    const { handle } = fakeFileHandle();
+    (h.sink.pickFile as Mock).mockResolvedValueOnce(asFileHandleLike(handle));
+    await service.exportDirect('SELECT 2', 0);
+    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1);
+    expect(h.ch.exportQuery.mock.calls[0][1]).toContain('SELECT 2');
+    expect(h.state.exporting.value).toBe(false);
+  });
+
+  it('aborts a script row with the current query id and cannot paint its late completion', async () => {
+    const cancelRemote = vi.fn();
+    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote });
+    const pending = deferred<Response>();
+    const { dir } = fakeDirHandle();
+    const h = makeHarness({
+      executionScope: () => scope,
+      tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      sink: { pickDirectory: vi.fn(async () => dir) },
+    });
+    h.ch.exportQuery.mockImplementation(async () => pending.promise);
+    const run = createExportService(h.deps).exportEntry();
+    await flush();
+    const queryId = h.ch.exportQuery.mock.calls[0][2].queryId as string;
+    const rendersBeforeClose = (h.hooks.renderResults as Mock).mock.calls.length;
+
+    scope.close({ epoch: 1, origin: 'https://ch.example', authorization: 'Bearer old', fetch: h.ctx.fetch });
+    expect(h.state.exporting.value).toBe(false);
+    expect(cancelRemote).toHaveBeenCalledWith(expect.anything(), queryId);
+    pending.resolve(asResponse(fakeExportResponse({ body: streamBody(['late']) })));
+    await run;
+
+    expect((h.hooks.renderResults as Mock).mock.calls.length).toBe(rendersBeforeClose);
+    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a script export in preflight and never lets the late directory picker start transport', async () => {
+    const directory = deferred<DirectoryHandleLike>();
+    const scope = executionScope();
+    const h = makeHarness({
+      executionScope: () => scope,
+      tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      sink: { pickDirectory: vi.fn(() => directory.promise) },
+    });
+    const run = createExportService(h.deps).exportEntry();
+    await flush();
+    scope.close();
+    expect(h.state.exporting.value).toBe(false);
+    directory.resolve(fakeDirHandle().dir);
+    await run;
+
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.ch.exportQuery).not.toHaveBeenCalled();
+    expect(h.ch.runQuery).not.toHaveBeenCalled();
+    expect(h.hooks.renderResults).not.toHaveBeenCalled();
   });
 });
 

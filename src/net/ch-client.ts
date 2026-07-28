@@ -42,6 +42,17 @@ export interface ChCtx {
   onTransportOffline?: (error?: unknown) => void;
 }
 
+/** Immutable authority retained only long enough to cancel work owned by a
+ * closing authenticated execution scope. `authorization` is already complete
+ * (scheme + credential): cleanup must never consult mutable auth mode, refresh,
+ * token storage, or normal auth-loss callbacks. */
+export interface AuthenticatedCancellationLease {
+  readonly epoch: number;
+  readonly origin: string;
+  readonly authorization: string;
+  readonly fetch: typeof fetch;
+}
+
 /** The injected SQL-string-quoting function a few call sites take as a
  * parameter (matching core/format.js's `sqlString`) instead of using the
  * module-level import directly. */
@@ -71,6 +82,16 @@ function errMessage(e: unknown): string {
 // replacement credential generation's lifecycle/auth state.
 function isCurrentEpoch(ctx: ChCtx, requestEpoch: number | undefined): boolean {
   return requestEpoch === undefined || ctx.currentEpoch?.() === requestEpoch;
+}
+
+// A request that was superseded before it can start (or retry) is cancellation,
+// not an authentication failure.  Keep the shape callers already treat as a
+// silent cancellation without coupling this network module to a DOMException
+// implementation.
+function staleEpochAbort(): Error {
+  const error = new Error('request superseded by a newer authentication session');
+  error.name = 'AbortError';
+  return error;
 }
 
 /** Generic ClickHouse `FORMAT JSON` response shape — only `.data` is ever
@@ -108,8 +129,11 @@ export function chUrl(origin: string, opts: ChUrlOpts = {}): string {
 export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?: AbortSignal): Promise<Response> {
   const requestEpoch = ctx.currentEpoch?.();
   const token = await ctx.getToken();
+  // getToken may have awaited a sign-in/sign-out replacement. Its credential
+  // belongs to that replacement and this request must not send it.
+  if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
   if (!token) {
-    if (isCurrentEpoch(ctx, requestEpoch)) ctx.onSignedOut(undefined, requestEpoch);
+    ctx.onSignedOut(undefined, requestEpoch);
     throw new Error('not signed in');
   }
   let bearer = token;
@@ -120,10 +144,14 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
   for (;;) {
     let resp: Response;
     try {
+      // Fence every attempt immediately before the injected side effect. A
+      // retry must never send a replacement session's newly-read credential.
+      const authorization = authHeader(bearer);
+      if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
       resp = await ctx.fetch(url, {
         method: 'POST',
         body: sql,
-        headers: { Authorization: authHeader(bearer) },
+        headers: { Authorization: authorization },
         signal,
       });
     } catch (e) {
@@ -145,6 +173,10 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
     let authExpired = resp.status === 401 || resp.status === 403;
     if (!authExpired && !resp.ok) {
       const peek = await resp.clone().text();
+      // Reading an error body is another async boundary. If this request was
+      // superseded while it was pending, its expiry marker must not start a
+      // refresh against the replacement session's credentials.
+      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
       if (isAuthExpiredBody(peek)) authExpired = true;
     }
     if (authExpired) {
@@ -155,11 +187,11 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
       // caller shows it as a normal query error instead of force-logging-out.
       if (ctx.authConfirmed) return resp;
       if (attempt === 0 && (await ctx.refresh())) {
-        if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
+        if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
         // A successful refresh always yields a fresh, usable token — the
         // refresh() contract this seam relies on.
         bearer = (await ctx.getToken())!;
-        if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
+        if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
         attempt++;
         continue;
       }
@@ -262,11 +294,14 @@ async function querySystemAware<T = Record<string, unknown>>(ctx: ChCtx, sqlBody
  * schema load or, via `ctx.dataLakeCatalogSettingUnsupported`, hiding every
  * other catalog too.
  */
-async function loadDataLakeCatalogTableNames(ctx: ChCtx, db: string): Promise<string[]> {
+async function loadDataLakeCatalogTableNames(ctx: ChCtx, db: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const json = await querySystemAware<{ name: string }>(ctx, `SELECT database, name FROM system.tables WHERE database = ${sqlString(db)}`);
+    const json = await querySystemAware<{ name: string }>(ctx, `SELECT database, name FROM system.tables WHERE database = ${sqlString(db)}`, signal);
     return (json.data || []).map((r) => r.name);
-  } catch {
+  } catch (e) {
+    // A catalog database is best-effort, but cancellation belongs to the
+    // whole schema load and must stop its sibling fan-out too.
+    if (isAbort(e, signal)) throw e;
     return [];
   }
 }
@@ -283,9 +318,28 @@ export async function killQuery(ctx: ChCtx, queryId: string | null | undefined, 
   } catch { /* best-effort */ }
 }
 
+/** Best-effort server cancellation through a frozen execution-scope lease.
+ * Unlike `killQuery`, this deliberately bypasses `authedFetch`: no token read,
+ * refresh, retry, lifecycle callback, or mutable auth-scheme lookup is allowed
+ * while a dead scope is closing. */
+export async function killQueryWithLease(
+  lease: AuthenticatedCancellationLease,
+  queryId: string | null | undefined,
+  sqlString: SqlStringFn,
+): Promise<void> {
+  if (!queryId) return;
+  try {
+    await lease.fetch(chUrl(lease.origin, { format: 'JSON' }), {
+      method: 'POST',
+      body: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
+      headers: { Authorization: lease.authorization },
+    });
+  } catch { /* best-effort */ }
+}
+
 /** Fetch `version()` + `uptime()`. Returns the version string ('' on shape miss). */
-export async function loadServerVersion(ctx: ChCtx): Promise<string> {
-  const json = await queryJson<{ v?: string; u?: number }>(ctx, 'SELECT version() AS v, uptime() AS u FORMAT JSON');
+export async function loadServerVersion(ctx: ChCtx, signal?: AbortSignal): Promise<string> {
+  const json = await queryJson<{ v?: string; u?: number }>(ctx, 'SELECT version() AS v, uptime() AS u FORMAT JSON', signal);
   const row = (json.data && json.data[0]) || {};
   return row.v || '';
 }
@@ -335,12 +389,12 @@ interface TableStatsRow { database: string; name: string; total_rows: number | s
  *
  * Returns [{ db, comment, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
-export async function loadSchema(ctx: ChCtx): Promise<SchemaDb[]> {
+export async function loadSchema(ctx: ChCtx, signal?: AbortSignal): Promise<SchemaDb[]> {
   const dbJson = await queryJson<DbRow>(ctx,
     "SELECT name, comment, engine FROM system.databases\n" +
     "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
     'ORDER BY name\n' +
-    'FORMAT JSON');
+    'FORMAT JSON', signal);
   const dbRows = dbJson.data || [];
   const catalogDbs = dbRows.filter((r) => r.engine === 'DataLakeCatalog').map((r) => r.name);
   const exclude = ['INFORMATION_SCHEMA', 'information_schema', ...catalogDbs].map(sqlString).join(', ');
@@ -352,8 +406,8 @@ export async function loadSchema(ctx: ChCtx): Promise<SchemaDb[]> {
       'FROM system.tables\n' +
       `WHERE database NOT IN (${exclude})\n` +
       "ORDER BY database, startsWith(name, '_'), name\n" +
-      'FORMAT JSON'),
-    Promise.all(catalogDbs.map(async (db) => ({ db, names: await loadDataLakeCatalogTableNames(ctx, db) }))),
+      'FORMAT JSON', signal),
+    Promise.all(catalogDbs.map(async (db) => ({ db, names: await loadDataLakeCatalogTableNames(ctx, db, signal) }))),
   ]);
   const byDb = new Map<string, { comment: string; tables: SchemaTable[] }>();
   for (const r of dbRows) byDb.set(r.name, { comment: r.comment || '', tables: [] });
@@ -499,12 +553,12 @@ export async function loadSchemaLineage(ctx: ChCtx, focus: LineageFocus | null |
 }
 
 /** Load the columns of one table. Returns [{name,type,comment}]. */
-export async function loadColumns(ctx: ChCtx, db: string, table: string, sqlString: SqlStringFn): Promise<{ name: string; type: string; comment: string }[]> {
+export async function loadColumns(ctx: ChCtx, db: string, table: string, sqlString: SqlStringFn, signal?: AbortSignal): Promise<{ name: string; type: string; comment: string }[]> {
   const sql =
     'SELECT name, type, comment FROM system.columns ' +
     'WHERE database = ' + sqlString(db) + ' AND table = ' + sqlString(table) + ' ' +
     'ORDER BY position';
-  const json = await querySystemAware<{ name: string; type: string; comment?: string }>(ctx, sql);
+  const json = await querySystemAware<{ name: string; type: string; comment?: string }>(ctx, sql, signal);
   return (json.data || []).map((r) => ({ name: r.name, type: r.type, comment: r.comment || '' }));
 }
 
@@ -536,14 +590,14 @@ export interface SchemaCardsResult {
  * (#179) — they're detail-drawer metadata (ch.loadTableDetail), not card
  * geometry, so pulling them on graph load was a dead read.
  */
-export async function loadSchemaCards(ctx: ChCtx, dbs: readonly string[] | null | undefined): Promise<SchemaCardsResult> {
+export async function loadSchemaCards(ctx: ChCtx, dbs: readonly string[] | null | undefined, signal?: AbortSignal): Promise<SchemaCardsResult> {
   const columnsByKey: Record<string, CardColumnRow[]> = {};
   const list = (dbs || []).map((d) => sqlString(d)).join(', ');
   if (!list) return { columnsByKey };
   const colRows = await trySystemAwareQueryData<CardColumnRow>(ctx,
     'SELECT database, table, name, type, is_in_partition_key, is_in_sorting_key, '
     + 'is_in_primary_key, is_in_sampling_key, compression_codec, position '
-    + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position');
+    + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position', signal);
   for (const r of colRows || []) {
     const key = r.database + '.' + r.table;
     (columnsByKey[key] = columnsByKey[key] || []).push(r);
@@ -555,6 +609,9 @@ export async function loadSchemaCards(ctx: ChCtx, dbs: readonly string[] | null 
 export interface LoadLineageTransitiveOpts {
   nodeCap?: number;
   dbCap?: number;
+  /** Cancels the current frontier and prevents a stale traversal from starting
+   * another database round under a replacement authentication scope. */
+  signal?: AbortSignal;
 }
 
 /** `loadLineageTransitive`'s result. */
@@ -568,7 +625,8 @@ export interface LineageTransitiveResult {
  * then BFS into every database referenced by the graph built so far, merging rows,
  * until no new database is referenced or a cap is hit. `opts.dbCap` bounds the
  * number of databases fetched and `opts.nodeCap` the graph size — either tripping
- * sets `truncated` (the caller shows a banner). Returns `{ rows, truncated }`;
+ * sets `truncated` (the caller shows a banner); `opts.signal` cancels every
+ * frontier request and prevents a later round. Returns `{ rows, truncated }`;
  * `rows` is the merged `{ tables, dictionaries }` for buildSchemaGraph + expandLineage.
  */
 export async function loadLineageTransitive(ctx: ChCtx, focus: LineageFocus | null | undefined, opts: LoadLineageTransitiveOpts = {}): Promise<LineageTransitiveResult> {
@@ -587,7 +645,7 @@ export async function loadLineageTransitive(ctx: ChCtx, focus: LineageFocus | nu
     // next frontier. Far fewer round-trips than fetching one db at a time.
     const batch = frontier.slice(0, dbCap - loaded.size);
     batch.forEach((db) => loaded.add(db));
-    const parts = await Promise.all(batch.map((db) => loadSchemaLineage(ctx, { db })));
+    const parts = await Promise.all(batch.map((db) => loadSchemaLineage(ctx, { db }, { signal: opts.signal })));
     for (const part of parts) {
       tables = tables.concat(part.tables);
       dictionaries = dictionaries.concat(part.dictionaries);
@@ -673,7 +731,7 @@ export interface TableDetail {
  * drawer needs `type_full` + `granularity` besides. `data_skipping_indices` is a
  * MergeTree-only view (no DataLakeCatalog tables), so the plain client suffices.
  */
-export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Promise<TableDetail> {
+export async function loadTableDetail(ctx: ChCtx, db: string, table: string, signal?: AbortSignal): Promise<TableDetail> {
   const byCol = 'database = ' + sqlString(db) + ' AND table = ' + sqlString(table);
   const byName = 'database = ' + sqlString(db) + ' AND name = ' + sqlString(table);
   const [columns, indexes, partitions, tableRows] = await Promise.all([
@@ -682,16 +740,16 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
       + 'is_in_partition_key, is_in_sorting_key, is_in_primary_key, is_in_sampling_key, '
       + 'toUInt64(data_compressed_bytes) AS compressed, toUInt64(data_uncompressed_bytes) AS uncompressed, '
       + 'toUInt64(marks_bytes) AS marks, position '
-      + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position'),
+      + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position', signal),
     tryQueryData<IndexDetailRow>(ctx,
       'SELECT name, expr, type, type_full, granularity, '
       + 'toUInt64(data_compressed_bytes) AS compressed, toUInt64(data_uncompressed_bytes) AS uncompressed, '
       + 'toUInt64(marks_bytes) AS marks '
-      + 'FROM system.data_skipping_indices WHERE ' + byCol + ' ORDER BY name FORMAT JSON'),
+      + 'FROM system.data_skipping_indices WHERE ' + byCol + ' ORDER BY name FORMAT JSON', signal),
     tryQueryData<PartitionDetailRow>(ctx,
       'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
-      + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
-    trySystemAwareQueryData<{ ddl?: string; comment?: string; engine?: string }>(ctx, 'SELECT create_table_query AS ddl, comment, engine FROM system.tables WHERE ' + byName),
+      + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON', signal),
+    trySystemAwareQueryData<{ ddl?: string; comment?: string; engine?: string }>(ctx, 'SELECT create_table_query AS ddl, comment, engine FROM system.tables WHERE ' + byName, signal),
   ]);
   return {
     columns: columns || [],
@@ -710,10 +768,9 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
 // `signal` and aborted it, that means the caller's whole operation was
 // cancelled, not that this particular sub-query failed, so it must propagate
 // rather than be swallowed into "no data, continue" (#124). Gated on
-// `signal.aborted` (not just the error's name) so a caller that never passed
-// a signal — every site except `loadSchemaLineage` — keeps today's
-// unconditional swallow, even if the underlying fetch happens to throw an
-// AbortError-shaped error for some unrelated reason.
+// `signal.aborted` (not just the error's name) so any caller that omits the
+// optional signal keeps today's unconditional swallow, even if the underlying
+// fetch happens to throw an AbortError-shaped error for some unrelated reason.
 async function tryRun<T>(
   runner: (ctx: ChCtx, sql: string, signal?: AbortSignal) => Promise<ChJsonResult<T>>,
   ctx: ChCtx, sql: string, signal?: AbortSignal,
@@ -787,14 +844,14 @@ interface FormatRow { name: string }
  * Returns { keywords, functions, formats } — each null when its source is
  * missing/denied (the caller falls back to a built-in set).
  */
-export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
-  const kw = await tryQueryData<KeywordRow>(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON');
+export async function loadReferenceData(ctx: ChCtx, signal?: AbortSignal): Promise<ReferenceData> {
+  const kw = await tryQueryData<KeywordRow>(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON', signal);
   const keywords = kw ? kw.map((r) => r.keyword) : null;
   // Prefer the `syntax` column (modern ClickHouse) for signature help; fall back
   // to the minimal shape when it doesn't exist (older servers) so we still get
   // names for highlighting + completion.
-  const fn = await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate, syntax FROM system.functions FORMAT JSON')
-    || await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON');
+  const fn = await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate, syntax FROM system.functions FORMAT JSON', signal)
+    || await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON', signal);
   let functions: Record<string, RefFunctionEntry> | null = null;
   if (fn) {
     functions = {};
@@ -809,7 +866,7 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
   }
   // Output format names for FORMAT-clause completion (system.formats); a separate
   // catalog from keywords/functions, so it needs its own fetch.
-  const fmts = await tryQueryData<FormatRow>(ctx, 'SELECT name FROM system.formats WHERE is_output ORDER BY name FORMAT JSON');
+  const fmts = await tryQueryData<FormatRow>(ctx, 'SELECT name FROM system.formats WHERE is_output ORDER BY name FORMAT JSON', signal);
   const formats = fmts ? fmts.map((r) => r.name) : null;
   return { keywords, functions, formats };
 }
@@ -850,11 +907,11 @@ const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
   documentation: 'documentation',
 };
 
-export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<string[] | null> {
+export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable, signal?: AbortSignal): Promise<string[] | null> {
   const tableName = DOC_PROBE_TABLE_NAMES[table];
   return tryQueryData<{ name: string }>(
     ctx,
-    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON',
+    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON', signal,
   ).then((rows) => (rows === null ? null : rows.map((r) => r.name)));
 }
 
@@ -865,22 +922,22 @@ export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<s
  * on failure — transient, the caller must not cache it — the (possibly empty,
  * on no match) row array otherwise.
  */
-export function loadDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
-  return tryQueryData<Record<string, unknown>>(ctx, sql);
+export function loadDocRow(ctx: ChCtx, sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
+  return tryQueryData<Record<string, unknown>>(ctx, sql, signal);
 }
 
 /** #313's `system.functions`-specific capability probe — a thin wrapper over
  *  the generalized `loadDocTableColumns` (#314). Kept as its own export so
  *  `SchemaCatalogDeps`/existing call sites and tests don't need to change. */
-export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
-  return loadDocTableColumns(ctx, 'functions');
+export function loadFunctionsDocColumns(ctx: ChCtx, signal?: AbortSignal): Promise<string[] | null> {
+  return loadDocTableColumns(ctx, 'functions', signal);
 }
 
 /** #313's `system.functions`-specific row loader — a thin wrapper over the
  *  generalized `loadDocRow` (#314). Kept as its own export for the same
  *  reason as `loadFunctionsDocColumns` above. */
-export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
-  return loadDocRow(ctx, sql);
+export function loadFunctionDocRow(ctx: ChCtx, sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
+  return loadDocRow(ctx, sql, signal);
 }
 
 /** `exportQuery`'s options. */

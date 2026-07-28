@@ -48,6 +48,15 @@ export function applyConnectionStatus(app: Pick<App, 'conn' | 'dom'>): void {
   chip.title = app.conn.host();
   chip.querySelector<HTMLElement>('.connection-host')!.textContent = app.conn.host();
   chip.querySelector<HTMLElement>('.connection-state')!.textContent = presentation.label;
+  // An in-place Basic reauthentication keeps this exact header DOM mounted.
+  // Refresh identity alongside the lifecycle chip so a different user/target
+  // never leaves the old session's label behind.
+  const userButton = app.dom.userBtn;
+  if (userButton) {
+    userButton.title = app.conn.email();
+    const short = userButton.querySelector<HTMLElement>('.user-short');
+    if (short) short.textContent = userShortName(app.conn.email());
+  }
 }
 
 /** The one application header used by both Workbench and Dashboard. */

@@ -171,6 +171,38 @@ describe('executeRead', () => {
     expect(calls[0].opts.onChunk).toBeUndefined();
   });
 
+  it('does not acquire auth or mutate a result when the caller epoch is already stale', async () => {
+    const { fn } = fakeRunQuery([() => ({ error: 'must not run' })]);
+    const ctx = vi.fn(() => fakeCtx);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn, ctx }));
+    const result = newResult('Table');
+    await svc.executeRead(result, { sql: 'SELECT 1', isCurrent: () => false });
+    expect(ctx).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+    expect(result.error).toBeNull();
+  });
+
+  it('fences late stream chunks and settlement after the caller epoch closes', async () => {
+    let current = true;
+    const onChunk = vi.fn();
+    const { fn } = fakeRunQuery([
+      (opts) => {
+        opts.onLine!({ meta: [{ name: 'x', type: 'Int32' }] });
+        opts.onLine!({ row: { x: 1 } });
+        current = false;
+        opts.onLine!({ row: { x: 2 } });
+        opts.onChunk!();
+        return { error: 'late error' };
+      },
+    ]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));
+    const result = newResult('Table');
+    await svc.executeRead(result, { sql: 'SELECT 1', isCurrent: () => current, onChunk });
+    expect(result.rows).toEqual([[1]]);
+    expect(result.error).toBeNull();
+    expect(onChunk).not.toHaveBeenCalled();
+  });
+
   it('marks cancelled (not error) and keeps partial rows on AbortError', async () => {
     const { fn } = fakeRunQuery([
       (opts) => {
@@ -227,6 +259,99 @@ const ddlStmt = (params: Record<string, string | number> = {}): ScriptStatement 
 });
 
 describe('executeScript', () => {
+  it('fences late errors and callback publication after an authenticated epoch closes', async () => {
+    let current = true;
+    const rejected = fakeRunQuery([() => { current = false; throw new Error('late'); }]);
+    const service = createQueryExecutionService(makeDeps({ runQuery: rejected.fn }));
+    await expect(service.executeRead(newResult('Table'), { sql: 'SELECT 1', isCurrent: () => current }))
+      .resolves.toMatchObject({ error: null });
+
+    // The entry is local bookkeeping, but its callback is a UI publication and
+    // must be fenced independently for both error and success entries.
+    for (const outcome of [{ error: 'bad' } as RunQueryResult, { raw: '' } as RunQueryResult]) {
+      let checks = 0;
+      const transport = fakeRunQuery([() => outcome]);
+      const onStatementResult = vi.fn();
+      const scoped = createQueryExecutionService(makeDeps({ runQuery: transport.fn }));
+      const result = await scoped.executeScript({
+        statements: [ddlStmt()],
+        isCurrent: () => (++checks < 5),
+        onStatementStart: vi.fn(),
+        onStatementResult,
+      });
+      expect(result.entries).toHaveLength(1);
+      expect(onStatementResult).not.toHaveBeenCalled();
+    }
+  });
+
+  it('stringifies a non-Error script transport failure', async () => {
+    const { fn } = fakeRunQuery([() => { throw 'opaque transport failure'; }]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));
+    const { entries } = await svc.executeScript({ statements: [ddlStmt()], onStatementStart: vi.fn(), onStatementResult: vi.fn() });
+    expect(entries).toEqual([expect.objectContaining({ status: 'error', error: 'opaque transport failure' })]);
+  });
+
+  it('treats every lifecycle fence as a local abort, without publishing an entry or acquiring a replacement context', async () => {
+    // These four placements deliberately exercise the distinct fences around a
+    // script attempt: before the loop, after minting its id, after transport,
+    // and after a retry.  They are separate auth-loss interleavings in the UI.
+    const before = createQueryExecutionService(makeDeps({
+      runQuery: fakeRunQuery([]).fn,
+    }));
+    await expect(before.executeScript({ statements: [ddlStmt()], isCurrent: () => false, onStatementStart: vi.fn(), onStatementResult: vi.fn() }))
+      .resolves.toEqual({ entries: [], aborted: true });
+
+    let checks = 0;
+    const afterId = createQueryExecutionService(makeDeps({
+      runQuery: fakeRunQuery([]).fn,
+    }));
+    await expect(afterId.executeScript({
+      statements: [ddlStmt()],
+      isCurrent: () => (++checks < 2),
+      onStatementStart: vi.fn(), onStatementResult: vi.fn(),
+    })).resolves.toEqual({ entries: [], aborted: true });
+
+    let postTransport = true;
+    const transport = fakeRunQuery([() => { postTransport = false; return { raw: '' }; }]);
+    const afterTransport = createQueryExecutionService(makeDeps({ runQuery: transport.fn }));
+    await expect(afterTransport.executeScript({
+      statements: [ddlStmt()], isCurrent: () => postTransport,
+      onStatementStart: vi.fn(), onStatementResult: vi.fn(),
+    })).resolves.toEqual({ entries: [], aborted: true });
+
+    let retryTransportCalls = 0;
+    const retryTransport = fakeRunQuery([
+      () => ({ error: 'SESSION_IS_LOCKED' }),
+      () => { retryTransportCalls += 1; return { raw: '' }; },
+    ]);
+    let retryChecks = 0;
+    const afterRetry = createQueryExecutionService(makeDeps({
+      runQuery: retryTransport.fn,
+      sleep: async () => {},
+    }));
+    await expect(afterRetry.executeScript({
+      statements: [ddlStmt()],
+      // loop / after-id / after-transport / after-sleep all pass; the fence
+      // immediately after the retry transport rejects its late result.
+      isCurrent: () => (++retryChecks <= 6),
+      onStatementStart: vi.fn(), onStatementResult: vi.fn(),
+    })).resolves.toEqual({ entries: [], aborted: true });
+    expect(retryTransportCalls).toBe(1);
+  });
+
+  it('does not enter transport when the scope closes between publishing the id and the attempt', async () => {
+    let checks = 0;
+    const run = fakeRunQuery([]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: run.fn }));
+    await expect(svc.executeScript({
+      statements: [ddlStmt()],
+      // loop and id fence pass; attemptStatement itself observes the close.
+      isCurrent: () => (++checks < 3),
+      onStatementStart: vi.fn(), onStatementResult: vi.fn(),
+    })).resolves.toEqual({ entries: [], aborted: true });
+    expect(run.calls).toHaveLength(0);
+  });
+
   it('runs one runQuery per statement, wire text vs authored sql, in order', async () => {
     const { fn, calls } = fakeRunQuery([
       () => ({ raw: JSON.stringify({ meta: [{ name: 'x', type: 'Int32' }], data: [[1]] }) }),
@@ -319,6 +444,28 @@ describe('executeScript', () => {
     expect(calls).toHaveLength(2);
     expect(deps.sleep).toHaveBeenCalledWith(7);
     expect(entries[0].status).toBe('ok');
+  });
+
+  it('does not let a delayed retry acquire a replacement auth context', async () => {
+    let current = true;
+    const { fn, calls } = fakeRunQuery([
+      () => ({ error: 'SESSION_IS_LOCKED: locked' }),
+      () => ({ raw: '' }),
+    ]);
+    const ctx = vi.fn(() => fakeCtx);
+    const sleep = vi.fn(async () => { current = false; });
+    const onStatementStart = vi.fn();
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn, ctx, sleep }));
+    const result = await svc.executeScript({
+      statements: [ddlStmt()],
+      isCurrent: () => current,
+      onStatementStart,
+      onStatementResult: vi.fn(),
+    });
+    expect(result).toEqual({ entries: [], aborted: true });
+    expect(calls).toHaveLength(1);
+    expect(ctx).toHaveBeenCalledTimes(1);
+    expect(onStatementStart).toHaveBeenCalledTimes(1);
   });
 
   it('retries a transient (TypeError) failure only for a row-returning statement', async () => {
