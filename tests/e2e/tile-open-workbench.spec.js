@@ -329,4 +329,7 @@ test('on a phone the bottom nav is the route off a Dashboard, and offers only Ed
   await expect.poll(() => surface(page)).toBe('query');
   // And it landed on the editor panel, not merely on the surface.
   await expect(page.locator('.main-row')).toHaveAttribute('data-mobile-view', 'editor');
+  // The editor/results splitter is present for desktop dragging, but it must not
+  // consume a visible row in the single-pane mobile editor.
+  await expect(page.locator('.editor-results-split')).toBeHidden();
 });

@@ -371,7 +371,7 @@ body {
    the UA defaults converts "forgot to style a heading" from a visible bug into a
    quiet inherit, and forces any real step up the ramp to be deliberate. Rules
    that DO size a heading (.md-view, .modal-card, .schema-detail, .dash-notfound-title,
-   .docs-name, .detached-title, .section-label, .login-h1) all out-specify this. */
+   .docs-name, .detached-title, .section-label) all out-specify this. */
 h1, h2, h3, h4, h5, h6 {
   font-size: inherit;
   font-weight: var(--fw-semibold);
@@ -456,8 +456,6 @@ h1, h2, h3, h4, h5, h6 {
 .login-brand-text { display: flex; flex-direction: column; line-height: var(--lh-tight); }
 .login-brand-name { font-size: var(--text-headline); font-weight: var(--fw-semibold); color: var(--fg); }
 .login-brand-sub { font-size: var(--text-label); color: var(--fg-faint); }
-.login-h1 { font-size: var(--text-doc-h1); font-weight: var(--fw-semibold); letter-spacing: -.3px; color: var(--fg); margin-bottom: 4px; }
-.login-sub { font-size: var(--text-body); color: var(--fg-mute); margin-bottom: 20px; line-height: var(--lh-body); }
 
 /* SSO section */
 .login-sso { display: flex; flex-direction: column; gap: 8px; }
@@ -733,10 +731,6 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 4px; padding: 8px 12px; border-top: 1px solid var(--border-faint);
   font-size: var(--text-micro); color: var(--fg-faint); font-family: var(--mono);
 }
-/* Variable history (#171): a `.fm-item`-styled <label> so the whole row
-   toggles the checkbox, matching the rest of the File menu's row rhythm. */
-.fm-toggle { cursor: pointer; }
-.fm-checkbox { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
 /* Replace / New confirm dialog */
 .fm-dialog-backdrop {
   position: fixed; inset: 0; z-index: 130; background: var(--scrim);
@@ -751,7 +745,6 @@ h1, h2, h3, h4, h5, h6 {
 .fm-dialog-title { font-size: var(--text-headline); font-weight: var(--fw-semibold); color: var(--fg); margin-bottom: 6px; }
 .fm-dialog-body { font-size: var(--text-body); color: var(--fg-mute); line-height: var(--lh-body); margin-bottom: 18px; }
 .fm-dialog-body b { color: var(--fg); }
-.fm-mono { color: var(--fg); font-family: var(--mono); }
 .fm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .fm-dialog-cancel, .fm-dialog-confirm {
   height: 30px; padding: 0 14px; border-radius: var(--r-sm); font-family: inherit;
@@ -967,21 +960,6 @@ h1, h2, h3, h4, h5, h6 {
 .saved-row:hover .sv-act { display: inline-flex; }
 .sv-act:hover { color: var(--fg); background: var(--bg-hover); }
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }
-/* Export/Import row at the end of the Saved panel. margin-top:auto sinks it to
-   the bottom when the list is short, but it scrolls away with a long list (not
-   sticky) — no need to keep it on screen once there's plenty to scroll. */
-.saved-actions {
-  margin-top: auto; flex-shrink: 0;
-  display: flex; gap: 6px; padding: 6px 10px;
-  border-top: 1px solid var(--border); background: var(--bg-editor);
-}
-.sv-io {
-  flex: 1; height: 24px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: transparent; color: var(--fg-mute); font-size: var(--text-label); font-family: inherit;
-  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px;
-}
-.sv-io:hover:not([disabled]) { background: var(--bg-hover); color: var(--fg); }
-.sv-io[disabled] { opacity: .45; cursor: not-allowed; }
 .history-row {
   position: relative;
   padding: 8px 10px; cursor: pointer; user-select: none;
@@ -2073,13 +2051,7 @@ body.detached-tab .graph-overlay-panel {
   box-shadow: var(--ring-error);
 }
 
-/* #360 source-backed Dashboard variable transport states. The field is also
-   `disabled`; these mark WHY, so a benign 'waiting' (dashed, with a
-   "Waiting for: …" note) or a 'stale'/refreshing field (dimmed) reads
-   differently from a real 'error' (red) at a glance. */
 .var-input.is-error { border-color: var(--error-bd); background: var(--error-bg); }
-.var-input.is-waiting { border-style: dashed; }
-.var-input.is-stale { opacity: 0.55; font-style: italic; }
 .var-field-note { grid-column: 2; font-size: var(--text-label); color: var(--fg-mute); white-space: nowrap; }
 /* Relative-time preset combobox (#169): the accessible dropdown-on-focus +
    type-to-filter control for date-like {name:Type} variables (#174 §1) —
@@ -2190,8 +2162,8 @@ body.detached-tab .graph-overlay-panel {
    field; the popover is its own `position:fixed` panel, the same
    escape-the-scrolling-strip trick as .var-combo-list/.file-menu.
    #447 deleted this block with the curated filter model; it came back with the
-   control, minus the per-field source-status rules (.is-waiting/.is-stale) that
-   belonged to the Filter-source machine rather than to the control. */
+   control, without the Filter-source state machine that belonged to the prior
+   curated-filter implementation. */
 .ms-field { grid-column: 2; display: inline-flex; }
 .ms-trigger {
   display: inline-flex; align-items: center;
@@ -2760,7 +2732,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-categories { display: flex; flex-wrap: wrap; gap: 6px; }
 .docs-chip { font-size: var(--text-label); padding: 3px 9px; border-radius: var(--r-pill); background: var(--bg-chip); color: var(--fg-mute); }
 .docs-field-label { font-size: var(--text-label); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: .03em; color: var(--fg-faint); margin-bottom: 4px; }
-.docs-field-text { font-size: var(--text-body); color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .docs-flags { display: flex; gap: 6px; flex-wrap: wrap; }
 .docs-example-code { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
 /* #314 phase-2 pane elements */

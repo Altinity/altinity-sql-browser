@@ -181,7 +181,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
     e.preventDefault();
     try { actions.showSchemaGraph(JSON.parse(payload)); } catch { /* malformed payload */ }
   });
-  app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'row', dragCtx) });
+  app.dom.editorResultsSplit = h('div', { class: 'row-resize editor-results-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'row', dragCtx) });
 
   const workbenchEl = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.varStrip, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
   queryHost.appendChild(workbenchEl);

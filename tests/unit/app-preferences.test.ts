@@ -32,8 +32,6 @@ describe('save()', () => {
       ['docPanePx', 420, '420'],
       ['sidePanel', 'history', 'history'],
       ['resultRowLimit', 1000, '1000'],
-      ['dashLayout', 'wide', 'wide'],
-      ['dashCols', 3, '3'],
     ];
     for (const [name, value, expected] of cases) {
       deps.saveStr.mockClear();

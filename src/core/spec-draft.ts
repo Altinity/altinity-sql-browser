@@ -5,9 +5,6 @@
 import { cloneJson } from './saved-query.js';
 import {
   createQuerySpecValidationService as _createQuerySpecValidationService,
-  // Kept for parity with the pre-conversion module — unused here, same as
-  // before (spec-schema.js's own export, consumed directly by other modules).
-  querySpecSchemaService,
 } from './spec-schema.js';
 import type { QuerySpecV1 } from '../generated/json-schema.types.js';
 import { hasSameTimeRangeParameter } from './query-time-range.js';

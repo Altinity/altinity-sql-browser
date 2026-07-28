@@ -224,9 +224,8 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- persistence -------------------------------------------------------
   // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
-  // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit/dashLayout/
-  // dashCols, constructible without App/AppState/DOM. Consumers
-  // (dashboard.ts/saved-history.ts/splitters.ts) call `app.prefs.save(name,
+  // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit, constructible
+  // without App/AppState/DOM. Consumers (saved-history.ts/splitters.ts) call `app.prefs.save(name,
   // value)` directly (#276 Phase 5 deleted the flat `App.savePref` delegate);
   // `toggleTheme` below composes `prefs.toggleTheme()` (the state-flip +
   // persist) with its own DOM half.
