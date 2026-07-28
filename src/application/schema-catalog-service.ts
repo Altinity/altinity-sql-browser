@@ -284,6 +284,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // refresh that must retire doc probes/lookups, but it runs alongside the
   // normal schema load during boot and must not retire that schema request.
   let connectionGeneration = 0;
+  // Every metadata/reference/documentation transport for one authenticated
+  // connection shares this signal. Generation checks still fence state writes,
+  // while invalidation aborts the actual requests synchronously so a closed
+  // authenticated scope does not leave catalog work running in the background.
+  let connectionAbort = new AbortController();
   let docGeneration = 0;
   let capability: FunctionsDocCapability | null = null;
   let capabilityProbe: Promise<FunctionsDocCapability | null> | null = null;
@@ -324,10 +329,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (capability) return Promise.resolve(capability);
     if (capabilityProbe) return capabilityProbe; // dedupe concurrent probes
     const gen = docGeneration;
+    const signal = connectionAbort.signal;
     const probe = (async (): Promise<FunctionsDocCapability | null> => {
       await deps.ensureConfig();
       if (gen !== docGeneration) return null;
-      const cols = await deps.loadFunctionsDocColumns(deps.ctx());
+      const cols = await deps.loadFunctionsDocColumns(deps.ctx(), signal);
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       capabilityProbe = null; // settle: clears the in-flight slot so a `null` result below lets the next lookup batch retry
       if (cols === null) return null; // transient/denied probe failure — NOT cached into `capability`
@@ -348,10 +354,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const inflight = structuredCapabilityProbe.get(kind);
     if (inflight) return inflight; // dedupe concurrent probes for the SAME kind
     const gen = docGeneration;
+    const signal = connectionAbort.signal;
     const probe = (async (): Promise<StructuredDocCapability | null> => {
       await deps.ensureConfig();
       if (gen !== docGeneration) return null;
-      const cols = await deps.loadDocTableColumns(deps.ctx(), STRUCTURED_PROBE_TABLE[kind]);
+      const cols = await deps.loadDocTableColumns(deps.ctx(), STRUCTURED_PROBE_TABLE[kind], signal);
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       structuredCapabilityProbe.set(kind, null); // settle: clears the in-flight slot so a `null` result lets the next batch retry
       if (cols === null) return null; // transient/denied probe failure — NOT cached
@@ -390,10 +397,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
       return Promise.resolve(null); // unavailable NOW, no query — re-evaluated on the next lookup
     }
     const gen = docGeneration;
+    const signal = connectionAbort.signal;
     const probe = (async (): Promise<DocumentationCapability | null> => {
       await deps.ensureConfig();
       if (gen !== docGeneration) return null;
-      const cols = await deps.loadDocTableColumns(deps.ctx(), 'documentation');
+      const cols = await deps.loadDocTableColumns(deps.ctx(), 'documentation', signal);
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       docsCapabilityProbe = null; // settle: clears the in-flight slot so a `null` result below lets the next lookup batch retry
       if (cols === null) return null; // transient/denied probe failure — NOT cached into `docsCapability`
@@ -414,9 +422,10 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (!cap.available) return { lookup: { status: 'unavailable' }, cacheable: true }; // durably-confirmed absent/denied capability
     // `cap.available` guarantees `buildFunctionDocSelect` returns a SELECT, not null.
     const sql = buildFunctionDocSelect(cap, target.name, deps.sqlString)!;
+    const signal = connectionAbort.signal;
     await deps.ensureConfig();
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
-    const rows = await deps.loadFunctionDocRow(deps.ctx(), sql);
+    const rows = await deps.loadFunctionDocRow(deps.ctx(), sql, signal);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
     if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
@@ -443,9 +452,10 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (!cap.available) return { lookup: { status: 'unavailable' }, cacheable: true }; // durably-confirmed absent/denied capability
     // `cap.available` guarantees `buildStructuredDocSelect` returns a SELECT, not null.
     const sql = buildStructuredDocSelect(kind, cap, target.name, deps.sqlString)!;
+    const signal = connectionAbort.signal;
     await deps.ensureConfig();
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
-    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    const rows = await deps.loadDocRow(deps.ctx(), sql, signal);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
     if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
@@ -471,9 +481,10 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (!cap.available) return { lookup: { status: 'unavailable' }, cacheable: true }; // durably-confirmed absent/denied/pre-26.6
     const sql = buildDocumentationSelect(cap, target.kind, target.name, deps.sqlString);
     if (sql === null) return { lookup: { status: 'missing' }, cacheable: true }; // no server `type` label for this kind
+    const signal = connectionAbort.signal;
     await deps.ensureConfig();
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
-    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    const rows = await deps.loadDocRow(deps.ctx(), sql, signal);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
     if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
@@ -539,6 +550,12 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
         entryCache.delete(key); // transient/stale — no durable entry, next call retries
       }
       return result.lookup;
+    }).catch(() => {
+      // Editor callbacks retain this promise; network cancellation (and any
+      // other transient loader failure) must stay best-effort, never become
+      // an unhandled/rejected hover or reference callback.
+      if (entryCache.get(key) === promise) entryCache.delete(key);
+      return { status: 'unavailable' };
     });
     entryCache.set(key, promise); // dedupe concurrent lookups of the same key
     return promise;
@@ -614,6 +631,9 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
         documentationCache.delete(key);
       }
       return result.lookup;
+    }).catch(() => {
+      if (documentationCache.get(key) === promise) documentationCache.delete(key);
+      return { status: 'unavailable' };
     });
     documentationCache.set(key, promise);
     return promise;
@@ -632,9 +652,10 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (!cap.available) return { status: 'unavailable' }; // durably-confirmed absent/denied/pre-26.6
     // `cap.available` guarantees `buildDocumentationNameSelect` returns a SELECT, not null.
     const sql = buildDocumentationNameSelect(cap, name, deps.sqlString)!;
+    const signal = connectionAbort.signal;
     await deps.ensureConfig();
     if (gen !== docGeneration) return { status: 'unavailable' };
-    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    const rows = await deps.loadDocRow(deps.ctx(), sql, signal);
     if (gen !== docGeneration) return { status: 'unavailable' };
     if (rows === null) return { status: 'unavailable' }; // transient row-fetch failure
     if (rows.length === 0) return { status: 'missing' };
@@ -652,6 +673,9 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const promise = resolveDisambiguate(name, gen).then((result) => {
       if (disambiguateInFlight.get(name) === promise) disambiguateInFlight.delete(name);
       return result;
+    }).catch(() => {
+      if (disambiguateInFlight.get(name) === promise) disambiguateInFlight.delete(name);
+      return { status: 'unavailable' } as DocLookup<DocSummary[]>;
     });
     disambiguateInFlight.set(name, promise);
     return promise;
@@ -659,10 +683,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
 
   async function loadVersion(): Promise<void> {
     const gen = connectionGeneration;
+    const signal = connectionAbort.signal;
     try {
       await deps.ensureConfig();
       if (gen !== connectionGeneration) return;
-      const version = await deps.loadServerVersion(deps.ctx());
+      const version = await deps.loadServerVersion(deps.ctx(), signal);
       if (gen !== connectionGeneration) return;
       state.serverVersion = version;
       hooks.onServerVersionLoaded?.(state.serverVersion);
@@ -671,10 +696,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
 
   async function loadSchemaImpl(): Promise<void> {
     const gen = connectionGeneration;
+    const signal = connectionAbort.signal;
     try {
       await deps.ensureConfig();
       if (gen !== connectionGeneration) return;
-      const schema = await deps.loadSchema(deps.ctx());
+      const schema = await deps.loadSchema(deps.ctx(), signal);
       if (gen !== connectionGeneration) return;
       // One batched write → one repaint (app.ts's schema effect + banner
       // effect react to these signals; no manual renderSchema/updateBanner
@@ -694,6 +720,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // `tb.columns` stays the completion cache that buildCompletions reads.
   async function loadColumnsImpl(db: string, table: string): Promise<void> {
     const gen = connectionGeneration;
+    const signal = connectionAbort.signal;
     const setCols = (cols: SchemaColumn[] | 'loading'): void => {
       // `.value` is asserted non-null (matches the original untyped behavior
       // verbatim: a null schema here throws, exactly as `null.map(...)` always
@@ -708,7 +735,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     try {
       await deps.ensureConfig();
       if (gen !== connectionGeneration) return;
-      const cols = await deps.loadColumns(deps.ctx(), db, table, deps.sqlString);
+      const cols = await deps.loadColumns(deps.ctx(), db, table, deps.sqlString, signal);
       if (gen !== connectionGeneration) return;
       setCols(cols);
     } catch {
@@ -735,17 +762,31 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     // repopulating the cache for the new one.
     resetDocsState();
     const gen = connectionGeneration;
-    await deps.ensureConfig();
-    if (gen !== connectionGeneration) return;
-    const reference = await deps.loadReferenceData(deps.ctx());
-    if (gen !== connectionGeneration) return;
-    refData = assembleReferenceData(reference);
-    rebuildCompletions();
-    hooks.refreshEditorReference(); // re-highlight with server keywords
+    const signal = connectionAbort.signal;
+    try {
+      await deps.ensureConfig();
+      if (gen !== connectionGeneration) return;
+      const reference = await deps.loadReferenceData(deps.ctx(), signal);
+      if (gen !== connectionGeneration) return;
+      refData = assembleReferenceData(reference);
+      rebuildCompletions();
+      hooks.refreshEditorReference(); // re-highlight with server keywords
+    } catch (error) {
+      // invalidate() deliberately aborts this best-effort background load.
+      // Preserve the pre-existing contract for unrelated programming errors.
+      if (gen !== connectionGeneration
+        && signal.aborted
+        && (error as { name?: unknown } | null)?.name === 'AbortError') return;
+      throw error;
+    }
   }
 
   function invalidate(): void {
+    // Abort before advancing the generations, so callers observing the close
+    // synchronously see every in-flight network signal become aborted.
+    connectionAbort.abort();
     connectionGeneration++;
+    connectionAbort = new AbortController();
     resetDocsState();
     refData = assembleReferenceData(null);
     batch(() => {

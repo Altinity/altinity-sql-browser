@@ -1240,10 +1240,36 @@ describe('renderApp shell', () => {
   });
   it('suspends and resumes authentication without replacing the in-memory document session', async () => {
     const { app } = rendered();
-    const tab = app.activeTab();
-    tab.sqlDraft = 'SELECT 42';
-    tab.result = { marker: 'retained result' };
-    const resultRef = tab.result;
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const firstTab = app.activeTab();
+    firstTab.sqlDraft = 'SELECT 42';
+    firstTab.dirtySql = true;
+    firstTab.result = { marker: 'first retained result' };
+    app.actions.newTab();
+    const secondTab = app.activeTab();
+    app.sqlEditor.replaceDocument('SELECT 84');
+    app.dom.sqlEditorView!.dispatch({ selection: { anchor: 4 } });
+    await Promise.resolve(); // let CodeMirror's selection observer settle
+    secondTab.specText = '{"name":';
+    secondTab.specParsed = null;
+    secondTab.dirtySpec = true;
+    secondTab.result = { marker: 'second retained result' };
+    app.syncBeforeUnload();
+
+    const tabsRef = app.state.tabs.value;
+    const firstResultRef = firstTab.result;
+    const secondResultRef = secondTab.result;
+    const activeTabId = app.state.activeTabId.value;
+    const nextTabId = app.state.nextTabId;
+    const routeRef = app.sqlRoute;
+    const editorView = app.dom.sqlEditorView;
+    const selection = {
+      anchor: editorView!.state.selection.main.anchor,
+      head: editorView!.state.selection.main.head,
+    };
+    const beforeUnloadListener = addEventListener.mock.calls
+      .find(([type]) => type === 'beforeunload')?.[1] as EventListener | undefined;
+    expect(beforeUnloadListener).toBeTypeOf('function');
     const editorHost = app.dom.sqlEditorHost;
     const resultsRegion = app.dom.resultsRegion;
     const workbench = qs(app.root, '.workbench');
@@ -1256,12 +1282,29 @@ describe('renderApp shell', () => {
     expect(qs(app.root, '.login-screen')).toBeNull();
     expect(qs(app.root, '.auth-host:not([hidden]) .login-inline')).not.toBeNull();
     expect(qs(app.root, '.conn-status').classList.contains('tone-error')).toBe(true);
-    expect(app.activeTab()).toBe(tab);
-    expect(tab.sqlDraft).toBe('SELECT 42');
-    expect(tab.result).toBe(resultRef);
+    expect(app.state.tabs.value).toBe(tabsRef);
+    expect(app.state.tabs.value).toEqual([firstTab, secondTab]);
+    expect(app.state.activeTabId.value).toBe(activeTabId);
+    expect(app.state.nextTabId).toBe(nextTabId);
+    expect(app.sqlRoute).toBe(routeRef);
+    expect(app.activeTab()).toBe(secondTab);
+    expect(firstTab.sqlDraft).toBe('SELECT 42');
+    expect(firstTab.dirtySql).toBe(true);
+    expect(firstTab.result).toBe(firstResultRef);
+    expect(secondTab.sqlDraft).toBe('SELECT 84');
+    expect(secondTab.specText).toBe('{"name":');
+    expect(secondTab.dirtySql).toBe(true);
+    expect(secondTab.dirtySpec).toBe(true);
+    expect(secondTab.result).toBe(secondResultRef);
+    expect(app.dom.sqlEditorView).toBe(editorView);
+    expect(app.sqlEditor.getValue()).toBe('SELECT 84');
+    expect(editorView!.state.selection.main).toMatchObject(selection);
     expect(app.dom.sqlEditorHost).toBe(editorHost);
     expect(app.dom.resultsRegion).toBe(resultsRegion);
     expect(qs(app.root, '.workbench')).toBe(workbench);
+    const suspendedUnload = new Event('beforeunload', { cancelable: true });
+    beforeUnloadListener!(suspendedUnload);
+    expect(suspendedUnload.defaultPrevented).toBe(true);
 
     // Server-backed documentation actions share the same auth gate while the
     // local document shell remains usable.
@@ -1275,12 +1318,25 @@ describe('renderApp shell', () => {
     expect(app.executionScope()?.isOpen()).toBe(true);
     expect(qs<HTMLElement>(app.root, '.auth-host').hidden).toBe(true);
     expect(qs(app.root, '.conn-status').classList.contains('tone-success')).toBe(true);
-    expect(app.activeTab()).toBe(tab);
-    expect(tab.result).toBe(resultRef);
+    expect(app.state.tabs.value).toBe(tabsRef);
+    expect(app.activeTab()).toBe(secondTab);
+    expect(firstTab.result).toBe(firstResultRef);
+    expect(secondTab.result).toBe(secondResultRef);
+    expect(secondTab.dirtySql).toBe(true);
+    expect(secondTab.dirtySpec).toBe(true);
+    expect(app.sqlRoute).toBe(routeRef);
+    expect(app.dom.sqlEditorView).toBe(editorView);
+    expect(app.sqlEditor.getValue()).toBe('SELECT 84');
+    expect(editorView!.state.selection.main).toMatchObject(selection);
     expect(app.dom.sqlEditorHost).toBe(editorHost);
     expect(app.dom.resultsRegion).toBe(resultsRegion);
     expect(qs(app.root, '.workbench')).toBe(workbench);
     expect(qs(app.dom.userBtn!, '.user-short').textContent).toBe('demo');
+
+    // Leave no real beforeunload listener behind for later tests.
+    for (const tab of tabsRef) { tab.dirtySql = false; tab.dirtySpec = false; }
+    app.syncBeforeUnload();
+    addEventListener.mockRestore();
   });
   it('reuses an already-open execution scope when resume is requested again', () => {
     const { app } = rendered();

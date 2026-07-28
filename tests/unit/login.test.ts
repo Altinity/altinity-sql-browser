@@ -603,7 +603,12 @@ describe('mountInlineLogin', () => {
     expect(error.textContent).toBe('wrong password');
     expect(error.getAttribute('role')).toBe('alert');
     expect(error.getAttribute('aria-live')).toBe('polite');
-    expect(qs<HTMLButtonElement>(host, '.login-creds .login-btn').textContent).toContain('Connect');
+    const button = qs<HTMLButtonElement>(host, '.login-creds .login-btn');
+    expect(button.textContent).toContain('Connect');
+    expect(button.disabled).toBe(false);
+    click(button); // a current failure leaves the same values available to retry
+    await tick();
+    expect(connect).toHaveBeenCalledTimes(2);
 
     handle.show();
     expect(host.querySelector('.login-error')).toBeNull();
@@ -649,6 +654,106 @@ describe('mountInlineLogin', () => {
     expect(connect).toHaveBeenCalledWith({
       username: 'alice', password: 'fresh-secret', host: 'https://db.example:9440',
     });
+  });
+
+  it('resets a successful Basic submission so the retained mount supports a second recovery cycle', async () => {
+    const connect = vi.fn(async () => {});
+    const app = appWith({ actions: { connect } });
+    const host = document.createElement('div');
+    const handle = mountInlineLogin(app, host);
+    const [user, pass] = qsa<HTMLInputElement>(host, '.login-input');
+    const eye = qs<HTMLButtonElement>(host, '.login-eye');
+    const button = qs<HTMLButtonElement>(host, '.login-creds .login-btn');
+
+    type(user, 'alice');
+    type(pass, 'first-secret');
+    click(eye); // prove a successful cycle also resets password visibility
+    expect(pass.type).toBe('text');
+    click(button);
+    await tick();
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(pass.value).toBe('');
+    expect(pass.type).toBe('password');
+    expect(eye.title).toBe('Show password');
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('Connect');
+
+    handle.hide();
+    handle.show('Expired again');
+    expect(button.disabled).toBe(false);
+    type(pass, 'second-secret');
+    click(button);
+    await tick();
+
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect).toHaveBeenLastCalledWith({
+      username: 'alice', password: 'second-secret', host: '',
+    });
+    expect(pass.value).toBe('');
+    expect(button.disabled).toBe(false);
+  });
+
+  it('does not let a stale successful recovery clear a newer recovery presentation', async () => {
+    let resolveFirst: (() => void) | undefined;
+    const connect = vi.fn(() => new Promise<void>((resolve) => { resolveFirst = resolve; }));
+    const app = appWith({ actions: { connect } });
+    const host = document.createElement('div');
+    const handle = mountInlineLogin(app, host);
+    const [user, pass] = qsa<HTMLInputElement>(host, '.login-input');
+    const button = qs<HTMLButtonElement>(host, '.login-creds .login-btn');
+
+    type(user, 'alice'); type(pass, 'old-secret');
+    click(button);
+    expect(button.disabled).toBe(true);
+    handle.hide(); // actions.connect normally hides the retained recovery host
+    handle.show('Credentials expired again');
+    type(pass, 'new-secret');
+    expect(button.disabled).toBe(false); // a new recovery cycle is immediately usable
+
+    resolveFirst?.();
+    await tick();
+
+    expect(pass.value).toBe('new-secret');
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('Credentials expired again');
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('Connect');
+  });
+
+  it('does not let a stale failed recovery overwrite or block a newer recovery cycle', async () => {
+    let rejectFirst: ((reason?: unknown) => void) | undefined;
+    let attempts = 0;
+    const connect = vi.fn(() => {
+      attempts += 1;
+      return attempts === 1
+        ? new Promise<void>((_resolve, reject) => { rejectFirst = reject; })
+        : Promise.resolve();
+    });
+    const app = appWith({ actions: { connect } });
+    const host = document.createElement('div');
+    const handle = mountInlineLogin(app, host);
+    const [user, pass] = qsa<HTMLInputElement>(host, '.login-input');
+    const button = qs<HTMLButtonElement>(host, '.login-creds .login-btn');
+
+    type(user, 'alice'); type(pass, 'old-secret');
+    click(button);
+    handle.hide();
+    handle.show('Credentials expired again');
+    type(pass, 'fresh-secret');
+
+    rejectFirst?.(new Error('old password rejected'));
+    await tick();
+
+    expect([user.value, pass.value]).toEqual(['alice', 'fresh-secret']);
+    expect(qs<HTMLElement>(host, '.login-error').textContent).toBe('Credentials expired again');
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('Connect');
+
+    click(button); // the current presentation can retry even after old failure settles
+    await tick();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(pass.value).toBe('');
+    expect(button.disabled).toBe(false);
   });
 
   it('does not expose OAuth navigation inline before the recovery checkpoint exists', async () => {

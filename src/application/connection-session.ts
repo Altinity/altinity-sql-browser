@@ -334,13 +334,20 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     if (authMode === 'basic') return Promise.resolve(false);
     const epoch = connectionSignal.value.epoch;
     if (refreshSlot?.epoch === epoch) return refreshSlot.promise;
+    // Bind this refresh to the credential generation that started it. Never
+    // read a replacement epoch's rotated refresh token after config discovery.
+    const refreshTokenForEpoch = refreshTok;
 
     transition({ type: 'begin-refresh', epoch });
     let promise!: Promise<boolean>;
     promise = (async () => {
       try {
         const cfg = await resolveConfig();
-        const tokens = await refreshTokens(fetchFn, cfg, refreshTok);
+        // Discovery/config loading is asynchronous. A newer login may have
+        // installed credentials while it was pending; the old refresh must not
+        // send either generation's token after that boundary.
+        if (connectionSignal.value.epoch !== epoch) return false;
+        const tokens = await refreshTokens(fetchFn, cfg, refreshTokenForEpoch);
         const bearer = bearerFromTokens(tokens, cfg.bearer);
         // A newer credential scope owns the session now. This settlement may
         // neither write tokens nor publish lifecycle state.
@@ -445,8 +452,12 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   async function ensureConfig(): Promise<ResolvedIdpConfig | null> {
     // Basic mode needs no OAuth config — the auth scheme is fixed.
     if (authMode === 'basic') return null;
+    const epoch = connectionSignal.value.epoch;
     try {
       const cfg = await resolveConfig();
+      // A late IdP discovery from an old credential generation cannot rewrite
+      // the replacement session's ClickHouse auth-header policy.
+      if (connectionSignal.value.epoch !== epoch || authMode !== 'oauth') return null;
       chAuthVal = cfg.chAuth;
       basicUserClaimVal = cfg.basicUserClaim || '';
       return cfg;

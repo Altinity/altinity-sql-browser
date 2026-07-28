@@ -109,6 +109,11 @@ function mountLoginControls(
   const cur = app.conn.host();
   let disposed = false;
   let busy: 'sso' | 'creds' | null = null; // guards against double-submit
+  // An inline mount can be retained while a credential sign-in still awaits
+  // its post-connect work. A second auth loss calls `show()` on that same
+  // mount, which must make the old attempt unable to repaint the new recovery
+  // presentation when it eventually settles.
+  let presentationGeneration = 0;
   let showPw = false;
   // A `?host=` URL param pre-fills the credential server address. A non-empty
   // host means credential-only (SSO can only target the serving host), so
@@ -372,18 +377,19 @@ function mountLoginControls(
 
   async function pickOAuth(hh: HostDescriptor): Promise<void> {
     if (disposed || busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
+    const generation = presentationGeneration;
     busy = 'sso';
     hostPicker.disabled = true;
     try {
       await app.actions.login(hh.idp, hh.url);
     } catch (err) {
-      if (disposed) return;
+      if (!ownsPresentation(generation)) return;
       busy = null;
       hostPicker.disabled = false;
       const certGo = certWarn.querySelector<HTMLButtonElement>('.login-cert-go');
       if (certGo) certGo.disabled = false;
       reportError(errMsg(err));
-      if (!disposed) update();
+      if (ownsPresentation(generation)) update();
     }
   }
 
@@ -410,8 +416,36 @@ function mountLoginControls(
 
   function onCredsKey(e: KeyboardEvent): void { if (e.key === 'Enter' && hasCreds()) doConnect(); }
 
+  function resetCredentialsAfterSuccess(): void {
+    busy = null;
+    passInput.value = '';
+    showPw = false;
+    passInput.type = 'password';
+    eyeBtn.title = 'Show password';
+    eyeBtn.replaceChildren(Icon.eye());
+    connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+    setError();
+    update();
+  }
+
+  function ownsPresentation(generation: number): boolean {
+    return !disposed && (mode === 'full' || generation === presentationGeneration);
+  }
+
+  function beginInlinePresentation(): void {
+    presentationGeneration += 1;
+    // The previous recovery action may still be awaiting metadata, but this
+    // presentation is a fresh opportunity to authenticate. Its completion is
+    // fenced by `presentationGeneration`, so release only the local UI here.
+    busy = null;
+    connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+    hostPicker.disabled = false;
+    update();
+  }
+
   async function doConnect(): Promise<void> {
     if (disposed || busy || !hasCreds()) return;
+    const generation = presentationGeneration;
     busy = 'creds';
     connectBtn.disabled = true;
     connectBtn.replaceChildren(h('span', null, 'Connecting…'));
@@ -419,28 +453,30 @@ function mountLoginControls(
       await app.actions.connect({ username: userInput.value, password: passInput.value, host: hostInput.value });
       // Full login mounts the workbench; inline recovery hides this host while
       // retaining the already-mounted document session.
+      if (ownsPresentation(generation)) resetCredentialsAfterSuccess();
     } catch (err) {
-      if (disposed) return;
+      if (!ownsPresentation(generation)) return;
       busy = null;
       connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
       reportError(errMsg(err));
-      if (!disposed) update();
+      if (ownsPresentation(generation)) update();
     }
   }
 
   async function doSso(idpId: string, btn: HTMLButtonElement, label: string): Promise<void> {
     if (disposed || busy) return;
+    const generation = presentationGeneration;
     busy = 'sso';
     btn.disabled = true;
     btn.replaceChildren(h('span', null, 'Redirecting…'));
     try {
       await app.actions.login(idpId);
     } catch (err) {
-      if (disposed) return;
+      if (!ownsPresentation(generation)) return;
       busy = null;
       btn.replaceChildren(Icon.shield(), h('span', null, label));
       reportError(errMsg(err));
-      if (!disposed) update();
+      if (ownsPresentation(generation)) update();
     }
   }
 
@@ -462,6 +498,7 @@ function mountLoginControls(
     container,
     show: (msg?: string) => {
       if (disposed) return;
+      if (mode === 'inline') beginInlinePresentation();
       setError(msg);
       if (mode === 'inline') (target as HTMLElement).hidden = false;
       focus();

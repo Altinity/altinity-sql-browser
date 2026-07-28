@@ -173,6 +173,10 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
     let authExpired = resp.status === 401 || resp.status === 403;
     if (!authExpired && !resp.ok) {
       const peek = await resp.clone().text();
+      // Reading an error body is another async boundary. If this request was
+      // superseded while it was pending, its expiry marker must not start a
+      // refresh against the replacement session's credentials.
+      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
       if (isAuthExpiredBody(peek)) authExpired = true;
     }
     if (authExpired) {
@@ -290,11 +294,14 @@ async function querySystemAware<T = Record<string, unknown>>(ctx: ChCtx, sqlBody
  * schema load or, via `ctx.dataLakeCatalogSettingUnsupported`, hiding every
  * other catalog too.
  */
-async function loadDataLakeCatalogTableNames(ctx: ChCtx, db: string): Promise<string[]> {
+async function loadDataLakeCatalogTableNames(ctx: ChCtx, db: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const json = await querySystemAware<{ name: string }>(ctx, `SELECT database, name FROM system.tables WHERE database = ${sqlString(db)}`);
+    const json = await querySystemAware<{ name: string }>(ctx, `SELECT database, name FROM system.tables WHERE database = ${sqlString(db)}`, signal);
     return (json.data || []).map((r) => r.name);
-  } catch {
+  } catch (e) {
+    // A catalog database is best-effort, but cancellation belongs to the
+    // whole schema load and must stop its sibling fan-out too.
+    if (isAbort(e, signal)) throw e;
     return [];
   }
 }
@@ -331,8 +338,8 @@ export async function killQueryWithLease(
 }
 
 /** Fetch `version()` + `uptime()`. Returns the version string ('' on shape miss). */
-export async function loadServerVersion(ctx: ChCtx): Promise<string> {
-  const json = await queryJson<{ v?: string; u?: number }>(ctx, 'SELECT version() AS v, uptime() AS u FORMAT JSON');
+export async function loadServerVersion(ctx: ChCtx, signal?: AbortSignal): Promise<string> {
+  const json = await queryJson<{ v?: string; u?: number }>(ctx, 'SELECT version() AS v, uptime() AS u FORMAT JSON', signal);
   const row = (json.data && json.data[0]) || {};
   return row.v || '';
 }
@@ -382,12 +389,12 @@ interface TableStatsRow { database: string; name: string; total_rows: number | s
  *
  * Returns [{ db, comment, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
-export async function loadSchema(ctx: ChCtx): Promise<SchemaDb[]> {
+export async function loadSchema(ctx: ChCtx, signal?: AbortSignal): Promise<SchemaDb[]> {
   const dbJson = await queryJson<DbRow>(ctx,
     "SELECT name, comment, engine FROM system.databases\n" +
     "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
     'ORDER BY name\n' +
-    'FORMAT JSON');
+    'FORMAT JSON', signal);
   const dbRows = dbJson.data || [];
   const catalogDbs = dbRows.filter((r) => r.engine === 'DataLakeCatalog').map((r) => r.name);
   const exclude = ['INFORMATION_SCHEMA', 'information_schema', ...catalogDbs].map(sqlString).join(', ');
@@ -399,8 +406,8 @@ export async function loadSchema(ctx: ChCtx): Promise<SchemaDb[]> {
       'FROM system.tables\n' +
       `WHERE database NOT IN (${exclude})\n` +
       "ORDER BY database, startsWith(name, '_'), name\n" +
-      'FORMAT JSON'),
-    Promise.all(catalogDbs.map(async (db) => ({ db, names: await loadDataLakeCatalogTableNames(ctx, db) }))),
+      'FORMAT JSON', signal),
+    Promise.all(catalogDbs.map(async (db) => ({ db, names: await loadDataLakeCatalogTableNames(ctx, db, signal) }))),
   ]);
   const byDb = new Map<string, { comment: string; tables: SchemaTable[] }>();
   for (const r of dbRows) byDb.set(r.name, { comment: r.comment || '', tables: [] });
@@ -546,12 +553,12 @@ export async function loadSchemaLineage(ctx: ChCtx, focus: LineageFocus | null |
 }
 
 /** Load the columns of one table. Returns [{name,type,comment}]. */
-export async function loadColumns(ctx: ChCtx, db: string, table: string, sqlString: SqlStringFn): Promise<{ name: string; type: string; comment: string }[]> {
+export async function loadColumns(ctx: ChCtx, db: string, table: string, sqlString: SqlStringFn, signal?: AbortSignal): Promise<{ name: string; type: string; comment: string }[]> {
   const sql =
     'SELECT name, type, comment FROM system.columns ' +
     'WHERE database = ' + sqlString(db) + ' AND table = ' + sqlString(table) + ' ' +
     'ORDER BY position';
-  const json = await querySystemAware<{ name: string; type: string; comment?: string }>(ctx, sql);
+  const json = await querySystemAware<{ name: string; type: string; comment?: string }>(ctx, sql, signal);
   return (json.data || []).map((r) => ({ name: r.name, type: r.type, comment: r.comment || '' }));
 }
 
@@ -837,14 +844,14 @@ interface FormatRow { name: string }
  * Returns { keywords, functions, formats } — each null when its source is
  * missing/denied (the caller falls back to a built-in set).
  */
-export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
-  const kw = await tryQueryData<KeywordRow>(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON');
+export async function loadReferenceData(ctx: ChCtx, signal?: AbortSignal): Promise<ReferenceData> {
+  const kw = await tryQueryData<KeywordRow>(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON', signal);
   const keywords = kw ? kw.map((r) => r.keyword) : null;
   // Prefer the `syntax` column (modern ClickHouse) for signature help; fall back
   // to the minimal shape when it doesn't exist (older servers) so we still get
   // names for highlighting + completion.
-  const fn = await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate, syntax FROM system.functions FORMAT JSON')
-    || await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON');
+  const fn = await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate, syntax FROM system.functions FORMAT JSON', signal)
+    || await tryQueryData<FunctionRow>(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON', signal);
   let functions: Record<string, RefFunctionEntry> | null = null;
   if (fn) {
     functions = {};
@@ -859,7 +866,7 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
   }
   // Output format names for FORMAT-clause completion (system.formats); a separate
   // catalog from keywords/functions, so it needs its own fetch.
-  const fmts = await tryQueryData<FormatRow>(ctx, 'SELECT name FROM system.formats WHERE is_output ORDER BY name FORMAT JSON');
+  const fmts = await tryQueryData<FormatRow>(ctx, 'SELECT name FROM system.formats WHERE is_output ORDER BY name FORMAT JSON', signal);
   const formats = fmts ? fmts.map((r) => r.name) : null;
   return { keywords, functions, formats };
 }
@@ -900,11 +907,11 @@ const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
   documentation: 'documentation',
 };
 
-export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<string[] | null> {
+export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable, signal?: AbortSignal): Promise<string[] | null> {
   const tableName = DOC_PROBE_TABLE_NAMES[table];
   return tryQueryData<{ name: string }>(
     ctx,
-    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON',
+    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON', signal,
   ).then((rows) => (rows === null ? null : rows.map((r) => r.name)));
 }
 
@@ -915,22 +922,22 @@ export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<s
  * on failure — transient, the caller must not cache it — the (possibly empty,
  * on no match) row array otherwise.
  */
-export function loadDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
-  return tryQueryData<Record<string, unknown>>(ctx, sql);
+export function loadDocRow(ctx: ChCtx, sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
+  return tryQueryData<Record<string, unknown>>(ctx, sql, signal);
 }
 
 /** #313's `system.functions`-specific capability probe — a thin wrapper over
  *  the generalized `loadDocTableColumns` (#314). Kept as its own export so
  *  `SchemaCatalogDeps`/existing call sites and tests don't need to change. */
-export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
-  return loadDocTableColumns(ctx, 'functions');
+export function loadFunctionsDocColumns(ctx: ChCtx, signal?: AbortSignal): Promise<string[] | null> {
+  return loadDocTableColumns(ctx, 'functions', signal);
 }
 
 /** #313's `system.functions`-specific row loader — a thin wrapper over the
  *  generalized `loadDocRow` (#314). Kept as its own export for the same
  *  reason as `loadFunctionsDocColumns` above. */
-export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
-  return loadDocRow(ctx, sql);
+export function loadFunctionDocRow(ctx: ChCtx, sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
+  return loadDocRow(ctx, sql, signal);
 }
 
 /** `exportQuery`'s options. */

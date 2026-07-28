@@ -281,6 +281,32 @@ describe('authedFetch', () => {
     expect(ctx.onSignedOut).not.toHaveBeenCalled();
     expect(onTransportOffline).not.toHaveBeenCalled();
   });
+  it('does not refresh a replacement epoch after delayed body classification', async () => {
+    let epoch = 1;
+    const body = deferred<string>();
+    const bodyStarted = deferred<void>();
+    const response: FakeResponse = {
+      ok: false,
+      status: 500,
+      text: async () => {
+        bodyStarted.resolve();
+        return body.promise;
+      },
+      clone() { return this; },
+    };
+    const ctx = ctxWith(async () => response, {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => true),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await bodyStarted.promise;
+    epoch = 2;
+    body.resolve('jwt::token_verification_exception');
+
+    expect((await pending).status).toBe(500);
+    expect(ctx.refresh).not.toHaveBeenCalled();
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
   it('does not retry or sign out when refresh settles after its request becomes stale', async () => {
     let epoch = 1;
     const refresh = deferred<boolean>();
@@ -427,6 +453,37 @@ describe('loadServerVersion', () => {
   });
 });
 
+describe('catalog loader cancellation signals', () => {
+  it('forwards one caller signal through metadata, catalog fan-out, reference fallbacks, and documentation loaders', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(async (_url, init) => {
+      if (init.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      }
+      // Force loadReferenceData's syntax-query compatibility fallback.
+      if (init.body.includes('system.functions') && init.body.includes('syntax')) {
+        return textResp('Unknown identifier syntax', false, 500);
+      }
+      return jsonResp({ data: [] });
+    });
+
+    await loadServerVersion(ctx, controller.signal);
+    await loadSchema(ctx, controller.signal);
+    await loadColumns(ctx, 'ice', 'orders', sqlString, controller.signal);
+    await loadReferenceData(ctx, controller.signal);
+    await loadDocTableColumns(ctx, 'documentation', controller.signal);
+    await loadDocRow(ctx, 'SELECT 1 FORMAT JSON', controller.signal);
+    await loadFunctionsDocColumns(ctx, controller.signal);
+    await loadFunctionDocRow(ctx, 'SELECT 1 FORMAT JSON', controller.signal);
+
+    expect(ctx.fetchMock.mock.calls.every(([, init]) => init.signal === controller.signal)).toBe(true);
+    const referenceFunctionCalls = ctx.fetchMock.mock.calls.filter(([, init]) => init.body.includes('system.functions'));
+    expect(referenceFunctionCalls).toHaveLength(2);
+    expect(referenceFunctionCalls.every(([, init]) => init.signal === controller.signal)).toBe(true);
+    expect(ctx.fetchMock.mock.calls.some(([, init]) => init.body.includes("database = 'ice'"))).toBe(true);
+  });
+});
+
 describe('byUnderscoreThenName', () => {
   it('sorts underscore-prefixed names after regular ones, either argument order', () => {
     expect(byUnderscoreThenName('_hidden', 'orders')).toBe(1);
@@ -570,6 +627,22 @@ describe('loadSchema', () => {
     expect(schema.find((d) => d.db === 'default')!.tables).toEqual([{ name: 't0', total_rows: '1', total_bytes: '2', comment: '', columns: null }]);
     expect(schema.find((d) => d.db === 'broken')!.tables).toEqual([]);
     expect(schema.find((d) => d.db === 'healthy')!.tables).toEqual([{ name: 't1', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
+  });
+  it('propagates an abort from a catalog-database fan-out instead of treating it as an empty database', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(async (_url, init) => {
+      if (init.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      }
+      if (init.body.includes("database = 'ice'")) {
+        controller.abort();
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return jsonResp({ data: [] });
+    });
+    await expect(loadSchema(ctx, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 

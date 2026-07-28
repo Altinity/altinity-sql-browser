@@ -204,6 +204,29 @@ describe('loadReference', () => {
     await svc.docEntry({ kind: 'function', name: 'count' }); // cache was cleared by loadReference → refetches
     expect(loadFunctionDocRow).toHaveBeenCalledTimes(2);
   });
+
+  it('swallows an AbortError only after invalidation, while unrelated reference failures reject', async () => {
+    const abortingLoad = vi.fn((_ctx: ChCtx, signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {
+      signal!.addEventListener('abort', () => {
+        const error = new Error('connection closed');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const abortingSvc = createSchemaCatalogService(makeDeps({
+      loadReferenceData: abortingLoad as unknown as SchemaCatalogDeps['loadReferenceData'],
+    }));
+    const aborting = abortingSvc.loadReference();
+    await Promise.resolve();
+    abortingSvc.invalidate();
+    await expect(aborting).resolves.toBeUndefined();
+
+    const transportFailure = new Error('reference transport failed');
+    const failingSvc = createSchemaCatalogService(makeDeps({
+      loadReferenceData: vi.fn(async () => { throw transportFailure; }) as unknown as SchemaCatalogDeps['loadReferenceData'],
+    }));
+    await expect(failingSvc.loadReference()).rejects.toBe(transportFailure);
+  });
 });
 
 describe('rebuildCompletions', () => {
@@ -266,6 +289,63 @@ describe('connection invalidation generation', () => {
     expect(deps.loadColumns).not.toHaveBeenCalled();
     expect(deps.loadReferenceData).not.toHaveBeenCalled();
     expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+  });
+
+  it('synchronously aborts active schema, reference, and documentation work and gives the next connection a fresh signal', async () => {
+    const firstSchema = deferred<SchemaDb[]>();
+    const secondSchema = deferred<SchemaDb[]>();
+    const schemaLoads = [firstSchema, secondSchema];
+    const schemaSignals: AbortSignal[] = [];
+    const referenceSignals: AbortSignal[] = [];
+    const docSignals: AbortSignal[] = [];
+    const deps = makeDeps({
+      loadSchema: vi.fn((_ctx: ChCtx, signal?: AbortSignal) => {
+        schemaSignals.push(signal!);
+        return schemaLoads.shift()!.promise;
+      }) as unknown as SchemaCatalogDeps['loadSchema'],
+      loadReferenceData: vi.fn((_ctx: ChCtx, signal?: AbortSignal) => {
+        referenceSignals.push(signal!);
+        return new Promise((_resolve, reject) => {
+          signal!.addEventListener('abort', () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      }) as unknown as SchemaCatalogDeps['loadReferenceData'],
+      loadDocTableColumns: vi.fn((_ctx: ChCtx, _table, signal?: AbortSignal) => {
+        docSignals.push(signal!);
+        return new Promise<string[]>((_resolve, reject) => {
+          signal!.addEventListener('abort', () => {
+            const error = new Error('cancelled');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      }) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const schema = svc.loadSchema();
+    const ref = svc.loadReference();
+    const doc = svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    await Promise.resolve();
+    svc.invalidate();
+
+    expect(schemaSignals[0].aborted).toBe(true);
+    expect(referenceSignals[0].aborted).toBe(true);
+    expect(docSignals[0].aborted).toBe(true);
+
+    firstSchema.resolve([]);
+    await Promise.all([schema, ref]);
+    await expect(doc).resolves.toEqual({ status: 'unavailable' });
+
+    const freshSchema = svc.loadSchema();
+    await Promise.resolve();
+    expect(schemaSignals[1]).not.toBe(schemaSignals[0]);
+    expect(schemaSignals[1].aborted).toBe(false);
+    secondSchema.resolve([]);
+    await freshSchema;
   });
 
   it('does not rebuild schema/columns after a loader itself invalidates the connection', async () => {
@@ -735,7 +815,7 @@ describe('docEntry — #314 structured-source routing', () => {
       status: 'found',
       value: expect.objectContaining({ target: { kind: 'table-engine', name: 'MergeTree' }, title: 'MergeTree' }),
     });
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 
@@ -749,9 +829,9 @@ describe('docEntry — #314 structured-source routing', () => {
     await svc.docEntry({ kind: 'database-engine', name: 'Atomic' });
     await svc.docEntry({ kind: 'data-type', name: 'Int32' });
 
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(1, fakeCtx, 'formats');
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(2, fakeCtx, 'database_engines');
-    expect(loadDocTableColumns).toHaveBeenNthCalledWith(3, fakeCtx, 'data_type_families');
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(1, fakeCtx, 'formats', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(2, fakeCtx, 'database_engines', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(3, fakeCtx, 'data_type_families', expect.any(AbortSignal));
   });
 
   it('probes each structured kind independently, once per kind, and dedupes concurrent probes for the SAME kind', async () => {
@@ -1181,7 +1261,7 @@ describe('#315 system.documentation capability + version policy', () => {
       value: expect.objectContaining({ target: { kind: 'setting', name: 'max_threads' }, renderMode: 'markdown-subset' }),
     });
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
 
     // A second lookup for a different name shares the cached capability.
@@ -1369,7 +1449,7 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     if (result.status === 'found') expect(result.value.sourceTable).not.toBe('documentation');
     // Only the table-engine probe/lookup ran — never a documentation probe.
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
     expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 
@@ -1384,7 +1464,7 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     expect(await svc.docEntry({ kind: 'table-engine', name: 'NopeTree' })).toEqual({ status: 'missing' });
     // Only the table-engine probe ran (once) — no documentation probe.
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
   });
 
   it('a durably-unavailable structured source falls back to system.documentation for the SAME target', async () => {
@@ -1409,8 +1489,8 @@ describe('#315 source preference — structured vs. system.documentation', () =>
         renderMode: 'markdown-subset',
       }),
     });
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
   });
 
   it('a kind with NO structured loader at all ("setting") goes straight to system.documentation', async () => {
@@ -1424,7 +1504,24 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
     expect(result.status).toBe('found');
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
-    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation', expect.any(AbortSignal));
+  });
+
+  it('converts a thrown compact-documentation transport failure to unavailable and clears the entry cache for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('compact documentation transport failed'))
+      .mockResolvedValueOnce([{ name: 'max_threads', type: 'Setting', description: 'x' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docEntry({ kind: 'setting', name: 'max_threads' })).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docEntry({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
   it('docKindAvailable("setting") reflects the documentation capability once probed (no structured loader exists for it)', async () => {
@@ -1507,7 +1604,7 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
       value: expect.objectContaining({ markdown: 'The full markdown body.', renderMode: 'markdown-subset' }),
     });
     // The structured table-engine loader was never consulted by docMarkdown.
-    expect(loadDocTableColumns).not.toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).not.toHaveBeenCalledWith(fakeCtx, 'table_engines', expect.any(AbortSignal));
   });
 
   it('caches found/missing and dedupes concurrent lookups, separately from docEntry', async () => {
@@ -1556,6 +1653,23 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
     expect(await svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
     const second = await svc.docMarkdown({ kind: 'setting', name: 'max_threads' });
     expect(second.status).toBe('found');
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
+  });
+
+  it('converts a thrown transport failure to unavailable and clears the Markdown cache for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('markdown transport failed'))
+      .mockResolvedValueOnce([{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
     expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
@@ -1659,6 +1773,23 @@ describe('#315 docDisambiguate — name-only, all kinds', () => {
     expect(await svc.docDisambiguate('Log')).toEqual({ status: 'unavailable' });
     const second = await svc.docDisambiguate('Log');
     expect(second.status).toBe('found');
+  });
+
+  it('converts a thrown disambiguation transport failure to unavailable and releases the name for a retry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocRow = vi.fn()
+      .mockRejectedValueOnce(new Error('disambiguation transport failed'))
+      .mockResolvedValueOnce([{ name: 'Log', type: 'Table Engine', description: 'x' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+
+    await expect(svc.docDisambiguate('Log')).resolves.toEqual({ status: 'unavailable' });
+    await expect(svc.docDisambiguate('Log')).resolves.toMatchObject({ status: 'found' });
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
   });
 
   it('invalidate() mid-flight (during the capability probe) drops a stale docDisambiguate response', async () => {

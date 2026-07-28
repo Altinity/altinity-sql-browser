@@ -426,6 +426,31 @@ describe('refresh (via getToken)', () => {
     expect(onAuthLost).not.toHaveBeenCalled();
   });
 
+  it('does not send a replacement refresh token when config resolves after an epoch change', async () => {
+    const configResponse = deferred<FakeResponse>();
+    let tokenCalls = 0;
+    const { session, storage } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'old-refresh' }),
+      routes: [
+        (url) => (url.endsWith('/config.json') ? configResponse.promise : null),
+        (url) => {
+          if (!url.endsWith('/token')) return null;
+          tokenCalls += 1;
+          return jsonResponse(200, { id_token: 'must-not-be-used' });
+        },
+      ],
+    });
+    const oldGet = session.getToken();
+    await vi.waitFor(() => expect(session.connection.value.kind).toBe('refreshing'));
+    session.setTokens('replacement-token', 'replacement-refresh');
+    configResponse.resolve(jsonResponse(200, CONFIG_DOC_RAW));
+
+    await expect(oldGet).resolves.toBe('replacement-token');
+    expect(tokenCalls).toBe(0);
+    expect(storage.getItem('oauth_id_token')).toBe('replacement-token');
+    expect(storage.getItem('oauth_refresh_token')).toBe('replacement-refresh');
+  });
+
   it('does not let an old finally clear a newer epoch refresh slot', async () => {
     const oldResponse = deferred<FakeResponse>();
     const newResponse = deferred<FakeResponse>();
@@ -565,6 +590,27 @@ describe('ensureConfig', () => {
     const { session, fetchMock } = setup({ storage: memStorage({ ch_basic_auth: 'YWJj' }) });
     await expect(session.ensureConfig()).resolves.toBeNull();
     expect(fetchMock.calls.length).toBe(0);
+  });
+
+  it('does not let old discovery rewrite a replacement epoch auth-header policy', async () => {
+    const discovery = deferred<FakeResponse>();
+    const { session, fetchMock } = setup({
+      storage: memStorage({ oauth_id_token: validToken, oauth_idp: 'basicidp' }),
+      routes: [(url) => (url.includes('issuer2.example/.well-known/') ? discovery.promise : null)],
+    });
+    const oldEnsure = session.ensureConfig();
+    await vi.waitFor(() => expect(fetchMock.calls.some((url) => url.includes('issuer2.example/.well-known/'))).toBe(true));
+
+    session.selectIdp('g');
+    session.setTokens('replacement-token', 'replacement-refresh');
+    discovery.resolve(jsonResponse(200, {
+      authorization_endpoint: 'https://issuer2.example/authorize',
+      token_endpoint: 'https://issuer2.example/token',
+    }));
+
+    await expect(oldEnsure).resolves.toBeNull();
+    expect(session.chAuth()).toBe('bearer');
+    expect(session.basicUserClaim()).toBe('');
   });
 });
 

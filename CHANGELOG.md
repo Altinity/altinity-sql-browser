@@ -22,7 +22,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   editor/tab/result objects, drafts, dirty state, route, and unload guard survive while the
   header turns red and the existing authentication controls appear inline.
   Successful Basic reauthentication installs a fresh scope and reloads
-  connection metadata in place; explicit Log out remains destructive.
+  connection metadata in place; its reusable inline form clears the password,
+  resets submission state, and hides password visibility after success, ready
+  for a later recovery. Inline OAuth deliberately remains unavailable until the
+  Phase 3 checkpoint; explicit Log out remains destructive.
+  Async error-body classification and config discovery are epoch-fenced; refresh
+  authority snapshots its epoch and rechecks it after config discovery before
+  token-endpoint I/O, so stale discovery cannot replace a newer auth-header
+  policy. Catalog, schema, reference, and docs transports share a
+  connection-generation abort signal: `invalidate()` aborts them synchronously,
+  while stale writes remain fenced.
 - **Connection state now has one explicit, epoch-fenced lifecycle** (#512
   phase 1). OAuth/Basic credentials, single-flight token refresh, transport
   success/failure, auth loss, reauthentication, and explicit sign-out flow
