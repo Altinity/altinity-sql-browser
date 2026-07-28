@@ -310,8 +310,8 @@ test.describe('Dashboard hierarchy tree', () => {
   // #472: "focus styling must visibly distinguish the disclosure control from the
   // navigation target from the trailing action". happy-dom can see none of this, and
   // `:focus-visible` only applies under real keyboard modality — so it has to be a
-  // real Tab walk in a real browser. Which doubles as proof that all four targets
-  // (#429 phase 3 added the rename pencil) are keyboard-reachable, in row order,
+  // real Tab walk in a real browser. Which doubles as proof that all five targets
+  // (#515 added the plus before the rename pencil) are keyboard-reachable, in row order,
   // within ONE composite tab stop.
   test('Tab walks the row, its chevron and its trailing actions, each ringed differently', async ({ page }) => {
     await open(page);
@@ -336,15 +336,17 @@ test.describe('Dashboard hierarchy tree', () => {
     await page.keyboard.press('Tab');
     const chevron = await ring();
     await page.keyboard.press('Tab');
+    const plus = await ring();
+    await page.keyboard.press('Tab');
     const pencil = await ring();
     await page.keyboard.press('Tab');
     const trash = await ring();
 
-    // #494: the trailing target became a CLUSTER — pencil then trash, the
-    // destructive one last — and Tab reaches both inside the one composite
-    // tab stop, in paint order.
-    expect([row.what, chevron.what, pencil.what, trash.what]).toEqual([
-      'workspace:sales', 'chevron', 'Edit dashboard Sales revenue', 'Delete dashboard Sales revenue',
+    // #515: the cluster is plus, pencil, trash — destructive last — and Tab
+    // reaches all three inside the one composite tab stop, in paint order.
+    expect([row.what, chevron.what, plus.what, pencil.what, trash.what]).toEqual([
+      'workspace:sales', 'chevron', 'Add panel to Sales revenue',
+      'Edit dashboard Sales revenue', 'Delete dashboard Sales revenue',
     ]);
     // The row rings with a box-shadow and no outline; the chevron with an outline and
     // no shadow. Different channels, so neither reads as the other — and neither
@@ -353,6 +355,7 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(row.outline).toBe('none');
     expect(chevron.outline).toContain('solid');
     expect(chevron.shadow).toBe('none');
+    expect(plus.outline).not.toBe(chevron.outline);
     expect(pencil.outline).not.toBe(chevron.outline);
     expect(trash.outline).not.toBe(chevron.outline);
     // Nothing was opened or expanded by walking the row.
@@ -854,10 +857,11 @@ test.describe('direct row actions (#494)', () => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     // Tab to the pencil the way a keyboard user reaches it — row, chevron,
-    // pencil — rather than calling `.click()`, which is what let the #495
+    // plus, pencil — rather than calling `.click()`, which is what let the #495
     // review defect through: the tree's own Enter handler runs on the LIST and
     // would otherwise navigate instead.
     await treeRow(page, 'workspace:sales').focus();
+    await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await expect(treeRow(page, 'workspace:sales')
@@ -875,8 +879,9 @@ test.describe('direct row actions (#494)', () => {
     await treeRow(page, 'workspace:sales').focus();
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
     await page.keyboard.press('Space');
-    await expect(page.locator('.fm-dialog-card')).toHaveCount(1);
+    await expect(page.getByRole('dialog', { name: 'Edit dashboard' })).toBeVisible();
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
     await page.keyboard.press('Escape');
   });
@@ -984,7 +989,7 @@ test.describe('direct row actions (#494)', () => {
 
   // #494: "narrow sidebar layout must preserve the label's usable width and
   // ellipsis rather than overlapping or wrapping the controls". Two revealed
-  // buttons per row is one more than #429 phase 3 had, and happy-dom can see
+  // buttons per row is two more than #429 phase 3 had, and happy-dom can see
   // none of this — only a real layout can.
   test('a long title still ellipsizes in a narrow pane with the cluster revealed', async ({ page }) => {
     await open(page, 900);
@@ -1007,13 +1012,13 @@ test.describe('direct row actions (#494)', () => {
         // No control sits on top of the label…
         overlap: acts.some((act) => act.getBoundingClientRect().left < labelBox.right - 0.5),
         // …and, the assertion that actually bites: the label SHRINKS to make
-        // room, so both controls stay inside the visible pane instead of being
+        // room, so all controls stay inside the visible pane instead of being
         // pushed off its right edge where nothing can reach them.
         spilled: acts.filter((act) => act.getBoundingClientRect().right > listBox.right + 0.5).length,
         rowOverflow: el.scrollWidth - list.clientWidth,
       };
     });
-    expect(box.actCount).toBe(2);
+    expect(box.actCount).toBe(3);
     expect(box.lines).toBeLessThanOrEqual(24);
     expect(box.clipped).toBe(true);
     expect(box.overlap).toBe(false);

@@ -32,6 +32,9 @@ export interface DialogHostApp {
 
 export interface OpenDialogShellOpts {
   extraCardClass?: string;
+  /** Refuse user-initiated close paths while this returns false. Application
+   *  teardown still force-closes through `closeOpenDialogShell()`. */
+  canClose?: () => boolean;
   /**
    * Where focus goes when the dialog closes — `null` when there is nothing to
    * remember (the trigger is already gone by the time the dialog mounts, as
@@ -63,7 +66,7 @@ export interface OpenDialogShellOpts {
   onClose?: () => void;
 }
 
-let openHandle: { backdrop: Element; close: () => void } | null = null;
+let openHandle: { backdrop: Element; forceClose: () => void } | null = null;
 
 /** Distinguishes one dialog's `aria-labelledby` target from the next one's.
  *  Module-local and monotonic — never reset — so a stale dialog being torn
@@ -74,7 +77,7 @@ let dialogSeq = 0;
  *  the same teardown every surface transition already runs for anchored
  *  popovers and the doc pane. A no-op when nothing is open. */
 export function closeOpenDialogShell(): void {
-  openHandle?.close();
+  openHandle?.forceClose();
 }
 
 export function openDialogShell(
@@ -98,8 +101,9 @@ export function openDialogShell(
   // that second call would restore focus (stealing it from behind the modal
   // that replaced it) and run the caller's `onClose` a second time.
   let torndown = false;
-  const close = (): void => {
+  const close = (force = false): void => {
     if (torndown) return;
+    if (!force && opts.canClose?.() === false) return;
     torndown = true;
     doc.removeEventListener('keydown', onKey, true);
     detachBackdrop();
@@ -147,9 +151,9 @@ export function openDialogShell(
     'aria-labelledby': titleId,
   }, h('div', { class: 'fm-dialog-title', id: titleId }, title), content);
   backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
-  const detachBackdrop = attachBackdropClose(backdrop, close);
-  const handle: DialogHandle = { close };
-  openHandle = { backdrop, close };
+  const detachBackdrop = attachBackdropClose(backdrop, () => close());
+  const handle: DialogHandle = { close: () => close() };
+  openHandle = { backdrop, forceClose: () => close(true) };
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
   return handle;
@@ -183,6 +187,18 @@ export interface MetadataDialogOpts {
   returnFocusTo: OpenDialogShellOpts['returnFocusTo'];
   onClose?: () => void;
   /**
+   * Runs only after a successful confirm has closed and fully torn down the
+   * dialog. Navigation that focuses a new destination belongs here, otherwise
+   * the dialog's return-focus step can steal focus back to its old trigger.
+   */
+  onSuccessAfterClose?: () => void;
+  /**
+   * Disable every user close path while confirm is in flight. Use this when
+   * the commit creates a durable resource, so closing cannot imply that an
+   * already-started creation was cancelled.
+   */
+  lockCloseWhileConfirming?: boolean;
+  /**
    * Commit the edit. Resolve `null` when it succeeded — the dialog closes —
    * or a message to show, keeping the dialog open with the user's text intact.
    */
@@ -203,8 +219,9 @@ export interface MetadataDialogOpts {
  * unsuccessful outcome keeps the card open, restores its controls and shows
  * ONE diagnostic; only a real commit closes it.
  *
- * While a commit is in flight both buttons are disabled, so the same mutation
- * cannot be submitted twice by an impatient second Enter. If the shell was
+ * While a commit is in flight confirm is disabled, so the same mutation
+ * cannot be submitted twice by an impatient second Enter. Creation callers
+ * may also lock Cancel, Escape and backdrop dismissal. If the shell was
  * force-closed underneath us (a surface transition runs
  * `closeOpenDialogShell()`), the late resolution is dropped rather than
  * writing a diagnostic into a detached card.
@@ -233,13 +250,11 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
   let closed = false;
   let inFlight = false;
   const sync = (): void => {
-    // Only the CONFIRM is barred while a write is in flight — that is what
-    // stops the same mutation being submitted twice. Cancel stays operable, so
-    // the visible way out agrees with Escape and the backdrop, which were never
-    // gated; a dialog whose only escape hatches are invisible reads as wedged.
-    // Closing mid-write is safe: the late answer is dropped below rather than
-    // written into a detached card.
+    // Confirm is always barred while a write is in flight. Most metadata edits
+    // still allow dismissal and drop a late answer; durable creation opts into
+    // locking every user close path until the write answers.
     confirm.disabled = inFlight || nameInput.value.trim() === '';
+    cancel.disabled = opts.lockCloseWhileConfirming === true && inFlight;
   };
   const commit = async (): Promise<void> => {
     const name = nameInput.value.trim();
@@ -252,7 +267,11 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
     if (closed) return;
     inFlight = false;
     sync();
-    if (message === null) { handle.close(); return; }
+    if (message === null) {
+      handle.close();
+      opts.onSuccessAfterClose?.();
+      return;
+    }
     error.textContent = message;
     error.hidden = false;
     nameInput.focus();
@@ -275,6 +294,7 @@ export function openMetadataDialog(app: DialogHostApp, opts: MetadataDialogOpts)
     h('div', { class: 'fm-dialog-actions' }, cancel, confirm),
   ], {
     returnFocusTo: opts.returnFocusTo,
+    canClose: () => opts.lockCloseWhileConfirming !== true || !inFlight,
     onClose: () => { closed = true; opts.onClose?.(); },
   });
   sync();

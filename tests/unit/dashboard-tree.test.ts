@@ -708,10 +708,10 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     // The chevron and every trailing control keep their own, distinct names
     // (`openAll` expanded this row, so its verb is Collapse).
     expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
-    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
-    // …and none of those four names leaks into the row's own (#494 adds three
-    // more labelled buttons per row than #472 measured this against).
-    for (const label of ['Edit dashboard', 'Delete dashboard', 'Collapse']) {
+    expect(actionNames(list, 'w1:sales'))
+      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
+    // …and none of those names leaks into the row's own.
+    for (const label of ['Add panel', 'Edit dashboard', 'Delete dashboard', 'Collapse']) {
       expect(name('w1:sales')).not.toContain(label);
     }
     expect(name('w1:sales:tile:t1')).toBe('Revenue');
@@ -727,9 +727,9 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     vi.advanceTimersByTime(400);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
     expect(app.openDashboard).not.toHaveBeenCalled();
-    // #472's three targets became four (#494): chevron, row, pencil, trash.
+    // Chevron, row, plus, pencil, trash are independent targets.
     expect(row.querySelectorAll('.dash-tree-chev')).toHaveLength(1);
-    expect(row.querySelectorAll('.dash-tree-act')).toHaveLength(2);
+    expect(row.querySelectorAll('.dash-tree-act')).toHaveLength(3);
     vi.useRealTimers();
   });
 });
@@ -759,10 +759,11 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     expect(list.querySelectorAll('[aria-label^="Actions for"]')).toHaveLength(0);
   });
 
-  it('gives the Dashboard row a pencil and a trash, in that order', () => {
+  it('gives the Dashboard row plus, pencil and trash, in that order', () => {
     const { list } = open();
     // Destructive rightmost — never where the pointer lands by habit.
-    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
+    expect(actionNames(list, 'w1:sales'))
+      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
   });
 
   it('gives a Panel row a pencil and a trash that name the panel', () => {
@@ -798,6 +799,8 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
 
   it('marks the destructive one so it can be styled apart from the pencil', () => {
     const { list } = open();
+    expect(actionBtn(list, 'w1:sales', 'Add panel to Sales')!.classList.contains('dash-tree-act-danger'))
+      .toBe(false);
     expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.classList.contains('dash-tree-act-danger'))
       .toBe(false);
     expect(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!.classList.contains('dash-tree-act-danger'))
@@ -813,9 +816,11 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     expect(trash.getAttribute('aria-haspopup')).toBe('menu');
   });
 
-  it('paints the pencil glyph on edit and the trash glyph on delete', () => {
+  it('paints the plus, pencil and trash glyphs on their actions', () => {
     const { list } = open();
     // Swapping the two icons would otherwise pass every other assertion here.
+    expect(actionBtn(list, 'w1:sales', 'Add panel to Sales')!.innerHTML)
+      .toBe(Icon.plus().outerHTML);
     expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.innerHTML)
       .toBe(Icon.pencil().outerHTML);
     expect(actionBtn(list, 'w1:sales', 'Delete dashboard Sales')!.innerHTML)
@@ -1236,6 +1241,172 @@ describe('renderDashboardTree — panel metadata pencil (#494)', () => {
     save().click();
     await settle();
     expect(document.querySelector('.fm-dialog-error')!.textContent).toBe('Storage is full');
+  });
+});
+
+describe('renderDashboardTree — Add panel (#515)', () => {
+  const storedWorkspace = (): StoredWorkspaceV5 => ({
+    storageVersion: 5, id: 'w1', key: 'w1', name: 'Workspace',
+    queries: [query('q1', 'Revenue')],
+    dashboards: [{
+      documentVersion: 2, id: 'sales', title: 'Sales', revision: 4,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      tiles: [{ id: 't1', queryId: 'q1' }],
+    }],
+  });
+  const open = (over: Partial<DashboardTreeApp> = {}) => {
+    let id = 0;
+    const fixture = treeApp({
+      currentWorkspace: storedWorkspace(),
+      genId: vi.fn(() => 'new-' + ++id),
+      ...over,
+    });
+    renderDashboardTree(fixture.app);
+    return fixture;
+  };
+  const plus = (list: HTMLElement): HTMLButtonElement =>
+    actionBtn(list, 'w1:sales', 'Add panel to Sales')!;
+  const nameInput = (): HTMLInputElement =>
+    document.querySelector<HTMLInputElement>('#panel-create-name')!;
+  const descInput = (): HTMLTextAreaElement =>
+    document.querySelector<HTMLTextAreaElement>('#panel-create-description')!;
+  const add = (): HTMLButtonElement =>
+    document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+  it('renders a real dialog button immediately before the pencil', () => {
+    const { list } = open();
+    expect(actionNames(list, 'w1:sales'))
+      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
+    expect(plus(list).getAttribute('aria-haspopup')).toBe('dialog');
+    expect(plus(list).getAttribute('data-act')).toBe('add-panel');
+    expect(plus(list).getAttribute('title')).toBe('Add panel');
+    expect(plus(list).innerHTML).toBe(Icon.plus().outerHTML);
+  });
+
+  it('opens the shared two-field dialog with Add disabled until name is nonblank', () => {
+    const { list } = open();
+    click(plus(list));
+    expect(document.querySelector('.fm-dialog-title')!.textContent).toBe('Add panel');
+    expect(document.querySelector('label[for="panel-create-name"]')!.textContent).toBe('Panel name');
+    expect(document.querySelector('label[for="panel-create-description"]')!.textContent)
+      .toBe('Panel description');
+    expect(nameInput().value).toBe('');
+    expect(descInput().value).toBe('');
+    expect(add().textContent).toBe('Add');
+    expect(add().disabled).toBe(true);
+  });
+
+  it('Cancel changes neither the workspace nor tabs', async () => {
+    const { app, list, committed } = open();
+    const beforeWorkspace = structuredClone(app.currentWorkspace);
+    const beforeTabs = structuredClone(app.state.tabs.value);
+    click(plus(list));
+    nameInput().value = 'Discarded';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    click(document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!);
+    await settle();
+    expect(committed).toEqual([]);
+    expect(app.currentWorkspace).toEqual(beforeWorkspace);
+    expect(app.state.tabs.value).toEqual(beforeTabs);
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+  });
+
+  it('commits, closes, reveals the new row, then opens its linked query', async () => {
+    const { app, list, committed } = open();
+    const openSavedQuery = vi.mocked(app.openSavedQuery);
+    openSavedQuery.mockImplementation(() => {
+      expect(document.querySelector('.fm-dialog-card')).toBeNull();
+      expect(document.activeElement?.getAttribute('data-key')).toBe('w1:sales:tile:new-2');
+    });
+    click(plus(list));
+    nameInput().value = '  New panel  ';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    descInput().value = '  Description  ';
+    add().click();
+    await settle();
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.queries.at(-1)).toMatchObject({
+      id: 'new-1', sql: '', spec: {
+        name: 'New panel', description: 'Description', dashboard: { role: 'panel' },
+      },
+    });
+    expect(committed[0]!.dashboards[0].tiles.at(-1)).toEqual({
+      id: 'new-2', queryId: 'new-1',
+    });
+    expect(app.state.upperRole.value).toBe('dashboards');
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey)
+      .toBe('w1:sales:tile:new-2');
+    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('new-1');
+  });
+
+  it('keeps every dismiss path locked while Add is committing', async () => {
+    let release = (_outcome: Awaited<ReturnType<App['mutateWorkspace']>>): void => {};
+    const mutateWorkspace = vi.fn(() => new Promise<Awaited<ReturnType<App['mutateWorkspace']>>>(
+      (resolve) => { release = resolve; },
+    )) as App['mutateWorkspace'];
+    const { app, list } = open({ mutateWorkspace });
+    click(plus(list));
+    nameInput().value = 'Pending panel';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    add().click();
+
+    const cancel = document.querySelector<HTMLButtonElement>('.fm-dialog-cancel')!;
+    const backdrop = document.querySelector<HTMLElement>('.fm-dialog-backdrop')!;
+    expect(cancel.disabled).toBe(true);
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    }));
+    click(backdrop);
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+
+    release({
+      ok: false,
+      diagnostics: [{ path: [], code: 'storage', message: 'Storage is full', severity: 'error' }],
+    });
+    await settle();
+    expect(cancel.disabled).toBe(false);
+    expect(document.querySelector('.fm-dialog-error')!.textContent).toBe('Storage is full');
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+  });
+
+  it('keeps values and reports a stale target without navigating', async () => {
+    const latest = storedWorkspace();
+    const mutateWorkspace = (async (transform) => {
+      latest.dashboards = [];
+      const transformed = await transform(latest);
+      return { ok: false, aborted: true, data: transformed?.data };
+    }) as App['mutateWorkspace'];
+    const { app, list } = open({ mutateWorkspace });
+    click(plus(list));
+    nameInput().value = 'Kept';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    descInput().value = 'Still here';
+    add().click();
+    await settle();
+
+    expect(document.querySelector('.fm-dialog-card')).not.toBeNull();
+    expect(nameInput().value).toBe('Kept');
+    expect(descInput().value).toBe('Still here');
+    expect(document.querySelector('.fm-dialog-error')!.textContent)
+      .toBe('That dashboard is no longer part of this workspace.');
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+  });
+
+  it('renders the plus unavailable with its reason at the tile limit', () => {
+    const full = storedWorkspace();
+    full.dashboards[0].tiles = Array.from({ length: 100 }, (_, i) => ({
+      id: 't' + i, queryId: 'q' + i,
+    }));
+    const fixture = treeApp({ currentWorkspace: full });
+    renderDashboardTree(fixture.app);
+    const button = plus(fixture.list);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('title'))
+      .toBe('This dashboard already has the maximum of 100 panels, so another panel cannot be added.');
+    click(button);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
   });
 });
 

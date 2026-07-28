@@ -774,6 +774,35 @@ specific: mobile is out of scope for the gesture as a whole, no `isMobile`
 branches were added, and `draggable` stays unconditional on Library and History
 rows so the shipped editor drop is unchanged there.
 
+## Addendum (#515, 2026-07-28): blank Panel creation is one owned aggregate mutation
+
+A Dashboard row now places **Add panel** immediately before its edit and delete
+actions. This is not Library assignment: the two-field dialog supplies the new
+query's name and optional description, and the command constructs a blank
+`spec.dashboard.role: "panel"` query directly. No Library source is resolved,
+copied, favorited, or modified.
+
+The pure candidate builder lives in `dashboard/application`, while its
+read-latest-at-dequeue wrapper and injected id generation live in
+`application`. Query and tile ids are minted once per Add attempt. Inside the
+queued transform the command strictly re-resolves the Dashboard, re-checks the
+100-tile limit, rejects workspace-wide query-id and Dashboard-local tile-id
+collisions, appends the query, and delegates tile creation to
+`add-query-instance`. That canonical path remains the sole owner of initial
+placement, layout normalization, and grid-fallback regeneration. The target
+Dashboard revision advances once; every unrelated query and Dashboard is
+retained unchanged. Aggregate validation and persistence see one candidate, so
+an orphan query or dangling tile is never published on failure.
+
+Success settlement is deliberately a post-dialog-close callback. The dialog
+first tears down and performs its ordinary return-focus step; only then does
+the tree reveal the new Panel and call the existing saved-query open path.
+That path switches to the Query surface, seeds the linked tab's committed-token
+baseline, and focuses the SQL editor, so dialog teardown cannot steal focus back
+to the hidden plus trigger. Cancel, Escape, backdrop close, stale targets,
+collisions, validation errors, and persistence failures perform no navigation;
+failed writes keep the entered values and diagnostic in the open dialog.
+
 ## Addendum (#465, 2026-07-27): Test's shape check is re-hosted on Run, not re-invented
 
 The #457 addendum above ("Losing Test is accepted...") deferred re-hosting the

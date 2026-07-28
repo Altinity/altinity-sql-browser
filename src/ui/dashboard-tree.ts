@@ -52,6 +52,10 @@ import { commitPanelQueryMetadata } from '../application/dashboard-panel-metadat
 import type {
   PanelMetadataDeps, PanelMetadataOutcome,
 } from '../application/dashboard-panel-metadata.js';
+import {
+  createDashboardPanel, panelCreationMessage,
+} from '../application/panel-creation-service.js';
+import type { PanelCreationData } from '../application/panel-creation-service.js';
 import { closeOpenDialogShell, openMetadataDialog } from './dialog-shell.js';
 import {
   assignLibraryQuerySqlToVariable, assignLibraryQueryToPanel, libraryAssignmentMessage,
@@ -841,7 +845,8 @@ function buildActionButton(
   // to look and announce like a delete (#494 — a row's vocabulary must not
   // change with availability), and its `confirm` is null precisely because it
   // will never be asked.
-  const destructive = act.kind !== 'edit-dashboard' && act.kind !== 'edit-panel';
+  const destructive = act.kind !== 'add-panel'
+    && act.kind !== 'edit-dashboard' && act.kind !== 'edit-panel';
   const trigger: HTMLButtonElement = h('button', {
     class: 'dash-tree-act'
       + (destructive ? ' dash-tree-act-danger' : '')
@@ -866,7 +871,9 @@ function buildActionButton(
       app._dashTreeArbiter?.cancelFor(row.key);
       runAction(app, doc, row, act, trigger);
     },
-  }, act.kind === 'edit-dashboard' || act.kind === 'edit-panel' ? Icon.pencil() : Icon.trash());
+  }, act.kind === 'add-panel'
+    ? Icon.plus()
+    : (act.kind === 'edit-dashboard' || act.kind === 'edit-panel' ? Icon.pencil() : Icon.trash()));
   return trigger;
 }
 
@@ -904,6 +911,7 @@ const returnFocusAfterDialog = (
  *  question above it already named the resource, and "OK" next to a sentence
  *  full of names is where a destructive click gets made by accident. */
 const CONFIRM_LABELS: Record<DashboardTreeActionKind, string> = {
+  'add-panel': '',
   'edit-dashboard': '',
   'edit-panel': '',
   'delete-dashboard': 'Delete dashboard',
@@ -927,6 +935,10 @@ function runAction(
 ): void {
   const target = act.target;
   if (target === null) return;
+  if (act.kind === 'add-panel') {
+    openPanelCreationDialog(app, doc, trigger, row);
+    return;
+  }
   if (act.kind === 'edit-dashboard') { openDashboardMetadataDialog(app, doc, trigger, row); return; }
   if (act.kind === 'edit-panel') {
     openPanelMetadataDialog(app, doc, trigger, row, target as PanelActionTarget);
@@ -939,6 +951,41 @@ function runAction(
  *  are the only carriers of. Narrowed once here rather than with a guard at
  *  each use: the model pairs kind and target by construction. */
 type PanelActionTarget = Extract<DashboardTreeActionTarget, { kind: 'panel' }>;
+
+/** Create a blank owned query + tile, then reveal and open it only after the
+ * dialog has closed so its return-focus step cannot steal focus from SQL. */
+function openPanelCreationDialog(
+  app: DashboardTreeApp, doc: Document, trigger: HTMLButtonElement, row: DashboardTreeRow,
+): void {
+  closeOpenDialogShell();
+  trigger.setAttribute('aria-expanded', 'true');
+  let created: PanelCreationData | null = null;
+  openMetadataDialog({ document: doc, acquireKeyboardOwner: app.acquireKeyboardOwner }, {
+    title: 'Add panel',
+    nameLabel: 'Panel name',
+    descriptionLabel: 'Panel description',
+    name: '',
+    description: '',
+    confirmLabel: 'Add',
+    idPrefix: 'panel-create',
+    lockCloseWhileConfirming: true,
+    returnFocusTo: returnFocusAfterDialog(app, trigger, row.key),
+    onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+    onSuccessAfterClose: () => {
+      revealAssignedPanel(app, row.dashboardId, created!.tileId);
+      app.openSavedQuery(created!.queryId);
+    },
+    onConfirm: async ({ name, description }) => {
+      const outcome = await createDashboardPanel({
+        mutateWorkspace: app.mutateWorkspace,
+        onWorkspaceExternallyChanged: app.onWorkspaceExternallyChanged,
+        genId: app.genId,
+      }, row.dashboardId, name, description);
+      if (outcome.ok) created = outcome.data as PanelCreationData;
+      return panelCreationMessage(outcome);
+    },
+  });
+}
 
 /** Ask before destroying something, anchored on the control that asked. */
 function confirmDestructive(

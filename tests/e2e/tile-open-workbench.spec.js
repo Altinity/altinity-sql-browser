@@ -103,6 +103,66 @@ test('the action is keyboard reachable and activates on Enter', async ({ page })
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-sales', active: true });
 });
 
+test('a Dashboard-row plus creates a blank linked Panel and focuses its SQL editor', async ({ page }) => {
+  await open(page);
+  await roleTab(page, 'Dashboards').click();
+  const dashboard = treeRow(page, 'workspace:sales');
+  const plus = dashboard.locator('.dash-tree-act[aria-label="Add panel to Sales"]');
+
+  // The direct action is a real keyboard target, revealed by focus just like
+  // the adjacent pencil and trash. Start from the row's disclosure control:
+  // the next Tab must be the plus in the declared within-row order.
+  await dashboard.locator('.dash-tree-chev').focus();
+  await page.keyboard.press('Tab');
+  await expect(plus).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(plus).toBeFocused();
+  await expect.poll(() => plus.evaluate((el) => getComputedStyle(el).display)).not.toBe('none');
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'Add panel' });
+  await expect(dialog).toBeVisible();
+  const name = dialog.getByRole('textbox', { name: 'Panel name' });
+  const description = dialog.getByRole('textbox', { name: 'Panel description' });
+  await name.fill('New revenue panel');
+  await description.fill('Created from the tree');
+  await name.focus();
+  await page.keyboard.press('Enter');
+
+  // Settlement happens only after the dialog closes: the linked tab is active,
+  // blank and clean, and focus belongs to the real CodeMirror SQL editor.
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => surface(page)).toBe('query');
+  const active = (await tabs(page)).find((tab) => tab.active);
+  expect(active).toMatchObject({
+    name: 'New revenue panel',
+    sql: '',
+    spec: {
+      name: 'New revenue panel',
+      description: 'Created from the tree',
+      dashboard: { role: 'panel' },
+    },
+    dirtySql: false,
+    dirtySpec: false,
+  });
+  expect(active.savedId).toBeTruthy();
+  expect(active.committedToken).toBeTruthy();
+  await expect(page.locator('.cm-content[data-language="sql"]')).toBeFocused();
+  // The row is addressed by TILE id, not the query id. Its visible existence is
+  // asserted by name after reveal expanded the Panels group.
+  await expect(page.locator('.dash-tree-row', { hasText: 'New revenue panel' })).toHaveCount(1);
+  expect(await page.evaluate(() => window.__libraryIds())).not.toContain(active.savedId);
+
+  // Ordinary linked-query lifecycle from here: typing dirties the tab; Save
+  // updates the owned query and returns it to clean without moving it to Library.
+  await page.keyboard.type('SELECT 42');
+  await expect.poll(async () => (await tabs(page)).find((tab) => tab.active).dirtySql).toBe(true);
+  await page.locator('.save-btn').click();
+  await expect.poll(async () => (await page.evaluate(() => window.__queries()))
+    .find((query) => query.id === active.savedId).sql).toBe('SELECT 42');
+  await expect.poll(async () => (await tabs(page)).find((tab) => tab.active).dirtySql).toBe(false);
+  expect(await page.evaluate(() => window.__libraryIds())).not.toContain(active.savedId);
+});
+
 test('a KPI tile in VIEW mode still exposes a reachable action', async ({ page }) => {
   // The hard case, and the reason this spec exists: a grafana-grid KPI tile is
   // frameless, and its head is an absolutely-positioned `pointer-events: none`

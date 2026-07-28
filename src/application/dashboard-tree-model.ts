@@ -31,6 +31,7 @@ import type { DashboardTreeGroup, DashboardTreeUiState } from '../core/dashboard
 import { encodeKeyPart, groupStateKey } from '../core/dashboard-tree-ui-state.js';
 import { inferDashboardVariables } from '../core/dashboard-variables.js';
 import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
+import { PORTABLE_LIMITS } from '../dashboard/model/portable-limits.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import type { DashboardVariable } from '../core/dashboard-variables.js';
 import type { LibraryDropTarget } from '../core/library-drag.js';
@@ -139,6 +140,7 @@ export type DashboardTreeCommand =
  * answered exactly once, here.
  */
 export type DashboardTreeActionKind =
+  | 'add-panel'
   | 'edit-dashboard'
   | 'delete-dashboard'
   | 'edit-panel'
@@ -440,7 +442,9 @@ const WRONG_ROLE_REASON =
  *  states, applied to the Dashboard identity delete already refuses on
  *  (`dashboard-duplicate` in `removeDashboardDocument`/`removeDashboardPanel`). */
 const AMBIGUOUS_DASHBOARD_REASON =
-  'Two dashboards in this workspace share this id, so it cannot be edited or removed here.';
+  'Two dashboards in this workspace share this id, so neither can be changed here.';
+const DASHBOARD_TILE_LIMIT_REASON =
+  'This dashboard already has the maximum of 100 panels, so another panel cannot be added.';
 /** Two tiles in the SAME Dashboard carry this id — even when they reference
  *  different queries. Each would otherwise look, independently, like that
  *  query's sole owner (`ownersOfQuery` cannot tell them apart), so this is
@@ -653,7 +657,7 @@ export function deriveDashboardTree(
       invalid: null,
       severity: null,
       diagnostic: null,
-      // #494: the Dashboard row's own two direct controls. Its `⋯` menu is
+      // #494/#515: the Dashboard row's own three direct controls. Its `⋯` menu is
       // gone — *Open in Edit* was its last item, and a menu button that opens
       // a one-item menu beside two real controls is chrome, not vocabulary.
       // Shift-click / Shift+Enter remain the Edit gesture (`shift` below).
@@ -664,12 +668,19 @@ export function deriveDashboardTree(
       // commit would only refuse is the exact bug this closes.
       actions: dashboardIdDuplicated
         ? [
+          unavailableAction('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
+            AMBIGUOUS_DASHBOARD_REASON),
           unavailableAction('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
             AMBIGUOUS_DASHBOARD_REASON),
           unavailableAction('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
             AMBIGUOUS_DASHBOARD_REASON),
         ]
         : [
+          ...(tiles.length >= PORTABLE_LIMITS.maxTilesPerDashboard
+            ? [unavailableAction('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
+              DASHBOARD_TILE_LIMIT_REASON)]
+            : [action('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
+              'Add panel', { kind: 'dashboard', dashboardId: dashboard.id })]),
           action('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
             'Edit dashboard title & description', { kind: 'dashboard', dashboardId: dashboard.id }),
           action('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
