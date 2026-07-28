@@ -3,12 +3,15 @@
 // prohibition and narrow-phone visibility difficult to accidentally bypass.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (file) => readFileSync(join(repoRoot, file), 'utf8');
+const sourceFiles = (path) => statSync(path).isFile()
+  ? [path]
+  : readdirSync(path).flatMap((entry) => sourceFiles(join(path, entry)));
 
 describe('connection lifecycle architecture', () => {
   it('never infers lifecycle/readiness from serverVersion in authority or projection modules', () => {
@@ -20,6 +23,22 @@ describe('connection lifecycle architecture', () => {
       'src/ui/app-shell.ts',
     ];
     const violations = authorityFiles.filter((file) => /\bserverVersion\b/.test(read(file)));
+    expect(violations).toEqual([]);
+  });
+
+  it('keeps connection-chip rendering exclusive to the lifecycle projector and header', () => {
+    const owners = new Set([
+      'src/core/connection-lifecycle.ts',
+      'src/ui/app-header.ts',
+      'src/ui/app.types.ts',
+    ]);
+    const projectionPattern =
+      /\bconnStatus\b|connection-(?:state|chip)|data-connection-state|\bprojectConnectionLifecycle\b/;
+    const violations = sourceFiles(join(repoRoot, 'src'))
+      .map((file) => file.slice(repoRoot.length + 1))
+      .filter((file) => /\.(?:ts|tsx|js|mjs)$/.test(file))
+      .filter((file) => !owners.has(file))
+      .filter((file) => projectionPattern.test(read(file)));
     expect(violations).toEqual([]);
   });
 

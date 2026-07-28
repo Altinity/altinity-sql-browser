@@ -199,6 +199,27 @@ for (const relFile of connectionAuthorityFiles) {
   }
 }
 
+// The DOM projection is exclusive too. The retired bridge lived in app.ts:
+// catalog version metadata called back into the composition root, which then
+// mutated the chip. Keep the handle declaration in app.types.ts, but reject
+// every chip selector/projector reference outside its pure projector and
+// header renderer. This catches that exact regression without banning
+// legitimate server-version capability data or the user-menu version label.
+const connectionProjectionOwners = new Set([
+  'src/core/connection-lifecycle.ts',
+  'src/ui/app-header.ts',
+  'src/ui/app.types.ts',
+]);
+const connectionProjectionPattern =
+  /\bconnStatus\b|connection-(?:state|chip)|data-connection-state|\bprojectConnectionLifecycle\b/;
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  if (connectionProjectionOwners.has(relFile)) continue;
+  if (connectionProjectionPattern.test(fs.readFileSync(file, 'utf8'))) {
+    violations.push(`${relFile} → connection-chip projection (issue #512: only app-header may render lifecycle state)`);
+  }
+}
+
 if (violations.length) {
   console.error('check-boundaries: architecture violations:');
   for (const line of violations) console.error(`  ${line}`);
