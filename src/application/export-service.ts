@@ -59,6 +59,10 @@ import { variableDoc } from '../state.js';
 import type { ResultSort } from '../core/sort.js';
 import type { ChCtx, exportQuery, runQuery, killQuery } from '../net/ch-client.js';
 import type { WorkbenchParameterSession } from './workbench-parameter-session.js';
+import type {
+  AuthenticatedExecutionRegistration,
+  AuthenticatedExecutionScope,
+} from './authenticated-execution-scope.js';
 
 // ── File System Access seam (moved from app.ts) ─────────────────────────────
 
@@ -179,6 +183,10 @@ export interface ExportServiceDeps {
   runQuery: typeof runQuery;
   killQuery: typeof killQuery;
   ctx(): ChCtx;
+  /** The disposable authenticated epoch which owns newly-started export work.
+   *  A null scope preserves this application's narrow unit-test seam; normal
+   *  UI entry points only call export while a scope is available. */
+  executionScope(): AuthenticatedExecutionScope | null;
   ensureConfig(): Promise<unknown>;
   /** Resolves the live bearer/basic credential, or null when signed out /
    *  unrefreshable — both export entry points call `ctx().onSignedOut()` and
@@ -254,6 +262,32 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   let exportScriptQueryId: string | null = null;
   let exportScriptCancelled = false;
   let exportScriptTick: ReturnType<typeof setInterval> | null = null;
+  let nextScriptWave = 0;
+  let activeScriptWave: number | null = null;
+
+  function isCurrent(registration: AuthenticatedExecutionRegistration | null): boolean {
+    return registration === null || registration.isCurrent();
+  }
+
+  /** Clear only the direct-export wave which still owns the shared UI flag.
+   *  A late finally from a lost epoch must never turn off a replacement
+   *  export's spinner. */
+  function settleExport(controller: AbortController): void {
+    if (exportAbort !== controller) return;
+    exportAbort = null;
+    exportQueryId = null;
+    deps.state.exporting.value = false;
+  }
+
+  function settleScriptExport(wave: number): void {
+    if (activeScriptWave !== wave) return;
+    if (exportScriptTick != null) clearInterval(exportScriptTick);
+    exportScriptTick = null;
+    exportScriptAbort = null;
+    exportScriptQueryId = null;
+    activeScriptWave = null;
+    deps.state.exporting.value = false;
+  }
 
   // The Export button dispatches by statement count: one statement keeps the
   // rich single-file flow below; more than one opens the script-export flow
@@ -302,8 +336,27 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     // second click while the native dialog is still open is blocked by the
     // guard above — the button's own disabled state (setExportBtn) also
     // reflects this via an effect, but the guard is the authority.
+    const controller = new AbortController();
+    let waveQueryId: string | null = null;
+    let progress: { update(bytes: number): void; remove(): void } | null = null;
+    // Register before the native picker.  Auth can be lost while that modal is
+    // open, and a picker that eventually resolves must not proceed to config,
+    // token, transport, or a late toast in the next authenticated epoch.
+    exportAbort = controller;
+    exportQueryId = null;
     deps.state.exporting.value = true;
+    const registration = deps.executionScope()?.register({
+      name: 'single-file export',
+      abort: () => {
+        controller.abort();
+        progress?.remove();
+        progress = null;
+        settleExport(controller);
+      },
+      getQueryId: () => waveQueryId,
+    }) || null;
     try {
+      if (!isCurrent(registration)) return;
       // Picker FIRST, before any await: showSaveFilePicker requires the click's
       // transient activation, which a prior await (e.g. a token refresh in
       // ensureConfig/getToken can be a network round trip) would forfeit.
@@ -314,29 +367,41 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
           types: [{ description: format + ' data', accept: { [mime]: ['.' + ext] } }],
         });
       } catch (e) {
+        if (!isCurrent(registration)) return;
         if (e instanceof Error && e.name === 'AbortError') return; // user dismissed the picker
         deps.hooks.toast('Save dialog failed: ' + String((e instanceof Error && e.message) || e));
         return;
       }
 
+      if (!isCurrent(registration)) return;
+
       // Now the awaits are safe — we already hold the file handle.
       await deps.ensureConfig();
-      if (!(await deps.getToken())) { deps.ctx().onSignedOut(); return; }
+      if (!isCurrent(registration)) return;
+      if (!(await deps.getToken())) {
+        if (isCurrent(registration)) deps.ctx().onSignedOut();
+        return;
+      }
+      if (!isCurrent(registration)) return;
 
-      exportQueryId = 'export-' + deps.uid('');
-      exportAbort = new AbortController();
-      const progress = deps.hooks.showExportProgress(cancelExport);
+      waveQueryId = 'export-' + deps.uid('');
+      exportQueryId = waveQueryId;
+      progress = deps.hooks.showExportProgress(cancelExport);
+      if (!isCurrent(registration)) return;
       try {
         const resp = await deps.exportQuery(deps.ctx(), sql, {
-          queryId: exportQueryId, signal: exportAbort.signal, format,
+          queryId: waveQueryId, signal: controller.signal, format,
           // Native query-parameter substitution (#134/#173), same as run() —
           // paramArgs is the wave-start snapshot captured above (review F6).
           params: { ...deps.sessionParamsFor(tab, [sql]), ...paramArgs },
         });
+        if (!isCurrent(registration)) return;
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
         const err = await streamToFile(resp, handle, {
-          signal: exportAbort.signal, tag, onProgress: (bytes) => progress.update(bytes),
+          signal: controller.signal, tag,
+          onProgress: (bytes) => { if (isCurrent(registration)) progress?.update(bytes); },
         });
+        if (!isCurrent(registration)) return;
         if (err) deps.hooks.toast('Export incomplete — server error mid-stream: ' + err);
         else deps.hooks.toast('Export complete');
       } catch (e) {
@@ -344,16 +409,16 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
         // rendered the login screen) both already have their own signal — an
         // extra toast on top would just be a confusing second message.
         const msg = String((e instanceof Error && e.message) || e);
-        if (!(e instanceof Error && e.name === 'AbortError') && msg !== 'signed out') {
+        if (isCurrent(registration) && !(e instanceof Error && e.name === 'AbortError') && msg !== 'signed out') {
           deps.hooks.toast('Export failed: ' + msg);
         }
       } finally {
-        progress.remove();
-        exportAbort = null;
-        exportQueryId = null;
+        progress?.remove();
+        progress = null;
       }
     } finally {
-      deps.state.exporting.value = false;
+      registration?.release();
+      settleExport(controller);
     }
   }
 
@@ -371,6 +436,16 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     { signal, tag, onProgress }: { signal: AbortSignal; tag: string | null; onProgress: (bytes: number) => void },
   ): Promise<string | null> {
     const writable = await handle.createWritable();
+    const retainPartial = async (): Promise<void> => {
+      // Finalize whatever reached the browser's swap file, then label it as
+      // incomplete when the platform supports in-place move.
+      await writable.close().catch(() => {});
+      if (typeof handle.move === 'function') await handle.move(handle.name + '.partial').catch(() => {});
+    };
+    if (signal.aborted) {
+      await retainPartial();
+      throw new DOMException('aborted', 'AbortError');
+    }
     const HOLDBACK = 32 * 1024; // >= ClickHouse's MAX_EXCEPTION_SIZE (16 KiB) + margin
     const reader = resp.body!.getReader();
     let held = new Uint8Array(0);
@@ -394,6 +469,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       // EOF: inspect the retained tail (latin1: 1 char per byte, for byte-accurate slicing).
       const frame = findExceptionFrame(latin1(held), tag);
       const clean = frame ? held.subarray(0, frame.cleanBytes) : held;
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError');
       if (clean.length) {
         await writable.write(clean);
         written += clean.length;
@@ -412,8 +488,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       // partial artifact rather than a clean export. Best-effort: on
       // browsers without move() (or if it throws), the file is still
       // recoverable under its original name, just without the suffix.
-      await writable.close().catch(() => {});
-      if (typeof handle.move === 'function') await handle.move(handle.name + '.partial').catch(() => {});
+      await retainPartial();
       throw e;
     } finally {
       reader.releaseLock();
@@ -449,23 +524,42 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     // while the directory dialog / auth is still in flight is blocked by
     // exportEntry's guard — exportScript itself doesn't set this until after
     // those awaits, which would otherwise leave a re-entrancy window open.
+    const wave = ++nextScriptWave;
+    activeScriptWave = wave;
+    exportScriptCancelled = false;
     deps.state.exporting.value = true;
+    const registration = deps.executionScope()?.register({
+      name: 'script export',
+      abort: () => {
+        exportScriptCancelled = true;
+        exportScriptAbort?.abort();
+        settleScriptExport(wave);
+      },
+      getQueryId: () => activeScriptWave === wave ? exportScriptQueryId : null,
+    }) || null;
     try {
+      if (!isCurrent(registration) || activeScriptWave !== wave) return;
       let dir: DirectoryHandleLike;
       try {
         dir = await deps.sink.pickDirectory({ mode: 'readwrite' });
       } catch (e) {
+        if (!isCurrent(registration) || activeScriptWave !== wave) return;
         if (e instanceof Error && e.name === 'AbortError') return; // dismissed → silent no-op
         deps.hooks.toast('Folder dialog failed: ' + String((e instanceof Error && e.message) || e));
         return;
       }
+      if (!isCurrent(registration) || activeScriptWave !== wave) return;
       await deps.ensureConfig();
-      if (!(await deps.getToken())) { deps.ctx().onSignedOut(); return; }
-      await exportScript(statements, dir, paramSrc);
+      if (!isCurrent(registration) || activeScriptWave !== wave) return;
+      if (!(await deps.getToken())) {
+        if (isCurrent(registration) && activeScriptWave === wave) deps.ctx().onSignedOut();
+        return;
+      }
+      if (!isCurrent(registration) || activeScriptWave !== wave) return;
+      await exportScript(statements, dir, paramSrc, registration, wave);
     } finally {
-      // No-op if exportScript already reset it — covers every early-return
-      // path above that never reaches exportScript's own finally.
-      deps.state.exporting.value = false;
+      registration?.release();
+      settleScriptExport(wave);
     }
   }
 
@@ -479,7 +573,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
   // can't self-collide, and a partially-written file shouldn't be silently
   // re-attempted).
-  async function exportScript(statements: string[], dir: DirectoryHandleLike, paramSrc: PreparedSource): Promise<void> {
+  async function exportScript(
+    statements: string[], dir: DirectoryHandleLike, paramSrc: PreparedSource,
+    registration: AuthenticatedExecutionRegistration | null, wave: number,
+  ): Promise<void> {
+    const current = () => isCurrent(registration) && activeScriptWave === wave;
+    if (!current()) return;
     const tab = deps.activeTab();
     const t0 = deps.now();
     const sp = deps.sessionParamsFor(tab, statements);
@@ -492,16 +591,15 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     const scriptExportResult: ScriptExportResult = { scriptExport: entries, startedAt: t0 };
     Object.assign(tab, { result: scriptExportResult });
     deps.state.resultSort = { col: null, dir: 'asc' };
-    exportScriptCancelled = false;
-    deps.state.exporting.value = true;
     const taken = new Set<string>();
     try {
       // Live elapsed for the running row (bytes tick via onProgress; this ticks
       // time). Started inside the try so a throw here still clears it below —
       // an interval set before the try would otherwise leak forever.
-      exportScriptTick = setInterval(() => deps.hooks.renderResults(), 200);
+      exportScriptTick = setInterval(() => { if (current()) deps.hooks.renderResults(); }, 200);
       deps.hooks.renderResults();
       for (const e of entries) {
+        if (!current()) return;
         if (exportScriptCancelled) { e.status = 'skipped'; continue; }
         // Wire text = the pipeline's per-statement execution view (#165);
         // verbatim for effect/DDL statements and for block-free SQL.
@@ -521,6 +619,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
           if (e.type !== 'rows') {
             const out = await deps.runQuery(deps.ctx(), execStmt,
               { format: 'TSV', signal, queryId: exportScriptQueryId, params });
+            if (!current()) return;
             if (out.error != null) throw new Error(out.error);
             e.status = 'ok';
           } else {
@@ -529,11 +628,14 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
             taken.add(name);
             e.file = name;
             const fileHandle = await dir.getFileHandle(name, { create: true });
+            if (!current()) return;
             const resp = await deps.exportQuery(deps.ctx(), sql,
               { queryId: exportScriptQueryId, signal, format, params });
+            if (!current()) return;
             const tag = resp.headers.get('X-ClickHouse-Exception-Tag');
             const midErr = await streamToFile(resp, fileHandle,
-              { signal, tag, onProgress: (b) => { e.bytes = b; } });
+              { signal, tag, onProgress: (b) => { if (current()) e.bytes = b; } });
+            if (!current()) return;
             if (midErr) {
               e.status = 'failed';
               e.error = 'File may be incomplete; server failed after streaming started. ' + midErr;
@@ -545,23 +647,25 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
           e.ms = deps.now() - e.startedAt!;
           deps.hooks.renderResults();
         } catch (ex) {
+          if (!current()) return;
           e.ms = deps.now() - e.startedAt!;
           if (ex instanceof Error && ex.name === 'AbortError') { e.status = 'cancelled'; exportScriptCancelled = true; }
           else { e.status = 'failed'; e.error = String((ex instanceof Error && ex.message) || ex); }
           break; // stop-on-first-failure
         }
       }
+      if (!current()) return;
       for (const e of entries) if (e.status === 'pending') e.status = 'skipped';
     } finally {
-      clearInterval(exportScriptTick as ReturnType<typeof setInterval>); exportScriptTick = null;
-      exportScriptAbort = null;
-      exportScriptQueryId = null;
-      deps.state.exporting.value = false;
-      scriptExportResult.elapsedMs = deps.now() - t0;
-      // A schema-mutating effect statement that actually ran refreshes the tree
-      // (mirrors runScript) even though this export ran outside runScript.
-      if (entries.some((e) => e.status === 'ok' && isSchemaMutatingSql(e.sql))) deps.hooks.loadSchema();
-      deps.hooks.renderResults();
+      // Do not `return` from this finally: a stale scope skips publication, but
+      // it must not swallow an unexpected exception from owner code.
+      if (current()) {
+        scriptExportResult.elapsedMs = deps.now() - t0;
+        // A schema-mutating effect statement that actually ran refreshes the tree
+        // (mirrors runScript) even though this export ran outside runScript.
+        if (entries.some((e) => e.status === 'ok' && isSchemaMutatingSql(e.sql))) deps.hooks.loadSchema();
+        deps.hooks.renderResults();
+      }
     }
   }
 

@@ -241,7 +241,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   //
   // Connection-scoped state, reset by `resetDocsState()` (called from both
   // `invalidate()` and the top of `loadReferenceImpl` — see those functions):
-  //  - `docGeneration` — bumped on every reset; a lookup captures the
+  //  - `docGeneration` — bumped on every documentation reset; a lookup captures the
   //    generation it started under and, if that generation has moved on by
   //    the time its async result settles, drops the result silently: no
   //    cache write, no map entry left behind, and the caller gets
@@ -278,6 +278,12 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // cached under BOTH the requested key and the normalized `kind:name` key,
   // so a later lookup under either kind is served from cache without a
   // second fetch.
+  // `connectionGeneration` fences every non-documentation server result when
+  // invalidate() retires a connection. Documentation additionally keeps its
+  // existing `docGeneration`: loadReference() is a documentation/reference
+  // refresh that must retire doc probes/lookups, but it runs alongside the
+  // normal schema load during boot and must not retire that schema request.
+  let connectionGeneration = 0;
   let docGeneration = 0;
   let capability: FunctionsDocCapability | null = null;
   let capabilityProbe: Promise<FunctionsDocCapability | null> | null = null;
@@ -299,6 +305,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   let docsCapability: DocumentationCapability | null = null;
   let docsCapabilityProbe: Promise<DocumentationCapability | null> | null = null;
   const documentationCache = new Map<string, DocLookup<MarkdownDocEntry> | Promise<DocLookup<MarkdownDocEntry>>>();
+  const disambiguateInFlight = new Map<string, Promise<DocLookup<DocSummary[]>>>();
 
   function resetDocsState(): void {
     docGeneration++;
@@ -310,6 +317,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     docsCapability = null;
     docsCapabilityProbe = null;
     documentationCache.clear();
+    disambiguateInFlight.clear();
   }
 
   function ensureCapability(): Promise<FunctionsDocCapability | null> {
@@ -318,6 +326,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const gen = docGeneration;
     const probe = (async (): Promise<FunctionsDocCapability | null> => {
       await deps.ensureConfig();
+      if (gen !== docGeneration) return null;
       const cols = await deps.loadFunctionsDocColumns(deps.ctx());
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       capabilityProbe = null; // settle: clears the in-flight slot so a `null` result below lets the next lookup batch retry
@@ -341,6 +350,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const gen = docGeneration;
     const probe = (async (): Promise<StructuredDocCapability | null> => {
       await deps.ensureConfig();
+      if (gen !== docGeneration) return null;
       const cols = await deps.loadDocTableColumns(deps.ctx(), STRUCTURED_PROBE_TABLE[kind]);
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       structuredCapabilityProbe.set(kind, null); // settle: clears the in-flight slot so a `null` result lets the next batch retry
@@ -382,6 +392,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const gen = docGeneration;
     const probe = (async (): Promise<DocumentationCapability | null> => {
       await deps.ensureConfig();
+      if (gen !== docGeneration) return null;
       const cols = await deps.loadDocTableColumns(deps.ctx(), 'documentation');
       if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
       docsCapabilityProbe = null; // settle: clears the in-flight slot so a `null` result below lets the next lookup batch retry
@@ -404,6 +415,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     // `cap.available` guarantees `buildFunctionDocSelect` returns a SELECT, not null.
     const sql = buildFunctionDocSelect(cap, target.name, deps.sqlString)!;
     await deps.ensureConfig();
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     const rows = await deps.loadFunctionDocRow(deps.ctx(), sql);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
@@ -432,6 +444,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     // `cap.available` guarantees `buildStructuredDocSelect` returns a SELECT, not null.
     const sql = buildStructuredDocSelect(kind, cap, target.name, deps.sqlString)!;
     await deps.ensureConfig();
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     const rows = await deps.loadDocRow(deps.ctx(), sql);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
@@ -459,6 +472,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     const sql = buildDocumentationSelect(cap, target.kind, target.name, deps.sqlString);
     if (sql === null) return { lookup: { status: 'missing' }, cacheable: true }; // no server `type` label for this kind
     await deps.ensureConfig();
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     const rows = await deps.loadDocRow(deps.ctx(), sql);
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
@@ -611,8 +625,6 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // settle) but is not itself a durable cache — disambiguation results are
   // cheap/rare enough (a user explicitly asking "what else is named X") that
   // there is no lasting cache to invalidate.
-  const disambiguateInFlight = new Map<string, Promise<DocLookup<DocSummary[]>>>();
-
   async function resolveDisambiguate(name: string, gen: number): Promise<DocLookup<DocSummary[]>> {
     const cap = await ensureDocumentationCapability();
     if (gen !== docGeneration) return { status: 'unavailable' };
@@ -621,6 +633,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     // `cap.available` guarantees `buildDocumentationNameSelect` returns a SELECT, not null.
     const sql = buildDocumentationNameSelect(cap, name, deps.sqlString)!;
     await deps.ensureConfig();
+    if (gen !== docGeneration) return { status: 'unavailable' };
     const rows = await deps.loadDocRow(deps.ctx(), sql);
     if (gen !== docGeneration) return { status: 'unavailable' };
     if (rows === null) return { status: 'unavailable' }; // transient row-fetch failure
@@ -637,7 +650,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (inflight) return inflight;
     const gen = docGeneration;
     const promise = resolveDisambiguate(name, gen).then((result) => {
-      disambiguateInFlight.delete(name);
+      if (disambiguateInFlight.get(name) === promise) disambiguateInFlight.delete(name);
       return result;
     });
     disambiguateInFlight.set(name, promise);
@@ -645,22 +658,30 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   }
 
   async function loadVersion(): Promise<void> {
+    const gen = connectionGeneration;
     try {
       await deps.ensureConfig();
-      state.serverVersion = await deps.loadServerVersion(deps.ctx());
+      if (gen !== connectionGeneration) return;
+      const version = await deps.loadServerVersion(deps.ctx());
+      if (gen !== connectionGeneration) return;
+      state.serverVersion = version;
       hooks.onServerVersionLoaded?.(state.serverVersion);
     } catch { /* Best-effort metadata; ch-client reports transport lifecycle. */ }
   }
 
   async function loadSchemaImpl(): Promise<void> {
+    const gen = connectionGeneration;
     try {
       await deps.ensureConfig();
+      if (gen !== connectionGeneration) return;
       const schema = await deps.loadSchema(deps.ctx());
+      if (gen !== connectionGeneration) return;
       // One batched write → one repaint (app.ts's schema effect + banner
       // effect react to these signals; no manual renderSchema/updateBanner
       // needed here).
       batch(() => { state.schema.value = schema; state.schemaError.value = null; });
     } catch (e) {
+      if (gen !== connectionGeneration) return;
       state.schemaError.value = String((e instanceof Error && e.message) || e);
     }
     rebuildCompletions();
@@ -672,6 +693,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // paints the spinner immediately; the result/[] write repaints with the data.
   // `tb.columns` stays the completion cache that buildCompletions reads.
   async function loadColumnsImpl(db: string, table: string): Promise<void> {
+    const gen = connectionGeneration;
     const setCols = (cols: SchemaColumn[] | 'loading'): void => {
       // `.value` is asserted non-null (matches the original untyped behavior
       // verbatim: a null schema here throws, exactly as `null.map(...)` always
@@ -685,8 +707,12 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     setCols('loading');
     try {
       await deps.ensureConfig();
-      setCols(await deps.loadColumns(deps.ctx(), db, table, deps.sqlString));
+      if (gen !== connectionGeneration) return;
+      const cols = await deps.loadColumns(deps.ctx(), db, table, deps.sqlString);
+      if (gen !== connectionGeneration) return;
+      setCols(cols);
     } catch {
+      if (gen !== connectionGeneration) return;
       setCols([]);
     }
     rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
@@ -708,16 +734,26 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     // flight against the OLD connection drops its result instead of
     // repopulating the cache for the new one.
     resetDocsState();
+    const gen = connectionGeneration;
     await deps.ensureConfig();
-    refData = assembleReferenceData(await deps.loadReferenceData(deps.ctx()));
+    if (gen !== connectionGeneration) return;
+    const reference = await deps.loadReferenceData(deps.ctx());
+    if (gen !== connectionGeneration) return;
+    refData = assembleReferenceData(reference);
     rebuildCompletions();
     hooks.refreshEditorReference(); // re-highlight with server keywords
   }
 
   function invalidate(): void {
+    connectionGeneration++;
     resetDocsState();
     refData = assembleReferenceData(null);
-    rebuildCompletions();
+    batch(() => {
+      state.serverVersion = null;
+      state.schema.value = null;
+      state.schemaError.value = null;
+      rebuildCompletions();
+    });
   }
 
   return {

@@ -309,8 +309,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     const next = transition({ type: 'auth-required', epoch: expectedEpoch, detail: message });
     authLossReportedEpoch = next.epoch;
     try {
-      if (lease) deps.onAuthLost(message, lease);
-      else deps.onAuthLost(message);
+      deps.onAuthLost(message, lease ?? undefined);
     } finally {
       clearTokens();
     }

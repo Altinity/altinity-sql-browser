@@ -47,6 +47,9 @@ export interface BootstrapApp {
    *  main.ts's own `string | null` sentinel (`null` means "no callback
    *  error"), so this contract states what's actually passed here. */
   showLogin(msg?: string | null): void;
+  /** Create the disposable execution scope for the signed-in credential epoch
+   * before any shell/catalog operation is allowed to run. */
+  resumeAuthenticatedExecution(): void;
   /** Resolve the explicit or last-used StoredWorkspaceV5 and project it onto
    *  `app.state` before the first `renderApp()` — see
    *  `App.loadWorkspaceOnBoot`'s own doc comment (app.types.ts). The real
@@ -203,6 +206,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
+    app.resumeAuthenticatedExecution();
     await app.loadWorkspaceOnBoot();
     app.renderCurrentSurface();
     void app.catalog.loadVersion();

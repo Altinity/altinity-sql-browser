@@ -105,6 +105,7 @@ import type { SqlRoute } from '../core/sql-route.js';
 import type { AppState } from '../state.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
+import type { AuthenticatedExecutionScope } from '../application/authenticated-execution-scope.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import type { WorkspaceCommitResult, WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { AppPreferences } from '../application/app-preferences.js';
@@ -162,6 +163,10 @@ export interface DashboardApp {
   toggleTheme(): void;
   conn: Pick<ConnectionSession, 'basePath' | 'host' | 'email' | 'ensureFreshToken' | 'chCtx'>;
   exec: Pick<QueryExecutionService, 'executeRead'>;
+  /** Server work belongs to the disposable authenticated epoch; the Dashboard
+   * stays mounted when this becomes unavailable. */
+  executionScope?(): AuthenticatedExecutionScope | null;
+  requireAuthenticatedExecution?(): AuthenticatedExecutionScope | null;
   now(): number;
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
@@ -600,6 +605,8 @@ export async function renderDashboard(
     queries,
     exec: app.exec,
     connection: { ensureFreshToken: () => app.conn.ensureFreshToken() },
+    executionScope: () => app.requireAuthenticatedExecution?.() ?? app.executionScope?.() ?? null,
+    mintQueryId: () => app.genId(),
     registry: defaultLayoutRegistry,
     now: () => app.now(),
     wallNow: () => app.wallNow(),

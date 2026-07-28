@@ -163,6 +163,12 @@ describe('construction seeding', () => {
 });
 
 describe('connection lifecycle ownership', () => {
+  it('uses empty Basic storage as an empty display identity and never refreshes Basic credentials', async () => {
+    const { session } = setup({ storage: memStorage({ ch_basic_auth: 'YWJj' }) });
+    expect(session.email()).toBe('');
+    await expect(session.chCtx.refresh()).resolves.toBe(false);
+  });
+
   it('publishes only transport settlements as connected/offline', () => {
     const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onTransportConnected();
@@ -677,6 +683,27 @@ describe('signOut', () => {
 });
 
 describe('chCtx.onSignedOut', () => {
+  it('reports a discovered empty session once without converting explicit signed-out state', () => {
+    const { session, onAuthLost } = setup();
+    session.chCtx.onSignedOut('no credentials');
+    session.chCtx.onSignedOut('duplicate');
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 0 });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+    expect(onAuthLost).toHaveBeenCalledWith('no credentials');
+  });
+
+  it('captures the in-memory credential even if sessionStorage changes before a failure settles', () => {
+    const storage = memStorage({ oauth_id_token: validToken });
+    const { session, onAuthLost } = setup({ storage });
+    // OAuth's token is deliberately held in memory; a storage mutation must
+    // not weaken the exact cancellation authority captured for an in-flight
+    // operation.
+    storage.removeItem('oauth_id_token');
+    session.chCtx.onSignedOut('credential disappeared');
+    expect(session.connection.value).toMatchObject({ kind: 'auth-required', detail: 'credential disappeared' });
+    expect(onAuthLost).toHaveBeenCalledWith('credential disappeared', expect.objectContaining({ authorization: `Bearer ${validToken}` }));
+  });
+
   it('clears tokens and reports the given detail', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut('you are not welcome');
@@ -732,6 +759,27 @@ describe('chCtx.onSignedOut', () => {
       fetch: session.chCtx.fetch,
     });
   });
+  it('returns no cancellation lease for a superseded epoch or an empty current credential', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const captureAtEpoch = session.captureCancellationLease as (expectedEpoch?: number) =>
+      AuthenticatedCancellationLease | null;
+    expect(captureAtEpoch(session.connection.value.epoch + 1)).toBeNull();
+    session.signOut();
+    expect(session.captureCancellationLease()).toBeNull();
+  });
+  it('probes an empty Basic password as an intentional empty credential', async () => {
+    let auth = '';
+    const { session } = setup({
+      queryJson: fakeQueryJson(async (ctx) => {
+        const credential = await ctx.getToken();
+        if (credential === null || !ctx.authHeader) throw new Error('missing Basic credential');
+        auth = ctx.authHeader(credential);
+        return {};
+      }),
+    });
+    await session.connectBasic({ username: 'alice', password: '' });
+    expect(auth).toBe(`Basic ${btoa('alice:')}`);
+  });
   it('clears credentials even when the auth-loss consumer throws', () => {
     const storage = memStorage({ oauth_id_token: validToken, oauth_refresh_token: 'refresh' });
     const { session } = setup({
@@ -749,6 +797,17 @@ describe('chCtx.onSignedOut', () => {
 // ── ensureFreshToken ─────────────────────────────────────────────────────────
 
 describe('ensureFreshToken', () => {
+  it('returns null rather than invalidating a newer credential when a failed refresh is deliberately kept in its old epoch', async () => {
+    let session!: ReturnType<typeof createConnectionSession>;
+    const { session: created } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken }),
+      routes: [(url) => (url.endsWith('/token') ? jsonResponse(200, {}) : null)],
+      onAuthLost: () => session.signOut(),
+    });
+    session = created;
+    await expect(session.getToken()).resolves.toBeNull();
+  });
+
   it('resolves true when a valid token is available', async () => {
     const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     await expect(session.ensureFreshToken()).resolves.toBe(true);

@@ -9,6 +9,7 @@ import type {
   DashboardDocumentV2, DashboardTileV1, SavedQueryV2,
 } from '../../src/generated/json-schema.types.js';
 import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
+import { createAuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -786,6 +787,252 @@ describe('per-tile control and lifecycle', () => {
     releaseTile();
     await Promise.all([first, second]);
     expect(session.state.value.tiles[0].columns).toEqual([{ name: 'fresh' }]);
+  });
+
+  it('suspends an in-flight tile through its execution scope, keeps committed data, and permits a replacement scope to refresh', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let call = 0;
+    let request: ViewerReadRequest | null = null;
+    const cancelled: string[] = [];
+    let scope = createAuthenticatedExecutionScope({
+      epoch: 7,
+      cancelRemote: (_lease, queryId) => { cancelled.push(queryId); },
+    });
+    const exec: ViewerExecutor = {
+      async executeRead(result, req) {
+        call++;
+        if (call === 1) {
+          result.columns = [{ name: 'old' }] as never;
+          result.rows = [[1]];
+          return;
+        }
+        if (call === 2) {
+          request = req;
+          await gate;
+          result.columns = [{ name: 'stale' }] as never;
+          result.rows = [[9]];
+          return;
+        }
+        result.columns = [{ name: 'fresh' }] as never;
+        result.rows = [[2]];
+      },
+    };
+    let queryNumber = 0;
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      executionScope: () => scope,
+      mintQueryId: () => `dash-${++queryNumber}`,
+    }));
+    await session.start();
+    expect(session.state.value.tiles[0].columns).toEqual([{ name: 'old' }]);
+
+    const suspended = session.refresh();
+    await flush();
+    expect(session.state.value.tiles[0].status).toBe('loading');
+    scope.close({ epoch: 7 } as never);
+    const activeRequest = request as ViewerReadRequest | null;
+    expect(activeRequest?.signal?.aborted).toBe(true);
+    expect(session.state.value.running).toBe(false);
+    // An auth suspension is not a manual cancel: the already committed tile
+    // remains visibly ready while its stale refresh request is aborted.
+    expect(session.state.value.tiles[0].status).toBe('ready');
+    expect(session.state.value.tiles[0].columns).toEqual([{ name: 'old' }]);
+    expect(cancelled).toContain('dash-2');
+    release();
+    await suspended;
+    expect(session.state.value.tiles[0].columns).toEqual([{ name: 'old' }]);
+
+    scope = createAuthenticatedExecutionScope({ epoch: 8, cancelRemote: () => {} });
+    await session.refresh();
+    expect(session.state.value.tiles[0].status).toBe('ready');
+    expect(session.state.value.tiles[0].columns).toEqual([{ name: 'fresh' }]);
+  });
+
+  it('registers before token preflight, so scope closure prevents a deferred preflight from issuing a tile request', async () => {
+    let releaseToken!: (ok: boolean) => void;
+    const token = new Promise<boolean>((resolve) => { releaseToken = resolve; });
+    const scope = createAuthenticatedExecutionScope({ epoch: 7, cancelRemote: () => {} });
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      connection: { ensureFreshToken: () => token }, executionScope: () => scope,
+      mintQueryId: () => 'dash-preflight',
+    }));
+    const started = session.start();
+    scope.close({ epoch: 7 } as never);
+    releaseToken(true);
+    await started;
+    expect(calls).toEqual([]);
+    expect(session.state.value.running).toBe(false);
+  });
+
+  it('settles a configured variable that was waiting for options when scope closure lands in preflight', async () => {
+    let releaseToken!: (ok: boolean) => void;
+    const token = new Promise<boolean>((resolve) => { releaseToken = resolve; });
+    const scope = createAuthenticatedExecutionScope({ epoch: 8, cancelRemote: () => {} });
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t1', 'q1')],
+        variableConfigs: { country: { sql: 'SELECT code, label FROM countries' } },
+      }),
+      exec,
+      queries: [query('q1', 'SELECT 1 WHERE country = {country:String}')],
+      connection: { ensureFreshToken: () => token }, executionScope: () => scope,
+    }));
+    const started = session.start();
+    expect(session.state.value.variableStates[0].status).toBe('loading');
+    scope.close({ epoch: 8 } as never);
+    expect(session.state.value.variableStates[0].status).toBe('idle');
+    releaseToken(true);
+    await started;
+    expect(calls).toEqual([]);
+  });
+
+  it('treats a supplied-but-missing execution scope as suspended across full, tile, and variable waves', async () => {
+    const ensureFreshToken = vi.fn(async () => true);
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }),
+      exec,
+      queries: [query('q1', 'SELECT 1 WHERE country = {country:String}')],
+      connection: { ensureFreshToken }, executionScope: () => null,
+    }));
+    await session.start();
+    await session.refreshTile('t1');
+    await session.applyVariable('country', 'de', true);
+    expect(ensureFreshToken).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(session.state.value.variableStates[0]).toMatchObject({ value: 'de', active: true });
+  });
+
+  it('keeps a no-scope query-id seam backward-compatible by executing without a request registration', async () => {
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      mintQueryId: () => 'legacy-query-id',
+    }));
+    await session.start();
+    expect(calls).toHaveLength(1);
+    expect(session.state.value.tiles[0].status).toBe('ready');
+  });
+
+  it('fences a run that becomes stale between loading-state publication and request registration', async () => {
+    let checks = 0;
+    const scope = {
+      isOpen: () => true,
+      register: vi.fn(() => ({
+        // preflight checks twice, runTile checks once at entry, then the
+        // loading-state fence sees this fourth read as stale.
+        isCurrent: () => ++checks < 4,
+        release: vi.fn(),
+      })),
+    };
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      executionScope: () => scope, mintQueryId: () => 'late-scope-check',
+    }));
+    await session.start();
+    expect(calls).toEqual([]);
+    expect(scope.register).toHaveBeenCalledTimes(1);
+  });
+
+  it('fences a run that becomes stale immediately before beginRequest', async () => {
+    let checks = 0;
+    const scope = {
+      isOpen: () => true,
+      register: vi.fn(() => ({
+        // The fourth read is the post-loading guard; the fifth is beginRequest.
+        isCurrent: () => ++checks < 5,
+        release: vi.fn(),
+      })),
+    };
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      executionScope: () => scope, mintQueryId: () => 'stale-before-request',
+    }));
+    await session.start();
+    expect(calls).toEqual([]);
+    expect(scope.register).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles a tile without issuing it when the request registration becomes stale during setup', async () => {
+    let registrations = 0;
+    const scope = {
+      isOpen: () => true,
+      register: vi.fn(() => {
+        const current = ++registrations === 1;
+        return { isCurrent: () => current, release: vi.fn() };
+      }),
+    };
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT 1')],
+      executionScope: () => scope,
+      mintQueryId: () => 'stale-during-registration',
+    }));
+    await session.start();
+    expect(calls).toEqual([]);
+    expect(session.state.value.tiles[0].status).toBe('idle');
+  });
+
+  it('does not start the option batch when its query registration becomes stale during setup', async () => {
+    let registrations = 0;
+    const scope = {
+      isOpen: () => true,
+      register: vi.fn(() => {
+        const current = ++registrations === 1;
+        return { isCurrent: () => current, release: vi.fn() };
+      }),
+    };
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t1', 'q1')],
+        variableConfigs: { country: { sql: 'SELECT code, label FROM countries' } },
+      }),
+      exec,
+      queries: [query('q1', 'SELECT 1 WHERE country = {country:String}')],
+      executionScope: () => scope,
+      mintQueryId: () => 'stale-option-registration',
+    }));
+    await session.start();
+    expect(calls).toEqual([]);
+    expect(session.state.value.variableStates[0].status).toBe('loading');
+  });
+
+  it('aborts a variable-triggered affected-tile wave through the same scope fence', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let request: ViewerReadRequest | null = null;
+    const scope = createAuthenticatedExecutionScope({ epoch: 7, cancelRemote: () => {} });
+    const exec: ViewerExecutor = {
+      async executeRead(result, req) {
+        request = req;
+        await gate;
+        result.columns = [{ name: 'late' }] as never;
+        result.rows = [[1]];
+      },
+    };
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec, queries: [query('q1', 'SELECT {country:String}')],
+      executionScope: () => scope, mintQueryId: () => 'dash-variable',
+    }));
+    await session.start();
+    expect(session.state.value.tiles[0].status).toBe('unfilled');
+
+    const applied = session.applyVariable('country', 'de', true);
+    await flush();
+    expect(session.state.value.tiles[0].status).toBe('loading');
+    scope.close({ epoch: 7 } as never);
+    expect((request as ViewerReadRequest | null)?.signal?.aborted).toBe(true);
+    expect(session.state.value.tiles[0].status).toBe('idle');
+    release();
+    await applied;
+    expect(session.state.value.tiles[0].columns).toBeNull();
   });
 
   it('a superseded seventh queued tile worker exits before mutating state or issuing a request', async () => {

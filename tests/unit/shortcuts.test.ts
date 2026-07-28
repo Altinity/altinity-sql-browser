@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { signal } from '@preact/signals-core';
 import { SHORTCUT_CATALOG, openShortcuts, handleKeydown, resetShortcutChord } from '../../src/ui/shortcuts.js';
 import type { ShortcutKeydownEvent, SurfaceCommandPort } from '../../src/ui/shortcuts.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -271,7 +272,10 @@ describe('handleKeydown', () => {
   });
 
   it('fails closed for every application action when signed out', () => {
-    const app = makeApp({ conn: { isSignedIn: () => false } });
+    const app = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'signed-out' as const, epoch: 1 }),
+    } });
     for (const event of [
       { metaKey: true, key: 'Enter' }, { metaKey: true, key: 's' },
       { metaKey: true, shiftKey: true, key: 'Enter' }, { key: 'g' }, { key: '?' },
@@ -322,7 +326,10 @@ describe('handleKeydown', () => {
     expect(app.actions.formatQuery).toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled();
     expect(e.preventDefault).toHaveBeenCalled();
-    const out = makeApp({ conn: { isSignedIn: () => false } });
+    const out = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'signed-out' as const, epoch: 1 }),
+    } });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), out)).toBeNull();
   });
   it('Spec mode blocks Run and routes document formatting to the Spec editor', () => {
@@ -345,7 +352,10 @@ describe('handleKeydown', () => {
   });
 
   it('does not switch editor mode while signed out', () => {
-    const app = makeApp({ conn: { isSignedIn: () => false } });
+    const app = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'signed-out' as const, epoch: 1 }),
+    } });
     const e = ev({ metaKey: true, altKey: true, key: '1' });
     expect(handleKeydown(e, app)).toBeNull();
     expect(e.preventDefault).not.toHaveBeenCalled();
@@ -362,7 +372,10 @@ describe('handleKeydown', () => {
     expect(app.actions.share).toHaveBeenCalledTimes(1);
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBe('save');
     expect(app.actions.save).toHaveBeenCalledTimes(2);
-    const out = makeApp({ conn: { isSignedIn: () => false } });
+    const out = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'signed-out' as const, epoch: 1 }),
+    } });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 's' }), out)).toBeNull();
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), out)).toBeNull();
   });
@@ -371,8 +384,28 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: '?' }), app)).toBe('shortcuts');
     expect(handleKeydown(ev({ key: '?', target: { tagName: 'INPUT' } }), app)).toBeNull();
     expect(handleKeydown(ev({ key: '?', target: { isContentEditable: true } }), app)).toBeNull();
-    const out = makeApp({ conn: { isSignedIn: () => false } });
+    const out = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'signed-out' as const, epoch: 1 }),
+    } });
     expect(handleKeydown(ev({ key: '?' }), out)).toBeNull();
+  });
+
+  it('keeps local commands and routes remote commands to their shared gate while auth is required', () => {
+    const app = makeApp({ conn: {
+      isSignedIn: () => false,
+      connection: signal({ kind: 'auth-required' as const, epoch: 2 }),
+    } });
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
+    expect(app.actions.run).toHaveBeenCalledOnce();
+    expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBe('save');
+    expect(app.actions.save).toHaveBeenCalledOnce();
+    app.activeTab().editorMode = 'spec';
+    expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), app)).toBe('formatSpec');
+    expect(app.actions.formatSpec).toHaveBeenCalledOnce();
+    expect(handleKeydown(ev({ metaKey: true, altKey: true, key: '1' }), app)).toBe('sqlMode');
+    expect(app.actions.setEditorMode).toHaveBeenCalledWith('sql');
+    expect(handleKeydown(ev({ key: '?' }), app)).toBe('shortcuts');
   });
   it('returns null for unhandled keys', () => {
     const app = makeApp();

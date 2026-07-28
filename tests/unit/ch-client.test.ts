@@ -1214,6 +1214,16 @@ describe('loadLineageTransitive', () => {
     expect(out.truncated).toBe(false);
   });
 
+  it('threads one cancellation signal through every transitive frontier request', async () => {
+    const controller = new AbortController();
+    const ctx = lineageCtx();
+    await loadLineageTransitive(ctx, { db: 'a' }, { signal: controller.signal });
+    expect(ctx.fetchMock).toHaveBeenCalled();
+    for (const [, init] of ctx.fetchMock.mock.calls) {
+      expect(init.signal).toBe(controller.signal);
+    }
+  });
+
   it('flags truncated when the database cap is hit', async () => {
     // a → b → c; dbCap 2 stops before loading c.
     const ctx = ctxWith((url, init) => {

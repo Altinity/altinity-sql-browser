@@ -38,6 +38,10 @@ import type { ResultSource } from '../core/query-source.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession } from '../application/connection-session.js';
+import type {
+  AuthenticatedExecutionRegistration,
+  AuthenticatedExecutionScope,
+} from '../application/authenticated-execution-scope.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
 
@@ -161,7 +165,11 @@ export interface ResultsApp {
   now(): number;
   elapsedMs(): number;
   wallNow(): number;
-  conn: Pick<ConnectionSession, 'ensureFreshToken'>;
+  conn: Pick<ConnectionSession, 'ensureFreshToken'> & {
+    chCtx: Pick<ConnectionSession['chCtx'], 'onSignedOut'>;
+  };
+  executionScope(): AuthenticatedExecutionScope | null;
+  requireAuthenticatedExecution(): AuthenticatedExecutionScope | null;
   /** The shared request/stream/normalize service (#276 Phase 1) — this module
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
@@ -931,6 +939,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
       let gen = 0;
       let running = false;
       let ac: AbortController | null = null;
+      let activeRegistration: AuthenticatedExecutionRegistration | null = null;
       let closed = false;
       let statEl: HTMLElement | null = null;
       let refreshBtn: HTMLButtonElement | null = null;
@@ -989,6 +998,8 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         if (closed) return;
         const myGen = ++gen;
         if (ac) ac.abort(); // supersede any in-flight detached request
+        activeRegistration?.release();
+        activeRegistration = null;
         ac = new AbortController();
         const { signal } = ac;
         const batch = prepareParameterizedBatch(analysis, {
@@ -1003,18 +1014,39 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         // and re-enables Refresh even if it just superseded an in-flight run.
         if (blockers.length) { settle('Enter a value for: ' + blockers.join(', ')); return; }
         if (src.errors.length) { settle(src.errors[0]); return; }
+        const scope = app.requireAuthenticatedExecution();
+        if (!scope) { settle('Sign in required'); return; }
+        const queryId = `detached-${source.tabId}-${myGen}-${Math.round(app.now())}`;
+        const registration = scope.register({
+          name: 'detached result refresh',
+          abort: () => {
+            if (myGen !== gen || closed) return;
+            gen += 1;
+            ac?.abort();
+            settle('Sign in required');
+          },
+          getQueryId: () => queryId,
+        });
+        activeRegistration = registration;
+        const releaseRegistration = (): void => {
+          registration.release();
+          if (activeRegistration === registration) activeRegistration = null;
+        };
         running = true;
         setStatus('Running…');
         if (refreshBtn) refreshBtn.disabled = true;
         if (!(await app.conn.ensureFreshToken())) {
-          if (myGen === gen && !closed) settle('Not signed in');
+          if (registration.isCurrent()) app.conn.chCtx.onSignedOut();
+          if (myGen === gen && !closed) settle('Sign in required');
+          releaseRegistration();
           return;
         }
+        if (!registration.isCurrent() || myGen !== gen || closed) { releaseRegistration(); return; }
         const execution = panelExecution(savedPanel, mergedSourceSql(src, source.sql), {
           format: 'Table', rowLimit: source.rowLimit,
           params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
         });
-        if (execution.error) { settle(execution.error); return; }
+        if (execution.error) { settle(execution.error); releaseRegistration(); return; }
         // `!`: `defaults.format: 'Table'` is always supplied above, so
         // `execution.format` is always populated whether or not the KPI arm
         // ends up owning transport (it overrides to 'KPI' rather than clearing it).
@@ -1026,26 +1058,32 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
           // Native param_<name> bindings + the captured session (when any).
           params: execution.params,
           signal,
+          queryId,
+          isCurrent: () => registration.isCurrent() && myGen === gen && !closed,
           // Progress-only streaming (#198): update the lightweight status text as
           // rows arrive, but NEVER paint the in-flight result and NEVER touch the
           // committed `current` / stat / view / chart — only the winning
           // completion below commits and repaints. A stale/closed chunk is dropped.
           onChunk: () => {
-            if (myGen !== gen || closed) return;
+            if (!registration.isCurrent() || myGen !== gen || closed) return;
             const rowsRead = Number(result.progress?.rows) || 0;
             setStatus(rowsRead > 0 ? `Running… ${formatRows(rowsRead)} rows read` : 'Running…');
           },
         });
-        if (myGen !== gen || closed) return; // superseded or closed → discard silently
+        if (!registration.isCurrent() || myGen !== gen || closed) {
+          releaseRegistration();
+          return; // superseded or closed → discard silently
+        }
         // The in-flight result was never painted, so failure/cancel needs no
         // restore repaint — the committed `current` is still on screen (#198).
-        if (result.cancelled) { settle(''); return; }
-        if (result.error) { settle(result.error); return; }
+        if (result.cancelled) { settle(''); releaseRegistration(); return; }
+        if (result.error) { settle(result.error); releaseRegistration(); return; }
         current = result;
         // #171: record the winning run's bound params via the shared recorder.
         app.params.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
         settle('');
         paint();
+        releaseRegistration();
       }
 
       const toolbar = h('div', { class: 'res-toolbar' },
@@ -1100,6 +1138,8 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
       // and destroy the live chart instance.
       return () => {
         closed = true;
+        activeRegistration?.release();
+        activeRegistration = null;
         if (ac) ac.abort();
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
         variableBarDispose?.();

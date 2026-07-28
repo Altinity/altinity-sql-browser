@@ -585,6 +585,9 @@ export async function loadSchemaCards(ctx: ChCtx, dbs: readonly string[] | null 
 export interface LoadLineageTransitiveOpts {
   nodeCap?: number;
   dbCap?: number;
+  /** Cancels the current frontier and prevents a stale traversal from starting
+   * another database round under a replacement authentication scope. */
+  signal?: AbortSignal;
 }
 
 /** `loadLineageTransitive`'s result. */
@@ -598,7 +601,8 @@ export interface LineageTransitiveResult {
  * then BFS into every database referenced by the graph built so far, merging rows,
  * until no new database is referenced or a cap is hit. `opts.dbCap` bounds the
  * number of databases fetched and `opts.nodeCap` the graph size — either tripping
- * sets `truncated` (the caller shows a banner). Returns `{ rows, truncated }`;
+ * sets `truncated` (the caller shows a banner); `opts.signal` cancels every
+ * frontier request and prevents a later round. Returns `{ rows, truncated }`;
  * `rows` is the merged `{ tables, dictionaries }` for buildSchemaGraph + expandLineage.
  */
 export async function loadLineageTransitive(ctx: ChCtx, focus: LineageFocus | null | undefined, opts: LoadLineageTransitiveOpts = {}): Promise<LineageTransitiveResult> {
@@ -617,7 +621,7 @@ export async function loadLineageTransitive(ctx: ChCtx, focus: LineageFocus | nu
     // next frontier. Far fewer round-trips than fetching one db at a time.
     const batch = frontier.slice(0, dbCap - loaded.size);
     batch.forEach((db) => loaded.add(db));
-    const parts = await Promise.all(batch.map((db) => loadSchemaLineage(ctx, { db })));
+    const parts = await Promise.all(batch.map((db) => loadSchemaLineage(ctx, { db }, { signal: opts.signal })));
     for (const part of parts) {
       tables = tables.concat(part.tables);
       dictionaries = dictionaries.concat(part.dictionaries);

@@ -431,6 +431,24 @@ h1, h2, h3, h4, h5, h6 {
     var(--bg);
 }
 .login-screen .mono { font-family: var(--mono); }
+.auth-host {
+  flex: 0 1 auto;
+  max-height: 48vh;
+  overflow: auto;
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(620px 220px at 50% -30%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 72%),
+    var(--bg);
+}
+.auth-host[hidden] { display: none; }
+.login-inline {
+  display: flex;
+  justify-content: center;
+}
+.login-inline .login-card {
+  box-shadow: var(--shadow-popover);
+}
 .login-card {
   width: 380px; padding: 40px 36px 36px;
   background: var(--bg-header);

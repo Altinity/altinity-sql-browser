@@ -51,6 +51,7 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
     },
     catalog: { loadVersion: vi.fn(async () => {}) },
     renderCurrentSurface: vi.fn(),
+    resumeAuthenticatedExecution: vi.fn(),
     syncSqlRoute: vi.fn(),
     showLogin: vi.fn(),
     // #287 W4: bootstrap awaits this before the first renderApp() on the
@@ -109,6 +110,7 @@ describe('bootstrap', () => {
   it('renders the app when already signed in', async () => {
     const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv());
+    expect(app.resumeAuthenticatedExecution).toHaveBeenCalledOnce();
     expect(app.catalog.loadVersion).toHaveBeenCalledOnce();
     expect(app.renderCurrentSurface).toHaveBeenCalled();
   });

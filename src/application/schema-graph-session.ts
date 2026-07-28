@@ -34,6 +34,10 @@ import type { CardGraphNode, CardGraphEdge, CardModel, SchemaCardColumnRow } fro
 import type { PositionMap } from '../core/graph-layout.js';
 import { newResult } from '../core/stream.js';
 import type { StreamResult } from '../core/stream.js';
+import type {
+  AuthenticatedExecutionRegistration,
+  AuthenticatedExecutionScope,
+} from './authenticated-execution-scope.js';
 
 // ── Shapes redeclared locally rather than imported across the
 // application→ui boundary (rule 1) ──────────────────────────────────────────
@@ -123,6 +127,9 @@ export interface SchemaGraphHooks {
 export interface SchemaGraphDeps {
   ensureConfig(): Promise<unknown>;
   getToken(): Promise<string | null>;
+  /** The disposable authenticated execution scope.  A graph session survives
+   * authentication loss; its individual requests do not. */
+  executionScope(): AuthenticatedExecutionScope | null;
   /** The live ClickHouse auth context — a *provider*, not a value (matches
    *  `schema-catalog-service.ts`'s own `ctx` seam). */
   ctx(): ChCtx;
@@ -145,11 +152,14 @@ export interface SchemaGraphSession {
    *  (marked `partial`) if one had already drawn, else drops back to the
    *  empty placeholder. */
   cancel(opts?: { clearResult?: boolean }): void;
+  /** Suspend authenticated graph work while retaining the visible graph/tab
+   * shell for an in-place sign-in resume. */
+  suspend(): void;
   /** Load the enriched rich-card dataset for the fullscreen expand view.
    *  Throws `SchemaGraphAuthRequiredError` when signed out/unrefreshable;
    *  any other failure (a lineage/cards fetch, a graph-build throw) just
    *  propagates — the shell's catch-all maps both to `view.fail(...)`. */
-  expand(focus: SchemaGraphFocus): Promise<SchemaGraphExpandData>;
+  expand(focus: SchemaGraphFocus): Promise<SchemaGraphExpandData | null>;
   /** Resolve one clicked node's detail data, or `null` when a later click on
    *  `token` superseded this one before the fetch resolved (last-clicked
    *  wins, not last-resolved — #97). `token` keys the last-clicked-wins
@@ -168,6 +178,8 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
   // state lives in its owner" shape as WorkbenchSession's own
   // `abortController`.
   let abortController: AbortController | null = null;
+  let showRegistration: AuthenticatedExecutionRegistration | null = null;
+  let activeShow: { tab: SchemaGraphTab; result: SchemaGraphResult } | null = null;
 
   // Last-clicked-wins bookkeeping for the node-detail pane (#97) — keyed by
   // the shell's opaque per-overlay token (a `Document` in production), so a
@@ -175,9 +187,24 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
   // resolves.
   const latestDetailRequest = new WeakMap<object, SchemaGraphFocus>();
 
+  function settleSuspendedShow(tab: SchemaGraphTab, result: SchemaGraphResult): void {
+    // Authentication loss must never tear down the tab/result shell.  Unlike a
+    // user pressing Cancel, keep even the empty loading placeholder so resume
+    // can continue from the same document without a destructive UI reset.
+    if (tab.result !== (result as unknown)) return;
+    const sg = result.schemaGraph;
+    if (!sg || !sg.loading) return;
+    sg.loading = false;
+    sg.partial = true;
+    deps.hooks.renderResults();
+  }
+
   function cancel({ clearResult = false }: { clearResult?: boolean } = {}): void {
     if (abortController) abortController.abort();
     abortController = null;
+    showRegistration?.release();
+    showRegistration = null;
+    activeShow = null;
     if (!clearResult) return;
     const tab = deps.activeTab();
     const result = tab.result as SchemaGraphResult | null;
@@ -192,62 +219,97 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
     deps.hooks.renderResults();
   }
 
+  function suspend(): void {
+    const active = activeShow;
+    if (abortController) abortController.abort();
+    abortController = null;
+    showRegistration?.release();
+    showRegistration = null;
+    activeShow = null;
+    if (active) settleSuspendedShow(active.tab, active.result);
+  }
+
   async function show(focus: SchemaGraphFocus): Promise<void> {
     if (!focus || !focus.db) return;
-    await deps.ensureConfig();
-    if (!(await deps.getToken())) { deps.hooks.onAuthFailed(); return; }
-    cancel(); // a new click/drag replaces whatever graph was in flight
-    const tab = deps.activeTab();
-    // Show a loading placeholder first — even Phase A (system.tables +
-    // system.dictionaries) is a network round trip.
-    const result: SchemaGraphResult = newResult('Table');
-    result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
-    Object.assign(tab, { result });
-    // `result` is the stale-write guard (mirrors #97's identity-guard shape,
-    // and WorkbenchSession's own run() guard): captured once, checked before
-    // every later write, so a second graph request (or the shell's own
-    // Run/Explain replacing tab.result) that replaces tab.result mid-fetch
-    // can never have this call's (Phase A or Phase B) result land on the new
-    // tab.result. `tab.result`'s declared type (state.ts's opaque
-    // `Record<string,unknown> | null`) has no overlap with our own
-    // `SchemaGraphResult` for a direct `!==` — widen `result` to `unknown`
-    // (not a further cast to another concrete type) for the comparison only;
-    // the identity check itself is unaffected.
-    const superseded = (): boolean => tab.result !== (result as unknown);
-    deps.hooks.renderResults();
     const controller = new AbortController();
-    abortController = controller;
+    let tab: SchemaGraphTab | null = null;
+    let result: SchemaGraphResult | null = null;
+    const scope = deps.executionScope();
+    const registration = scope?.register({
+      name: 'schema graph inline load',
+      abort: () => {
+        controller.abort();
+        if (tab && result) settleSuspendedShow(tab, result);
+      },
+    }) || null;
+    const current = (): boolean => !controller.signal.aborted && (registration === null || registration.isCurrent());
     try {
-      const lineage = await deps.loadSchemaLineage(deps.ctx(), focus, {
-        signal: controller.signal,
-        onBase: (base) => {
-          if (superseded()) return; // superseded before Phase A even landed
-          const g = buildSchemaGraph(base, focus);
-          result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
-          deps.hooks.renderResults();
-        },
-        onProgress: (done, total) => {
-          if (superseded() || !result.schemaGraph || !result.schemaGraph.loading) return;
-          result.schemaGraph.progress = { done, total };
-          deps.hooks.renderResults();
-        },
-      });
-      if (superseded()) return; // superseded while Phase B was resolving
-      const g = buildSchemaGraph(lineage, focus);
-      // tableCount lets the renderer explain an empty result ("N tables, none linked").
-      result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
-    } catch (e) {
-      // AbortError means cancel() already left the pane in a clean state
-      // (partial graph or the empty placeholder) — nothing more to do.
-      if (e instanceof Error && e.name === 'AbortError') return;
-      if (superseded()) return;
-      const errorResult: SchemaGraphResult = newResult('Table');
-      errorResult.error = String((e instanceof Error && e.message) || e);
-      Object.assign(tab, { result: errorResult });
+      await deps.ensureConfig();
+      if (!current()) return;
+      if (!(await deps.getToken())) {
+        if (current()) deps.hooks.onAuthFailed();
+        return;
+      }
+      if (!current()) return;
+      cancel(); // a new click/drag replaces whatever graph was in flight
+      tab = deps.activeTab();
+      // Show a loading placeholder first — even Phase A (system.tables +
+      // system.dictionaries) is a network round trip.
+      result = newResult('Table');
+      result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+      Object.assign(tab, { result });
+      activeShow = { tab, result };
+      // `result` is the stale-write guard (mirrors #97's identity-guard shape,
+      // and WorkbenchSession's own run() guard): captured once, checked before
+      // every later write, so a second graph request (or the shell's own
+      // Run/Explain replacing tab.result) that replaces tab.result mid-fetch
+      // can never have this call's (Phase A or Phase B) result land on the new
+      // tab.result. `tab.result`'s declared type (state.ts's opaque
+      // `Record<string,unknown> | null`) has no overlap with our own
+      // `SchemaGraphResult` for a direct `!==` — widen `result` to `unknown`
+      // (not a further cast to another concrete type) for the comparison only;
+      // the identity check itself is unaffected.
+      const superseded = (): boolean => !current() || tab!.result !== (result as unknown);
+      deps.hooks.renderResults();
+      abortController = controller;
+      showRegistration = registration;
+      try {
+        const lineage = await deps.loadSchemaLineage(deps.ctx(), focus, {
+          signal: controller.signal,
+          onBase: (base) => {
+            if (superseded()) return; // superseded before Phase A even landed
+            const g = buildSchemaGraph(base, focus);
+            result!.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
+            deps.hooks.renderResults();
+          },
+          onProgress: (done, total) => {
+            if (superseded() || !result!.schemaGraph || !result!.schemaGraph.loading) return;
+            result!.schemaGraph.progress = { done, total };
+            deps.hooks.renderResults();
+          },
+        });
+        if (superseded()) return; // superseded while Phase B was resolving
+        const g = buildSchemaGraph(lineage, focus);
+        // tableCount lets the renderer explain an empty result ("N tables, none linked").
+        result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
+      } catch (e) {
+        // AbortError means cancel() already left the pane in a clean state
+        // (partial graph or the empty placeholder) — nothing more to do.
+        if (e instanceof Error && e.name === 'AbortError') return;
+        if (superseded()) return;
+        const errorResult: SchemaGraphResult = newResult('Table');
+        errorResult.error = String((e instanceof Error && e.message) || e);
+        Object.assign(tab, { result: errorResult });
+      } finally {
+        const renderCurrent = !superseded();
+        if (abortController === controller) abortController = null;
+        if (showRegistration === registration) showRegistration = null;
+        if (activeShow?.result === result) activeShow = null;
+        if (renderCurrent) deps.hooks.renderResults();
+      }
     } finally {
-      if (abortController === controller) abortController = null;
+      registration?.release();
     }
-    deps.hooks.renderResults();
   }
 
   // `ch.CardColumnRow` (the real loader shape) has no index signature;
@@ -261,7 +323,7 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
     return out;
   };
 
-  async function expand(focus: SchemaGraphFocus): Promise<SchemaGraphExpandData> {
+  async function expand(focus: SchemaGraphFocus): Promise<SchemaGraphExpandData | null> {
     // Pin the result whose Expand was clicked NOW, before any await: a tab
     // switch during the fetch must not redirect the saved-positions map to a
     // different tab's result (mirrors show()'s own captured-before-any-await
@@ -269,44 +331,80 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
     const clickedTab = deps.activeTab();
     const clickedResult = clickedTab.result as SchemaGraphResult | null;
     const sg = clickedResult?.schemaGraph || null;
-    await deps.ensureConfig();
-    if (!(await deps.getToken())) {
-      deps.hooks.onAuthFailed();
-      throw new SchemaGraphAuthRequiredError('Sign in to view the schema graph.');
+    const controller = new AbortController();
+    const scope = deps.executionScope();
+    const registration = scope?.register({
+      name: 'schema graph expand',
+      abort: () => controller.abort(),
+    }) || null;
+    const current = (): boolean => !controller.signal.aborted && (registration === null || registration.isCurrent());
+    try {
+      await deps.ensureConfig();
+      if (!current()) return null;
+      const token = await deps.getToken();
+      if (!current()) return null;
+      if (!token) {
+        deps.hooks.onAuthFailed();
+        throw new SchemaGraphAuthRequiredError('Sign in to view the schema graph.');
+      }
+      // Walk lineage transitively across DB boundaries (soft-capped) — pulls in
+      // objects an other database references, instead of dead-ending at the edge.
+      const lineage = await deps.loadLineageTransitive(deps.ctx(), focus, {
+        signal: controller.signal,
+      });
+      if (!current()) return null;
+      const g = buildSchemaGraph(lineage.rows, focus);
+      // Fresh node/edge literals (`{...n}`): `SchemaGraphNode` (buildSchemaGraph's
+      // fixed-field output) has no index signature; `ExpandLineageNode` (what
+      // expandLineage's graph needs) does — every field it reads is already there.
+      const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db || ''); // closure around focus.db, tags external nodes
+      // Card metadata for every database the expansion reached (external nodes too).
+      const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
+      const cards = await deps.loadSchemaCards(deps.ctx(), dbs);
+      if (!current()) return null;
+      const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
+        { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
+      // Persist manually-moved node positions per result: the map hangs off the
+      // live schemaGraph result (captured above) so re-opening keeps the layout.
+      const positions: PositionMap = (sg && sg.savedPositions) || {};
+      if (sg && current()) sg.savedPositions = positions;
+      return {
+        nodes: cardGraph.nodes,
+        edges: cardGraph.edges,
+        focus,
+        truncated: lineage.truncated || ex.truncated,
+        savedPositions: positions,
+      };
+    } finally {
+      registration?.release();
     }
-    // Walk lineage transitively across DB boundaries (soft-capped) — pulls in
-    // objects an other database references, instead of dead-ending at the edge.
-    const lineage = await deps.loadLineageTransitive(deps.ctx(), focus);
-    const g = buildSchemaGraph(lineage.rows, focus);
-    // Fresh node/edge literals (`{...n}`): `SchemaGraphNode` (buildSchemaGraph's
-    // fixed-field output) has no index signature; `ExpandLineageNode` (what
-    // expandLineage's graph needs) does — every field it reads is already there.
-    const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db || ''); // closure around focus.db, tags external nodes
-    // Card metadata for every database the expansion reached (external nodes too).
-    const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
-    const cards = await deps.loadSchemaCards(deps.ctx(), dbs);
-    const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
-      { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
-    // Persist manually-moved node positions per result: the map hangs off the
-    // live schemaGraph result (captured above) so re-opening keeps the layout.
-    const positions: PositionMap = (sg && sg.savedPositions) || {};
-    if (sg) sg.savedPositions = positions;
-    return {
-      nodes: cardGraph.nodes,
-      edges: cardGraph.edges,
-      focus,
-      truncated: lineage.truncated || ex.truncated,
-      savedPositions: positions,
-    };
   }
 
   async function loadNodeDetail(node: SchemaGraphFocus, token: object): Promise<TableDetail | null> {
     if (!node || !node.db || !node.name) return null;
+    const controller = new AbortController();
+    const scope = deps.executionScope();
+    const registration = scope?.register({
+      name: 'schema graph node detail',
+      abort: () => controller.abort(),
+    }) || null;
+    const current = (): boolean => !controller.signal.aborted && (registration === null || registration.isCurrent());
     latestDetailRequest.set(token, node);
-    const detail = await deps.loadTableDetail(deps.ctx(), node.db, node.name);
-    if (latestDetailRequest.get(token) !== node) return null; // superseded by a later click
-    return detail;
+    try {
+      await deps.ensureConfig();
+      if (!current()) return null;
+      if (!(await deps.getToken())) {
+        if (current()) deps.hooks.onAuthFailed();
+        return null;
+      }
+      if (!current()) return null;
+      const detail = await deps.loadTableDetail(deps.ctx(), node.db, node.name);
+      if (!current() || latestDetailRequest.get(token) !== node) return null; // superseded by a later click
+      return detail;
+    } finally {
+      registration?.release();
+    }
   }
 
-  return { show, cancel, expand, loadNodeDetail };
+  return { show, cancel, suspend, expand, loadNodeDetail };
 }

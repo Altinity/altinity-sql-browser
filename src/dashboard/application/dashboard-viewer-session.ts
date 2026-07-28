@@ -249,6 +249,9 @@ export interface ViewerReadRequest {
   rowLimit?: number;
   params?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** A caller-owned, unique server query id.  The execution scope uses this
+   *  value to cancel exactly the request that was live when auth was lost. */
+  queryId?: string;
   onChunk?: () => void;
 }
 export interface ViewerExecutor {
@@ -263,6 +266,28 @@ export interface ViewerConnection {
   ensureFreshToken(): Promise<boolean>;
 }
 
+/**
+ * Structural projection of `AuthenticatedExecutionScope`.
+ *
+ * This package is deliberately below `src/application/**` in the dependency
+ * graph, so importing the concrete coordinator would violate the Dashboard
+ * boundary.  Keeping the small capability structural lets the UI pass the
+ * real scope without making this runtime depend on the app shell.
+ */
+export interface ViewerExecutionRegistration {
+  release(): void;
+  isCurrent(): boolean;
+}
+
+export interface ViewerExecutionScope {
+  isOpen(): boolean;
+  register(operation: {
+    name: string;
+    abort(): void;
+    getQueryId?(): string | null | undefined;
+  }): ViewerExecutionRegistration;
+}
+
 export interface DashboardViewerDeps {
   /** The immutable Dashboard snapshot this session views. */
   document: DashboardDocumentV2;
@@ -272,6 +297,11 @@ export interface DashboardViewerDeps {
   queries: readonly SavedQueryV2[];
   exec: ViewerExecutor;
   connection: ViewerConnection;
+  /** The disposable authenticated execution epoch.  When supplied, a missing
+   *  scope means the document remains viewable but no server work may begin. */
+  executionScope?(): ViewerExecutionScope | null;
+  /** Creates a unique ClickHouse query id for each HTTP request. */
+  mintQueryId?(): string;
   /** Resolves the active layout plugin + fallback. Defaults to none — the
    *  viewer computes the flow model directly from the document either way; the
    *  registry is used only to fail closed when the layout cannot load. */
@@ -812,6 +842,64 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // can yield — exactly like a tile's generation. Without that ordering a
   // superseded wave could still be the last one to publish its rows.
   let optionsGen = 0;
+  let optionAbortController: AbortController | null = null;
+
+  /** A registration retained for one public execution entry point.  It is
+   * created before token preflight so an auth-loss arriving while refresh is
+   * pending can synchronously make its continuation inert. */
+  interface ScopeRun {
+    isCurrent(): boolean;
+    release(): void;
+    scope: ViewerExecutionScope | null;
+  }
+
+  function settleAuthenticatedWork(): void {
+    // Preserve each tile's last committed result.  Only the transient loading
+    // presentation is settled; a resumed scope can refresh the same mounted
+    // Dashboard session without a route rebuild.
+    optionsGen++;
+    optionAbortController?.abort();
+    optionAbortController = null;
+    for (const runtime of tiles) {
+      runtime.gen++;
+      runtime.abortController?.abort();
+      runtime.abortController = null;
+      if (runtime.state.status === 'loading') {
+        // A refresh paints over an already-committed result only transiently.
+        // Authentication loss restores that committed presentation instead of
+        // replacing it with the viewer's generic idle/loading placeholder.
+        runtime.state.status = runtime.state.rows === null ? 'idle' : 'ready';
+        runtime.state.progressRows = 0;
+      }
+    }
+    for (const variable of variableRuntimes) {
+      if (variable.state.status !== 'loading') continue;
+      variable.state.status = variable.state.options === null ? 'idle' : 'ready';
+    }
+    publish(false);
+  }
+
+  function beginScopeRun(name: string): ScopeRun | null {
+    const scope = deps.executionScope?.();
+    // Omitted is the backwards-compatible/testing seam; supplied-but-null is
+    // the real suspended-auth state and must never reach token preflight.
+    if (deps.executionScope && (!scope || !scope.isOpen())) return null;
+    if (!scope) return { isCurrent: () => !destroyed, release: () => {}, scope: null };
+    const registration = scope.register({ name, abort: settleAuthenticatedWork });
+    return {
+      isCurrent: () => !destroyed && registration.isCurrent(),
+      release: () => registration.release(),
+      scope,
+    };
+  }
+
+  function beginRequest(
+    run: ScopeRun, name: string, controller: AbortController, queryId: string,
+  ): ViewerExecutionRegistration | null {
+    if (!run.isCurrent()) return null;
+    if (!run.scope) return null;
+    return run.scope.register({ name, abort: () => controller.abort(), getQueryId: () => queryId });
+  }
 
   // `unknown`, not `string`: a multi-select variable's committed value is a real
   // `string[]` and must reach `serializeParamValue` as one — stringifying it here
@@ -934,18 +1022,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     };
   }
 
-  async function runTile(runtime: TileRuntime, source: PreparedSource, generation: number): Promise<void> {
-    if (runtime.gen !== generation) return;
+  async function runTile(
+    runtime: TileRuntime, source: PreparedSource, generation: number, run: ScopeRun,
+  ): Promise<void> {
+    if (!run.isCurrent() || runtime.gen !== generation) return;
     if (source.missing.length || source.invalid.length) {
       runtime.state.status = 'unfilled';
       runtime.state.unfilled = source.missing.concat(source.invalid);
-      publish();
+      if (run.isCurrent()) publish();
       return;
     }
     if (source.errors.length) {
       runtime.state.status = 'error';
       runtime.state.error = source.errors[0];
-      publish();
+      if (run.isCurrent()) publish();
       return;
     }
     // `!`: runtime.query is present for every runnable (non-error) tile.
@@ -960,43 +1050,58 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       runtime.state.status = 'error';
       runtime.state.error = execution.error
         || 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.';
-      publish();
+      if (run.isCurrent()) publish();
       return;
     }
     runtime.state.status = 'loading';
     runtime.state.progressRows = 0;
+    if (!run.isCurrent()) return;
     publish();
     const controller = new AbortController();
     runtime.abortController = controller;
+    const queryId = deps.mintQueryId?.();
+    const requestRegistration = queryId === undefined
+      ? null
+      : beginRequest(run, `dashboard tile ${runtime.tile.id}`, controller, queryId);
+    if (!run.isCurrent() || (requestRegistration !== null && !requestRegistration.isCurrent())) {
+      controller.abort();
+      if (runtime.gen === generation && runtime.state.status === 'loading') runtime.state.status = 'idle';
+      requestRegistration?.release();
+      return;
+    }
     const startedAt = deps.now();
     const rowCap = runtime.isKpi ? 2 : DASH_TILE_ROW_CAP;
     // `!`: panelExecution always resolves a concrete format ('Table' default or 'KPI').
     const result = newResult(execution.format!, rowCap);
-    await deps.exec.executeRead(result, {
-      sql: execSql, format: execution.format, rowLimit: execution.rowLimit,
-      params: execution.params, signal: controller.signal,
-      onChunk: () => {
-        if (runtime.gen !== generation) return;
-        runtime.state.progressRows = result.progress.rows;
+    try {
+      await deps.exec.executeRead(result, {
+        sql: execSql, format: execution.format, rowLimit: execution.rowLimit,
+        params: execution.params, signal: controller.signal, queryId,
+        onChunk: () => {
+          if (!run.isCurrent() || runtime.gen !== generation) return;
+          runtime.state.progressRows = result.progress.rows;
+          publish();
+        },
+      });
+      if (!run.isCurrent() || runtime.gen !== generation) return; // superseded mid-stream
+      runtime.abortController = null;
+      if (result.error != null || result.cancelled) {
+        runtime.state.status = 'error';
+        runtime.state.error = result.error || 'Cancelled';
         publish();
-      },
-    });
-    if (runtime.gen !== generation) return; // superseded mid-stream
-    runtime.abortController = null;
-    if (result.error != null || result.cancelled) {
-      runtime.state.status = 'error';
-      runtime.state.error = result.error || 'Cancelled';
+        return;
+      }
+      runtime.state.status = 'ready';
+      runtime.state.error = null;
+      runtime.state.unfilled = [];
+      runtime.state.columns = result.columns as unknown as Column[];
+      runtime.state.rows = result.rows;
+      runtime.state.meta = tileResultMeta(result, startedAt, deps.now());
+      deps.recordBoundParams?.(source.statements.flatMap((statement) => statement.boundParams));
       publish();
-      return;
+    } finally {
+      requestRegistration?.release();
     }
-    runtime.state.status = 'ready';
-    runtime.state.error = null;
-    runtime.state.unfilled = [];
-    runtime.state.columns = result.columns as unknown as Column[];
-    runtime.state.rows = result.rows;
-    runtime.state.meta = tileResultMeta(result, startedAt, deps.now());
-    deps.recordBoundParams?.(source.statements.flatMap((statement) => statement.boundParams));
-    publish();
   }
 
   // ── The option batch ──────────────────────────────────────────────────────
@@ -1058,16 +1163,33 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    * opening ONE variable in its own main-editor tab and running it there (#457)
    * is the diagnostic path.
    */
-  async function runOptionBatch(generation: number): Promise<string[]> {
+  async function runOptionBatch(generation: number, run: ScopeRun): Promise<string[]> {
     if (optionBatch === null) return NO_RECONCILED;
     const result = newResult('Table', optionBatch.rowLimit);
-    await deps.exec.executeRead(result, {
-      sql: optionBatch.sql,
-      format: 'Table',
-      rowLimit: optionBatch.rowLimit,
-      params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
-    });
-    if (optionsGen !== generation || destroyed) return NO_RECONCILED; // superseded
+    const controller = new AbortController();
+    optionAbortController = controller;
+    const queryId = deps.mintQueryId?.();
+    const requestRegistration = queryId === undefined
+      ? null
+      : beginRequest(run, 'dashboard variable options', controller, queryId);
+    if (!run.isCurrent() || (requestRegistration !== null && !requestRegistration.isCurrent())) {
+      controller.abort();
+      requestRegistration?.release();
+      return NO_RECONCILED;
+    }
+    try {
+      await deps.exec.executeRead(result, {
+        sql: optionBatch.sql,
+        format: 'Table',
+        rowLimit: optionBatch.rowLimit,
+        params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
+        signal: controller.signal, queryId,
+      });
+    } finally {
+      if (optionAbortController === controller) optionAbortController = null;
+      requestRegistration?.release();
+    }
+    if (!run.isCurrent() || optionsGen !== generation || destroyed) return NO_RECONCILED; // superseded
     const failure = result.error != null || result.cancelled
       ? (result.error || 'Cancelled')
       : null;
@@ -1159,9 +1281,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  those tiles in `error` status is a `'failure'`: it still completes
    *  (`updatedAt` advances via the caller's own `publish`, unblocking the next
    *  refresh) but must never overwrite the last known-good time. Skipped
-   *  entirely once destroyed — there is no UI left to reflect it. */
+   *  The caller's scope-current guard already excludes destroyed sessions. */
   function recordRefreshOutcome(ranTiles: TileRuntime[], waveMs: number): void {
-    if (destroyed) return;
     const failed = ranTiles.some((runtime) => runtime.state.status === 'error');
     lastRefreshOutcome = failed ? 'failure' : 'success';
     if (!failed) lastSuccessWallMs = waveMs;
@@ -1169,13 +1290,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // ── Waves ─────────────────────────────────────────────────────────────────
 
-  async function preflight(): Promise<boolean> {
-    if (destroyed) return false;
+  async function preflight(run: ScopeRun): Promise<boolean> {
+    if (!run.isCurrent()) return false;
     if (!(await deps.connection.ensureFreshToken())) {
-      if (!destroyed) deps.onAuthFailed?.();
+      if (run.isCurrent()) deps.onAuthFailed?.();
       return false;
     }
-    return !destroyed;
+    return run.isCurrent();
   }
 
   function sourcesById(prepared: PreparedSource[]): Map<string, PreparedSource> {
@@ -1183,7 +1304,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   async function refresh(): Promise<void> {
-    if (!(await preflight())) return;
+    const run = beginScopeRun('dashboard refresh');
+    if (!run) return;
+    try {
+      if (!(await preflight(run))) return;
     // #335: ONE wall-clock snapshot for the WHOLE refresh — every tile in it
     // resolves its relative tokens against this single instant.
     const waveMs = deps.wallNow();
@@ -1209,10 +1333,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // every panel for a list nothing is waiting on. Both are inside the `running`
     // window, so the refresh control stays busy until the options have landed too.
     const [reconciled] = await Promise.all([
-      runOptionBatch(optionsGeneration),
+      runOptionBatch(optionsGeneration, run),
       runPool(runnable, VIEWER_TILE_CONCURRENCY,
-        (runtime) => runTile(runtime, batch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!)),
+        (runtime) => runTile(runtime, batch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!, run)),
     ]);
+    if (!run.isCurrent()) return;
     // #437: classified from the TILES only. An options failure has its own
     // published diagnostic and must not overwrite the last known-good tile
     // timestamp — the panels did refresh successfully.
@@ -1222,8 +1347,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // every reconciled name, because `commitAndRerun` reserves generations across
     // all of their targets before issuing a single `runAffectedWave` (the same
     // coalescing clear-all uses). Runs only after both halves above have settled.
-    if (reconciled.length && !destroyed) await commitAndRerun(reconciled);
-    publish(false, destroyed ? null : deps.now());
+    if (reconciled.length && run.isCurrent()) await commitAndRerun(reconciled);
+    if (run.isCurrent()) publish(false, deps.now());
+    } finally {
+      run.release();
+    }
   }
 
   const start = refresh;
@@ -1231,7 +1359,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   async function refreshTile(tileId: string): Promise<void> {
     const runtime = tiles.find((entry) => entry.tile.id === tileId);
     if (!runtime || !runtime.query || runtime.isText || runtime.presentationError) return;
-    if (!(await preflight())) return;
+    const run = beginScopeRun(`dashboard tile ${tileId} refresh`);
+    if (!run) return;
+    try {
+      if (!(await preflight(run))) return;
     // A single-tile refresh is a wave of one: it must publish its snapshot
     // like every other wave, or the tile's re-resolved relative bounds drift
     // from the closed time-range trigger label until the next full wave.
@@ -1239,7 +1370,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     waveWallNowMs = waveMs;
     const generation = supersede(runtime);
     const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
-    await runTile(runtime, prepared.get(tileId)!, generation);
+    await runTile(runtime, prepared.get(tileId)!, generation, run);
+    } finally {
+      run.release();
+    }
   }
 
   // Re-run only the tiles some committed variable feeds into.
@@ -1263,7 +1397,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // `preflight()` is the destroyed guard on this path too — it returns false
     // once the session is torn down, so no generation is reserved and no
     // request is issued after `destroy()`.
-    if (!(await preflight())) { publish(); return; }
+    const run = beginScopeRun('dashboard variable refresh');
+    if (!run) { publish(); return; }
+    try {
+    if (!(await preflight(run))) { if (run.isCurrent()) publish(); return; }
     // Consult each committed variable's RESOLVED targets (`targetsByParameter`,
     // built once at construction from `resolveVariableTargets`) rather than
     // blindly rerunning every tile that merely declares the name — the two must
@@ -1277,7 +1414,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     publish();
     await runPool(targets, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, prepared.get(runtime.tile.id)!, reservations.get(runtime.tile.id)!));
+      (runtime) => runTile(runtime, prepared.get(runtime.tile.id)!, reservations.get(runtime.tile.id)!, run));
+    } finally {
+      run.release();
+    }
   }
 
   // After committing a value (these four are commit paths only — never
@@ -1468,6 +1608,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // Supersede any in-flight options request too, so its response can never
     // publish onto a torn-down session.
     optionsGen++;
+    optionAbortController?.abort();
+    optionAbortController = null;
     for (const runtime of tiles) {
       runtime.gen++;
       if (runtime.abortController) {

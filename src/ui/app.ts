@@ -65,7 +65,8 @@ import type { ComboField } from './combobox.js';
 import { recentOptions } from '../core/recent-values.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
-import { renderLogin } from './login.js';
+import { mountInlineLogin, renderLogin } from './login.js';
+import type { InlineLoginHandle } from './login.js';
 import { openShortcuts, resetShortcutChord } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
@@ -73,6 +74,10 @@ import type { App, ActionsRegistry, KeyboardOwner, SchemaFocus, WorkspaceChanged
 import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import {
+  createAuthenticatedExecutionScope,
+  type AuthenticatedExecutionScope,
+} from '../application/authenticated-execution-scope.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
 import { createWorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import { createChSessionParams } from '../application/ch-session-params.js';
@@ -349,7 +354,10 @@ export function createApp(env: CreateAppEnv = {}): App {
   // action (never by importing ui/doc-pane itself — the editor stays a leaf
   // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
   // only for tidiness; the adapter reads it lazily at click/F1 time.
-  app.openDocEntry = (target) => openDocEntry(app, target);
+  app.openDocEntry = (target) => {
+    if (!app.requireAuthenticatedExecution()) return;
+    openDocEntry(app, target);
+  };
   // #60 — the global Escape shortcut closes the pane from anywhere (layered
   // before cancel-query in shortcuts.ts's handleKeydown).
   app.closeDocPane = () => {
@@ -359,7 +367,10 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
   // #315 — the F1 name-only disambiguation fallback's injected action, bound
   // the same way and for the same "editor never imports UI" reason.
-  app.openDocDisambiguation = (name) => openDocDisambiguation(app, name);
+  app.openDocDisambiguation = (name) => {
+    if (!app.requireAuthenticatedExecution()) return;
+    openDocDisambiguation(app, name);
+  };
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
@@ -434,6 +445,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // structural-only reinterpretation, not a new runtime assumption (a null
   // root would already throw inside login.ts's own `app.root.replaceChildren`
   // either way).
+  // Declared before the auth callbacks so they can retain or dispose the same
+  // persistent document shell. Construction completes before any callback can
+  // run; the actual mount helpers are installed further below.
+  let shell: AppShellHandle | null = null;
+  let disposeWorkbenchMount: (() => void) | null = null;
   const renderLoginApp = (msg?: string): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
@@ -442,19 +458,31 @@ export function createApp(env: CreateAppEnv = {}): App {
     // detached sidebar, and the next sign-in would skip re-mounting a shell that
     // is no longer in the document, leaving a blank page.
     //
-    // The Dashboard surface goes here too, not just in `signOut`: this is the ONE
-    // place that knows the login screen is now showing, and `onAuthLost` (a 401 or
-    // an expired token) arrives here without passing through `signOut`. Left
-    // alive, a mounted Dashboard keeps its window listeners, its viewer session,
-    // and a generation-matching `surfaceCommands` — so its refresh and style
-    // shortcuts stay dispatchable FROM the login screen, executing tile queries
-    // against a dead session. Advancing the generation is what closes that port.
+    // The Dashboard surface goes here too: this is the explicit end-of-session
+    // renderer, so no route-scoped listeners or generation-matching command
+    // port may remain dispatchable from the full-screen login. Involuntary auth
+    // loss does not call this path; it retains the Dashboard/document shell and
+    // exposes the inline authentication host instead.
     disposeDashboardSurface();
     advanceSurfaceGeneration();
     app.mainSurface = QUERY_SURFACE;
     disposeShell();
     renderLogin(app as App & { root: Element }, msg);
   };
+  // Temporary auth loss suspends only this disposable scope. The document
+  // session (tabs/editors/results/workspace/shell) stays mounted; the two UI
+  // callbacks are installed once the persistent shell seam is defined below.
+  let activeExecutionScope: AuthenticatedExecutionScope | null = null;
+  let inlineLogin: InlineLoginHandle | null = null;
+  const revealAuthenticationRequired = (detail?: string): void => {
+    if (!shell) {
+      renderLoginApp(detail);
+      return;
+    }
+    inlineLogin ??= mountInlineLogin(app as App & { root: Element }, shell.authHost);
+    inlineLogin.show(detail);
+  };
+  const hideAuthenticationRequired = (): void => inlineLogin?.hide();
   // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
   // PKCE login/refresh, Basic probing, and IdP config resolution live in
   // `application/connection-session.ts`,
@@ -464,9 +492,49 @@ export function createApp(env: CreateAppEnv = {}): App {
   const conn = createConnectionSession({
     fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
-    onAuthLost: (detail) => renderLoginApp(detail),
+    onAuthLost: (detail, lease) => {
+      const closing = activeExecutionScope;
+      activeExecutionScope = null;
+      closing?.close(lease);
+      revealAuthenticationRequired(detail);
+    },
   });
   app.conn = conn;
+  app.executionScope = () => activeExecutionScope;
+  app.resumeAuthenticatedExecution = () => {
+    const epoch = conn.connection.value.epoch;
+    if (activeExecutionScope?.epoch === epoch && activeExecutionScope.isOpen()) {
+      hideAuthenticationRequired();
+      return;
+    }
+    activeExecutionScope?.close();
+    const scope = createAuthenticatedExecutionScope({
+      epoch,
+      cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
+    });
+    activeExecutionScope = scope;
+    // Connection-scoped caches/panes are owners even when they have no live
+    // server query id. Their own invalidation/generation guards make late
+    // completion inert; query-bearing owners register their current ids.
+    scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
+    scope.register({ name: 'schema graph', abort: () => graph.suspend() });
+    scope.register({ name: 'documentation pane', abort: () => closeDocPane(app) });
+    hideAuthenticationRequired();
+  };
+  app.requireAuthenticatedExecution = () => {
+    let scope = activeExecutionScope;
+    // Production bootstrap establishes the first scope explicitly, but
+    // controller entry points are also valid before a surface is mounted
+    // (and tests exercise that contract). An already-authenticated session can
+    // therefore materialize its scope lazily; an auth-required session cannot.
+    if (!scope && conn.isSignedIn()) {
+      app.resumeAuthenticatedExecution();
+      scope = activeExecutionScope;
+    }
+    if (scope?.isOpen()) return scope;
+    revealAuthenticationRequired(conn.connection.value.detail);
+    return null;
+  };
   // THE single live ClickHouse context — owned by the session, aliased locally
   // so every existing ch.* call site below keeps referencing the same mutated
   // object (chCtx.origin/authConfirmed are mutated in place, never replaced).
@@ -490,6 +558,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.signOut = () => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
+    const closing = activeExecutionScope;
+    activeExecutionScope = null;
+    closing?.close(conn.captureCancellationLease());
     workbench.destroy();
     // Plain abort (no clearResult settle) — the login render replaces the
     // whole DOM next, so settling the visible result would be a wasted paint.
@@ -501,9 +572,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     // alongside the catalog reset, before the login screen renders.
     closeDocPane(app);
     conn.signOut();
-    // #425: the Dashboard teardown, the surface-generation bump and the
-    // main-surface reset live in `renderLoginApp` — the one place that knows the
-    // login screen is showing — so `onAuthLost` gets them as well.
+    // #425: explicit logout owns Dashboard teardown, the surface-generation
+    // bump, and the main-surface reset through the full-screen login renderer.
     renderLoginApp();
   };
   app.showLogin = (msg) => renderLoginApp(msg);
@@ -690,6 +760,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const exportService = createExportService({
     exportQuery: ch.exportQuery, runQuery: ch.runQuery, killQuery: ch.killQuery,
     ctx: () => chCtx, ensureConfig, getToken, sqlString, now, wallNow, uid,
+    executionScope: () => app.executionScope(),
     canExport: () => app.canExport(), canExportScript: () => app.canExportScript(),
     sink: exportSink,
     state: app.state, // AppState structurally satisfies ExportStateSlice
@@ -716,6 +787,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // effects (results repaint / Run button / mobile badge) the session owns.
   const workbench = createWorkbenchSession({
     exec, ensureConfig, getToken, now, wallNow, uid,
+    executionScope: () => app.executionScope(),
     state: app.state, // AppState structurally satisfies WorkbenchStateSlice
     activeTab: () => app.activeTab(),
     hooks: {
@@ -730,7 +802,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       getSelectionText: () => app.sqlEditor.getSelection().text,
       tickElapsed,
       saveJSON,
-      onAuthFailed: () => chCtx.onSignedOut(),
+      onAuthFailed: chCtx.onSignedOut,
     },
   });
   app.workbench = workbench;
@@ -991,12 +1063,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     const tab = app.activeTab();
     if (tab.result && tab.result.formatError) { tab.result = null; renderResults(app); }
   }
-  // Format one statement via ClickHouse's formatQuery(); returns the formatted text.
-  const formatOne = async (s: string): Promise<string> => {
-    const json = await ch.queryJson<{ q: string }>(chCtx, 'SELECT formatQuery(' + sqlString(s) + ') AS q FORMAT JSON');
-    return (json.data && json.data[0] && json.data[0].q) || '';
-  };
-
   async function formatQuery(): Promise<void> {
     if (app.activeTab().editorMode !== 'sql') return;
     const raw = app.activeTab().sqlDraft || '';
@@ -1010,17 +1076,58 @@ export function createApp(env: CreateAppEnv = {}): App {
       flashToast('Statement contains optional blocks — not formatted', { document: doc });
       return;
     }
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    const tab = app.activeTab();
-    setFmtBtn(true); // formatting a script is one request per statement — show busy
+    // `actions.formatQuery` enters through withAuthenticatedExecution(), so a
+    // private invocation only exists while its scope is present.
+    const scope = app.executionScope()!;
+    const controller = new AbortController();
+    const registration = scope.register({
+      name: 'format query',
+      abort: () => {
+        controller.abort();
+        setFmtBtn(false);
+      },
+    });
+    const formatOne = async (s: string): Promise<string> => {
+      const queryId = uid('q');
+      const requestRegistration = scope.register({
+        name: 'format statement',
+        abort: () => controller.abort(),
+        getQueryId: () => queryId,
+      });
+      try {
+        if (!requestRegistration.isCurrent()) return '';
+        const json = await ch.queryJson<{ q: string }>(
+          chCtx,
+          'SELECT formatQuery(' + sqlString(s) + ') AS q FORMAT JSON',
+          controller.signal,
+          { query_id: queryId },
+        );
+        return requestRegistration.isCurrent()
+          ? (json.data && json.data[0] && json.data[0].q) || ''
+          : '';
+      } finally {
+        requestRegistration.release();
+      }
+    };
     try {
+      await ensureConfig();
+      if (!registration.isCurrent()) return;
+      if (!(await getToken())) {
+        // Scope epoch, rather than the mutable current lifecycle, makes a
+        // late old credential failure harmless after a successful resume.
+        chCtx.onSignedOut(undefined, scope.epoch);
+        return;
+      }
+      if (!registration.isCurrent()) return;
+      const tab = app.activeTab();
+      setFmtBtn(true); // formatting a script is one request per statement — show busy
       if (stmts.length > 1) {
         // Multi-statement: format each (best-effort — keep the original text for any
         // statement that won't format, like insertCreate; skip a template, #165),
         // then reassemble with a `;` and a blank line between statements.
         const skipped = stmts.filter((s) => hasOptionalBlocks(s)).length;
         const formatted = await Promise.all(stmts.map((s) => (hasOptionalBlocks(s) ? s : formatOne(s).catch(() => s))));
+        if (!registration.isCurrent()) return;
         app.sqlEditor.replaceDocument(withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
         clearFormatError();
         if (skipped) {
@@ -1033,11 +1140,13 @@ export function createApp(env: CreateAppEnv = {}): App {
       // position maps 1:1 onto the editor text; show it persistently + jump the caret.
       try {
         const q = await formatOne(raw);
+        if (!registration.isCurrent()) return;
         // Terminate so the caret lands past the last token — otherwise the input
         // event from the replace re-opens autocomplete on the trailing word.
         if (q) app.sqlEditor.replaceDocument(withStatementBreak(q));
         clearFormatError();
       } catch (e) {
+        if (!registration.isCurrent()) return;
         const msg = String((e instanceof Error && e.message) || e);
         // `formatError` (not a run result, so a later successful format can
         // clear just this — see clearFormatError) is app.ts/test-only, not
@@ -1050,7 +1159,8 @@ export function createApp(env: CreateAppEnv = {}): App {
         if (pos != null) app.sqlEditor.revealOffset(pos);
       }
     } finally {
-      setFmtBtn(false);
+      if (registration.isCurrent()) setFmtBtn(false);
+      registration.release();
     }
   }
 
@@ -1067,6 +1177,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // detail-pane mount.
   const graph = createSchemaGraphSession({
     ensureConfig, getToken, ctx: () => chCtx,
+    executionScope: () => app.executionScope(),
     loadSchemaLineage: ch.loadSchemaLineage,
     loadLineageTransitive: ch.loadLineageTransitive,
     loadSchemaCards: ch.loadSchemaCards,
@@ -1074,7 +1185,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
-      onAuthFailed: () => chCtx.onSignedOut(),
+      onAuthFailed: chCtx.onSignedOut,
     },
   });
   app.graph = graph;
@@ -1096,6 +1207,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     const view = openSchemaView(app as DetachedGraphApp);
     try {
       const data = await graph.expand(focus);
+      if (!data) return;
       // Every real lineage/expansion node always carries `id`/`label`
       // (schema-graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both
       // required there); schema-cards.ts's own `CardGraphNode` widens them to
@@ -1171,7 +1283,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   function setResultRowLimit(n: number): Promise<void> | undefined {
     app.state.resultRowLimit = normalizeRowLimit(n);
     prefs.save('resultRowLimit', app.state.resultRowLimit);
-    return app.activeTab().editorMode === 'sql' ? workbench.run() : undefined;
+    if (app.activeTab().editorMode !== 'sql') return undefined;
+    return app.requireAuthenticatedExecution() ? workbench.run() : undefined;
   }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
@@ -1180,32 +1293,71 @@ export function createApp(env: CreateAppEnv = {}): App {
   // failure or an empty statement (having already surfaced the toast), so
   // callers can no-op without inspecting the error themselves.
   async function fetchCreateSql(target: string): Promise<string | null> {
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return null; }
+    // Both callers are action-gated, so this private helper has a scope for
+    // its whole setup window.
+    const scope = app.executionScope()!;
+    const controller = new AbortController();
+    let queryId: string | null = null;
+    const registration = scope.register({
+      name: 'show create',
+      abort: () => controller.abort(),
+      getQueryId: () => queryId,
+    });
+    const current = (): boolean => registration.isCurrent();
     try {
-      const show = await ch.queryJson<{ statement: string }>(chCtx, 'SHOW CREATE ' + target + ' FORMAT JSON');
+      await ensureConfig();
+      if (!current()) return null;
+      if (!(await getToken())) {
+        chCtx.onSignedOut(undefined, scope.epoch);
+        return null;
+      }
+      if (!current()) return null;
+      queryId = uid('q');
+      const show = await ch.queryJson<{ statement: string }>(
+        chCtx,
+        'SHOW CREATE ' + target + ' FORMAT JSON',
+        controller.signal,
+        { query_id: queryId },
+      );
+      if (!current()) return null;
       const stmt = (show.data && show.data[0] && show.data[0].statement) || '';
       if (!stmt) return null;
       try {
-        const fmt = await ch.queryJson<{ q: string }>(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
-        return (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
-      } catch { return stmt; /* formatting is best-effort — fall back to the raw DDL */ }
+        queryId = uid('q');
+        const fmt = await ch.queryJson<{ q: string }>(
+          chCtx,
+          'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON',
+          controller.signal,
+          { query_id: queryId },
+        );
+        return current() ? (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt : null;
+      } catch {
+        return current() ? stmt : null; // formatting is best-effort — fall back to the raw DDL
+      }
     } catch (e) {
-      flashToast('SHOW CREATE failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
+      if (current()) {
+        flashToast('SHOW CREATE failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
+      }
       return null;
+    } finally {
+      registration.release();
     }
   }
 
   // Replaces the active editor's content (undo restores the prior query).
   async function insertCreate(target: string): Promise<void> {
+    const scope = app.executionScope();
     const sql = await fetchCreateSql(target);
-    if (sql != null) app.sqlEditor.replaceDocument(sql);
+    if (sql != null && scope?.isOpen() && app.executionScope() === scope) {
+      app.sqlEditor.replaceDocument(sql);
+    }
   }
 
   // Opens the DDL in a new tab, leaving the active tab untouched.
   async function openCreateInNewTab(target: string, name?: string): Promise<void> {
+    const scope = app.executionScope();
     const sql = await fetchCreateSql(target);
-    if (sql == null) return;
+    if (sql == null || !scope?.isOpen() || app.executionScope() !== scope) return;
     loadIntoNewTab(app, name || '', sql); // falsy → loadIntoNewTab's own 'Untitled' fallback, same as omitting name
     toEditorOnMobile();
   }
@@ -1746,8 +1898,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // sign-out) tears them down; `shell === null` is then the signal to rebuild,
   // and it MUST be nulled by everything that replaces `#root` wholesale, or the
   // next render would skip a mount that is no longer in the document.
-  let shell: AppShellHandle | null = null;
-  let disposeWorkbenchMount: (() => void) | null = null;
   const ignoreExternalWorkspaceChange = (): void => {};
   const ensureShell = (): AppShellHandle => {
     shell ??= mountAppShell({
@@ -1761,12 +1911,21 @@ export function createApp(env: CreateAppEnv = {}): App {
       updateBanner: app.updateBanner,
       startDrag,
     });
+    if (!inlineLogin) {
+      inlineLogin = mountInlineLogin(
+        app as App & { root: Element },
+        shell.authHost,
+      );
+      if (activeExecutionScope?.isOpen()) inlineLogin.hide();
+    }
     if (!disposeWorkbenchMount) disposeWorkbenchMount = renderApp(app, { startDrag }, shell.queryHost);
     return shell;
   };
   const disposeShell = (): void => {
     disposeWorkbenchMount?.();
     disposeWorkbenchMount = null;
+    inlineLogin?.dispose();
+    inlineLogin = null;
     shell?.dispose();
     shell = null;
   };
@@ -1815,6 +1974,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     closeDocPane(app);
   };
   app.renderDashboard = () => {
+    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
     beginSurfaceTransition();
     const mounted = ensureShell();
     // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
@@ -2625,8 +2785,10 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   // --- actions registry --------------------------------------------------
+  const withAuthenticatedExecution = <T>(operation: () => T): T | undefined =>
+    (app.requireAuthenticatedExecution() ? operation() : undefined);
   app.actions = {
-    run: (opts) => workbench.runEntry(opts),
+    run: (opts) => withAuthenticatedExecution(() => workbench.runEntry(opts)),
     cancel: () => workbench.cancel(),
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
@@ -2647,7 +2809,16 @@ export function createApp(env: CreateAppEnv = {}): App {
     // basic auth would keep rendering the placeholder workspace instead of the
     // requested or last-used persisted workspace.
     connect: async (input) => {
+      const resumeMountedDocument = shell !== null && activeExecutionScope === null;
       await conn.connectBasic(input);
+      app.resumeAuthenticatedExecution();
+      if (resumeMountedDocument) {
+        // Preserve the exact mounted document/editor/result objects. Only
+        // connection-scoped metadata and execution owners are refreshed.
+        await Promise.allSettled([catalog.loadSchema(), catalog.loadReference()]);
+        void catalog.loadVersion();
+        return;
+      }
       await app.loadWorkspaceOnBoot();
       app.renderCurrentSurface();
       void app.catalog.loadVersion();
@@ -2662,24 +2833,33 @@ export function createApp(env: CreateAppEnv = {}): App {
     // sides of the cast keeps it a single legal step (same pattern as
     // `recordHistory`'s above).
     copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
-    exportEntry,
-    exportDirect,
+    exportEntry: () => withAuthenticatedExecution(exportEntry),
+    exportDirect: (sqlInput, waveMs) =>
+      withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
     cancelExport,
     cancelExportScript,
     save: saveActiveQuery,
     openUserMenu,
-    formatQuery,
+    formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
     formatSpec,
     setEditorMode,
-    explainQuery,
-    setExplainView,
+    explainQuery: () => withAuthenticatedExecution(explainQuery),
+    setExplainView: (id) => withAuthenticatedExecution(() => setExplainView(id)),
     setResultRowLimit,
-    showSchemaGraph,
+    showSchemaGraph: (focus) =>
+      withAuthenticatedExecution(() => showSchemaGraph(focus)) ?? Promise.resolve(),
     cancelSchemaGraph,
-    expandSchemaGraph,
-    openNodeDetail,
-    insertCreate: async (target) => { await insertCreate(target); toEditorOnMobile(); },
-    openCreateInNewTab: (target, name) => openCreateInNewTab(target, name),
+    expandSchemaGraph: (focus) =>
+      withAuthenticatedExecution(() => expandSchemaGraph(focus)) ?? Promise.resolve(),
+    openNodeDetail: (node, targetDoc) =>
+      withAuthenticatedExecution(() => openNodeDetail(node, targetDoc)) ?? Promise.resolve(),
+    insertCreate: async (target) => {
+      if (!app.requireAuthenticatedExecution()) return;
+      await insertCreate(target);
+      toEditorOnMobile();
+    },
+    openCreateInNewTab: (target, name) =>
+      withAuthenticatedExecution(() => openCreateInNewTab(target, name)) ?? Promise.resolve(),
     openShortcuts: () => {
       const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
       if (dialog) app.shortcutDialog = dialog;
@@ -2688,7 +2868,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
     insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
     replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
-    loadColumns,
+    loadColumns: (db, table) =>
+      withAuthenticatedExecution(() => loadColumns(db, table)) ?? Promise.resolve(),
     // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
     // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
     // (no new array), so this is also the one place that re-syncs the
@@ -2701,6 +2882,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   };
 
   app.renderApp = () => {
+    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
     beginSurfaceTransition();
     // The Dashboard's own route-scoped resources go; the query column does NOT
     // (it is mounted once and preserved — see `ensureShell`).

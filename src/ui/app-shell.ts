@@ -72,6 +72,12 @@ export type SurfaceHostKind = 'query' | 'dashboard';
 export interface AppShellHandle {
   /** Replace the header slot's content (each surface builds its own header). */
   setHeader(header: Element): void;
+  /**
+   * Stable host for in-shell authentication controls. It sits immediately
+   * below the header and starts hidden, so lifecycle wiring can reveal it
+   * without replacing either work surface.
+   */
+  authHost: HTMLElement;
   /** Host the workbench column (SQL editor + result/data drawer) mounts into. */
   queryHost: HTMLElement;
   /** Host a Dashboard mounts into. */
@@ -108,6 +114,12 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // spliced in via `setHeader()` below — this slot is the stable mount point
   // so the header can be replaced without rebuilding the sidebar around it.
   const headerSlot = h('div', { class: 'app-header-slot' });
+  const authHost = app.dom.authHost = h('div', {
+    class: 'auth-host',
+    hidden: true,
+    role: 'region',
+    'aria-label': 'Authentication required',
+  });
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',
@@ -204,7 +216,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     navBtn('editor', Icon.code(), 'Editor'),
     navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
 
-  root!.replaceChildren(headerSlot, app.dom.banner, mainRow, app.dom.mobileNav);
+  root!.replaceChildren(headerSlot, authHost, app.dom.banner, mainRow, app.dom.mobileNav);
 
   const disposers: (() => void)[] = [];
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()
@@ -305,6 +317,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       headerSlot.replaceChildren(header);
       applyConnectionStatus(app);
     },
+    authHost,
     queryHost,
     dashboardHost,
     showHost: (kind) => {

@@ -19,6 +19,7 @@ import type {
 import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
+import type { AuthenticatedExecutionScope } from '../application/authenticated-execution-scope.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
@@ -110,6 +111,8 @@ export interface AppDom {
   // app.ts-internal only (renderApp()'s own mounted chrome + renderVarStrip()'s
   // rebuild bookkeeping) — not read by any other module.
   banner?: HTMLElement;
+  /** Stable in-shell mount for temporary authentication recovery controls. */
+  authHost?: HTMLElement;
   connStatus?: HTMLElement;
   editorModeSwitch?: HTMLElement;
   editorRegion?: HTMLElement;
@@ -242,6 +245,15 @@ export interface App {
    *  shells/bootstrap consume those; a future phase re-points them to
    *  `app.conn` directly. */
   conn: ConnectionSession;
+  /** Current disposable authenticated execution scope, or null while the
+   * mounted document session is suspended for reauthentication. */
+  executionScope(): AuthenticatedExecutionScope | null;
+  /** Start a fresh scope for the session's current credential epoch. Bootstrap
+   * and successful in-place Basic authentication call this before server work. */
+  resumeAuthenticatedExecution(): void;
+  /** Shared gate for server-dependent commands. A null return also reveals and
+   * focuses the mounted recovery controls when the document shell is alive. */
+  requireAuthenticatedExecution(): AuthenticatedExecutionScope | null;
 
   // Editor ports (injected seams — #143/#212).
   sqlEditor: EditorPort;

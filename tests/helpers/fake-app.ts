@@ -39,6 +39,7 @@ import type { ChartJsConfigResult } from '../../src/core/chart-data.js';
 import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 import type { ConnectionSession } from '../../src/application/connection-session.js';
+import { createAuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
 import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../../src/application/schema-graph-session.js';
 import type { AppPreferences } from '../../src/application/app-preferences.js';
@@ -378,6 +379,7 @@ const savedDefaults: SavedQueryService = {
 const graphDefaults: SchemaGraphSession = {
   show: vi.fn(async () => {}),
   cancel: vi.fn(),
+  suspend: vi.fn(),
   expand: vi.fn(async () => ({ nodes: [], edges: [], focus: {}, truncated: false, savedPositions: {} })),
   loadNodeDetail: vi.fn(async () => null),
 };
@@ -404,6 +406,9 @@ const appDefaults: App = {
   root: null,
   document,
   conn: connDefaults,
+  executionScope: () => null,
+  resumeAuthenticatedExecution: () => {},
+  requireAuthenticatedExecution: () => null,
   catalog: catalogDefaults,
   params: paramsDefaults,
   graph: graphDefaults,
@@ -661,6 +666,10 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'cat
 export function makeApp<O extends AppOverrides = Record<string, never>>(overrides: O = {} as O) {
   const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
   const root = document.createElement('div');
+  const executionScope = createAuthenticatedExecutionScope({
+    epoch: 1,
+    cancelRemote: async () => {},
+  });
   // Resolved BEFORE `base` so the `mutateWorkspace` queue below (which needs to
   // call `.loadById()`/`.commit()` on the SAME repository the rest of the
   // fake app sees) can close over it directly — the final `workspace` field is
@@ -819,6 +828,8 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     elapsedMs: () => 0,
     now: () => 0,
     wallNow: () => 0, // the #173 wave wall clock (epoch ms; fixed in tests)
+    executionScope: () => executionScope,
+    requireAuthenticatedExecution: () => executionScope,
     showLogin: vi.fn(),
     signOut: vi.fn(),
     // Concrete (non-optional) elements — most consumers read these

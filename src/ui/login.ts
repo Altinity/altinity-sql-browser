@@ -35,6 +35,30 @@ export interface LoginApp {
   showLogin(msg?: string): void;
 }
 
+/** A reusable in-shell authentication mount. The host is stable for the life
+ *  of the app shell; showing, hiding, and reporting an authentication error
+ *  therefore never replaces the editor/results document tree around it. */
+export interface InlineLoginHandle {
+  /** Reveal the controls, replace any previous local error, and focus them. */
+  show(errorMsg?: string): void;
+  /** Hide the controls without discarding field values or async config. */
+  hide(): void;
+  /** Focus the first usable authentication control. */
+  focus(): void;
+  /** Fence pending config work and remove only this mount from its host. */
+  dispose(): void;
+}
+
+interface LoginMount extends InlineLoginHandle {
+  container: HTMLElement;
+}
+
+// `renderLogin()` historically has no disposer in its public API. Remember its
+// private mount so a re-render can still fence a late `loadIdps()` completion
+// from the screen it just replaced.
+const fullMounts = new WeakMap<Element, LoginMount>();
+const inlineMounts = new WeakMap<HTMLElement, LoginMount>();
+
 // `err` is `unknown` under strict catch typing; only a thrown `Error` has a
 // `.message` worth surfacing (every throw site in this module and its tests
 // is either `new Error(...)` or a raw primitive) — anything else stringifies
@@ -52,7 +76,38 @@ function errMsg(err: unknown): string {
  *   showLogin(msg)             — re-render with an error message
  */
 export function renderLogin(app: LoginApp, errorMsg?: string): void {
+  fullMounts.get(app.root)?.dispose();
+  const mount = mountLoginControls(app, app.root, 'full', errorMsg);
+  fullMounts.set(app.root, mount);
+}
+
+/**
+ * Mount the same authentication card used by `renderLogin()` into a stable
+ * in-shell host. Unlike the full-screen renderer, failures are painted into
+ * this mount and neither `app.root` nor the surrounding shell is replaced.
+ *
+ * The mount starts visible and focused. Callers may retain it across lifecycle
+ * changes with `hide()`/`show()`, or tear it down permanently with `dispose()`.
+ */
+export function mountInlineLogin(
+  app: LoginApp,
+  host: HTMLElement,
+  errorMsg?: string,
+): InlineLoginHandle {
+  inlineMounts.get(host)?.dispose();
+  const mount = mountLoginControls(app, host, 'inline', errorMsg);
+  inlineMounts.set(host, mount);
+  return mount;
+}
+
+function mountLoginControls(
+  app: LoginApp,
+  target: Element,
+  mode: 'full' | 'inline',
+  initialError?: string,
+): LoginMount {
   const cur = app.conn.host();
+  let disposed = false;
   let busy: 'sso' | 'creds' | null = null; // guards against double-submit
   let showPw = false;
   // A `?host=` URL param pre-fills the credential server address. A non-empty
@@ -153,23 +208,51 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
         h('div', { class: 'login-brand-sub mono' }, 'ClickHouse® query console'))),
     pickerSection,
     ssoSection,
-    credSection,
-    errorMsg ? h('div', { class: 'login-error' }, errorMsg) : null);
+    credSection);
+  let errorEl: HTMLElement | null = null;
+  const setError = (msg?: string): void => {
+    if (!msg) {
+      errorEl?.remove();
+      errorEl = null;
+      return;
+    }
+    if (!errorEl) {
+      errorEl = h('div', {
+        class: 'login-error',
+        role: 'alert',
+        'aria-live': 'polite',
+      });
+      card.append(errorEl);
+    }
+    errorEl.textContent = msg;
+  };
+  setError(initialError);
 
-  app.root.replaceChildren(h('div', { class: 'login-screen' }, card));
+  const container = mode === 'full'
+    ? h('div', { class: 'login-screen' }, card)
+    : h('div', {
+      class: 'login-inline',
+      role: 'group',
+      'aria-label': 'Authentication required',
+    }, card);
+  target.replaceChildren(container);
+  if (mode === 'inline') (target as HTMLElement).hidden = false;
   update();
 
   // Resolve the configured IdPs (and the basic_login flag) and reconcile which
   // sections are shown. On failure keep credentials visible (fail-open — OAuth
   // can't work without config anyway) and show no SSO.
   app.conn.loadIdps().then(({ idps, basicLogin, hosts }) => {
+    if (disposed) return;
     const credsShown = basicLogin !== false;
     if (!credsShown) credSection.remove();
     populateHosts(hosts);
     populateSso(idps);
     applyChrome(ssoBtns.length > 0, credsShown);
     update();
-  }).catch(() => applyChrome(false, true)); // no config → credentials only
+  }).catch(() => {
+    if (!disposed) applyChrome(false, true);
+  }); // no config → credentials only
 
   // Show the "or use credentials" divider only when both sign-in methods
   // are actually offered.
@@ -185,7 +268,7 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
     const standalone = (idps || []).filter((i) => !pickHosts.some((hh) => hh.auth === 'oauth' && hh.idp === i.id));
     if (!standalone.length) return;
     const mk = (idpId: string, label: string): HTMLButtonElement => {
-      const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b) },
+      const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b, label) },
         Icon.shield(), h('span', null, label));
       ssoBtns.push(b);
       return b;
@@ -266,15 +349,19 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
   }
 
   async function pickOAuth(hh: HostDescriptor): Promise<void> {
-    if (busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
+    if (disposed || busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
     busy = 'sso';
     hostPicker.disabled = true;
     try {
       await app.actions.login(hh.idp, hh.url);
     } catch (err) {
+      if (disposed) return;
       busy = null;
       hostPicker.disabled = false;
-      app.showLogin(errMsg(err));
+      const certGo = certWarn.querySelector<HTMLButtonElement>('.login-cert-go');
+      if (certGo) certGo.disabled = false;
+      reportError(errMsg(err));
+      if (!disposed) update();
     }
   }
 
@@ -302,29 +389,72 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
   function onCredsKey(e: KeyboardEvent): void { if (e.key === 'Enter' && hasCreds()) doConnect(); }
 
   async function doConnect(): Promise<void> {
-    if (busy || !hasCreds()) return;
+    if (disposed || busy || !hasCreds()) return;
     busy = 'creds';
     connectBtn.disabled = true;
     connectBtn.replaceChildren(h('span', null, 'Connecting…'));
     try {
       await app.actions.connect({ username: userInput.value, password: passInput.value, host: hostInput.value });
-      // success → connect() renders the workbench, replacing this screen.
+      // Full login mounts the workbench; inline recovery hides this host while
+      // retaining the already-mounted document session.
     } catch (err) {
+      if (disposed) return;
       busy = null;
-      app.showLogin(errMsg(err));
+      connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
+      reportError(errMsg(err));
+      if (!disposed) update();
     }
   }
 
-  async function doSso(idpId: string, btn: HTMLButtonElement): Promise<void> {
-    if (busy) return;
+  async function doSso(idpId: string, btn: HTMLButtonElement, label: string): Promise<void> {
+    if (disposed || busy) return;
     busy = 'sso';
     btn.disabled = true;
     btn.replaceChildren(h('span', null, 'Redirecting…'));
     try {
       await app.actions.login(idpId);
     } catch (err) {
+      if (disposed) return;
       busy = null;
-      app.showLogin(errMsg(err));
+      btn.replaceChildren(Icon.shield(), h('span', null, label));
+      reportError(errMsg(err));
+      if (!disposed) update();
     }
   }
+
+  function reportError(msg: string): void {
+    if (mode === 'full') app.showLogin(msg);
+    else setError(msg);
+  }
+
+  function focus(): void {
+    if (disposed || mode === 'inline' && (target as HTMLElement).hidden) return;
+    const control = container.querySelector<HTMLElement>('input:not([disabled])')
+      ?? container.querySelector<HTMLElement>('.login-sso button:not([disabled])')
+      ?? container.querySelector<HTMLElement>('select:not([disabled])')
+      ?? container.querySelector<HTMLElement>('button:not([disabled])');
+    control?.focus();
+  }
+
+  const mount: LoginMount = {
+    container,
+    show: (msg?: string) => {
+      if (disposed) return;
+      setError(msg);
+      if (mode === 'inline') (target as HTMLElement).hidden = false;
+      focus();
+    },
+    hide: () => {
+      if (!disposed && mode === 'inline') (target as HTMLElement).hidden = true;
+    },
+    focus,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (container.parentNode === target) container.remove();
+      if (mode === 'inline') (target as HTMLElement).hidden = true;
+    },
+  };
+  if (mode === 'inline') focus();
+  return mount;
 }

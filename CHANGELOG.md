@@ -10,6 +10,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Temporary ClickHouse authentication loss now suspends only authenticated
+  execution, not the in-memory document session** (#512 phase 2, absorbing
+  #502/#520/#522). A disposable, epoch-fenced execution scope coordinates
+  Workbench and Dashboard queries, exports, schema graphs, catalog/reference
+  loads, formatting, SHOW CREATE, and detached-result refreshes. Closing it
+  aborts local work before best-effort server cancellation with an immutable
+  origin and `Authorization` lease, and stale completions cannot publish into
+  the next authenticated epoch. The mounted shell, exact editor/tab/result
+  objects, drafts, dirty state, route, and unload guard survive while the
+  header turns red and the existing authentication controls appear inline.
+  Successful Basic reauthentication installs a fresh scope and reloads
+  connection metadata in place; explicit Log out remains destructive.
 - **Connection state now has one explicit, epoch-fenced lifecycle** (#512
   phase 1). OAuth/Basic credentials, single-flight token refresh, transport
   success/failure, auth loss, reauthentication, and explicit sign-out flow

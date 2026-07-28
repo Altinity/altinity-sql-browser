@@ -14,6 +14,11 @@ import type {
 import type { StreamResult } from '../../src/core/stream.js';
 import type { PreparedSource, PreparedStatement, BoundParamSnapshot } from '../../src/core/param-pipeline.js';
 import { VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
+import {
+  createAuthenticatedExecutionScope,
+} from '../../src/application/authenticated-execution-scope.js';
+import type { AuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
+import type { AuthenticatedCancellationLease } from '../../src/application/authenticated-execution-scope.js';
 
 // ── Small deferred helper (mirrors the pattern query-execution-service.test.ts
 // uses for scripting async runQuery behaviors, adapted to a single promise a
@@ -113,6 +118,7 @@ interface Harness {
   tab: QueryTab;
   execFakes: ReturnType<typeof makeExec>;
   nowSeq: { value: number };
+  scopeRef: { current: AuthenticatedExecutionScope | null };
 }
 
 function makeHarness(opts: {
@@ -120,12 +126,14 @@ function makeHarness(opts: {
   hooks?: Partial<WorkbenchHooks>;
   tab?: Partial<QueryTab>;
   getToken?: () => Promise<string | null>;
+  executionScope?: AuthenticatedExecutionScope | null;
 } = {}): Harness {
   const state = makeState(opts.state);
   const hooks = makeHooks(opts.hooks);
   const tab: QueryTab = { ...newTabObj('t1'), ...opts.tab };
   const execFakes = makeExec();
   const nowSeq = { value: 0 };
+  const scopeRef = { current: opts.executionScope || null };
   const deps: WorkbenchSessionDeps = {
     exec: execFakes.exec,
     ensureConfig: vi.fn(async () => undefined),
@@ -136,8 +144,22 @@ function makeHarness(opts: {
     state,
     activeTab: () => tab,
     hooks,
+    executionScope: () => scopeRef.current,
   };
-  return { deps, state, hooks, tab, execFakes, nowSeq };
+  return { deps, state, hooks, tab, execFakes, nowSeq, scopeRef };
+}
+
+function executionScope(epoch = 1) {
+  return createAuthenticatedExecutionScope({ epoch, cancelRemote: vi.fn() });
+}
+
+function cancellationLease(epoch = 1): AuthenticatedCancellationLease {
+  return {
+    epoch,
+    origin: 'https://cluster.example',
+    authorization: 'Bearer fixed-at-close',
+    fetch: vi.fn() as typeof fetch,
+  };
 }
 
 // ── run() ────────────────────────────────────────────────────────────────────
@@ -164,7 +186,7 @@ describe('createWorkbenchSession: run()', () => {
   // run/preview branch and a tab carries no `filterPreview`.
 
   it('blocks (no exec call) when the var gate is blocked', async () => {
-    const h = makeHarness({ hooks: { varGateBlocked: vi.fn(() => true) } });
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' }, hooks: { varGateBlocked: vi.fn(() => true) } });
     const session = createWorkbenchSession(h.deps);
     await session.run();
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
@@ -178,6 +200,93 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('auth loss during preflight leaves a completed result intact and never starts a request', async () => {
+    const scope = executionScope();
+    const gate = deferred<unknown>();
+    const h = makeHarness({ executionScope: scope, tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => gate.promise);
+    const completed = { format: 'Table', rows: [['old']] };
+    h.tab.result = completed as QueryTab['result'];
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+
+    scope.close(cancellationLease());
+    expect(h.state.running.value).toBe(false);
+    gate.resolve(undefined);
+    await pending;
+
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.tab.result).toBe(completed);
+    expect(h.hooks.onAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not cross a scope closure that occurs while the ordinary-run token awaits', async () => {
+    const scope = executionScope();
+    const tokenGate = deferred<string | null>();
+    const h = makeHarness({ executionScope: scope, tab: { sqlDraft: 'SELECT 1' }, getToken: () => tokenGate.promise });
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flush();
+
+    scope.close();
+    tokenGate.resolve('tok');
+    await pending;
+
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.hooks.onAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it('scope close aborts the request, supplies its server id once, and makes its late completion inert', async () => {
+    const cancelRemote = vi.fn();
+    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote });
+    const lease = cancellationLease();
+    const gate = deferred<StreamResult>();
+    const h = makeHarness({ executionScope: scope, tab: { sqlDraft: 'CREATE TABLE stale (x Int32) ENGINE=Memory' } });
+    h.execFakes.executeRead.mockImplementation((_result: StreamResult) => gate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flush();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+
+    scope.close(lease);
+    expect(req.signal?.aborted).toBe(true);
+    expect(h.state.running.value).toBe(false);
+    expect(cancelRemote).toHaveBeenCalledWith(lease, 'q-1');
+    gate.resolve({} as StreamResult);
+    await pending;
+
+    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
+    expect(h.hooks.loadSchema).not.toHaveBeenCalled();
+    expect((h.tab.result as { source?: unknown } | null)?.source).toBeUndefined();
+  });
+
+  it('a replacement scope can run while an old scoped completion settles inertly', async () => {
+    const oldScope = executionScope();
+    const newScope = executionScope(2);
+    const oldGate = deferred<StreamResult>();
+    const h = makeHarness({ executionScope: oldScope, tab: { sqlDraft: 'SELECT 1' } });
+    h.execFakes.executeRead.mockImplementationOnce(() => oldGate.promise);
+    h.execFakes.executeRead.mockImplementationOnce(async (result: StreamResult) => {
+      Object.assign(result, { columns: [{ name: 'fresh', type: 'String' }], rows: [['new']] });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    const stale = session.run();
+    await flush();
+    oldScope.close(cancellationLease());
+    h.scopeRef.current = newScope;
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledTimes(2);
+    const fresh = h.tab.result;
+    oldGate.resolve({} as StreamResult);
+    await stale;
+
+    expect(h.tab.result).toBe(fresh);
+    expect(h.hooks.recordHistory).toHaveBeenCalledTimes(1);
+    expect((fresh as { rows?: unknown[][] } | null)?.rows).toEqual([['new']]);
   });
 
   it('KPI panel: an explicit FORMAT clash sets an owned error result and never executes', async () => {
@@ -380,6 +489,76 @@ describe('createWorkbenchSession: runScript()', () => {
     await session.runScript(['SELECT 1'], 'SELECT 1');
     expect(h.execFakes.executeScript).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a token failure while the captured script scope is still current', async () => {
+    const h = makeHarness({ executionScope: executionScope(), getToken: async () => null });
+    const session = createWorkbenchSession(h.deps);
+    await session.runScript(['SELECT 1'], 'SELECT 1');
+
+    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(h.hooks.onAuthFailed).toHaveBeenCalledOnce();
+  });
+
+  it('scope close makes late script callbacks and final settlement inert', async () => {
+    const scope = executionScope();
+    const gate = deferred<ScriptExecutionResult>();
+    const h = makeHarness({ executionScope: scope });
+    let req!: ScriptExecutionRequest;
+    h.execFakes.executeScript.mockImplementation((request: ScriptExecutionRequest) => {
+      req = request;
+      return gate.promise;
+    });
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.runScript(['CREATE TABLE t (x Int32) ENGINE=Memory'], 'CREATE TABLE t (x Int32) ENGINE=Memory');
+    await flush();
+
+    scope.close();
+    req.onStatementStart(0, { queryId: 'late-script-q', attempt: 1 });
+    req.onStatementResult(0, { sql: 'CREATE TABLE t (x Int32) ENGINE=Memory', status: 'ok', ms: 1 });
+    expect(h.state.running.value).toBe(false);
+    gate.resolve({ entries: [], aborted: false });
+    await pending;
+
+    expect((h.tab.result as { script: unknown[] } | null)?.script).toEqual([]);
+    expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
+    expect(h.hooks.loadSchema).not.toHaveBeenCalled();
+    expect(h.state.history).toEqual([]);
+  });
+
+  it('captures the script scope before config/token awaits and treats either auth-loss point as stale', async () => {
+    const beforeConfigScope = executionScope();
+    const configGate = deferred<unknown>();
+    const beforeConfig = makeHarness({ executionScope: beforeConfigScope });
+    beforeConfig.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const beforeConfigSession = createWorkbenchSession(beforeConfig.deps);
+    const first = beforeConfigSession.runScript(['SELECT 1'], 'SELECT 1');
+    beforeConfigScope.close();
+    configGate.resolve(undefined);
+    await first;
+
+    const duringTokenScope = executionScope();
+    const tokenGate = deferred<string | null>();
+    const duringToken = makeHarness({ executionScope: duringTokenScope, getToken: () => tokenGate.promise });
+    const duringTokenSession = createWorkbenchSession(duringToken.deps);
+    const second = duringTokenSession.runScript(['SELECT 1'], 'SELECT 1');
+    await flush();
+    duringTokenScope.close();
+    tokenGate.resolve('tok');
+    await second;
+
+    expect(beforeConfig.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(duringToken.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(beforeConfig.hooks.onAuthFailed).not.toHaveBeenCalled();
+    expect(duringToken.hooks.onAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it('keeps the ordinary explicit cancel path safe if only the running signal remains', () => {
+    const h = makeHarness({ state: { running: signal(true) } });
+    const session = createWorkbenchSession(h.deps);
+
+    expect(() => session.cancel()).not.toThrow();
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null);
   });
 
   it('flips `running` true eagerly, before the transport resolves', async () => {
@@ -830,6 +1009,63 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a current variable-scope token failure, but ignores a scope closed during token resolution', async () => {
+    const current = makeHarness({ executionScope: executionScope(), tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }), getToken: async () => null });
+    await createWorkbenchSession(current.deps).run();
+
+    const closingScope = executionScope();
+    const tokenGate = deferred<string | null>();
+    const stale = makeHarness({ executionScope: closingScope, tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }), getToken: () => tokenGate.promise });
+    const pending = createWorkbenchSession(stale.deps).run();
+    await flush();
+    closingScope.close();
+    tokenGate.resolve('tok');
+    await pending;
+
+    expect(current.hooks.onAuthFailed).toHaveBeenCalledOnce();
+    expect(current.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(stale.hooks.onAuthFailed).not.toHaveBeenCalled();
+    expect(stale.execFakes.executeRead).not.toHaveBeenCalled();
+  });
+
+  it('scope close during a variable probe settles immediately and skips late validation, source, and History', async () => {
+    const scope = executionScope();
+    const gate = deferred<StreamResult>();
+    const h = makeHarness({ executionScope: scope, tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.execFakes.executeRead.mockImplementation((_result: StreamResult) => gate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flush();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+
+    scope.close();
+    req.onChunk?.();
+    expect(h.state.running.value).toBe(false);
+    gate.resolve({} as StreamResult);
+    await pending;
+
+    expect(h.hooks.renderResults).not.toHaveBeenCalled();
+    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect((h.tab.result as { source?: unknown } | null)?.source).toBeUndefined();
+  });
+
+  it('captures the variable scope before config awaits, preserving the pre-existing result on auth loss', async () => {
+    const scope = executionScope();
+    const configGate = deferred<unknown>();
+    const h = makeHarness({ executionScope: scope, tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const previous = { rows: [['completed']] };
+    h.tab.result = previous as QueryTab['result'];
+    const pending = createWorkbenchSession(h.deps).run();
+
+    scope.close();
+    configGate.resolve(undefined);
+    await pending;
+
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.tab.result).toBe(previous);
   });
 
   it('never consults the ordinary {name:Type} var gate — optionSqlDiagnostics is its complete policy (#465 review)', async () => {

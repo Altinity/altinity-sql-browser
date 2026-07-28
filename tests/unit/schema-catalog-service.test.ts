@@ -51,6 +51,13 @@ function makeHooks(): Mocked<Required<SchemaCatalogHooks>> {
   };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(reason?: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 function makeDeps(over: Partial<SchemaCatalogDeps> = {}): SchemaCatalogDeps {
   return {
     loadServerVersion: vi.fn(async () => '24.3.1.2603'),
@@ -239,6 +246,239 @@ describe('refData / completions setters', () => {
 
 
 // ── invalidate ───────────────────────────────────────────────────────────────
+
+describe('connection invalidation generation', () => {
+  it('stops before every metadata transport when invalidated during configuration, and never rebuilds stale data', async () => {
+    const config = deferred<null>();
+    const state = makeState(baseSchema());
+    const hooks = makeHooks();
+    const deps = makeDeps({ state, hooks, ensureConfig: vi.fn(() => config.promise) });
+    const svc = createSchemaCatalogService(deps);
+    const version = svc.loadVersion();
+    const schema = svc.loadSchema();
+    const columns = svc.loadColumns('d1', 't1');
+    const reference = svc.loadReference();
+    svc.invalidate();
+    config.resolve(null);
+    await Promise.all([version, schema, columns, reference]);
+    expect(deps.loadServerVersion).not.toHaveBeenCalled();
+    expect(deps.loadSchema).not.toHaveBeenCalled();
+    expect(deps.loadColumns).not.toHaveBeenCalled();
+    expect(deps.loadReferenceData).not.toHaveBeenCalled();
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+  });
+
+  it('does not rebuild schema/columns after a loader itself invalidates the connection', async () => {
+    const state = makeState(baseSchema());
+    const hooks = makeHooks();
+    let svc!: ReturnType<typeof createSchemaCatalogService>;
+    const deps = makeDeps({
+      state,
+      hooks,
+      loadSchema: vi.fn(async () => { svc.invalidate(); return baseSchema(); }) as unknown as SchemaCatalogDeps['loadSchema'],
+      loadColumns: vi.fn(async () => { svc.invalidate(); throw new Error('connection replaced'); }),
+    });
+    svc = createSchemaCatalogService(deps);
+    await svc.loadSchema();
+    // invalidate() intentionally clears the whole connection projection;
+    // columns are normally only requested from a newly-rendered schema row.
+    state.schema.value = baseSchema();
+    await svc.loadColumns('d1', 't1');
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+  });
+
+  it('drops capability probes which complete after reconnect for function, structured, and Markdown documentation sources', async () => {
+    const functionColumns = deferred<string[]>();
+    const functionSvc = createSchemaCatalogService(makeDeps({
+      loadFunctionsDocColumns: vi.fn(() => functionColumns.promise),
+    }));
+    const functionLookup = functionSvc.docEntry({ kind: 'function', name: 'late' });
+    await Promise.resolve();
+    functionSvc.invalidate();
+    functionColumns.resolve(['name']);
+    await expect(functionLookup).resolves.toEqual({ status: 'unavailable' });
+
+    const structuredColumns = deferred<string[]>();
+    const structuredSvc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(() => structuredColumns.promise) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    const structuredLookup = structuredSvc.docEntry({ kind: 'table-engine', name: 'late' });
+    await Promise.resolve();
+    structuredSvc.invalidate();
+    structuredColumns.resolve(['name']);
+    await expect(structuredLookup).resolves.toEqual({ status: 'unavailable' });
+
+    const markdownColumns = deferred<string[]>();
+    const markdownSvc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(() => markdownColumns.promise) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    const markdownLookup = markdownSvc.docEntry({ kind: 'setting', name: 'late' });
+    await Promise.resolve();
+    markdownSvc.invalidate();
+    markdownColumns.resolve(['name', 'type', 'description']);
+    await expect(markdownLookup).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('fences a reconnect that happens during the post-capability configuration await of every documentation lookup', async () => {
+    const exercise = async (
+      warm: () => Promise<unknown>,
+      lookup: () => Promise<unknown>,
+      invalidate: () => void,
+      release: () => void,
+    ): Promise<void> => {
+      await warm();
+      const pending = lookup();
+      await Promise.resolve();
+      invalidate();
+      release();
+      await expect(pending).resolves.toEqual({ status: 'unavailable' });
+    };
+
+    let hold = false;
+    let config = deferred<null>();
+    const functionSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadFunctionsDocColumns: vi.fn(async () => ['name']),
+    }));
+    await exercise(() => functionSvc.docEntry({ kind: 'function', name: 'warm' }),
+      () => { hold = true; return functionSvc.docEntry({ kind: 'function', name: 'next' }); },
+      () => functionSvc.invalidate(), () => config.resolve(null));
+
+    hold = false; config = deferred<null>();
+    const structuredSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await exercise(() => structuredSvc.docEntry({ kind: 'table-engine', name: 'warm' }),
+      () => { hold = true; return structuredSvc.docEntry({ kind: 'table-engine', name: 'next' }); },
+      () => structuredSvc.invalidate(), () => config.resolve(null));
+
+    hold = false; config = deferred<null>();
+    const markdownSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await exercise(() => markdownSvc.docEntry({ kind: 'setting', name: 'warm' }),
+      () => { hold = true; return markdownSvc.docEntry({ kind: 'setting', name: 'next' }); },
+      () => markdownSvc.invalidate(), () => config.resolve(null));
+
+    // Name disambiguation has the same post-config fence but a separate
+    // in-flight map, so cover it as its own consumer of the cached capability.
+    hold = false; config = deferred<null>();
+    const disambiguateSvc = createSchemaCatalogService(makeDeps({
+      ensureConfig: vi.fn(() => hold ? config.promise : Promise.resolve(null)),
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await disambiguateSvc.docEntry({ kind: 'setting', name: 'warm' });
+    hold = true;
+    const pending = disambiguateSvc.docDisambiguate('next');
+    await Promise.resolve();
+    disambiguateSvc.invalidate();
+    config.resolve(null);
+    await expect(pending).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('falls back from a durably unavailable structured source and aliases a canonical Markdown entry', async () => {
+    const fallback = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async (_ctx: ChCtx, table: string) => (
+        table === 'table_engines' ? [] : ['name', 'type', 'description']
+      )) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow: vi.fn(async () => [{ name: 'MergeTree', type: 'Table engine', description: 'fallback' }]),
+    }));
+    await expect(fallback.docEntry({ kind: 'table-engine', name: 'MergeTree' })).resolves.toMatchObject({ status: 'found' });
+
+    const markdown = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']) as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow: vi.fn(async () => [{ name: 'MAX_THREADS', type: 'Setting', description: 'canonical' }]),
+    }));
+    await expect(markdown.docMarkdown({ kind: 'setting', name: 'max_threads' })).resolves.toMatchObject({ status: 'found' });
+  });
+
+  it('drops every stale metadata result, clears connection state, and permits a fresh generation', async () => {
+    const oldVersion = deferred<string>();
+    const oldSchema = deferred<SchemaDb[]>();
+    const oldColumns = deferred<{ name: string; type: string; comment: string }[]>();
+    const oldReference = deferred<{ keywords: string[]; functions: Record<string, unknown>; formats: string[] }>();
+    const freshSchema = [{ db: 'fresh', tables: [{ name: 'table' }] }];
+    const freshColumns = [{ name: 'fresh_column', type: 'String', comment: '' }];
+    const state = makeState(baseSchema());
+    state.serverVersion = 'old-version';
+    state.schemaError.value = 'old error';
+    const hooks = makeHooks();
+    const loadServerVersion = vi.fn().mockImplementationOnce(() => oldVersion.promise).mockResolvedValueOnce('fresh-version');
+    const loadSchema = vi.fn().mockImplementationOnce(() => oldSchema.promise).mockResolvedValueOnce(freshSchema);
+    const loadColumns = vi.fn().mockImplementationOnce(() => oldColumns.promise).mockResolvedValueOnce(freshColumns);
+    const loadReferenceData = vi.fn().mockImplementationOnce(() => oldReference.promise).mockResolvedValueOnce({ keywords: ['FRESH'], functions: {}, formats: [] });
+    const deps = makeDeps({
+      state,
+      hooks,
+      loadServerVersion,
+      loadSchema: loadSchema as unknown as SchemaCatalogDeps['loadSchema'],
+      loadColumns,
+      loadReferenceData: loadReferenceData as unknown as SchemaCatalogDeps['loadReferenceData'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    // loadReference resets only documentation state; all four loaders are now
+    // in the same connection generation and must be retired together by
+    // invalidate(), not by their own late result.
+    const reference = svc.loadReference();
+    const version = svc.loadVersion();
+    const schema = svc.loadSchema();
+    const columns = svc.loadColumns('d1', 't1');
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(loadServerVersion).toHaveBeenCalledTimes(1);
+    expect(loadSchema).toHaveBeenCalledTimes(1);
+    expect(loadColumns).toHaveBeenCalledTimes(1);
+    expect(loadReferenceData).toHaveBeenCalledTimes(1);
+
+    svc.invalidate();
+    expect(state.serverVersion).toBeNull();
+    expect(state.schema.value).toBeNull();
+    expect(state.schemaError.value).toBeNull();
+    expect(svc.refData.keywords).not.toContain('FRESH');
+
+    oldVersion.resolve('late-version');
+    oldSchema.resolve(baseSchema());
+    oldColumns.resolve([{ name: 'late_column', type: 'String', comment: '' }]);
+    oldReference.resolve({ keywords: ['LATE'], functions: {}, formats: [] });
+    await Promise.all([version, schema, columns, reference]);
+    expect(state.serverVersion).toBeNull();
+    expect(state.schema.value).toBeNull();
+    expect(svc.refData.keywords).not.toContain('LATE');
+    expect(hooks.onServerVersionLoaded).not.toHaveBeenCalled();
+    expect(hooks.renderVarStrip).not.toHaveBeenCalled();
+    expect(hooks.refreshEditorReference).not.toHaveBeenCalled();
+
+    await svc.loadVersion();
+    await svc.loadSchema();
+    await svc.loadColumns('fresh', 'table');
+    await svc.loadReference();
+    expect(state.serverVersion).toBe('fresh-version');
+    expect(state.schema.value).toMatchObject(freshSchema);
+    expect((state.schema.value as SchemaDb[])[0].tables![0].columns).toEqual(freshColumns);
+    expect(svc.refData.keywords).toContain('FRESH');
+    expect(hooks.onServerVersionLoaded).toHaveBeenCalledWith('fresh-version');
+    expect(hooks.renderVarStrip).toHaveBeenCalledTimes(1);
+    expect(hooks.refreshEditorReference).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish a stale schema failure after invalidation', async () => {
+    const schema = deferred<SchemaDb[]>();
+    const state = makeState();
+    const svc = createSchemaCatalogService(makeDeps({
+      state,
+      loadSchema: vi.fn(() => schema.promise) as unknown as SchemaCatalogDeps['loadSchema'],
+    }));
+
+    const pending = svc.loadSchema();
+    await Promise.resolve();
+    svc.invalidate();
+    schema.reject(new Error('late schema failure'));
+    await pending;
+    expect(state.schemaError.value).toBeNull();
+  });
+});
 
 // ── docSummary / docEntry (#313) ────────────────────────────────────────────
 
