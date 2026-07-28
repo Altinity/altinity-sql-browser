@@ -1,7 +1,8 @@
 // Minimal hyperscript helper. `h(tag, props, ...children)` builds a DOM node;
 // `s(tag, ...)` is the same in the SVG namespace. Both support function
-// components (h only), style objects, class/className, raw html, on* event
-// listeners, boolean/null skipping, and nested/array children.
+// components (h only), style objects, class/className, trusted static html, on*
+// event listeners, boolean/null skipping, and nested/array children. `html` is
+// a trust-boundary escape hatch: never pass user, server, or Markdown content.
 
 const SVG_NS = 'http://www.w3.org/2000/svg' as const;
 
@@ -34,6 +35,8 @@ function apply<T extends Element & ElementCSSInlineStyle>(el: T, props: ElProps 
       if (v == null || v === false) continue;
       if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
       else if (k === 'class' || k === 'className') el.setAttribute('class', String(v));
+      // `html` is reserved for trusted, code-owned static markup (currently
+      // inline SVG art). Dynamic content must be built as DOM/text nodes.
       else if (k === 'html') el.innerHTML = String(v);
       else if (k.startsWith('on') && typeof v === 'function') {
         el.addEventListener(k.slice(2).toLowerCase(), v as EventListener);

@@ -8,15 +8,21 @@ all bundled — see hard rule 4). Quality is held by tests.
 
 1. **Coverage gate is non-negotiable.** `npm test` must pass, and `tsc --noEmit`
    must pass (ADR-0002 — incremental strict TypeScript, dev-time only; wired
-   into the `pretest` step). The pure/network/state/DOM and render layers are
-   gated at **100/100/100/100 per file**. `src/ui/app.ts` + `src/main.ts` are
-   the browser glue — gated lower and integration-tested. Add tests in the
+   into the `pretest` step). The suite enforces per-file coverage floors of
+   **100/95/90/100** (statements/functions/branches/lines). Most
+   pure/network/state/DOM and render modules maintain 100/100/100/100;
+   `src/ui/app.ts` + `src/main.ts` are browser glue and integration-tested.
+   Add tests in the
    same change as the code. The whole hand-written tree is strict TypeScript
    (ADR-0002 complete, #267) — new modules start as `.ts`.
 2. **Keep the layers honest.** Pure logic goes in `src/core/` (no DOM, no
-   globals). Network goes in `src/net/` with the fetch seam *injected*, never
-   imported. DOM rendering goes in `src/ui/` as functions that take the `app`
-   controller — except the editor, which lives in `src/editor/` behind the
+   globals). Workspace aggregates go in `src/workspace/`; Dashboard model,
+   layout, and application code goes in `src/dashboard/`, with dependency
+   direction `model/layouts <- application <- UI`. App-level coordination and
+   sessions go in `src/application/` and must not import `src/ui/` or
+   `src/editor/`. Network goes in `src/net/` with the fetch seam *injected*,
+   never imported. DOM rendering goes in `src/ui/` as functions that take the
+   `app` controller — except the editor, which lives in `src/editor/` behind the
    injected editor seams (#143/#212): only `main.js` imports concrete adapters,
    and everything else addresses `app.sqlEditor` or `app.specEditor` explicitly.
    SQL execution, schema insertion, export, and SQL formatting must never target
@@ -52,7 +58,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    `docs/ADR-0001-reactivity.md`), and **marked** (the Markdown LEXER for
    #60/#315 reference-doc bodies — used strictly as a pure tokenizer in
    `core/doc-markdown.ts`, like the signals precedent it needs no seam;
-   `marked.parse()`/HTML-string output and `innerHTML` are FORBIDDEN — the
+   `marked.parse()`/HTML-string output and `innerHTML` are FORBIDDEN, except
+   for `ui/dom.ts`'s `html` prop: that escape hatch accepts only trusted,
+   code-owned static markup (never user, server, or Markdown content) — the
    token tree is projected into DOM by `ui/doc-markdown-view.ts` under the
    fail-closed policy: images/raw HTML/rejected links render as literal
    text; measured +44 KB raw / ~3% artifact delta) — all inlined into the
@@ -112,6 +120,9 @@ Touch these in one change:
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
+| `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
+| `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
+| `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |
 | `src/ui/*` | hyperscript, icons, render modules, controller |
 | `src/editor/*` | injected SQL/Spec editor ports + CodeMirror adapters (#143/#21/#212) |
 | `src/state.ts` | state model + pure ops (strict TS — ADR-0002 phase 2) |
