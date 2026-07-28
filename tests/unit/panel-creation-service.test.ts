@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDashboardPanel, panelCreationMessage,
 } from '../../src/application/panel-creation-service.js';
-import type { MutateWorkspace, WorkspaceExternallyChangedInfo } from '../../src/state.js';
+import type { MutateWorkspace } from '../../src/state.js';
 import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
 const dash = (id: string): DashboardDocumentV2 => ({
@@ -35,13 +35,11 @@ const deps = (
   }) as MutateWorkspace;
   let seq = 0;
   const genId = vi.fn(() => 'id-' + ++seq);
-  const onWorkspaceExternallyChanged =
-    vi.fn<(info: WorkspaceExternallyChangedInfo) => void>();
-  return { mutateWorkspace, genId, onWorkspaceExternallyChanged, candidates };
+  return { mutateWorkspace, genId, candidates };
 };
 
 describe('createDashboardPanel', () => {
-  it('mints both ids once, commits, reports them, and refreshes query projections', async () => {
+  it('mints both ids once, commits, and reports them without route-local settlement', async () => {
     const app = deps(ws());
     const outcome = await createDashboardPanel(app, 'd1', 'Panel', 'Description');
 
@@ -50,9 +48,6 @@ describe('createDashboardPanel', () => {
       ok: true, data: { status: 'ok', queryId: 'id-1', tileId: 'id-2' },
     });
     if (!outcome.ok) throw new Error('expected ok');
-    expect(app.onWorkspaceExternallyChanged).toHaveBeenCalledWith({
-      workspace: outcome.workspace, queriesChanged: true,
-    });
   });
 
   it('re-reads the target at dequeue time and leaves no orphan on a stale target', async () => {
@@ -65,7 +60,6 @@ describe('createDashboardPanel', () => {
       data: { status: 'declined', reason: 'dashboard-missing' },
     });
     expect(app.candidates).toEqual([null]);
-    expect(app.onWorkspaceExternallyChanged).not.toHaveBeenCalled();
   });
 
   it('declines when no workspace is committed', async () => {

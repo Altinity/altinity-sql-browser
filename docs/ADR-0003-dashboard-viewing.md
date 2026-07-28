@@ -797,6 +797,10 @@ an orphan query or dangling tile is never published on failure.
 Success settlement is deliberately a post-dialog-close callback. The dialog
 first tears down and performs its ordinary return-focus step; only then does
 the tree reveal the new Panel and call the existing saved-query open path.
+The creation service does not invoke the active Dashboard's workspace-refresh
+hook before returning: `mutateWorkspace` has already projected the committed
+aggregate, while an eager Dashboard rerender would force-close the dialog and
+discard that post-close navigation.
 That path switches to the Query surface, seeds the linked tab's committed-token
 baseline, and focuses the SQL editor, so dialog teardown cannot steal focus back
 to the hidden plus trigger. Cancel, Escape, backdrop close, stale targets,

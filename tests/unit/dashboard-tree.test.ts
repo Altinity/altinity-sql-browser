@@ -1313,7 +1313,16 @@ describe('renderDashboardTree — Add panel (#515)', () => {
   });
 
   it('commits, closes, reveals the new row, then opens its linked query', async () => {
-    const { app, list, committed } = open();
+    const prematureRefresh = vi.fn(() => {
+      throw new Error('Panel creation must settle before a Dashboard refresh');
+    });
+    const { app, list, committed } = open({
+      onWorkspaceExternallyChanged: prematureRefresh,
+      mainSurface: {
+        kind: 'dashboard', dashboardId: 'sales', mode: 'view',
+        currentMember: null, pendingFocus: null, pendingScrollTop: null,
+      },
+    });
     const openSavedQuery = vi.mocked(app.openSavedQuery);
     openSavedQuery.mockImplementation(() => {
       expect(document.querySelector('.fm-dialog-card')).toBeNull();
@@ -1339,6 +1348,7 @@ describe('renderDashboardTree — Add panel (#515)', () => {
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey)
       .toBe('w1:sales:tile:new-2');
     expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('new-1');
+    expect(prematureRefresh).not.toHaveBeenCalled();
   });
 
   it('keeps every dismiss path locked while Add is committing', async () => {

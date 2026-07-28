@@ -978,7 +978,6 @@ function openPanelCreationDialog(
     onConfirm: async ({ name, description }) => {
       const outcome = await createDashboardPanel({
         mutateWorkspace: app.mutateWorkspace,
-        onWorkspaceExternallyChanged: app.onWorkspaceExternallyChanged,
         genId: app.genId,
       }, row.dashboardId, name, description);
       if (outcome.ok) created = outcome.data as PanelCreationData;

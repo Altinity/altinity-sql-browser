@@ -105,7 +105,11 @@ test('the action is keyboard reachable and activates on Enter', async ({ page })
 
 test('a Dashboard-row plus creates a blank linked Panel and focuses its SQL editor', async ({ page }) => {
   await open(page);
-  await roleTab(page, 'Dashboards').click();
+  // Begin on the actual Dashboard surface. A successful mutation must not
+  // rerender that surface (which force-closes overlays) before the dialog can
+  // close and perform its reveal/open/focus settlement.
+  await openDashboard(page, 'sales');
+  await expect.poll(() => surface(page)).toBe('dashboard');
   const dashboard = treeRow(page, 'workspace:sales');
   const plus = dashboard.locator('.dash-tree-act[aria-label="Add panel to Sales"]');
 

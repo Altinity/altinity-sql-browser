@@ -4,9 +4,7 @@
 
 import { createPanelCandidate } from '../dashboard/application/panel-creation.js';
 import type { PanelCreationAbort } from '../dashboard/application/panel-creation.js';
-import type {
-  MutateWorkspace, WorkspaceExternallyChangedInfo, WorkspaceMutationOutcome,
-} from '../state.js';
+import type { MutateWorkspace, WorkspaceMutationOutcome } from '../state.js';
 
 export type PanelCreationData = { status: 'ok'; queryId: string; tileId: string };
 export type PanelCreationDeclined = { status: 'declined'; reason: PanelCreationAbort };
@@ -15,7 +13,6 @@ export type PanelCreationOutcome =
 
 export interface PanelCreationDeps {
   mutateWorkspace: MutateWorkspace;
-  onWorkspaceExternallyChanged(info: WorkspaceExternallyChangedInfo): void;
   genId(): string;
 }
 
@@ -42,9 +39,6 @@ export async function createDashboardPanel(
     if (!result.ok) return declined(result.reason);
     return { candidate: result.workspace, data: { status: 'ok', ...result.data } };
   });
-  if (outcome.ok) {
-    deps.onWorkspaceExternallyChanged({ workspace: outcome.workspace, queriesChanged: true });
-  }
   return outcome;
 }
 
