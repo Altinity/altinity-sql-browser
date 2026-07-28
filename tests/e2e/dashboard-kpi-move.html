@@ -35,6 +35,7 @@
   <script type="module">
     import { createApp } from '/src/ui/app.js';
     import { renderDashboard } from '/src/ui/dashboard.js';
+    import { createAuthenticatedExecutionScope } from '/src/application/authenticated-execution-scope.js';
 
     const seed = {
       storageVersion: 5, id: 'workspace', key: 'workspace', name: 'Workspace',
@@ -50,6 +51,12 @@
     };
     const root = document.querySelector('#surface');
     const app = createApp({ root, broadcastChannel: () => null });
+    // #524: Dashboard refreshes now require the same authenticated execution
+    // scope production installs after sign-in. This direct-render fixture has no
+    // bootstrap/login route, so provide its open, inert test epoch explicitly.
+    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote: () => {} });
+    app.executionScope = () => scope;
+    app.requireAuthenticatedExecution = () => scope;
     app.conn.ensureFreshToken = async () => true;
     app.conn.chCtx.onSignedOut = () => {};
     app.exec.executeRead = async (result, opts) => {

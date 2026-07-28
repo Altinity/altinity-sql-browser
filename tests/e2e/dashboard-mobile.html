@@ -145,6 +145,10 @@
       conn: {
         host: () => 'clickhouse.example.internal',
         email: () => 'me@example.com',
+        // #523: the shared header now projects the authoritative connection
+        // lifecycle rather than inferring it from metadata. This hand-built
+        // layout harness supplies the connected presentation it exercises.
+        connection: { value: { kind: 'connected', epoch: 1 } },
       },
       actions: {
         openUserMenu: () => {},

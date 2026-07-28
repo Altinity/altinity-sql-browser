@@ -30,6 +30,12 @@ test.describe('OAuth document recovery redirect (#512)', () => {
     ));
     await page.evaluate(() => window.__oauthRecoveryTrigger401());
     await authLossResponse;
+    // Recovery retains the document session, but it must not remain in the
+    // shell's flex flow: that used to push the workspace below a second scroll
+    // region. The authentication form is a blocking viewport overlay instead.
+    const recovery = page.locator('.auth-host');
+    await expect(recovery).toHaveCSS('position', 'fixed');
+    await expect(recovery).toHaveCSS('z-index', '120');
     const sso = page.locator('.login-inline .login-sso .login-btn');
     await expect(sso).toHaveText('Continue with Fixture SSO');
 
