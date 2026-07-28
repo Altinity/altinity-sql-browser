@@ -10,6 +10,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Connection state now has one explicit, epoch-fenced lifecycle** (#512
+  phase 1). OAuth/Basic credentials, single-flight token refresh, transport
+  success/failure, auth loss, reauthentication, and explicit sign-out flow
+  through `ConnectionSession`; stale refreshes cannot publish tokens or
+  lifecycle state into a newer login. The accessible header chip reacts to
+  that lifecycle (green connected, amber offline, red auth-required) instead
+  of inferring connectivity from the best-effort server-version probe. HTTP
+  query failures remain query errors and do not falsely mark the transport
+  offline.
 - **A Dashboard row can create a blank Panel directly from the Dashboards
   tree** (#515). Its new plus action opens the shared name/description dialog,
   then atomically commits one empty panel-role query and one canonically laid

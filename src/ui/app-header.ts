@@ -1,6 +1,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { userShortName } from '../core/format.js';
+import { connectionLifecyclePresentation } from '../core/connection-lifecycle.js';
 import { libraryControls, QUERY_FILE_MENU } from './file-menu.js';
 import type { FileMenuSurfaceContext } from './file-menu.js';
 import type { App } from './app.types.js';
@@ -33,19 +34,37 @@ export function routeButton(
   }, h('span', { class: 'surface-label' }, label));
 }
 
+/** Paint the existing chip from the session's authoritative lifecycle. Safe
+ * before the header exists so app-shell can use one reactive effect across
+ * its mount/setHeader ordering. */
+export function applyConnectionStatus(app: Pick<App, 'conn' | 'dom'>): void {
+  const chip = app.dom.connStatus;
+  if (!chip) return;
+  const lifecycle = app.conn.connection.value;
+  const presentation = connectionLifecyclePresentation(lifecycle);
+  chip.className = presentation.className;
+  chip.dataset.connectionState = lifecycle.kind;
+  chip.setAttribute('aria-label', presentation.ariaLabel);
+  chip.title = app.conn.host();
+  chip.querySelector<HTMLElement>('.connection-host')!.textContent = app.conn.host();
+  chip.querySelector<HTMLElement>('.connection-state')!.textContent = presentation.label;
+}
+
 /** The one application header used by both Workbench and Dashboard. */
 export function buildAppHeader(app: App, options: AppHeaderOptions = {}): HTMLElement {
   app.dom.themeBtn = h('button', {
     class: 'hd-btn', title: 'Toggle theme', onclick: () => app.toggleTheme(),
   }, app.state.theme === 'dark' ? Icon.sun() : Icon.moon());
 
+  const connection = connectionLifecyclePresentation(app.conn.connection.value);
   app.dom.connStatus = h('div', {
-    class: `conn-status connection-chip${app.state.serverVersion ? '' : ' dim'}`,
+    class: connection.className,
+    'data-connection-state': app.conn.connection.value.kind,
     role: 'status',
-    'aria-label': app.state.serverVersion ? 'ClickHouse connection: connected' : 'ClickHouse connection: connecting',
+    'aria-label': connection.ariaLabel,
     title: app.conn.host(),
   }, h('span', { class: 'connection-host' }, app.conn.host()),
-  h('span', { class: 'connection-state' }, app.state.serverVersion ? 'Connected' : 'Connecting…'));
+  h('span', { class: 'connection-state' }, connection.label));
   app.dom.userBtn = h('button', {
     class: 'hd-btn user-btn', title: app.conn.email(), onclick: () => app.actions.openUserMenu(),
   }, h('span', { class: 'user-short' }, userShortName(app.conn.email())), Icon.chevDown());

@@ -23,7 +23,12 @@ interface FakeResponse { ok: boolean; status: number; json(): Promise<unknown>; 
 function jsonResponse(status: number, body: unknown): FakeResponse {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
-type RouteFn = (url: string, init?: RequestInit) => FakeResponse | null;
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+type RouteFn = (url: string, init?: RequestInit) => FakeResponse | null | Promise<FakeResponse | null>;
 
 // One shared config.json doc: 'g' is a default (bearer) IdP; 'basicidp' maps
 // ch_auth=basic with a custom basic_user_claim, for the chUsername/authHeader
@@ -44,7 +49,7 @@ function makeFetch(routes: RouteFn[] = []): { fn: typeof fetch; calls: string[] 
   const fn = vi.fn(async (url: string, init?: RequestInit): Promise<FakeResponse> => {
     calls.push(url);
     for (const r of routes) {
-      const resp = r(url, init);
+      const resp = await r(url, init);
       if (resp) return resp;
     }
     if (url.endsWith('/config.json')) return jsonResponse(200, CONFIG_DOC_RAW);
@@ -142,6 +147,57 @@ describe('construction seeding', () => {
     const { session } = setup();
     expect(session.chAuth()).toBe('bearer');
     expect(session.basicUserClaim()).toBe('');
+  });
+
+  it('starts restored credentials in starting and an empty session signed out', () => {
+    const { session: restored } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const { session: empty } = setup();
+    expect(restored.connection.value).toEqual({ kind: 'starting', epoch: 0 });
+    expect(empty.connection.value).toEqual({ kind: 'signed-out', epoch: 0 });
+    expect(restored.chCtx.currentEpoch()).toBe(0);
+  });
+});
+
+describe('connection lifecycle ownership', () => {
+  it('publishes only transport settlements as connected/offline', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    session.chCtx.onTransportConnected();
+    expect(session.connection.value).toEqual({ kind: 'connected', epoch: 0 });
+    session.chCtx.onTransportOffline(new TypeError('network'));
+    expect(session.connection.value).toEqual({ kind: 'offline', epoch: 0, detail: 'Network unavailable' });
+    session.chCtx.onTransportConnected();
+    expect(session.connection.value).toEqual({ kind: 'connected', epoch: 0 });
+  });
+
+  it('installs and explicitly removes credential scopes in new epochs', () => {
+    const { session } = setup();
+    session.setTokens(validToken, 'r1');
+    expect(session.connection.value).toEqual({ kind: 'starting', epoch: 1 });
+    expect(session.chCtx.currentEpoch()).toBe(1);
+    session.signOut();
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+  });
+
+  it('invalidates involuntary auth loss once and reports it once', () => {
+    const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    session.chCtx.onTransportConnected();
+    session.chCtx.onSignedOut('expired by IdP');
+    expect(session.connection.value).toEqual({ kind: 'auth-required', epoch: 1, detail: 'expired by IdP' });
+    expect(session.token()).toBeNull();
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+    session.chCtx.onSignedOut('duplicate');
+    expect(session.connection.value).toEqual({ kind: 'auth-required', epoch: 1, detail: 'expired by IdP' });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores auth loss captured by an older credential epoch', () => {
+    const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const oldEpoch = session.chCtx.currentEpoch();
+    session.setTokens('replacement-token');
+    session.chCtx.onSignedOut('stale failure', oldEpoch);
+    expect(session.token()).toBe('replacement-token');
+    expect(session.connection.value).toEqual({ kind: 'starting', epoch: oldEpoch + 1 });
+    expect(onAuthLost).not.toHaveBeenCalled();
   });
 });
 
@@ -280,11 +336,116 @@ describe('refresh (via getToken)', () => {
   });
 
   it('returns false when the token endpoint yields no usable bearer', async () => {
-    const { session } = setup({
+    const { session, onAuthLost } = setup({
       storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' }),
       routes: [(url) => (url.endsWith('/token') ? jsonResponse(200, {}) : null)],
     });
     await expect(session.getToken()).resolves.toBeNull();
+    expect(session.connection.value).toMatchObject({ kind: 'auth-required', epoch: 1 });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves credentials and reports offline when refresh configuration cannot load', async () => {
+    const { session, storage, onAuthLost } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' }),
+      routes: [(url) => (url.endsWith('/config.json') ? jsonResponse(500, {}) : null)],
+    });
+    await expect(session.getToken()).rejects.toThrow();
+    expect(session.connection.value).toEqual({
+      kind: 'offline', epoch: 0, detail: 'Unable to refresh session',
+    });
+    expect(session.token()).toBe(expiredToken);
+    expect(storage.getItem('oauth_refresh_token')).toBe('r0');
+    expect(onAuthLost).not.toHaveBeenCalled();
+  });
+
+  it('preserves credentials and reports offline when the IdP transport is unavailable', async () => {
+    const { session, storage, onAuthLost } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' }),
+      routes: [async (url) => {
+        if (url.endsWith('/token')) throw new TypeError('network down');
+        return null;
+      }],
+    });
+    await expect(session.getToken()).rejects.toThrow('network down');
+    expect(session.connection.value).toEqual({
+      kind: 'offline', epoch: 0, detail: 'Unable to refresh session',
+    });
+    expect(session.token()).toBe(expiredToken);
+    expect(storage.getItem('oauth_refresh_token')).toBe('r0');
+    expect(onAuthLost).not.toHaveBeenCalled();
+  });
+
+  it('shares one refresh promise for all callers in the same epoch', async () => {
+    const tokenResponse = deferred<FakeResponse>();
+    let tokenCalls = 0;
+    const { session } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' }),
+      routes: [async (url) => {
+        if (!url.endsWith('/token')) return null;
+        tokenCalls += 1;
+        return tokenResponse.promise;
+      }],
+    });
+    const first = session.getToken();
+    const second = session.getToken();
+    await vi.waitFor(() => expect(tokenCalls).toBe(1));
+    expect(session.connection.value.kind).toBe('refreshing');
+    expect(tokenCalls).toBe(1);
+    tokenResponse.resolve(jsonResponse(200, { id_token: 'shared-token', refresh_token: 'r1' }));
+    await expect(Promise.all([first, second])).resolves.toEqual(['shared-token', 'shared-token']);
+    expect(tokenCalls).toBe(1);
+    expect(session.connection.value).toEqual({ kind: 'starting', epoch: 0 });
+  });
+
+  it('fences a late refresh after a newer credential scope is installed', async () => {
+    const oldResponse = deferred<FakeResponse>();
+    const { session, storage, onAuthLost } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'old-refresh' }),
+      routes: [async (url) => (url.endsWith('/token') ? oldResponse.promise : null)],
+    });
+    const oldGet = session.getToken();
+    await vi.waitFor(() => expect(session.connection.value.kind).toBe('refreshing'));
+    session.setTokens('new-login-token', 'new-refresh');
+    const newEpoch = session.connection.value.epoch;
+    oldResponse.resolve(jsonResponse(200, { id_token: 'stale-token', refresh_token: 'stale-refresh' }));
+    await expect(oldGet).resolves.toBe('new-login-token');
+    expect(session.connection.value).toEqual({ kind: 'starting', epoch: newEpoch });
+    expect(storage.getItem('oauth_id_token')).toBe('new-login-token');
+    expect(storage.getItem('oauth_refresh_token')).toBe('new-refresh');
+    expect(onAuthLost).not.toHaveBeenCalled();
+  });
+
+  it('does not let an old finally clear a newer epoch refresh slot', async () => {
+    const oldResponse = deferred<FakeResponse>();
+    const newResponse = deferred<FakeResponse>();
+    let oldCalls = 0;
+    let newCalls = 0;
+    const { session } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'old-refresh' }),
+      routes: [async (url, init) => {
+        if (!url.endsWith('/token')) return null;
+        const body = String(init?.body || '');
+        if (body.includes('old-refresh')) {
+          oldCalls += 1;
+          return oldResponse.promise;
+        }
+        newCalls += 1;
+        return newResponse.promise;
+      }],
+    });
+    const oldGet = session.getToken();
+    await vi.waitFor(() => expect(oldCalls).toBe(1));
+    session.setTokens(expiredToken, 'new-refresh');
+    const newGetA = session.getToken();
+    await vi.waitFor(() => expect(newCalls).toBe(1));
+    oldResponse.resolve(jsonResponse(200, { id_token: 'stale' }));
+    await oldGet;
+    const newGetB = session.getToken();
+    expect(newCalls).toBe(1);
+    newResponse.resolve(jsonResponse(200, { id_token: 'fresh' }));
+    await expect(Promise.all([newGetA, newGetB])).resolves.toEqual(['fresh', 'fresh']);
+    expect(newCalls).toBe(1);
   });
 });
 
@@ -331,6 +492,14 @@ describe('beginOAuth', () => {
       state: storage.getItem('oauth_state'),
       search: '?ws=ops&surface=dashboard&mode=view&keep=1',
     });
+  });
+
+  it('restores the prior lifecycle when redirect preparation fails', async () => {
+    const { session } = setup({
+      routes: [(url) => (url.endsWith('/config.json') ? jsonResponse(500, {}) : null)],
+    });
+    await expect(session.beginOAuth('g')).rejects.toThrow();
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 1 });
   });
 });
 
@@ -447,6 +616,34 @@ describe('connectBasic', () => {
     await expect(session.connectBasic({ username: 'bob', password: 'bad' })).rejects.toThrow('denied: bad creds');
     const { session: s2 } = setup({ queryJson: fakeQueryJson(async (ctx) => { ctx.onSignedOut(); return {}; }) });
     await expect(s2.connectBasic({ username: 'bob', password: 'bad' })).rejects.toThrow('Authentication failed');
+  });
+
+  it('does not let a slow older probe overwrite a newer successful login', async () => {
+    const alice = deferred<void>();
+    const bob = deferred<void>();
+    let probes = 0;
+    const { session, storage } = setup({
+      queryJson: fakeQueryJson(async (ctx) => {
+        probes += 1;
+        const token = await ctx.getToken();
+        const decoded = atob(token || '');
+        if (decoded.startsWith('alice:')) await alice.promise;
+        else await bob.promise;
+        return { data: [{ 1: 1 }] };
+      }),
+    });
+    const older = session.connectBasic({ username: 'alice', password: 'old', host: 'old.example' });
+    const newer = session.connectBasic({ username: 'bob', password: 'new', host: 'new.example' });
+    await vi.waitFor(() => expect(probes).toBe(2));
+    bob.resolve();
+    await expect(newer).resolves.toBeUndefined();
+    const winningEpoch = session.connection.value.epoch;
+    alice.resolve();
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+    expect(session.connection.value).toEqual({ kind: 'starting', epoch: winningEpoch });
+    expect(storage.getItem('ch_basic_user')).toBe('bob');
+    expect(storage.getItem('ch_basic_origin')).toBe('https://new.example:8443');
+    expect(session.chCtx.origin).toBe('https://new.example:8443');
   });
 });
 

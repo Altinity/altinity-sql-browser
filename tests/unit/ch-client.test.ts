@@ -82,6 +82,16 @@ function ctxWith(fetchImpl: FetchImpl, over: Partial<ChCtx> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('chUrl', () => {
   it('uses default format and compression', () => {
     expect(chUrl('https://o')).toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1');
@@ -106,11 +116,63 @@ describe('authedFetch', () => {
     await expect(authedFetch(ctx, 'u', 'sql')).rejects.toThrow('not signed in');
     expect(ctx.onSignedOut).toHaveBeenCalled();
   });
+  it('does not signal auth loss when a missing-token request becomes stale', async () => {
+    let epoch = 1;
+    const token = deferred<string | null>();
+    const ctx = ctxWith(() => jsonResp({}), { currentEpoch: () => epoch, getToken: () => token.promise });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    epoch = 2;
+    token.resolve(null);
+    await expect(pending).rejects.toThrow('not signed in');
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
   it('returns the response on success', async () => {
     const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
     const r = await authedFetch(ctx, 'u', 'sql');
     expect(r.ok).toBe(true);
     expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer tok');
+  });
+  it('reports a successful current transport connection when lifecycle hooks are supplied', async () => {
+    const onTransportConnected = vi.fn();
+    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), { currentEpoch: () => 4, onTransportConnected });
+    await authedFetch(ctx, 'u', 'sql');
+    expect(onTransportConnected).toHaveBeenCalledTimes(1);
+  });
+  it('reports a non-abort fetch rejection as transport-offline', async () => {
+    const failure = new Error('network unavailable');
+    const onTransportOffline = vi.fn();
+    const ctx = ctxWith(async () => { throw failure; }, { currentEpoch: () => 4, onTransportOffline });
+    await expect(authedFetch(ctx, 'u', 'sql')).rejects.toBe(failure);
+    expect(onTransportOffline).toHaveBeenCalledWith(failure);
+  });
+  it('does not report a stale fetch rejection as transport-offline', async () => {
+    let epoch = 1;
+    const failure = new Error('network unavailable');
+    const rejectedFetch = deferred<FakeResponse>();
+    const onTransportOffline = vi.fn();
+    const ctx = ctxWith(async () => rejectedFetch.promise, { currentEpoch: () => epoch, onTransportOffline });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    epoch = 2;
+    rejectedFetch.reject(failure);
+    await expect(pending).rejects.toBe(failure);
+    expect(onTransportOffline).not.toHaveBeenCalled();
+  });
+  it('does not report HTTP failures or caller cancellation as transport-offline', async () => {
+    const onTransportOffline = vi.fn();
+    const httpCtx = ctxWith(async () => textResp('server error', false, 500), { onTransportOffline });
+    await authedFetch(httpCtx, 'u', 'sql');
+    const controller = new AbortController();
+    controller.abort();
+    const abortCtx = ctxWith(async () => { throw new Error('cancelled request'); }, { onTransportOffline });
+    await expect(authedFetch(abortCtx, 'u', 'sql', controller.signal)).rejects.toThrow('cancelled request');
+    expect(onTransportOffline).not.toHaveBeenCalled();
+  });
+  it('does not report an AbortError rejection as transport-offline', async () => {
+    const onTransportOffline = vi.fn();
+    const abortError = Object.assign(new Error('cancelled request'), { name: 'AbortError' });
+    const ctx = ctxWith(async () => { throw abortError; }, { onTransportOffline });
+    await expect(authedFetch(ctx, 'u', 'sql')).rejects.toBe(abortError);
+    expect(onTransportOffline).not.toHaveBeenCalled();
   });
   it('refreshes once on 401 then retries', async () => {
     let n = 0;
@@ -141,6 +203,118 @@ describe('authedFetch', () => {
     const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
     await authedFetch(ctx, 'u', 'sql');
     expect(ctx.authConfirmed).toBe(true);
+  });
+  it('fences a stale successful response from lifecycle and authentication state', async () => {
+    let epoch = 1;
+    const response = deferred<FakeResponse>();
+    const onTransportConnected = vi.fn();
+    const ctx = ctxWith(async () => response.promise, { currentEpoch: () => epoch, onTransportConnected });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    epoch = 2;
+    response.resolve(jsonResp({ ok: 1 }));
+    expect((await pending).ok).toBe(true);
+    expect(ctx.authConfirmed).toBeUndefined();
+    expect(onTransportConnected).not.toHaveBeenCalled();
+  });
+  it('fences a stale auth-failure response from refresh and sign-out', async () => {
+    let epoch = 1;
+    const onTransportOffline = vi.fn();
+    const ctx = ctxWith(async () => jsonResp({}, false, 401), {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => true),
+      onTransportOffline,
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    epoch = 2;
+    expect((await pending).status).toBe(401);
+    expect(ctx.refresh).not.toHaveBeenCalled();
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+    expect(onTransportOffline).not.toHaveBeenCalled();
+  });
+  it('does not retry or sign out when refresh settles after its request becomes stale', async () => {
+    let epoch = 1;
+    const refresh = deferred<boolean>();
+    const refreshStarted = deferred<void>();
+    const ctx = ctxWith(async () => jsonResp({}, false, 401), {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => {
+        refreshStarted.resolve();
+        return refresh.promise;
+      }),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await refreshStarted.promise;
+    expect(ctx.refresh).toHaveBeenCalledTimes(1);
+    epoch = 2;
+    refresh.resolve(true);
+    expect((await pending).status).toBe(401);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
+  it('does not retry when the post-refresh token lookup becomes stale', async () => {
+    let epoch = 1;
+    let tokenCalls = 0;
+    const freshToken = deferred<string | null>();
+    const freshTokenStarted = deferred<void>();
+    const ctx = ctxWith(async () => textResp('expired', false, 401), {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => true),
+      getToken: vi.fn(async () => {
+        tokenCalls += 1;
+        if (tokenCalls === 1) return 'old';
+        freshTokenStarted.resolve();
+        return freshToken.promise;
+      }),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await freshTokenStarted.promise;
+    epoch = 2;
+    freshToken.resolve('new');
+    expect((await pending).status).toBe(401);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
+  it('does not sign out when an unsuccessful refresh becomes stale', async () => {
+    let epoch = 1;
+    const refresh = deferred<boolean>();
+    const refreshStarted = deferred<void>();
+    const ctx = ctxWith(async () => textResp('expired', false, 401), {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => {
+        refreshStarted.resolve();
+        return refresh.promise;
+      }),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await refreshStarted.promise;
+    epoch = 2;
+    refresh.resolve(false);
+    expect((await pending).status).toBe(401);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+  });
+  it('does not sign out when parsing the denial reason crosses an epoch', async () => {
+    let epoch = 1;
+    const denialText = deferred<string>();
+    const textStarted = deferred<void>();
+    const response: FakeResponse = {
+      ok: false,
+      status: 403,
+      text: async () => {
+        textStarted.resolve();
+        return denialText.promise;
+      },
+      clone() { return this; },
+    };
+    const ctx = ctxWith(async () => response, {
+      currentEpoch: () => epoch,
+      refresh: vi.fn(async () => false),
+    });
+    const pending = authedFetch(ctx, 'u', 'sql');
+    await textStarted.promise;
+    epoch = 2;
+    denialText.resolve('Code: 516. Authentication failed');
+    expect((await pending).status).toBe(403);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
   });
   it('once authenticated, a later 403 is returned as a query error (no sign-out)', async () => {
     // e.g. SHOW CREATE USER <missing> → HTTP 403 / UNKNOWN_USER, mid-session.

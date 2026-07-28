@@ -48,7 +48,7 @@ module is tested with plain stubs at the per-file coverage gate.
 | Module | Owns |
 |---|---|
 | `query-execution-service` (`app.exec`) | the shared request/stream/normalize read core + the script transport loop (retry classification, stop-on-first-failure, per-attempt `query_id`); stateless `kill(queryId)` — cancellation is caller-owned (`AbortController`s live with the owning session) |
-| `connection-session` (`app.conn`) | auth + connection lifecycle: OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in — never reconstructed) |
+| `connection-session` (`app.conn`) | authoritative auth + connection lifecycle (`starting` / `connected` / `refreshing` / `offline` / `auth-required` / `reauthenticating` / `signed-out`), OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in — never reconstructed) |
 | `schema-catalog-service` (`app.catalog`) | server version, schema tree, lazy columns, SQL reference/completions, entity-doc cache, `invalidate()` |
 | `workbench-parameter-session` (`app.params`) | `{name:Type}` analysis/prepare/gate policy, input-vs-execute hardening, enum inference, recent values; reads the live shared `AppState` slices through accessors |
 | `export-service` (`app.exports`) | direct + script export behind an injectable `ExportSink` (`pickFile`/`pickDirectory`); hold-back exception inspection, `.partial` semantics, its own cancellation state |
@@ -92,6 +92,17 @@ invalidates the catalog before the login screen renders. There is no
 route-remount mechanism — the dashboard is its own browser tab whose closure
 JS never observes — so no teardown theater beyond that.
 
+Connection lifecycle ownership follows the same rule. `ConnectionSession`
+publishes one read-only signal and assigns a monotonically increasing
+credential epoch whenever credentials are installed or invalidated. Refresh is
+single-flight within an epoch; a late refresh or transport response cannot
+write tokens, report auth loss, or repaint the replacement epoch.
+`net/ch-client` reports only successful 2xx transport settlement as connected
+and rejected, non-aborted `fetch` as offline. HTTP query failures — including a
+post-confirmation 401/403 — remain query outcomes, not connection state. The
+header chip is a pure projection of this lifecycle; `serverVersion` remains
+display metadata and is never connection authority.
+
 ## The `App` object
 
 `createApp(env)` still returns one `app` object, but it is now a composition
@@ -112,7 +123,9 @@ test seam the parameter session reads live).
 Unchanged from the beginning and now applied uniformly: every side effect is
 passed in, never imported — `createApp(env)` injects
 `document/window/location/fetch/crypto/sessionStorage`, `ch-client` functions
-take a `ctx = {fetch, origin, getToken, refresh, authHeader, onSignedOut}`,
+take a `ctx = {fetch, origin, getToken, refresh, authHeader,
+onSignedOut(detail?, expectedEpoch?), currentEpoch?, onTransportConnected?,
+onTransportOffline?}`,
 and every `create*Service(deps)` receives its transport/clock/uid/storage
 explicitly. The suite needs no network/DOM mocking libraries — plain stubs
 suffice, and coverage is genuine.

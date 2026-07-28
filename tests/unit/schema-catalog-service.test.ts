@@ -45,7 +45,7 @@ function makeState(initial: unknown[] | null = null): SchemaCatalogStateSlice {
 
 function makeHooks(): Mocked<Required<SchemaCatalogHooks>> {
   return {
-    onConnStatusChanged: vi.fn<NonNullable<SchemaCatalogHooks['onConnStatusChanged']>>(),
+    onServerVersionLoaded: vi.fn<NonNullable<SchemaCatalogHooks['onServerVersionLoaded']>>(),
     renderVarStrip: vi.fn<SchemaCatalogHooks['renderVarStrip']>(),
     refreshEditorReference: vi.fn<SchemaCatalogHooks['refreshEditorReference']>(),
   };
@@ -78,18 +78,17 @@ const baseSchema = (): SchemaDb[] => ([
 // ── loadVersion ──────────────────────────────────────────────────────────────
 
 describe('loadVersion', () => {
-  it('sets serverVersion and reports online on success', async () => {
+  it('sets serverVersion on success', async () => {
     const state = makeState();
     const hooks = makeHooks();
     const deps = makeDeps({ state, hooks, loadServerVersion: vi.fn(async () => '25.1.2.100') });
     const svc = createSchemaCatalogService(deps);
     await svc.loadVersion();
     expect(state.serverVersion).toBe('25.1.2.100');
-    expect(hooks.onConnStatusChanged).toHaveBeenCalledTimes(1);
-    expect(hooks.onConnStatusChanged).toHaveBeenCalledWith(true);
+    expect(hooks.onServerVersionLoaded).toHaveBeenCalledWith('25.1.2.100');
   });
 
-  it('reports offline and leaves serverVersion untouched on a probe failure', async () => {
+  it('leaves serverVersion untouched on a best-effort probe failure', async () => {
     const state = makeState();
     state.serverVersion = 'stale';
     const hooks = makeHooks();
@@ -101,13 +100,7 @@ describe('loadVersion', () => {
     const svc = createSchemaCatalogService(deps);
     await svc.loadVersion();
     expect(state.serverVersion).toBe('stale');
-    expect(hooks.onConnStatusChanged).toHaveBeenCalledWith(false);
-  });
-
-  it('tolerates a caller that omits onConnStatusChanged', async () => {
-    const deps = makeDeps({ hooks: { renderVarStrip: vi.fn(), refreshEditorReference: vi.fn() } });
-    const svc = createSchemaCatalogService(deps);
-    await expect(svc.loadVersion()).resolves.toBeUndefined();
+    expect(hooks.onServerVersionLoaded).not.toHaveBeenCalled();
   });
 });
 

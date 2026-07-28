@@ -38,6 +38,7 @@ import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
+import { applyConnectionStatus } from './app-header.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { startDrag } from './splitters.js';
 import type { App } from './app.types.js';
@@ -272,6 +273,14 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.libraryDirty.value;
     renderLibraryTitle(app);
   }));
+  // ConnectionSession is the single authority for the status chip. This
+  // effect intentionally registers before the caller builds the header; its
+  // first no-op subscribes to the signal, and setHeader below performs the
+  // initial paint once the chip exists.
+  disposers.push(effect(() => {
+    app.conn.connection.value;
+    applyConnectionStatus(app);
+  }));
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the
   // auto-navigation in the action wrappers) via the injected matchMedia seam.
@@ -292,7 +301,10 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   catalog.loadReference();
 
   return {
-    setHeader: (header: Element) => { headerSlot.replaceChildren(header); },
+    setHeader: (header: Element) => {
+      headerSlot.replaceChildren(header);
+      applyConnectionStatus(app);
+    },
     queryHost,
     dashboardHost,
     showHost: (kind) => {

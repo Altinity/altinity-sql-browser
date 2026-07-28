@@ -20,18 +20,26 @@ import { sqlString } from '../core/format.js';
  * real implementations in production, plain stubs in tests. `authConfirmed`
  * and `dataLakeCatalogSettingUnsupported` are one-shot-then-remember latches
  * `authedFetch`/`querySystemAware` set on `ctx` itself (see their docstrings)
- * — optional here because they start unset. */
+ * — optional here because they start unset. The epoch/lifecycle hooks are
+ * optional too, preserving the smaller seam used by existing callers. */
 export interface ChCtx {
   fetch: typeof fetch;
   origin: string;
   getToken(): Promise<string | null>;
   refresh(): Promise<boolean>;
-  onSignedOut(detail?: string): void;
+  onSignedOut(detail?: string, expectedEpoch?: number): void;
   /** Picks the Authorization scheme (Bearer vs Basic); defaults to Bearer
    * inside `authedFetch` when absent. */
   authHeader?: (token: string) => string;
   authConfirmed?: boolean;
   dataLakeCatalogSettingUnsupported?: boolean;
+  /** Identifies the active credential/session generation. A request captures
+   * this before its first await so stale work cannot affect its replacement. */
+  currentEpoch?: () => number;
+  /** Receives a current request's successful HTTP 2xx transport settlement. */
+  onTransportConnected?: () => void;
+  /** Receives a current non-abort rejection from the injected fetch seam. */
+  onTransportOffline?: (error?: unknown) => void;
 }
 
 /** The injected SQL-string-quoting function a few call sites take as a
@@ -56,6 +64,13 @@ function isAbort(e: unknown, signal: AbortSignal | undefined): boolean {
 function errMessage(e: unknown): string {
   const message = (e as { message?: unknown } | null)?.message;
   return typeof message === 'string' && message ? message : String(e);
+}
+
+// A client that supplied no epoch hook remains backward-compatible: every
+// request is current. When it did supply one, no stale request may alter the
+// replacement credential generation's lifecycle/auth state.
+function isCurrentEpoch(ctx: ChCtx, requestEpoch: number | undefined): boolean {
+  return requestEpoch === undefined || ctx.currentEpoch?.() === requestEpoch;
 }
 
 /** Generic ClickHouse `FORMAT JSON` response shape — only `.data` is ever
@@ -91,9 +106,10 @@ export function chUrl(origin: string, opts: ChUrlOpts = {}): string {
  * when authentication cannot be recovered.
  */
 export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?: AbortSignal): Promise<Response> {
+  const requestEpoch = ctx.currentEpoch?.();
   const token = await ctx.getToken();
   if (!token) {
-    ctx.onSignedOut();
+    if (isCurrentEpoch(ctx, requestEpoch)) ctx.onSignedOut(undefined, requestEpoch);
     throw new Error('not signed in');
   }
   let bearer = token;
@@ -102,14 +118,30 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
   // default to Bearer so the seam stays optional.
   const authHeader = ctx.authHeader || ((t: string) => 'Bearer ' + t);
   for (;;) {
-    const resp = await ctx.fetch(url, {
-      method: 'POST',
-      body: sql,
-      headers: { Authorization: authHeader(bearer) },
-      signal,
-    });
+    let resp: Response;
+    try {
+      resp = await ctx.fetch(url, {
+        method: 'POST',
+        body: sql,
+        headers: { Authorization: authHeader(bearer) },
+        signal,
+      });
+    } catch (e) {
+      // Only a rejected fetch is a transport failure. HTTP failures are normal
+      // responses and caller cancellation is deliberately invisible here.
+      const aborted = signal?.aborted || (e as { name?: unknown } | null)?.name === 'AbortError';
+      if (isCurrentEpoch(ctx, requestEpoch) && !aborted) ctx.onTransportOffline?.(e);
+      throw e;
+    }
+    // The request may have crossed a sign-in/sign-out boundary while fetch was
+    // pending. Its response still belongs to its caller, but cannot change the
+    // new epoch's connection/auth state or start a refresh with its token.
+    if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
     // A 2xx confirms the credentials are good for the rest of the session.
-    if (resp.ok) ctx.authConfirmed = true;
+    if (resp.ok) {
+      ctx.authConfirmed = true;
+      ctx.onTransportConnected?.();
+    }
     let authExpired = resp.status === 401 || resp.status === 403;
     if (!authExpired && !resp.ok) {
       const peek = await resp.clone().text();
@@ -123,17 +155,21 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
       // caller shows it as a normal query error instead of force-logging-out.
       if (ctx.authConfirmed) return resp;
       if (attempt === 0 && (await ctx.refresh())) {
+        if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
         // A successful refresh always yields a fresh, usable token — the
         // refresh() contract this seam relies on.
         bearer = (await ctx.getToken())!;
+        if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
         attempt++;
         continue;
       }
+      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
       // First-contact 401/403 with a non-expired token: CH rejected the login
       // itself — an authorization/identity problem, not session expiry. Surface
       // CH's own reason so it's diagnosable.
       const reason = parseExceptionText(await resp.clone().text());
-      ctx.onSignedOut(authDeniedMessage(resp.status, reason));
+      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
+      ctx.onSignedOut(authDeniedMessage(resp.status, reason), requestEpoch);
       throw new Error('signed out');
     }
     return resp;

@@ -112,9 +112,9 @@ describe('refreshTokens', () => {
     const f = vi.fn(async () => tokenResp(false, {}));
     expect(await refreshTokens(asFetch(f), googleCfg, 'rt')).toBeNull();
   });
-  it('returns null when fetch throws', async () => {
+  it('rethrows a transport failure so callers do not misclassify it as rejected credentials', async () => {
     const f = vi.fn(async () => { throw new Error('net'); });
-    expect(await refreshTokens(asFetch(f), googleCfg, 'rt')).toBeNull();
+    await expect(refreshTokens(asFetch(f), googleCfg, 'rt')).rejects.toThrow('net');
   });
 });
 
