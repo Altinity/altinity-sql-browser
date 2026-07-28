@@ -10,7 +10,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   closeOpenDialogShell, openDialogShell, openMetadataDialog, openNameDialog,
 } from '../../src/ui/dialog-shell.js';
-import type { DialogHandle } from '../../src/ui/dialog-shell.js';
+import type {
+  DialogHandle, MetadataDialogConfirmResult,
+} from '../../src/ui/dialog-shell.js';
 import { h } from '../../src/ui/dom.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -222,7 +224,9 @@ describe('openMetadataDialog', () => {
   const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
   const open = (
-    onConfirm: (values: { name: string; description: string }) => Promise<string | null>,
+    onConfirm: (
+      values: { name: string; description: string },
+    ) => Promise<MetadataDialogConfirmResult>,
     over: Partial<Parameters<typeof openMetadataDialog>[1]> = {},
   ) => track(openMetadataDialog(makeApp(), {
     title: 'Edit panel', nameLabel: 'Name', descriptionLabel: 'Description',
@@ -351,6 +355,38 @@ describe('openMetadataDialog', () => {
     expect(onSuccessAfterClose).toHaveBeenCalledTimes(1);
   });
 
+  it('unlocks a creation after a rejected commit and shows a dismissible diagnostic', async () => {
+    const openRejected = () => open(async () => {
+      throw new Error('IndexedDB transaction aborted');
+    }, { lockCloseWhileConfirming: true });
+
+    openRejected();
+    nameInput().value = 'Kept after rejection';
+    save().click();
+    await settle();
+    expect(nameInput().value).toBe('Kept after rejection');
+    expect(cancelBtn().disabled).toBe(false);
+    expect(errorEl().hidden).toBe(false);
+    expect(errorEl().textContent).toBe('Could not save changes. Please try again.');
+    key(document, 'Escape');
+    expect(backdropOf()).toBeNull();
+
+    openRejected();
+    save().click();
+    await settle();
+    cancelBtn().click();
+    expect(backdropOf()).toBeNull();
+  });
+
+  it('dismisses a stale settlement without running success navigation', async () => {
+    const onSuccessAfterClose = vi.fn();
+    open(async () => undefined, { onSuccessAfterClose });
+    save().click();
+    await settle();
+    expect(backdropOf()).toBeNull();
+    expect(onSuccessAfterClose).not.toHaveBeenCalled();
+  });
+
   it('a Cancel taken mid-write closes, and the late answer is dropped', async () => {
     let release = (message: string | null): void => { void message; };
     open(() => new Promise<string | null>((resolve) => { release = resolve; }));
@@ -372,6 +408,18 @@ describe('openMetadataDialog', () => {
     release('Storage is full');
     await settle();
     // No diagnostic is written into a detached card, and nothing reopens.
+    expect(backdropOf()).toBeNull();
+  });
+
+  it('drops a late rejection for a dialog that was force-closed while the write was queued', async () => {
+    let reject = (_reason: unknown): void => {};
+    open(() => new Promise<string | null>((_resolve, rejectPromise) => { reject = rejectPromise; }), {
+      lockCloseWhileConfirming: true,
+    });
+    save().click();
+    closeOpenDialogShell();
+    reject(new Error('Store unavailable'));
+    await settle();
     expect(backdropOf()).toBeNull();
   });
 

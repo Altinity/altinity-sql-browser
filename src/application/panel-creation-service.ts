@@ -56,12 +56,16 @@ const DECLINE_MESSAGES: Record<PanelCreationAbort, string> = {
   'blank-name': 'Enter a panel name.',
 };
 
-/** A dialog diagnostic, or `null` only for a committed creation. */
-export function panelCreationMessage(outcome: PanelCreationOutcome): string | null {
+/**
+ * A dialog diagnostic, `null` for a route-current committed creation, or
+ * `undefined` when the route became stale and the dialog should dismiss
+ * without claiming failure or running route-local success settlement.
+ */
+export function panelCreationMessage(outcome: PanelCreationOutcome): string | null | undefined {
   if (outcome.ok) return null;
   if (!outcome.aborted) {
     return outcome.diagnostics[0]?.message || 'Could not save this panel.';
   }
   const data = outcome.data;
-  return data?.status === 'declined' ? DECLINE_MESSAGES[data.reason] : 'Could not save this panel.';
+  return data?.status === 'declined' ? DECLINE_MESSAGES[data.reason] : undefined;
 }

@@ -1394,6 +1394,24 @@ describe('renderDashboardTree — Add panel (#515)', () => {
     expect(app.openSavedQuery).not.toHaveBeenCalled();
   });
 
+  it('silently dismisses a route-stale durable commit without success navigation', async () => {
+    const onWorkspaceExternallyChanged = vi.fn();
+    const mutateWorkspace = (async (transform) => {
+      const transformed = await transform(storedWorkspace());
+      return { ok: false, aborted: true, data: transformed!.data };
+    }) as App['mutateWorkspace'];
+    const { app, list } = open({ mutateWorkspace, onWorkspaceExternallyChanged });
+    click(plus(list));
+    nameInput().value = 'Committed elsewhere';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    add().click();
+    await settle();
+
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.openSavedQuery).not.toHaveBeenCalled();
+    expect(onWorkspaceExternallyChanged).not.toHaveBeenCalled();
+  });
+
   it('renders the plus unavailable with its reason at the tile limit', () => {
     const full = storedWorkspace();
     full.dashboards[0].tiles = Array.from({ length: 100 }, (_, i) => ({

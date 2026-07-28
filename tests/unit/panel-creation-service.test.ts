@@ -99,7 +99,7 @@ describe('panelCreationMessage', () => {
     }
   });
 
-  it('surfaces validation/persistence diagnostics and handles an unclassified abort', () => {
+  it('surfaces validation/persistence diagnostics and silently dismisses stale aborts', () => {
     expect(panelCreationMessage({
       ok: false, aborted: false, diagnostics: [{ message: 'Rejected value' }],
     } as never)).toBe('Rejected value');
@@ -108,6 +108,10 @@ describe('panelCreationMessage', () => {
     } as never)).toBe('Could not save this panel.');
     expect(panelCreationMessage({
       ok: false, aborted: true,
-    } as never)).toBe('Could not save this panel.');
+    } as never)).toBeUndefined();
+    expect(panelCreationMessage({
+      ok: false, aborted: true,
+      data: { status: 'ok', queryId: 'q', tileId: 't' },
+    } as never)).toBeUndefined();
   });
 });

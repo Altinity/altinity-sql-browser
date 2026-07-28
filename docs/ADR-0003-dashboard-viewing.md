@@ -802,6 +802,11 @@ baseline, and focuses the SQL editor, so dialog teardown cannot steal focus back
 to the hidden plus trigger. Cancel, Escape, backdrop close, stale targets,
 collisions, validation errors, and persistence failures perform no navigation;
 failed writes keep the entered values and diagnostic in the open dialog.
+An unexpected rejected write is converted to the same recoverable dialog state:
+the fields remain, a generic diagnostic is announced, and every dismissal path
+is re-enabled. If persistence succeeds only after the route has moved on,
+settlement instead closes silently without claiming failure or running the
+old route's reveal/open/focus callback.
 
 ## Addendum (#465, 2026-07-27): Test's shape check is re-hosted on Run, not re-invented
 
