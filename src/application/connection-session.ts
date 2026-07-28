@@ -124,6 +124,14 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   let token: string | null = ss.getItem('oauth_id_token');
   let refreshTok: string | null = ss.getItem('oauth_refresh_token');
   let authMode: 'oauth' | 'basic' = ss.getItem('ch_basic_auth') ? 'basic' : 'oauth';
+  // #502: latches once `chCtx.onSignedOut` starts handling a dead session, so
+  // concurrent/nested reports of the SAME auth loss (e.g. the teardown's own
+  // fire-and-forget KILL QUERY/export-cancel calls independently discovering
+  // the same expired-and-unrefreshable token) can't re-run the teardown,
+  // re-render login, or re-attempt `refresh()` against the token endpoint.
+  // Reset only by a genuine fresh sign-in (`setTokens`/`connectBasic`), so a
+  // LATER, distinct auth-loss event in the new session is handled normally.
+  let signedOutHandled = false;
   const basicCreds = (): string | null => ss.getItem('ch_basic_auth');
   const basicUser = (): string => ss.getItem('ch_basic_user') || '';
   const originHost = (o: string): string => { try { return new URL(o).host; } catch { return ''; } };
@@ -182,6 +190,9 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     // tokens. (The refresh path also lands here; they're already gone → no-op.)
     ss.removeItem('oauth_verifier');
     ss.removeItem('oauth_state');
+    // #502: a fresh/refreshed token means this is a live session again — a
+    // LATER auth loss is a distinct event `onSignedOut` must handle again.
+    signedOutHandled = false;
   }
   function clearTokens(): void {
     token = null;
@@ -244,7 +255,14 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     if (!token) return null;
     if (!isTokenExpired(token)) return token;
     if (await refresh()) return token;
-    clearTokens();
+    // #502: deliberately NOT `clearTokens()` here. Every caller of `getToken`
+    // already does `if (!(await getToken())) { <its own onSignedOut/
+    // onAuthFailed call> }` — that path's authenticated teardown (KILL QUERY,
+    // export cancellation) needs the still-current `token`/`authMode` this
+    // closure holds to actually reach the server; clearing it here, before
+    // any of those callers ever get a chance to run, was making every one of
+    // them silently no-op on an already-missing token. `onSignedOut` clears
+    // once its teardown has run.
     return null;
   }
 
@@ -287,10 +305,21 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     // those best-effort authed calls silently no-op before ever reaching the
     // server. (A Basic-mode session's later `authHeader()` call still reads
     // `authMode` post-reset either way — same latent gap `signOut()` already
-    // had — tracked separately, not introduced here.)
+    // had — tracked separately, not introduced here.) `signedOutHandled`
+    // guards re-entrancy: the teardown's own fire-and-forget calls can each
+    // independently rediscover the same dead token and report auth loss
+    // again — only the first report actually runs the teardown/render/clear;
+    // later ones (this tick or a delayed microtask) are no-ops until a fresh
+    // sign-in resets the latch. The `finally` guarantees credentials are
+    // still cleared even if the injected `onAuthLost` throws.
     onSignedOut: (detail?: string) => {
-      deps.onAuthLost(detail || 'Your session expired — please sign in again.');
-      clearTokens();
+      if (signedOutHandled) return;
+      signedOutHandled = true;
+      try {
+        deps.onAuthLost(detail || 'Your session expired — please sign in again.');
+      } finally {
+        clearTokens();
+      }
     },
   };
 
@@ -336,6 +365,8 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     ss.setItem('ch_basic_user', user);
     ss.setItem('ch_basic_origin', target);
     chCtx.origin = target;
+    // #502: a fresh Basic session is live again — see `setTokens`'s own reset.
+    signedOutHandled = false;
   }
 
   // --- dashboard (#149 D1) -------------------------------------------------

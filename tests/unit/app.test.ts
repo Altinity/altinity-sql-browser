@@ -3400,15 +3400,28 @@ describe('auth flows', () => {
     const app = createApp(e);
     expect(await app.conn.chCtx.getToken()).toBeNull();
   });
-  it('onSignedOut shows the given message, else a session-expired default', async () => {
+  // #502: `chCtx.onSignedOut` latches once it starts handling a dead
+  // session (concurrent/nested reports of the SAME auth loss must not
+  // re-render login with a second message) — a fresh `app` per case is the
+  // distinct-session boundary the latch actually gates on.
+  it('onSignedOut shows the given detail — an authorization denial', async () => {
     const app = createApp(env());
     app.renderApp();
-    // authorization denial: CH-supplied message is shown verbatim on the login screen
     app.conn.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
     expect(qs(app.root, '.login-error').textContent).toContain('denied your account');
-    // genuine expiry: no detail → the reworded default
+  });
+  it('onSignedOut falls back to a session-expired default with no detail', async () => {
+    const app = createApp(env());
+    app.renderApp();
     app.conn.chCtx.onSignedOut();
     expect(qs(app.root, '.login-error').textContent).toContain('session expired');
+  });
+  it('a second onSignedOut report for the same dead session does not re-render login with a new message', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.conn.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
+    app.conn.chCtx.onSignedOut(); // e.g. a concurrent request's own report — no-op
+    expect(qs(app.root, '.login-error').textContent).toContain('denied your account');
   });
   it('login(idp, origin) stashes oauth_origin for a cross-origin cluster; sign-out clears it', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' } as Location;

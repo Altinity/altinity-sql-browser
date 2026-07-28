@@ -260,7 +260,15 @@ describe('refresh (via getToken)', () => {
     await expect(session.getToken()).resolves.toBe('YWJj');
   });
 
-  it('clears everything when the token endpoint rejects the refresh', async () => {
+  // #502: getToken() itself must NOT clear credentials on a failed refresh —
+  // its caller (every one of them already does
+  // `if (!(await getToken())) { <onSignedOut path> }`) needs the still-
+  // current token/authMode readable when it reports auth loss, so its own
+  // authenticated teardown (KILL QUERY, export cancellation) can actually
+  // reach the server instead of finding a token that's already gone.
+  // Clearing is now `chCtx.onSignedOut`'s job alone (see the 'chCtx.onSignedOut'
+  // describe block below).
+  it('leaves credentials in place when the token endpoint rejects the refresh — clearing is onSignedOut\'s job', async () => {
     const { session, storage } = setup({
       storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0', oauth_idp: 'g' }),
       routes: [(url) => (url.endsWith('/token') ? jsonResponse(401, {}) : null)],
@@ -268,15 +276,11 @@ describe('refresh (via getToken)', () => {
     session.chCtx.authConfirmed = true;
     const tok = await session.getToken();
     expect(tok).toBeNull();
-    expect(session.token()).toBeNull();
-    expect(session.refreshToken()).toBeNull();
-    expect(session.idpId()).toBeNull();
-    expect(session.authMode()).toBe('oauth');
-    expect(session.chCtx.authConfirmed).toBe(false);
-    for (const k of [
-      'oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp', 'oauth_origin',
-      'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin',
-    ]) expect(storage.getItem(k)).toBeNull();
+    expect(session.token()).toBe(expiredToken);
+    expect(session.refreshToken()).toBe('r0');
+    expect(session.idpId()).toBe('g');
+    expect(session.chCtx.authConfirmed).toBe(true);
+    expect(storage.getItem('oauth_id_token')).toBe(expiredToken);
   });
 
   it('returns false when the token endpoint yields no usable bearer', async () => {
@@ -486,6 +490,54 @@ describe('chCtx.onSignedOut', () => {
     const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
     session.chCtx.onSignedOut();
     expect(onAuthLost).toHaveBeenCalledWith('Your session expired — please sign in again.');
+  });
+
+  // #502: onAuthLost must see the still-current credential — its own
+  // authenticated teardown needs it — and only THEN does the token clear.
+  it('notifies onAuthLost while the credential is still current, and only clears once it returns', async () => {
+    const storage = memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0', oauth_idp: 'g' });
+    let idTokenDuringTeardown: string | null | undefined;
+    const { session } = setup({
+      storage,
+      routes: [(url) => (url.endsWith('/token') ? jsonResponse(401, {}) : null)],
+      onAuthLost: vi.fn(() => { idTokenDuringTeardown = storage.getItem('oauth_id_token'); }),
+    });
+    // Mirrors authedFetch's own `if (!(await getToken())) { ctx.onSignedOut(); }`.
+    if (!(await session.getToken())) session.chCtx.onSignedOut();
+    expect(idTokenDuringTeardown).toBe(expiredToken);
+    expect(session.token()).toBeNull();
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+  });
+
+  // #502: idempotency — several concurrent requests can each independently
+  // report the same dead session (including the teardown's own fire-and-
+  // forget calls rediscovering the same expired-and-unrefreshable token).
+  it('a second report for the same dead session is a no-op', () => {
+    const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    session.chCtx.onSignedOut('first report');
+    session.chCtx.onSignedOut('second report');
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+    expect(onAuthLost).toHaveBeenCalledWith('first report');
+  });
+
+  it('a fresh sign-in resets the latch, so a later distinct auth loss is handled again', () => {
+    const { session, onAuthLost } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    session.chCtx.onSignedOut('first loss');
+    session.setTokens(validToken); // fresh sign-in
+    session.chCtx.onSignedOut('second loss');
+    expect(onAuthLost).toHaveBeenCalledTimes(2);
+    expect(onAuthLost).toHaveBeenNthCalledWith(2, 'second loss');
+  });
+
+  it('still clears every credential even when the injected onAuthLost throws', () => {
+    const { session, storage } = setup({
+      storage: memStorage({ oauth_id_token: validToken, oauth_refresh_token: 'r' }),
+      onAuthLost: () => { throw new Error('shell blew up'); },
+    });
+    expect(() => session.chCtx.onSignedOut()).toThrow('shell blew up');
+    expect(session.token()).toBeNull();
+    expect(storage.getItem('oauth_id_token')).toBeNull();
+    expect(storage.getItem('oauth_refresh_token')).toBeNull();
   });
 });
 

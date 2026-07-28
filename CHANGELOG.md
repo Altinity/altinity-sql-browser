@@ -30,10 +30,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   all of it, so a mid-flight query/export/lineage stream — or a still-completing
   request that would go on to record History, bound parameters, or a schema
   reload — could survive past the login screen. The teardown is now a single
-  idempotent `teardownAuthenticatedSession()` helper shared by both paths, and
-  `chCtx.onSignedOut` now notifies it before clearing credentials (not after),
-  so the teardown's requests still carry valid credentials to the server
-  instead of silently no-op'ing on an already-cleared token.
+  idempotent `teardownAuthenticatedSession()` helper shared by both paths.
+  Making this actually work required two deeper changes to
+  `connection-session.ts`: `getToken()` no longer clears credentials itself
+  on a failed proactive refresh (it did, previously — before its caller ever
+  got a chance to run the teardown with a still-usable token), and
+  `chCtx.onSignedOut` now (a) notifies the teardown *before* clearing
+  credentials, not after, so its requests still carry valid credentials
+  instead of silently no-op'ing on an already-cleared token, (b) latches
+  once it starts handling a dead session so the teardown's own concurrent
+  authenticated calls rediscovering the same dead token can't recursively
+  re-run it, resetting only on a genuine fresh sign-in, and (c) still clears
+  credentials even if the injected `onAuthLost` callback throws.
 
 ### Removed
 - **The unused saved-query repair planner has been removed** (#429 phase 6 /
