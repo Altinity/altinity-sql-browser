@@ -33,7 +33,7 @@ describe('connection lifecycle architecture', () => {
       'src/ui/app.types.ts',
     ]);
     const projectionPattern =
-      /\bconnStatus\b|connection-(?:state|chip)|data-connection-state|\bprojectConnectionLifecycle\b/;
+      /\bconnStatus\b|conn-status|connection-(?:state|chip)|data-connection-state|\bconnectionLifecyclePresentation\b/;
     const violations = sourceFiles(join(repoRoot, 'src'))
       .map((file) => file.slice(repoRoot.length + 1))
       .filter((file) => /\.(?:ts|tsx|js|mjs)$/.test(file))

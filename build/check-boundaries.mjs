@@ -211,7 +211,7 @@ const connectionProjectionOwners = new Set([
   'src/ui/app.types.ts',
 ]);
 const connectionProjectionPattern =
-  /\bconnStatus\b|connection-(?:state|chip)|data-connection-state|\bprojectConnectionLifecycle\b/;
+  /\bconnStatus\b|conn-status|connection-(?:state|chip)|data-connection-state|\bconnectionLifecyclePresentation\b/;
 for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   if (connectionProjectionOwners.has(relFile)) continue;
