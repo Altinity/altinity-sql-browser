@@ -89,4 +89,23 @@ describe('dashboard dependency boundaries', () => {
   it('src/workspace imports no Workbench UI / App / AppState / editor / service / net modules', () => {
     expect(violations('src/workspace')).toEqual([]);
   });
+
+  it('does not restore the retired saved-query repair planner or its vocabulary', () => {
+    const retiredPath = ['saved-query', 'mutation.ts'].join('-');
+    expect(existsSync(join(repoRoot, 'src/dashboard/application', retiredPath))).toBe(false);
+    const retiredTerms = [
+      ['plan', 'SavedQuery', 'Mutation'].join(''),
+      ['suggest', 'Repairs'].join(''),
+      ['SavedQuery', 'Repair'].join(''),
+      ['remove', '-affected', '-tiles'].join(''),
+    ];
+    const hits = [];
+    for (const file of [...collectFiles(join(repoRoot, 'src')), ...collectFiles(join(repoRoot, 'tests'))]) {
+      const source = readFileSync(file, 'utf8');
+      for (const term of retiredTerms) {
+        if (source.includes(term)) hits.push(`${relative(repoRoot, file)} → ${term}`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
 });

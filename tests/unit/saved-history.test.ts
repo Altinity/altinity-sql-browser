@@ -198,7 +198,7 @@ describe('renderSavedHistory', () => {
 
   // #427: the LIBRARY projection. A query some Dashboard member owns is not a
   // Library entry — it stays serialized, and #426's tree is how it is reached.
-  it('saved: hides Dashboard-owned queries and counts only the Library', () => {
+  it('saved: hides queries owned by a non-current Dashboard, including their trash controls', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
@@ -208,15 +208,23 @@ describe('renderSavedHistory', () => {
     app.currentWorkspace = {
       storageVersion: 5, id: 'w', key: 'w', name: 'W',
       queries: app.state.savedQueries,
-      dashboards: [{
-        documentVersion: 2, id: 'd', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
-        tiles: [{ id: 't1', queryId: 'owned-panel' }],
-      }],
+      dashboards: [
+        {
+          documentVersion: 2, id: 'current', title: 'Current', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+          tiles: [],
+        },
+        {
+          documentVersion: 2, id: 'other', title: 'Other', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+          tiles: [{ id: 't1', queryId: 'owned-panel' }],
+        },
+      ],
     };
     renderSavedHistory(app);
-    expect(qsa(savedList(app), '.saved-row').map((row) => qs(row, '.name').textContent))
-      .toEqual(['Library one']);
+    const rows = qsa(savedList(app), '.saved-row');
+    expect(rows.map((row) => qs(row, '.name').textContent)).toEqual(['Library one']);
+    expect(qsa(savedList(app), '.sv-act').filter((button) => button.title === 'Delete')).toHaveLength(1);
     expect(qs(savedTabsRow(app), '.side-count').textContent).toBe('· 1');
     // Every stored query is still there — the list is a projection, not a filter
     // on the workspace.

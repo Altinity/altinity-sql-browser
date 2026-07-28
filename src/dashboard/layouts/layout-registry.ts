@@ -140,9 +140,9 @@ export function createLayoutRegistry(
 export const defaultLayoutRegistry: DashboardLayoutRegistry =
   createLayoutRegistry(BUILTIN_SYNC_PLUGINS.map(syncRegistration));
 
-/** Synchronous plugin resolution for pure call sites that mutate a Dashboard
+/** Synchronous plugin resolution for call sites that mutate a Dashboard
  *  document but cannot await the async registry (`tile-membership.ts`,
- *  `saved-query-mutation.ts` — #291): looked up in `BUILTIN_SYNC_PLUGINS` by
+ *  `library-assignment.ts` — #291/#428): looked up in `BUILTIN_SYNC_PLUGINS` by
  *  exact `{type, version}` match, else the flow@1 plugin. Both built-in
  *  plugins are stateless, already-constructed values (`load()` never truly
  *  defers for either — see the module doc comment above), so no async is

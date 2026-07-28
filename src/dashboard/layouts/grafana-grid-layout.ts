@@ -484,9 +484,9 @@ function tileRefsOf(tiles: readonly unknown[]): GrafanaGridFallbackTile[] {
  *  `layout.fallback`, mirroring `setGridPlacement`'s own mutate-in-place
  *  contract) — a no-op when `layout` is not a grafana-grid@1 document. The
  *  single shared primitive every #291 application-layer mutation path
- *  (authoring commands, tile-membership star toggle, saved-query mutation
- *  planning) calls so "every grid mutation regenerates the flow@1 fallback
- *  deterministically" is enforced once, not duplicated per call site. The
+ *  (authoring commands and tile membership) calls so "every grid mutation
+ *  regenerates the flow@1 fallback deterministically" is enforced once, not
+ *  duplicated per call site. The
  *  non-grid guard runs BEFORE the tiles→refs mapping/allocation (#291 review
  *  F9) — calling this on the far-more-common flow-engine document costs only
  *  the guard check, never a `tiles[]` walk that would just be thrown away. */

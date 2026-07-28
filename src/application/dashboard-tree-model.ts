@@ -414,9 +414,9 @@ const variableAnnotation = (
  *
  * Both say what is wrong with the DATA rather than "not allowed": the row is
  * showing a tile whose dedicated query cannot be proven, and the user's next
- * move is to look at the panel, not to try again. Repairing such a workspace
- * is #429's repair-planner phase, deliberately not something these controls
- * attempt — a guessed owner is how one delete becomes two.
+ * move is to inspect the workspace data, not to try again. #429 deliberately
+ * keeps malformed ownership fail-closed rather than guessing a repair — a
+ * guessed owner is how one delete becomes two.
  */
 const MISSING_PANEL_QUERY_REASON =
   'This panel’s query is not in this workspace, so there is nothing to edit or remove.';

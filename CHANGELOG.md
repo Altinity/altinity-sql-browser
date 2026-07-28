@@ -9,6 +9,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Removed
+- **The unused saved-query repair planner has been removed** (#429 phase 6 /
+  #500). Direct, ownership-safe Panel and Dashboard trash actions are the
+  supported cascading delete paths; Library deletion and saved-query edits
+  continue to fail closed when whole-workspace validation would invalidate a
+  live Dashboard member.
+
 ## [0.7.0] - 2026-07-27
 
 ### Added
