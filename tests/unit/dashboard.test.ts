@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach, type Mock } from 'vitest';
 import {
-  normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
-  activeDashboardView, dashboardViewSelection, partitionKpiBands,
+  DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP, partitionKpiBands,
 } from '../../src/core/dashboard.js';
 import { KEYS } from '../../src/state.js';
 import { VARIABLE_OPTION_CAP } from '../../src/core/variable-options.js';
@@ -58,44 +57,6 @@ describe('DASH_TILE_ROW_CAP', () => {
   // the workbench. Bumping CHART_ROW_CAPS must be a deliberate two-file edit.
   it('covers every chart display cap (no silent chart starvation)', () => {
     expect(DASH_TILE_ROW_CAP).toBeGreaterThanOrEqual(Math.max(...Object.values(CHART_ROW_CAPS)));
-  });
-});
-
-describe('normalizeDashLayout', () => {
-  it('passes through known modes (incl. wide, #184), defaults everything else to arrange', () => {
-    expect(normalizeDashLayout('arrange')).toBe('arrange');
-    expect(normalizeDashLayout('report')).toBe('report');
-    expect(normalizeDashLayout('wide')).toBe('wide');
-    expect(normalizeDashLayout('grid')).toBe('arrange');
-    expect(normalizeDashLayout(undefined)).toBe('arrange');
-  });
-});
-
-describe('activeDashboardView (#184)', () => {
-  it('maps wide/report straight through and splits arrange by column count', () => {
-    expect(activeDashboardView({ dashLayout: 'wide', dashCols: 3 })).toBe('wide');
-    expect(activeDashboardView({ dashLayout: 'report', dashCols: 3 })).toBe('report');
-    expect(activeDashboardView({ dashLayout: 'arrange', dashCols: 2 })).toBe('columns-2');
-    expect(activeDashboardView({ dashLayout: 'arrange', dashCols: 3 })).toBe('columns-3');
-  });
-});
-
-describe('dashboardViewSelection (#184)', () => {
-  it('is the inverse of activeDashboardView, omitting dashCols for the single-column views', () => {
-    expect(dashboardViewSelection('wide')).toEqual({ dashLayout: 'wide' });
-    expect(dashboardViewSelection('report')).toEqual({ dashLayout: 'report' });
-    expect(dashboardViewSelection('columns-2')).toEqual({ dashLayout: 'arrange', dashCols: 2 });
-    expect(dashboardViewSelection('columns-3')).toEqual({ dashLayout: 'arrange', dashCols: 3 });
-    expect(dashboardViewSelection('nonsense')).toEqual({ dashLayout: 'arrange', dashCols: 3 });
-  });
-});
-
-describe('normalizeDashCols', () => {
-  it('passes through 2/3, defaults everything else to 3', () => {
-    expect(normalizeDashCols(2)).toBe(2);
-    expect(normalizeDashCols(3)).toBe(3);
-    expect(normalizeDashCols(4)).toBe(3);
-    expect(normalizeDashCols(NaN)).toBe(3);
   });
 });
 

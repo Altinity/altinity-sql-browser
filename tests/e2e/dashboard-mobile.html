@@ -255,9 +255,6 @@
     timeRegion.append(trHeading, trField.el, trSep);
     timeHost.append(timeRegion);
 
-    window.__prefs = { dashLayout: 'report', dashCols: 3 };
-    localStorage.setItem('asb:dashLayout', 'report');
-    localStorage.setItem('asb:dashCols', '3');
     window.__layoutApplyCount = 0;
     window.__setLayout = (mode) => {
       // #321: 'full-width'/'wide' removed — every mode this harness exercises

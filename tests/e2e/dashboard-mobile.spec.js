@@ -138,7 +138,7 @@ test.describe('Dashboard mobile layout', () => {
     expect(result).toEqual({ oneRow: true, inside: true, pageOverflow: 0, outside: [] });
   });
 
-  test('visually normalizes every saved layout on mobile and restores desktop CSS on resize', async ({ page }) => {
+  test('visually normalizes every flow preset on mobile and restores desktop CSS on resize', async ({ page }) => {
     await openAt(page, 390);
     // 'wide'/'full-width' removed (#321) — every remaining flow preset still
     // normalizes to one column on mobile.
@@ -153,16 +153,12 @@ test.describe('Dashboard mobile layout', () => {
           width: grid.getBoundingClientRect().width,
           availableWidth: grid.closest('.dash-page').clientWidth,
           tileMinHeight: getComputedStyle(tile).minHeight,
-          prefs: window.__prefs,
-          stored: [localStorage.getItem('asb:dashLayout'), localStorage.getItem('asb:dashCols')],
         };
       });
       expect(layout.columns).toBe(1);
       expect(layout.maxWidth).toBe('none');
       expect(layout.width).toBe(layout.availableWidth);
       expect(layout.tileMinHeight).toBe('300px');
-      expect(layout.prefs).toEqual({ dashLayout: 'report', dashCols: 3 });
-      expect(layout.stored).toEqual(['report', '3']);
     }
 
     await page.evaluate(() => window.__setLayout('report'));
@@ -173,9 +169,8 @@ test.describe('Dashboard mobile layout', () => {
       maxWidth: getComputedStyle(grid).maxWidth,
       tileMinHeight: getComputedStyle(grid.querySelector('.dash-tile')).minHeight,
       applyCount: window.__layoutApplyCount,
-      stored: [localStorage.getItem('asb:dashLayout'), localStorage.getItem('asb:dashCols')],
     }));
-    expect(restored).toEqual({ maxWidth: '1100px', tileMinHeight: '440px', applyCount, stored: ['report', '3'] });
+    expect(restored).toEqual({ maxWidth: '1100px', tileMinHeight: '440px', applyCount });
   });
 
   test('scrolls variables in one row while fixed combobox content escapes clipping', async ({ page }) => {

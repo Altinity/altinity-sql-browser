@@ -4262,6 +4262,7 @@ describe('exhaustive controller coverage', () => {
     drag(qs(app.root, '.col-resize'), 'col');
     drag(app.dom.sideSplit!, 'sideRow');
     drag(app.dom.editorResultsSplit!, 'row');
+    expect(app.dom.editorResultsSplit!.classList.contains('editor-results-split')).toBe(true);
     expect(app.state.sidebarPx).toBeDefined();
     // sideRow must resize the schema pane itself, not whichever element happens
     // to be the sidebar's first child (the mobile segmented control sits before

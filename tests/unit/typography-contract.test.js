@@ -239,7 +239,7 @@ describe('stylesheet uses the tokens', () => {
     // The document ramp exists because reference docs and Markdown panels are prose
     // the user reads. Letting it leak into operable chrome would reintroduce exactly
     // the oversized-shell-typography problem the Compact Scale Rule forbids.
-    const READ = /^\.(md-view|docs-|login-h1)/;
+    const READ = /^\.(md-view|docs-)/;
     for (const token of ['--text-doc-h1', '--text-doc-h2', '--text-doc-h3']) {
       const strayed = sizedBy(token).filter((sel) => !READ.test(sel));
       expect(strayed).toEqual([]);

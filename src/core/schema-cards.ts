@@ -141,14 +141,11 @@ function numberish(v: number | string | undefined): number | null {
  * they belong in the detail drawer, not in card geometry. `comment` (trimmed,
  * untruncated) isn't drawn as its own row — like the plain inline graph, it's a
  * hover-only tooltip on the whole card, so it never affects the card's own layout.
- * `_legacySkipIndexes` is never read — a bygone skip-index-rows argument some
- * callers still pass; accepted and ignored so it can never affect the model.
  */
 export function buildCardModel(
   node?: CardGraphNode | null,
   tableRow?: CardTableRow | null,
   columns?: SchemaCardColumnRow[] | null,
-  _legacySkipIndexes?: unknown,
 ): CardModel {
   const n = node || {};
   const tr = tableRow || {};
