@@ -51,6 +51,7 @@ const validatedCallback = (
   version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
   oauthState: 'oauth-state',
   validatedAt: createdAt,
+  documentSessionFingerprint: 'live-session-fingerprint',
   ...over,
 });
 
@@ -179,7 +180,7 @@ describe('OAuth document recovery validated-callback codec', () => {
   it('exports a separate stable key/version/TTL and round-trips only callback proof fields', () => {
     expect(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)
       .toBe('oauth_document_recovery_validated_callback');
-    expect(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION).toBe(1);
+    expect(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION).toBe(2);
     expect(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_TTL_MS)
       .toBeLessThanOrEqual(OAUTH_DOCUMENT_RECOVERY_TTL_MS);
     const input = {
@@ -204,7 +205,7 @@ describe('OAuth document recovery validated-callback codec', () => {
     expect(decodeMarker(null)).toEqual({ kind: 'missing' });
     expect(decodeMarker(undefined)).toEqual({ kind: 'missing' });
     expect(decodeMarker('{bad')).toEqual({ kind: 'invalid', reason: 'malformed' });
-    expect(decodeMarker({ ...validatedCallback(), version: 2 }))
+    expect(decodeMarker({ ...validatedCallback(), version: 99 }))
       .toEqual({ kind: 'invalid', reason: 'unsupported' });
     for (const value of [
       { oauthState: 'oauth-state', validatedAt: createdAt },

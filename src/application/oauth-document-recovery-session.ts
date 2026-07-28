@@ -60,7 +60,8 @@ export type OAuthDocumentRecoveryRestoreResult =
   | { kind: 'workspace-unavailable-retained' }
   /** Pending callback authority could not be retired safely before publication. */
   | { kind: 'retry-deferred-retained' }
-  | { kind: 'workspace-mismatch-cleared' }
+  | { kind: 'document-session-changed-retained' }
+  | { kind: 'workspace-mismatch-retained' }
   /** The snapshot deliberately remains until the shell has installed its guard. */
   | { kind: 'restored' };
 
@@ -71,6 +72,8 @@ export interface OAuthDocumentRecoverySession {
    * intentionally allowed to throw: ConnectionSession must then abort redirect.
    */
   prepare(oauthState: string): boolean;
+  /** Prepare plus an exact rollback for failures before navigation commits. */
+  prepareTransaction(oauthState: string): { hasRecoverySnapshot: boolean; rollback(): void };
   /**
    * Restore only after OAuth callback validation and workspace loading. A
    * restored payload is not consumed automatically; call consume once the
@@ -82,7 +85,10 @@ export interface OAuthDocumentRecoverySession {
    * fresh in-memory callback authority or a strict persisted callback marker.
    * A checkpoint by itself is never authority and produces `kind: 'absent'`.
    */
-  retryPending(workspace: StoredWorkspaceV5 | null): OAuthDocumentRecoveryRestoreResult;
+  retryPending(
+    workspace: StoredWorkspaceV5 | null,
+    options?: { allowChangedDocumentSession?: boolean },
+  ): OAuthDocumentRecoveryRestoreResult;
   /** Remove the payload after the caller's post-restore work succeeded. */
   consume(): void;
   /** Explicit logout/end-session cleanup. */
@@ -106,6 +112,23 @@ function authoredTab(tab: QueryTab): OAuthDocumentRecoveryTab {
     ...(tab.lastCommittedQueryToken === undefined ? {} : { lastCommittedQueryToken: tab.lastCommittedQueryToken }),
     ...(tab.externalState === undefined ? {} : { externalState: tab.externalState }),
   };
+}
+
+export function oauthDocumentSessionFingerprint(state: OAuthDocumentRecoveryState): string {
+  const authored = JSON.stringify({
+    tabs: state.tabs.value.map(authoredTab),
+    activeTabId: state.activeTabId.value,
+    nextTabId: state.nextTabId,
+  });
+  // Persist a compact comparison token, not a second copy of authored SQL/Spec.
+  // FNV-1a 64 is deterministic across reloads; this is a change detector, not
+  // an authenticity boundary (callback state remains the authority).
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < authored.length; index += 1) {
+    hash ^= BigInt(authored.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
 }
 
 function freshTab(tab: OAuthDocumentRecoveryTab): QueryTab {
@@ -168,6 +191,7 @@ export function createOAuthDocumentRecoverySession(
       version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
       oauthState,
       validatedAt,
+      documentSessionFingerprint: oauthDocumentSessionFingerprint(deps.state),
     };
     pendingValidatedCallback = marker;
     try {
@@ -296,6 +320,32 @@ export function createOAuthDocumentRecoverySession(
     return true;
   }
 
+  function prepareTransaction(
+    oauthState: string,
+  ): { hasRecoverySnapshot: boolean; rollback(): void } {
+    const checkpoint = deps.storage.getItem(OAUTH_DOCUMENT_RECOVERY_KEY);
+    const marker = deps.storage.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY);
+    const pending = pendingValidatedCallback;
+    const rollback = (): void => {
+      if (checkpoint === null) deps.storage.removeItem(OAUTH_DOCUMENT_RECOVERY_KEY);
+      else deps.storage.setItem(OAUTH_DOCUMENT_RECOVERY_KEY, checkpoint);
+      if (marker === null) deps.storage.removeItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY);
+      else deps.storage.setItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY, marker);
+      pendingValidatedCallback = pending;
+    };
+    let hasRecoverySnapshot: boolean;
+    try {
+      hasRecoverySnapshot = prepare(oauthState);
+    } catch (error) {
+      rollback();
+      throw error;
+    }
+    return {
+      hasRecoverySnapshot,
+      rollback,
+    };
+  }
+
   function restoreCheckpoint(
     callbackState: string,
     workspace: StoredWorkspaceV5 | null,
@@ -320,8 +370,7 @@ export function createOAuthDocumentRecoverySession(
     if (workspace === null) return { kind: 'workspace-unavailable-retained' };
     if (decoded.value.workspaceId !== workspace.id
       || decoded.value.workspaceKey !== workspace.key) {
-      deps.storage.removeItem(OAUTH_DOCUMENT_RECOVERY_KEY);
-      return { kind: 'workspace-mismatch-cleared' };
+      return { kind: 'workspace-mismatch-retained' };
     }
 
     let candidate: Signal<QueryTab[]>;
@@ -361,9 +410,10 @@ export function createOAuthDocumentRecoverySession(
     const now = deps.now();
     const result = restoreCheckpoint(callbackState, workspace, now);
     if (result.kind === 'workspace-unavailable-retained'
+      || result.kind === 'workspace-mismatch-retained'
       || result.kind === 'retry-deferred-retained') {
       rememberValidatedCallback(callbackState, now);
-    } else {
+    } else if (result.kind !== 'callback-mismatch') {
       // A fresh validated callback supersedes any earlier pending authority.
       // Publication, absence, invalidity, and proven mismatch are all terminal.
       clearPendingBestEffort();
@@ -373,16 +423,21 @@ export function createOAuthDocumentRecoverySession(
 
   function retryPending(
     workspace: StoredWorkspaceV5 | null,
+    { allowChangedDocumentSession = false }: { allowChangedDocumentSession?: boolean } = {},
   ): OAuthDocumentRecoveryRestoreResult {
     const now = deps.now();
     const pending = pendingCallback(now);
     if (pending.kind === 'absent') return { kind: 'absent' };
     if (pending.kind === 'deferred') return { kind: 'retry-deferred-retained' };
-    // Never let an automatic retry replace save-relevant work authored in RAM
-    // after the callback was deferred. This gate precedes checkpoint access,
-    // candidate construction, reconciliation, and authority retirement.
-    if (deps.state.tabs.value.some(tabSaveDirty)) {
+    if (!allowChangedDocumentSession && deps.state.tabs.value.some(tabSaveDirty)) {
       return { kind: 'retry-deferred-retained' };
+    }
+    // Dirty flags are not a revision: saving or closing newer work can make the
+    // session clean again. Compare the complete authored state observed when
+    // callback authority was deferred before allowing automatic publication.
+    if (!allowChangedDocumentSession
+      && oauthDocumentSessionFingerprint(deps.state) !== pending.value.documentSessionFingerprint) {
+      return { kind: 'document-session-changed-retained' };
     }
     const marker = pending.value;
     const result = restoreCheckpoint(
@@ -392,6 +447,7 @@ export function createOAuthDocumentRecoverySession(
       () => retirePendingBeforePublish(marker),
     );
     if (result.kind !== 'workspace-unavailable-retained'
+      && result.kind !== 'workspace-mismatch-retained'
       && result.kind !== 'retry-deferred-retained'
       && result.kind !== 'restored') {
       clearPendingBestEffort();
@@ -399,5 +455,5 @@ export function createOAuthDocumentRecoverySession(
     return result;
   }
 
-  return { prepare, restore, retryPending, consume, clear };
+  return { prepare, prepareTransaction, restore, retryPending, consume, clear };
 }

@@ -7,7 +7,7 @@ export const OAUTH_DOCUMENT_RECOVERY_VERSION = 1;
 export const OAUTH_DOCUMENT_RECOVERY_TTL_MS = 15 * 60 * 1000;
 export const OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY =
   'oauth_document_recovery_validated_callback';
-export const OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION = 1;
+export const OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION = 2;
 export const OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_TTL_MS =
   OAUTH_DOCUMENT_RECOVERY_TTL_MS;
 
@@ -51,6 +51,7 @@ export interface OAuthDocumentRecoveryValidatedCallback {
   version: typeof OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION;
   oauthState: string;
   validatedAt: number;
+  documentSessionFingerprint: string;
 }
 
 export type OAuthDocumentRecoveryInvalidReason = 'malformed' | 'unsupported' | 'expired';
@@ -76,7 +77,9 @@ type ValidatedCallbackShapeResult =
 const ROOT_KEYS = [
   'version', 'createdAt', 'workspaceId', 'workspaceKey', 'oauthState', 'tabs', 'activeTabId', 'nextTabId',
 ];
-const VALIDATED_CALLBACK_KEYS = ['version', 'oauthState', 'validatedAt'];
+const VALIDATED_CALLBACK_KEYS = [
+  'version', 'oauthState', 'validatedAt', 'documentSessionFingerprint',
+];
 const TAB_KEYS = [
   'id', 'doc', 'name', 'sqlDraft', 'specText', 'specVersion', 'editorMode', 'dirtySql', 'dirtySpec', 'savedId',
 ];
@@ -176,7 +179,8 @@ function readValidatedCallbackShape(
   if (value.version !== OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION) {
     return { kind: 'invalid', reason: 'unsupported' };
   }
-  if (!nonBlank(value.oauthState) || !finiteInteger(value.validatedAt)) {
+  if (!nonBlank(value.oauthState) || !finiteInteger(value.validatedAt)
+    || typeof value.documentSessionFingerprint !== 'string') {
     return { kind: 'invalid', reason: 'malformed' };
   }
   return {
@@ -185,6 +189,7 @@ function readValidatedCallbackShape(
       version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
       oauthState: value.oauthState,
       validatedAt: value.validatedAt,
+      documentSessionFingerprint: value.documentSessionFingerprint,
     },
   };
 }
@@ -273,7 +278,7 @@ export function decodeOAuthDocumentRecovery(
   return shape;
 }
 
-/** Serialize only the callback proof's version, OAuth state, and validation time. */
+/** Serialize callback authority together with its live-session publication fence. */
 export function encodeOAuthDocumentRecoveryValidatedCallback(
   marker: OAuthDocumentRecoveryValidatedCallback,
 ): string {
@@ -282,6 +287,7 @@ export function encodeOAuthDocumentRecoveryValidatedCallback(
     version: value.version,
     oauthState: value.oauthState,
     validatedAt: value.validatedAt,
+    documentSessionFingerprint: value.documentSessionFingerprint,
   });
 }
 

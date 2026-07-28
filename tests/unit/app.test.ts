@@ -841,10 +841,19 @@ describe('createApp basics', () => {
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
 
-    // Saving/cleaning the newer edit makes publication safe on the next
-    // automatic retry; the retained callback recovery can now take over.
+    // Saving/cleaning does not prove the session is unchanged. Keep the newer
+    // clean work and require explicit confirmation before recovery publishes.
     app.activeTab().dirtySql = false;
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'recovery' }, 'replace');
+    expect(app.activeTab()).toMatchObject({
+      name: 'Untitled', sqlDraft: 'SELECT newer in-memory edit', dirtySql: false,
+    });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
+    const restore = [...document.querySelectorAll<HTMLButtonElement>('.share-toast button')]
+      .find((button) => button.textContent === 'Restore drafts');
+    expect(restore).toBeDefined();
+    restore!.click();
     expect(app.activeTab()).toMatchObject({
       name: 'Recovered draft', sqlDraft: 'SELECT recovered', dirtySql: true,
     });

@@ -53,9 +53,15 @@ only after that checkpoint write succeeds. If serialization or storage fails,
 the redirect does not start, the warning remains armed, and the inline controls
 show the failure so sign-in can be retried. A failed IdP callback keeps the
 draft checkpoint; a retry binds the same authored payload to its new OAuth
-state. A separate tab-scoped, TTL-bound validated-callback marker contains only
-that state and its validation time; the checkpoint alone never authorizes an
-automatic restore. Starting another OAuth attempt invalidates the older marker.
+state. A separate tab-scoped, TTL-bound validated-callback marker contains the
+callback state, its validation time, and a compact fingerprint of the authored
+document session at that point. The fingerprint is a change detector, not an
+authorization secret; the checkpoint alone never authorizes an automatic
+restore. Starting another OAuth attempt invalidates the older marker. Markers
+written by the previous version-1 format lack that fingerprint, so they are
+treated as unsupported and cleared rather than migrated; the retained
+checkpoint can be rebound by a later OAuth retry, which writes a version-2
+marker.
 
 After a successful callback, the app restores the route, loads the committed
 workspace, validates the checkpoint against that workspace and callback state,
@@ -64,14 +70,17 @@ signed-in render. Invalid JSON drafts survive as authored and regain normal
 diagnostics. If the workspace is unavailable, or storage/validation fails
 before publication, recovery remains unpublished and retryable. A valid pending
 recovery suppresses legacy shared content and retries automatically only after
-an authoritative workspace load; it never overwrites newer save-relevant dirty
-work in memory, and its marker is retired before publication. Results and other
-execution state do not survive an OAuth reload. Malformed, unsupported,
-logically expired (after 15 minutes), or workspace-mismatched checkpoints are
-ineligible and the normal signed-in flow continues; expiry does not promise
-eager physical removal from browser storage. A stale callback cannot consume a
-newer retry's checkpoint. Explicit **Log out** clears any pending checkpoint
-and validated-callback marker.
+an authoritative workspace load while the document session is unchanged. If
+that session changed after callback validation, the checkpoint is retained and
+the user must choose **Restore drafts** explicitly; automatic recovery never
+overwrites newer work in memory. A workspace-mismatched checkpoint is likewise
+retained, with its callback authority, for a later matching workspace rather
+than discarded. Its marker is retired before publication. Results and other
+execution state do not survive an OAuth reload. Malformed, unsupported, or
+logically expired (after 15 minutes) checkpoints are ineligible; expiry does
+not promise eager physical removal from browser storage. A stale callback
+cannot consume a newer retry's checkpoint. Explicit **Log out** clears any
+pending checkpoint and validated-callback marker.
 
 ### Multiple IdPs
 

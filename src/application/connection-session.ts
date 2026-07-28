@@ -48,6 +48,11 @@ export interface SessionStorageLike {
  *  a cast; a test stub only implements two members. */
 export type SessionCrypto = PkceCrypto;
 
+export interface OAuthRedirectPreparation {
+  hasRecoverySnapshot: boolean;
+  rollback(): void;
+}
+
 /** Every side effect this session needs, injected as a narrow bag — mirrors
  *  `query-execution-service.ts`'s own `QueryExecutionDeps` seam. Production
  *  wires the real browser/env objects; tests inject plain stubs. */
@@ -66,7 +71,7 @@ export interface ConnectionSessionDeps {
   /** Persist an OAuth-state-bound document recovery snapshot after this
    * session has written its PKCE attempt. `true` means that snapshot is
    * durable and the intentional redirect may bypass the dirty unload guard. */
-  prepareOAuthRedirect?(oauthState: string): boolean;
+  prepareOAuthRedirect?(oauthState: string): boolean | OAuthRedirectPreparation;
   /** Arm a one-shot dirty-unload bypass for the immediately following OAuth
    * navigation. The returned callback undoes the arm if navigation fails. */
   armOAuthRedirectUnloadBypass?(): () => void;
@@ -314,10 +319,13 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   async function beginOAuth(idpArg?: string, targetOrigin?: string): Promise<void> {
     const prior = authenticationPrior();
     const authenticating = transition({ type: 'start-authentication' });
-    const attemptKeys = ['oauth_verifier', 'oauth_state', 'oauth_return_route'] as const;
+    const attemptKeys = [
+      'oauth_verifier', 'oauth_state', 'oauth_return_route', 'oauth_idp', 'oauth_origin',
+    ] as const;
     type AttemptValues = Record<typeof attemptKeys[number], string | null>;
     let priorAttemptValues: AttemptValues | null = null;
     let ownedAttemptValues: AttemptValues | null = null;
+    let rollbackOAuthPreparation: (() => void) | undefined;
     let disarmUnloadBypass: (() => void) | undefined;
     const ownsStoredAttempt = (): boolean => {
       const current = connectionSignal.value;
@@ -334,17 +342,20 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       if (!ownsStoredAttempt()) throw new Error('Authentication attempt superseded');
     };
     try {
-      // Keep these three legacy keys as the one canonical OAuth attempt. A
+      // Keep the OAuth attempt and its selected endpoint as one transaction. A
       // failed post-PKCE preparation must leave a previous callback/retry
       // attempt exactly as it was, including absent keys.
       priorAttemptValues = {
         oauth_verifier: ss.getItem('oauth_verifier'),
         oauth_state: ss.getItem('oauth_state'),
         oauth_return_route: ss.getItem('oauth_return_route'),
+        oauth_idp: ss.getItem('oauth_idp'),
+        oauth_origin: ss.getItem('oauth_origin'),
       };
       ownedAttemptValues = { ...priorAttemptValues };
       if (idpArg) {
         selectIdp(idpArg);
+        ownedAttemptValues.oauth_idp = idpArg;
         assertAttemptOwnership();
       }
       // A picked saved-connection can target another cluster: stash its origin so
@@ -352,6 +363,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
       if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
       else ss.removeItem('oauth_origin');
+      ownedAttemptValues.oauth_origin = targetOrigin || null;
       assertAttemptOwnership();
       const cfg = await resolveConfig();
       assertCurrentAuthentication(authenticating.epoch);
@@ -382,9 +394,11 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
       ss.setItem('oauth_return_route', returnRoute);
       ownedAttemptValues.oauth_return_route = returnRoute;
       assertAttemptOwnership();
-      const hasRecoverySnapshot = deps.prepareOAuthRedirect
-        ? deps.prepareOAuthRedirect(state)
-        : false;
+      const prepared = deps.prepareOAuthRedirect?.(state) ?? false;
+      const hasRecoverySnapshot = typeof prepared === 'boolean'
+        ? prepared
+        : prepared.hasRecoverySnapshot;
+      rollbackOAuthPreparation = typeof prepared === 'boolean' ? undefined : prepared.rollback;
       assertAttemptOwnership();
       // Deliberately adjacent to navigation: no unrelated asynchronous work
       // may run after the one-shot bypass is armed.
@@ -407,6 +421,11 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
         // The original redirect failure is the actionable error. Continue
         // cleanup even when a host-provided disarm callback misbehaves.
       }
+      try {
+        if (rollbackOAuthPreparation && ownsStoredAttempt()) rollbackOAuthPreparation();
+      } catch {
+        // Preserve the redirect error and continue restoring the OAuth attempt.
+      }
       if (priorAttemptValues && ownsStoredAttempt()) {
         for (const key of attemptKeys) {
           try {
@@ -414,6 +433,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
             if (value === null) ss.removeItem(key);
             else ss.setItem(key, value);
             ownedAttemptValues![key] = value;
+            if (key === 'oauth_idp') idpId = value;
           } catch {
             // A failed restore may have mutated storage before throwing. Stop
             // rather than risk overwriting a reentrant/newer attempt.
