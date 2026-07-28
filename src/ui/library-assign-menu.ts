@@ -15,6 +15,7 @@ import type { LibraryQueryDragPayload } from '../core/library-drag.js';
 import { shortIdFragments } from '../core/file-menu-model.js';
 import { queryName } from '../core/saved-query.js';
 import { UNTITLED_DASHBOARD } from '../application/dashboard-tree-model.js';
+import { revealAssignedPanel } from './dashboard-tree.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { App } from './app.types.js';
 
@@ -57,8 +58,10 @@ async function assign(
   // must not navigate or toast over a surface the user chose afterwards.
   if (!(currentAtNotification ?? app.isSurfaceGenerationCurrent(surfaceGeneration))) return;
   if (outcome.ok && outcome.data?.status === 'ok') {
-    // Match the drag path's post-command behavior: work on the independent
-    // owned copy that was just created, never the Library source.
+    // Match the drag path's post-command behavior: reveal/select the new Panel
+    // in the Dashboard tree, then work on its independent owned copy — never
+    // the Library source.
+    revealAssignedPanel(app, dashboardId, outcome.data.tileId);
     app.openSavedQuery(outcome.data.queryId);
   }
   const message = libraryAssignmentMessage(outcome);

@@ -6,6 +6,7 @@ import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 import type { App } from '../../src/ui/app.types.js';
+import { groupStateKey, readTreeUi } from '../../src/core/dashboard-tree-ui-state.js';
 
 const query = savedQuery({ id: 'library-q', name: 'Orders', sql: 'SELECT * FROM orders' });
 const dashboard = (id: string, title: string) => ({
@@ -154,6 +155,11 @@ describe('openLibraryAssignMenu', () => {
     expect(app.onWorkspaceExternallyChanged).toHaveBeenCalledWith({
       workspace: committed, queriesChanged: true,
     });
+    expect(app.state.upperRole.value).toBe('dashboards');
+    const treeUi = readTreeUi(app.state.dashboardTreeUi, 'workspace-1');
+    expect(treeUi.expandedDashboardIds.has('dashboard-a')).toBe(true);
+    expect(treeUi.expandedGroups.has(groupStateKey('dashboard-a', 'panels'))).toBe(true);
+    expect(treeUi.keyboardRowKey).toBe('workspace-1:dashboard-a:tile:new-tile');
     expect(app.openSavedQuery).toHaveBeenCalledWith('new-query');
   });
 

@@ -602,6 +602,10 @@ test.describe('Library → Dashboard assignment (#428)', () => {
   test('Add to dashboard is fully keyboard-operable and restores focus on Escape', async ({ page }) => {
     await open(page);
     const add = libraryRow(page).getByRole('button', { name: 'Add to dashboard…' });
+    await expect(add).toHaveCSS('opacity', '0');
+    await libraryRow(page).hover();
+    await expect(add).toHaveCSS('opacity', '1');
+    await page.mouse.move(0, 0);
     // Reach the action from the row's preceding native keyboard stop. A direct
     // `add.focus()` would still pass if the control accidentally became
     // `tabindex=-1`, which is exactly the regression this acceptance test guards.
@@ -609,6 +613,7 @@ test.describe('Library → Dashboard assignment (#428)', () => {
     await page.keyboard.press('Tab');
     await expect(add).toBeFocused();
     await expect(add).toBeVisible();
+    await expect(add).toHaveCSS('opacity', '1');
 
     await page.keyboard.press('Enter');
     const choose = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
@@ -644,6 +649,11 @@ test.describe('Library → Dashboard assignment (#428)', () => {
       const current = await committed(page);
       return current.dashboards.find((d) => d.id === 'ops').tiles.length;
     }).toBe(1);
+    await expect(roleTab(page, 'Dashboards')).toHaveAttribute('aria-pressed', 'true');
+    const newPanel = page.locator('.dash-tree-row[data-key^="workspace:ops:tile:"]');
+    await expect(newPanel).toHaveCount(1);
+    await expect(newPanel).toHaveAttribute('tabindex', '0');
+    await expect(newPanel).toBeFocused();
   });
 
   test('one drag publishes both the subquery text and the Dashboard identity', async ({ page }) => {

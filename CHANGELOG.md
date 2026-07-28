@@ -13,7 +13,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 - **Every Library query now has a keyboard-accessible “Add to dashboard…”
   action** (#483). Its Dashboard → panel chooser uses the same assignment
   command as drag/drop, creates the same independent owned query and tile, and
-  supports arrow navigation, Escape, Cancel, and focus restoration.
+  supports arrow navigation, Escape, Cancel, and focus restoration. The compact
+  Plus appears on row hover or keyboard focus; a successful add switches the
+  sidebar to the Dashboard tree and selects the new panel.
 
 ### Removed
 - **The unused saved-query repair planner has been removed** (#429 phase 6 /

@@ -975,7 +975,13 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--fg-faint); cursor: pointer; border-radius: var(--r-xs); flex-shrink: 0;
   display: none; align-items: center; justify-content: center; padding: 0;
 }
-.saved-row .sv-assign { display: inline-flex; }
+.saved-row .sv-assign {
+  display: inline-flex; opacity: 0; pointer-events: none;
+}
+.saved-row:hover .sv-assign,
+.saved-row .sv-assign:focus-visible {
+  opacity: 1; pointer-events: auto;
+}
 .saved-row:hover .sv-act { display: inline-flex; }
 .sv-act:hover { color: var(--fg); background: var(--bg-hover); }
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }
