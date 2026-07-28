@@ -333,8 +333,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // The dashboard calls this before fanning tiles out, so the tiles never each
   // race an expired-token refresh (a rotating refresh token used N-ways at once
   // would invalidate itself), and a single sign-out is handled by the caller
-  // instead of N tiles each firing onSignedOut. Also used by bootstrap to
-  // refresh a handed-off-but-expired token before falling back to login.
+  // instead of N tiles each firing onSignedOut.
   async function ensureFreshToken(): Promise<boolean> {
     await ensureConfig();
     return !!(await getToken());

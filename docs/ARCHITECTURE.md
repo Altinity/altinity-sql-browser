@@ -12,8 +12,10 @@ route-scoped sessions behind a small composition root.
 core/          pure logic (no DOM, no globals, no imports from other layers)
 net/           integration: OAuth + the ClickHouse HTTP client (fetch injected via ctx)
 application/   route-agnostic services & sessions (no App, no DOM, no ui/editor imports)
+workspace/     pure stored-workspace aggregate, persistence contracts, and mutations
+dashboard/     Dashboard model/layouts/application runtime (model/layouts <- application <- UI)
 ui/workbench/  the workbench route: session (run lifecycle) + shell (DOM + effects)
-ui/dashboard/  the dashboard route: session (tile/variable runtime); ui/dashboard.ts is its shell
+ui/dashboard.ts the dashboard route shell (DOM + effects)
 ui/*           render modules (hyperscript), editor ports live in editor/
 ui/app.ts      composition/bootstrap: constructs everything, wires routes
 state.ts       the shared signal-backed model + pure ops
@@ -23,8 +25,9 @@ main.ts        page bootstrap: OAuth callback, share links, route dispatch
 Dependency direction is strictly downward. Enforced mechanically by
 `build/check-boundaries.mjs` (runs in `pretest` as `check:arch`):
 
-- `src/application/**` never imports `src/ui/**` or `src/editor/**` (type-only
-  imports count).
+- `src/application/**` never imports `src/ui/**` or `src/editor/**`; the
+  Dashboard and workspace layers cannot import higher layers, and Dashboard
+  application depends only on Dashboard model/layouts (type-only imports count).
 - `src/ui/workbench/**` and `src/ui/dashboard/**` never import each other,
   never import the editor (dashboard), and never import `src/ui/app.ts` —
   shells receive everything injected.
@@ -35,11 +38,12 @@ Two known, deliberate exceptions predate #276 and are out of its scope:
 
 ## The services (`src/application/`)
 
-Each is a `create*(deps)` factory taking a narrow dependency bag — never the
-`App` object or the full `AppState` (narrow `Pick`-shaped state slices are
-structurally satisfied by `AppState`). Side effects are always injected
+Services and sessions take narrow dependency bags — never the `App` object or
+the full `AppState` (narrow `Pick`-shaped state slices are structurally
+satisfied by `AppState`). The pure projections and state transitions in this
+layer take their explicit inputs directly. Side effects are always injected
 (fetch via the ClickHouse `ctx`, clocks, `uid`, storage, timers), so every
-service is tested with plain stubs at the per-file coverage gate.
+module is tested with plain stubs at the per-file coverage gate.
 
 | Module | Owns |
 |---|---|
@@ -53,6 +57,12 @@ service is tested with plain stubs at the per-file coverage gate.
 | `schema-graph-session` (`app.graph`) | lineage load/expand/node-detail lifecycle with stale-request guards; abort state is session-private |
 | `app-preferences` (`app.prefs`) | typed preference persistence (`save(name, value)` + `toggleTheme()`) |
 | `ch-session-params` | pure helpers minting/attaching the per-tab ClickHouse HTTP `session_id` (TEMPORARY/SET stickiness), shared by the workbench hooks and export wiring |
+| `dashboard-create` / `dashboard-delete` / `dashboard-title` | serialized workspace mutations for Dashboard creation, deletion, and title edits |
+| `dashboard-panel-metadata` | serialized workspace mutations for Dashboard tile title/description overrides |
+| `dashboard-tree-model` | pure Dashboard-tree projection, including inferred Variables and navigation rows |
+| `dashboard-variable-config` | serialized commits for Dashboard Variable option-SQL configuration |
+| `library-assignment-service` | serialized Library-to-Dashboard panel and Variable assignments, plus user-facing assignment outcomes |
+| `main-surface` | pure Query/Dashboard surface state, routing, history restoration, and focus transitions |
 
 ## Route sessions and shells
 
@@ -67,12 +77,11 @@ service is tested with plain stubs at the per-file coverage gate.
   workbench DOM (header, sidebar, splitters, tabs, toolbar, var strip,
   results) and registers every other effect. `ui/app.ts`'s `renderApp` is a
   thin call into it.
-- `ui/dashboard/dashboard-session.ts` owns the dashboard runtime: the 6-way
-  tile pool, wave generations (reserved at wave creation), per-slot
-  cancellation, the variable-commit wave, `destroy()`. Its input is an
-  explicit `DashboardRuntimeInput` built by the shell from the favorites
-  list — a stored dashboard document can replace that source without touching
-  the session. `ui/dashboard.ts` is its shell (own header; no sidebar), typed
+- `dashboard/application/dashboard-viewer-session.ts` owns the Dashboard
+  runtime: the 6-way tile pool, wave generations (reserved at wave creation),
+  per-tile cancellation, Variable commits, and `destroy()`. Its input is a
+  stored `DashboardDocumentV2` plus workspace queries and narrow injected
+  interfaces. `ui/dashboard.ts` is its shell (own header; no sidebar), typed
   against a narrow `DashboardApp`, not `App`.
 
 Lifecycle ownership: **cancellation state always lives with the session that

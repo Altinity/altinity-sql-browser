@@ -33,7 +33,8 @@ const jsToTsInMixedTree: Plugin = {
 // aggregate, so one weak file can't hide a regression in another. Every
 // module under src/ is pure-or-DOM and individually testable under happy-dom;
 // the fetch/crypto/storage seams are injected, never imported, so they mock
-// with plain stubs. We hold the whole tree at 100/100/100/100.
+// with plain stubs. Per-file floors are 100 statements/lines, 95 functions,
+// and 90 branches; most modules maintain 100/100/100/100 in practice.
 export default defineConfig({
   root: repoRoot,
   plugins: [jsToTsInMixedTree],
@@ -59,19 +60,13 @@ export default defineConfig({
       // Type-only seam interface files (ADR-0002 phase 0 / #262) have no
       // executable statements — nothing to cover, like src/generated/.
       exclude: ['src/generated/*.js', 'src/**/*.types.ts'],
-      // Every src file must hit 100% on its own (perFile) — no global
-      // aggregate hiding a weak module. Code is written to avoid
-      // unreachable defensive branches so 100/100/100/100 is genuine.
       // Per-file (no global aggregate hiding a weak module). The pure/network/
-      // state/DOM and render layers are written to hit 100/100/100/100. The
-      // ui/app.js controller is the browser glue — a few branches/functions are
-      // only exercised by the real autostart path (excluded from tests), so it
-      // is held at a 90%+ floor for now rather than padding tests artificially.
-      // Per-file floors. The pure/network/state/DOM and render layers sit at
-      // 100; the ui/app.js controller glue brings the floor down (a few of its
-      // branches/functions are only hit by the real browser autostart path,
-      // which tests exclude). statements/lines stay at 100; functions ≥95;
-      // branches ≥90 (v8's branch counter is strict and platform-sensitive).
+      // state/DOM and render layers generally maintain 100/100/100/100; the
+      // enforced floors below are deliberately explicit for the whole tree.
+      // Per-file floors: statements/lines stay at 100; functions ≥95; branches
+      // ≥90 (v8's branch counter is strict and platform-sensitive). Most
+      // modules exceed these floors, while browser-glue branches/functions are
+      // not padded for the autostart path tests intentionally exclude.
       thresholds: {
         perFile: true,
         statements: 100,
