@@ -509,6 +509,38 @@ describe('chCtx.onSignedOut', () => {
     expect(storage.getItem('oauth_id_token')).toBeNull();
   });
 
+  // #502: the plain `getToken()` can't be reused as-is for the teardown's own
+  // authenticated calls — it would treat an already-expired-or-expiring-soon
+  // token as needing another refresh and return null on failure, discarding
+  // a token that might still be accepted. `onSignedOut` freezes `getToken`
+  // to resolve the retained credential for its own synchronous duration —
+  // this works because `authedFetch` (ch-client.ts) reads+calls `ctx.getToken`
+  // synchronously, before its own first `await`, so a nested fire-and-forget
+  // call captures the frozen value before this function's `finally` restores
+  // it. (`ctx.authHeader`/`ctx.refresh` are read later, in `authedFetch`'s own
+  // async continuation — well after this function has already returned — so
+  // freezing THEM would be a no-op; not attempted here. See #520 for the
+  // narrower, separately-tracked Basic-mode consequence.)
+  it('freezes getToken for the teardown window: a nested call gets the still-current (even already-expired) credential', async () => {
+    let session!: ReturnType<typeof setup>['session'];
+    let getTokenResult: string | null | undefined;
+    const storage = memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' });
+    const setupResult = setup({
+      storage,
+      // Mirrors what the teardown's own fire-and-forget authedFetch calls
+      // do: call getToken() WHILE onSignedOut is still synchronously running.
+      onAuthLost: () => {
+        void session.chCtx.getToken().then((t) => { getTokenResult = t; });
+      },
+    });
+    session = setupResult.session;
+    session.chCtx.onSignedOut();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getTokenResult).toBe(expiredToken); // the retained credential, not null
+    expect(setupResult.fetchMock.calls.some((u) => u.endsWith('/token'))).toBe(false); // no real refresh attempted
+  });
+
   // #502: idempotency — several concurrent requests can each independently
   // report the same dead session (including the teardown's own fire-and-
   // forget calls rediscovering the same expired-and-unrefreshable token).

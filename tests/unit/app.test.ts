@@ -2191,6 +2191,39 @@ describe('query run', () => {
     // Idempotent: a second concurrent report of auth loss must not throw.
     expect(() => app.conn.chCtx.onSignedOut()).not.toThrow();
   });
+  // #502: the "failed proactive refresh" trigger specifically — getToken()
+  // treats a token within its 60s skew as needing refresh, and (unlike a
+  // hard-expired token) discards it on a failed refresh attempt UNLESS the
+  // teardown uses the frozen snapshot connection-session.ts now captures.
+  // Without that, workbench.destroy()'s KILL QUERY would never reach the
+  // server at all for this trigger — it would see a null token and bail.
+  it('KILL QUERY still reaches the server when the retained token needed (and failed) a proactive refresh', async () => {
+    const expiringSoonToken = jwt({ email: 'soon@example.com', exp: Math.floor(Date.now() / 1000) + 30 });
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    const fetch = makeFetch([
+      [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid' } })],
+      [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://a', token_endpoint: 'https://t' } })],
+      [(u) => u === 'https://t', resp({ ok: false, status: 401, text: '{}' })], // refresh fails
+      [(u, sql) => /SELECT 1\b/.test(sql), () => new Promise<FakeResponse>((res) => { resolveRunFetch = res; })],
+    ]);
+    const { app } = appForRun([], { fetch }); // default sessionStorage: a valid (non-expiring) token — run()'s own preflight needs no refresh
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r));
+    expect(app.state.running.value).toBe(true);
+    const runCall = asMock(fetch).mock.calls.find((c) => c[1] && /SELECT 1\b/.test(c[1].body || ''))!;
+    // The live token is now this one (e.g. rotated by an earlier refresh
+    // elsewhere) — expiring soon, and its own refresh attempt fails.
+    app.conn.setTokens(expiringSoonToken, 'rt0');
+    expect(await app.conn.getToken()).toBeNull(); // mirrors any real caller's preflight
+    app.conn.chCtx.onSignedOut(); // mirrors what that caller does next
+    expect((runCall[1].signal as AbortSignal).aborted).toBe(true);
+    await new Promise((r) => setTimeout(r));
+    const kill = asMock(fetch).mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''));
+    expect(kill).toBeTruthy(); // reached the server using the retained, expiring-soon token
+    resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
+  });
   it('surfaces a query error', async () => {
     const { app } = appForRun([
       [(u, sql) => /bad/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],
@@ -3389,7 +3422,7 @@ describe('auth flows', () => {
     expect(ok).toBe(true);
     expect(app.conn.token()).toBe(validToken);
   });
-  it('getToken returns null + clears when refresh fails', async () => {
+  it('getToken returns null when refresh fails', async () => {
     const e = env({
       sessionStorage: memSession({ oauth_id_token: jwt({ exp: 1 }) }),
       fetch: makeFetch([

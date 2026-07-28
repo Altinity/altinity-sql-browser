@@ -296,28 +296,54 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     authHeader,
     // detail is set when CH rejects a *valid* login (authorization denial); the
     // no-arg calls (no token / expired + refresh failed) fall back to expiry.
-    // #502: `deps.onAuthLost` runs BEFORE `clearTokens()`, not after — its
-    // shell-owned teardown (aborting the workbench/graph/export requests and
-    // KILLing their server-side queries) is fire-and-forget, so each call's
-    // `authedFetch` only reaches its first `await ctx.getToken()` in THIS
-    // synchronous tick; clearing first (the old order) makes `getToken()`'s
-    // synchronous null check see an already-cleared token and every one of
-    // those best-effort authed calls silently no-op before ever reaching the
-    // server. (A Basic-mode session's later `authHeader()` call still reads
-    // `authMode` post-reset either way — same latent gap `signOut()` already
-    // had — tracked separately, not introduced here.) `signedOutHandled`
-    // guards re-entrancy: the teardown's own fire-and-forget calls can each
-    // independently rediscover the same dead token and report auth loss
-    // again — only the first report actually runs the teardown/render/clear;
-    // later ones (this tick or a delayed microtask) are no-ops until a fresh
-    // sign-in resets the latch. The `finally` guarantees credentials are
+    // #502: the shell-owned teardown `deps.onAuthLost` runs (aborting the
+    // workbench/graph/export requests and KILLing their server-side queries)
+    // must authenticate its own fire-and-forget calls with the credential
+    // this dying session held — even one `getToken()`'s 60s skew calls
+    // "expiring soon", or one already past real expiry: a best-effort KILL
+    // QUERY costs nothing extra either way, and it's likely still accepted.
+    // The plain `ctx.getToken()` can't be reused as-is for this: it treats a
+    // failed *proactive* refresh as terminal and returns null regardless of
+    // whether the retained token is still good, so every nested
+    // `authedFetch` inside the teardown would see `!token` and bail before
+    // ever reaching the server. `chCtx.getToken` is frozen to resolve this
+    // exact retained token — computed and captured BEFORE the teardown
+    // runs — for the synchronous duration of `deps.onAuthLost`, then
+    // restored. This works because `authedFetch` reads+calls `ctx.getToken`
+    // synchronously, before its own first `await` — every nested call
+    // captures the frozen value before this function's `finally` below ever
+    // runs (fire-and-forget calls only kick off their promises here; they
+    // don't settle until well after this function returns).
+    //
+    // `ctx.authHeader`/`ctx.refresh`, in contrast, are read by `authedFetch`
+    // only in the continuation AFTER its own `await ctx.getToken()` — i.e.
+    // in a later microtask (or later still, `ctx.refresh` only fires on an
+    // actual 401 response, after a real network round-trip) — by which
+    // point this function has already returned and restored/cleared
+    // everything. Freezing them here would be a no-op that only creates a
+    // false sense of protection, so this deliberately does NOT try: for a
+    // Basic-mode session specifically, this means a stray retry can still
+    // build the wrong Authorization scheme once `authMode` has been reset
+    // (tracked separately as `inbox` #520, not fixed here — a real fix needs
+    // the fire-and-forget calls to be awaited, or their credentials captured
+    // and threaded through explicitly, before this function ever restores or
+    // clears anything).
+    //
+    // `signedOutHandled` guards re-entrancy: the teardown's own frozen calls,
+    // if they still fail, report auth loss again but that's a no-op (no
+    // second render/teardown) until a fresh sign-in (`setTokens`/
+    // `connectBasic`) resets it. The `finally` guarantees credentials are
     // still cleared even if the injected `onAuthLost` throws.
     onSignedOut: (detail?: string) => {
       if (signedOutHandled) return;
       signedOutHandled = true;
+      const frozenToken = authMode === 'basic' ? basicCreds() : token;
+      const realGetToken = chCtx.getToken;
+      chCtx.getToken = async () => frozenToken;
       try {
         deps.onAuthLost(detail || 'Your session expired — please sign in again.');
       } finally {
+        chCtx.getToken = realGetToken;
         clearTokens();
       }
     },

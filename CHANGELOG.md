@@ -31,17 +31,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   request that would go on to record History, bound parameters, or a schema
   reload — could survive past the login screen. The teardown is now a single
   idempotent `teardownAuthenticatedSession()` helper shared by both paths.
-  Making this actually work required two deeper changes to
+  Making this actually work required deeper changes to
   `connection-session.ts`: `getToken()` no longer clears credentials itself
   on a failed proactive refresh (it did, previously — before its caller ever
-  got a chance to run the teardown with a still-usable token), and
-  `chCtx.onSignedOut` now (a) notifies the teardown *before* clearing
-  credentials, not after, so its requests still carry valid credentials
-  instead of silently no-op'ing on an already-cleared token, (b) latches
-  once it starts handling a dead session so the teardown's own concurrent
-  authenticated calls rediscovering the same dead token can't recursively
-  re-run it, resetting only on a genuine fresh sign-in, and (c) still clears
-  credentials even if the injected `onAuthLost` callback throws.
+  got a chance to run the teardown), and `chCtx.onSignedOut` now (a)
+  notifies the teardown *before* clearing credentials, not after, freezing
+  `getToken` for that window to resolve the still-retained credential (even
+  one within the proactive-refresh skew, or already past real expiry — a
+  best-effort `KILL QUERY` costs nothing extra either way) rather than
+  discarding it, so the teardown's `KILL QUERY`/export-cancellation requests
+  reach the server instead of silently no-op'ing on a token that looks gone;
+  (b) latches once it starts handling a dead session so the teardown's own
+  concurrent authenticated calls rediscovering the same dead token can't
+  recursively re-run it, resetting only on a genuine fresh sign-in; and (c)
+  still clears credentials even if the injected `onAuthLost` callback
+  throws. A detached/expanded Data Pane view's own refresh preflight
+  (`src/ui/results.ts`) also now reports auth loss the same way every other
+  caller does — previously it neither cleared nor reported it, so a dead
+  token could linger un-torn-down indefinitely if that was a user's only
+  live activity.
 
 ### Removed
 - **The unused saved-query repair planner has been removed** (#429 phase 6 /

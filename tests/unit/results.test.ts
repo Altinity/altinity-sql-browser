@@ -1039,7 +1039,8 @@ describe('expandDataPane', () => {
     // `exec.executeRead` fixture in this suite uses.
     const executeRead = vi.fn(async (result: QueryResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
     const ensureFreshToken = vi.fn(async () => false);
-    const app = makeApp({ conn: { ensureFreshToken }, exec: { executeRead } });
+    const onSignedOut = vi.fn();
+    const app = makeApp({ conn: { ensureFreshToken }, chCtx: { onSignedOut }, exec: { executeRead } });
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1048,6 +1049,10 @@ describe('expandDataPane', () => {
     expect(app.exec.executeRead).not.toHaveBeenCalled();
     expect(qs(overlay, '.detached-status').textContent).toBe('Not signed in');
     expect(refreshBtn(overlay)!.disabled).toBe(false); // re-enabled after the blocked attempt
+    // #522: unlike before, this failure now reports auth loss too — dead
+    // credentials must not linger un-torn-down until some other action
+    // happens to rediscover them.
+    expect(onSignedOut).toHaveBeenCalled();
   });
 
   it('shows a status and keeps the previous result when the rerun errors', async () => {

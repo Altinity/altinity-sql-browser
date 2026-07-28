@@ -161,7 +161,7 @@ export interface ResultsApp {
   now(): number;
   elapsedMs(): number;
   wallNow(): number;
-  conn: Pick<ConnectionSession, 'ensureFreshToken'>;
+  conn: Pick<ConnectionSession, 'ensureFreshToken'> & { chCtx: Pick<ConnectionSession['chCtx'], 'onSignedOut'> };
   /** The shared request/stream/normalize service (#276 Phase 1) — this module
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
@@ -1008,6 +1008,11 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         if (refreshBtn) refreshBtn.disabled = true;
         if (!(await app.conn.ensureFreshToken())) {
           if (myGen === gen && !closed) settle('Not signed in');
+          // #522: unlike a dashboard tile's own preflight (`onAuthFailed`),
+          // this path never reported the auth loss at all — dead credentials
+          // would otherwise linger un-torn-down until some other action
+          // happened to rediscover the same dead token.
+          app.conn.chCtx.onSignedOut();
           return;
         }
         const execution = panelExecution(savedPanel, mergedSourceSql(src, source.sql), {
