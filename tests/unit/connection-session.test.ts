@@ -79,6 +79,9 @@ interface SetupOpts {
   routes?: RouteFn[];
   queryJson?: QueryJsonFn;
   onAuthLost?: ConnectionSessionDeps['onAuthLost'];
+  prepareOAuthRedirect?: ConnectionSessionDeps['prepareOAuthRedirect'];
+  armOAuthRedirectUnloadBypass?: ConnectionSessionDeps['armOAuthRedirectUnloadBypass'];
+  clearOAuthDocumentRecovery?: ConnectionSessionDeps['clearOAuthDocumentRecovery'];
 }
 function setup(opts: SetupOpts = {}) {
   const fetchMock = makeFetch(opts.routes || []);
@@ -95,6 +98,9 @@ function setup(opts: SetupOpts = {}) {
     crypto: webcrypto,
     queryJson: opts.queryJson || fakeQueryJson(async () => ({ data: [{ 1: 1 }] })),
     onAuthLost,
+    prepareOAuthRedirect: opts.prepareOAuthRedirect,
+    armOAuthRedirectUnloadBypass: opts.armOAuthRedirectUnloadBypass,
+    clearOAuthDocumentRecovery: opts.clearOAuthDocumentRecovery,
   };
   return { deps, storage, location, fetchMock, onAuthLost, session: createConnectionSession(deps) };
 }
@@ -529,8 +535,604 @@ describe('beginOAuth', () => {
     });
   });
 
+  it('prepares after the complete PKCE attempt is stored, but does not arm for a clean session', async () => {
+    const arm = vi.fn(() => vi.fn());
+    const prepare = vi.fn((state: string) => {
+      const storedState = storage.getItem('oauth_state');
+      expect(storedState).toBe(state);
+      expect(storage.getItem('oauth_verifier')).toBeTruthy();
+      expect(JSON.parse(storage.getItem('oauth_return_route')!)).toEqual({ state, search: '' });
+      return false;
+    });
+    const { session, storage, location } = setup({
+      prepareOAuthRedirect: prepare,
+      armOAuthRedirectUnloadBypass: arm,
+    });
+
+    await session.beginOAuth('g');
+
+    expect(prepare).toHaveBeenCalledWith(storage.getItem('oauth_state'));
+    expect(arm).not.toHaveBeenCalled();
+    expect(location.href).toContain('https://issuer.example/authorize');
+  });
+
+  it('rolls back instead of navigating when durable recovery has no unload-bypass capability', async () => {
+    const storage = memStorage({
+      oauth_verifier: 'previous-verifier',
+      oauth_state: 'previous-state',
+      oauth_return_route: 'previous-route',
+    });
+    const { session, location } = setup({
+      storage,
+      prepareOAuthRedirect: () => true,
+    });
+
+    await expect(session.beginOAuth('g')).rejects.toThrow(
+      'OAuth recovery redirect requires an unload bypass',
+    );
+
+    expect(location.href).toBe('https://ch.example/sql');
+    expect(storage.getItem('oauth_verifier')).toBe('previous-verifier');
+    expect(storage.getItem('oauth_state')).toBe('previous-state');
+    expect(storage.getItem('oauth_return_route')).toBe('previous-route');
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 1 });
+  });
+
+  it('arms the one-shot unload bypass immediately before assigning the OAuth redirect', async () => {
+    const events: string[] = [];
+    let href = 'https://ch.example/sql';
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '',
+      get href() { return href; },
+      set href(value: string) { events.push('href'); href = value; },
+    };
+    const arm = vi.fn(() => {
+      events.push('arm');
+      return () => events.push('disarm');
+    });
+    const { session } = setup({
+      location,
+      prepareOAuthRedirect: () => { events.push('prepare'); return true; },
+      armOAuthRedirectUnloadBypass: arm,
+    });
+
+    await session.beginOAuth('g');
+
+    expect(events).toEqual(['prepare', 'arm', 'href']);
+    expect(arm).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops writing OAuth keys when a reentrant storage setter signs out', async () => {
+    const backing = memStorage();
+    let session!: ReturnType<typeof createConnectionSession>;
+    let signedOut = false;
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        backing.setItem(key, value);
+        if (key === 'oauth_verifier' && !signedOut) {
+          signedOut = true;
+          session.signOut();
+        }
+      },
+      removeItem: backing.removeItem,
+    };
+    const prepare = vi.fn(() => true);
+    const arm = vi.fn(() => vi.fn());
+    const clearOAuthDocumentRecovery = vi.fn();
+    const configured = setup({
+      storage,
+      prepareOAuthRedirect: prepare,
+      armOAuthRedirectUnloadBypass: arm,
+      clearOAuthDocumentRecovery,
+    });
+    session = configured.session;
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('Authentication attempt superseded');
+
+    expect(configured.location.href).toBe('https://ch.example/sql');
+    expect(backing.getItem('oauth_verifier')).toBeNull();
+    expect(backing.getItem('oauth_state')).toBeNull();
+    expect(backing.getItem('oauth_return_route')).toBeNull();
+    expect(backing.getItem('oauth_idp')).toBeNull();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(arm).not.toHaveBeenCalled();
+    expect(clearOAuthDocumentRecovery).toHaveBeenCalledTimes(1);
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+  });
+
+  it('disarms and does not navigate when the arm callback signs out reentrantly', async () => {
+    let session!: ReturnType<typeof createConnectionSession>;
+    const disarm = vi.fn();
+    const configured = setup({
+      prepareOAuthRedirect: () => true,
+      armOAuthRedirectUnloadBypass: () => {
+        session.signOut();
+        return disarm;
+      },
+    });
+    session = configured.session;
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('Authentication attempt superseded');
+
+    expect(configured.location.href).toBe('https://ch.example/sql');
+    expect(disarm).toHaveBeenCalledTimes(1);
+    expect(configured.storage.getItem('oauth_verifier')).toBeNull();
+    expect(configured.storage.getItem('oauth_state')).toBeNull();
+    expect(configured.storage.getItem('oauth_return_route')).toBeNull();
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+  });
+
+  it('rolls back all attempt keys and restores auth-required lifecycle when preparation fails', async () => {
+    const storage = memStorage({ oauth_id_token: validToken });
+    const arm = vi.fn(() => vi.fn());
+    const { session, location } = setup({
+      storage,
+      prepareOAuthRedirect: () => { throw new Error('snapshot write failed'); },
+      armOAuthRedirectUnloadBypass: arm,
+    });
+    session.chCtx.onSignedOut('session expired');
+    storage.setItem('oauth_verifier', 'previous-verifier');
+    storage.setItem('oauth_state', 'previous-state');
+    storage.setItem('oauth_return_route', 'previous-route');
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('snapshot write failed');
+
+    expect(location.href).toBe('https://ch.example/sql');
+    expect(arm).not.toHaveBeenCalled();
+    expect(storage.getItem('oauth_verifier')).toBe('previous-verifier');
+    expect(storage.getItem('oauth_state')).toBe('previous-state');
+    expect(storage.getItem('oauth_return_route')).toBe('previous-route');
+    expect(session.connection.value).toEqual({ kind: 'auth-required', epoch: 2, detail: 'session expired' });
+  });
+
+  it('rolls back a partial OAuth-attempt storage write without navigating or arming', async () => {
+    const backing = memStorage({
+      oauth_idp: 'g', oauth_verifier: 'old-verifier', oauth_state: 'old-state', oauth_return_route: 'old-route',
+    });
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        if (key === 'oauth_state' && value !== 'old-state') throw new Error('storage full');
+        backing.setItem(key, value);
+      },
+      removeItem: backing.removeItem,
+    };
+    const arm = vi.fn(() => vi.fn());
+    const { session, location } = setup({ storage, armOAuthRedirectUnloadBypass: arm });
+
+    await expect(session.beginOAuth()).rejects.toThrow('storage full');
+
+    expect(location.href).toBe('https://ch.example/sql');
+    expect(arm).not.toHaveBeenCalled();
+    expect(backing.getItem('oauth_verifier')).toBe('old-verifier');
+    expect(backing.getItem('oauth_state')).toBe('old-state');
+    expect(backing.getItem('oauth_return_route')).toBe('old-route');
+  });
+
+  it('stops rollback after its first restore mutation reentrantly signs out', async () => {
+    const backing = memStorage({
+      oauth_verifier: 'old-verifier',
+      oauth_state: 'old-state',
+      oauth_return_route: 'old-route',
+    });
+    let session!: ReturnType<typeof createConnectionSession>;
+    let signedOut = false;
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        backing.setItem(key, value);
+        if (key === 'oauth_verifier' && value === 'old-verifier' && !signedOut) {
+          signedOut = true;
+          session.signOut();
+        }
+      },
+      removeItem: backing.removeItem,
+    };
+    const clearOAuthDocumentRecovery = vi.fn();
+    const configured = setup({
+      storage,
+      prepareOAuthRedirect: () => { throw new Error('snapshot failed'); },
+      clearOAuthDocumentRecovery,
+    });
+    session = configured.session;
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('snapshot failed');
+
+    expect(configured.location.href).toBe('https://ch.example/sql');
+    expect(backing.getItem('oauth_verifier')).toBeNull();
+    expect(backing.getItem('oauth_state')).toBeNull();
+    expect(backing.getItem('oauth_return_route')).toBeNull();
+    expect(clearOAuthDocumentRecovery).toHaveBeenCalledTimes(1);
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+  });
+
+  it('stops rollback when a restore mutation itself throws', async () => {
+    const backing = memStorage({
+      oauth_verifier: 'old-verifier',
+      oauth_state: 'old-state',
+      oauth_return_route: 'old-route',
+    });
+    const rollbackValues: Record<string, string> = {
+      oauth_verifier: 'old-verifier',
+      oauth_state: 'old-state',
+      oauth_return_route: 'old-route',
+    };
+    const restoreAttempts: string[] = [];
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        if (value === rollbackValues[key]) {
+          restoreAttempts.push(key);
+          if (key === 'oauth_verifier') throw new Error('restore blocked');
+        }
+        backing.setItem(key, value);
+      },
+      removeItem: backing.removeItem,
+    };
+    const { session } = setup({
+      storage,
+      prepareOAuthRedirect: () => { throw new Error('snapshot failed'); },
+    });
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('snapshot failed');
+
+    expect(restoreAttempts).toEqual(['oauth_verifier']);
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 1 });
+  });
+
+  it('does not continue stale rollback after its first restore starts a newer attempt', async () => {
+    const backing = memStorage({
+      oauth_verifier: 'old-verifier',
+      oauth_state: 'old-state',
+      oauth_return_route: 'old-route',
+    });
+    const oldRollbackWrites: string[] = [];
+    let session!: ReturnType<typeof createConnectionSession>;
+    let newer: Promise<void> | undefined;
+    let startedNewer = false;
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        if (value === 'old-verifier' || value === 'old-state' || value === 'old-route') {
+          oldRollbackWrites.push(`${key}:${value}`);
+        }
+        backing.setItem(key, value);
+        if (key === 'oauth_verifier' && value === 'old-verifier' && !startedNewer) {
+          startedNewer = true;
+          newer = session.beginOAuth('basicidp');
+        }
+      },
+      removeItem: backing.removeItem,
+    };
+    let prepareCalls = 0;
+    const configured = setup({
+      storage,
+      prepareOAuthRedirect: () => {
+        prepareCalls += 1;
+        if (prepareCalls === 1) throw new Error('older snapshot failed');
+        return false;
+      },
+    });
+    session = configured.session;
+
+    const older = session.beginOAuth('g');
+    await expect(older).rejects.toThrow('older snapshot failed');
+    expect(newer).toBeDefined();
+    await expect(newer!).resolves.toBeUndefined();
+
+    expect(oldRollbackWrites).toEqual(['oauth_verifier:old-verifier']);
+    const state = backing.getItem('oauth_state');
+    expect(JSON.parse(backing.getItem('oauth_return_route')!)).toEqual({ state, search: '' });
+    expect(configured.location.href).toContain('https://issuer2.example/authorize');
+    expect(session.connection.value).toEqual({ kind: 'reauthenticating', epoch: 2 });
+  });
+
+  it('preserves the redirect error when storage cannot verify rollback ownership', async () => {
+    const backing = memStorage();
+    let readsFail = false;
+    const storage: SessionStorageLike = {
+      getItem: (key) => {
+        if (readsFail) throw new Error(`cannot read ${key}`);
+        return backing.getItem(key);
+      },
+      setItem: backing.setItem,
+      removeItem: backing.removeItem,
+    };
+    const { session, location } = setup({
+      storage,
+      prepareOAuthRedirect: () => {
+        readsFail = true;
+        throw new Error('snapshot failed');
+      },
+    });
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('snapshot failed');
+    expect(location.href).toBe('https://ch.example/sql');
+  });
+
+  it('disarms and rolls back the OAuth attempt when assigning href fails', async () => {
+    const events: string[] = [];
+    const storage = memStorage({
+      oauth_verifier: 'old-verifier', oauth_state: 'old-state', oauth_return_route: 'old-route',
+    });
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '',
+      get href() { return 'https://ch.example/sql'; },
+      set href(_value: string) { events.push('href'); throw new Error('redirect blocked'); },
+    };
+    const { session } = setup({
+      storage,
+      location,
+      prepareOAuthRedirect: () => true,
+      armOAuthRedirectUnloadBypass: () => {
+        events.push('arm');
+        return () => events.push('disarm');
+      },
+    });
+
+    await expect(session.beginOAuth('g')).rejects.toThrow('redirect blocked');
+
+    expect(events).toEqual(['arm', 'href', 'disarm']);
+    expect(storage.getItem('oauth_verifier')).toBe('old-verifier');
+    expect(storage.getItem('oauth_state')).toBe('old-state');
+    expect(storage.getItem('oauth_return_route')).toBe('old-route');
+  });
+
+  it('replaces every OAuth attempt key on retry', async () => {
+    const { session, storage, location } = setup({
+      storage: memStorage({
+        oauth_verifier: 'stale-verifier', oauth_state: 'stale-state', oauth_return_route: 'stale-route',
+      }),
+      prepareOAuthRedirect: () => false,
+    });
+
+    await session.beginOAuth('g');
+    const first = {
+      verifier: storage.getItem('oauth_verifier'),
+      state: storage.getItem('oauth_state'),
+      route: storage.getItem('oauth_return_route'),
+    };
+    location.search = '?ws=next';
+    await session.beginOAuth('g');
+
+    expect(storage.getItem('oauth_verifier')).not.toBe(first.verifier);
+    expect(storage.getItem('oauth_state')).not.toBe(first.state);
+    expect(storage.getItem('oauth_return_route')).not.toBe(first.route);
+    expect(JSON.parse(storage.getItem('oauth_return_route')!)).toEqual({
+      state: storage.getItem('oauth_state'), search: '?ws=next',
+    });
+  });
+
+  it('does not let an older config-delayed attempt roll back or disarm a newer redirect', async () => {
+    const oldDiscovery = deferred<FakeResponse>();
+    const prepare = vi.fn(() => true);
+    const disarmNewer = vi.fn();
+    const arm = vi.fn(() => disarmNewer);
+    const { session, storage, location, fetchMock } = setup({
+      routes: [(url) => (
+        url.includes('issuer.example/.well-known/openid-configuration')
+          ? oldDiscovery.promise
+          : null
+      )],
+      prepareOAuthRedirect: prepare,
+      armOAuthRedirectUnloadBypass: arm,
+    });
+    const older = session.beginOAuth('g');
+    await vi.waitFor(() => expect(fetchMock.calls.some(
+      (url) => url.includes('issuer.example/.well-known/openid-configuration'),
+    )).toBe(true));
+
+    location.search = '?ws=newer';
+    await session.beginOAuth('basicidp');
+    const newerAttempt = {
+      verifier: storage.getItem('oauth_verifier'),
+      state: storage.getItem('oauth_state'),
+      route: storage.getItem('oauth_return_route'),
+      href: location.href,
+      lifecycle: session.connection.value,
+    };
+
+    oldDiscovery.resolve(jsonResponse(200, {
+      authorization_endpoint: 'https://issuer.example/authorize',
+      token_endpoint: 'https://issuer.example/token',
+    }));
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+
+    expect(storage.getItem('oauth_verifier')).toBe(newerAttempt.verifier);
+    expect(storage.getItem('oauth_state')).toBe(newerAttempt.state);
+    expect(storage.getItem('oauth_return_route')).toBe(newerAttempt.route);
+    expect(location.href).toBe(newerAttempt.href);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(newerAttempt.state);
+    expect(arm).toHaveBeenCalledTimes(1);
+    expect(disarmNewer).not.toHaveBeenCalled();
+    expect(session.connection.value).toBe(newerAttempt.lifecycle);
+    expect(session.connection.value).toEqual({ kind: 'reauthenticating', epoch: 2 });
+  });
+
+  it('does not let a stale attempt mutate storage after the newer attempt rolls itself back', async () => {
+    const oldDiscovery = deferred<FakeResponse>();
+    const backing = memStorage({
+      oauth_verifier: 'original-verifier',
+      oauth_state: 'original-state',
+      oauth_return_route: 'original-route',
+    });
+    const mutations: string[] = [];
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        if (key.startsWith('oauth_') && key !== 'oauth_idp') mutations.push(`set:${key}`);
+        backing.setItem(key, value);
+      },
+      removeItem: (key) => {
+        if (key.startsWith('oauth_') && key !== 'oauth_idp') mutations.push(`remove:${key}`);
+        backing.removeItem(key);
+      },
+    };
+    const arm = vi.fn(() => vi.fn());
+    const { session, fetchMock } = setup({
+      storage,
+      routes: [(url) => (
+        url.includes('issuer.example/.well-known/openid-configuration')
+          ? oldDiscovery.promise
+          : null
+      )],
+      prepareOAuthRedirect: () => { throw new Error('newer snapshot failed'); },
+      armOAuthRedirectUnloadBypass: arm,
+    });
+    const older = session.beginOAuth('g');
+    await vi.waitFor(() => expect(fetchMock.calls.some(
+      (url) => url.includes('issuer.example/.well-known/openid-configuration'),
+    )).toBe(true));
+
+    await expect(session.beginOAuth('basicidp')).rejects.toThrow('newer snapshot failed');
+    const mutationsAfterNewerRollback = mutations.length;
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+
+    oldDiscovery.resolve(jsonResponse(200, {
+      authorization_endpoint: 'https://issuer.example/authorize',
+      token_endpoint: 'https://issuer.example/token',
+    }));
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+
+    expect(mutations).toHaveLength(mutationsAfterNewerRollback);
+    expect(backing.getItem('oauth_verifier')).toBe('original-verifier');
+    expect(backing.getItem('oauth_state')).toBe('original-state');
+    expect(backing.getItem('oauth_return_route')).toBe('original-route');
+    expect(arm).not.toHaveBeenCalled();
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 2 });
+  });
+
+  it('preserves the original auth-required prior when an overlapping retry fails', async () => {
+    const oldDiscovery = deferred<FakeResponse>();
+    const { session, fetchMock } = setup({
+      storage: memStorage({ oauth_id_token: validToken }),
+      routes: [(url) => (
+        url.includes('issuer.example/.well-known/openid-configuration')
+          ? oldDiscovery.promise
+          : null
+      )],
+      prepareOAuthRedirect: () => { throw new Error('newer snapshot failed'); },
+    });
+    session.chCtx.onSignedOut('original authentication detail');
+    expect(session.connection.value).toEqual({
+      kind: 'auth-required', epoch: 1, detail: 'original authentication detail',
+    });
+
+    const older = session.beginOAuth('g');
+    await vi.waitFor(() => expect(fetchMock.calls.some(
+      (url) => url.includes('issuer.example/.well-known/openid-configuration'),
+    )).toBe(true));
+    await expect(session.beginOAuth('basicidp')).rejects.toThrow('newer snapshot failed');
+
+    expect(session.connection.value).toEqual({
+      kind: 'auth-required', epoch: 3, detail: 'original authentication detail',
+    });
+    oldDiscovery.resolve(jsonResponse(200, {
+      authorization_endpoint: 'https://issuer.example/authorize',
+      token_endpoint: 'https://issuer.example/token',
+    }));
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+    expect(session.connection.value).toEqual({
+      kind: 'auth-required', epoch: 3, detail: 'original authentication detail',
+    });
+  });
+
+  it('keeps a reentrant newer attempt authoritative when an older storage write resumes', async () => {
+    const backing = memStorage({
+      oauth_verifier: 'original-verifier',
+      oauth_state: 'original-state',
+      oauth_return_route: 'original-route',
+    });
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=older', href: 'https://ch.example/sql',
+    };
+    let session!: ReturnType<typeof createConnectionSession>;
+    let newer: Promise<void> | undefined;
+    let startedNewer = false;
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: (key, value) => {
+        backing.setItem(key, value);
+        if (key === 'oauth_state' && !startedNewer) {
+          startedNewer = true;
+          location.search = '?ws=newer';
+          newer = session.beginOAuth('basicidp');
+        }
+      },
+      removeItem: backing.removeItem,
+    };
+    const prepare = vi.fn(() => true);
+    const disarmNewer = vi.fn();
+    const arm = vi.fn(() => disarmNewer);
+    ({ session } = setup({
+      storage,
+      location,
+      prepareOAuthRedirect: prepare,
+      armOAuthRedirectUnloadBypass: arm,
+    }));
+
+    const older = session.beginOAuth('g');
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+    expect(newer).toBeDefined();
+    await expect(newer!).resolves.toBeUndefined();
+
+    const state = backing.getItem('oauth_state');
+    expect(JSON.parse(backing.getItem('oauth_return_route')!)).toEqual({
+      state, search: '?ws=newer',
+    });
+    expect(backing.getItem('oauth_verifier')).not.toBe('original-verifier');
+    expect(state).not.toBe('original-state');
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(state);
+    expect(arm).toHaveBeenCalledTimes(1);
+    expect(disarmNewer).not.toHaveBeenCalled();
+    expect(session.connection.value).toEqual({ kind: 'reauthenticating', epoch: 2 });
+  });
+
+  it('disarms a stale bypass when a returning href setter starts a newer attempt', async () => {
+    let href = 'https://ch.example/sql';
+    let session!: ReturnType<typeof createConnectionSession>;
+    let newer: Promise<void> | undefined;
+    let startedNewer = false;
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '',
+      get href() { return href; },
+      set href(value: string) {
+        href = value;
+        if (!startedNewer) {
+          startedNewer = true;
+          newer = session.beginOAuth('basicidp');
+        }
+      },
+    };
+    const disarmOlder = vi.fn();
+    const disarmNewer = vi.fn();
+    const arm = vi.fn()
+      .mockImplementationOnce(() => disarmOlder)
+      .mockImplementationOnce(() => disarmNewer);
+    ({ session } = setup({
+      location,
+      prepareOAuthRedirect: () => true,
+      armOAuthRedirectUnloadBypass: arm,
+    }));
+
+    const older = session.beginOAuth('g');
+    await expect(older).rejects.toThrow('Authentication attempt superseded');
+    expect(disarmOlder).toHaveBeenCalledTimes(1);
+    expect(newer).toBeDefined();
+    await expect(newer!).resolves.toBeUndefined();
+
+    expect(arm).toHaveBeenCalledTimes(2);
+    expect(disarmNewer).not.toHaveBeenCalled();
+    expect(location.href).toContain('https://issuer2.example/authorize');
+    expect(session.connection.value).toEqual({ kind: 'reauthenticating', epoch: 2 });
+  });
+
   it('restores the prior lifecycle when redirect preparation fails', async () => {
     const { session } = setup({
+      storage: memStorage({ oauth_id_token: validToken }),
       routes: [(url) => (url.endsWith('/config.json') ? jsonResponse(500, {}) : null)],
     });
     await expect(session.beginOAuth('g')).rejects.toThrow();
@@ -725,6 +1327,49 @@ describe('signOut', () => {
     expect(session.chCtx.origin).toBe(location.origin);
     expect(session.chCtx.authConfirmed).toBe(false);
     expect(onAuthLost).not.toHaveBeenCalled();
+  });
+
+  it('clears document recovery only for explicit sign-out, not involuntary auth loss', () => {
+    const clearOAuthDocumentRecovery = vi.fn();
+    const { session } = setup({
+      storage: memStorage({ oauth_id_token: validToken }),
+      clearOAuthDocumentRecovery,
+    });
+
+    session.chCtx.onSignedOut('expired');
+    expect(clearOAuthDocumentRecovery).not.toHaveBeenCalled();
+    session.signOut();
+    expect(clearOAuthDocumentRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  it('still clears document recovery and stays signed out when auth storage cleanup throws', () => {
+    const backing = memStorage({ oauth_id_token: validToken });
+    const storage: SessionStorageLike = {
+      getItem: backing.getItem,
+      setItem: backing.setItem,
+      removeItem: (key) => {
+        if (key === 'oauth_id_token') throw new Error('auth storage cleanup failed');
+        backing.removeItem(key);
+      },
+    };
+    const clearOAuthDocumentRecovery = vi.fn();
+    const { session } = setup({ storage, clearOAuthDocumentRecovery });
+
+    expect(() => session.signOut()).toThrow('auth storage cleanup failed');
+
+    expect(clearOAuthDocumentRecovery).toHaveBeenCalledTimes(1);
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 1 });
+  });
+
+  it('surfaces a recovery cleanup failure after credentials clear successfully', () => {
+    const { session } = setup({
+      storage: memStorage({ oauth_id_token: validToken }),
+      clearOAuthDocumentRecovery: () => { throw new Error('recovery cleanup failed'); },
+    });
+
+    expect(() => session.signOut()).toThrow('recovery cleanup failed');
+    expect(session.token()).toBeNull();
+    expect(session.connection.value).toEqual({ kind: 'signed-out', epoch: 1 });
   });
 });
 

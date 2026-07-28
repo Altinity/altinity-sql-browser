@@ -1,0 +1,228 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>OAuth document recovery (#512)</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body data-theme="dark">
+  <div id="root"></div>
+  <!-- createApp/bootstrap are the real source modules. This map mirrors the
+       source-module E2E fixtures and additionally resolves main.ts's shipped
+       Chart/Dagre imports, so the test executes bootstrap itself. -->
+  <script type="importmap">
+    { "imports": {
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+      "marked": "/node_modules/marked/lib/marked.esm.js",
+      "chart.js": "/node_modules/chart.js/dist/chart.js",
+      "chart.js/auto": "/node_modules/chart.js/auto/auto.js",
+      "@kurkle/color": "/node_modules/@kurkle/color/dist/color.esm.js",
+      "chartjs-adapter-date-fns": "/node_modules/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.esm.js",
+      "date-fns": "/node_modules/date-fns/index.js",
+      "@dagrejs/dagre": "/node_modules/@dagrejs/dagre/dist/dagre.esm.js",
+      "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
+      "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
+      "@codemirror/commands": "/node_modules/@codemirror/commands/dist/index.js",
+      "@codemirror/lang-json": "/node_modules/@codemirror/lang-json/dist/index.js",
+      "@codemirror/language": "/node_modules/@codemirror/language/dist/index.js",
+      "@codemirror/lang-sql": "/node_modules/@codemirror/lang-sql/dist/index.js",
+      "@codemirror/lang-xml": "/node_modules/@codemirror/lang-xml/dist/index.js",
+      "@codemirror/autocomplete": "/node_modules/@codemirror/autocomplete/dist/index.js",
+      "@codemirror/search": "/node_modules/@codemirror/search/dist/index.js",
+      "@lezer/common": "/node_modules/@lezer/common/dist/index.js",
+      "@lezer/highlight": "/node_modules/@lezer/highlight/dist/index.js",
+      "@lezer/lr": "/node_modules/@lezer/lr/dist/index.js",
+      "@lezer/json": "/node_modules/@lezer/json/dist/index.js",
+      "@lezer/xml": "/node_modules/@lezer/xml/dist/index.js",
+      "style-mod": "/node_modules/style-mod/src/style-mod.js",
+      "w3c-keyname": "/node_modules/w3c-keyname/index.js",
+      "crelt": "/node_modules/crelt/index.js",
+      "@marijn/find-cluster-break": "/node_modules/@marijn/find-cluster-break/src/index.js"
+    } }
+  </script>
+  <script type="module">
+    // Keep main.ts's browser auto-start out of this fixture: this page calls the
+    // exact exported bootstrap with a real App so it can seed IndexedDB only on
+    // the initial document and observe the callback document's first render.
+    window.__ASB_NO_AUTOSTART__ = true;
+    const fixtureRoot = '/tests/e2e/oauth-document-recovery';
+    const fixtureCh = `${fixtureRoot}/ch`;
+    const versionSql = 'SELECT version() AS v, uptime() AS u FORMAT JSON';
+    const nativeFetch = window.fetch.bind(window);
+    const initialCatalog = { started: false, settled: false };
+    // The production session addresses its ClickHouse origin at the serving
+    // origin. Keep that real client behavior, but send only THIS fixture's
+    // POSTs to its dedicated fake endpoint; no other E2E page is intercepted.
+    const fixtureFetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input, window.location.href);
+      const isClickHousePost = url.origin === window.location.origin
+        && url.pathname === '/' && init?.method === 'POST';
+      const isInitialVersion = isClickHousePost && init.body === versionSql;
+      if (isInitialVersion) initialCatalog.started = true;
+      if (isClickHousePost) url.pathname = fixtureCh;
+      try {
+        return await nativeFetch(isClickHousePost ? url.href : input, init);
+      } finally {
+        if (isInitialVersion) initialCatalog.settled = true;
+      }
+    };
+    // Observe the actual guard registration while preserving browser behavior;
+    // this proves the dirty document was guarded before OAuth arms its one-shot
+    // bypass without attempting an extra navigation/prompt.
+    const nativeAddEventListener = window.addEventListener.bind(window);
+    let initialDirtyGuardInstalled = false;
+    window.addEventListener = (...args) => {
+      if (args[0] === 'beforeunload') initialDirtyGuardInstalled = true;
+      return nativeAddEventListener(...args);
+    };
+    const scenario = new URLSearchParams(window.location.search).get('scenario') || 'normal';
+    const [{ createApp }, { bootstrap }, { newTabObj }, { newResult }, { encodeOAuthDocumentRecovery }] = await Promise.all([
+      import('/src/ui/app.js'), import('/src/main.js'), import('/src/state.js'),
+      import('/src/core/stream.js'), import('/src/core/oauth-document-recovery.js'),
+    ]);
+
+    const startedKey = 'e2e-oauth-document-recovery-started';
+    const initialDocument = !sessionStorage.getItem(startedKey);
+    const token = () => {
+      const encode = (value) => btoa(JSON.stringify(value)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+      return `${encode({ alg: 'none' })}.${encode({ email: 'recovery@example.test', exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+    };
+    if (initialDocument) {
+      sessionStorage.setItem('oauth_id_token', token());
+      sessionStorage.setItem('oauth_idp', 'fixture');
+    }
+
+    const app = createApp({ root: document.querySelector('#root'), fetch: fixtureFetch, broadcastChannel: () => null });
+    const summarize = () => app.state.tabs.value.map((tab) => ({
+      id: tab.id, doc: tab.doc, name: tab.name, sqlDraft: tab.sqlDraft, specText: tab.specText,
+      dirtySql: tab.dirtySql, dirtySpec: tab.dirtySpec, editorMode: tab.editorMode, savedId: tab.savedId,
+      specParsed: tab.specParsed, diagnostics: tab.specDiagnostics, result: tab.result,
+      columns: tab.lastSuccessfulResultColumns, chSession: tab.chSession,
+    }));
+    const renderCurrentSurface = app.renderCurrentSurface;
+    let renderCount = 0;
+    app.renderCurrentSurface = () => {
+      // bootstrap calls this after loadWorkspaceOnBoot and recovery. Capturing at
+      // the method boundary proves the restored authored state existed before
+      // any signed-in renderer could observe its placeholder tab.
+      renderCount += 1;
+      window.__oauthRecoveryFirstRender ??= summarize();
+      renderCurrentSurface();
+    };
+    window.__oauthRecoveryRenderCount = () => renderCount;
+
+    if (initialDocument) {
+      const workspace = {
+        storageVersion: 5, id: 'recovery-workspace', key: 'recovery-workspace', name: 'Recovery workspace',
+        queries: [{ id: 'saved-query', sql: 'SELECT committed', specVersion: 1, spec: { name: 'Saved query', favorite: false } }],
+        dashboards: [{
+          documentVersion: 2, id: 'dash-1', title: 'Dashboard', revision: 1,
+          layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [],
+          variableConfigs: { region: { sql: "SELECT 'committed'" } },
+        }],
+      };
+      const existing = await app.workspace.loadById(workspace.id);
+      if (existing.status === 'ok') await app.workspace.delete(workspace.id);
+      const saved = await app.workspace.create(workspace);
+      if (!saved.ok) throw new Error(saved.diagnostics.map((item) => item.message).join('; '));
+      if (scenario === 'inert') {
+        // A valid authored checkpoint is not callback authority by itself.
+        // With no validated-callback marker, token boot must leave it inert.
+        sessionStorage.setItem('oauth_document_recovery', encodeOAuthDocumentRecovery({
+          version: 1, createdAt: Date.now(), workspaceId: workspace.id, workspaceKey: workspace.key,
+          oauthState: 'unvalidated-state',
+          tabs: [{
+            id: 't1', doc: { kind: 'query' }, name: 'Inert checkpoint',
+            sqlDraft: 'SELECT inert checkpoint must not restore', specText: '{}', specVersion: 1,
+            editorMode: 'sql', dirtySql: true, dirtySpec: false, savedId: null,
+          }],
+          activeTabId: 't1', nextTabId: 2,
+        }));
+      }
+      sessionStorage.setItem(startedKey, '1');
+    }
+
+    await bootstrap(app, {
+      location: window.location, sessionStorage: window.sessionStorage, history: window.history,
+      fetch: fixtureFetch,
+    });
+
+    if (initialDocument && scenario !== 'inert') {
+      // Deliberately authored-only recovery candidates, plus values which must
+      // NOT cross the redirect. The saved tab has invalid raw Spec text; the
+      // dashboard-variable tab proves non-query document bindings survive too.
+      const saved = newTabObj('t1');
+      saved.name = 'Saved query';
+      saved.savedId = 'saved-query';
+      saved.sqlDraft = 'SELECT dirty saved query';
+      saved.specText = '{ invalid JSON';
+      saved.dirtySql = true;
+      saved.dirtySpec = true;
+      saved.editorMode = 'spec';
+      saved.result = newResult('JSON');
+      saved.result.columns = [{ name: 'transient', type: 'String' }];
+      saved.result.rows = [['transient result']];
+      saved.lastSuccessfulResultColumns = [{ name: 'transient', type: 'String' }];
+      saved.chSession = 'transient-ch-session';
+      const variable = newTabObj('t2');
+      variable.doc = { kind: 'dashboard-variable', dashboardId: 'dash-1', variableName: 'region' };
+      variable.name = 'Variable: region';
+      variable.sqlDraft = "SELECT 'dirty variable'";
+      variable.dirtySql = true;
+      app.state.tabs.value = [saved, variable];
+      app.state.activeTabId.value = saved.id;
+      app.state.nextTabId = 3;
+      app.syncBeforeUnload();
+      window.__oauthRecoveryInitialDirtyGuard = initialDirtyGuardInstalled;
+      if (scenario === 'pending') {
+        // The checkpoint remains bound to the real workspace, while the OAuth
+        // callback's return route deliberately cannot resolve it. A later
+        // reload onto the matching route must use the persisted marker.
+        const missingSearch = '?scenario=pending&ws=missing-workspace';
+        window.history.replaceState(null, '', window.location.pathname + missingSearch);
+        app.syncSqlRoute(missingSearch);
+      }
+      window.__oauthRecoveryTrigger401 = async () => {
+        // Go through the real protected workbench command, rather than calling
+        // the HTTP client directly: this is the normal execution-scope owner
+        // that handles a first-contact 401 and retains/reveals inline login.
+        // The authored Spec mode is restored before the OAuth checkpoint is
+        // made, so it remains the recovery candidate.
+        const active = app.activeTab();
+        const editorMode = active.editorMode;
+        active.editorMode = 'sql';
+        app.conn.chCtx.authConfirmed = false;
+        await app.actions.run({ sql: 'SELECT E2E_FORCE_AUTH_LOSS' });
+        active.editorMode = editorMode;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      };
+    }
+    window.__oauthRecoveryState = () => summarize();
+    window.__oauthRecoveryWorkspaceKey = () => app.currentWorkspace?.key ?? null;
+    // The signed-in shell's retained inline login mount is established by the
+    // initial surface effects. Wait for that real mount (not a timing guess)
+    // before exposing the 401 trigger, so the test exercises `show()` on it.
+    if (app.currentWorkspace) {
+      await new Promise((resolve) => {
+        const waitForInlineMount = () => {
+          if (document.querySelector('.auth-host .login-inline')) resolve();
+          else requestAnimationFrame(waitForInlineMount);
+        };
+        waitForInlineMount();
+      });
+    }
+    // bootstrap intentionally starts catalog/version work in the background.
+    // Wait for its exact SQL request to complete AND for authedFetch to record
+    // the successful response before exposing the user-triggered 401; this
+    // prevents a stale success from racing the first-contact auth-loss path.
+    await new Promise((resolve) => {
+      const waitForInitialCatalog = () => {
+        if (initialCatalog.started && initialCatalog.settled && app.conn.chCtx.authConfirmed) resolve();
+        else requestAnimationFrame(waitForInitialCatalog);
+      };
+      waitForInitialCatalog();
+    });
+    window.__oauthRecoveryReady = true;
+  </script>
+</body>
+</html>

@@ -239,7 +239,17 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
   disposers.push(effect(() => {
     state.tabs.value;
     state.activeTabId.value;
-    queryDoc.revalidateSpecDrafts({ refreshUi: false });
+    // Revalidation only rebuilds derived Spec state; authored tabs may already
+    // have been published by OAuth recovery. A validator outage must not abort
+    // this effect before the tab strip/editors mount and make those drafts
+    // reachable. Do not retry here or expose the raw validator error: the
+    // recovery boundary has already retained its checkpoint and reported the
+    // safe user-facing warning.
+    try {
+      queryDoc.revalidateSpecDrafts({ refreshUi: false });
+    } catch {
+      // Keep the last safe derived state and continue rendering authored data.
+    }
     renderTabs(app);
     // #466/#501-review: a new/closed/switched tab changes the `tabs` SIGNAL
     // itself, which this effect reacts to — so this is the one place that

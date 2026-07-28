@@ -10,6 +10,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **OAuth reauthentication now preserves dirty document work across its page
+  redirect** (#512 phase 3). Before navigation, a versioned, expiring
+  `sessionStorage` checkpoint captures authored tab state only and binds it to
+  the OAuth attempt plus the current workspace. A successful callback loads
+  the committed workspace, reconciles linked tabs, restores and revalidates raw
+  Spec drafts before first render, reinstalls the dirty unload guard, and only
+  then consumes the checkpoint. Results, ClickHouse session ids, credentials,
+  and other execution state are never checkpointed. Failed callbacks retain
+  the drafts for a state-rebound retry; malformed, expired, or
+  workspace-mismatched payloads fail closed into the normal boot path. The
+  separate tab-scoped, 15-minute validated-callback marker contains only state
+  and validation time; a checkpoint alone is never retry authority, and expiry
+  is logical eligibility rather than a promise of eager deletion. Unavailable
+  workspaces and prepublication storage/validation failures retain unpublished
+  recovery. Valid pending recovery suppresses legacy shared content and retries
+  after authoritative workspace load without overwriting newer save-relevant
+  dirty RAM; its marker is retired before publication. A new OAuth attempt
+  invalidates older authority. The intentional redirect receives a one-shot
+  unload bypass only after storage succeeds, and explicit Log out clears the
+  checkpoint and marker.
 - **Temporary ClickHouse authentication loss now suspends only authenticated
   execution, not the in-memory document session** (#512 phase 2, absorbing
   #502/#520/#522). A disposable, epoch-fenced execution scope coordinates
@@ -24,8 +44,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Successful Basic reauthentication installs a fresh scope and reloads
   connection metadata in place; its reusable inline form clears the password,
   resets submission state, and hides password visibility after success, ready
-  for a later recovery. Inline OAuth deliberately remains unavailable until the
-  Phase 3 checkpoint; explicit Log out remains destructive.
+  for a later recovery. Inline OAuth uses Phase 3's durable document checkpoint;
+  explicit Log out remains destructive.
   Async error-body classification and config discovery are epoch-fenced; refresh
   authority snapshots its epoch and rechecks it after config discovery before
   token-endpoint I/O, so stale discovery cannot replace a newer auth-header

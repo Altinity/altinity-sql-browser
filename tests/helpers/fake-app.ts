@@ -476,6 +476,11 @@ const appDefaults: App = {
   rewriteWorkspaceRoute: () => {},
   renderCurrentSurface: () => {},
   syncBeforeUnload: () => {},
+  // Recovery itself is covered by its application/session tests. UI fixtures
+  // need the same benign no-checkpoint result as an ordinary app boot.
+  restoreOAuthDocumentRecovery: () => ({ kind: 'absent' }),
+  retryPendingOAuthDocumentRecovery: () => ({ kind: 'absent' }),
+  consumeLegacyShared: () => false,
   reloadDashboardRoute: () => {},
   loadWorkspaceOnBoot: async () => null,
   // Inert placeholders — `base` below overrides both with real, state-backed

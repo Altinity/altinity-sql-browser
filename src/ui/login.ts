@@ -126,6 +126,7 @@ function mountLoginControls(
     : (app.conn.hostHint || '');
   let advOpen = !!hostHint;
   let ssoBtns: HTMLButtonElement[] = [];
+  const ssoBtnLabels = new WeakMap<HTMLButtonElement, string>();
 
   // A username is enough to connect — the password is optional, since passwordless
   // users are common on demo/playground clusters (e.g. ClickHouse `play`). An empty
@@ -198,7 +199,6 @@ function mountLoginControls(
 
   // --- saved-connection picker (populated async; shown only when config lists hosts) ---
   let pickHosts: HostDescriptor[] = [];
-  let inlineOAuthConfigured = false;
   const hostPicker = h('select', { class: 'login-picker mono', onchange: onPickHost });
   // Shown only for an `insecure` (accept-invalid-certificate) connection — the
   // browser can't be reached until its cert is trusted (see showCertWarn).
@@ -277,23 +277,11 @@ function mountLoginControls(
     // targets that host's origin); don't also offer it as a serving-host SSO button —
     // that would query the serving origin (e.g. localhost), not the chosen cluster.
     const standalone = (idps || []).filter((i) => !pickHosts.some((hh) => hh.auth === 'oauth' && hh.idp === i.id));
-    // Phase 2 keeps the document shell mounted during recovery, but does not
-    // yet have the redirect-resume checkpoint needed to make an OAuth round
-    // trip safe. Full-screen login retains the normal OAuth controls.
-    if (mode === 'inline') {
-      if (standalone.length || inlineOAuthConfigured) {
-        ssoSection.replaceChildren(h('div', {
-          class: 'login-inline-oauth-unavailable',
-          role: 'status',
-          'aria-live': 'polite',
-        }, 'Single sign-on is temporarily unavailable while this session is paused. Your work remains open.'));
-      }
-      return;
-    }
     if (!standalone.length) return;
     const mk = (idpId: string, label: string): HTMLButtonElement => {
       const b = h('button', { class: 'login-btn btn-primary', onclick: () => doSso(idpId, b, label) },
         Icon.shield(), h('span', null, label));
+      ssoBtnLabels.set(b, label);
       ssoBtns.push(b);
       return b;
     };
@@ -309,10 +297,9 @@ function mountLoginControls(
   // Fill the picker from config.json's `hosts` (npm run local supplies them from
   // ~/.clickhouse-client/config.xml). Hidden when none are configured.
   function populateHosts(hosts: HostDescriptor[] | undefined): void {
-    // OAuth saved connections also redirect away from the mounted document.
-    // Only credential targets are safe to offer in Phase 2 inline recovery.
-    inlineOAuthConfigured = mode === 'inline' && (hosts || []).some((hh) => hh.auth === 'oauth');
-    pickHosts = (hosts || []).filter((hh) => mode === 'full' || hh.auth === 'basic');
+    // OAuth recovery now creates a durable checkpoint before navigation, so
+    // in-shell authentication has the same saved-host choices as full login.
+    pickHosts = hosts || [];
     if (!pickHosts.length) return;
     hostPicker.replaceChildren(
       h('option', { value: '' }, 'Choose a connection…'),
@@ -440,6 +427,12 @@ function mountLoginControls(
     busy = null;
     connectBtn.replaceChildren(h('span', null, 'Connect'), Icon.arrow());
     hostPicker.disabled = false;
+    for (const button of ssoBtns) {
+      const label = ssoBtnLabels.get(button);
+      if (label) button.replaceChildren(Icon.shield(), h('span', null, label));
+    }
+    const certGo = certWarn.querySelector<HTMLButtonElement>('.login-cert-go');
+    if (certGo) certGo.disabled = false;
     update();
   }
 
