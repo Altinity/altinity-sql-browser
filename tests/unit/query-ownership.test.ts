@@ -109,6 +109,14 @@ describe('libraryQueries', () => {
     );
     expect(libraryQueries(ws)).toEqual([]);
   });
+
+  it('excludes a query owned only by a non-compatibility Dashboard', () => {
+    const ws = workspace(
+      [query('a'), query('owned-elsewhere'), query('b')],
+      [dashboard('compatibility', []), dashboard('other', ['owned-elsewhere'])],
+    );
+    expect(libraryQueries(ws).map((entry) => entry.id)).toEqual(['a', 'b']);
+  });
 });
 
 describe('ownersOfQuery', () => {

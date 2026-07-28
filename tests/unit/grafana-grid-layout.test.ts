@@ -563,10 +563,9 @@ describe('regenerateGridFallback', () => {
   });
 
   // #291 review F9: the id-extraction/filtering used to be built by every
-  // call site (dashboard-commands.ts, tile-membership.ts,
-  // saved-query-mutation.ts) before calling this function — now it accepts
-  // the RAW `dashboard.tiles[]`-shaped array directly and does its own
-  // filtering, tolerating a malformed entry.
+  // call site (dashboard-commands.ts and tile-membership.ts) before calling
+  // this function — now it accepts the RAW `dashboard.tiles[]`-shaped array
+  // directly and does its own filtering, tolerating a malformed entry.
   it('accepts a raw dashboard.tiles[]-shaped array directly, dropping a malformed entry', () => {
     const layout = gridLayout({ a: { span: 4 } });
     regenerateGridFallback(layout, [

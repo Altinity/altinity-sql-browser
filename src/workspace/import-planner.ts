@@ -7,11 +7,11 @@
 // A PortableBundle import always resolves to one COMPLETE candidate
 // StoredWorkspaceV5 built from the repository-level primitives in
 // workspace-operations.ts, then validated in one pass through
-// validateStoredWorkspaceDocument — exactly the same "build the whole
-// candidate, validate once, never commit an invalid one" discipline
-// saved-query-mutation.ts uses for in-place mutations. Nothing here mutates
-// application state; the caller commits the returned candidate atomically
-// through the Phase-2 repository, or does not commit at all.
+// validateStoredWorkspaceDocument — the same "build the whole candidate,
+// validate once, never commit an invalid one" discipline every strict
+// workspace write uses. Nothing here mutates application state; the caller
+// commits the returned candidate atomically through the Phase-2 repository,
+// or does not commit at all.
 //
 // Query-identity conflicts are resolved BY ID, never by content-based dedup
 // (#280): an incoming query conflicts with an existing one only when their
@@ -195,8 +195,7 @@ export interface RewriteDashboardReferencesResult {
 }
 
 /**
- * Bulk generalization of `saved-query-mutation.ts`'s `remapQuery`: rewrite
- * every `tile.queryId` and `filter.sourceQueryId` through `mapping`. A
+ * Rewrite every `tile.queryId` and `filter.sourceQueryId` through `mapping`. A
  * reference that maps to `null` (skipped) or has no mapping entry at all
  * sets `invalidated: true` and collects the source id in
  * `missingRequiredIds` — the reference is left as-is (never silently

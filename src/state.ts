@@ -1361,8 +1361,8 @@ export async function deleteSaved(
   id: string, mutate: MutateWorkspace,
 ): Promise<CommitOnlyResult> {
   // Delete by ID from the LATEST workspace (#343): the whole-workspace
-  // validation/repair policy runs against every `latest` Dashboard (not a stale
-  // Workbench Dashboard snapshot) via the commit inside `mutateWorkspace`.
+  // fail-closed validation policy runs against every `latest` Dashboard (not a
+  // stale Workbench Dashboard snapshot) via the commit inside `mutateWorkspace`.
   const outcome = await mutate((latest) => {
     const base = baselineWorkspace(state, latest);
     return { candidate: candidateFrom(base, base.queries.filter((q) => q.id !== id)) };

@@ -358,6 +358,53 @@ describe('saved queries', () => {
     // #343: the linked save refreshed the in-sync baseline token to the new commit.
     expect(tab.lastCommittedQueryToken).toBe(queryToken(s.savedQueries[0]));
   });
+  it('rejects an edit that invalidates a Panel on a non-current Dashboard and changes no state', async () => {
+    const s = savedTestState();
+    const owned = savedQuery({
+      id: 'owned', sql: 'SELECT 1', name: 'Panel query', dashboard: { role: 'panel' },
+    });
+    const current: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'current', title: 'Current', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      tiles: [],
+    };
+    const other: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'other', title: 'Other', revision: 2,
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      tiles: [{ id: 't1', queryId: 'owned' }],
+    };
+    s.savedQueries = [owned];
+    s.dashboard = current;
+    const tab = s.tabs.value[0];
+    tab.savedId = 'owned';
+    tab.sqlDraft = owned.sql;
+    setTabSpecDraft(tab, owned.spec, { dirty: true });
+    const latest: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'workspace', name: s.libraryName.value,
+      queries: s.savedQueries, dashboards: [current, other],
+    };
+    const workspaceBefore = JSON.stringify(latest);
+    const stateBefore = JSON.stringify({ queries: s.savedQueries, dashboard: s.dashboard });
+    const tabBefore = JSON.stringify(tab);
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
+    const setupRole = { ...owned.spec, dashboard: { role: 'setup' as const } };
+
+    const result = await commitSavedQuery(s, tab, setupRole, mutate);
+
+    expect(result).toMatchObject({
+      ok: false,
+      entry: null,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dashboard-setup-reference' }),
+      ]),
+    });
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
+    const rejectedCandidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(rejectedCandidate.dashboards).toEqual([current, other]);
+    expect(JSON.stringify(latest)).toBe(workspaceBefore);
+    expect(JSON.stringify({ queries: s.savedQueries, dashboard: s.dashboard })).toBe(stateBefore);
+    expect(JSON.stringify(tab)).toBe(tabBefore);
+  });
   it('materializes timeRanges on create and only on SQL-dirty linked saves while the property is absent', async () => {
     const s = savedTestState();
     const mutate = fakeMutateWorkspace(s);
@@ -611,9 +658,8 @@ describe('saved queries', () => {
   // #299: the Workbench star also drives Dashboard tile membership, atomically
   // with the favorite flip — only panel-role queries become tiles (mirrors
   // legacy-migration.ts's buildLegacyMigrationCandidate), star OFF removes
-  // every matching tile and scrubs those tile ids from filter targets (mirrors
-  // saved-query-mutation.ts's removeAffectedTiles), and a null `state.dashboard`
-  // means favorite-flip-only (no Dashboard to touch).
+  // every matching tile and scrubs those tile ids from filter targets, and a
+  // null `state.dashboard` means favorite-flip-only (no Dashboard to touch).
   // #427 SEVERED the favourite<->membership coupling #299 introduced. A star is a
   // Library/workbench preference now; Dashboard membership is an explicit
   // reference to a query the member OWNS. These tests pin the inverse contract:
@@ -696,7 +742,7 @@ describe('saved queries', () => {
     });
 
 
-    it('preserves every Dashboard through a rename and through a delete', async () => {
+    it('preserves every Dashboard through a rename', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
       const committed: StoredWorkspaceV5 = {
@@ -1017,16 +1063,76 @@ describe('saved queries', () => {
     await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryView(s.savedQueries[0])).toBe('json');
   });
-  it('deleteSaved removes + clears tab pointers', async () => {
+  it('deleteSaved removes an ordinary zero-owner Library query and reconciles its linked tab', async () => {
     const s = savedTestState();
-    s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
+    const queries = [
+      savedQuery({ id: 's1', sql: 'x', name: 'Library query' }),
+      savedQuery({ id: 'owned', sql: 'SELECT 1', name: 'Panel query', dashboard: { role: 'panel' } }),
+    ];
+    const current: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'current', title: 'Current', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      tiles: [],
+    };
+    const other: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'other', title: 'Other', revision: 2,
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      tiles: [{ id: 't1', queryId: 'owned' }],
+    };
+    s.savedQueries = queries;
+    s.dashboard = current;
     s.tabs.value[0].savedId = 's1';
-    const mutate = fakeMutateWorkspace(s);
+    const latest: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'workspace', name: s.libraryName.value,
+      queries, dashboards: [current, other],
+    };
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
     const result = await deleteSaved(s, 's1', mutate);
     expect(result).toEqual({ ok: true });
-    expect(s.savedQueries).toHaveLength(0);
+    expect(s.savedQueries.map((query) => query.id)).toEqual(['owned']);
+    const candidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(candidate.dashboards).toEqual([current, other]);
+    expect(s.dashboard).toEqual(current);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(s.tabs.value[0].editorMode).toBe('sql');
+  });
+
+  it('deleteSaved rejects a query owned only on a non-current Dashboard and changes no state', async () => {
+    const s = savedTestState();
+    const queries = [
+      savedQuery({ id: 'lib', sql: 'SELECT 0', name: 'Library query' }),
+      savedQuery({ id: 'owned', sql: 'SELECT 1', name: 'Panel query', dashboard: { role: 'panel' } }),
+    ];
+    const current: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'current', title: 'Current', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      tiles: [],
+    };
+    const other: DashboardDocumentV2 = {
+      documentVersion: 2, id: 'other', title: 'Other', revision: 2,
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      tiles: [{ id: 't1', queryId: 'owned' }],
+    };
+    s.savedQueries = queries;
+    s.dashboard = current;
+    const latest: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'workspace', name: s.libraryName.value,
+      queries, dashboards: [current, other],
+    };
+    const workspaceBefore = JSON.stringify(latest);
+    const stateBefore = JSON.stringify({ queries: s.savedQueries, dashboard: s.dashboard });
+    const mutate = fakeMutateWorkspace(s, { loadById: async () => latest });
+    const result = await deleteSaved(s, 'owned', mutate);
+    expect(result).toMatchObject({
+      ok: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dashboard-tile-query-missing' }),
+      ]),
+    });
+    const rejectedCandidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(rejectedCandidate.dashboards).toEqual([current, other]);
+    expect(JSON.stringify(latest)).toBe(workspaceBefore);
+    expect(JSON.stringify({ queries: s.savedQueries, dashboard: s.dashboard })).toBe(stateBefore);
   });
 
   it('deleteSaved maps the defensive aborted mutation arm to empty diagnostics', async () => {

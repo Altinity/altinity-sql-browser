@@ -170,8 +170,8 @@ function structuralDiagnostics(
 
 /** Complete deterministic validation of one V5 stored-workspace aggregate —
  *  the same pipeline `WorkspaceRepository.commit` runs before any write, and
- *  the pipeline every candidate builder (import planner, saved-query mutation
- *  planner) validates its candidate through. */
+ *  the pipeline every candidate builder (imports, saved-query writes,
+ *  Dashboard commands) validates its candidate through. */
 export function validateStoredWorkspaceDocument(
   document: unknown, { validationService = jsonSchemaValidationService }: WorkspaceCodecOptions = {},
 ): WorkspaceDiagnostic[] {
