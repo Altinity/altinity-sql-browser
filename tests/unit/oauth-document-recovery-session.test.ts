@@ -12,6 +12,7 @@ import {
 } from '../../src/core/oauth-document-recovery.js';
 import {
   createOAuthDocumentRecoverySession,
+  oauthDocumentSessionFingerprint,
   type OAuthDocumentRecoverySessionDeps,
   type OAuthDocumentRecoveryState,
   type OAuthDocumentRecoveryStorage,
@@ -72,6 +73,7 @@ function saveMarker(
   store: OAuthDocumentRecoveryStorage,
   oauthState = 'state-1',
   validatedAt = NOW,
+  liveState = state(),
 ): void {
   store.setItem(
     OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY,
@@ -79,6 +81,7 @@ function saveMarker(
       version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
       oauthState,
       validatedAt,
+      documentSessionFingerprint: oauthDocumentSessionFingerprint(liveState),
     }),
   );
 }
@@ -207,6 +210,25 @@ describe('OAuthDocumentRecoverySession.prepare', () => {
     expect(() => session.prepare('new')).toThrow('storage full');
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(old);
   });
+
+  it('rolls checkpoint, marker, and in-memory authority back as one preparation transaction', () => {
+    const store = storage();
+    saveSnapshot(store);
+    saveMarker(store);
+    const checkpoint = store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY);
+    const marker = store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY);
+    const session = createOAuthDocumentRecoverySession(deps({ storage: store }));
+
+    const prepared = session.prepareTransaction('new-state');
+    expect(prepared.hasRecoverySnapshot).toBe(true);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBe(checkpoint);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+
+    prepared.rollback();
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBe(marker);
+    expect(session.retryPending(workspace())).toEqual({ kind: 'restored' });
+  });
 });
 
 describe('OAuthDocumentRecoverySession.restore', () => {
@@ -215,23 +237,26 @@ describe('OAuthDocumentRecoverySession.restore', () => {
     expect(session.restore('state-1', workspace())).toEqual({ kind: 'absent' });
     const before = s.tabs.value;
     saveSnapshot(store);
+    saveMarker(store);
+    const marker = store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY);
     expect(session.restore('old-state', workspace())).toEqual({ kind: 'callback-mismatch' });
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBeNull();
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBe(marker);
     expect(s.tabs.value).toBe(before);
   });
 
-  it('clears invalid or workspace-mismatched payloads without publishing any state', () => {
+  it('clears invalid payloads but retains workspace-mismatched recovery without publishing', () => {
     const s = state(); const initialTabs = s.tabs.value; const store = storage({ [OAUTH_DOCUMENT_RECOVERY_KEY]: '{bad' });
     const session = createOAuthDocumentRecoverySession(deps({ state: s, storage: store }));
     expect(session.restore('state-1', null)).toEqual({ kind: 'invalid-cleared', reason: 'malformed' });
     expect(s.tabs.value).toBe(initialTabs);
     saveSnapshot(store);
-    expect(session.restore('state-1', { ...workspace(), id: 'other' })).toEqual({ kind: 'workspace-mismatch-cleared' });
-    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(session.restore('state-1', { ...workspace(), id: 'other' })).toEqual({ kind: 'workspace-mismatch-retained' });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBeNull();
     expect(s.tabs.value).toBe(initialTabs);
     saveSnapshot(store);
-    expect(session.restore('state-1', { ...workspace(), key: 'other' })).toEqual({ kind: 'workspace-mismatch-cleared' });
-    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
+    expect(session.restore('state-1', { ...workspace(), key: 'other' })).toEqual({ kind: 'workspace-mismatch-retained' });
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBeNull();
   });
 
   it('retains a valid checkpoint and callback authority while unavailable, then retries in-session', () => {
@@ -249,6 +274,7 @@ describe('OAuthDocumentRecoverySession.restore', () => {
       version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
       oauthState: 'state-1',
       validatedAt: NOW,
+      documentSessionFingerprint: oauthDocumentSessionFingerprint(s),
     });
     expect(s.tabs.value).toBe(before);
 
@@ -422,6 +448,7 @@ describe('OAuthDocumentRecoverySession.restore', () => {
         version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
         oauthState: 'state-1',
         validatedAt: NOW - OAUTH_DOCUMENT_RECOVERY_TTL_MS - 1,
+        documentSessionFingerprint: oauthDocumentSessionFingerprint(state()),
       }),
     ]) {
       const store = storage({
@@ -450,7 +477,7 @@ describe('OAuthDocumentRecoverySession.restore', () => {
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBeNull();
   });
 
-  it('clears a state-mismatched marker only, and clears both records on proven workspace mismatch', () => {
+  it('clears a state-mismatched marker only, and retains both records on workspace mismatch', () => {
     const stateMismatch = storage(); saveSnapshot(stateMismatch); saveMarker(stateMismatch, 'other');
     const staleMarker = createOAuthDocumentRecoverySession(deps({ storage: stateMismatch }));
     expect(staleMarker.retryPending(workspace())).toEqual({ kind: 'callback-mismatch' });
@@ -460,9 +487,10 @@ describe('OAuthDocumentRecoverySession.restore', () => {
     const workspaceMismatch = storage(); saveSnapshot(workspaceMismatch); saveMarker(workspaceMismatch);
     const wrongWorkspace = createOAuthDocumentRecoverySession(deps({ storage: workspaceMismatch }));
     expect(wrongWorkspace.retryPending({ ...workspace(), id: 'other' }))
-      .toEqual({ kind: 'workspace-mismatch-cleared' });
-    expect(workspaceMismatch.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBeNull();
-    expect(workspaceMismatch.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+      .toEqual({ kind: 'workspace-mismatch-retained' });
+    expect(workspaceMismatch.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).not.toBeNull();
+    expect(workspaceMismatch.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
+    expect(wrongWorkspace.retryPending(workspace())).toEqual({ kind: 'restored' });
   });
 
   it('clears unsupported and expired payloads before any state publication', () => {
@@ -577,9 +605,15 @@ describe('OAuthDocumentRecoverySession.restore', () => {
 
     live.dirtySql = false;
     live.dirtySpec = false;
-    expect(session.retryPending(workspace([saved('q1', 'SELECT latest')]))).toEqual({ kind: 'restored' });
-    expect(s.tabs.value).not.toBe(beforeTabs);
-    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBeNull();
+    expect(session.retryPending(workspace([saved('q1', 'SELECT latest')]))).toEqual({
+      kind: 'document-session-changed-retained',
+    });
+    expect(s.tabs.value).toBe(beforeTabs);
+    expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).toBe(marker);
+    expect(session.retryPending(
+      workspace([saved('q1', 'SELECT latest')]),
+      { allowChangedDocumentSession: true },
+    )).toEqual({ kind: 'restored' });
   });
 
   it('retains fresh callback authority when checkpoint storage access fails, then retries', () => {

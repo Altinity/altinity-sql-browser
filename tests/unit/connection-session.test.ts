@@ -855,7 +855,9 @@ describe('beginOAuth', () => {
     const events: string[] = [];
     const storage = memStorage({
       oauth_verifier: 'old-verifier', oauth_state: 'old-state', oauth_return_route: 'old-route',
+      oauth_idp: 'basicidp', oauth_origin: 'https://old-cluster.example',
     });
+    const rollback = vi.fn();
     const location = {
       origin: 'https://ch.example', pathname: '/sql', search: '',
       get href() { return 'https://ch.example/sql'; },
@@ -864,7 +866,7 @@ describe('beginOAuth', () => {
     const { session } = setup({
       storage,
       location,
-      prepareOAuthRedirect: () => true,
+      prepareOAuthRedirect: () => ({ hasRecoverySnapshot: true, rollback }),
       armOAuthRedirectUnloadBypass: () => {
         events.push('arm');
         return () => events.push('disarm');
@@ -877,6 +879,10 @@ describe('beginOAuth', () => {
     expect(storage.getItem('oauth_verifier')).toBe('old-verifier');
     expect(storage.getItem('oauth_state')).toBe('old-state');
     expect(storage.getItem('oauth_return_route')).toBe('old-route');
+    expect(storage.getItem('oauth_idp')).toBe('basicidp');
+    expect(storage.getItem('oauth_origin')).toBe('https://old-cluster.example');
+    expect(session.idpId()).toBe('basicidp');
+    expect(rollback).toHaveBeenCalledOnce();
   });
 
   it('replaces every OAuth attempt key on retry', async () => {

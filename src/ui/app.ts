@@ -508,6 +508,26 @@ export function createApp(env: CreateAppEnv = {}): App {
       // owns callback precedence, so callers discard the legacy share handoff.
       return deferOAuthDocumentRecovery();
     }
+    if (pending.kind === 'document-session-changed-retained') {
+      flashToast(
+        'Recovered drafts were kept because this document session changed.',
+        {
+          document: doc,
+          action: {
+            label: 'Restore drafts',
+            onClick: () => {
+              const forced = oauthDocumentRecovery.retryPending(
+                app.currentWorkspace,
+                { allowChangedDocumentSession: true },
+              );
+              finalizeOAuthDocumentRecovery(forced);
+              app.renderCurrentSurface();
+            },
+          },
+        },
+      );
+      return pending;
+    }
     deferredRecoveryWarningShown = false;
     return finalizeOAuthDocumentRecovery(pending);
   };
@@ -668,7 +688,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       closing?.close(lease);
       revealAuthenticationRequired(detail);
     },
-    prepareOAuthRedirect: (state) => oauthDocumentRecovery.prepare(state),
+    prepareOAuthRedirect: (state) => oauthDocumentRecovery.prepareTransaction(state),
     clearOAuthDocumentRecovery: () => oauthDocumentRecovery.clear(),
     armOAuthRedirectUnloadBypass: () => armOAuthRedirectUnloadBypass(),
   });

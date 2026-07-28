@@ -19,17 +19,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   then consumes the checkpoint. Results, ClickHouse session ids, credentials,
   and other execution state are never checkpointed. Failed callbacks retain
   the drafts for a state-rebound retry; malformed, expired, or
-  workspace-mismatched payloads fail closed into the normal boot path. The
-  separate tab-scoped, 15-minute validated-callback marker contains only state
-  and validation time; a checkpoint alone is never retry authority, and expiry
+  workspace-mismatched payloads fail closed without deletion until their
+  matching workspace returns. The separate tab-scoped, 15-minute
+  validated-callback marker binds state and validation time to a canonical
+  live-document fingerprint; a checkpoint alone is never retry authority, and expiry
   is logical eligibility rather than a promise of eager deletion. Unavailable
   workspaces and prepublication storage/validation failures retain unpublished
   recovery. Valid pending recovery suppresses legacy shared content and retries
-  after authoritative workspace load without overwriting newer save-relevant
-  dirty RAM; its marker is retired before publication. A new OAuth attempt
-  invalidates older authority. The intentional redirect receives a one-shot
-  unload bypass only after storage succeeds, and explicit Log out clears the
-  checkpoint and marker.
+  after authoritative workspace load without overwriting a newer document
+  session—even after that work is saved clean. Changed sessions require an
+  explicit Restore drafts action; the marker is retired before publication.
+  Callback mismatch does not revoke unrelated pending authority. A new OAuth
+  attempt invalidates older authority. Redirect preparation is transactional
+  across checkpoint, marker, IdP, origin, verifier, state, and return route; the
+  intentional redirect receives a one-shot unload bypass only after storage
+  succeeds, and explicit Log out clears the checkpoint and marker.
 - **Temporary ClickHouse authentication loss now suspends only authenticated
   execution, not the in-memory document session** (#512 phase 2, absorbing
   #502/#520/#522). A disposable, epoch-fenced execution scope coordinates

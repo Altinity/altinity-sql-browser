@@ -229,6 +229,7 @@ describe('bootstrap', () => {
         version: OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_VERSION,
         oauthState: 'pending-state',
         validatedAt: Date.now(),
+        documentSessionFingerprint: 'pending-live-session',
       }),
     );
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({
@@ -460,7 +461,7 @@ describe('bootstrap', () => {
   it.each([
     { kind: 'absent' } as const,
     { kind: 'invalid-cleared', reason: 'expired' } as const,
-    { kind: 'workspace-mismatch-cleared' } as const,
+    { kind: 'workspace-mismatch-retained' } as const,
     { kind: 'callback-mismatch' } as const,
   ])('falls back to the legacy shared seed when recovery is $kind', async (result) => {
     const restore = vi.fn(() => result);
