@@ -200,12 +200,20 @@ export function openMenu(opts: MenuOptions): MenuHandle {
   trigger.setAttribute('aria-expanded', 'true');
   doc.body.appendChild(overlay);
   doc.body.appendChild(menu);
+  const viewportH = doc.defaultView?.innerHeight;
+  menu.style.position = 'fixed';
+  if (viewportH != null) {
+    // A menu taller than the viewport remains keyboard/pointer reachable rather
+    // than overflowing both above and below after placement is clamped.
+    menu.style.maxHeight = Math.max(0, viewportH - 16) + 'px';
+    menu.style.overflowY = 'auto';
+  }
   const r = trigger.getBoundingClientRect();
+  const panelH = menu.getBoundingClientRect().height;
   // fixedAnchor's return type is a `{top,left}` / `{top,right}` union (the
   // right-align branch only fires when a `viewportW` option is passed) — this
   // call site never passes one, so it's always the `{top,left}` shape.
-  const a = fixedAnchor(r) as { top: number; left: number };
-  menu.style.position = 'fixed';
+  const a = fixedAnchor(r, { viewportH, panelH }) as { top: number; left: number };
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';
   doc.addEventListener('keydown', onKey, true);

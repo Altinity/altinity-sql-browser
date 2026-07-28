@@ -95,6 +95,24 @@ describe('fixedAnchor', () => {
     expect(a.left).toBe(100);
     expect(a.right).toBeUndefined();
   });
+  it('keeps the panel below when it fits inside the lower viewport', () => {
+    expect(fixedAnchor(
+      { top: 20, bottom: 40, left: 10 },
+      { viewportH: 300, panelH: 100 },
+    ).top).toBe(46);
+  });
+  it('flips the panel above an anchor near the viewport bottom', () => {
+    expect(fixedAnchor(
+      { top: 250, bottom: 270, left: 10 },
+      { viewportH: 300, panelH: 100 },
+    ).top).toBe(144);
+  });
+  it('clamps inside the viewport when the panel fits neither above nor below', () => {
+    expect(fixedAnchor(
+      { top: 40, bottom: 60, left: 10 },
+      { viewportH: 120, panelH: 100 },
+    ).top).toBe(12);
+  });
 });
 
 describe('s (SVG namespace)', () => {

@@ -656,6 +656,33 @@ test.describe('Library → Dashboard assignment (#428)', () => {
     await expect(newPanel).toBeFocused();
   });
 
+  test('the chooser flips above a Library row at the viewport bottom', async ({ page }) => {
+    await open(page);
+    const row = libraryRow(page);
+    await row.evaluate((element) => {
+      Object.assign(element.style, {
+        position: 'fixed', right: '4px', bottom: '4px', width: '300px', zIndex: '100',
+      });
+    });
+    const add = row.getByRole('button', { name: 'Add to dashboard…' });
+    await row.hover();
+    const triggerBox = await add.boundingBox();
+    await add.click();
+
+    const choose = page.getByRole('menu', { name: 'Choose a dashboard for Countries' });
+    const chooseBox = await choose.boundingBox();
+    expect(chooseBox.y + chooseBox.height).toBeLessThanOrEqual(triggerBox.y);
+    expect(chooseBox.y).toBeGreaterThanOrEqual(8);
+
+    await choose.getByRole('menuitem').first().click();
+    const confirm = page.getByRole('menu', { name: 'Confirm adding Countries to Sales revenue' });
+    const confirmBox = await confirm.boundingBox();
+    expect(confirmBox.y + confirmBox.height).toBeLessThanOrEqual(triggerBox.y);
+    expect(confirmBox.y).toBeGreaterThanOrEqual(8);
+    await expect(confirm.getByRole('menuitem', { name: 'Add' })).toBeVisible();
+    await expect(confirm.getByRole('menuitem', { name: 'Cancel' })).toBeVisible();
+  });
+
   test('one drag publishes both the subquery text and the Dashboard identity', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
