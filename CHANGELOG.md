@@ -10,6 +10,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **A Dashboard row can create a blank Panel directly from the Dashboards
+  tree** (#515). Its new plus action opens the shared name/description dialog,
+  then atomically commits one empty panel-role query and one canonically laid
+  out tile—without selecting or copying a Library query. The action is
+  keyboard-accessible, unavailable for ambiguous or 100-panel Dashboards, and
+  a successful Add reveals the new Panel and opens its clean linked tab with
+  focus in the SQL editor.
 - **Every Library query now has a keyboard-accessible “Add to dashboard…”
   action** (#483). Its Dashboard → panel chooser uses the same assignment
   command as drag/drop, creates the same independent owned query and tile, and

@@ -10,7 +10,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   closeOpenDialogShell, openDialogShell, openMetadataDialog, openNameDialog,
 } from '../../src/ui/dialog-shell.js';
-import type { DialogHandle } from '../../src/ui/dialog-shell.js';
+import type {
+  DialogHandle, MetadataDialogConfirmResult,
+} from '../../src/ui/dialog-shell.js';
 import { h } from '../../src/ui/dom.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -222,7 +224,9 @@ describe('openMetadataDialog', () => {
   const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
   const open = (
-    onConfirm: (values: { name: string; description: string }) => Promise<string | null>,
+    onConfirm: (
+      values: { name: string; description: string },
+    ) => Promise<MetadataDialogConfirmResult>,
     over: Partial<Parameters<typeof openMetadataDialog>[1]> = {},
   ) => track(openMetadataDialog(makeApp(), {
     title: 'Edit panel', nameLabel: 'Name', descriptionLabel: 'Description',
@@ -254,6 +258,24 @@ describe('openMetadataDialog', () => {
     expect(backdropOf()).toBeNull();
   });
 
+  it('runs success settlement only after close teardown and return-focus', async () => {
+    const trigger = h('button', {}, 'Plus') as HTMLButtonElement;
+    document.body.appendChild(trigger);
+    const order: string[] = [];
+    trigger.addEventListener('focus', () => order.push('focus'));
+    open(async () => null, {
+      returnFocusTo: trigger,
+      onClose: () => order.push('close'),
+      onSuccessAfterClose: () => {
+        order.push('success');
+        expect(backdropOf()).toBeNull();
+      },
+    });
+    save().click();
+    await settle();
+    expect(order).toEqual(['focus', 'close', 'success']);
+  });
+
   it('Enter in the name field commits; Enter in the description does not', async () => {
     const onConfirm = vi.fn(async () => null);
     open(onConfirm);
@@ -277,7 +299,8 @@ describe('openMetadataDialog', () => {
   });
 
   it('keeps the card, the typed values and the controls when the commit reports a failure', async () => {
-    open(async () => 'That dashboard is no longer part of this workspace.');
+    const onSuccessAfterClose = vi.fn();
+    open(async () => 'That dashboard is no longer part of this workspace.', { onSuccessAfterClose });
     nameInput().value = 'Kept';
     nameInput().dispatchEvent(new Event('input', { bubbles: true }));
     save().click();
@@ -290,6 +313,7 @@ describe('openMetadataDialog', () => {
     expect(save().disabled).toBe(false);
     expect(cancelBtn().disabled).toBe(false);
     expect(document.activeElement).toBe(nameInput());
+    expect(onSuccessAfterClose).not.toHaveBeenCalled();
   });
 
   it('bars a SECOND submit while the first is in flight, but leaves the way out open', async () => {
@@ -307,6 +331,60 @@ describe('openMetadataDialog', () => {
     release();
     await settle();
     expect(backdropOf()).toBeNull();
+  });
+
+  it('can lock Cancel, Escape and backdrop dismissal until a creation settles', async () => {
+    let release = (): void => {};
+    const onSuccessAfterClose = vi.fn();
+    open(() => new Promise<string | null>((resolve) => { release = () => resolve(null); }), {
+      lockCloseWhileConfirming: true,
+      onSuccessAfterClose,
+    });
+    save().click();
+    expect(cancelBtn().disabled).toBe(true);
+
+    key(document, 'Escape');
+    expect(backdropOf()).not.toBeNull();
+    mousedown(backdropOf()!);
+    click(backdropOf()!);
+    expect(backdropOf()).not.toBeNull();
+
+    release();
+    await settle();
+    expect(backdropOf()).toBeNull();
+    expect(onSuccessAfterClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlocks a creation after a rejected commit and shows a dismissible diagnostic', async () => {
+    const openRejected = () => open(async () => {
+      throw new Error('IndexedDB transaction aborted');
+    }, { lockCloseWhileConfirming: true });
+
+    openRejected();
+    nameInput().value = 'Kept after rejection';
+    save().click();
+    await settle();
+    expect(nameInput().value).toBe('Kept after rejection');
+    expect(cancelBtn().disabled).toBe(false);
+    expect(errorEl().hidden).toBe(false);
+    expect(errorEl().textContent).toBe('Could not save changes. Please try again.');
+    key(document, 'Escape');
+    expect(backdropOf()).toBeNull();
+
+    openRejected();
+    save().click();
+    await settle();
+    cancelBtn().click();
+    expect(backdropOf()).toBeNull();
+  });
+
+  it('dismisses a stale settlement without running success navigation', async () => {
+    const onSuccessAfterClose = vi.fn();
+    open(async () => undefined, { onSuccessAfterClose });
+    save().click();
+    await settle();
+    expect(backdropOf()).toBeNull();
+    expect(onSuccessAfterClose).not.toHaveBeenCalled();
   });
 
   it('a Cancel taken mid-write closes, and the late answer is dropped', async () => {
@@ -333,6 +411,18 @@ describe('openMetadataDialog', () => {
     expect(backdropOf()).toBeNull();
   });
 
+  it('drops a late rejection for a dialog that was force-closed while the write was queued', async () => {
+    let reject = (_reason: unknown): void => {};
+    open(() => new Promise<string | null>((_resolve, rejectPromise) => { reject = rejectPromise; }), {
+      lockCloseWhileConfirming: true,
+    });
+    save().click();
+    closeOpenDialogShell();
+    reject(new Error('Store unavailable'));
+    await settle();
+    expect(backdropOf()).toBeNull();
+  });
+
   it('runs the caller\'s onClose and restores focus to the trigger', () => {
     const trigger = h('button', {}, 'Pencil') as HTMLButtonElement;
     document.body.appendChild(trigger);
@@ -341,6 +431,13 @@ describe('openMetadataDialog', () => {
     handle.close();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('does not run success settlement for Cancel', () => {
+    const onSuccessAfterClose = vi.fn();
+    open(async () => null, { onSuccessAfterClose });
+    cancelBtn().click();
+    expect(onSuccessAfterClose).not.toHaveBeenCalled();
   });
 });
 

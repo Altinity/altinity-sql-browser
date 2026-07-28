@@ -447,6 +447,14 @@ preference — it never adds or removes a Dashboard panel. Saving or editing a q
 form with both a name and a description field; the description shows under the
 row and is included in Markdown/SQL exports.
 
+Each unambiguous Dashboard row also has a direct **+ Add panel** action. It asks
+for a required Panel name and optional description, atomically creates an empty
+Dashboard-owned query plus its tile, and opens that clean linked query in the
+SQL editor. This is intentionally separate from **Add to dashboard…** on a
+Library row: creating a blank Panel never selects, copies, or modifies a Library
+query. A Dashboard at the 100-panel schema limit exposes the action as
+unavailable instead of opening a dialog that cannot commit.
+
 The queries plus the workspace's Dashboard collection form a workspace
 (`StoredWorkspaceV3`; records written before that contract are read and
 migrated automatically). A browser profile can keep multiple workspaces in

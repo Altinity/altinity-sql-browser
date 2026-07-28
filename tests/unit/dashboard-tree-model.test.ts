@@ -603,7 +603,8 @@ describe('deriveDashboardTree — search', () => {
     expect(dash.single).toMatchObject({ kind: 'open-dashboard', request: { mode: 'view' } });
     expect(dash.shift).toMatchObject({ kind: 'open-dashboard', request: { mode: 'edit' } });
     // The search forcing expansion open does not touch the row's OWN actions.
-    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions.map((a) => a.kind))
+      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
   });
 
   it('every row is toggleable again once the search clears', () => {
@@ -705,8 +706,9 @@ describe('deriveDashboardTree — command sets', () => {
     expect('focus' in (dash.single as { request: object }).request).toBe(false);
     // #494 removed the `⋯` menu — *Open in Edit* was its last item, and Shift
     // (asserted above via `shift`) is still how Edit is reached. The row's
-    // vocabulary is now its two direct actions, and nothing else mirrors a menu.
-    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+    // vocabulary is now its three direct actions, and nothing else mirrors a menu.
+    expect(dash.actions.map((a) => a.kind))
+      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
   });
 
   it('gives a group row ONLY a toggle — no double, no Shift, no actions', () => {
@@ -804,12 +806,33 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
     ]);
   });
 
-  it('names the Dashboard row\'s own controls "Edit dashboard <title>" / "Delete dashboard <title>"', () => {
+  it('orders and names the Dashboard row add / edit / delete controls', () => {
     const tree = derive(ws({ dashboards: [dashboard({ id: 'd', title: 'D' })] }));
     const dash = row(tree.rows, 'w1:d');
-    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
-    expect(dash.actions.map((a) => a.label)).toEqual(['Edit dashboard D', 'Delete dashboard D']);
-    expect(dash.actions[1].confirm).toBe('Delete dashboard “D”? This also deletes every query its panels own.');
+    expect(dash.actions.map((a) => a.kind))
+      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions.map((a) => a.label))
+      .toEqual(['Add panel to D', 'Edit dashboard D', 'Delete dashboard D']);
+    expect(dash.actions[0]).toMatchObject({
+      tooltip: 'Add panel', target: { kind: 'dashboard', dashboardId: 'd' },
+      unavailable: null, confirm: null,
+    });
+    expect(dash.actions[2].confirm).toBe('Delete dashboard “D”? This also deletes every query its panels own.');
+  });
+
+  it('keeps Add panel visible but unavailable at the 100-tile limit', () => {
+    const tiles = Array.from({ length: 100 }, (_, i) => ({ id: 't' + i, queryId: 'q' + i }));
+    const dash = row(derive(ws({
+      dashboards: [dashboard({ id: 'd', title: 'Full', tiles })],
+    })).rows, 'w1:d');
+
+    expect(dash.actions.map((action) => action.kind))
+      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions[0]).toMatchObject({
+      label: 'Add panel to Full',
+      target: null,
+      unavailable: 'This dashboard already has the maximum of 100 panels, so another panel cannot be added.',
+    });
   });
 
   it('falls back to the row\'s own Untitled label in an action name, on both row kinds', () => {
@@ -823,7 +846,9 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
     expect(dash.label).toBe(UNTITLED_DASHBOARD);
     expect(panel.label).toBe(UNTITLED_PANEL);
     expect(dash.actions.map((a) => a.label)).toEqual([
-      'Edit dashboard ' + UNTITLED_DASHBOARD, 'Delete dashboard ' + UNTITLED_DASHBOARD,
+      'Add panel to ' + UNTITLED_DASHBOARD,
+      'Edit dashboard ' + UNTITLED_DASHBOARD,
+      'Delete dashboard ' + UNTITLED_DASHBOARD,
     ]);
     expect(panel.actions.map((a) => a.label)).toEqual([
       'Edit ' + UNTITLED_PANEL, 'Remove ' + UNTITLED_PANEL + ' from dashboard',
@@ -950,7 +975,8 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
       const dash0 = row(tree.rows, 'w1:d:dup:0');
       const dash1 = row(tree.rows, 'w1:d:dup:1');
       for (const dash of [dash0, dash1]) {
-        expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+        expect(dash.actions.map((a) => a.kind))
+          .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
         for (const a of dash.actions) {
           expect(a.target).toBeNull();
           expect(a.confirm).toBeNull();

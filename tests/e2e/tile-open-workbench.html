@@ -47,6 +47,7 @@
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
     import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
+    import { libraryQueries } from '/src/dashboard/model/query-ownership.js';
 
     // `table` rather than a chart panel: the Chart.js seam is deliberately NOT
     // injected here (this fixture is about a tile's chrome, not its rendering), and
@@ -145,6 +146,9 @@
     window.__tabs = () => app.state.tabs.value.map((tab) => ({
       name: tab.name, savedId: tab.savedId, docKind: tab.doc?.kind ?? null,
       active: tab.id === app.state.activeTabId.value,
+      sql: tab.sqlDraft, spec: tab.specParsed,
+      dirtySql: tab.dirtySql, dirtySpec: tab.dirtySpec,
+      committedToken: tab.lastCommittedQueryToken,
     }));
     window.__surface = () => app.mainSurface.kind;
     /** Committed truth for every query, so a Save can be checked against the
@@ -154,6 +158,10 @@
       return read.status === 'ok'
         ? read.workspace.queries.map((query) => ({ id: query.id, name: query.spec.name, sql: query.sql }))
         : null;
+    };
+    window.__libraryIds = async () => {
+      const read = await app.workspace.loadById(seed.id);
+      return read.status === 'ok' ? libraryQueries(read.workspace).map((query) => query.id) : null;
     };
     window.__app = app;
     window.__ready = true;
