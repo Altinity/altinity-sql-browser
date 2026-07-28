@@ -51,6 +51,16 @@ describe('connection lifecycle reducer', () => {
     }
   });
 
+  it('returns the latest retained transport state after a failed refresh', () => {
+    const refreshing = reduceConnectionLifecycle(connected(), { type: 'begin-refresh', epoch: 4 });
+    const wentOffline = reduceConnectionLifecycle(refreshing, {
+      type: 'transport-offline', epoch: 4, detail: 'network',
+    });
+    expect(reduceConnectionLifecycle(wentOffline, {
+      type: 'refresh-failed', epoch: 4,
+    })).toEqual({ kind: 'offline', epoch: 4, detail: 'network' });
+  });
+
   it('moves current starting/offline transport to connected', () => {
     expect(reduceConnectionLifecycle(starting(), { type: 'transport-connected', epoch: 4 }))
       .toEqual({ kind: 'connected', epoch: 4 });
@@ -58,11 +68,55 @@ describe('connection lifecycle reducer', () => {
       .toEqual({ kind: 'connected', epoch: 4, detail: 'probe' });
   });
 
+  it('retains current connected transport evidence while refresh remains in flight', () => {
+    for (const resume of [starting(), offline()]) {
+      const refreshing = reduceConnectionLifecycle(resume, { type: 'begin-refresh', epoch: 4 });
+      const connectedDuringRefresh = reduceConnectionLifecycle(refreshing, {
+        type: 'transport-connected', epoch: 4, detail: 'query',
+      });
+      expect(connectedDuringRefresh).toMatchObject({
+        kind: 'refreshing',
+        resume: { kind: 'connected', epoch: 4, detail: 'query' },
+      });
+      expect(reduceConnectionLifecycle(connectedDuringRefresh, {
+        type: 'refresh-succeeded', epoch: 4,
+      })).toEqual({ kind: 'connected', epoch: 4, detail: 'query' });
+    }
+    const alreadyConnected = {
+      kind: 'refreshing' as const, epoch: 4, resume: connected(),
+    };
+    expect(reduceConnectionLifecycle(alreadyConnected, {
+      type: 'transport-connected', epoch: 4,
+    })).toBe(alreadyConnected);
+  });
+
   it('moves current non-protected transport state offline', () => {
-    for (const state of [starting(), connected(), { kind: 'refreshing', epoch: 4, resume: connected() } as ConnectionLifecycleState]) {
+    for (const state of [starting(), connected()]) {
       expect(reduceConnectionLifecycle(state, { type: 'transport-offline', epoch: 4, detail: 'network' }))
         .toEqual({ kind: 'offline', epoch: 4, detail: 'network' });
     }
+  });
+
+  it('retains current offline transport evidence while refresh remains in flight', () => {
+    for (const resume of [starting(), connected()]) {
+      const refreshing = reduceConnectionLifecycle(resume, { type: 'begin-refresh', epoch: 4 });
+      const offlineDuringRefresh = reduceConnectionLifecycle(refreshing, {
+        type: 'transport-offline', epoch: 4, detail: 'network',
+      });
+      expect(offlineDuringRefresh).toMatchObject({
+        kind: 'refreshing',
+        resume: { kind: 'offline', epoch: 4, detail: 'network' },
+      });
+      expect(reduceConnectionLifecycle(offlineDuringRefresh, {
+        type: 'refresh-succeeded', epoch: 4,
+      })).toEqual({ kind: 'offline', epoch: 4, detail: 'network' });
+    }
+    const alreadyOffline = {
+      kind: 'refreshing' as const, epoch: 4, resume: offline(),
+    };
+    expect(reduceConnectionLifecycle(alreadyOffline, {
+      type: 'transport-offline', epoch: 4,
+    })).toBe(alreadyOffline);
   });
 
   it('does not let transport offline overwrite authentication or sign-out states', () => {
@@ -88,12 +142,13 @@ describe('connection lifecycle reducer', () => {
     const cases: Array<[ConnectionLifecycleState, Parameters<typeof reduceConnectionLifecycle>[1]]> = [
       [connected(), { type: 'begin-refresh', epoch: 3 }],
       [connected(), { type: 'refresh-succeeded', epoch: 4 }],
+      [connected(), { type: 'refresh-failed', epoch: 4 }],
       [connected(), { type: 'transport-connected', epoch: 4 }],
       [offline(), { type: 'auth-required', epoch: 3 }],
       [signedOut(), { type: 'auth-required', epoch: 4 }],
       [reauthenticating(), { type: 'failed-authentication', epoch: 3, prior: signedOut() }],
       [connected(), { type: 'failed-authentication', epoch: 4, prior: authRequired() }],
-      [refreshing, { type: 'transport-connected', epoch: 4 }],
+      [refreshing, { type: 'transport-connected', epoch: 3 }],
     ];
     for (const [state, event] of cases) expect(reduceConnectionLifecycle(state, event)).toBe(state);
   });

@@ -334,6 +334,7 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
         // Preserve them and expose a recoverable connectivity state.
         if (connectionSignal.value.epoch === epoch) {
           transition({ type: 'transport-offline', epoch, detail: 'Unable to refresh session' });
+          transition({ type: 'refresh-failed', epoch });
         }
         throw error;
       }

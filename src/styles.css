@@ -3593,7 +3593,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-grid.is-report .dash-tile { min-height: 300px; }
 }
 @media (max-width: 520px) {
-  .connection-chip { display: none; }
+  .connection-chip { max-width: 132px; padding-inline: 5px; }
+  .connection-chip .connection-state {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  .app-header .user-btn .user-short { display: none; }
   .app-header .lib-name { max-width: 96px; }
 }
 @media (max-width: 520px) {

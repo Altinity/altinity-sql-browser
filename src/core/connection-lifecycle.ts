@@ -61,6 +61,7 @@ export type ConnectionLifecycleEvent =
   | { type: 'credentials-installed'; detail?: string }
   | ({ type: 'begin-refresh' } & CurrentEpochEvent)
   | ({ type: 'refresh-succeeded' } & CurrentEpochEvent)
+  | ({ type: 'refresh-failed' } & CurrentEpochEvent)
   | ({ type: 'transport-connected' } & CurrentEpochEvent)
   | ({ type: 'transport-offline' } & CurrentEpochEvent)
   | ({ type: 'auth-required' } & CurrentEpochEvent)
@@ -112,10 +113,15 @@ export function reduceConnectionLifecycle(
         : { kind: 'refreshing', epoch: state.epoch, detail: event.detail, resume: state };
 
     case 'refresh-succeeded':
+    case 'refresh-failed':
       if (!isCurrent(state, event) || state.kind !== 'refreshing') return state;
       return state.resume;
 
     case 'transport-connected':
+      if (isCurrent(state, event) && state.kind === 'refreshing') {
+        if (state.resume.kind === 'connected') return state;
+        return { ...state, resume: stable('connected', state.epoch, event.detail) };
+      }
       if (!isCurrent(state, event) || (state.kind !== 'starting' && state.kind !== 'offline')) return state;
       return stable('connected', state.epoch, event.detail);
 
@@ -125,6 +131,10 @@ export function reduceConnectionLifecycle(
         || state.kind === 'auth-required'
         || state.kind === 'signed-out'
         || state.kind === 'reauthenticating') return state;
+      if (state.kind === 'refreshing') {
+        if (state.resume.kind === 'offline') return state;
+        return { ...state, resume: stable('offline', state.epoch, event.detail) };
+      }
       return stable('offline', state.epoch, event.detail);
 
     case 'auth-required':

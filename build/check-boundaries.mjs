@@ -179,8 +179,28 @@ for (const rule of RULES) {
   }
 }
 
+// Issue #512 Phase 1: connection readiness has one authority. These are the
+// modules that own or project the lifecycle, and none may regain the retired
+// server-version shortcut. `serverVersion` remains legitimate catalog/query
+// capability metadata and user-menu display elsewhere.
+const connectionAuthorityFiles = [
+  'src/core/connection-lifecycle.ts',
+  'src/application/connection-session.ts',
+  'src/net/ch-client.ts',
+  'src/ui/app-header.ts',
+  'src/ui/app-shell.ts',
+];
+for (const relFile of connectionAuthorityFiles) {
+  const file = path.join(repoRoot, relFile);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  if (/\bserverVersion\b/.test(fs.readFileSync(file, 'utf8'))) {
+    violations.push(`${relFile} → serverVersion (issue #512: lifecycle/readiness must not be inferred from version metadata)`);
+  }
+}
+
 if (violations.length) {
-  console.error('check-boundaries: layer-boundary violations (issue #276):');
+  console.error('check-boundaries: architecture violations:');
   for (const line of violations) console.error(`  ${line}`);
   process.exit(1);
 }

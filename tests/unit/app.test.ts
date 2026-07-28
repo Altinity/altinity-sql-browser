@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
+import type { Signal } from '@preact/signals-core';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
@@ -36,6 +37,7 @@ import type {
   DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
+import type { ConnectionLifecycleState } from '../../src/core/connection-lifecycle.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry, ResultSchemaGraph,
 } from '../../src/ui/results.js';
@@ -1167,6 +1169,32 @@ describe('renderApp shell', () => {
     expect(qs(app.root, '.connection-state').textContent).toBe('Offline');
     expect(qs(app.root, '.conn-status').dataset.connectionState).toBe('offline');
     expect(qs(app.root, '.conn-status').classList.contains('tone-offline')).toBe(true);
+  });
+  it('projects all seven lifecycle states into the mounted accessible header chip', () => {
+    const app = createApp(env());
+    app.renderApp();
+    const lifecycle = app.conn.connection as Signal<ConnectionLifecycleState>;
+    const cases: Array<[ConnectionLifecycleState, string, string, string]> = [
+      [{ kind: 'starting', epoch: 1 }, 'Connecting…', 'connecting', 'tone-warning'],
+      [{ kind: 'connected', epoch: 1 }, 'Connected', 'connected', 'tone-success'],
+      [{
+        kind: 'refreshing', epoch: 1, resume: { kind: 'connected', epoch: 1 },
+      }, 'Refreshing…', 'refreshing', 'tone-warning'],
+      [{ kind: 'offline', epoch: 1 }, 'Offline', 'offline', 'tone-offline'],
+      [{ kind: 'auth-required', epoch: 2 }, 'Sign in required', 'authentication required', 'tone-error'],
+      [{ kind: 'reauthenticating', epoch: 3 }, 'Signing in…', 'reauthenticating', 'tone-warning'],
+      [{ kind: 'signed-out', epoch: 4 }, 'Signed out', 'signed out', 'tone-neutral'],
+    ];
+    for (const [value, label, ariaState, tone] of cases) {
+      lifecycle.value = value;
+      const chip = qs<HTMLElement>(app.root, '.conn-status');
+      expect(chip.dataset.connectionState).toBe(value.kind);
+      expect(chip.classList.contains(`is-${value.kind}`)).toBe(true);
+      expect(chip.classList.contains(tone)).toBe(true);
+      expect(qs(chip, '.connection-state').textContent).toBe(label);
+      expect(chip.getAttribute('aria-label')).toBe(`ClickHouse connection: ${ariaState}`);
+      expect(chip.title).toBe('ch.example');
+    }
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
