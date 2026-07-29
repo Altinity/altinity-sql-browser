@@ -203,9 +203,17 @@ export function validateStoredWorkspaceDocument(
 
 export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV5 } | WorkspaceFailResult;
 
+/** Re-canonicalize every Dashboard layout, leaving the rest of the record
+ *  alone. The root copy is SHALLOW deliberately (#549 review): a workspace
+ *  reaches `PORTABLE_LIMITS.maxDecodedJsonBytes` (20 MiB) of mostly SQL text,
+ *  and this runs on every v5 decode AND every encode — deep-cloning the whole
+ *  record would reallocate every saved query only to throw the cloned
+ *  `dashboards` away. Nothing here mutates the input: `upgradeDashboardLayout`
+ *  returns a fresh clone of each Dashboard, and the only consumers of the
+ *  result (`validateStoredWorkspaceDocument`, `canonicalJson`) are read-only. */
 function canonicalizeWorkspaceLayouts(workspace: StoredWorkspaceV5): StoredWorkspaceV5 {
   return {
-    ...cloneJson(workspace),
+    ...workspace,
     dashboards: workspace.dashboards.map(upgradeDashboardLayout),
   };
 }

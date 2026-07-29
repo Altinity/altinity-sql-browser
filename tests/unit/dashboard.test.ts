@@ -2925,6 +2925,36 @@ describe('renderDashboard — Full view (#321)', () => {
     expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
   });
 
+  // #549 review: a Dashboard that OPENS in a fixed-width style never saw a
+  // render-mode flip on its first publish (`gridRenderMode` is 'tiles' for
+  // Report) nor a style CHANGE (the mirror starts at the persisted preset), so
+  // the corrective relabel pass never ran and every tile kept the
+  // two-dimensional "Resize" label while the gesture was already vertical-only.
+  // The build-time label reads the authored style directly instead.
+  it('a Dashboard persisted in a fixed-width style exposes the vertical-only resize label from the FIRST render', async () => {
+    for (const [preset, placement] of [
+      ['full', { full: { height: 2 } }], ['report', { report: { height: 5 } }],
+    ] as const) {
+      const { app } = dashApp({
+        workspace: wsWith({
+          queries: [q('q1', 'SELECT k, v FROM a')],
+          tiles: [{ id: 't1', queryId: 'q1' }],
+          layout: {
+            type: 'grafana-grid', version: 2, preset, items: { t1: placement },
+            fallback: {
+              type: 'flow', version: 1, preset: preset === 'report' ? 'report' : 'columns-2',
+              items: { t1: { span: preset === 'report' ? 1 : 2, height: 'medium' } },
+            },
+          },
+        }),
+      });
+      await render(app);
+      const handle = qs<HTMLElement>(app.root, '.dash-gg-resize');
+      expect(handle.title).toBe('Resize tile height');
+      expect(handle.getAttribute('aria-label')).toBe('Resize tile height');
+    }
+  });
+
   it('a resize handle reads "Resize" (two-dimensional) in tiles mode', async () => {
     const { app } = dashApp({ workspace: twoTilesGrid() });
     await render(app);

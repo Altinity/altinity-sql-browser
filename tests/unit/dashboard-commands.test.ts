@@ -411,6 +411,56 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     }
   });
 
+  // #549 review: an unknown or FUTURE primary engine with a valid flow@1
+  // fallback is a supported READ state (#280) — the renderer shows the
+  // fallback — but `upgradeDashboardLayout` returns such a layout UNCHANGED, so
+  // an authored-style change over it cannot silently "succeed". The old
+  // behaviour stamped `preset` onto the foreign layout: a revision bump, a
+  // renderer still on the fallback, and a Style menu claiming a style the
+  // document did not have.
+  describe('an authored grafana-grid@2 style over a primary this build cannot load', () => {
+    const foreignFallback = {
+      type: 'flow', version: 1, preset: 'columns-2', items: { t1: { span: 3, height: 'large' } },
+    };
+
+    it('fails closed for an UNKNOWN engine instead of stamping the preset onto it', () => {
+      const layout = { type: 'future-engine', version: 9, items: { t1: { anything: true } }, fallback: foreignFallback };
+      const d = draft({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: layout as never });
+      for (const preset of ['grid', 'full', 'report'] as const) {
+        const result = run(d, {
+          type: 'change-layout', layout: { type: 'grafana-grid', version: 2, preset } as never,
+        }, [query('q')]);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.diagnostics[0].code).toBe('dashboard-command-layout-engine-unsupported');
+          expect(result.diagnostics[0].message).toContain('future-engine');
+        }
+      }
+      // The document is untouched — no preset, and the fallback the renderer is
+      // actually using is still the authored one.
+      expect(d.layout).toEqual(layout);
+    });
+
+    it('fails closed for a FUTURE grafana-grid version rather than rebuilding its fallback from misread items', () => {
+      const layout = {
+        type: 'grafana-grid', version: 3, preset: 'grid',
+        items: { t1: { someFutureShape: { span: 3 } } }, fallback: foreignFallback,
+      };
+      const d = draft({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: layout as never });
+      const result = run(d, {
+        type: 'change-layout', layout: { type: 'grafana-grid', version: 2, preset: 'full' } as never,
+      }, [query('q')]);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics[0].code).toBe('dashboard-command-layout-engine-unsupported');
+        expect(result.diagnostics[0].message).toContain('grafana-grid@3');
+      }
+      // Specifically NOT regenerated to every-tile-default (span 2 / medium),
+      // which is what reading v3+ items as v1 placements would have produced.
+      expect(d.layout.fallback).toEqual(foreignFallback);
+    });
+  });
+
   it('a bare same-engine flow change (no items field) preserves the existing preset/items too', () => {
     const d = draft({
       tiles: [{ id: 't1', queryId: 'q' }] as never,

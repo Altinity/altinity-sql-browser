@@ -1415,6 +1415,14 @@ export async function renderDashboard(
   function resizeHandleLabel(full: boolean): string {
     return full ? 'Resize tile height' : 'Resize';
   }
+  /** True for the fixed-width authored styles (#535): Full and Report both
+   *  resize vertically only, so both take the vertical-only handle label. The
+   *  one predicate both the per-publish relabel and `ensureTileEl`'s
+   *  build-time label read, because the render-mode mirror (`gridRenderMode`)
+   *  cannot answer this — it is `'tiles'` for Report, so a Dashboard that OPENS
+   *  in Report saw neither a mode flip nor a style change on its first publish
+   *  and kept the generic "Resize" label (#549 review). */
+  const isVerticalOnlyStyle = (style: DashboardStyle): boolean => style === 'full' || style === 'report';
   function applyResizeHandleMode(tileEl: TileEl, full: boolean): void {
     if (!tileEl.resizeHandle) return;
     tileEl.resizeHandle.hidden = currentDashboardStyle === 'columns-2'
@@ -2358,7 +2366,7 @@ export async function renderDashboard(
       card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
       menuBtn, kpiActions: null,
     };
-    if (resizeHandle) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
+    if (resizeHandle) applyResizeHandleMode(tileEl, isVerticalOnlyStyle(currentDashboardStyle));
     // A tile built mid-session (a duplicate, an import) has to arrive already
     // gated: the effect below only re-labels tiles it can find in `tileEls`, and
     // this one is added to that map on the next line.
@@ -2906,7 +2914,7 @@ export async function renderDashboard(
       layoutMenu.sync();
       grid.classList.toggle('is-full', gridRenderMode === 'full');
       for (const tileEl of tileEls.values()) {
-        applyResizeHandleMode(tileEl, sview.style === 'full' || sview.style === 'report');
+        applyResizeHandleMode(tileEl, isVerticalOnlyStyle(sview.style));
       }
     }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);

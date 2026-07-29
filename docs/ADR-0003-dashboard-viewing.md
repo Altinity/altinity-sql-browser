@@ -1061,6 +1061,32 @@ This follow-up replaces that model with one versioned layout-engine contract.
 - **All authored styles use the grid renderer.** This retires flow KPI bands for
   canonical current workspaces: KPI panels are ordinary grid tiles under Grid,
   Full, and Report, sharing the same reorder, action, and resize lifecycle.
+- **A primary engine this build cannot load is readable, not re-styleable.** An
+  unknown engine or a future `grafana-grid` version with a valid `flow@1`
+  fallback stays readable through that fallback (#280), but `change-layout` to
+  `grafana-grid@2` over it fails with
+  `dashboard-command-layout-engine-unsupported`. Converting was rejected: it
+  would discard a primary the user gets back by upgrading. Silently succeeding
+  was rejected outright — it bumped the revision, left the renderer on the
+  fallback, and made the Style menu claim a style the document did not have.
+- **The new contract keeps the `grafana-grid` engine id, and downgrades are
+  read-only by convention.** The registry keys plugins on `(id, version)`
+  precisely so one engine can carry several contract versions, so `@2` registers
+  under the same id as `@1`. The consequence is accepted deliberately: a build
+  predating `@2` resolves the document to its fallback and — because editability
+  is not gated on fallback use — still offers Edit mode, where its
+  version-blind fallback regeneration rebuilds `fallback` by reading `@2`'s
+  nested items as `@1` placements, discarding edits made in that session.
+  Authored `items` are never written by such a build and this one regenerates
+  the fallback deterministically at every codec boundary, so no authored data is
+  lost. Two alternatives were rejected: a DISTINCT engine id (the old build's
+  regeneration then no-ops, so its edits appear to persist and are discarded
+  later when this build regenerates the fallback — silent divergence instead of
+  visible loss), and bumping the Dashboard `documentVersion` so old builds fail
+  closed (correct failure direction, but it makes the migration a one-way door:
+  after one save, an artifact rollback leaves the whole workspace unreadable,
+  not just its dashboards — a rollout-policy decision, not a codec one). The
+  real gap, that `usedFallback` gates nothing, is #550.
 
 ## Alternatives considered
 

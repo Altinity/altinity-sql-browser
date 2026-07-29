@@ -356,6 +356,26 @@ function applyCommandToClone(
 
       if (targetType === 'grafana-grid' && command.layout.version === 2) {
         const upgraded = upgradeDashboardLayout(dashboard);
+        // `upgradeDashboardLayout` converts every READABLE legacy engine
+        // (grafana-grid@1, flow@1) and returns anything ELSE unchanged. An
+        // unknown or future primary with a valid flow@1 fallback is a supported
+        // READ state (#280) but is not convertible here, so this has to fail
+        // closed rather than fall through (#549 review): stamping the requested
+        // `preset` onto a foreign layout would bump the revision for nothing,
+        // leave the renderer on the fallback, and make the Style menu claim a
+        // style the document does not have — and for a FUTURE grafana-grid
+        // version the regeneration below would additionally rebuild its
+        // fallback by misreading v3+ items as v1 placements. An engine this
+        // build cannot load is an engine it cannot re-style.
+        const upgradedLayout = upgraded.layout as unknown as Record<string, unknown>;
+        if (upgradedLayout.type !== 'grafana-grid') {
+          return failWith(diagnostic(['layout'], 'dashboard-command-layout-engine-unsupported',
+            `Layout engine ${JSON.stringify(String(upgradedLayout.type))} is not one this build can re-style`));
+        }
+        if (upgradedLayout.version !== 2) {
+          return failWith(diagnostic(['layout'], 'dashboard-command-layout-engine-unsupported',
+            `Layout engine grafana-grid@${String(upgradedLayout.version)} is not one this build can re-style`));
+        }
         const preset = command.layout.preset;
         if (preset === 'grid' || preset === 'full' || preset === 'report') {
           upgraded.layout.preset = preset;

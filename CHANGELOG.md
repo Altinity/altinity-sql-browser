@@ -22,7 +22,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   session state only, switching/rebuilding/reloading resets them, and mobile
   collapses them to one column. Existing `grafana-grid@1` and `flow@1`
   documents normalize deterministically at codec boundaries without changing
-  the Dashboard or workspace document version.
+  the Dashboard or workspace document version. A Dashboard whose primary layout
+  engine this build cannot load — an unknown engine, or a future `grafana-grid`
+  version — is still READ through its `flow@1` fallback, but selecting an
+  authored style now fails with a diagnostic instead of stamping the requested
+  preset onto a layout it cannot convert. A Dashboard that opens directly in
+  Report exposes its vertical-only resize label from the first render.
+  *Downgrade limitation:* a build predating `grafana-grid@2` also reads such a
+  Dashboard through that fallback, but must not be used to EDIT one — it
+  rewrites the fallback from placements it cannot interpret, so layout edits
+  made there are lost (authored Grid/Full/Report dimensions are never touched,
+  and this build regenerates the fallback deterministically on the next read).
+  Gating editing on fallback use is tracked in #550.
 - **Deleting a panel from its tile header no longer leaves its query behind in
   Library** (#537). The tile-header trash dispatched a document-only tile
   removal, which leaves `queries` untouched — and since every panel tile is the
