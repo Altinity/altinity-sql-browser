@@ -10,6 +10,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **Dashboard tile descriptions now match the selected presentation density.**
+  Full view and Report show the saved-query description beneath the tile name;
+  Grid Tiles and the 2/3-column styles keep only the name visible and expose the
+  description by hovering that name.
 - **Deleting a panel from its tile header no longer leaves its query behind in
   Library** (#537). The tile-header trash dispatched a document-only tile
   removal, which leaves `queries` untouched — and since every panel tile is the

@@ -3481,6 +3481,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   font-size: var(--text-label); color: var(--fg-mute); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Compact Dashboard styles retain the description in the cached header node
+   for instant style switching, but expose it only through the name tooltip. */
+.dash-tile-desc[hidden] { display: none; }
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; overflow: hidden; }
 .dash-time-crosshair-host { position: relative; }
 .dash-time-crosshair-host.is-time-crosshair::after {
