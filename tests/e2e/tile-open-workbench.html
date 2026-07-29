@@ -47,7 +47,6 @@
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
     import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
-    import { createAuthenticatedExecutionScope } from '/src/application/authenticated-execution-scope.js';
     import { libraryQueries } from '/src/dashboard/model/query-ownership.js';
 
     // `table` rather than a chart panel: the Chart.js seam is deliberately NOT
@@ -119,11 +118,10 @@
       CodeViewer: createCodeViewer,
     });
     // #524: this full-surface fixture bypasses sign-in but still executes
-    // Dashboard and Workbench work, so provide the authenticated epoch that
-    // production boot installs after a successful connection.
-    const scope = createAuthenticatedExecutionScope({ epoch: 1, cancelRemote: () => {} });
-    app.executionScope = () => scope;
-    app.requireAuthenticatedExecution = () => scope;
+    // Dashboard and Workbench work. Use the app-owned resume seam rather than
+    // replacing its public scope accessors: `renderApp()` uses its private
+    // lifecycle state to decide whether the blocking auth host starts hidden.
+    app.resumeAuthenticatedExecution();
     app.conn.ensureFreshToken = async () => true;
     app.conn.chCtx.onSignedOut = () => {};
     app.catalog.loadSchema = async () => { app.state.schema.value = []; };
