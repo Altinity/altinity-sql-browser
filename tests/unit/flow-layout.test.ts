@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FLOW_PLACEMENT, FLOW_MOBILE_BREAKPOINT, FLOW_PRESET_COLUMNS,
   computeFlowLayout, deriveFlowPlacement, effectiveSpan, flowLayoutPlugin,
-  presetColumns, resolvePlacement, setFlowPlacement,
+  flowPlacementAt, presetColumns, resolvePlacement, setFlowPlacement,
 } from '../../src/dashboard/layouts/flow-layout.js';
 import type { DashboardDocumentV2 } from '../../src/generated/json-schema.types.js';
 
@@ -56,6 +56,38 @@ describe('setFlowPlacement', () => {
     expect(layout.items).toBeUndefined();
     // A non-object layout is tolerated too.
     expect(() => setFlowPlacement(null, 't1', { span: 1 })).not.toThrow();
+  });
+});
+
+describe('flowPlacementAt (#535)', () => {
+  it('reads a placement back off a flow layout', () => {
+    const layout = flowLayout();
+    setFlowPlacement(layout, 't1', { span: 2, height: 'large' });
+    expect(flowPlacementAt(layout, 't1')).toEqual({ span: 2, height: 'large' });
+  });
+
+  // The whole reason this is not a bare `layout.items[tileId]`: the WRITE path
+  // targets the fallback surface for an unsupported primary engine, so a read of
+  // the primary would answer "no placement" for exactly those documents.
+  it('reads through the flow@1 fallback of an unsupported primary layout', () => {
+    const layout: Record<string, unknown> = { type: 'grid', version: 9, fallback: flowLayout() };
+    setFlowPlacement(layout, 't1', { span: 3, height: 'compact' });
+    expect(flowPlacementAt(layout, 't1')).toEqual({ span: 3, height: 'compact' });
+  });
+
+  it('answers undefined for an unknown tile, a surfaceless layout and a non-object', () => {
+    expect(flowPlacementAt(flowLayout(), 'nope')).toBeUndefined();
+    expect(flowPlacementAt({ type: 'flow', version: 1, preset: 'report' }, 't1')).toBeUndefined();
+    expect(flowPlacementAt({ type: 'grid', version: 9 }, 't1')).toBeUndefined();
+    expect(flowPlacementAt(null, 't1')).toBeUndefined();
+  });
+
+  // A reader that created an empty `items` would dirty a document just by looking,
+  // which would then be persisted as a change nobody made.
+  it('never mutates the layout it reads', () => {
+    const layout: Record<string, unknown> = { type: 'flow', version: 1, preset: 'report' };
+    flowPlacementAt(layout, 't1');
+    expect(layout.items).toBeUndefined();
   });
 });
 

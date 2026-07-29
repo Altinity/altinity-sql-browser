@@ -6,7 +6,7 @@ import {
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
   gridHeightUnitsFromFlowHeight, gridHeightUnitsToFlowHeight, gridHeightUnitsToPx,
   gridSpanFromFlowSpan, normalizeGridHeightUnits, regenerateGridFallback, resolveGridPlacement,
-  setGridPlacement, snapGridHeight, snapGridSpan,
+  gridPlacementAt, setGridPlacement, snapGridHeight, snapGridSpan,
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
@@ -160,6 +160,26 @@ describe('setGridPlacement', () => {
   it('is a no-op on a non-object layout', () => {
     expect(() => setGridPlacement(null, 't1', { span: 1 })).not.toThrow();
     expect(() => setGridPlacement(5, 't1', { span: 1 })).not.toThrow();
+  });
+});
+
+describe('gridPlacementAt (#535)', () => {
+  it('reads a placement back off a grid layout', () => {
+    const layout = gridLayout();
+    setGridPlacement(layout, 't1', { span: 8, height: 5 });
+    expect(gridPlacementAt(layout, 't1')).toEqual({ span: 8, height: 5 });
+  });
+
+  it('answers undefined for an unknown tile, an items-less layout and a non-object', () => {
+    expect(gridPlacementAt(gridLayout(), 'nope')).toBeUndefined();
+    expect(gridPlacementAt({ type: 'grafana-grid', version: 1 }, 't1')).toBeUndefined();
+    expect(gridPlacementAt(null, 't1')).toBeUndefined();
+  });
+
+  it('never mutates the layout it reads', () => {
+    const layout: Record<string, unknown> = { type: 'grafana-grid', version: 1 };
+    gridPlacementAt(layout, 't1');
+    expect(layout.items).toBeUndefined();
   });
 });
 

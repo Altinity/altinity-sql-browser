@@ -533,6 +533,21 @@ export interface App {
    *  #443 — the id is resolved BEFORE anything moves: one that names no saved
    *  query reports a diagnostic and changes no surface, no route and no tab. */
   openSavedQuery(queryId: string): void;
+  /**
+   * #535 — a Dashboard TILE's own expand action: everything `openSavedQuery`
+   * does, plus the two things that make it an act of "go work on this panel"
+   * rather than "go look at some query".
+   *
+   *  - the query RUNS on arrival (when it is auto-runnable), on its own saved
+   *    view, so the editor shows the same result the tile was showing;
+   *  - the Dashboards tree is revealed with this panel's row expanded and armed,
+   *    so leaving the Dashboard does not lose the user's place in it.
+   *
+   * The tile is addressed by all three ids because each answers a different
+   * question: `queryId` is the document to open, and `dashboardId`+`tileId` are
+   * the tree row to reveal — a tile's row cannot be derived from its query.
+   */
+  openPanelQuery(target: { dashboardId: string; tileId: string; queryId: string }): void;
   /** #457 — open (or re-select) the main-editor tab that edits ONE Dashboard
    *  variable's option SQL, switching back to Query mode first. A variable is
    *  addressed by Dashboard id + exact name, which is the only identity it has:

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-// #471 — a Dashboard tile's own `Open in Workbench` action, replacing the
-// Dashboard-level `< Query` button.
+// #471/#535 — a Dashboard tile head's own actions: the expand action that replaced
+// the Dashboard-level `< Query` button, and #535's duplicate and widen beside it.
 //
 // Everything here is something the unit suite cannot reach: a subtle action that
 // only a real browser reveals on hover/focus, a KPI tile whose head is a
@@ -46,13 +46,19 @@ test('a tile action opens that tile\'s own document in the shipped tab strip', a
   const action = tileAction(page, 'Live KPIs');
   // Subtle until the tile is hovered — but present in the DOM and named, not
   // conjured on hover.
-  await expect(action).toHaveAttribute('aria-label', 'Open Live KPIs in Workbench');
-  await expect(action).toHaveAttribute('title', 'Open in Workbench');
+  await expect(action).toHaveAttribute('aria-label', 'Open Live KPIs in Workbench and run');
+  await expect(action).toHaveAttribute('title', 'Open in Workbench and run');
   expect(await action.evaluate((el) => getComputedStyle(el).opacity)).toBe('0');
   await tileCard(page, 'Live KPIs').hover();
   await expect.poll(() => action.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
 
+  const runsBefore = await page.evaluate(() => window.__execCalls());
   await action.click();
+
+  // #535: the query RAN on arrival — the tile was showing a result, so the editor
+  // does too. Proven by the execution seam, not by pixels: an empty result pane and
+  // a pane that has not been asked to render yet look identical.
+  await expect.poll(() => page.evaluate(() => window.__execCalls())).toBeGreaterThan(runsBefore);
 
   // We are on the Workbench, and the tile's document is the ACTIVE tab.
   await expect.poll(() => surface(page)).toBe('query');
@@ -265,26 +271,126 @@ test('a KPI tile in VIEW mode still exposes a reachable action', async ({ page }
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-kpi', active: true });
 });
 
-test('a KPI tile in EDIT mode puts the action top-right, beside the delete button', async ({ page }) => {
+test('a KPI tile in EDIT mode packs all four actions top-right, in reading order', async ({ page }) => {
   // Geometry, because CSS decides it and happy-dom sees none of it: a KPI tile has
-  // no heading to push its actions right, so the head squares them up itself. Two
-  // competing `margin-left: auto` items would SPLIT the free space and leave this
-  // action floating mid-head.
+  // no heading to push its actions right, so the head squares them up itself. ONE
+  // `margin-left: auto` among the four would absorb the free space mid-group and
+  // strand everything before it at the LEFT edge — which is why #535 removed the one
+  // `.dash-gg-del` used to carry.
   await open(page);
   await openDashboard(page, 'sales', 'edit');
 
   const kpi = page.locator('.dash-gg-tile.is-kpi');
   await kpi.hover();
   const geometry = await kpi.evaluate((tile) => {
+    const box = (sel) => {
+      const rect = tile.querySelector(sel).getBoundingClientRect();
+      return { left: rect.left, right: rect.right };
+    };
     const head = tile.querySelector(':scope > .dash-tile-head').getBoundingClientRect();
-    const open_ = tile.querySelector('.dash-tile-open').getBoundingClientRect();
-    const del = tile.querySelector('.dash-gg-del').getBoundingClientRect();
-    return { headLeft: head.left, headRight: head.right, headWidth: head.width, openLeft: open_.left, openRight: open_.right, delLeft: del.left, delRight: del.right };
+    return {
+      headLeft: head.left,
+      headRight: head.right,
+      headWidth: head.width,
+      actions: ['.dash-tile-dup', '.dash-tile-widen', '.dash-tile-open', '.dash-gg-del'].map(box),
+    };
   });
-  // Both actions live in the right-hand quarter of the head, in reading order.
-  expect(geometry.openLeft).toBeGreaterThan(geometry.headLeft + geometry.headWidth * 0.75);
-  expect(geometry.openRight).toBeLessThanOrEqual(geometry.delLeft + 1);
-  expect(geometry.delRight).toBeLessThanOrEqual(geometry.headRight + 1);
+  const [dup, widen, open_, del] = geometry.actions;
+  // The whole group is right-packed: the FIRST action starts past the head's
+  // midpoint, and each one follows the last with no gap opened between them.
+  expect(dup.left).toBeGreaterThan(geometry.headLeft + geometry.headWidth * 0.5);
+  expect(dup.right).toBeLessThanOrEqual(widen.left + 1);
+  expect(widen.right).toBeLessThanOrEqual(open_.left + 1);
+  expect(open_.right).toBeLessThanOrEqual(del.left + 1);
+  expect(del.right).toBeLessThanOrEqual(geometry.headRight + 1);
+});
+
+// #535 — the widen step, in a real CSS grid. Everything here is invisible to
+// happy-dom: the rendered column span, the pixel height, and whether the `hidden`
+// attribute actually hides a button whose author-sheet `display: inline-flex` beats
+// the UA sheet's `[hidden] { display: none }`.
+test('widen doubles a grid tile\'s rendered width and height, then wraps', async ({ page }) => {
+  // Wide enough that the grid host clears `effectiveGridColumns`' 1160px tier and
+  // renders all 12 columns. At the default 1280 viewport the sidebar leaves it in
+  // the 6-column tier, where the fixture's span-8 tile is ALREADY full width and a
+  // widen changes nothing horizontally — a real clamp, not a bug, but it would make
+  // this assertion untestable.
+  await open(page, { width: 1600, height: 900 });
+  await openDashboard(page, 'sales', 'edit');
+
+  const tile = tileCard(page, 'Live KPIs');
+  const widen = tile.locator('.dash-tile-widen');
+  await tile.hover();
+  await expect(widen).toHaveAttribute('title', 'Widen to 12 columns'); // span 8 -> 12
+  const before = await tile.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  });
+
+  await widen.click();
+  await expect(widen).toHaveAttribute('title', 'Shrink to 1 column');
+  const wide = await tile.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  });
+  // Wider AND taller on screen, and the persisted placement says exactly why.
+  expect(wide.width).toBeGreaterThan(before.width);
+  expect(wide.height).toBeGreaterThan(before.height);
+  expect((await page.evaluate(() => window.__dashboard('sales'))).items['t-sales'])
+    .toEqual({ span: 12, height: 4 });
+
+  // At the maximum the next press wraps to a single column.
+  await widen.click();
+  await expect(widen).toHaveAttribute('title', 'Widen to 2 columns');
+  await expect.poll(() => tile.evaluate((el) => el.getBoundingClientRect().width))
+    .toBeLessThan(wide.width / 2);
+});
+
+test('widen hides itself for a single-column style, and the hidden attribute really hides it', async ({ page }) => {
+  await open(page);
+  await openDashboard(page, 'sales', 'edit');
+  const widen = tileCard(page, 'Live KPIs').locator('.dash-tile-widen');
+  await tileCard(page, 'Live KPIs').hover();
+  await expect(widen).toBeVisible();
+
+  // Report is one centred column — there is no width to step through. `hidden`
+  // needs its own CSS rule here, because the base rule's `display: inline-flex`
+  // outranks the UA stylesheet.
+  await page.locator('.dash-style-btn').click();
+  await page.locator('.dash-style-menu').getByRole('menuitem', { name: 'Report' }).click();
+  await expect(widen).toBeHidden();
+
+  await page.locator('.dash-style-btn').click();
+  await page.locator('.dash-style-menu').getByRole('menuitem', { name: '3 columns' }).click();
+  await expect(widen).toBeVisible();
+  await expect(widen).toHaveAttribute('title', 'Widen to 2 columns');
+});
+
+// #535 — duplication commits TWO resources and then rebuilds the route; only a real
+// IndexedDB round trip proves both landed and the copy actually rendered.
+test('duplicate commits a copy right after the source, and it renders', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await open(page);
+  await openDashboard(page, 'sales', 'edit');
+  await expect(tileNames(page)).toHaveText(['Revenue KPI', 'Live KPIs', 'Runbook']);
+
+  const tile = tileCard(page, 'Live KPIs');
+  await tile.hover();
+  await tile.locator('.dash-tile-dup').click();
+
+  // The copy shares the source's NAME, so it is located by position, never by text.
+  await expect(tileNames(page)).toHaveText(['Revenue KPI', 'Live KPIs', 'Live KPIs', 'Runbook']);
+  const committed = await page.evaluate(() => window.__dashboard('sales'));
+  expect(committed.tiles.map((t) => t.queryId))
+    .toEqual(['q-kpi', 'q-sales', committed.tiles[2].queryId, 'q-text']);
+  // Its own dedicated owned copy, and NOT a Library query.
+  const copyQueryId = committed.tiles[2].queryId;
+  expect(copyQueryId).not.toBe('q-sales');
+  expect(await page.evaluate(() => window.__libraryIds())).not.toContain(copyQueryId);
+  // Same size as the source, not the query's add-time size hint.
+  expect(committed.items[committed.tiles[2].id]).toEqual(committed.items['t-sales']);
+  expect(pageErrors).toEqual([]);
 });
 
 test('the KPI overlay action is reachable by keyboard, which reveals the head', async ({ page }) => {

@@ -172,6 +172,16 @@ export function setGridPlacement(layout: unknown, tileId: string, placement: unk
   if (items) items[tileId] = placement;
 }
 
+/** One tile's STORED grid placement, or `undefined` when the layout holds none
+ *  for it (#535). The read counterpart of `setGridPlacement` — trivial here
+ *  because grafana-grid@1 is only ever a PRIMARY layout, but paired with
+ *  `flowPlacementAt` so a caller never has to know which engine hides its
+ *  placements where. Never mutates. */
+export function gridPlacementAt(layout: unknown, tileId: string): unknown {
+  if (!isObject(layout) || !isObject(layout.items)) return undefined;
+  return layout.items[tileId];
+}
+
 /** Derive an initial grid placement from a query's `sizeHints.preferred`,
  *  reusing flow@1's own `compact|medium|wide` → span mapping
  *  (`deriveFlowPlacement`) and converting the result through

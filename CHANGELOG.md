@@ -46,6 +46,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   graph rather than stored as a second identity, and repaints immediately after
   Dashboard renames. Dirty, conflict, deleted, and close controls retain their
   established order and behavior.
+- **A Dashboard panel tile head now carries duplicate, widen and expand
+  actions** (#535). All three are revealed on tile hover or focus.
+  *Duplicate* (edit mode) places a copy of the panel immediately after the
+  source, carrying its presentation, any local title/description and its size;
+  because every panel tile solely owns a saved-query copy (#427), the copy gets
+  its own dedicated clone rather than sharing the source's document. *Widen*
+  (edit mode) steps a tile through the widths the active style has: one more
+  column under the 2- and 3-column presets, doubled span and height in Grid
+  Tiles, each clamped, wrapping back to a single column at the maximum; its
+  label names the width the next press produces, and it hides itself under
+  Report, under Full view and below the mobile breakpoint, where there is no
+  width to step. *Expand* — the existing Open in Workbench action, now on the
+  design's expand glyph — additionally runs the opened query on its own saved
+  view and reveals the panel's Dashboards-tree row, so leaving a Dashboard no
+  longer loses your place in it or lands on an empty result pane. A flow KPI
+  band member gets duplicate and expand but not widen: a band ignores tile
+  widths. Duplicate and expand carry the design's own glyphs; widen ships as a
+  horizontal double-headed arrow rather than the design's four-way arrows, which
+  are drawn at 24px and become an unreadable blob — and near-indistinguishable
+  from the expand brackets beside them — at the 13px a tile head renders. This restores in-tile width authoring, which #280 phase 8 had moved
+  into the Spec editor; the free-form two-dimensional resize remains the
+  corner drag.
 - **OAuth reauthentication now preserves dirty document work across its page
   redirect** (#512 phase 3). Before navigation, a versioned, expiring
   `sessionStorage` checkpoint captures authored tab state only and binds it to
