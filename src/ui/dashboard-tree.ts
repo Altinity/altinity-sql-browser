@@ -576,7 +576,7 @@ function dropProps(app: DashboardTreeApp, row: DashboardTreeRow): Record<string,
     ondragenter: over,
     ondragover: over,
     ondragleave: (event: DragEvent) => {
-      // The row has eight child spans and drag events bubble, so a bare
+      // The row has several child spans and drag events bubble, so a bare
       // `dragleave` fires every time the pointer crosses onto one of them.
       const to = event.relatedTarget;
       const rowEl = event.currentTarget as HTMLElement;
@@ -674,6 +674,11 @@ function buildRow(
   const count = row.count === null
     ? null
     : h('span', { class: 'side-count dash-tree-count' }, '· ' + row.count);
+  // The label and its count grow as ONE group, so the count reads right after
+  // the name (`Sales revenue · 2`) like the Library tab's `Library · 66` —
+  // rather than as a sibling of a flex:1 label, which pushes it into the
+  // right-aligned cluster with `meta`/actions.
+  const labelGroup = h('span', { class: 'dash-tree-label-group' }, label, count);
   // #447: the WORD, not only a colour — an unused (orphaned) variable says so in
   // text, right after its name.
   const status = row.invalid === 'variable-unused'
@@ -737,7 +742,7 @@ function buildRow(
       syncRovingTabindex(rowEl.parentElement, row.key);
       pressRow(app, row, event.shiftKey);
     },
-  }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
+  }, chevron, h('span', { class: 'icon' }, rowIcon(row)), labelGroup, status,
     h('span', { class: 'meta' }, row.meta), marker,
     // #494: the trailing DIRECT controls, in the model's own order — edit
     // before delete, destructive rightmost. No tree ROW carries a `⋯` any more.

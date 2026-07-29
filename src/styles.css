@@ -1720,7 +1720,13 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row { position: relative; }
 /* The group rows (Variables / Panels) are structure, not content. */
 .dash-tree-group { color: var(--fg-faint); font-weight: var(--fw-medium); }
-.dash-tree-count { margin-left: 2px; font-size: var(--text-label); }
+/* `flex-shrink: 0` + `white-space: nowrap`: inside `.dash-tree-label-group`
+   below, an unbounded `.label` (its flex-basis is its full, untruncated text
+   width) would otherwise absorb almost none of the shrink budget itself,
+   leaving this tiny "· N" to take the rest — squeezing it down to a couple of
+   pixels and wrapping "· 2" onto two lines. The count stays fixed-width; the
+   label does all the shrinking, same as it always ellipsizes. */
+.dash-tree-count { margin-left: 2px; font-size: var(--text-label); flex-shrink: 0; white-space: nowrap; }
 /* CURRENT RESOURCE vs KEYBOARD FOCUS must read differently (#426): the current
    Dashboard/member is a persistent tonal surface with an accent edge, while
    keyboard focus is the transient ring. A row can legitimately be both. */
@@ -1810,15 +1816,43 @@ body.detached-tab .graph-overlay-panel {
   opacity: 0; pointer-events: none;
 }
 /* Revealed on hover like the Library row actions, but ALWAYS in the keyboard
-   focus order: `:focus-within` makes the visually concealed cluster visible
-   while the row or one of its controls owns focus, so no operation is
-   keyboard-unreachable.
+   focus order: `:focus-visible`/`:has(:focus-visible)` make the visually
+   concealed cluster visible while the row itself OR one of its controls holds
+   KEYBOARD focus, so no operation is keyboard-unreachable. Both are needed —
+   `:has()`'s argument is an implicit DESCENDANT selector, so `:has(:focus-
+   visible)` alone matches only when a control inside the row (the chevron or
+   an action button) is focused, not when the row's own composite tab stop
+   is (the roving-tabindex owner a real ArrowDown/ArrowUp or the first Tab
+   into the tree lands on) — that gap left the cluster invisible at exactly
+   the moment #472 wants a sighted keyboard user to see it waiting.
+   Deliberately not `:focus-within`, which matches on any focus regardless of
+   modality — a row a user merely CLICKED to select keeps DOM focus, so
+   `:focus-within` kept its actions revealed forever, alongside whichever row
+   the pointer was hovering, showing two pencil/trash pairs at once. Ordinary
+   pointer focus on the ROW no longer pins it open this way — though a
+   different row's genuine hover and this row's genuine keyboard focus can
+   still be visible at once, which is correct: those are two independent,
+   live states, not the stale-selection bug. Chromium (and other engines)
+   withhold `:focus-visible` after a pointer interaction but grant it for real
+   keyboard navigation — Tab/Arrow keys — even when the resulting focus is set
+   programmatically from a keydown handler (see the Tab-walk and
+   keyboard-delete tests in `tests/e2e/dashboard-tree.spec.js`).
+   `.dash-tree-act:focus` (plain, not `:focus-visible`) is separate and
+   narrower: the button ITSELF holding any focus — Tab, a programmatic
+   focus-return once its own dialog closes, or a test's direct `.focus()` —
+   reveals only that one control, never a sibling or the whole row, so it
+   cannot resurrect the row-level bug above. This preserves the pre-existing
+   contract `tests/e2e/tile-open-workbench.spec.js`'s "Panels-row plus" test
+   and its sibling `.dash-tile-actions` ("Focus alone reveals it — a keyboard
+   user never hovers") already rely on.
    `[aria-expanded="true"]` holds it visible for its own dialog/confirmation's
    whole lifetime — both are body-mounted, so by the time one closes the
    pointer and focus have left the row, and an invisible trigger must not
    become unreachable before focus can return to it. */
 .dash-tree-row:hover .dash-tree-act,
-.dash-tree-row:focus-within .dash-tree-act,
+.dash-tree-row:focus-visible .dash-tree-act,
+.dash-tree-row:has(:focus-visible) .dash-tree-act,
+.dash-tree-act:focus,
 .dash-tree-act[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
 /* #447's orphan-variable trash stays ALWAYS visible: it is the only way to
    remove stored SQL nothing references any more, and a hover-only affordance
@@ -1913,6 +1947,16 @@ body.detached-tab .graph-overlay-panel {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tree-row .meta.loading { font-style: italic; opacity: .6; }
+
+/* Dashboard tree count reads immediately after the label — matching Library's
+   `Library · 66` placement — instead of inheriting the schema tree's
+   flex:1 label above, which pushes trailing content to the row's far right
+   edge. Only the GROUP grows; the label inside it shrinks/ellipsizes and the
+   count stays a fixed-width neighbor. Placed after `.tree-row .label` above
+   so this wins the `flex` override at equal selector specificity, without
+   touching the schema (Databases) tree's own `.tree-row .label` behavior. */
+.dash-tree-label-group { display: flex; align-items: center; min-width: 0; flex: 1; }
+.dash-tree-label-group .label { flex: 0 1 auto; min-width: 0; }
 
 /* Column name/type independent drag targets (#186). Only these two child
    spans are drag sources on a column row — the row-level `:active grabbing`
