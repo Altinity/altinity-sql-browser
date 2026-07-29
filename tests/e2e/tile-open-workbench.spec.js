@@ -94,6 +94,78 @@ test('two Dashboard copies with the SAME name open two tabs; re-opening selects 
   expect(after.filter((t) => t.active).map((t) => t.savedId)).toEqual(['q-sales']);
 });
 
+test('tab keyboard activation, roving navigation, and close preserve focus', async ({ page }) => {
+  await open(page);
+  await openDashboard(page, 'sales');
+  await tileAction(page, 'Live KPIs').click();
+  await openDashboard(page, 'ops');
+  await tileAction(page, 'Live KPIs').click();
+
+  const selectors = page.locator('.qtab-select');
+  await expect(selectors).toHaveCount(3);
+  await expect(selectors.nth(2)).toHaveAttribute('tabindex', '0');
+  await expect(selectors.nth(1)).toHaveAttribute('tabindex', '-1');
+
+  // A native Space click changes the active signal, replaces the whole strip,
+  // and must focus the replacement rather than the now-detached old button.
+  await selectors.nth(1).focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toBeFocused();
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toHaveAttribute('tabindex', '0');
+
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(page.locator('.qtab-select[data-tab-id="t1"]')).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator('.qtab-select[data-tab-id="t1"]')).toBeFocused();
+
+  // Close the focused active first tab. Its next neighbour becomes the first
+  // remaining tab and receives both selection and focus.
+  await page.locator('.qtab.active .close').click();
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toBeFocused();
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('closing a clean inactive tab focuses the surviving active tab', async ({ page }) => {
+  await open(page);
+  await openDashboard(page, 'sales');
+  await tileAction(page, 'Live KPIs').click();
+  await openDashboard(page, 'ops');
+  await tileAction(page, 'Live KPIs').click();
+
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toHaveAttribute('aria-selected', 'true');
+  await page.locator('.qtab').filter({ has: page.locator('[data-tab-id="t2"]') }).locator('.close').click();
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toHaveCount(0);
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toBeFocused();
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('confirming a dirty inactive close focuses the surviving active tab', async ({ page }) => {
+  await open(page);
+  await openDashboard(page, 'sales');
+  await tileAction(page, 'Live KPIs').click();
+  await openDashboard(page, 'ops');
+  await tileAction(page, 'Live KPIs').click();
+
+  // Dirty the sales copy, then return selection to the ops copy so the close
+  // target is inactive when its confirmation opens.
+  await page.locator('.qtab-select[data-tab-id="t2"]').click();
+  await page.locator('.cm-content[data-language="sql"]').click();
+  await page.keyboard.type(' ');
+  await page.locator('.qtab-select[data-tab-id="t3"]').click();
+  await page.locator('.qtab').filter({ has: page.locator('[data-tab-id="t2"]') }).locator('.close').click();
+  await expect(page.locator('.qtab-close-confirm')).toBeVisible();
+  await page.locator('.qtab-close-confirm-go').click();
+
+  await expect(page.locator('.qtab-select[data-tab-id="t2"]')).toHaveCount(0);
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toBeFocused();
+  await expect(page.locator('.qtab-select[data-tab-id="t3"]')).toHaveAttribute('aria-selected', 'true');
+});
+
 test('the action is keyboard reachable and activates on Enter', async ({ page }) => {
   await open(page);
   await openDashboard(page, 'sales');

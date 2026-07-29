@@ -920,6 +920,35 @@ option batch supports at most 1000 options.
   before the success bookkeeping in `runVariableSql`, so an over-cap response
   creates neither History nor a detached-result source.
 
+## Addendum (#464, 2026-07-29): tab origin is derived, but its presentation is explicit
+
+The #471 addendum above settled query-tab identity: a Dashboard tile's dedicated
+query id is already the stable document identity, and `savedId` already drives
+tab reuse and Save targeting. This change adds the missing visible and accessible
+source context without introducing a reverse origin field.
+
+- **Ownership remains the one source of truth.** Query-tab source is projected
+  from `savedId` through `buildQueryOwnershipIndex`; Dashboard-variable tabs use
+  their existing `(dashboardId, variableName)` document binding. No
+  `QueryTabOrigin`, saved-query back-pointer, or recovery payload field mirrors
+  those references. Workspace commits repaint the strip because a Dashboard
+  rename can change presentation without changing any tab signal.
+- **Badges exist only inside a visible name collision.** Every tab in an exact
+  same-name group receives a source label, while unique names reserve no badge
+  space. Multi-word Dashboard titles start with their initialism and expand
+  words in place; single-word titles start with a three-character prefix.
+  Distinct titles expand through their readable full text before the exceptional
+  case of identical titles adds the shortest unique Dashboard-id prefix.
+- **Full context does not depend on a visible badge.** The selectable surface is
+  a native, keyboard-focusable `tab` inside the tab-list, named and titled
+  `<Dashboard, Library, or Draft> / <document>`. A roving tab stop supports
+  Left/Right/Home/End, and an app-scoped focus handoff survives the strip's
+  replacement render after activation or close (including a confirmed dirty
+  close). The accessible name appends unsaved/conflict/deleted state rather than
+  hiding those visual indicators behind the explicit source label. The close
+  button remains a separate sibling control, and source badges precede the
+  existing conflict/deleted and dirty indicators.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from
