@@ -9,10 +9,12 @@ import {
 } from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { queryToken } from '../workspace/workspace-sync.js';
+import { planTabOriginBadges } from '../dashboard/model/tab-origin-badges.js';
 import { batch } from '@preact/signals-core';
 import type { AppDom } from './app.types.js';
 import type { AppState, QueryTab } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
@@ -25,6 +27,8 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 export interface TabsApp {
   dom: Pick<AppDom, 'qtabsInner'>;
   state: AppState;
+  /** The committed aggregate is the canonical source for Dashboard ownership. */
+  currentWorkspace: StoredWorkspaceV5 | null;
   /** #447 narrowed this: `actions.setEditorMode` + `specEditor.revealOffset`
    *  were read ONLY by the removed Filter-role badge. */
   sqlEditor: Pick<EditorPort, 'focus'>;
@@ -43,10 +47,27 @@ export interface TabsApp {
 export function renderTabs(app: TabsApp): void {
   const host = app.dom.qtabsInner;
   if (!host) return;
+  host.setAttribute('role', 'tablist');
+  host.setAttribute('aria-label', 'Open query tabs');
+  const origins = new Map(planTabOriginBadges(app.state.tabs.value, app.currentWorkspace)
+    .map((origin) => [origin.tabId, origin]));
   host.replaceChildren(...app.state.tabs.value.map((t) => {
     const isActive = t.id === app.state.activeTabId.value;
-    return h('div', { class: 'qtab' + (isActive ? ' active' : ''), onclick: () => selectTab(app, t.id) },
-      h('span', { class: 'name' }, t.name),
+    const origin = origins.get(t.id)!;
+    const fullContext = `${origin.context} / ${t.name}`;
+    const select = (): void => selectTab(app, t.id);
+    return h('div', { class: 'qtab' + (isActive ? ' active' : '') },
+      h('button', {
+        class: 'qtab-select', type: 'button', role: 'tab', title: fullContext,
+        'aria-selected': isActive ? 'true' : 'false',
+        'aria-label': fullContext,
+        onclick: select,
+      },
+        h('span', { class: 'name' }, t.name),
+        origin.badge === null ? null : h('span', {
+          class: `qtab-origin ${origin.kind}`,
+          'aria-hidden': 'true',
+        }, origin.kind === 'dashboard' ? Icon.dashboard() : null, origin.badge),
       // #343: a visible marker when this tab's linked saved query changed
       // ('conflict') or was deleted ('deleted') in another browser tab.
       t.externalState
@@ -59,10 +80,11 @@ export function renderTabs(app: TabsApp): void {
         : null,
       // #457: `tabSaveDirty`, not `tabDirty` — the dot and the Save button must
       // read the SAME predicate, and a variable tab's Spec is never saved.
-      tabSaveDirty(t) ? h('span', { class: 'dirty' }) : null,
+        tabSaveDirty(t) ? h('span', { class: 'dirty' }) : null,
+      ),
       app.state.tabs.value.length > 1
         ? h('button', {
-            class: 'close',
+            class: 'close', title: `Close ${t.name}`, 'aria-label': `Close ${t.name}`,
             onclick: (e: Event) => { e.stopPropagation(); requestCloseTab(app, t.id, e.currentTarget as HTMLElement); },
           }, Icon.close())
         : null,

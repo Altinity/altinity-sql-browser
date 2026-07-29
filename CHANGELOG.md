@@ -34,6 +34,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   independently scrolling login region.
 
 ### Added
+- **Same-named Workbench tabs now show their source only when disambiguation is
+  needed** (#464). Colliding Dashboard tabs receive a compact Dashboard icon and
+  the shortest readable title abbreviation; Library and draft collisions receive
+  explicit labels, while unique tabs keep the existing compact layout. Every tab
+  exposes its full source through a semantic, keyboard-focusable tab control and
+  tooltip, including Dashboard-variable tabs. Source presentation is derived from
+  the canonical saved-query/Dashboard ownership graph rather than stored as a
+  second identity, and repaints immediately after Dashboard renames. Dirty,
+  conflict, deleted, and close controls retain their established order and
+  behavior.
 - **OAuth reauthentication now preserves dirty document work across its page
   redirect** (#512 phase 3). Before navigation, a versioned, expiring
   `sessionStorage` checkpoint captures authored tab state only and binds it to

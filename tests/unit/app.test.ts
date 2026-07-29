@@ -6542,6 +6542,29 @@ describe('unified /sql routing', () => {
       .find((item) => item.querySelector('.fm-label')?.textContent === label)!.click();
   };
 
+  it('repaints tab origin context when a workspace projection renames a Dashboard', () => {
+    const app = createApp(env());
+    const query = savedQuery({ id: 'q1', name: 'Overview', sql: 'SELECT 1' });
+    const first = {
+      ...dashboardWorkspace([query]),
+      dashboards: [{
+        ...dashboardWorkspace().dashboards[0], title: 'Operations',
+        tiles: [{ id: 'tile', queryId: 'q1' }],
+      }],
+    };
+    app.applyCommittedWorkspace(first);
+    app.activeTab().name = 'Overview';
+    app.activeTab().savedId = 'q1';
+    app.renderApp();
+    expect(qs<HTMLButtonElement>(app.root, '.qtab-select').title).toBe('Operations / Overview');
+
+    app.applyCommittedWorkspace({
+      ...first,
+      dashboards: [{ ...first.dashboards[0], title: 'Production' }],
+    });
+    expect(qs<HTMLButtonElement>(app.root, '.qtab-select').title).toBe('Production / Overview');
+  });
+
   it('tracks mounted renderer lifetime independently from workspace loading', () => {
     const app = createApp(env());
     const before = app.captureSurfaceGeneration();

@@ -48,6 +48,7 @@ describe('renderTabs', () => {
     const tabs = app.dom.qtabsInner.querySelectorAll('.qtab');
     expect(tabs).toHaveLength(2);
     expect(tabs[0].classList.contains('active')).toBe(true);
+    expect(tabs[0].querySelector('.qtab-select')?.getAttribute('aria-selected')).toBe('true');
     expect(tabs[0].querySelector('.dirty')).not.toBeNull();
     expect(tabs[0].querySelector('.close')).not.toBeNull();
   });
@@ -73,16 +74,66 @@ describe('renderTabs', () => {
     expect(b2.title).toContain('deleted in another tab');
     expect(tabs[2].querySelector('.qtab-external')).toBeNull(); // normal tab: no badge
   });
+  it('renders collision-only origin badges while full context stays accessible', () => {
+    const app = makeApp();
+    app.currentWorkspace = {
+      id: 'w1', key: 'workspace', name: 'Workspace', storageVersion: 5,
+      queries: [],
+      dashboards: [{ id: 'ops', title: 'ClickHouse Operations', tiles: [{ id: 'tile', queryId: 'd1' }] }],
+    } as unknown as typeof app.currentWorkspace;
+    app.state.tabs.value = [
+      { id: 't1', name: 'Overview', savedId: 'library', dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'Overview', savedId: 'd1', dirtySql: false, dirtySpec: false, externalState: 'conflict' } as QueryTab,
+      { id: 't4', name: 'Overview', savedId: null, dirtySql: true, dirtySpec: false, externalState: 'deleted' } as QueryTab,
+      { id: 't3', name: 'Unique', savedId: 'd1', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    renderTabs(app);
+    const tabs = app.dom.qtabsInner.querySelectorAll('.qtab');
+    expect(tabs[0].querySelector('.qtab-origin')?.textContent).toBe('Library');
+    expect(tabs[1].querySelector('.qtab-origin')?.textContent).toBe('CO');
+    expect(tabs[1].querySelector('.qtab-origin.dashboard svg')).not.toBeNull();
+    expect(tabs[2].querySelector('.qtab-origin')?.textContent).toBe('Draft');
+    expect(tabs[3].querySelector('.qtab-origin')).toBeNull();
+    expect(app.dom.qtabsInner.getAttribute('role')).toBe('tablist');
+    const dashboardSelect = qs<HTMLButtonElement>(tabs[1], '.qtab-select');
+    expect(dashboardSelect.getAttribute('role')).toBe('tab');
+    expect(dashboardSelect.title).toBe('ClickHouse Operations / Overview');
+    expect(dashboardSelect.getAttribute('aria-label')).toBe('ClickHouse Operations / Overview');
+    expect(Array.from(tabs[1].children).map((child) => child.className)).toEqual([
+      'qtab-select', 'close',
+    ]);
+    expect(Array.from(dashboardSelect.children).map((child) => child.className)).toEqual([
+      'name', 'qtab-origin dashboard', 'qtab-external conflict',
+    ]);
+    expect(Array.from(qs(tabs[2], '.qtab-select').children).map((child) => child.className)).toEqual([
+      'name', 'qtab-origin draft', 'qtab-external deleted', 'dirty',
+    ]);
+    expect(tabs[0].querySelector('.dirty')).not.toBeNull();
+    expect(tabs[0].querySelector('.close')?.getAttribute('aria-label')).toBe('Close Overview');
+  });
   it('clicking a tab selects it; clicking close closes it', () => {
     const app = makeApp();
     app.state.tabs.value = [{ id: 't1', name: 'A' } as QueryTab, { id: 't2', name: 'B' } as QueryTab];
     renderTabs(app);
-    const second = app.dom.qtabsInner.querySelectorAll('.qtab')[1];
+    const second = qs<HTMLButtonElement>(app.dom.qtabsInner.querySelectorAll('.qtab')[1], '.qtab-select');
     second.dispatchEvent(new Event('click'));
     expect(app.state.activeTabId.value).toBe('t2');
     const close = qs<HTMLElement>(app.dom.qtabsInner.querySelectorAll('.qtab')[0], '.close');
     close.dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
+  });
+  it('exposes a focusable native tab button', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: false, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    renderTabs(app);
+    document.body.append(app.dom.qtabsInner);
+    const second = qs<HTMLButtonElement>(app.dom.qtabsInner.querySelectorAll('.qtab')[1], '.qtab-select');
+    second.focus();
+    expect(document.activeElement).toBe(second);
+    expect(second.type).toBe('button');
   });
   // #447 deleted the Filter tab badge case: `filter` is no longer a
   // saved-query role, so no tab can carry one.

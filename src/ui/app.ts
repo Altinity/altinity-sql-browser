@@ -2288,6 +2288,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     // and stays put rather than navigating nowhere.)
     cancelDashboardTreeClicks(app);
     invalidateDashboardTree();
+    // #464: Dashboard titles and ownership are presentation inputs for the
+    // Query tab strip. A workspace commit can change either without changing a
+    // tab signal (for example, renaming a Dashboard), so repaint explicitly
+    // after the complete projection rather than waiting for a later tab edit.
+    renderTabs(app);
     // #425: COMPLETE the fallback, don't just record it. Rewriting the route and
     // leaving the Dashboard host exposed wedges the app: every path back —
     // `showQuerySurface`, the header switch, `g w`, a Library click — early-returns

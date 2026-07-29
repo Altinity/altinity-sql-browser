@@ -1917,16 +1917,23 @@ body.detached-tab .graph-overlay-panel {
 }
 .qtabs-inner { display: flex; flex: 1; overflow: auto; height: 100%; }
 .qtab {
-  display: flex; align-items: center; gap: 8px;
-  padding: 0 8px 0 12px;
+  display: flex; align-items: center;
   height: 100%;
   border-right: 1px solid var(--border);
-  cursor: pointer;
   font-size: var(--text-label);
   color: var(--fg-mute);
   position: relative; white-space: nowrap;
   min-width: 100px;
 }
+.qtab-select {
+  min-width: 0; flex: 1;
+  display: flex; align-items: center; gap: 8px;
+  align-self: stretch;
+  padding: 0 8px 0 12px;
+  border: 0; background: transparent; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.qtab-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .qtab.active {
   background: var(--bg-editor);
   color: var(--fg); font-weight: var(--fw-medium);
@@ -1935,7 +1942,16 @@ body.detached-tab .graph-overlay-panel {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
   background: var(--accent);
 }
-.qtab .name { flex: 1; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.qtab .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.qtab-origin {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 4px;
+  border: 1px solid var(--border); border-radius: var(--r-xs);
+  background: var(--bg-chip); color: var(--fg-mute);
+  font-size: var(--text-micro); font-weight: var(--fw-medium); line-height: var(--lh-flush);
+}
+.qtab-origin svg { flex-shrink: 0; }
 .qtab .dirty { width: 5px; height: 5px; border-radius: var(--r-xs); background: var(--fg-mute); flex-shrink: 0; }
 /* #343: the marker saying this tab's linked query changed ('!') or was deleted
    ('⌫') in another browser tab. Like the conflict chooser it reaches, this
@@ -1962,6 +1978,7 @@ body.detached-tab .graph-overlay-panel {
 }
 .qtab .close {
   width: 16px; height: 16px; border-radius: var(--r-xs); padding: 0;
+  margin-right: 8px;
   border: none; background: transparent;
   color: var(--fg-faint); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
