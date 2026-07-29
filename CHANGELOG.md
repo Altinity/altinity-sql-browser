@@ -34,6 +34,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   made there are lost (authored Grid/Full/Report dimensions are never touched,
   and this build regenerates the fallback deterministically on the next read).
   Gating editing on fallback use is tracked in #550.
+
+## [0.7.2] - 2026-07-29
+
+### Fixed
+- **The Caddy container now runs under Kubernetes' no-new-privileges policy.**
+  Its unneeded privileged-port capability is removed during the image build;
+  the smoke test exercises the same policy.
+
+## [0.7.1] - 2026-07-29
+
+### Fixed
+- **Dashboard tile descriptions now match the selected presentation density.**
+  Full view and Report show the saved-query description beneath the tile name;
+  Grid Tiles and the 2/3-column styles keep only the name visible and expose the
+  description by hovering that name.
 - **Deleting a panel from its tile header no longer leaves its query behind in
   Library** (#537). The tile-header trash dispatched a document-only tile
   removal, which leaves `queries` untouched — and since every panel tile is the
@@ -74,6 +89,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   independently scrolling login region.
 
 ### Changed
+- **The Docker SPA runtime now uses Caddy with build-time compression sidecars.**
+  The image carries Brotli (quality 11), Zstandard (level 19), and gzip (level
+  9) variants of `sql.html`; Caddy negotiates them from `Accept-Encoding` with
+  `Vary: Accept-Encoding` and never compresses requests at runtime. The
+  ClickHouse and release-bundle paths continue to distribute the single raw
+  `sql.html` artifact.
 - **A Dashboard panel tile head now carries two controls and a `⋯` menu**
   (#544). #535 had left the head with five — grip, duplicate, widen, expand,
   delete — competing with the tile title for one flex row, and a tile a single

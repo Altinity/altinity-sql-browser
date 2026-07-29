@@ -390,6 +390,10 @@ function tileFooter(meta: NonNullable<ViewerTileState['meta']>): HTMLElement[] {
  *  chart is painted once, not thrashed on every loading/progress tick). */
 interface TileEl {
   card: HTMLElement;
+  /** Stable title/subtitle nodes whose presentation changes with the selected
+   *  Dashboard style without rebuilding the cached tile. */
+  headingName: HTMLElement;
+  headingDescription: HTMLElement | null;
   body: HTMLElement;
   foot: HTMLElement;
   panelState: { key: string;[k: string]: unknown } | null;
@@ -1415,14 +1419,17 @@ export async function renderDashboard(
   function resizeHandleLabel(full: boolean): string {
     return full ? 'Resize tile height' : 'Resize';
   }
-  /** True for the fixed-width authored styles (#535): Full and Report both
-   *  resize vertically only, so both take the vertical-only handle label. The
-   *  one predicate both the per-publish relabel and `ensureTileEl`'s
-   *  build-time label read, because the render-mode mirror (`gridRenderMode`)
-   *  cannot answer this — it is `'tiles'` for Report, so a Dashboard that OPENS
-   *  in Report saw neither a mode flip nor a style change on its first publish
-   *  and kept the generic "Resize" label (#549 review). */
-  const isVerticalOnlyStyle = (style: DashboardStyle): boolean => style === 'full' || style === 'report';
+  /** True for the fixed-width authored styles (#535): Full and Report are both
+   *  one tile per row at a width the author cannot change. Two presentation
+   *  decisions follow from that and now read this ONE predicate rather than
+   *  re-listing the pair: the resize handle is vertical-only (below), and the
+   *  tile head has room for a description subtitle (`applyTileHeaderStyle`).
+   *
+   *  The resize label needs it because the render-mode mirror (`gridRenderMode`)
+   *  cannot answer the question — it is `'tiles'` for Report, so a Dashboard
+   *  that OPENS in Report saw neither a mode flip nor a style change on its
+   *  first publish and kept the generic "Resize" label (#549 review). */
+  const isFixedWidthStyle = (style: DashboardStyle): boolean => style === 'full' || style === 'report';
   function applyResizeHandleMode(tileEl: TileEl, full: boolean): void {
     if (!tileEl.resizeHandle) return;
     tileEl.resizeHandle.hidden = currentDashboardStyle === 'columns-2'
@@ -1443,6 +1450,22 @@ export async function renderDashboard(
    * `null` until the first publish, which is also when the first tile is built.
    */
   let widenStyle: DashboardStyle | null = null;
+  // The selected style also controls whether the saved-query description is a
+  // visible subtitle or a tooltip on the name. Like `widenStyle`, this mirror
+  // is updated before reconciliation so a tile first built during that publish
+  // arrives with the right header presentation.
+  let tileHeaderStyle: DashboardStyle = session.state.value.style;
+
+  /** Full and Report have enough horizontal room for a description subtitle.
+   *  The denser Grid Tiles and 2/3-column styles keep only the name visible and
+   *  expose the description itself as that name's native hover tooltip. */
+  function applyTileHeaderStyle(ts: ViewerTileState, tileEl: TileEl): void {
+    const expanded = isFixedWidthStyle(tileHeaderStyle);
+    if (expanded) tileEl.headingName.title = ts.title;
+    else if (ts.description) tileEl.headingName.title = ts.description;
+    else tileEl.headingName.removeAttribute('title');
+    if (tileEl.headingDescription) tileEl.headingDescription.hidden = !expanded;
+  }
 
   /**
    * `sview.style` is the ONE value that already folds authored style, legacy
@@ -2334,11 +2357,11 @@ export async function renderDashboard(
     const openBtn = readOnly ? tileOpenAction(ts) : null;
     const widenBtn = tileWidenAction(ts);
     const menuBtn = readOnly ? null : tileMenuAction(ts);
-    const heading = h('div', { class: 'dash-tile-heading' },
-      h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
-      ts.description ? h('span', {
-        class: 'dash-tile-desc', title: ts.description,
-      }, ts.description) : null);
+    const headingName = h('span', { class: 'dash-tile-name', title: ts.title }, ts.title);
+    const headingDescription = ts.description ? h('span', {
+      class: 'dash-tile-desc', title: ts.description,
+    }, ts.description) : null;
+    const heading = h('div', { class: 'dash-tile-heading' }, headingName, headingDescription);
     const head = h('div', { class: 'dash-tile-head' }, grip, heading, widenBtn, openBtn, menuBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
@@ -2363,14 +2386,16 @@ export async function renderDashboard(
     if (!readOnly) wireTileDrag(ts.tileId, card);
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
     const tileEl: TileEl = {
-      card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
+      card, headingName, headingDescription, body, foot,
+      panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
       menuBtn, kpiActions: null,
     };
-    if (resizeHandle) applyResizeHandleMode(tileEl, isVerticalOnlyStyle(currentDashboardStyle));
+    if (resizeHandle) applyResizeHandleMode(tileEl, isFixedWidthStyle(currentDashboardStyle));
     // A tile built mid-session (a duplicate, an import) has to arrive already
     // gated: the effect below only re-labels tiles it can find in `tileEls`, and
     // this one is added to that map on the next line.
     applyWidenMode(ts, tileEl);
+    applyTileHeaderStyle(ts, tileEl);
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
@@ -2900,9 +2925,13 @@ export async function renderDashboard(
     // Tiles this publish has not built yet are gated in `ensureTileEl` instead.
     widenStyle = widenStyleFor(sview);
     publishedTileIds = sview.tiles.map((ts) => ts.tileId);
+    tileHeaderStyle = sview.style;
     for (const ts of sview.tiles) {
       const tileEl = tileEls.get(ts.tileId);
-      if (tileEl) applyWidenMode(ts, tileEl);
+      if (tileEl) {
+        applyWidenMode(ts, tileEl);
+        applyTileHeaderStyle(ts, tileEl);
+      }
     }
     // Keep the local render-mode mirror current from the published session
     // layout. View mode can now project flow styles too, so leaving a Full
@@ -2914,7 +2943,7 @@ export async function renderDashboard(
       layoutMenu.sync();
       grid.classList.toggle('is-full', gridRenderMode === 'full');
       for (const tileEl of tileEls.values()) {
-        applyResizeHandleMode(tileEl, isVerticalOnlyStyle(sview.style));
+        applyResizeHandleMode(tileEl, isFixedWidthStyle(sview.style));
       }
     }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
