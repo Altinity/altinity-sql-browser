@@ -78,6 +78,22 @@ describe('planTabOriginBadges', () => {
     expect(plans.map((plan) => plan.badge)).toEqual(['CliO', 'CloO', 'Pro']);
   });
 
+  it('abbreviates Dashboard titles by grapheme, preserving emoji and combining sequences', () => {
+    const plans = planTabOriginBadges([
+      { id: 'chart', name: 'Overview', savedId: 'chart-query' },
+      { id: 'rocket', name: 'Overview', savedId: 'rocket-query' },
+      { id: 'developer', name: 'Overview', savedId: 'developer-query' },
+      { id: 'combining', name: 'Overview', savedId: 'combining-query' },
+    ], workspace([
+      { id: 'chart-dashboard', title: '📊 Operations', queryIds: ['chart-query'] },
+      { id: 'rocket-dashboard', title: '🚀 Production', queryIds: ['rocket-query'] },
+      { id: 'developer-dashboard', title: '👩‍💻 Analytics', queryIds: ['developer-query'] },
+      { id: 'combining-dashboard', title: 'e\u0301clair Metrics', queryIds: ['combining-query'] },
+    ]));
+    expect(plans.map((plan) => plan.badge)).toEqual(['📊O', '🚀P', '👩‍💻A', 'éM']);
+    expect(plans[2].badge).toBe('👩‍💻A');
+  });
+
   it('recomputes badges when a collision is closed or renamed', () => {
     const tabs = [
       { id: 'a', name: 'Overview', savedId: 'a1' },

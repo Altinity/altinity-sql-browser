@@ -941,9 +941,13 @@ source context without introducing a reverse origin field.
   case of identical titles adds the shortest unique Dashboard-id prefix.
 - **Full context does not depend on a visible badge.** The selectable surface is
   a native, keyboard-focusable `tab` inside the tab-list, named and titled
-  `<Dashboard, Library, or Draft> / <document>`. The close button remains a
-  separate sibling control, and source badges precede the existing
-  conflict/deleted and dirty indicators.
+  `<Dashboard, Library, or Draft> / <document>`. A roving tab stop supports
+  Left/Right/Home/End, and an app-scoped focus handoff survives the strip's
+  replacement render after activation or close (including a confirmed dirty
+  close). The accessible name appends unsaved/conflict/deleted state rather than
+  hiding those visual indicators behind the explicit source label. The close
+  button remains a separate sibling control, and source badges precede the
+  existing conflict/deleted and dirty indicators.
 
 ## Alternatives considered
 

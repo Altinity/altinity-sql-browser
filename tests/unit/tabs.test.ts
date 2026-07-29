@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { effect } from '@preact/signals-core';
 import {
   renderTabs, selectTab, newTab, closeTab, requestCloseTab, loadIntoNewTab, openVariableTab,
   reconcileVariableTab, discardVariableDraft,
@@ -74,6 +75,25 @@ describe('renderTabs', () => {
     expect(b2.title).toContain('deleted in another tab');
     expect(tabs[2].querySelector('.qtab-external')).toBeNull(); // normal tab: no badge
   });
+  it('announces dirty and external states without losing the origin or name', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 'dirty', name: 'Dirty', savedId: null, dirtySql: true, dirtySpec: false } as QueryTab,
+      { id: 'conflict', name: 'Conflict', savedId: null, dirtySql: false, dirtySpec: false, externalState: 'conflict' } as QueryTab,
+      { id: 'deleted', name: 'Deleted', savedId: null, dirtySql: false, dirtySpec: false, externalState: 'deleted' } as QueryTab,
+      { id: 'both', name: 'Both', savedId: null, dirtySql: true, dirtySpec: false, externalState: 'conflict' } as QueryTab,
+      { id: 'both-deleted', name: 'Both deleted', savedId: null, dirtySql: true, dirtySpec: false, externalState: 'deleted' } as QueryTab,
+    ];
+    renderTabs(app);
+    const label = (id: string): string => qs<HTMLButtonElement>(app.dom.qtabsInner, `[data-tab-id="${id}"]`).getAttribute('aria-label')!;
+    expect(label('dirty')).toBe('Draft / Dirty. Unsaved changes');
+    expect(label('conflict')).toBe('Draft / Conflict. Changed in another tab; resolve the conflict to save');
+    expect(label('deleted')).toBe('Draft / Deleted. Deleted in another tab; saving will create a new query');
+    expect(label('both')).toBe('Draft / Both. Unsaved changes. Changed in another tab; resolve the conflict to save');
+    expect(label('both-deleted')).toBe('Draft / Both deleted. Unsaved changes. Deleted in another tab; saving will create a new query');
+    expect(app.dom.qtabsInner.querySelector('.dirty')?.getAttribute('aria-hidden')).toBe('true');
+    expect(app.dom.qtabsInner.querySelector('.qtab-external')?.getAttribute('aria-hidden')).toBe('true');
+  });
   it('renders collision-only origin badges while full context stays accessible', () => {
     const app = makeApp();
     app.currentWorkspace = {
@@ -98,7 +118,7 @@ describe('renderTabs', () => {
     const dashboardSelect = qs<HTMLButtonElement>(tabs[1], '.qtab-select');
     expect(dashboardSelect.getAttribute('role')).toBe('tab');
     expect(dashboardSelect.title).toBe('ClickHouse Operations / Overview');
-    expect(dashboardSelect.getAttribute('aria-label')).toBe('ClickHouse Operations / Overview');
+    expect(dashboardSelect.getAttribute('aria-label')).toBe('ClickHouse Operations / Overview. Changed in another tab; resolve the conflict to save');
     expect(Array.from(tabs[1].children).map((child) => child.className)).toEqual([
       'qtab-select', 'close',
     ]);
@@ -134,6 +154,89 @@ describe('renderTabs', () => {
     second.focus();
     expect(document.activeElement).toBe(second);
     expect(second.type).toBe('button');
+  });
+  it('uses roving tabindex and restores focus to the rendered tab after click or Space activation', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A', dirtySql: false, dirtySpec: false } as QueryTab,
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false } as QueryTab,
+    ];
+    document.body.append(app.dom.qtabsInner);
+    const dispose = effect(() => {
+      app.state.tabs.value;
+      app.state.activeTabId.value;
+      renderTabs(app); // same synchronous render contract as workbench-shell
+    });
+    try {
+      let first = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t1"]');
+      const second = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t2"]');
+      expect(first.tabIndex).toBe(0);
+      expect(second.tabIndex).toBe(-1);
+
+      second.focus();
+      second.click();
+      const clicked = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t2"]');
+      expect(document.activeElement).toBe(clicked);
+      expect(clicked.tabIndex).toBe(0);
+      clicked.click(); // activating the already-active selector is a focused no-op
+      expect(document.activeElement).toBe(clicked);
+
+      first = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t1"]');
+      first.focus();
+      // Native buttons turn Space into click. happy-dom does not perform that
+      // browser default, so dispatch the native click explicitly after keydown.
+      first.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      first.click();
+      const spaced = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t1"]');
+      expect(document.activeElement).toBe(spaced);
+      expect(spaced.tabIndex).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+  it('wraps Arrow keys and supports Home and End while focusing each active replacement', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A' } as QueryTab,
+      { id: 't2', name: 'B' } as QueryTab,
+      { id: 't3', name: 'C' } as QueryTab,
+    ];
+    document.body.append(app.dom.qtabsInner);
+    renderTabs(app);
+    const key = (id: string, value: string): void => {
+      const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true });
+      qs<HTMLButtonElement>(app.dom.qtabsInner, `[data-tab-id="${id}"]`).dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      renderTabs(app); // mirrors the workbench shell's signal effect
+    };
+
+    key('t1', 'ArrowLeft');
+    expect(app.state.activeTabId.value).toBe('t3');
+    expect(document.activeElement).toBe(qs(app.dom.qtabsInner, '[data-tab-id="t3"]'));
+    key('t3', 'ArrowRight');
+    expect(app.state.activeTabId.value).toBe('t1');
+    key('t1', 'End');
+    expect(app.state.activeTabId.value).toBe('t3');
+    key('t3', 'Home');
+    expect(app.state.activeTabId.value).toBe('t1');
+    expect(qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t1"]').tabIndex).toBe(0);
+  });
+  it('focuses the selected neighbour after closing the focused active tab', () => {
+    const app = makeApp();
+    app.state.tabs.value = [
+      { id: 't1', name: 'A' } as QueryTab,
+      { id: 't2', name: 'B' } as QueryTab,
+      { id: 't3', name: 'C' } as QueryTab,
+    ];
+    app.state.activeTabId.value = 't2';
+    document.body.append(app.dom.qtabsInner);
+    renderTabs(app);
+    qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t2"]').focus();
+    closeTab(app, 't2', true);
+    renderTabs(app); // mirrors the workbench shell's signal effect
+    const neighbour = qs<HTMLButtonElement>(app.dom.qtabsInner, '[data-tab-id="t1"]');
+    expect(app.state.activeTabId.value).toBe('t1');
+    expect(document.activeElement).toBe(neighbour);
   });
   // #447 deleted the Filter tab badge case: `filter` is no longer a
   // saved-query role, so no tab can carry one.

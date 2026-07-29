@@ -35,22 +35,38 @@ interface ResolvedOrigin {
 
 const untitledDashboard = 'Untitled Dashboard';
 
+/**
+ * User-visible abbreviation operates on grapheme clusters, never UTF-16 code
+ * units. ES2022 includes `Intl.Segmenter`, which keeps emoji, combining marks,
+ * and zero-width-joiner sequences intact.
+ */
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const graphemes = (value: string): string[] => Array.from(
+  graphemeSegmenter.segment(value),
+  ({ segment }) => segment,
+);
+
+const firstGrapheme = (value: string): string => graphemes(value)[0] ?? '';
+const graphemePrefix = (value: string, length: number): string => graphemes(value).slice(0, length).join('');
+
 /** Every readable abbreviation, shortest first. Multi-word names start as an
  * initialism, then expand one word in place; a one-word name starts with a
  * three-character prefix. */
 function abbreviationCandidates(title: string): string[] {
   const words = title.trim().split(/\s+/).filter(Boolean);
   if (words.length === 1) {
+    const length = graphemes(words[0]).length;
     return Array.from(
-      { length: Math.max(1, words[0].length - Math.min(3, words[0].length) + 1) },
-      (_, index) => words[0].slice(0, Math.min(3, words[0].length) + index),
+      { length: Math.max(1, length - Math.min(3, length) + 1) },
+      (_, index) => graphemePrefix(words[0], Math.min(3, length) + index),
     );
   }
-  const candidates = [words.map((word) => word[0]).join('')];
+  const candidates = [words.map(firstGrapheme).join('')];
   for (let wordIndex = 0; wordIndex < words.length; wordIndex += 1) {
-    for (let length = 2; length <= words[wordIndex].length; length += 1) {
+    const wordLength = graphemes(words[wordIndex]).length;
+    for (let length = 2; length <= wordLength; length += 1) {
       candidates.push(words.map((word, index) => (
-        index < wordIndex ? word : index === wordIndex ? word.slice(0, length) : word[0]
+        index < wordIndex ? word : index === wordIndex ? graphemePrefix(word, length) : firstGrapheme(word)
       )).join(''));
     }
   }

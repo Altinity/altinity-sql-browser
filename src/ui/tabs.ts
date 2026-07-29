@@ -37,6 +37,37 @@ export interface TabsApp {
   document: Document;
 }
 
+// `renderTabs` deliberately replaces the strip wholesale. A native click (or
+// Space/Enter's native click) therefore removes the button that received the
+// event. Keep the intended selector across the signal-driven render and focus
+// its replacement synchronously at the end of that render; a timeout would
+// race the workbench shell's effect and leave keyboard focus on a detached
+// node. Closing an active tab uses this same hand-off for its chosen neighbour.
+// Key by app so two independently mounted/tested controllers cannot steal each
+// other's focus request.
+const pendingTabFocusIds = new WeakMap<TabsApp, string>();
+
+const tabStateDescription = (tab: QueryTab): string => {
+  const states = [
+    tabSaveDirty(tab) ? 'Unsaved changes' : null,
+    tab.externalState === 'conflict' ? 'Changed in another tab; resolve the conflict to save' : null,
+    tab.externalState === 'deleted' ? 'Deleted in another tab; saving will create a new query' : null,
+  ].filter((state): state is string => state !== null);
+  return states.join('. ');
+};
+
+const tabAccessibleLabel = (context: string, tab: QueryTab): string => {
+  const state = tabStateDescription(tab);
+  return state ? `${context} / ${tab.name}. ${state}` : `${context} / ${tab.name}`;
+};
+
+/** Select a tab and preserve keyboard focus across the render replacement. */
+function activateTab(app: TabsApp, id: string): void {
+  if (id === app.state.activeTabId.value) return;
+  pendingTabFocusIds.set(app, id);
+  selectTab(app, id);
+}
+
 // #447 removed `filterRoleBadge` (and its `FilterRoleTarget`): it was the shared
 // "Filter" role badge painted next to a tab name here and next to a Library row
 // in saved-history.ts, and the only role it ever announced was the Filter role
@@ -55,13 +86,26 @@ export function renderTabs(app: TabsApp): void {
     const isActive = t.id === app.state.activeTabId.value;
     const origin = origins.get(t.id)!;
     const fullContext = `${origin.context} / ${t.name}`;
-    const select = (): void => selectTab(app, t.id);
+    const select = (): void => activateTab(app, t.id);
+    const move = (event: KeyboardEvent): void => {
+      const tabs = app.state.tabs.value;
+      const index = tabs.findIndex((tab) => tab.id === t.id);
+      const targetIndex = event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+        : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+          : event.key === 'Home' ? 0
+            : event.key === 'End' ? tabs.length - 1 : -1;
+      if (targetIndex < 0) return;
+      event.preventDefault();
+      activateTab(app, tabs[targetIndex].id);
+    };
     return h('div', { class: 'qtab' + (isActive ? ' active' : '') },
       h('button', {
         class: 'qtab-select', type: 'button', role: 'tab', title: fullContext,
         'aria-selected': isActive ? 'true' : 'false',
-        'aria-label': fullContext,
+        'aria-label': tabAccessibleLabel(origin.context, t),
+        tabindex: isActive ? '0' : '-1', 'data-tab-id': t.id,
         onclick: select,
+        onkeydown: move,
       },
         h('span', { class: 'name' }, t.name),
         origin.badge === null ? null : h('span', {
@@ -73,6 +117,7 @@ export function renderTabs(app: TabsApp): void {
       t.externalState
         ? h('span', {
             class: 'qtab-external ' + t.externalState,
+            'aria-hidden': 'true',
             title: t.externalState === 'conflict'
               ? 'This query changed in another tab — resolve the conflict to save'
               : 'This query was deleted in another tab — Save will create a new one',
@@ -80,16 +125,22 @@ export function renderTabs(app: TabsApp): void {
         : null,
       // #457: `tabSaveDirty`, not `tabDirty` — the dot and the Save button must
       // read the SAME predicate, and a variable tab's Spec is never saved.
-        tabSaveDirty(t) ? h('span', { class: 'dirty' }) : null,
+        tabSaveDirty(t) ? h('span', { class: 'dirty', 'aria-hidden': 'true' }) : null,
       ),
       app.state.tabs.value.length > 1
         ? h('button', {
-            class: 'close', title: `Close ${t.name}`, 'aria-label': `Close ${t.name}`,
+            class: 'close', type: 'button', title: `Close ${t.name}`, 'aria-label': `Close ${t.name}`,
             onclick: (e: Event) => { e.stopPropagation(); requestCloseTab(app, t.id, e.currentTarget as HTMLElement); },
           }, Icon.close())
         : null,
     );
   }));
+  const pendingTabFocusId = pendingTabFocusIds.get(app);
+  if (pendingTabFocusId !== undefined) {
+    pendingTabFocusIds.delete(app);
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.qtab-select'))
+      .find((select) => select.dataset.tabId === pendingTabFocusId)?.focus();
+  }
 }
 
 // No refresh() any more: an effect wired in createApp() reads `tabs`/`activeTabId`
@@ -297,7 +348,7 @@ export function openVariableTab(
  */
 export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement): void {
   const tab = app.state.tabs.value.find((t) => t.id === id)!;
-  if (!tabSaveDirty(tab)) { closeTab(app, id); return; }
+  if (!tabSaveDirty(tab)) { closeTab(app, id, true); return; }
   openMenu({
     document: app.document,
     trigger,
@@ -308,7 +359,7 @@ export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement):
         kind: 'item',
         label: 'Close without saving',
         extraClass: 'qtab-close-confirm-go',
-        onClick: () => closeTab(app, id),
+        onClick: () => closeTab(app, id, true),
       },
       {
         kind: 'item', label: 'Cancel', extraClass: 'qtab-close-confirm-cancel', autofocus: true,
@@ -318,15 +369,20 @@ export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement):
   });
 }
 
-/** Close a tab (never the last one), re-selecting a neighbour if needed. */
-export function closeTab(app: TabsApp, id: string): void {
+/** Close a tab (never the last one), re-selecting a neighbour if needed.
+ * UI close controls request focus restoration because their own DOM is about
+ * to be replaced; programmatic lifecycle callers keep their existing focus. */
+export function closeTab(app: TabsApp, id: string, restoreFocus = false): void {
   if (app.state.tabs.value.length <= 1) return;
   const idx = app.state.tabs.value.findIndex((t) => t.id === id);
+  const wasActive = id === app.state.activeTabId.value;
   batch(() => {
     app.state.tabs.value = app.state.tabs.value.filter((t) => t.id !== id);
-    if (id === app.state.activeTabId.value) {
-      app.state.activeTabId.value = app.state.tabs.value[Math.max(0, idx - 1)].id;
-    }
+    const selectedId = wasActive
+      ? app.state.tabs.value[Math.max(0, idx - 1)].id
+      : app.state.activeTabId.value;
+    if (restoreFocus) pendingTabFocusIds.set(app, selectedId);
+    if (wasActive) app.state.activeTabId.value = selectedId;
   });
 }
 
