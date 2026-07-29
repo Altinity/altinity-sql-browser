@@ -30,9 +30,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)
   matched on any focus, so a row a user had merely clicked to select kept its
   actions visible indefinitely, alongside whichever other row the pointer was
-  hovering — swapped to `:has(:focus-visible)`, which only a real keyboard
-  Tab/Arrow grants, preserving reveal-on-keyboard-focus without pinning a
-  clicked row open. Separately, `Sales revenue · 2` read as a right-aligned
+  hovering — swapped to `:focus-visible`/`:has(:focus-visible)` (the row's own
+  composite tab stop and its controls, respectively — `:has()`'s implicit
+  descendant selector alone misses the row itself), which only a real
+  keyboard Tab/Arrow grants, preserving reveal-on-keyboard-focus without
+  pinning a clicked row open. Separately, `Sales revenue · 2` read as a
+  right-aligned
   column rather than immediately after the name (`Library · 66`'s placement,
   as `dashboard-tree-model.ts` already documented as the intent): the label
   and count are now wrapped in one flex group so only that group grows,

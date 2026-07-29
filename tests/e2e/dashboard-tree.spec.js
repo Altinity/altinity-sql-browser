@@ -938,6 +938,23 @@ test.describe('direct row actions (#494)', () => {
     await expect(hovered.locator('.dash-tree-act').first()).toHaveCSS('opacity', '1');
   });
 
+  // `:has()`'s argument is an implicit DESCENDANT selector, so a reveal rule
+  // written as only `.dash-tree-row:has(:focus-visible)` would miss the row's
+  // OWN composite tab stop — the roving-tabindex owner a real ArrowDown/
+  // ArrowUp or the first Tab into the tree lands ON, before a chevron or
+  // action button has been reached. That left the cluster invisible at
+  // exactly the moment a sighted keyboard user first arrives at a row.
+  test('arrowing onto a row reveals its own actions, not just a descendant control\'s', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const row = treeRow(page, 'workspace:sales');
+    await row.focus();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    await expect(row).toBeFocused();
+    await expect(row.locator('.dash-tree-act').first()).toHaveCSS('opacity', '1');
+  });
+
   test('the dialog announces itself as a modal named by its heading', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
