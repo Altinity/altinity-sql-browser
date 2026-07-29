@@ -114,13 +114,13 @@ test('a Dashboard-row plus creates a blank linked Panel and focuses its SQL edit
   const plus = dashboard.locator('.dash-tree-act[aria-label="Add panel to Sales"]');
 
   // The direct action is a real keyboard target, revealed by focus just like
-  // the adjacent pencil and trash. Start from the row's disclosure control:
-  // the next Tab must be the plus in the declared within-row order.
-  await dashboard.locator('.dash-tree-chev').focus();
-  await page.keyboard.press('Tab');
+  // the adjacent pencil and trash. Focus it explicitly: browser tab order also
+  // includes the independently interactive row label, so it is not portable to
+  // assert that the plus immediately follows the disclosure control.
+  await plus.focus();
   await expect(plus).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(plus).toBeFocused();
-  await expect.poll(() => plus.evaluate((el) => getComputedStyle(el).display)).not.toBe('none');
+  await expect.poll(() => plus.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
   await page.keyboard.press('Enter');
 
   const dialog = page.getByRole('dialog', { name: 'Add panel' });

@@ -1775,22 +1775,27 @@ body.detached-tab .graph-overlay-panel {
   border: none; background: transparent;
   color: var(--fg-faint); cursor: pointer;
   border-radius: var(--r-xs); flex-shrink: 0;
-  display: none; align-items: center; justify-content: center;
+  /* `display: none` made the hover-revealed controls unreachable from the
+     keyboard: a browser cannot tab to an element it has removed from its focus
+     order. Keep them focusable, then let focus-within reveal the cluster. */
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
 }
-/* Revealed on hover like the Library row actions, but ALWAYS present for the
-   keyboard: `:focus-within` keeps the cluster visible while the row or one of
-   its controls owns focus, so no operation is keyboard-unreachable.
+/* Revealed on hover like the Library row actions, but ALWAYS in the keyboard
+   focus order: `:focus-within` makes the visually concealed cluster visible
+   while the row or one of its controls owns focus, so no operation is
+   keyboard-unreachable.
    `[aria-expanded="true"]` holds it visible for its own dialog/confirmation's
    whole lifetime — both are body-mounted, so by the time one closes the
-   pointer and focus have left the row, and `focus()` on a `display: none`
-   trigger is a silent no-op in a real browser. */
+   pointer and focus have left the row, and an invisible trigger must not
+   become unreachable before focus can return to it. */
 .dash-tree-row:hover .dash-tree-act,
 .dash-tree-row:focus-within .dash-tree-act,
-.dash-tree-act[aria-expanded="true"] { display: inline-flex; }
+.dash-tree-act[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
 /* #447's orphan-variable trash stays ALWAYS visible: it is the only way to
    remove stored SQL nothing references any more, and a hover-only affordance
    would hide that row's whole point. #494 preserves that control as it was. */
-.dash-tree-act-static { display: inline-flex; }
+.dash-tree-act-static { opacity: 1; pointer-events: auto; }
 .dash-tree-act:hover { color: var(--fg); background: var(--bg-hover); }
 /* Destructive treatment on hover/focus, so the rightmost control of the
    cluster reads as the one that removes something. */
