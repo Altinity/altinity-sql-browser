@@ -10,6 +10,7 @@ import type {
 import { makeApp } from '../helpers/fake-app.js';
 import type { FakeChart } from '../helpers/fake-app.js';
 import { newResult as newResultUntyped } from '../../src/core/stream.js';
+import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { formatRows } from '../../src/core/format.js';
 import { queryPanel } from '../../src/core/saved-query.js';
 import type { AppState, ResultSort } from '../../src/state.js';
@@ -900,6 +901,64 @@ describe('expandDataPane', () => {
     expect(qs(row, '.dash-variables[aria-label="Query variables"]')).not.toBeNull();
     expect(qsa(row, '.var-field')).toHaveLength(1);
     expect(app.exec.executeRead).not.toHaveBeenCalled(); // open = snapshot, no request
+  });
+
+  // #478: `variable-bar.ts`'s `VariableBarApp.state.activeByName` is a
+  // caller-neutral port; this detached-Data caller must ALIAS the real
+  // `AppState.filterActive` object into it, never copy it — the bar mutates
+  // that map in place (a text field's activation-follows-value, #165), so a
+  // copy would silently strand `effectiveFilterActive`/every other Workbench
+  // reader on the old, never-updated object. The identity check below is
+  // what makes a copy-instead-of-alias regression fail: capture the object
+  // reference BEFORE the bar is ever built, then prove the bar's own edit
+  // lands on that SAME object, and that it routes through the real,
+  // persisted `saveFilterActive` (not a Dashboard-style no-op).
+  it('#478: aliases the real AppState.filterActive object (not a copy) and calls saveFilterActive', () => {
+    const app = makeApp();
+    const activeRef = app.state.filterActive;
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    const input = qs<HTMLInputElement>(overlay, '.detached-variable-row .var-field input');
+    input.value = 'Warning';
+    input.dispatchEvent(new Event('input', { bubbles: true })); // #165: activation syncs synchronously
+    // Still the exact same object — the adapter aliased it at construction,
+    // it never swapped `app.state.filterActive` for a fresh reference.
+    expect(app.state.filterActive).toBe(activeRef);
+    // ...and the bar's own write landed on that real object, not a private copy.
+    expect(activeRef.level).toBe(true);
+    // The adapter's `saveActive` routed to the real persisted Workbench save.
+    expect(app.params.saveFilterActive).toHaveBeenCalled();
+  });
+
+  // #478: the adapter's remaining two members — `wallNow` and `clearVarRecent`
+  // — are each closures over the real `app`, not the real `app` reached
+  // around; these two tests are this file's only exercise of either closure
+  // body (a same-shape cast would need neither, so these regress a silent
+  // revert back to `app as VariableBarApp`).
+  it('#478: a DateTime field resolves its preview through the adapter\'s wallNow closure', () => {
+    const wallNow = vi.fn(() => 0);
+    const app = makeApp({ wallNow });
+    const r = tableResult();
+    r.source = {
+      sql: 'SELECT n, s FROM t WHERE d = {asOf:DateTime}',
+      tabId: 't1', rowLimit: 100, title: 'Filtered', description: 'warnings only',
+    };
+    app.state.varValues.asOf = '-1d';
+    expandDataPane(app, r);
+    expect(wallNow).toHaveBeenCalled();
+  });
+
+  it('#478: Clear recent on the field footer routes through the adapter\'s clearVarRecent closure', () => {
+    const app = makeApp();
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'level', 'Warning');
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    const input = qs<HTMLInputElement>(overlay, '.detached-variable-row .var-field input');
+    input.dispatchEvent(new Event('focus'));
+    qs<HTMLButtonElement>(overlay, '.var-combo-footer button').dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    );
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('level');
   });
 
   it('a retained Refresh button is inert after its detached view closes', async () => {

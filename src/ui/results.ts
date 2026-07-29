@@ -174,8 +174,10 @@ export interface ResultsApp {
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
   /** #276 Phase 5: no flat `App` delegates for the params-group members this
-   *  module (and, via the `as VariableBarApp` cast below, variable-bar.ts) needs —
-   *  `app.params.*` directly. */
+   *  module needs — `app.params.*` directly. #478 replaced the former
+   *  `as VariableBarApp` cast with an explicit adapter below, so `saveFilterActive`
+   *  is now reached through that adapter's caller-neutral `saveActive` rather than
+   *  by variable-bar.ts reading this shape directly. */
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
   /** #276 Phase 5: no flat `App.savePref` delegate — `app.prefs.save(name,
    *  value)` directly (the cell-detail drawer's own resize persist). */
@@ -1111,7 +1113,22 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         }).fields[name];
         // A committed field re-runs only this detached query (rerun ignores the
         // param name buildVariableBar passes — a single source re-runs wholesale).
-        const variableBar = buildVariableBar(app as VariableBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query variables' });
+        // #478: an explicit adapter, not a same-shape cast — `activeByName`
+        // ALIASES the real `AppState.filterActive` object (the bar mutates it
+        // in place; a copy would silently stop `effectiveFilterActive` above,
+        // and every other Workbench reader, from observing the edit), and
+        // `saveActive` routes to the real persisted Workbench save.
+        const variableBarApp: VariableBarApp = {
+          document: doc,
+          state: { varValues: app.state.varValues, activeByName: app.state.filterActive, varRecent: app.state.varRecent },
+          params: {
+            saveVarValues: () => app.params.saveVarValues(),
+            saveActive: () => app.params.saveFilterActive(),
+            clearVarRecent: (name: string) => app.params.clearVarRecent(name),
+          },
+          wallNow: () => app.wallNow(),
+        };
+        const variableBar = buildVariableBar(variableBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query variables' });
         variableBarDispose = variableBar.dispose;
         refreshBtn = h('button', {
           class: 'res-act detached-refresh', title: 'Re-run this query with the current variable values',

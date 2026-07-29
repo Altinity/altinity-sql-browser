@@ -176,8 +176,8 @@
     const draftActive = {};
     const variableBarApp = {
       document,
-      state: { varValues: draftValues, filterActive: draftActive, varRecent: {} },
-      params: { saveVarValues() {}, saveFilterActive() {}, clearVarRecent() {} },
+      state: { varValues: draftValues, activeByName: draftActive, varRecent: {} },
+      params: { saveVarValues() {}, saveActive() {}, clearVarRecent() {} },
       wallNow: () => WALL,
     };
     // Session-lifetime, per-group "Recently used" ranges (owner decision: not

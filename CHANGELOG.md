@@ -9,6 +9,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
+  `state.filterActive`/`params.saveFilterActive` — named after Workbench
+  persistence even though Dashboard's own caller uses them for an unpersisted
+  in-memory draft — are renamed to `state.activeByName`/`params.saveActive`
+  on the shared `variable-bar.ts` contract only. Every persisted name and
+  storage key is unchanged (`AppState.filterActive`,
+  `WorkbenchParameterSession.saveFilterActive`, `effectiveFilterActive`,
+  `asb:filterActive`; no storage migration). Both callers now construct an
+  explicit adapter instead of a same-shape cast: Dashboard aliases its local
+  draft activation map with a no-op `saveActive` (the draft is never
+  persisted); detached Data aliases the real `AppState.filterActive` object
+  and routes `saveActive` to `app.params.saveFilterActive()`. Pure rename +
+  adapter refactor — no user-visible behavior changes.
+
 ### Fixed
 - **Dashboard styles now persist independent dimensions and temporary column
   previews no longer mutate authored layouts** (behavioral correction to

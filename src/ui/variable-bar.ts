@@ -1,5 +1,5 @@
 // The shared `{name:Type}` variable bar: one field per parameter, driving the
-// same `state.varValues`/`state.filterActive` machinery the SQL Browser
+// same `state.varValues`/`state.activeByName` machinery the SQL Browser
 // workbench uses. Extracted from the dashboard (#149 D3) when the detached Data
 // view (#185) became its second consumer (CLAUDE.md rule 5) — both the
 // dashboard's global variables and the detached view's per-query variable row
@@ -45,7 +45,6 @@ import { Icon } from './icons.js';
 import type { KeyboardOwner } from './app.types.js';
 import type { VariableOption } from '../core/variable-options.types.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
-import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). A real `App` satisfies this
@@ -56,12 +55,27 @@ export interface VariableBarApp {
   document: Document;
   state: {
     varValues: Record<string, string>;
-    filterActive: Record<string, boolean>;
+    /** #478: caller-neutral activation port — this module is shared by
+     *  Dashboard (an in-memory draft map, no persistence) and detached Data
+     *  (the persisted Workbench `AppState.filterActive`), so it must not name
+     *  either caller's storage model. ALIASED by both callers, never copied:
+     *  this module mutates it in place (a select's commit, a text field's
+     *  activation-follows-value), so a copy would silently stop the caller's
+     *  own reads (`effectiveFilterActive`, `activeMap`) from observing edits. */
+    activeByName: Record<string, boolean>;
     varRecent: RecentMap;
   };
   /** #276 Phase 5: no flat `App.saveVarValues`/`saveFilterActive`/
-   *  `clearVarRecent` delegates — this module reads `app.params.*` directly. */
-  params: Pick<WorkbenchParameterSession, 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
+   *  `clearVarRecent` delegates — this module reads `app.params.*` directly.
+   *  #478: `saveActive` replaces the Workbench-named `saveFilterActive` — a
+   *  caller-neutral port every caller supplies its OWN explicit adapter for
+   *  (Dashboard: a no-op, its draft is never persisted; detached Data: routes
+   *  to `app.params.saveFilterActive()`, the real persisted Workbench save). */
+  params: {
+    saveVarValues(): void;
+    saveActive(): void;
+    clearVarRecent(name: string): void;
+  };
   wallNow(): number;
 }
 
@@ -295,7 +309,7 @@ export interface VariableBarHandle {
 /**
  * Build a variable bar: one field per `{name:Type}` parameter in `params` (the
  * shape from `fieldControls(analysis)`), sharing `app.state.varValues` /
- * `app.state.filterActive` / `app.state.varRecent` with every other surface.
+ * `app.state.activeByName` / `app.state.varRecent` with every other surface.
  * Hidden entirely (no row, no spacing) when `params` is empty — same convention
  * as the workbench's var-strip. Typing debounces before calling `onCommit(name)`;
  * Enter or blur fires immediately, clearing any pending debounce so a value
@@ -435,7 +449,7 @@ export function buildVariableBar(
       name: p.name,
       options: spec.options ?? [],
       selected: spec.selection ?? [],
-      active: !!app.state.filterActive[p.name],
+      active: !!app.state.activeByName[p.name],
       loading: !!spec.loading,
       incomplete: !!spec.optionsIncomplete,
       title: p.name + ': ' + p.type,
@@ -444,7 +458,7 @@ export function buildVariableBar(
       // Activation travels with the value: a non-empty selection is active, and
       // Clear-then-Apply returns the variable to unset.
       onApply: (values, active) => {
-        app.state.filterActive[p.name] = active;
+        app.state.activeByName[p.name] = active;
         options.onCommitVariableSelection?.(p.name, values, active);
       },
       onKeyboardOwnerChange: options.onKeyboardOwnerChange,
@@ -471,7 +485,7 @@ export function buildVariableBar(
       name: p.name,
       options: spec.options ?? [],
       value: app.state.varValues[p.name] || '',
-      active: !!app.state.filterActive[p.name],
+      active: !!app.state.activeByName[p.name],
       title: p.name + ': ' + p.type,
       onCommit: (value, active) => {
         // A select commits value AND activation together — a pick (or the × that
@@ -480,7 +494,7 @@ export function buildVariableBar(
         // every other reader (the invalid-field affordance, a sibling rebuild)
         // still sees one source of truth.
         app.state.varValues[p.name] = value;
-        app.state.filterActive[p.name] = active;
+        app.state.activeByName[p.name] = active;
         options.onCommitVariable?.(p.name, value, active);
       },
     });
@@ -501,7 +515,7 @@ export function buildVariableBar(
    * a native checkbox is indeterminate while inactive, then emits the same
    * canonical strings the former true/false combobox options emitted. */
   const buildBoolField = (p: FieldControl): HTMLElement => {
-    const active = !!app.state.filterActive[p.name];
+    const active = !!app.state.activeByName[p.name];
     const optionalHint = p.optional ? ' — optional: unset leaves its filter block out' : '';
     const hintId = `var-bool-${idSafe(p.name)}-hint`;
     const input = h('input', {
@@ -512,7 +526,7 @@ export function buildVariableBar(
       onchange: () => {
         const value = input.checked ? 'true' : 'false';
         app.state.varValues[p.name] = value;
-        app.state.filterActive[p.name] = true;
+        app.state.activeByName[p.name] = true;
         options.onCommitVariable?.(p.name, value, true);
       },
     });
@@ -568,9 +582,9 @@ export function buildVariableBar(
       // Text controls sync activation with the value (#165): an activation
       // flip re-runs affected tiles exactly like a value change (same
       // debounce + generation guard downstream).
-      app.state.filterActive[p.name] = input.value !== '';
+      app.state.activeByName[p.name] = input.value !== '';
       app.params.saveVarValues();
-      app.params.saveFilterActive();
+      app.params.saveActive();
       applyFieldState(input, getField(p.name, 'input'), baseTitle, combo?.previewEl);
       // `!`: DOM's clearTimeout is a documented no-op on `null`/`undefined` —
       // the original .js called it unconditionally (`timer` starts `null`).
