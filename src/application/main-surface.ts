@@ -345,3 +345,28 @@ export function withCurrentMember(
   if (surface.kind !== 'dashboard') return surface;
   return { ...surface, currentMember: member };
 }
+
+/**
+ * OWE a render-time focus delivery to the Dashboard's next render (#544/#537).
+ *
+ * The counterpart to `withoutPendingFocus`, for a write that REBUILDS the surface
+ * it wanted to focus inside. #426's in-place path (`withCurrentMember` plus the
+ * command port) cannot serve here: removing a panel commits a two-resource
+ * workspace write, whose `queriesChanged` rebuild discards every tile card —
+ * including the one the successor focus is aimed at — and the rebuild is not
+ * awaited, so a port call made when the commit resolves would target a node that
+ * is already on its way out.
+ *
+ * Owing it to the next render instead means the delivery happens at the one
+ * deterministic point where the target exists, through the same one-shot
+ * `pendingFocus` slot a tree navigation uses, and is spent the same way.
+ *
+ * Deliberately leaves `currentMember` alone: the successor tile is where focus
+ * has to LAND, not something the user chose to select.
+ */
+export function withPendingFocus(
+  surface: MainSurfaceState, member: DashboardFocusTarget,
+): MainSurfaceState {
+  if (surface.kind !== 'dashboard') return surface;
+  return { ...surface, pendingFocus: member };
+}

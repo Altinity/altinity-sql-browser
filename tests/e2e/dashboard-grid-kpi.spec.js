@@ -41,7 +41,7 @@ test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
     expect(await kpiCard.locator('.dash-tile-head').evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
     await expect(kpiCard.locator('.dash-tile-name')).toHaveText('Active users');
     await expect(kpiCard.locator('.dash-gg-grip')).toHaveCount(0);
-    await expect(kpiCard.locator('.dash-gg-del')).toHaveCount(1);
+    await expect(kpiCard.locator('.dash-tile-menu')).toHaveCount(1);
     await expect(kpiCard.locator('.dash-gg-resize')).toHaveCount(1);
     await expect(kpiCard.locator('button.dash-gg-resize')).toHaveCount(1);
     expect(await kpiCard.locator('.dash-tile-body').evaluate((node) => getComputedStyle(node).padding)).toBe('0px');
@@ -51,7 +51,7 @@ test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
     await openWide(page);
     const card = page.locator('#editcmp-grid [data-tile-id="kpi-edit"]');
     const head = card.locator('.dash-tile-head');
-    const del = card.locator('.dash-gg-del');
+    const menuBtn = card.locator('.dash-tile-menu');
     const resize = card.locator('.dash-gg-resize');
     const before = await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }));
 
@@ -66,9 +66,9 @@ test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
     expect(await card.evaluate((node) => ({ w: node.getBoundingClientRect().width, h: node.getBoundingClientRect().height }))).toEqual(before);
 
     await page.mouse.move(0, 0);
-    await del.focus();
+    await menuBtn.focus();
     await expect(head).toBeVisible();
-    await expect(del).toBeFocused();
+    await expect(menuBtn).toBeFocused();
     await resize.focus();
     await expect(resize).toBeFocused();
 
@@ -110,7 +110,7 @@ test.describe('Dashboard grafana-grid KPI tiles (#340)', () => {
 
     // No edit affordances in view mode.
     await expect(kpiCard.locator('.dash-gg-grip')).toHaveCount(0);
-    await expect(kpiCard.locator('.dash-gg-del')).toHaveCount(0);
+    await expect(kpiCard.locator('.dash-tile-menu')).toHaveCount(0);
     await expect(kpiCard.locator('.dash-gg-resize')).toHaveCount(0);
 
     // The neighboring NORMAL view-mode tile is a control: still fully framed.

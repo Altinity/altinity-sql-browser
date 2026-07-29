@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { removeDashboardDocument, removeDashboardPanel } from '../../src/dashboard/application/dashboard-removal.js';
+import {
+  panelRemovalRefusal, removeDashboardDocument, removeDashboardPanel,
+} from '../../src/dashboard/application/dashboard-removal.js';
+import type { PanelRemovalRefusal } from '../../src/dashboard/application/dashboard-removal.js';
 import type {
   DashboardDocumentV2, SavedQueryV2, StoredWorkspaceV5,
 } from '../../src/generated/json-schema.types.js';
@@ -217,6 +220,74 @@ describe('removeDashboardPanel — the captured identity is re-proven (#494)', (
       .toEqual({ status: 'refused', reason: 'ownership-unproven' });
     expect(snapshot(input)).toEqual(before);
   });
+});
+
+describe('panelRemovalRefusal — the availability dry run (#537)', () => {
+  const removable = (): StoredWorkspaceV5 => workspace({
+    queries: [panelQuery('p1')],
+    dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] })],
+  });
+
+  it('answers null for a target the transform would remove, and touches nothing', () => {
+    const input = removable();
+    const before = snapshot(input);
+    expect(panelRemovalRefusal({ workspace: input, dashboardId: 'dash', tileId: 't1', queryId: 'p1' }))
+      .toBeNull();
+    // A dry run that mutated its input would be worse than no dry run at all:
+    // the caller runs this to DECIDE, on every menu open.
+    expect(snapshot(input)).toEqual(before);
+  });
+
+  // Every reason the transform can refuse with, so the dry run can never fall
+  // out of step with it — a new `PanelRemovalRefusal` arm has to be added here.
+  const cases: ReadonlyArray<{
+    reason: PanelRemovalRefusal; target: { dashboardId: string; tileId: string; queryId: string };
+    build: () => StoredWorkspaceV5;
+  }> = [
+    {
+      reason: 'dashboard-missing', target: { dashboardId: 'nope', tileId: 't1', queryId: 'p1' },
+      build: removable,
+    },
+    {
+      reason: 'dashboard-duplicate', target: { dashboardId: 'dash', tileId: 't1', queryId: 'p1' },
+      build: () => workspace({
+        queries: [panelQuery('p1')],
+        dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }] }), dashboard()],
+      }),
+    },
+    {
+      reason: 'tile-missing', target: { dashboardId: 'dash', tileId: 'gone', queryId: 'p1' },
+      build: removable,
+    },
+    {
+      reason: 'tile-retargeted', target: { dashboardId: 'dash', tileId: 't1', queryId: 'other' },
+      build: removable,
+    },
+    {
+      reason: 'tile-duplicate', target: { dashboardId: 'dash', tileId: 't1', queryId: 'p1' },
+      build: () => workspace({
+        queries: [panelQuery('p1'), panelQuery('p2')],
+        dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }, { id: 't1', queryId: 'p2' }] })],
+      }),
+    },
+    {
+      reason: 'ownership-unproven', target: { dashboardId: 'dash', tileId: 't1', queryId: 'p1' },
+      build: () => workspace({
+        queries: [panelQuery('p1')],
+        dashboards: [dashboard({ tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p1' }] })],
+      }),
+    },
+  ];
+
+  for (const { reason, target, build } of cases) {
+    it(`reports ${reason}, agreeing with the transform's own status`, () => {
+      const input = build();
+      expect(panelRemovalRefusal({ workspace: input, ...target })).toBe(reason);
+      // The point of a dry run is that it IS the transform. Assert the pair.
+      expect(removeDashboardPanel({ workspace: input, ...target }))
+        .toEqual({ status: 'refused', reason });
+    });
+  }
 });
 
 describe('removeDashboardDocument (#429, #494)', () => {

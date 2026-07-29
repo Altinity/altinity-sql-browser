@@ -30,7 +30,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { openMenu } from './menu.js';
+import { openConfirmMenu } from './confirm-menu.js';
 import { flashToast } from './toast.js';
 import { LIBRARY_QUERY_MIME } from './dnd-mime.js';
 import { discardVariableDraft, reconcileVariableTab } from './tabs.js';
@@ -740,7 +740,7 @@ function buildRow(
   }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
     h('span', { class: 'meta' }, row.meta), marker,
     // #494: the trailing DIRECT controls, in the model's own order — edit
-    // before delete, destructive rightmost. There is no `⋯` any more.
+    // before delete, destructive rightmost. No tree ROW carries a `⋯` any more.
     row.actions.map((act) => buildActionButton(app, doc, row, act, ui)));
 
   return rowEl;
@@ -837,10 +837,15 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  * #494 — one trailing direct control, built from the model's resolved action.
  *
  * Every Dashboard/Panel operation is its own real `<button>` now: the `⋯`
- * overflow menu is gone from both, so nothing a row can do is hidden behind a
- * second press. The orphaned-variable trash (#447) came along, because it was
+ * overflow menu is gone from both ROWS, so nothing a row can do is hidden behind
+ * a second press. The orphaned-variable trash (#447) came along, because it was
  * already exactly this shape and keeping it separate would have meant two ways
  * of saying "a trailing control".
+ *
+ * #544 reintroduced a `⋯` on the Dashboard TILE head (`tileMenuAction` in
+ * ui/dashboard.ts), which does not reopen this decision: #494's argument is about
+ * a two-control row in a fixed-width side pane, and a tile head had grown to five
+ * controls on a card that can render under 100px wide.
  *
  * Availability is the MODEL's answer, never re-derived here (#494 forbids
  * reading capability off DOM classes): an unavailable action still renders, so
@@ -940,10 +945,10 @@ const CONFIRM_LABELS: Record<DashboardTreeActionKind, string> = {
  *
  * An unavailable action does nothing at all — the model already said why, and
  * the button carries that reason as its tooltip and `aria-disabled` state.
- * Destructive actions never run straight from the press: they open the
- * confirmation this repo already uses for the same job (`openMenu`, anchored
- * on the trigger), which gives them a real `role="menuitem"`, an explicit
- * Cancel, Escape/outside-click dismissal and focus restored to the trigger.
+ * Destructive actions never run straight from the press: they open the shared
+ * confirmation (`openConfirmMenu`, anchored on the trigger), which gives them a
+ * real `role="menuitem"`, an explicit Cancel, Escape/outside-click dismissal and
+ * focus restored to the trigger.
  */
 function runAction(
   app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
@@ -1002,31 +1007,23 @@ function openPanelCreationDialog(
   });
 }
 
-/** Ask before destroying something, anchored on the control that asked. */
+/** Ask before destroying something, anchored on the control that asked.
+ *
+ *  The shape — question, destructive row first, Cancel autofocused (#501) — now
+ *  lives in the shared `openConfirmMenu`; this supplies the tree's own wording
+ *  and its own three classes, so the rendered DOM is unchanged. */
 function confirmDestructive(
   doc: Document, trigger: HTMLButtonElement, act: DashboardTreeAction, go: () => void,
 ): void {
-  openMenu({
+  openConfirmMenu({
     document: doc,
     trigger,
+    question: act.confirm!,
+    confirmLabel: CONFIRM_LABELS[act.kind],
     menuClass: 'dash-tree-confirm',
-    rows: [
-      { kind: 'section', label: act.confirm! },
-      {
-        kind: 'item',
-        label: CONFIRM_LABELS[act.kind],
-        extraClass: 'dash-tree-confirm-go',
-        onClick: go,
-      },
-      // #501: the destructive row is listed FIRST (this app's visual
-      // convention — the action reads top, Cancel second), but `openMenu`
-      // autofocuses whichever row asks for it. A keyboard user who opens a
-      // confirmation and presses Enter out of momentum must land on Cancel.
-      {
-        kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', autofocus: true,
-        onClick: () => {},
-      },
-    ],
+    goClass: 'dash-tree-confirm-go',
+    cancelClass: 'dash-tree-confirm-cancel',
+    onConfirm: go,
   });
 }
 

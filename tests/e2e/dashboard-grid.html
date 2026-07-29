@@ -125,14 +125,18 @@
       name.title = title;
       name.textContent = title;
       head.appendChild(name);
-      let delBtn = null;
+      // #544: the head's trailing control is the `⋯` actions menu now — the
+      // grid-only trash is gone, and remove is one of its rows.
+      let menuBtn = null;
       if (mode === 'edit') {
-        delBtn = document.createElement('button');
-        delBtn.className = 'dash-gg-del';
-        delBtn.title = 'Remove tile';
-        delBtn.setAttribute('aria-label', 'Remove ' + title + ' from the dashboard');
-        delBtn.textContent = '✕';
-        head.appendChild(delBtn);
+        menuBtn = document.createElement('button');
+        menuBtn.className = 'dash-tile-menu';
+        menuBtn.title = 'Panel actions';
+        menuBtn.setAttribute('aria-label', 'Panel actions: ' + title);
+        menuBtn.setAttribute('aria-haspopup', 'menu');
+        menuBtn.setAttribute('aria-expanded', 'false');
+        menuBtn.textContent = '⋯';
+        head.appendChild(menuBtn);
       }
 
       const body = document.createElement('div');
@@ -150,7 +154,7 @@
         resizeHandle.title = 'Resize';
         card.appendChild(resizeHandle);
       }
-      return { card, grip, delBtn, resizeHandle };
+      return { card, grip, menuBtn, resizeHandle };
     }
 
     // ── Scenario 1: packing ────────────────────────────────────────────────

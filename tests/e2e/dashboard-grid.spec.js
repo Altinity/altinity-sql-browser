@@ -237,28 +237,44 @@ test.describe('Dashboard grafana-grid layout', () => {
     expect(events[events.length - 1]).toEqual({ tileId: 'e2', span: 6, height: 2 });
   });
 
-  test('hover reveals the delete button and resize glyph only in edit mode; view mode never builds edit affordances', async ({ page }) => {
+  test('hover reveals the ⋯ and the resize glyph only in edit mode; view mode never builds edit affordances', async ({ page }) => {
     await openWide(page);
-    const delBtn = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-del');
+    const menuBtn = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-tile-menu');
     const resizeHandle = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-resize');
     const grip = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-grip');
 
-    // Grip is always visible in edit mode (not hover-gated); delete + the
+    // Grip is always visible in edit mode (not hover-gated); the `⋯` + the
     // resize glyph start hidden (opacity 0) and reveal on hover (styles.css
     // "Grafana-grid layout engine" section).
     await expect(grip).toBeVisible();
-    expect(await delBtn.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+    expect(await menuBtn.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
     expect(await resizeHandle.evaluate((node) => getComputedStyle(node, '::after').opacity)).toBe('0');
 
     await page.locator('#edit-grid .dash-tile[data-tile-id="e1"]').hover();
-    expect(await delBtn.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+    // Polled, not read once: unlike the trash it replaces, the `⋯` shares the tile
+    // head's `transition: opacity .12s`, so a single read lands mid-animation.
+    const opacity = () => menuBtn.evaluate((node) => getComputedStyle(node).opacity);
+    await expect.poll(opacity).toBe('1');
     expect(await resizeHandle.evaluate((node) => getComputedStyle(node, '::after').opacity)).toBe('1');
+
+    // #544: the `⋯` must ALSO stay visible for its own menu's lifetime, with
+    // neither hover nor focus holding it. `openMenu` mounts the menu on the body and
+    // takes focus with it, so the tile loses `:focus-within` and the pointer has
+    // usually left the card — without the `[aria-expanded="true"]` rule the trigger
+    // fades out from under its own anchored menu, and focus-restore on close lands
+    // on an invisible control. Only a real stylesheet can show this.
+    await page.mouse.move(0, 0);
+    await expect.poll(opacity).toBe('0');
+    await menuBtn.evaluate((node) => node.setAttribute('aria-expanded', 'true'));
+    await expect.poll(opacity).toBe('1');
+    await menuBtn.evaluate((node) => node.setAttribute('aria-expanded', 'false'));
+    await expect.poll(opacity).toBe('0');
 
     // View/read-only mode never constructs the edit affordances at all (not
     // merely CSS-hidden) — `ui/dashboard.ts`'s `ensureTileEl` gates their
     // construction on `!readOnly`.
     await expect(page.locator('#viewonly-grid .dash-gg-grip')).toHaveCount(0);
-    await expect(page.locator('#viewonly-grid .dash-gg-del')).toHaveCount(0);
+    await expect(page.locator('#viewonly-grid .dash-tile-menu')).toHaveCount(0);
     await expect(page.locator('#viewonly-grid .dash-gg-resize')).toHaveCount(0);
   });
 
