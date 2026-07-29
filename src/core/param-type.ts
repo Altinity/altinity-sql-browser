@@ -272,6 +272,13 @@ export function typeLexKind(type: string | ParsedParamType): 'int' | 'float' | '
   return 'text';
 }
 
+/** Whether a persisted Bool-family value should display as checked. The
+ * parameter pipeline accepts several legacy ClickHouse true spellings; a
+ * checkbox must preserve their meaning when a Dashboard rebuilds. Pure. */
+export function boolCheckboxChecked(value: unknown): boolean {
+  return value === true || (typeof value === 'string' && /^(true|1|yes|on|t|y)$/i.test(value));
+}
+
 /**
  * The distinct canonical types among a field's declarations — `null` when
  * they all agree (no conflict), otherwise the conflicting set in first-seen

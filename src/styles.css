@@ -2064,6 +2064,12 @@ body.detached-tab .graph-overlay-panel {
    glyph (the input title spells it out either way). */
 .var-field.is-optional .var-name { color: var(--fg-mute); }
 .var-field:not(.is-optional) .var-name { font-weight: var(--fw-bold); }
+.var-bool-field { align-items: center; }
+.var-bool-label { display: contents; }
+.var-bool {
+  width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer;
+}
+.var-bool:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
 /* Compact, type-aware width (#345): `--var-input-ch` is set once per field,
    at build time, by whichever field-family builder created the input
    (`applyFieldWidth`, var-field.ts — variable-width.ts resolves the ch count

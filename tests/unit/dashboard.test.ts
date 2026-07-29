@@ -2976,6 +2976,31 @@ describe('renderDashboard — shared rich variable bar over the viewer (#188)', 
     expect(qs(app.root, '.dash-filter-count-host')).toBeNull();
   });
 
+  it('renders Bool variables as checkboxes and Clear all restores their unset state', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE enabled = {enabled:Bool}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    let input = qs<HTMLInputElement>(app.root, '.dash-variable-host .var-bool');
+    expect(input).not.toBeNull();
+    expect(input.indeterminate).toBe(true);
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+    expect(qs<HTMLButtonElement>(app.root, '.dash-clear-variables').disabled).toBe(false);
+    // The synchronous publish rebuilds the bar, so read its fresh checkbox.
+    input = qs<HTMLInputElement>(app.root, '.dash-variable-host .var-bool');
+    expect(input.checked).toBe(true);
+    qs<HTMLButtonElement>(app.root, '.dash-clear-variables').click();
+    await flush();
+    input = qs<HTMLInputElement>(app.root, '.dash-variable-host .var-bool');
+    expect(input.checked).toBe(false);
+    expect(input.indeterminate).toBe(true);
+  });
+
   it('the variable host IS the scrolling field viewport (#294, single-level since the count sibling was removed)', async () => {
     const { app } = dashApp({
       workspace: wsWith({

@@ -698,7 +698,7 @@ export function fieldControls(analysis: ParameterAnalysis): FieldControl[] {
  *  `'unsupported'` are reachable only under the scalar-controls policy (see
  *  `fieldControlKind`). */
 export interface FieldControlKindResult {
-  kind: 'enum' | 'date' | 'text' | 'multi' | 'unsupported';
+  kind: 'enum' | 'date' | 'text' | 'bool' | 'multi' | 'unsupported';
   enumOptions: string[] | null;
 }
 
@@ -710,11 +710,9 @@ export interface FieldControlKindOptions {
    * confined to that surface so the workbench's variables strip keeps rendering
    * byte-identical controls:
    *
-   *   - `Bool` gains `true`/`false` as suggestions (it would otherwise fall to a
-   *     plain text box with no hint of what it accepts). The field stays free
-   *     text, because ClickHouse's Bool accept-set is not enumerable —
-   *     `yes`/`no`/`on`/`off`/`1`/`0` all work — so the list is a hint, not a
-   *     constraint;
+   *   - `Bool` resolves to the Dashboard's dedicated checkbox control. The
+   *     control emits the same canonical `true`/`false` values as the prior
+   *     choices, while an inactive field remains unset;
    *   - an `Array` of a SCALAR resolves to `'multi'`: several option rows
    *     combine into one bound array, which is exactly what the restored #189
    *     multi-select does. This says the TYPE can be multi-selected, not that
@@ -730,10 +728,6 @@ export interface FieldControlKindOptions {
    */
   scalarControls?: boolean;
 }
-
-/** The suggestions offered for a `Bool` variable under the scalar-controls
- *  policy. A hint, not a whitelist — see `FieldControlKindOptions`. */
-export const BOOL_CONTROL_OPTIONS: string[] = ['true', 'false'];
 
 /**
  * Which control a `fieldControls` entry renders — the enum > date-like >
@@ -765,7 +759,7 @@ export function fieldControlKind(
     // never be one whose option SQL was skipped.
     if (multiSelectElementType(field.type)) return { kind: 'multi', enumOptions: null };
     if (isCompoundParamType(field.type)) return { kind: 'unsupported', enumOptions: null };
-    if (typeLexKind(field.type) === 'bool') return { kind: 'enum', enumOptions: BOOL_CONTROL_OPTIONS };
+    if (typeLexKind(field.type) === 'bool') return { kind: 'bool', enumOptions: null };
   }
   return { kind: 'text', enumOptions: null };
 }

@@ -801,22 +801,54 @@ describe('buildVariableBar — Dashboard variable controls (#447 phase 2)', () =
     expect(document.querySelector('.ms-popover')).toBeNull();
   });
 
-  it('offers true/false suggestions for a Bool variable, and only under the map', () => {
-    const withMap = build('SELECT {flag:Bool}', { variables: { flag: { options: null } } }).bar;
-    const input = fieldFor(withMap, 'flag').querySelector<HTMLInputElement>('.var-input')!;
-    input.focus();
-    input.dispatchEvent(new Event('focus'));
-    const shown = [...fieldFor(withMap, 'flag').querySelectorAll('.combo-option')]
-      .map((n) => n.textContent ?? '').join('|');
-    expect(shown).toContain('true');
-    expect(shown).toContain('false');
-    // Still a free-text input: ClickHouse's Bool accept-set is not enumerable.
-    expect(input.readOnly).toBe(false);
-    const noMap = build('SELECT {flag:Bool}').bar;
-    const plain = fieldFor(noMap, 'flag').querySelector<HTMLInputElement>('.var-input')!;
-    plain.focus();
-    plain.dispatchEvent(new Event('focus'));
-    expect([...fieldFor(noMap, 'flag').querySelectorAll('.combo-option')]).toHaveLength(0);
+  it('renders a Bool Dashboard variable as an accessible indeterminate checkbox and commits canonical values', () => {
+    const onCommitVariable = vi.fn();
+    const { app, bar } = build('SELECT {flag:Bool}', {
+      variables: { flag: { options: OPTIONS } }, onCommitVariable,
+    });
+    const input = fieldFor(bar, 'flag').querySelector<HTMLInputElement>('.var-bool')!;
+    // A Bool's type wins even if option SQL is configured; unset is a native
+    // indeterminate state, not a third dropdown choice.
+    expect(input).not.toBeNull();
+    expect(fieldFor(bar, 'flag').querySelector('.variable-select')).toBeNull();
+    expect(input.checked).toBe(false);
+    expect(input.indeterminate).toBe(true);
+    expect(input.title).toContain('unset');
+    // Keyboard activation has the same native change path as pointer input.
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.state.varValues.flag).toBe('true');
+    expect(app.state.filterActive.flag).toBe(true);
+    expect(onCommitVariable).toHaveBeenLastCalledWith('flag', 'true', true);
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.state.varValues.flag).toBe('false');
+    expect(onCommitVariable).toHaveBeenLastCalledWith('flag', 'false', true);
+  });
+
+  it('renders a persisted Bool true spelling as checked and describes optional unset behavior', () => {
+    const app = makeApp();
+    app.state.varValues.enabled = 'yes';
+    app.state.filterActive.enabled = true;
+    // Build from the persisted state, just as Dashboard publication does.
+    const restored = buildVariableBar(app, paramsFor('SELECT 1 /*[ WHERE enabled = {enabled:Bool} ]*/'), () => {}, okField, {
+      document, variables: { enabled: { options: null } },
+    });
+    bars.push(restored);
+    const input = fieldFor(restored, 'enabled').querySelector<HTMLInputElement>('.var-bool')!;
+    expect(input.checked).toBe(true);
+    expect(input.indeterminate).toBe(false);
+    expect(input.title).toContain('optional: unset leaves its filter block out');
+    const hint = fieldFor(restored, 'enabled').querySelector('#' + input.getAttribute('aria-describedby'))!;
+    expect(hint.textContent).toBe('Unset leaves its filter block out.');
+    // The hint is a description, not part of the label's accessible name.
+    expect(input.closest('label')?.textContent).toBe('enabled');
+  });
+
+  it('keeps Bool as a plain workbench input without the Dashboard variables map', () => {
+    const { bar } = build('SELECT {flag:Bool}');
+    expect(fieldFor(bar, 'flag').querySelector('.var-bool')).toBeNull();
+    expect(fieldFor(bar, 'flag').querySelector('.var-input')).not.toBeNull();
   });
 
   it('leaves a time-range-owned parameter to its compound control, map or not', () => {
