@@ -133,11 +133,42 @@ export function isLeftNavigationSection(value: unknown): value is LeftNavigation
   return LEFT_NAV_SECTIONS.some((section) => section === value);
 }
 
-/** The `mode`/`focusedSection` invariant, as a predicate — a focused drawer
- *  exists only in rail mode. Exported so the reducers' shared postcondition can
- *  be asserted directly instead of re-derived in each test. */
+/**
+ * Heal a layout into a renderable one: a focused drawer only in rail mode, both
+ * widths finite and inside their own band, and a section only if it is one of the
+ * four. Returns the argument itself when it is already legal, so the reducers'
+ * identity-skip contract survives.
+ *
+ * Every reducer normalizes its input through this, which is what makes their
+ * postcondition unconditional. Without it the invariant was only ever a
+ * *precondition* — `resolveLeftNavigationDrag({ mode: 'wide', focusedSection:
+ * 'databases' }, 300)` preserved the illegal pair rather than fixing it, and
+ * `End` handed it straight back. That matters because `state.ts` stores `mode` and
+ * `focusedSection` in two independently writable signals: any caller that writes
+ * one without the other produces exactly that pair, and `leftNavigationWidthPx`
+ * would then push the centre surface by a width that omits the open drawer.
+ *
+ * Healing here does not make the atomic-write discipline optional — phase 3 should
+ * still write both signals together — but it means a slip is corrected on the next
+ * interaction instead of persisting as an unrenderable shell.
+ */
+export function normalizeLeftNavigationLayout(layout: LeftNavigationLayout): LeftNavigationLayout {
+  const mode = layout.mode === 'rail' ? 'rail' : 'wide';
+  const wideWidthPx = clampWideWidthPx(layout.wideWidthPx);
+  const drawerWidthPx = clampDrawerWidthPx(layout.drawerWidthPx);
+  const focusedSection = mode === 'rail' && isLeftNavigationSection(layout.focusedSection)
+    ? layout.focusedSection
+    : null;
+  const unchanged = mode === layout.mode && wideWidthPx === layout.wideWidthPx
+    && drawerWidthPx === layout.drawerWidthPx && focusedSection === layout.focusedSection;
+  return unchanged ? layout : { mode, wideWidthPx, drawerWidthPx, focusedSection };
+}
+
+/** A layout is coherent exactly when normalizing it changes nothing — so this
+ *  covers the `mode`/`focusedSection` pairing AND finite, in-band widths, rather
+ *  than only the pairing (a `NaN` width used to pass). */
 export function leftNavigationLayoutIsCoherent(layout: LeftNavigationLayout): boolean {
-  return layout.mode === 'rail' || layout.focusedSection === null;
+  return normalizeLeftNavigationLayout(layout) === layout;
 }
 
 /** Decode a persisted mode. Anything that is not exactly `'rail'` — a missing
@@ -184,6 +215,28 @@ export function clampDrawerWidthPx(px: number): number {
 }
 
 /**
+ * Decode a persisted pixel width, falling back to `fallbackPx` for anything that
+ * is not a complete number.
+ *
+ * `parseInt` is deliberately not used: it accepts a numeric *prefix*, so
+ * `'12junk'` decodes to 12 and `'200px'` to 200 — which made the "an invalid
+ * stored value returns to its documented default" contract false for exactly the
+ * corruption most likely to occur (a truncated write, or a value someone hand-
+ * edited with a CSS unit). `Number` requires the whole string, and the
+ * `Number.isFinite` guard also rejects the literal `'Infinity'` that `Number`
+ * would otherwise accept — a stored infinity is a corrupt value, not a width
+ * pressed against a bound.
+ *
+ * The clamp still runs afterwards, so a well-formed but out-of-range value is
+ * pulled into its band rather than discarded.
+ */
+export function decodeStoredPx(raw: unknown, fallbackPx: number): number {
+  if (typeof raw !== 'string' || raw.trim() === '') return fallbackPx;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallbackPx;
+}
+
+/**
  * The width the navigation actually occupies in the shell row — what the centre
  * surface is pushed by, and what the separator reports as `aria-valuenow`.
  * 'rail' with a drawer open occupies both: #487 requires every rail icon to stay
@@ -227,8 +280,9 @@ export function leftNavigationWidthPx(layout: LeftNavigationLayout): number {
  * moving) would show a sidebar that refuses to shrink to its own floor.
  */
 export function resolveLeftNavigationDrag(
-  layout: LeftNavigationLayout, totalPx: number,
+  input: LeftNavigationLayout, totalPx: number,
 ): LeftNavigationLayout {
+  const layout = normalizeLeftNavigationLayout(input);
   if (layout.mode === 'wide') {
     // A wide sidebar IS the whole navigation, so its panel width is the total.
     // Past the fold threshold: commit rail. The wide width is frozen at whatever
@@ -276,30 +330,20 @@ export interface LeftNavigationKey {
   altKey?: boolean;
 }
 
-/**
- * The TOTAL width an arrow step starts from — the same currency the reducer
- * takes, so for a wide sidebar and for an open drawer this is simply the width
- * the navigation already occupies.
- *
- * A bare rail is the exception: its base is `LEFT_WIDE_THRESHOLD_PX`, not its own
- * 48px. That is not a fudge — it is the only base that keeps the keyboard honest.
- * A pointer can leave a bare rail because `clientX` is absolute, so dragging to
- * x=300 proposes 300; an arrow key only has a *relative* step, so a base of 48
- * would propose 64, land in the sticky band, and change nothing — forever — while
- * the separator still advertised `aria-valuemax: 420`, a control that lies about
- * being resizable. Basing it at the threshold makes both directions come out
- * right through the ordinary reducer, with no special-casing there: a rightward
- * step crosses into wide (nothing legal exists between the rail and the 180
- * floor), and a leftward step lands in the sticky band and correctly does
- * nothing, because the rail is already as folded as it goes.
- *
- * Deliberately a CONSTANT and not `wideWidthPx`: any remembered width at or below
- * 244 would otherwise leave a bare rail's small ArrowRight stuck in the sticky
- * band again, reintroducing exactly the dead end this exists to prevent.
- */
-function keyboardBaseTotalPx(layout: LeftNavigationLayout): number {
-  if (layout.mode === 'rail' && layout.focusedSection === null) return LEFT_WIDE_THRESHOLD_PX;
-  return leftNavigationWidthPx(layout);
+/** Fold to a bare rail — `Home`, and the leftward arrow's boundary transition. */
+function foldToRail(layout: LeftNavigationLayout): LeftNavigationLayout {
+  return layout.mode === 'rail' && layout.focusedSection === null
+    ? layout
+    : { ...layout, mode: 'rail', focusedSection: null };
+}
+
+/** Restore the wide sidebar at its REMEMBERED width — `End`, and the rightward
+ *  arrow's boundary transition out of a bare rail. This is the one place a
+ *  remembered width is restored; a pointer drag follows the pointer instead. */
+function restoreWide(layout: LeftNavigationLayout): LeftNavigationLayout {
+  return layout.mode === 'wide'
+    ? layout
+    : { ...layout, mode: 'wide', wideWidthPx: clampWideWidthPx(layout.wideWidthPx), focusedSection: null };
 }
 
 /**
@@ -307,40 +351,67 @@ function keyboardBaseTotalPx(layout: LeftNavigationLayout): number {
  * ours — phase 3 must not swallow keys it does not handle, and must not treat a
  * Ctrl/Meta/Alt chord as a resize.
  *
- * Every arrow step routes through `resolveLeftNavigationDrag`, which is what
- * makes #487's "keyboard separator operations match pointer transitions" true by
- * construction rather than by two implementations agreeing.
+ * **Arrows resize within a band and perform the semantic transition at its edge.**
+ * That edge case is not decoration: an arrow key carries a *relative* step, and
+ * both bands are bounded by a dead zone wider than one step, so a purely relative
+ * arrow gets stranded at a boundary forever.
  *
- * `End` is the one place a remembered width is restored — it is the discrete
- * counterpart to a drag, with no pointer position to honour instead.
+ * Both ends had that failure, and they are exact mirrors:
+ *
+ * - a bare rail is 48px wide and the nearest legal wide width is 180, so a +16
+ *   step proposes 64, lands in the sticky band and does nothing;
+ * - a wide sidebar at its 180 floor folds only below 140, so a −16 step proposes
+ *   164, clamps straight back to 180 and does nothing.
+ *
+ * A *pointer* escapes both because `clientX` is absolute — it keeps travelling
+ * until it crosses the threshold — so leaving them relative made the keyboard and
+ * pointer disagree over a *sequence* even while agreeing on every single step.
+ * Eleven ArrowLeft presses from a 300px sidebar used to sit at 180 forever while
+ * the equivalent pointer path folded, with `aria-valuemin: 48` advertised
+ * throughout. `Home`/`Shift+Arrow` escaping is not a defence: the W3C splitter
+ * pattern makes plain Left/Right the separator's move keys.
+ *
+ * So the boundary step performs the transition the band edge implies, and every
+ * step inside a band still routes through `resolveLeftNavigationDrag` — the
+ * resize arithmetic has exactly one implementation.
  */
 export function resolveLeftNavigationKey(
-  layout: LeftNavigationLayout, event: LeftNavigationKey,
+  input: LeftNavigationLayout, event: LeftNavigationKey,
 ): LeftNavigationLayout | null {
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  // Home folds to rail and End restores wide, both regardless of the current
-  // mode — pressed twice they are idempotent, not a toggle.
-  if (event.key === 'Home') {
-    return layout.mode === 'rail' && layout.focusedSection === null
-      ? layout
-      : { ...layout, mode: 'rail', focusedSection: null };
-  }
-  if (event.key === 'End') {
-    return layout.mode === 'wide'
-      ? layout
-      : { ...layout, mode: 'wide', wideWidthPx: clampWideWidthPx(layout.wideWidthPx), focusedSection: null };
-  }
+  const layout = normalizeLeftNavigationLayout(input);
+  // Home folds and End restores, regardless of mode — pressed twice they are
+  // idempotent, not a toggle.
+  if (event.key === 'Home') return foldToRail(layout);
+  if (event.key === 'End') return restoreWide(layout);
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return null;
+  const towardWide = event.key === 'ArrowRight';
+  // A bare rail has no panel to resize: rightward is the restore transition (at
+  // the remembered width, like End — a fixed threshold-plus-step would silently
+  // discard a remembered 420 and hand back 276), and leftward is a no-op because
+  // the rail is already as folded as it goes.
+  if (layout.mode === 'rail' && layout.focusedSection === null) {
+    return towardWide ? restoreWide(layout) : layout;
+  }
+  // A wide sidebar already at its floor: leftward is the fold transition. An open
+  // drawer needs no equivalent — its own floor IS the fold threshold, so an
+  // ordinary step below it already closes it.
+  if (layout.mode === 'wide' && !towardWide && layout.wideWidthPx <= LEFT_PANEL_MIN_PX) {
+    return foldToRail(layout);
+  }
   const step = event.shiftKey ? LEFT_NAV_LARGE_STEP_PX : LEFT_NAV_STEP_PX;
-  const delta = event.key === 'ArrowRight' ? step : -step;
-  return resolveLeftNavigationDrag(layout, keyboardBaseTotalPx(layout) + delta);
+  return resolveLeftNavigationDrag(layout, leftNavigationWidthPx(layout) + (towardWide ? step : -step));
 }
 
 /**
- * Resolve a rail launcher activation — a click, or phase 3's
- * `openFocusedSection(section)` seam (#428's deterministic entry point).
- * Activating the ACTIVE section closes the drawer; activating a different one
- * switches content in place without closing first, as #487 requires.
+ * A rail launcher CLICK. Clicking the active section closes the drawer; clicking a
+ * different one switches content in place without closing first, as #487 requires.
+ *
+ * **This is a toggle, so it is not the `openFocusedSection` seam** — see
+ * `resolveRailOpen` below. Conflating the two is a real bug rather than a naming
+ * quibble: #428's bounded drag-hover fires repeatedly while a Library query is
+ * held over the Dashboards icon, and a toggle would flap the drawer open and shut
+ * on alternate notifications.
  *
  * **Returns the layout unchanged in wide mode, and that is a hard limit, not a
  * silent fallback.** There is no drawer in wide mode and both panes are already
@@ -352,10 +423,29 @@ export function resolveLeftNavigationKey(
  * width that omits the drawer entirely.
  */
 export function resolveRailActivation(
-  layout: LeftNavigationLayout, section: LeftNavigationSection,
+  input: LeftNavigationLayout, section: LeftNavigationSection,
 ): LeftNavigationLayout {
+  const layout = normalizeLeftNavigationLayout(input);
   if (layout.mode !== 'rail') return layout;
   return { ...layout, focusedSection: layout.focusedSection === section ? null : section };
+}
+
+/**
+ * Open a section IDEMPOTENTLY — the deterministic `openFocusedSection(section)`
+ * seam #487 requires the left-navigation API to provide for #428.
+ *
+ * "Deterministic" is the operative word: repeated calls must leave the section
+ * open, because the caller is a bounded drag-hover that re-asserts intent rather
+ * than a click that expresses a change. Already showing this section returns the
+ * layout by identity; wide mode returns unchanged, for the same reason as
+ * `resolveRailActivation`.
+ */
+export function resolveRailOpen(
+  input: LeftNavigationLayout, section: LeftNavigationSection,
+): LeftNavigationLayout {
+  const layout = normalizeLeftNavigationLayout(input);
+  if (layout.mode !== 'rail' || layout.focusedSection === section) return layout;
+  return { ...layout, focusedSection: section };
 }
 
 /**
@@ -373,12 +463,11 @@ export function resolveRailActivation(
  * directly.
  */
 export function effectiveLeftNavigationLayout(
-  layout: LeftNavigationLayout, isMobile: boolean,
+  input: LeftNavigationLayout, isMobile: boolean,
 ): LeftNavigationLayout {
+  const layout = normalizeLeftNavigationLayout(input);
   if (!isMobile) return layout;
-  return layout.mode === 'wide' && layout.focusedSection === null
-    ? layout
-    : { ...layout, mode: 'wide', focusedSection: null };
+  return layout.mode === 'wide' ? layout : { ...layout, mode: 'wide', focusedSection: null };
 }
 
 /** The separator's ARIA range: the rail's width is the floor (the navigation can
@@ -401,6 +490,8 @@ export function leftNavigationSeparatorAria(layout: LeftNavigationLayout): LeftN
   return {
     valueMin: LEFT_RAIL_PX,
     valueMax: LEFT_PANEL_MAX_PX,
-    valueNow: leftNavigationWidthPx(layout),
+    // Normalized, so a caller holding a layout with a non-finite width cannot
+    // publish `aria-valuenow="NaN"` to assistive technology.
+    valueNow: leftNavigationWidthPx(normalizeLeftNavigationLayout(layout)),
   };
 }

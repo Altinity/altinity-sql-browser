@@ -292,6 +292,23 @@ describe('createState — left navigation preferences (#487)', () => {
     expect(s.sidebarPx).toBe(248);
   });
 
+  it('rejects a partially numeric stored width instead of trusting its prefix', () => {
+    // `parseInt` accepted a numeric PREFIX, so a truncated write or a hand-edited
+    // CSS unit decoded to a plausible-looking width while the docs promised the
+    // default: `parseInt('12junk')` is 12 (then clamped to 180) and
+    // `parseInt('200px')` is 200 (accepted outright).
+    const s = createState(reader({
+      [KEYS.sidebarPx]: '12junk',
+      [KEYS.leftNavDrawerPx]: '200px',
+    }));
+    expect(s.sidebarPx).toBe(248);
+    expect(s.leftNavDrawerPx).toBe(240);
+    // A stored infinity is corruption too, not a width pressed against a bound.
+    expect(createState(reader({ [KEYS.sidebarPx]: 'Infinity' })).sidebarPx).toBe(248);
+    // …while a well-formed value still decodes, whitespace and decimals included.
+    expect(createState(reader({ [KEYS.sidebarPx]: ' 330 ' })).sidebarPx).toBe(330);
+  });
+
   it('clamps an out-of-range drawer width into the drawer own band', () => {
     // Not the wide sidebar's [180, 420]: a drawer wider than the wide threshold
     // is unreachable, because a drag that far right converts to the sidebar.

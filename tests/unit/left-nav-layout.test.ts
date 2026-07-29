@@ -21,9 +21,10 @@ import {
   LEFT_DRAWER_DEFAULT_PX, LEFT_FOLD_THRESHOLD_PX, LEFT_NAV_LARGE_STEP_PX, LEFT_NAV_SECTIONS,
   LEFT_NAV_STEP_PX, LEFT_PANEL_MAX_PX, LEFT_PANEL_MIN_PX, LEFT_RAIL_PX, LEFT_WIDE_DEFAULT_PX,
   LEFT_WIDE_THRESHOLD_PX,
-  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, effectiveLeftNavigationLayout,
-  isLeftNavigationSection, leftNavigationLayoutIsCoherent, leftNavigationSeparatorAria,
-  leftNavigationWidthPx, resolveLeftNavigationDrag, resolveLeftNavigationKey, resolveRailActivation,
+  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, decodeStoredPx,
+  effectiveLeftNavigationLayout, isLeftNavigationSection, leftNavigationLayoutIsCoherent,
+  leftNavigationSeparatorAria, leftNavigationWidthPx, normalizeLeftNavigationLayout,
+  resolveLeftNavigationDrag, resolveLeftNavigationKey, resolveRailActivation, resolveRailOpen,
 } from '../../src/core/left-nav-layout.js';
 import type { LeftNavigationLayout } from '../../src/core/left-nav-layout.js';
 
@@ -391,16 +392,16 @@ describe('resolveLeftNavigationKey', () => {
       rail({ focusedSection: 'history', drawerWidthPx: LEFT_FOLD_THRESHOLD_PX }), { key: 'ArrowLeft' })!;
     expect(next.focusedSection).toBeNull();
   });
-  it('leaves a bare rail on ONE rightward step, whatever the remembered width', () => {
-    // The bare-rail base must be the wide THRESHOLD, not `wideWidthPx`. With the
-    // remembered width as the base, any value at or below 244 would leave a small
-    // ArrowRight stuck in the sticky band forever — a separator advertising
-    // `aria-valuemax: 420` while refusing to move. 180 is trivially reachable by
-    // dragging the sidebar narrow before folding, so this is not a corner case.
+  it('leaves a bare rail on ONE rightward step, at the REMEMBERED width', () => {
+    // A relative +16 from the rail's own 48px would propose 64, land in the sticky
+    // band and do nothing forever, so the boundary step performs the restore
+    // transition instead — and at the remembered width, like End. A fixed
+    // threshold-plus-step base would hand back 276 and silently discard this 420.
     for (const wideWidthPx of [LEFT_PANEL_MIN_PX, 200, 244, LEFT_WIDE_DEFAULT_PX, LEFT_PANEL_MAX_PX]) {
       for (const shiftKey of [false, true]) {
-        expect(resolveLeftNavigationKey(rail({ wideWidthPx }), { key: 'ArrowRight', shiftKey })!.mode)
-          .toBe('wide');
+        const out = resolveLeftNavigationKey(rail({ wideWidthPx }), { key: 'ArrowRight', shiftKey })!;
+        expect(out.mode).toBe('wide');
+        expect(out.wideWidthPx).toBe(wideWidthPx);
       }
     }
   });
@@ -410,15 +411,20 @@ describe('resolveLeftNavigationKey', () => {
       expect(resolveLeftNavigationKey(stay, { key: 'ArrowLeft', shiftKey })).toBe(stay);
     }
   });
-  it('matches pointer transitions for the same proposed total width', () => {
-    // The property the design exists for. The pointer side is driven from the
-    // module's PUBLIC occupied width, never from a copy of the private base
-    // formula — recomputing the implementation here is what let a bare-rail base
-    // bug survive a green suite, so the bare rail (whose base is deliberately the
-    // threshold, not its own width) is asserted separately above.
+  it('matches pointer transitions INSIDE a band, for the same proposed total width', () => {
+    // The property the design exists for: inside a band the keyboard IS the drag
+    // reducer, so the resize arithmetic has one implementation. The pointer side is
+    // driven from the module's PUBLIC occupied width, never from a copy of a private
+    // base formula — recomputing the implementation here is what let a bare-rail
+    // base bug survive a green suite.
+    //
+    // Band EDGES are deliberately excluded and asserted separately: there the
+    // keyboard performs a semantic transition the pointer reaches by simply
+    // travelling further, which no single shared proposal can express. A bare rail
+    // and a 180px sidebar are the two such states.
     const cases: LeftNavigationLayout[] = [
       wide({ wideWidthPx: 300 }),
-      wide({ wideWidthPx: LEFT_PANEL_MIN_PX }),
+      wide({ wideWidthPx: LEFT_PANEL_MIN_PX + LEFT_NAV_LARGE_STEP_PX }),
       wide({ wideWidthPx: LEFT_PANEL_MAX_PX }),
       rail({ focusedSection: 'databases', drawerWidthPx: LEFT_FOLD_THRESHOLD_PX }),
       rail({ focusedSection: 'databases', drawerWidthPx: 200 }),
@@ -435,16 +441,186 @@ describe('resolveLeftNavigationKey', () => {
       }
     }
   });
-  it('is a no-op at the wide floor and ceiling for a small step, and folds on a large one', () => {
-    // Unlike the bare rail, this is NOT a dead end: the pointer does the same
-    // thing at these extremes (clientX 164 also leaves a 180 sidebar at 180), and
-    // Shift+ArrowLeft escapes. Keyboard and pointer agree, which is the contract.
-    expect(resolveLeftNavigationKey(wide({ wideWidthPx: LEFT_PANEL_MIN_PX }), { key: 'ArrowLeft' }))
-      .toEqual(wide({ wideWidthPx: LEFT_PANEL_MIN_PX }));
+  it('folds from the wide floor on a leftward step — the mirror of the bare-rail case', () => {
+    // The dead end this replaces: at the 180 floor a −16 step proposes 164, which
+    // clamps back to 180, so plain ArrowLeft did nothing FOREVER while
+    // `aria-valuemin: 48` was advertised. Home and Shift+Arrow escaping is not a
+    // defence — the W3C splitter pattern makes plain Left/Right the move keys.
+    for (const shiftKey of [false, true]) {
+      expect(resolveLeftNavigationKey(
+        wide({ wideWidthPx: LEFT_PANEL_MIN_PX }), { key: 'ArrowLeft', shiftKey })!.mode).toBe('rail');
+    }
+  });
+  it('holds at the wide ceiling on a rightward step — a real bound, not a dead zone', () => {
+    // Nothing legal exists to the right of 420, so refusing to move is the correct
+    // answer rather than a stranded control.
     expect(resolveLeftNavigationKey(wide({ wideWidthPx: LEFT_PANEL_MAX_PX }), { key: 'ArrowRight' }))
       .toEqual(wide({ wideWidthPx: LEFT_PANEL_MAX_PX }));
-    expect(resolveLeftNavigationKey(
-      wide({ wideWidthPx: LEFT_PANEL_MIN_PX }), { key: 'ArrowLeft', shiftKey: true })!.mode).toBe('rail');
+  });
+  it('reaches the rail from any wide width by repeated plain ArrowLeft', () => {
+    // The property the single-step tests could not express: a keyboard SEQUENCE
+    // must be able to go where the equivalent pointer path goes. Eleven presses
+    // from 300 used to sit at 180 forever while the pointer folded.
+    for (const start of [LEFT_PANEL_MAX_PX, 300, 190, LEFT_PANEL_MIN_PX]) {
+      let layout: LeftNavigationLayout = wide({ wideWidthPx: start });
+      for (let i = 0; i < 40 && layout.mode === 'wide'; i++) {
+        layout = resolveLeftNavigationKey(layout, { key: 'ArrowLeft' })!;
+      }
+      expect(layout.mode).toBe('rail');
+    }
+  });
+  it('round-trips between rail and wide with plain arrows, in both directions', () => {
+    // Reversibility of the MODE, which a stranded boundary silently broke. The width
+    // does not round-trip, and should not: the intervening ArrowLefts really did
+    // resize the sidebar down to its floor before folding, so 180 is the honest
+    // remembered width on the way back.
+    const start = rail({ wideWidthPx: 300 });
+    expect(resolveLeftNavigationKey(start, { key: 'ArrowRight' })).toEqual(wide({ wideWidthPx: 300 }));
+    let back: LeftNavigationLayout = wide({ wideWidthPx: 300 });
+    for (let i = 0; i < 40 && back.mode === 'wide'; i++) {
+      back = resolveLeftNavigationKey(back, { key: 'ArrowLeft' })!;
+    }
+    expect(back).toEqual(rail({ wideWidthPx: LEFT_PANEL_MIN_PX }));
+    // And straight back out again, so neither end is a trap.
+    expect(resolveLeftNavigationKey(back, { key: 'ArrowRight' })!.mode).toBe('wide');
+  });
+  it('normalizes an incoherent layout before acting on it', () => {
+    const healed = resolveLeftNavigationKey(
+      wide({ focusedSection: 'databases' }) as LeftNavigationLayout, { key: 'ArrowRight' })!;
+    expect(healed.focusedSection).toBeNull();
+    expect(resolveLeftNavigationKey(wide({ wideWidthPx: NaN }), { key: 'End' })!.wideWidthPx)
+      .toBe(LEFT_WIDE_DEFAULT_PX);
+  });
+});
+
+// #487 requires "a deterministic `openFocusedSection('dashboards')` seam" for
+// #428's bounded drag-hover. A toggle cannot serve that: hover re-asserts intent
+// repeatedly, so a toggle would flap the drawer open and shut on alternate
+// notifications. Open and toggle are therefore separate operations.
+describe('resolveRailOpen — the idempotent seam', () => {
+  it('opens a section from a bare rail', () => {
+    expect(resolveRailOpen(rail(), 'dashboards')).toEqual(rail({ focusedSection: 'dashboards' }));
+  });
+  it('is IDEMPOTENT — repeated opens leave the section open', () => {
+    // The exact #428 failure mode this exists to prevent.
+    let layout: LeftNavigationLayout = rail();
+    for (let i = 0; i < 5; i++) layout = resolveRailOpen(layout, 'dashboards');
+    expect(layout.focusedSection).toBe('dashboards');
+    // …and returns by identity once already open, so a hover notification storm
+    // cannot cause a repaint per event.
+    expect(resolveRailOpen(layout, 'dashboards')).toBe(layout);
+  });
+  it('switches from another open section without closing first', () => {
+    expect(resolveRailOpen(rail({ focusedSection: 'history' }), 'dashboards').focusedSection)
+      .toBe('dashboards');
+  });
+  it('never closes a drawer, unlike the click toggle', () => {
+    const open = rail({ focusedSection: 'dashboards' });
+    expect(resolveRailOpen(open, 'dashboards').focusedSection).toBe('dashboards');
+    expect(resolveRailActivation(open, 'dashboards').focusedSection).toBeNull();
+  });
+  it('is a no-op in wide mode, like the toggle', () => {
+    const layout = wide();
+    expect(resolveRailOpen(layout, 'dashboards')).toBe(layout);
+  });
+});
+
+describe('normalizeLeftNavigationLayout', () => {
+  it('returns a legal layout by identity', () => {
+    for (const layout of [wide(), rail(), rail({ focusedSection: 'library' })]) {
+      expect(normalizeLeftNavigationLayout(layout)).toBe(layout);
+    }
+  });
+  it('drops a focused section that wide mode cannot render', () => {
+    expect(normalizeLeftNavigationLayout(wide({ focusedSection: 'databases' })))
+      .toEqual(wide());
+  });
+  it('heals a non-finite or out-of-band width', () => {
+    expect(normalizeLeftNavigationLayout(wide({ wideWidthPx: NaN })).wideWidthPx)
+      .toBe(LEFT_WIDE_DEFAULT_PX);
+    expect(normalizeLeftNavigationLayout(wide({ wideWidthPx: 9999 })).wideWidthPx)
+      .toBe(LEFT_PANEL_MAX_PX);
+    expect(normalizeLeftNavigationLayout(wide({ drawerWidthPx: 9999 })).drawerWidthPx)
+      .toBe(LEFT_WIDE_THRESHOLD_PX);
+  });
+  it('rejects an unknown mode and an unknown section', () => {
+    expect(normalizeLeftNavigationLayout({ ...wide(), mode: 'collapsed' } as unknown as LeftNavigationLayout).mode)
+      .toBe('wide');
+    expect(normalizeLeftNavigationLayout(
+      { ...rail(), focusedSection: 'saved' } as unknown as LeftNavigationLayout).focusedSection).toBeNull();
+  });
+  it('makes every reducer heal an incoherent seed rather than preserve it', () => {
+    // Previously the invariant was only a PRECONDITION: a drag over an incoherent
+    // layout carried the illegal mode/section pair straight through, and End handed
+    // it back untouched. `state.ts` stores the two as independently writable
+    // signals, so that pair is one stray assignment away.
+    const bad = wide({ focusedSection: 'databases' });
+    expect(leftNavigationLayoutIsCoherent(bad)).toBe(false);
+    expect(resolveLeftNavigationDrag(bad, 300).focusedSection).toBeNull();
+    expect(resolveLeftNavigationKey(bad, { key: 'End' })!.focusedSection).toBeNull();
+    expect(resolveRailActivation(bad, 'databases').focusedSection).toBeNull();
+    expect(resolveRailOpen(bad, 'databases').focusedSection).toBeNull();
+    expect(effectiveLeftNavigationLayout(bad, false).focusedSection).toBeNull();
+  });
+  it('keeps a NaN width out of the ARIA value published to assistive technology', () => {
+    expect(leftNavigationSeparatorAria(wide({ wideWidthPx: NaN })).valueNow)
+      .toBe(LEFT_WIDE_DEFAULT_PX);
+  });
+  it('lifts a type-valid but illegal seed into its band before measuring', () => {
+    // A 150px "wide" sidebar is type-valid and state-invalid. Normalizing on entry
+    // means the sweep is measured from a legal 180 rather than reporting an occupied
+    // width no mode can render.
+    expect(normalizeLeftNavigationLayout(wide({ wideWidthPx: 150 })).wideWidthPx)
+      .toBe(LEFT_PANEL_MIN_PX);
+    // 149 is still above the fold threshold, so it resizes to the floor …
+    expect(resolveLeftNavigationDrag(wide({ wideWidthPx: 150 }), 149))
+      .toEqual(wide({ wideWidthPx: LEFT_PANEL_MIN_PX }));
+    // … and only a proposal past the threshold folds.
+    expect(resolveLeftNavigationDrag(wide({ wideWidthPx: 150 }), LEFT_FOLD_THRESHOLD_PX - 1).mode)
+      .toBe('rail');
+  });
+});
+
+describe('decodeStoredPx', () => {
+  it('accepts a complete number, with surrounding whitespace', () => {
+    expect(decodeStoredPx('300', 1)).toBe(300);
+    expect(decodeStoredPx('  300  ', 1)).toBe(300);
+    expect(decodeStoredPx('300.5', 1)).toBe(300.5);
+    expect(decodeStoredPx('-5', 1)).toBe(-5);
+  });
+  it('rejects a numeric PREFIX, which parseInt would have accepted', () => {
+    // The contract this fixes: `parseInt('12junk')` is 12 and `parseInt('200px')`
+    // is 200, so a truncated write or a hand-edited CSS unit decoded to a
+    // plausible-looking width while the docs promised the default.
+    expect(decodeStoredPx('12junk', 248)).toBe(248);
+    expect(decodeStoredPx('200px', 240)).toBe(240);
+    expect(decodeStoredPx('1e', 248)).toBe(248);
+  });
+  it('rejects a stored infinity, empty string, whitespace and every non-string', () => {
+    expect(decodeStoredPx('Infinity', 248)).toBe(248);
+    expect(decodeStoredPx('-Infinity', 248)).toBe(248);
+    expect(decodeStoredPx('NaN', 248)).toBe(248);
+    expect(decodeStoredPx('', 248)).toBe(248);
+    expect(decodeStoredPx('   ', 248)).toBe(248);
+    expect(decodeStoredPx(null, 248)).toBe(248);
+    expect(decodeStoredPx(undefined, 248)).toBe(248);
+    expect(decodeStoredPx(300, 248)).toBe(248);
+  });
+});
+
+// Documented, deliberately pinned, and phase 3's to change: the remembered wide
+// width depends on which pointer samples the browser happened to deliver, because
+// one field is doing duty as both the live drag width and the restore memory.
+// Separating them needs a drag-session snapshot, which a pure reducer cannot take.
+describe('restore memory is sampling-dependent (phase 3 obligation)', () => {
+  it('remembers a different width for the same gesture depending on event cadence', () => {
+    const seed = wide({ wideWidthPx: 300 });
+    // One coarse sample straight past the fold keeps the pre-drag width …
+    expect(resolveLeftNavigationDrag(seed, 139).wideWidthPx).toBe(300);
+    // … while an intermediate sample inside the 140–179 dead zone rests the width
+    // at the floor first, so the fold remembers 180 instead.
+    expect(resolveLeftNavigationDrag(resolveLeftNavigationDrag(seed, 179), 139).wideWidthPx)
+      .toBe(LEFT_PANEL_MIN_PX);
   });
 });
 

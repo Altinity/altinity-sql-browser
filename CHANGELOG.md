@@ -27,8 +27,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   navigation's proposed *total* width, which is what keeps a drag continuous
   across a mode change: handing the reducer a mode-relative width instead made a
   monotone rightward drag snap the navigation 108px backwards on the frame a
-  drawer converted to the sidebar. **No user-visible change yet**: the rail, the
-  docked focused drawer and the resize separator arrive in phase 3.
+  drawer converted to the sidebar. Arrow keys resize within a band and perform
+  the band edge's semantic transition, because an arrow's *relative* step cannot
+  cross a dead zone wider than itself — leaving that relative stranded a bare
+  rail's `ArrowRight` and a floored sidebar's `ArrowLeft` permanently, while
+  `aria-valuemin: 48` was advertised throughout. Opening a section is a separate
+  operation from the click toggle, since #428's bounded drag-hover re-asserts
+  intent repeatedly and a toggle would flap the drawer shut. Every reducer
+  normalizes its input, so the "a focused drawer exists only in rail mode"
+  invariant is an unconditional postcondition rather than a precondition the
+  caller has to honour. **No user-visible change yet**: the rail, the docked
+  focused drawer and the resize separator arrive in phase 3.
 - The sidebar's `'col'` drag axis now clamps through the same
   `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
   repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes
@@ -55,12 +64,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and `clamp` is not NaN-safe (`Math.max(180, NaN)` is `NaN`), so a non-numeric
   stored value would reach the DOM as `width: NaNpx` — which the browser drops,
   collapsing the sidebar with nothing to explain why, and the bad value would
-  persist across reloads. It now falls back to the documented 248px default.
+  persist across reloads. It now falls back to the documented 248px default, and
+  decoding requires the *whole* stored string to be a finite number — `parseInt`
+  accepted a numeric prefix, so a truncated write or a hand-edited `"200px"`
+  decoded to a plausible-looking width while the contract promised the default.
   Hardening rather than a reproducible user-visible bug: no code path in the app
-  writes a non-numeric value (a real drag always carries a finite `clientX`), so
+  writes a malformed value (a real drag always carries a finite `clientX`), so
   reaching it takes a hand-edited or foreign-origin `localStorage` entry. The
-  same hole in `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` is tracked
-  separately in #570.
+  same NaN hole in `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` is
+  tracked separately in #570.
 - **The Dashboard tree no longer reveals two rows' pencil/trash actions at
   once, and its `· N` count now sits inline after the label** (#568). The
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)

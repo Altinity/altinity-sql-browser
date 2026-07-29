@@ -37,7 +37,7 @@ import type { QueryTimeRangeInferenceDiagnostic } from './core/query-time-range.
 import { deriveWorkspaceKey } from './core/workspace-key.js';
 import {
   LEFT_DRAWER_DEFAULT_PX, LEFT_WIDE_DEFAULT_PX,
-  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode,
+  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, decodeStoredPx,
 } from './core/left-nav-layout.js';
 import type { LeftNavigationMode, LeftNavigationSection } from './core/left-nav-layout.js';
 
@@ -666,12 +666,13 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // back to the default so the selector always reflects a real choice.
     resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),
     // #487 — the WIDE left-navigation width, and the one width the fold/restore
-    // machine remembers. `clampWideWidthPx` enforces the same [180, 420] range
-    // and 248 default this key has always had, but is NaN-safe where the bare
-    // `clamp(parseInt(...))` was not: `Math.max(180, NaN)` is NaN, so a corrupt
-    // stored value used to decode straight through to `width: NaNpx`, which the
-    // browser drops — collapsing the sidebar with no way to tell why.
-    sidebarPx: clampWideWidthPx(parseInt(read.loadStr(KEYS.sidebarPx, String(LEFT_WIDE_DEFAULT_PX)), 10)),
+    // machine remembers. Same [180, 420] range and 248 default this key has always
+    // had, but decoded safely: the bare `clamp(parseInt(...))` it replaces was not
+    // NaN-safe (`Math.max(180, NaN)` is NaN, so a corrupt value reached the DOM as
+    // `width: NaNpx`, which the browser drops), and `parseInt` also accepted a
+    // numeric PREFIX, so `'12junk'` silently decoded to 12. `decodeStoredPx`
+    // requires the whole string to be a finite number before the clamp runs.
+    sidebarPx: clampWideWidthPx(decodeStoredPx(read.loadStr(KEYS.sidebarPx, ''), LEFT_WIDE_DEFAULT_PX)),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
     // Cell-detail / rows-viewer drawer width (issue #101). The 92vw upper
@@ -813,7 +814,7 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // desktop session shows a bare rail even when rail mode was persisted.
     leftNavMode: signal(decodeLeftNavigationMode(read.loadStr(KEYS.leftNavMode, 'wide'))),
     leftNavDrawerPx: clampDrawerWidthPx(
-      parseInt(read.loadStr(KEYS.leftNavDrawerPx, String(LEFT_DRAWER_DEFAULT_PX)), 10)),
+      decodeStoredPx(read.loadStr(KEYS.leftNavDrawerPx, ''), LEFT_DRAWER_DEFAULT_PX)),
     leftNavSection: signal<LeftNavigationSection | null>(null),
     // Best-effort mobile mode (#126). `isMobile` mirrors the viewport width
     // against MOBILE_BREAKPOINT_PX — set once and on `change` by app.js's
