@@ -198,11 +198,18 @@ export interface DashboardTreeRow {
   parentKey: string | null;
   label: string;
   /** An inline count rendered right after the label (`Variables · 3`), matching
-   *  the lower switcher's `.side-count` treatment. */
+   *  the lower switcher's `.side-count` treatment. #553 gave the Dashboard row
+   *  this same field for its panel count (`On-time flights · 7`) rather than
+   *  the right-aligned `meta` it used before, so all three of Dashboard,
+   *  Variables and Panels use ONE placement — and the narrow-sidebar
+   *  breakpoint (`@container sidebar (max-width: 220px)`, `.dash-tree-count`)
+   *  hides it uniformly across the three, never leaving one behind. */
   count: number | null;
-  /** Right-aligned trailing text — the Dashboard row's panel count, or a
-   *  variable row's type(s) (`String`, `String | UInt64`, or nothing at all for
-   *  an orphan with no `lastKnownType`). */
+  /** Right-aligned trailing text — a variable row's type(s) (`String`,
+   *  `String | UInt64`, or nothing at all for an orphan with no
+   *  `lastKnownType`). #553 moved the Dashboard row's own panel count OUT of
+   *  this field and into `count` above, so a Dashboard row's `meta` is now
+   *  always `''`. */
   meta: string;
   expandable: boolean;
   expanded: boolean;
@@ -233,7 +240,9 @@ export interface DashboardTreeRow {
    *
    * This replaced three separate expressions of the same idea: `renamable`
    * (#429 phase 3's Dashboard pencil), `deletable` (#447's orphaned-variable
-   * trash) and the `menu` list. A group row has none.
+   * trash) and the `menu` list. A group row has none, EXCEPT the Panels group
+   * row: #553 moved `add-panel` off the Dashboard row onto it, since Add panel
+   * creates a member of that group rather than acting on the Dashboard itself.
    */
   actions: readonly DashboardTreeAction[];
   dashboardId: string;
@@ -478,6 +487,25 @@ const unavailableAction = (
  *  everywhere else. */
 const quoted = (name: string): string => '“' + name + '”';
 
+/**
+ * The Add-panel control — #553 moved it off the Dashboard row onto the Panels
+ * GROUP row, since it creates a member of that group rather than acting on
+ * the Dashboard document itself. Availability is unchanged from before the
+ * move: an ambiguous Dashboard id or the 100-tile ceiling still render it,
+ * disabled, rather than withholding it outright (#494's "vocabulary must not
+ * silently shrink").
+ */
+const addPanelAction = (
+  dashboardId: string, dashboardLabel: string, tileCount: number, dashboardIdDuplicated: boolean,
+): DashboardTreeAction => {
+  const label = 'Add panel to ' + dashboardLabel;
+  if (dashboardIdDuplicated) return unavailableAction('add-panel', label, AMBIGUOUS_DASHBOARD_REASON);
+  if (tileCount >= PORTABLE_LIMITS.maxTilesPerDashboard) {
+    return unavailableAction('add-panel', label, DASHBOARD_TILE_LIMIT_REASON);
+  }
+  return action('add-panel', label, 'Add panel', { kind: 'dashboard', dashboardId });
+};
+
 export function deriveDashboardTree(
   { workspace, surface, ui }: DashboardTreeInput,
 ): DashboardTree {
@@ -645,10 +673,14 @@ export function deriveDashboardTree(
       level: 1,
       parentKey: null,
       label: title || UNTITLED_DASHBOARD,
-      count: null,
-      // Variables are Dashboard-level controls and are deliberately NOT counted
-      // here — this is the PANEL count.
-      meta: String(tiles.length),
+      // #553: the Dashboard row's own panel count, in the SAME inline `· N`
+      // placement as the Variables/Panels group rows below — it used to be the
+      // right-aligned `meta` text, competing with the action cluster for space
+      // and surviving the narrow-sidebar breakpoint that hides every other
+      // count. Variables are Dashboard-level controls and are deliberately NOT
+      // counted here — this is the PANEL count.
+      count: tiles.length,
+      meta: '',
       expandable: true,
       expanded: dashboardExpanded,
       toggleable: !dashboardForced,
@@ -657,9 +689,11 @@ export function deriveDashboardTree(
       invalid: null,
       severity: null,
       diagnostic: null,
-      // #494/#515: the Dashboard row's own three direct controls. Its `⋯` menu is
+      // #494/#515/#553: the Dashboard row's own two direct controls — Add panel
+      // moved to the Panels group row below, since it creates a member of that
+      // group rather than acting on the Dashboard document. Its `⋯` menu is
       // gone — *Open in Edit* was its last item, and a menu button that opens
-      // a one-item menu beside two real controls is chrome, not vocabulary.
+      // a one-item menu beside a real control is chrome, not vocabulary.
       // Shift-click / Shift+Enter remain the Edit gesture (`shift` below).
       //
       // A duplicated Dashboard id leaves both unavailable: `findDashboardStrict`
@@ -668,19 +702,12 @@ export function deriveDashboardTree(
       // commit would only refuse is the exact bug this closes.
       actions: dashboardIdDuplicated
         ? [
-          unavailableAction('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
-            AMBIGUOUS_DASHBOARD_REASON),
           unavailableAction('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
             AMBIGUOUS_DASHBOARD_REASON),
           unavailableAction('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
             AMBIGUOUS_DASHBOARD_REASON),
         ]
         : [
-          ...(tiles.length >= PORTABLE_LIMITS.maxTilesPerDashboard
-            ? [unavailableAction('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
-              DASHBOARD_TILE_LIMIT_REASON)]
-            : [action('add-panel', 'Add panel to ' + (title || UNTITLED_DASHBOARD),
-              'Add panel', { kind: 'dashboard', dashboardId: dashboard.id })]),
           action('edit-dashboard', 'Edit dashboard ' + (title || UNTITLED_DASHBOARD),
             'Edit dashboard title & description', { kind: 'dashboard', dashboardId: dashboard.id }),
           action('delete-dashboard', 'Delete dashboard ' + (title || UNTITLED_DASHBOARD),
@@ -882,7 +909,14 @@ export function deriveDashboardTree(
         invalid: null,
         severity: null,
         diagnostic: null,
-        actions: [],
+        // #553: the Panels group row is the only group row with a direct
+        // action — Add panel, moved here from the Dashboard row because it
+        // creates a member of THIS group. Variables offers nothing: a
+        // variable is inferred or configured through its own row, never added
+        // from the group.
+        actions: group === 'panels'
+          ? [addPanelAction(dashboard.id, title || UNTITLED_DASHBOARD, tiles.length, dashboardIdDuplicated)]
+          : [],
         dashboardId: dashboard.id,
         member: null,
         queryId: null,

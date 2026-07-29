@@ -189,15 +189,19 @@ test('the action is keyboard reachable and activates on Enter', async ({ page })
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-sales', active: true });
 });
 
-test('a Dashboard-row plus creates a blank linked Panel and focuses its SQL editor', async ({ page }) => {
+// #553: Add panel moved off the Dashboard row onto the Panels group row — it
+// creates a member of that group rather than acting on the Dashboard itself.
+test('the Panels-row plus creates a blank linked Panel and focuses its SQL editor', async ({ page }) => {
   await open(page);
   // Begin on the actual Dashboard surface. A successful mutation must not
   // rerender that surface (which force-closes overlays) before the dialog can
   // close and perform its reveal/open/focus settlement.
   await openDashboard(page, 'sales');
   await expect.poll(() => surface(page)).toBe('dashboard');
-  const dashboard = treeRow(page, 'workspace:sales');
-  const plus = dashboard.locator('.dash-tree-act[aria-label="Add panel to Sales"]');
+  // The Panels group row only paints once the Dashboard is expanded.
+  await treeRow(page, 'workspace:sales').locator('.dash-tree-chev').click();
+  const panelsGroup = treeRow(page, 'workspace:sales:group:panels');
+  const plus = panelsGroup.locator('.dash-tree-act[aria-label="Add panel to Sales"]');
 
   // The direct action is a real keyboard target, revealed by focus just like
   // the adjacent pencil and trash. Focus it explicitly: browser tab order also
