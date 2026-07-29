@@ -3392,6 +3392,13 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    this rule used to carry: the Dashboard's separate File menu is gone, and the
    style picker was its only other user. */
 .dash-style-menu { width: 220px; }
+/* #498: every layout-picker row carries this `extraClass` (buildLayoutMenu,
+   dashboard.ts), which the typography contract could not see until this issue
+   because it never reaches an `h()` `class:` literal. `.fm-item` above already
+   gives the row its complete chrome; this explicit (if redundant with
+   `.fm-trailing`'s own `margin-left: auto`) rule pins the layout label and its
+   `G + <key>` shortcut to the row's opposite ends. */
+.dash-style-item { justify-content: space-between; }
 /* #288: the read-only viewer's not-found state (a stale/replaced dashboard link
    or a spent one-time preview token). */
 .dash-notfound-title { margin: 0 0 8px; font-size: var(--text-title); color: var(--fg); }
