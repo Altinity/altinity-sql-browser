@@ -10,6 +10,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **OAuth document-recovery E2E runs no longer reuse an incompatible stale
+  harness server** (#533). Playwright now probes the fixture's server-only
+  config route before accepting an existing process, preventing misleading
+  ready-latch timeouts when an older static harness still owns the test port.
+  The fixture also drains every intercepted startup ClickHouse request before
+  arming its deliberate 401, so a late catalog success cannot mask auth loss.
 - **Dashboard variable option SQL can no longer pass Run with more than 1000
   rows** (#496). The existing bounded probe still fetches one sentinel row, but
   Run now rejects that 1001-row response after column-shape validation and

@@ -49,7 +49,7 @@
     const fixtureCh = `${fixtureRoot}/ch`;
     const versionSql = 'SELECT version() AS v, uptime() AS u FORMAT JSON';
     const nativeFetch = window.fetch.bind(window);
-    const initialCatalog = { started: false, settled: false };
+    const initialCatalog = { started: false, settled: false, succeeded: false, pending: 0 };
     // The production session addresses its ClickHouse origin at the serving
     // origin. Keep that real client behavior, but send only THIS fixture's
     // POSTs to its dedicated fake endpoint; no other E2E page is intercepted.
@@ -61,7 +61,9 @@
       if (isInitialVersion) initialCatalog.started = true;
       if (isClickHousePost) url.pathname = fixtureCh;
       try {
-        return await nativeFetch(isClickHousePost ? url.href : input, init);
+        const response = await nativeFetch(isClickHousePost ? url.href : input, init);
+        if (isInitialVersion) initialCatalog.succeeded = response.ok;
+        return response;
       } finally {
         if (isInitialVersion) initialCatalog.settled = true;
       }
@@ -93,6 +95,20 @@
     }
 
     const app = createApp({ root: document.querySelector('#root'), fetch: fixtureFetch, broadcastChannel: () => null });
+    // Track the complete catalog service operations, not only fetch(): fetch
+    // resolves at response headers, before JSON parsing and any dependent query
+    // batch. Readiness must wait through those later async boundaries too.
+    for (const name of ['loadSchema', 'loadReference', 'loadVersion']) {
+      const load = app.catalog[name].bind(app.catalog);
+      app.catalog[name] = async (...args) => {
+        initialCatalog.pending += 1;
+        try {
+          return await load(...args);
+        } finally {
+          initialCatalog.pending -= 1;
+        }
+      };
+    }
     const summarize = () => app.state.tabs.value.map((tab) => ({
       id: tab.id, doc: tab.doc, name: tab.name, sqlDraft: tab.sqlDraft, specText: tab.specText,
       dirtySql: tab.dirtySql, dirtySpec: tab.dirtySpec, editorMode: tab.editorMode, savedId: tab.savedId,
@@ -199,6 +215,7 @@
     }
     window.__oauthRecoveryState = () => summarize();
     window.__oauthRecoveryWorkspaceKey = () => app.currentWorkspace?.key ?? null;
+    window.__oauthRecoveryInitialCatalog = () => ({ ...initialCatalog });
     // The signed-in shell's retained inline login mount is established by the
     // initial surface effects. Wait for that real mount (not a timing guess)
     // before exposing the 401 trigger, so the test exercises `show()` on it.
@@ -212,12 +229,13 @@
       });
     }
     // bootstrap intentionally starts catalog/version work in the background.
-    // Wait for its exact SQL request to complete AND for authedFetch to record
-    // the successful response before exposing the user-triggered 401; this
+    // Wait for its exact SQL request to succeed and every complete catalog
+    // service operation to settle before exposing the user-triggered 401; this
     // prevents a stale success from racing the first-contact auth-loss path.
     await new Promise((resolve) => {
       const waitForInitialCatalog = () => {
-        if (initialCatalog.started && initialCatalog.settled && app.conn.chCtx.authConfirmed) resolve();
+        if (initialCatalog.started && initialCatalog.settled && initialCatalog.succeeded
+          && initialCatalog.pending === 0 && app.conn.chCtx.authConfirmed) resolve();
         else requestAnimationFrame(waitForInitialCatalog);
       };
       waitForInitialCatalog();

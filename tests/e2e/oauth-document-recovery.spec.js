@@ -23,6 +23,9 @@ test.describe('OAuth document recovery redirect (#512)', () => {
 
     await page.goto(fixturePath);
     await page.waitForFunction(() => window.__oauthRecoveryReady === true);
+    expect(await page.evaluate(() => window.__oauthRecoveryInitialCatalog())).toMatchObject({
+      started: true, settled: true, succeeded: true, pending: 0,
+    });
     expect(await page.evaluate(() => window.__oauthRecoveryInitialDirtyGuard)).toBe(true);
     const authLossResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === fixtureChPath
