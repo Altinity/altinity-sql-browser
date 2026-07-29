@@ -173,6 +173,13 @@ describe('renderDashboardTree — structure and ARIA', () => {
       .filter((chev) => chev.getAttribute('tabindex') === '0');
     expect(tabbableChevrons).toHaveLength(1);
     expect(tabbableChevrons[0].closest('.dash-tree-row')!.getAttribute('data-key')).toBe('w1:sales');
+    // WebKit needs explicit tabindex values on the hover-concealed actions;
+    // they must rove with their row rather than create stops for every row.
+    const tabbableActions = [...list.querySelectorAll<HTMLElement>('.dash-tree-act')]
+      .filter((action) => action.getAttribute('tabindex') === '0');
+    expect(tabbableActions).toHaveLength(3);
+    expect(tabbableActions.every((action) => action.closest('.dash-tree-row')?.dataset.key === 'w1:sales'))
+      .toBe(true);
   });
 
   // #501 review — a duplicated Dashboard or tile id used to collapse two rows
@@ -554,6 +561,10 @@ describe('renderDashboardTree — mouse gestures', () => {
     // move relative to another.
     expect(rowFor(list, 'w1:ops').getAttribute('tabindex')).toBe('0');
     expect(rowFor(list, 'w1:sales').getAttribute('tabindex')).toBe('-1');
+    expect([...rowFor(list, 'w1:ops').querySelectorAll('.dash-tree-act')]
+      .every((action) => action.getAttribute('tabindex') === '0')).toBe(true);
+    expect([...rowFor(list, 'w1:sales').querySelectorAll('.dash-tree-act')]
+      .every((action) => action.getAttribute('tabindex') === '-1')).toBe(true);
     settle();
   });
 
@@ -2161,6 +2172,14 @@ describe('renderDashboardTree — keyboard', () => {
   it('moves DOM focus with the roving tabindex', () => {
     const { app, list } = treeApp();
     renderDashboardTree(app);
+    rowFor(list, 'w1:ops').focus();
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:ops');
+    expect([...rowFor(list, 'w1:ops').querySelectorAll('.dash-tree-act')]
+      .every((action) => action.getAttribute('tabindex') === '0')).toBe(true);
+    actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.focus();
+    expect(readTreeUi(app.state.dashboardTreeUi, 'w1').keyboardRowKey).toBe('w1:sales');
+    expect([...rowFor(list, 'w1:sales').querySelectorAll('.dash-tree-act')]
+      .every((action) => action.getAttribute('tabindex') === '0')).toBe(true);
     rowFor(list, 'w1:sales').focus();
     key(list, 'ArrowDown');
     expect(document.activeElement).toBe(rowFor(list, 'w1:ops'));
