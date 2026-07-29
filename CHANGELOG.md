@@ -54,6 +54,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   independently scrolling login region.
 
 ### Changed
+- **The Docker SPA runtime now uses Caddy with build-time compression sidecars.**
+  The image carries Brotli (quality 11), Zstandard (level 19), and gzip (level
+  9) variants of `sql.html`; Caddy negotiates them from `Accept-Encoding` with
+  `Vary: Accept-Encoding` and never compresses requests at runtime. The
+  ClickHouse and release-bundle paths continue to distribute the single raw
+  `sql.html` artifact.
 - **A Dashboard panel tile head now carries two controls and a `⋯` menu**
   (#544). #535 had left the head with five — grip, duplicate, widen, expand,
   delete — competing with the tile title for one flex row, and a tile a single

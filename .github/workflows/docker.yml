@@ -1,6 +1,6 @@
 name: docker
 
-# Build the production nginx image and publish it multi-arch to GHCR.
+# Build the production Caddy image and publish it multi-arch to GHCR.
 # A version-tag push is the release boundary: PR and main CI validate the
 # application itself, while this workflow publishes the release image.
 on:

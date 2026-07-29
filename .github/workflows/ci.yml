@@ -27,6 +27,7 @@ jobs:
       unit: ${{ steps.filter.outputs.unit }}
       build: ${{ steps.filter.outputs.build }}
       bundle: ${{ steps.filter.outputs.bundle }}
+      docker: ${{ steps.filter.outputs.docker }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -65,6 +66,16 @@ jobs:
               - 'build/**'
               - 'deploy/**'
               - 'install.sh'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            docker:
+              - 'Dockerfile'
+              - 'deploy/caddy/**'
+              - 'deploy/config.json.example'
+              - 'build/**'
+              - 'src/**'
+              - 'schemas/**'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
@@ -215,6 +226,87 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck install.sh build/bundle.sh
 
+  # Exercise the published runtime shape, including Caddy's static
+  # Content-Encoding negotiation. Node decodes each selected sidecar, so the
+  # check does not depend on the runner curl being built with every codec.
+  docker-smoke:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.docker == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Build and run image
+        run: |
+          set -euo pipefail
+          docker build --build-arg ASB_COMMIT="${GITHUB_SHA}" --tag altinity-sql-browser:smoke .
+          docker run --detach --rm --name asb-smoke -p 18080:8080 altinity-sql-browser:smoke
+          trap 'docker logs asb-smoke; docker stop asb-smoke' EXIT
+          for i in $(seq 1 20); do
+            curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null && break
+            sleep 0.5
+          done
+          curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null
+          # The Docker build receives GitHub's merge-commit stamp while this
+          # checkout carries the PR-head stamp. Compare negotiated variants to
+          # the runtime identity response, rather than to the separately built
+          # checkout file, so the assertion covers exactly the image bytes.
+          for encoding in identity br zstd gzip; do
+            curl --fail --silent --show-error \
+              -H "Accept-Encoding: $encoding" \
+              -D "headers-$encoding.txt" \
+              http://127.0.0.1:18080/sql > "wire-$encoding"
+            grep -qi '^content-type: text/html' "headers-$encoding.txt"
+            grep -qi '^vary:.*accept-encoding' "headers-$encoding.txt"
+            grep -qi "^content-security-policy: default-src 'none'" "headers-$encoding.txt"
+            grep -qi '^x-content-type-options: nosniff' "headers-$encoding.txt"
+            grep -qi '^referrer-policy: no-referrer' "headers-$encoding.txt"
+            if [ "$encoding" = identity ]; then
+              ! grep -qi '^content-encoding:' "headers-$encoding.txt"
+            else
+              grep -qi "^content-encoding: $encoding" "headers-$encoding.txt"
+            fi
+            node --input-type=module - "$encoding" "wire-$encoding" "body-$encoding.html" <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { brotliDecompress, gunzip, zstdDecompress } from 'node:zlib';
+          import { promisify } from 'node:util';
+
+          const [encoding, input, output] = process.argv.slice(2);
+          const compressed = await readFile(input);
+          const decompress = {
+            br: promisify(brotliDecompress),
+            zstd: promisify(zstdDecompress),
+            gzip: promisify(gunzip),
+          }[encoding];
+          await writeFile(output, decompress ? await decompress(compressed) : compressed);
+          NODE
+            if [ "$encoding" = identity ]; then
+              cp "body-$encoding.html" expected-body.html
+            else
+              cmp expected-body.html "body-$encoding.html"
+            fi
+          done
+          curl --fail --silent -H 'Accept-Encoding: gzip, zstd, br' -D preferred-headers.txt \
+            http://127.0.0.1:18080/sql > /dev/null
+          grep -qi '^content-encoding: br' preferred-headers.txt
+          curl --fail --silent -D healthz-headers.txt http://127.0.0.1:18080/healthz > healthz-body.txt
+          test "$(cat healthz-body.txt)" = ok
+          grep -qi '^cache-control: no-store' healthz-headers.txt
+          curl --fail --silent -D config-headers.txt http://127.0.0.1:18080/sql/config.json > config-body.json
+          grep -qi '^content-type: application/json' config-headers.txt
+          grep -qi '^cache-control: no-store' config-headers.txt
+          grep -qi '^x-content-type-options: nosniff' config-headers.txt
+          grep -qi '^referrer-policy: no-referrer' config-headers.txt
+          node -e 'const chunks=[]; process.stdin.on("data", c => chunks.push(c)); process.stdin.on("end", () => JSON.parse(Buffer.concat(chunks)));' < config-body.json
+
   # Nightly/manual/release real-browser regression tests (Playwright). Keep the
   # costly browser matrix out of ordinary PR and branch-push CI; unit tests
   # cover each commit, while release tags validate the shipped image/artifact.
@@ -249,7 +341,7 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [changes, examples, test, size, bundle, e2e]
+    needs: [changes, examples, test, size, bundle, docker-smoke, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify applicable jobs

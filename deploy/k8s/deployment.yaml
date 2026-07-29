@@ -39,7 +39,7 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101          # nginx-unprivileged
+        runAsUser: 101          # Caddy runtime
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -82,9 +82,9 @@ spec:
         - name: config
           configMap:
             name: sql-browser-config
-# Optional hardening: set readOnlyRootFilesystem: true on the container and add
-# emptyDir mounts for /tmp, /var/cache/nginx, /var/run, and /etc/nginx/conf.d
-# (the nginx entrypoint writes the envsubst-rendered config there at startup).
+# Optional hardening: set readOnlyRootFilesystem: true and add an emptyDir mount
+# for /data. Caddy's TLS-storage housekeeping uses that directory even though
+# this HTTP-only image neither obtains certificates nor rewrites its config.
 ---
 apiVersion: v1
 kind: Service
