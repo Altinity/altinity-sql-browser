@@ -174,8 +174,10 @@ export interface ResultsApp {
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
   /** #276 Phase 5: no flat `App` delegates for the params-group members this
-   *  module (and, via the `as VariableBarApp` cast below, variable-bar.ts) needs —
-   *  `app.params.*` directly. */
+   *  module needs — `app.params.*` directly. #478 replaced the former
+   *  `as VariableBarApp` cast with an explicit adapter below, so `saveFilterActive`
+   *  is now reached through that adapter's caller-neutral `saveActive` rather than
+   *  by variable-bar.ts reading this shape directly. */
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
   /** #276 Phase 5: no flat `App.savePref` delegate — `app.prefs.save(name,
    *  value)` directly (the cell-detail drawer's own resize persist). */
