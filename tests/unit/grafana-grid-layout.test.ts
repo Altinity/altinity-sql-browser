@@ -85,6 +85,56 @@ describe('grafana-grid@2 plugin', () => {
         items: { a: { span: 1, height: 'compact' } },
       });
   });
+
+  // #551 — setStylePlacement's v2 `items` map is the same tile-id-keyed write
+  // surface; __proto__/constructor must survive here too.
+  it('preserves a v2 style placement for tile ids __proto__ and constructor without polluting Object.prototype', () => {
+    for (const tileId of ['__proto__', 'constructor']) {
+      const layout: Record<string, unknown> = { type: 'grafana-grid', version: 2 };
+      // FIRST write for this tile id — no own `items[tileId]` entry exists yet,
+      // exactly the case where a bare `items[tileId]` read resolves through
+      // the prototype chain to Object.prototype/Object.prototype.constructor
+      // itself. `setStylePlacement` then merges INTO that read value
+      // (`current[style] = next`) before writing it back — if the read ever
+      // aliases the real prototype instead of copying it, this line mutates
+      // Object.prototype for the whole process, not just this `layout`.
+      setStylePlacement(layout, tileId, 'grid', { span: 9, height: 3 });
+      const items = layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ grid: { span: 9, height: 3 } });
+      expect(JSON.parse(JSON.stringify(layout)).items[tileId]).toEqual({ grid: { span: 9, height: 3 } });
+      expect(resolveStylePlacement(layout, tileId, 'grid')).toEqual({ span: 9, height: 3 });
+      expect(Object.hasOwn(Object.prototype, 'grid')).toBe(false);
+      expect((Object.prototype as Record<string, unknown>).grid).toBeUndefined();
+      // A brand-new, unrelated plain object must not see the placement.
+      expect(({} as Record<string, unknown>).grid).toBeUndefined();
+    }
+  });
+
+  // #551 — deriveAuthoredFlowFallback (v2 regeneration) writes flowItems
+  // keyed by tile id; the legacy deriveFlowFallback path (routed above) shares
+  // the same risk. Both are the v2 "regenerate fallback" acceptance case.
+  it('preserves __proto__/constructor tile ids through deriveAuthoredFlowFallback (v2 fallback regeneration)', () => {
+    for (const tileId of ['__proto__', 'constructor']) {
+      const layout: Record<string, unknown> = {
+        type: 'grafana-grid', version: 2, preset: 'grid',
+        items: { [tileId]: { grid: { span: 4, height: 1 } } },
+      };
+      const fallback = deriveAuthoredFlowFallback(layout, [{ id: tileId }]);
+      expect(Object.hasOwn(fallback.items, tileId)).toBe(true);
+      expect(fallback.items[tileId]).toEqual({ span: 1, height: 'compact' });
+      expect(JSON.parse(JSON.stringify(fallback)).items[tileId]).toEqual({ span: 1, height: 'compact' });
+    }
+  });
+
+  it('preserves __proto__/constructor tile ids through deriveFlowFallback (grafana-grid@1 fallback derivation)', () => {
+    for (const tileId of ['__proto__', 'constructor']) {
+      const fallback = deriveFlowFallback(gridLayout({ [tileId]: { span: 4, height: 1 } }), [{ id: tileId }]);
+      expect(Object.hasOwn(fallback.items, tileId)).toBe(true);
+      expect(fallback.items[tileId]).toEqual({ span: 1, height: 'compact' });
+      expect(JSON.parse(JSON.stringify(fallback)).items[tileId]).toEqual({ span: 1, height: 'compact' });
+    }
+  });
 });
 
 describe('gridSpanFromFlowSpan / flowSpanFromGridSpan', () => {
@@ -223,6 +273,21 @@ describe('setGridPlacement', () => {
   it('is a no-op on a non-object layout', () => {
     expect(() => setGridPlacement(null, 't1', { span: 1 })).not.toThrow();
     expect(() => setGridPlacement(5, 't1', { span: 1 })).not.toThrow();
+  });
+
+  // #551 — a tile whose id is '__proto__' or 'constructor' (both schema-legal,
+  // `dashboardTileV1.id` pattern `\S`) must keep its placement as an own
+  // property, not silently vanish through the inherited Object.prototype
+  // setter. Assert the placement SURVIVES with the right span/height, not
+  // merely that the call doesn't throw.
+  it('preserves a placement for tile ids __proto__ and constructor', () => {
+    for (const tileId of ['__proto__', 'constructor']) {
+      const layout = gridLayout();
+      setGridPlacement(layout, tileId, { span: 8, height: 5 });
+      expect(Object.hasOwn(layout.items, tileId)).toBe(true);
+      expect(layout.items[tileId]).toEqual({ span: 8, height: 5 });
+      expect(JSON.parse(JSON.stringify(layout)).items[tileId]).toEqual({ span: 8, height: 5 });
+    }
   });
 });
 

@@ -14,7 +14,7 @@
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { isFlowLayout } from '../model/workspace-semantics.js';
-import { cloneJson } from '../../core/saved-query.js';
+import { cloneJson, defineJsonField, readJsonField } from '../../core/saved-query.js';
 import { partitionKpiBands } from '../../core/dashboard.js';
 import type {
   DashboardDocumentV2, FlowHeightV1, FlowPresetV1, FlowTilePlacementV1,
@@ -63,7 +63,7 @@ function flowItemsHost(layout: unknown): Record<string, unknown> | null {
  *  No-op when the layout has no flow surface. */
 export function setFlowPlacement(layout: unknown, tileId: string, placement: unknown): void {
   const items = flowItemsHost(layout);
-  if (items) items[tileId] = placement;
+  if (items) defineJsonField(items, tileId, placement);
 }
 
 /** One tile's STORED flow placement, or `undefined` when the layout holds none
@@ -82,7 +82,7 @@ export function flowPlacementAt(layout: unknown, tileId: string): unknown {
   if (!isObject(layout)) return undefined;
   const surface = isFlowLayout(layout.type, layout.version) ? layout : layout.fallback;
   if (!isObject(surface) || !isObject(surface.items)) return undefined;
-  return surface.items[tileId];
+  return readJsonField(surface.items, tileId);
 }
 
 /** Derive an initial flow placement from a query's `sizeHints.preferred`
@@ -263,7 +263,7 @@ export function computeFlowLayout(input: ComputeFlowLayoutInput): FlowLayoutMode
   const columns = mobile ? 1 : presetColumns(preset);
 
   const renders: FlowTileRender[] = tiles.map((tile, index) => {
-    const placement = resolvePlacement(items[tile.id]);
+    const placement = resolvePlacement(readJsonField(items, tile.id));
     return {
       tileId: tile.id, index, isKpi: !!tile.isKpi, height: placement.height,
       span: mobile ? 1 : effectiveSpan(placement.span, columns),

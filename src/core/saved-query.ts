@@ -30,10 +30,53 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function defineJsonField(target: Record<string, unknown>, key: string, value: unknown): void {
+/**
+ * Write one JSON-shaped key onto a plain object as an OWN enumerable,
+ * writable, configurable data property, via `Object.defineProperty` rather
+ * than `target[key] = value`. The difference matters for exactly one key: a
+ * bare assignment to `'__proto__'` on a plain object invokes the INHERITED
+ * `Object.prototype.__proto__` setter (changing `target`'s own prototype
+ * instead of creating a property), so the write silently vanishes and
+ * `JSON.stringify(target)` never sees it. `defineProperty` always creates an
+ * own data property, so `'__proto__'`/`'constructor'` survive as ordinary
+ * forward-compatible data — the same class of input `JSON.parse` already
+ * produces (it special-cases object keys the same way).
+ *
+ * This is the one shared primitive for every write into a plain object keyed
+ * by caller-controlled string data — used here for Spec/panel/dashboard
+ * fields, and reused by every Dashboard placement-map write (`layout.items`)
+ * across `src/dashboard/layouts` and `src/dashboard/model` (#551): a tile id
+ * is exactly such caller-controlled data (schema pattern `\S`, so `__proto__`
+ * and `constructor` are both legal tile ids). No prototype pollution is
+ * possible either way: only `target`'s own `[[Prototype]]`/properties are
+ * ever touched, never `Object.prototype` itself.
+ */
+export function defineJsonField(target: Record<string, unknown>, key: string, value: unknown): void {
   Object.defineProperty(target, key, {
     value, enumerable: true, writable: true, configurable: true,
   });
+}
+
+/**
+ * Read one key off a plain object as an OWN property only — `undefined` for
+ * anything else. The read-side counterpart of `defineJsonField`, and not a
+ * redundant safety net: a bare `target[key]` for `key === '__proto__'` (or
+ * `'constructor'`) on a `target` with no OWN property under that name
+ * resolves through the prototype chain to `Object.prototype` itself (or
+ * `Object.prototype.constructor`) — a real object, so an `isObject(...)`
+ * check alone cannot tell it apart from genuine stored data. Code that reads
+ * a placement this way to MERGE-then-rewrite it (e.g. `current[style] =
+ * next` while preserving `current`'s other fields) ends up assigning
+ * directly onto the ALIASED `Object.prototype`, mutating it for the whole
+ * realm — not a hypothetical: this is exactly how `setStylePlacement`
+ * (`grafana-grid-layout.ts`) polluted `Object.prototype.grid` for every
+ * OTHER placement map in the same test run until this helper replaced its
+ * bare read (#551 review). Every read of a caller-keyed JSON map that could
+ * be merged, mutated, or treated as "no entry vs. an empty one" must go
+ * through this, not a bare bracket access.
+ */
+export function readJsonField(target: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(target, key) ? target[key] : undefined;
 }
 
 /**

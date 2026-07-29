@@ -10,6 +10,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **A Dashboard tile whose id is `__proto__` or `constructor` no longer loses
+  its placement** (#551, found reviewing #549). Both are legal tile ids under
+  `dashboardTileV1.id` (pattern `\S`), and a placement-map write of the shape
+  `map[tileId] = placement` silently drops them: the assignment invokes the
+  inherited `Object.prototype.__proto__` setter instead of creating an own
+  property, so the tile falls back to the layout engine's default size.
+  Worse, one read site (`grafana-grid@2`'s `setStylePlacement`, merging a new
+  style onto a tile's existing style map) read the same key back before
+  writing it, and for a tile id with no own entry yet that bare read resolves
+  to `Object.prototype` itself — the subsequent merge-write mutated the real
+  `Object.prototype` for the whole process, not just the one layout. Every
+  placement-map write (`grafana-grid-layout.ts`, `flow-layout.ts`,
+  `dashboard-document.ts`'s legacy-layout migrations and fallback
+  regeneration, `dashboard-commands.ts`'s `duplicate-tile` and the
+  flow→grafana-grid `change-layout` conversion) now goes through one shared
+  `Object.defineProperty`-based helper (`defineJsonField`, already used by
+  `core/saved-query.ts` for the same class of Spec/panel JSON fields), and
+  every read that could be merged or mutated goes through its paired
+  own-property-only counterpart (`readJsonField`), closing that
+  `Object.prototype` escape.
 - **Dashboard styles now persist independent dimensions and temporary column
   previews no longer mutate authored layouts** (behavioral correction to
   #535/#538). The new `grafana-grid@2` contract stores Grid `{span,height}`,

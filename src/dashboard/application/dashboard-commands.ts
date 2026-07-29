@@ -14,7 +14,7 @@
 // patch, or an invalid placement. Role/limit/reference/presentation failures
 // are left to the caller's validation stage.
 
-import { cloneJson } from '../../core/saved-query.js';
+import { cloneJson, defineJsonField, readJsonField } from '../../core/saved-query.js';
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import {
@@ -128,7 +128,7 @@ function placementForActiveEngine(
   plugin: DashboardLayoutPlugin, layout: unknown, tileId: string,
 ): unknown {
   const placement = plugin.type === 'grafana-grid' && plugin.version === 2
-    ? (isObject(layout) && isObject(layout.items) ? layout.items[tileId] : undefined)
+    ? (isObject(layout) && isObject(layout.items) ? readJsonField(layout.items, tileId) : undefined)
     : plugin.type === 'grafana-grid'
     ? gridPlacementAt(layout, tileId) : flowPlacementAt(layout, tileId);
   return isObject(placement) ? placement : undefined;
@@ -236,7 +236,7 @@ function applyCommandToClone(
       if (placement !== undefined) {
         if (ctx.plugin.type === 'grafana-grid' && ctx.plugin.version === 2
           && isObject(dashboard.layout) && isObject(dashboard.layout.items)) {
-          (dashboard.layout.items as Record<string, unknown>)[newTileId] = cloneJson(placement);
+          defineJsonField(dashboard.layout.items as Record<string, unknown>, newTileId, cloneJson(placement));
         } else {
           setPlacementForActiveEngine(ctx.plugin, dashboard.layout, newTileId, cloneJson(placement));
         }
@@ -385,14 +385,14 @@ function applyCommandToClone(
       }
 
       if (currentType === 'flow' && targetType === 'grafana-grid') {
-        const flowItems = dashboard.layout.items ?? {};
+        const flowItems = isObject(dashboard.layout.items) ? dashboard.layout.items : {};
         const gridItems: Record<string, unknown> = {};
         for (const tile of tiles) {
           if (!isObject(tile) || typeof tile.id !== 'string') continue;
-          const flowPlacement = resolvePlacement(flowItems[tile.id]);
-          gridItems[tile.id] = {
+          const flowPlacement = resolvePlacement(readJsonField(flowItems, tile.id));
+          defineJsonField(gridItems, tile.id, {
             span: gridSpanFromFlowSpan(flowPlacement.span), height: gridHeightUnitsFromFlowHeight(flowPlacement.height),
-          };
+          });
         }
         // Drop the (never-present-on-a-flow-primary) `fallback` field before
         // snapshotting — a flow primary IS the fallback engine, so it never

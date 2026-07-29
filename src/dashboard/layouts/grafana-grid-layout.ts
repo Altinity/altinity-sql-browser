@@ -53,7 +53,7 @@
 
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { cloneJson } from '../../core/saved-query.js';
+import { cloneJson, defineJsonField, readJsonField } from '../../core/saved-query.js';
 import { deriveFlowPlacement } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
 import type {
@@ -182,7 +182,7 @@ function gridItemsHost(layout: unknown): Record<string, unknown> | null {
  *  No-op when the layout is not an object. */
 export function setGridPlacement(layout: unknown, tileId: string, placement: unknown): void {
   const items = gridItemsHost(layout);
-  if (items) items[tileId] = placement;
+  if (items) defineJsonField(items, tileId, placement);
 }
 
 /** One tile's STORED grid placement, or `undefined` when the layout holds none
@@ -192,12 +192,12 @@ export function setGridPlacement(layout: unknown, tileId: string, placement: unk
  *  placements where. Never mutates. */
 export function gridPlacementAt(layout: unknown, tileId: string): unknown {
   if (!isObject(layout) || !isObject(layout.items)) return undefined;
-  return layout.items[tileId];
+  return readJsonField(layout.items, tileId);
 }
 
 function tileStylesAt(layout: unknown, tileId: string): GridTileStyles {
   if (!isObject(layout) || layout.version !== 2 || !isObject(layout.items)) return {};
-  const entry = layout.items[tileId];
+  const entry = readJsonField(layout.items, tileId);
   return isObject(entry) ? entry as GridTileStyles : {};
 }
 
@@ -233,7 +233,14 @@ export function setStylePlacement(
   if (!isObject(layout) || layout.version !== 2) return;
   if (!isObject(layout.items)) layout.items = {};
   const items = layout.items as Record<string, unknown>;
-  const current = isObject(items[tileId]) ? items[tileId] as Record<string, unknown> : {};
+  // Own-property-only read (readJsonField), then a FRESH shallow copy — never
+  // the stored/inherited value mutated in place. For tileId === '__proto__'
+  // with no own entry yet, a bare `items[tileId]` would resolve through the
+  // prototype chain to Object.prototype itself; writing `current[style] = …`
+  // on THAT reference would corrupt Object.prototype for the whole realm,
+  // not just this layout (#551 review — caught by this file's own test).
+  const owned = readJsonField(items, tileId);
+  const current: Record<string, unknown> = isObject(owned) ? { ...owned } : {};
   const candidate = isObject(placement) ? placement : {};
   const next: Record<string, unknown> = {};
   if (style === 'grid' && Object.prototype.hasOwnProperty.call(candidate, 'span')) {
@@ -243,7 +250,7 @@ export function setStylePlacement(
     next.height = candidate.height;
   }
   current[style] = next;
-  items[tileId] = current;
+  defineJsonField(items, tileId, current);
 }
 
 export function stylePlacementAt(
@@ -509,7 +516,7 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
     const placement = isObject(layout) && layout.version === 2
       ? resolveStylePlacement(layout, tile.id,
         style === 'full' || style === 'report' ? style : 'grid')
-      : resolveGridPlacement(items[tile.id]);
+      : resolveGridPlacement(readJsonField(items, tile.id));
     const authoredSpan = style === 'full' ? columns
       : style === 'report' ? REPORT_GRID_SPAN
         : temporary ? (previewSpans?.get(tile.id) ?? 1) : placement.span;
@@ -561,10 +568,10 @@ export function deriveFlowFallback(
   const items = gridItemsFor(gridLayout);
   const flowItems: Record<string, FlowTilePlacementV1> = {};
   for (const tile of tiles) {
-    const gridPlacement = resolveGridPlacement(items[tile.id]);
-    flowItems[tile.id] = {
+    const gridPlacement = resolveGridPlacement(readJsonField(items, tile.id));
+    defineJsonField(flowItems, tile.id, {
       span: flowSpanFromGridSpan(gridPlacement.span), height: gridHeightUnitsToFlowHeight(gridPlacement.height),
-    };
+    });
   }
   return { type: 'flow', version: 1, preset: 'columns-2', items: flowItems };
 }
@@ -579,14 +586,14 @@ export function deriveAuthoredFlowFallback(
   const flowItems: Record<string, FlowTilePlacementV1> = {};
   for (const tile of tiles) {
     const placement = resolveStylePlacement(layout, tile.id, preset);
-    flowItems[tile.id] = preset === 'grid'
+    defineJsonField(flowItems, tile.id, preset === 'grid'
       ? {
         span: flowSpanFromGridSpan(placement.span),
         height: gridHeightUnitsToFlowHeight(placement.height),
       }
       : preset === 'full'
         ? { span: 2, height: gridHeightUnitsToFlowHeight(placement.height) }
-        : { span: 1, height: gridHeightUnitsToFlowHeight(placement.height) };
+        : { span: 1, height: gridHeightUnitsToFlowHeight(placement.height) });
   }
   return {
     type: 'flow',

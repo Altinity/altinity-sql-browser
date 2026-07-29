@@ -404,6 +404,39 @@ describe('decodeStoredWorkspaceJson', () => {
     expect(!invalid.ok && invalid.diagnostics[0].code).toBe('workspace-version-unsupported');
     expect(!invalid.ok && invalid.diagnostics).toHaveLength(1);
   });
+
+  // #551 — a tile whose id is '__proto__' or 'constructor' (schema-legal)
+  // must keep its placement through a full encode -> decode round trip: text
+  // -> JSON.parse -> canonicalizeWorkspaceLayouts (upgradeDashboardLayout,
+  // flow@1 -> grafana-grid@2) -> the canonical V5 value.
+  for (const tileId of ['__proto__', 'constructor']) {
+    it(`round-trips the placement of a tile id ${JSON.stringify(tileId)} through decode (flow@1 -> grafana-grid@2)`, () => {
+      const source = workspace({
+        queries: [panelQuery('p1')],
+        dashboards: [dashboardDoc({
+          tiles: [{ id: tileId, queryId: 'p1' }],
+          layout: { type: 'flow', version: 1, preset: 'columns-2', items: { [tileId]: { span: 2, height: 'large' } } },
+        })],
+      });
+      const decoded = decodeStoredWorkspaceJson(JSON.stringify(source));
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) return;
+      const layout = decoded.value.dashboards[0].layout as unknown as {
+        items: Record<string, unknown>;
+        fallback: { items: Record<string, unknown> };
+      };
+      expect(Object.hasOwn(layout.items, tileId)).toBe(true);
+      expect(layout.items[tileId]).toEqual({ grid: { span: 6, height: 3 } });
+      expect(Object.hasOwn(layout.fallback.items, tileId)).toBe(true);
+      expect(layout.fallback.items[tileId]).toEqual({ span: 2, height: 'large' });
+      // Re-encoding the canonical value must keep the placement too.
+      const encoded = encodeStoredWorkspaceJson(decoded.value);
+      expect(encoded.ok).toBe(true);
+      if (!encoded.ok) return;
+      const reparsedLayout = JSON.parse(encoded.value).dashboards[0].layout;
+      expect(reparsedLayout.items[tileId]).toEqual({ grid: { span: 6, height: 3 } });
+    });
+  }
 });
 
 describe('encodeStoredWorkspaceJson', () => {

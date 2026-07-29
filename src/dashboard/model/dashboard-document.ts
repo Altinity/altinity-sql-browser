@@ -10,7 +10,7 @@
 //
 // Pure — no DOM, no persistence, no clock.
 
-import { cloneJson } from '../../core/saved-query.js';
+import { cloneJson, defineJsonField, readJsonField } from '../../core/saved-query.js';
 import type { DashboardDocumentV1, DashboardDocumentV2 } from '../../generated/json-schema.types.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -48,7 +48,8 @@ function authoredPlacement(
   layout: Record<string, unknown>, tileId: string, style: 'grid' | 'full' | 'report',
 ): { span: number; height: number } {
   const items = isObject(layout.items) ? layout.items : {};
-  const entry = isObject(items[tileId]) ? items[tileId] : {};
+  const ownEntry = readJsonField(items, tileId);
+  const entry = isObject(ownEntry) ? ownEntry : {};
   const placement = isObject(entry[style]) ? entry[style] as Record<string, unknown> : {};
   if (style === 'grid') {
     return {
@@ -67,11 +68,11 @@ function regenerateFallback(layout: Record<string, unknown>, tileIds: readonly s
   const items: Record<string, unknown> = {};
   for (const tileId of tileIds) {
     const placement = authoredPlacement(layout, tileId, preset);
-    items[tileId] = preset === 'grid'
+    defineJsonField(items, tileId, preset === 'grid'
       ? { span: gridToFlowSpan(placement.span), height: flowHeight(placement.height) }
       : preset === 'full'
         ? { span: 2, height: flowHeight(placement.height) }
-        : { span: 1, height: flowHeight(placement.height) };
+        : { span: 1, height: flowHeight(placement.height) });
   }
   layout.fallback = {
     type: 'flow',
@@ -102,12 +103,12 @@ export function upgradeDashboardLayout<T extends DashboardDocumentV1 | Dashboard
   if (layout.type === 'grafana-grid' && layout.version === 1) {
     const oldItems = isObject(layout.items) ? layout.items : {};
     for (const tileId of tileIds) {
-      const old = oldItems[tileId];
+      const old = readJsonField(oldItems, tileId);
       if (!isObject(old)) continue;
       const grid: Record<string, unknown> = {};
       if (Object.hasOwn(old, 'span')) grid.span = old.span;
       if (Object.hasOwn(old, 'height')) grid.height = gridHeight(old.height);
-      items[tileId] = { grid };
+      defineJsonField(items, tileId, { grid });
     }
     next.layout = {
       type: 'grafana-grid', version: 2, preset: 'grid', items,
@@ -116,24 +117,24 @@ export function upgradeDashboardLayout<T extends DashboardDocumentV1 | Dashboard
     const oldItems = isObject(layout.items) ? layout.items : {};
     if (layout.preset === 'report') {
       for (const tileId of tileIds) {
-        const old = oldItems[tileId];
+        const old = readJsonField(oldItems, tileId);
         if (!isObject(old) || !Object.hasOwn(old, 'height')) continue;
-        items[tileId] = {
+        defineJsonField(items, tileId, {
           report: { height: gridHeight(old.height) },
-        };
+        });
       }
       next.layout = {
         type: 'grafana-grid', version: 2, preset: 'report', items,
       } as never;
     } else {
       for (const tileId of tileIds) {
-        const old = resolvedFlowPlacement(oldItems[tileId]);
-        items[tileId] = {
+        const old = resolvedFlowPlacement(readJsonField(oldItems, tileId));
+        defineJsonField(items, tileId, {
           grid: {
             span: flowToGridSpan(old.span),
             height: gridHeight(old.height),
           },
-        };
+        });
       }
       next.layout = {
         type: 'grafana-grid', version: 2, preset: 'grid', items,

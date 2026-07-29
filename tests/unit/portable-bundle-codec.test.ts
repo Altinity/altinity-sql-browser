@@ -176,6 +176,40 @@ describe('encodePortableBundleJson', () => {
     expect(!result.ok && has(result.diagnostics, 'workspace-duplicate-query-id')).toBe(true);
   });
 
+  // #551 — a tile whose id is '__proto__' or 'constructor' (schema-legal)
+  // must keep its placement through a portable-bundle encode -> decode round
+  // trip: both encode and decode run every Dashboard through
+  // upgradeDashboardLayout (flow@1 -> grafana-grid@2), which writes the
+  // placement-map keyed by tile id.
+  for (const tileId of ['__proto__', 'constructor']) {
+    it(`round-trips the placement of a tile id ${JSON.stringify(tileId)} through encode then decode`, () => {
+      const dashboards = [dashboardDoc({
+        tiles: [{ id: tileId, queryId: 'p1' }],
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: { [tileId]: { span: 2, height: 'large' } } },
+      })];
+      const encoded = encodePortableBundleJson({
+        queries: [panelQuery('p1')], dashboards, nowISO: '2026-07-17T00:00:00.000Z',
+      });
+      expect(encoded.ok).toBe(true);
+      if (!encoded.ok) return;
+      const encodedLayout = JSON.parse(encoded.value).dashboards[0].layout;
+      expect(Object.hasOwn(encodedLayout.items, tileId)).toBe(true);
+      expect(encodedLayout.items[tileId]).toEqual({ grid: { span: 6, height: 3 } });
+
+      const decoded = decodePortableBundleJson(encoded.value);
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) return;
+      const layout = decoded.value.dashboards[0].layout as unknown as {
+        items: Record<string, unknown>;
+        fallback: { items: Record<string, unknown> };
+      };
+      expect(Object.hasOwn(layout.items, tileId)).toBe(true);
+      expect(layout.items[tileId]).toEqual({ grid: { span: 6, height: 3 } });
+      expect(Object.hasOwn(layout.fallback.items, tileId)).toBe(true);
+      expect(layout.fallback.items[tileId]).toEqual({ span: 2, height: 'large' });
+    });
+  }
+
   it('rejects an encoded document larger than the decoded-JSON byte cap', () => {
     // An arbitrary extension field (query-spec is open) inflates each spec to just
     // under the 1 MiB per-spec cap; twenty-one sum past the 20 MiB whole-document

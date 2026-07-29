@@ -3,7 +3,7 @@ import { applyCommand } from '../../src/dashboard/application/dashboard-commands
 import type { ApplyCommandContext, DashboardCommand } from '../../src/dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
 import { flowLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
-import { grafanaGridLayoutPlugin } from '../../src/dashboard/layouts/grafana-grid-layout.js';
+import { grafanaGridLayoutPlugin, grafanaGridLayoutV2Plugin } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import type { DashboardLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
 import type { DashboardDocumentV2 } from '../../src/generated/json-schema.types.js';
 
@@ -170,6 +170,55 @@ describe('applyCommand — duplicate-tile (#535)', () => {
     expect(taken.ok).toBe(false);
     if (!taken.ok) expect(taken.diagnostics[0].code).toBe('dashboard-command-tile-id-taken');
   });
+
+  // #551 — the new tile id itself may be '__proto__' or 'constructor'
+  // (schema-legal, caller-minted): the copy's placement must survive as an
+  // own property under every engine this command writes through, not just
+  // avoid throwing.
+  for (const newTileId of ['__proto__', 'constructor']) {
+    it(`copies the placement to a new tile id ${JSON.stringify(newTileId)} under flow`, () => {
+      const result = run(seeded(), { ...dup, newTileId }, [query('q'), query('q-copy')]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const items = result.dashboard.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, newTileId)).toBe(true);
+      expect(items[newTileId]).toEqual({ span: 2, height: 'large' });
+      expect(JSON.parse(JSON.stringify(result.dashboard)).layout.items[newTileId]).toEqual({ span: 2, height: 'large' });
+    });
+
+    it(`copies the placement to a new tile id ${JSON.stringify(newTileId)} under grafana-grid@1`, () => {
+      const gridDoc = draft({
+        tiles: [source] as never,
+        layout: { type: 'grafana-grid', version: 1, items: { b: { span: 8, height: 5 } } } as never,
+      });
+      const result = run(gridDoc, { ...dup, newTileId }, [query('q'), query('q-copy')], grafanaGridLayoutPlugin);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const items = result.dashboard.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, newTileId)).toBe(true);
+      expect(items[newTileId]).toEqual({ span: 8, height: 5 });
+    });
+
+    // The grafana-grid@2 style-map write is its own dedicated branch in
+    // applyCommandToClone (duplicate-tile), separate from
+    // setPlacementForActiveEngine — it must be exercised directly.
+    it(`copies the placement to a new tile id ${JSON.stringify(newTileId)} under grafana-grid@2 style items`, () => {
+      const gridV2Doc = draft({
+        tiles: [source] as never,
+        layout: {
+          type: 'grafana-grid', version: 2, preset: 'grid',
+          items: { b: { grid: { span: 8, height: 5 } } },
+        } as never,
+      });
+      const result = run(gridV2Doc, { ...dup, newTileId }, [query('q'), query('q-copy')], grafanaGridLayoutV2Plugin);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const items = result.dashboard.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, newTileId)).toBe(true);
+      expect(items[newTileId]).toEqual({ grid: { span: 8, height: 5 } });
+      expect(JSON.parse(JSON.stringify(result.dashboard)).layout.items[newTileId]).toEqual({ grid: { span: 8, height: 5 } });
+    });
+  }
 });
 
 describe('applyCommand — update-tile', () => {
@@ -233,6 +282,21 @@ describe('applyCommand — update-placement / change-layout', () => {
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.diagnostics[0].code).toBe('dashboard-command-tile-missing');
   });
+
+  // #551 — a tile whose id is '__proto__' or 'constructor' (schema-legal)
+  // must keep an update-placement write as an own property.
+  for (const tileId of ['__proto__', 'constructor']) {
+    it(`sets a valid placement for tile id ${JSON.stringify(tileId)}`, () => {
+      const protoSeeded = draft({ tiles: [{ id: tileId, queryId: 'q' }] as never });
+      const ok = run(protoSeeded, { type: 'update-placement', tileId, style: 'grid', placement: { span: 2 } }, [query('q')]);
+      expect(ok.ok).toBe(true);
+      if (!ok.ok) return;
+      const items = ok.dashboard.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ span: 2 });
+      expect(JSON.parse(JSON.stringify(ok.dashboard)).layout.items[tileId]).toEqual({ span: 2 });
+    });
+  }
 
   it('installs a new layout document', () => {
     const layout = { type: 'flow', version: 1, preset: 'columns-2', items: {} } as never;
@@ -335,6 +399,26 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     });
     expect(result.dashboard.layout.fallback).toEqual(flowLayout);
   });
+
+  // #551 — the flow -> grid conversion above writes `gridItems[tile.id] = …`;
+  // a tile id of '__proto__' or 'constructor' (schema-legal) must survive it
+  // as an own property with the correct converted span/height.
+  for (const tileId of ['__proto__', 'constructor']) {
+    it(`flow -> grafana-grid preserves the converted placement for tile id ${JSON.stringify(tileId)}`, () => {
+      const flowLayout = {
+        type: 'flow', version: 1, preset: 'columns-2',
+        items: { [tileId]: { span: 2, height: 'large' } },
+      };
+      const d = draft({ tiles: [{ id: tileId, queryId: 'q' }] as never, layout: flowLayout as never });
+      const result = run(d, { type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as never }, [query('q')]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const items = result.dashboard.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ span: 6, height: 3 });
+      expect(JSON.parse(JSON.stringify(result.dashboard)).layout.items[tileId]).toEqual({ span: 6, height: 3 });
+    });
+  }
 
   it('grafana-grid -> flow restores the fallback verbatim, dropping the fallback field itself', () => {
     const fallbackLayout = { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'large' } } };
