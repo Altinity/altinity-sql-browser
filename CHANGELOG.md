@@ -10,6 +10,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **WebKit now follows Dashboard-tree keyboard focus through concealed row
+  actions** (#540). Explicit, roving tab stops keep Tab on the focused row's
+  chevron and actions; a pointer- or programmatically-focused row becomes the
+  owner too, so returning from an action dialog continues through that row
+  rather than skipping its remaining controls.
 - **OAuth document-recovery E2E runs no longer reuse an incompatible stale
   harness server** (#533). Playwright now probes the fixture's server-only
   config route before accepting an existing process, preventing misleading

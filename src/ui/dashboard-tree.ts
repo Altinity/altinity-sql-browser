@@ -715,6 +715,17 @@ function buildRow(
     // Doubles as the tooltip and the accessible description for a broken row.
     ...(row.diagnostic === null ? {} : { title: row.diagnostic }),
     ...(row.current ? { 'aria-current': 'true' } : {}),
+    // Focus entering this row or any nested control (for example, a
+    // programmatic delete flow or a pointer-opened dialog's return target) is
+    // a keyboard entry. Keep the stateful roving owner in sync so this row's
+    // explicit WebKit action stops are reachable immediately.
+    onfocusin: (event: FocusEvent) => {
+      const target = event.currentTarget as HTMLElement;
+      app.state.dashboardTreeUi.set(
+        app.currentWorkspace?.id ?? '', setKeyboardRow(readUi(app), row.key),
+      );
+      syncRovingTabindex(target.parentElement, row.key);
+    },
     onclick: (event: MouseEvent) => {
       // The keyboard owner follows the pointer, so Tab lands where the user last
       // clicked rather than back at the top of the tree. The DOM is synced in the
@@ -730,7 +741,7 @@ function buildRow(
     h('span', { class: 'meta' }, row.meta), marker,
     // #494: the trailing DIRECT controls, in the model's own order — edit
     // before delete, destructive rightmost. There is no `⋯` any more.
-    row.actions.map((act) => buildActionButton(app, doc, row, act)));
+    row.actions.map((act) => buildActionButton(app, doc, row, act, ui)));
 
   return rowEl;
 }
@@ -840,6 +851,7 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  */
 function buildActionButton(
   app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
+  ui: DashboardTreeUiState,
 ): HTMLElement {
   // From the KIND, never from `act.confirm`: an UNAVAILABLE delete still has
   // to look and announce like a delete (#494 — a row's vocabulary must not
@@ -857,6 +869,10 @@ function buildActionButton(
       // `:focus-within`, matching the Library Query row.
       + (act.kind === 'delete-variable-config' ? ' dash-tree-act-static' : ''),
     type: 'button',
+    // WebKit's sequential-focus navigation requires an explicit tabindex for
+    // these visually concealed controls. Rove with the row, so Tab walks only
+    // this row's cluster before leaving the composite tree.
+    tabindex: row.key === ui.keyboardRowKey ? '0' : '-1',
     'aria-haspopup': destructive ? 'menu' : 'dialog',
     'aria-expanded': 'false',
     'aria-label': act.label,
@@ -1311,16 +1327,19 @@ const focusChevron = (list: HTMLElement, key: string): void => {
   )!.focus();
 };
 
-/** Put `tabindex="0"` on exactly one row, without rebuilding anything. */
+/** Put `tabindex="0"` on exactly one row and its nested controls, without rebuilding anything. */
 function syncRovingTabindex(list: HTMLElement | null, key: string): void {
   for (const node of list?.querySelectorAll<HTMLElement>('.dash-tree-row') ?? []) {
     const value = node.dataset.key === key ? '0' : '-1';
     node.setAttribute('tabindex', value);
-    // #429/#472: the disclosure button roves WITH its row, so the immediate sync
-    // has to move it too — otherwise the row the user just left keeps a chevron in
-    // the Tab order until the next paint, and the tree briefly offers four targets.
+    // #429/#472: the nested controls rove WITH their row, so the immediate sync
+    // has to move them too — otherwise the row the user just left keeps actions
+    // in the Tab order until the next paint.
     for (const chev of node.querySelectorAll<HTMLElement>('.' + CHEVRON_CLASS)) {
       chev.setAttribute('tabindex', value);
+    }
+    for (const action of node.querySelectorAll<HTMLElement>('.dash-tree-act')) {
+      action.setAttribute('tabindex', value);
     }
   }
 }
