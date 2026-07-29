@@ -125,7 +125,7 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): () => void {
     save: (name, value) => prefs.save(name as PreferenceKey, value),
   };
 
-  app.dom.qtabsInner = h('div', { class: 'qtabs-inner' });
+  app.dom.qtabsInner = h('div', { class: 'qtabs-inner', role: 'tablist', 'aria-label': 'Open query tabs' });
   const qtabsRow = h('div', { class: 'qtabs' }, app.dom.qtabsInner,
     h('button', { class: 'new-tab', title: 'New query', onclick: () => actions.newTab() }, Icon.plus()));
 

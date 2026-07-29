@@ -31,8 +31,9 @@
 <body data-theme="dark">
   <!-- #335: a REAL DashboardViewerSession whose two tiles consume {from:DateTime}
        + {to:DateTime} (so `from`/`to` resolve to a scalar date-like pair and form
-       ONE time-range group), plus a third tile consuming {service:String} (a
-       non-group variable that keeps its own field). The real `buildVariableBar` is
+       ONE time-range group), plus a third tile consuming {service:String} and
+       {enabled:Bool} (non-group variables that keep their own fields). The real
+       `buildVariableBar` is
        mounted through the same glue `dashboard.ts`'s `rebuildVariableBar` uses:
        the same `timeRange` assembly, the same `onApplyTimeRange`
        (recents-push + `session.applyVariables` batch + live announcement), the
@@ -94,7 +95,7 @@
           { timeRanges: [{ from: 'from', to: 'to' }] }),
         savedQuery('qb', 'SELECT avg(x) AS a FROM logs WHERE ts >= {from:DateTime} AND ts < {to:DateTime} /* tile-b */',
           { timeRanges: [{ from: 'from', to: 'to' }] }),
-        savedQuery('qc', 'SELECT count() AS c FROM logs WHERE service = {service:String} /* tile-c */'),
+        savedQuery('qc', 'SELECT count() AS c FROM logs WHERE enabled = {enabled:Bool} /*[ AND service = {service:String} ]*/ /* tile-c */'),
       ],
       exec,
       // #447: the variables `from`, `to` and `service` are INFERRED from the tile
@@ -207,6 +208,10 @@
         const id = idByParam.get(name);
         if (id) session.applyVariable(id, draftValues[name] ?? '', !!draftActive[name]);
       };
+      const onCommitVariable = (name, value, active) => {
+        const id = idByParam.get(name);
+        if (id) window.__lastApply = session.applyVariable(id, value, active);
+      };
       const getField = (name, mode) => session.getVariableField(name, mode, draftValues, draftActive);
 
       const variableById = new Map(sview.variableStates.map((f) => [f.id, f]));
@@ -241,6 +246,7 @@
 
       const bar = buildVariableBar(variableBarApp, session.controls, onCommit, getField, {
         document, timeRange, onApplyTimeRange,
+        variables: { enabled: { options: null } }, onCommitVariable,
       });
       host.replaceChildren(bar.el);
       currentBar = bar;

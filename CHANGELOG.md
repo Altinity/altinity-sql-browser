@@ -64,6 +64,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   here.
 
 ### Added
+- **Dashboard `Bool` variables now use compact tri-state checkboxes** (#530).
+  Checked and unchecked emit the same canonical `true` and `false` values as
+  the former choices, while the existing Clear all action restores the native
+  indeterminate unset state. The shared Dashboard variable bar uses the control
+  in both Dashboard variable surfaces; non-Boolean variables keep their current
+  controls.
+- **Same-named Workbench tabs now show their source only when disambiguation is
+  needed** (#464). Colliding Dashboard tabs receive a compact Dashboard icon and
+  the shortest readable title abbreviation; Library and draft collisions receive
+  explicit labels, while unique tabs keep the existing compact layout. Every tab
+  exposes its full source through a semantic tab control and tooltip, including
+  Dashboard-variable tabs. Roving Arrow/Home/End navigation preserves focus
+  through activation and close-driven strip replacement, and accessible names
+  announce unsaved, externally changed, and externally deleted state. Source
+  presentation is derived from the canonical saved-query/Dashboard ownership
+  graph rather than stored as a second identity, and repaints immediately after
+  Dashboard renames. Dirty, conflict, deleted, and close controls retain their
+  established order and behavior.
 - **A Dashboard panel tile head carries duplicate, widen and expand actions**
   (#535, revised by #544 above — all but widen moved into the `⋯` menu in the
   same release, and widen kept an inline button alongside its row).
