@@ -9,6 +9,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-29
+
+### Fixed
+- **The Caddy container now runs under Kubernetes' no-new-privileges policy.**
+  Its unneeded privileged-port capability is removed during the image build;
+  the smoke test exercises the same policy.
+
 ## [0.7.1] - 2026-07-29
 
 ### Fixed

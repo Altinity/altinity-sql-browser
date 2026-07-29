@@ -47,10 +47,13 @@ COPY deploy/caddy/Caddyfile /etc/caddy/Caddyfile
 # can yield 0600 files the non-root Caddy process (uid 101) then can't read at
 # serve time. Normalise to world-readable.
 # (Builder-agnostic — avoids requiring BuildKit's COPY --chmod.)
+# Caddy's upstream image grants its binary cap_net_bind_service for privileged
+# ports, but this app uses 8080 and Kubernetes runs with no-new-privileges.
 USER root
 RUN chmod 0644 /app/sql.html /app/sql.html.br /app/sql.html.zst /app/sql.html.gz \
       /config/config.json /etc/caddy/Caddyfile \
-    && chown -R 101:0 /data
+    && chown -R 101:0 /data \
+    && setcap -r /usr/bin/caddy
 USER 101
 
 # CSP connect-src origins: same-origin ('self') is added by the template; this

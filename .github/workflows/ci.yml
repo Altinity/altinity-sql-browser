@@ -248,7 +248,8 @@ jobs:
         run: |
           set -euo pipefail
           docker build --build-arg ASB_COMMIT="${GITHUB_SHA}" --tag altinity-sql-browser:smoke .
-          docker run --detach --rm --name asb-smoke -p 18080:8080 altinity-sql-browser:smoke
+          docker run --detach --rm --name asb-smoke --security-opt no-new-privileges \
+            -p 18080:8080 altinity-sql-browser:smoke
           trap 'docker logs asb-smoke; docker stop asb-smoke' EXIT
           for i in $(seq 1 20); do
             curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null && break
