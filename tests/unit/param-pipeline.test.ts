@@ -720,14 +720,14 @@ describe('fieldControlKind (shared control priority — review F1/F8)', () => {
       }
     });
 
-    it('offers true/false for Bool', () => {
+    it('classifies Bool for the Dashboard checkbox', () => {
       expect(fieldControlKind({ type: 'Bool' }, null, scalar))
-        .toEqual({ kind: 'enum', enumOptions: ['true', 'false'] });
+        .toEqual({ kind: 'bool', enumOptions: null });
       expect(fieldControlKind({ type: 'Boolean' }, null, scalar))
-        .toEqual({ kind: 'enum', enumOptions: ['true', 'false'] });
+        .toEqual({ kind: 'bool', enumOptions: null });
       // Through the value-transparent wrappers too.
-      expect(fieldControlKind({ type: 'Nullable(Bool)' }, null, scalar).enumOptions)
-        .toEqual(['true', 'false']);
+      expect(fieldControlKind({ type: 'Nullable(Bool)' }, null, scalar).kind)
+        .toBe('bool');
     });
 
     it('reports an Array of a scalar as multi', () => {

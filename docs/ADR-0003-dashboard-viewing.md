@@ -3,9 +3,11 @@
 - **Status:** Accepted; detached-snapshot decision superseded by #407 on
   2026-07-23; surface lifecycle amended by #425 and surface NAVIGATION amended by
   #426, both 2026-07-25; the #447 phase-2 compound-type exclusion narrowed by #468
-  on 2026-07-26 (see the addenda)
-- **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25, 2026-07-26
-- **Context tracking:** roadmap #68; #288, #302, #406, #407, #425, #447, #457, #468
+  on 2026-07-26 and its Bool-control decision amended by #530 on 2026-07-29
+  (see the addenda)
+- **Date:** 2026-07-18; revised 2026-07-23, 2026-07-25, 2026-07-26, 2026-07-29
+- **Context tracking:** roadmap #68; #288, #302, #406, #407, #425, #447, #457,
+  #468, #530
 
 ## Context
 
@@ -380,6 +382,24 @@ the application already has. Four decisions replace it.
   guarantee now rides on the surface rebuild that occurs when the user returns to
   the Dashboard, not on that poke. The tree's orphan-delete still fires it for real,
   because the tree is visible while a Dashboard is.
+
+## Addendum (#530, 2026-07-29): Bool uses a tri-state checkbox
+
+The #447 phase-2 addendum deliberately kept `Bool` as a free-text field with
+`true`/`false` suggestions, on the assumption that a checkbox could not preserve
+the required UNSET state. That trade-off made a Boolean needlessly look like a
+three-row select on both Dashboard variable surfaces.
+
+The Dashboard variable bar now renders a native checkbox for any Bool-family
+declaration. Its state model is deliberately three-way: an active checked field
+commits canonical `true`, an active unchecked field commits canonical `false`,
+and an inactive field sets the native `indeterminate` property. The existing
+Dashboard Clear all affordance returns the field to that inactive/indeterminate
+UNSET state, so no additional third option or per-field reset control is needed.
+The checkbox remains inside its visible label, retains native keyboard and focus
+semantics, and is selected before any Dashboard-local option SQL control: a Bool
+type is the stronger presentation contract. The Workbench variable strip does not
+opt into this Dashboard-specific policy and remains a free-text control.
 
 ## Addendum (#468, 2026-07-26): an `Array(scalar T)` variable binds a selection
 

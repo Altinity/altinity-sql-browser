@@ -34,6 +34,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   independently scrolling login region.
 
 ### Added
+- **Dashboard `Bool` variables now use compact tri-state checkboxes** (#530).
+  Checked and unchecked emit the same canonical `true` and `false` values as
+  the former choices, while the existing Clear all action restores the native
+  indeterminate unset state. The shared Dashboard variable bar uses the control
+  in both Dashboard variable surfaces; non-Boolean variables keep their current
+  controls.
 - **Same-named Workbench tabs now show their source only when disambiguation is
   needed** (#464). Colliding Dashboard tabs receive a compact Dashboard icon and
   the shortest readable title abbreviation; Library and draft collisions receive

@@ -43,6 +43,22 @@ test.describe('Dashboard compound time-range control', () => {
     await expect(page.getByRole('combobox', { name: 'from' })).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'to' })).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'service' })).toHaveCount(1);
+    const enabled = page.getByRole('checkbox', { name: 'enabled' });
+    await expect(enabled).toHaveCount(1);
+    expect(await enabled.evaluate((node) => node.indeterminate)).toBe(true);
+  });
+
+  test('Bool checkbox accepts keyboard activation and runs its affected tile with canonical true', async ({ page }) => {
+    const enabled = page.getByRole('checkbox', { name: 'enabled' });
+    await enabled.focus();
+    await page.evaluate(() => window.__resetExec());
+    await enabled.press('Space');
+    await page.evaluate(() => window.__lastApply);
+    await expect(enabled).toBeChecked();
+    expect(await enabled.evaluate((node) => node.indeterminate)).toBe(false);
+    const log = await page.evaluate(() => window.__execLog);
+    expect(log.filter((sql) => sql.includes('tile-c'))).toHaveLength(1);
+    expect(log).toHaveLength(1);
   });
 
   test('opens with both bounds seeded, resolved previews, and Recently used as the resting state', async ({ page }) => {

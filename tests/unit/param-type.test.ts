@@ -5,11 +5,26 @@ import {
   conflictingTypes,
   enumMembers,
   enumValues,
+  boolCheckboxChecked,
   isSupportedTimeRangeParamType,
   dateTimeTimeZone,
   isCompoundParamType,
   multiSelectElementType,
 } from '../../src/core/param-type.js';
+
+describe('boolCheckboxChecked', () => {
+  it('preserves every confirmed true spelling across a Dashboard rebuild', () => {
+    for (const value of [true, 'true', '1', 'Yes', 'ON', 't', 'Y']) {
+      expect(boolCheckboxChecked(value)).toBe(true);
+    }
+  });
+
+  it('leaves false, unknown, and non-string values unchecked', () => {
+    for (const value of [false, 'false', '0', 'no', 'off', 'enable', 1, null, undefined]) {
+      expect(boolCheckboxChecked(value)).toBe(false);
+    }
+  });
+});
 
 // #447 phase 2: named so a single-scalar surface can say "no control for this"
 // rather than render one that cannot produce a valid value.

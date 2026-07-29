@@ -27,6 +27,7 @@
 import { h } from './dom.js';
 import { fieldControlKind } from '../core/param-pipeline.js';
 import type { FieldControl, PreparedFieldState, ValidationMode } from '../core/param-pipeline.js';
+import { boolCheckboxChecked } from '../core/param-type.js';
 import { recentOptions } from '../core/recent-values.js';
 import type { RecentMap } from '../core/recent-values.js';
 import { applyFieldState, applyFieldWidth } from './var-field.js';
@@ -496,6 +497,31 @@ export function buildVariableBar(
       h('span', { class: 'var-name' }, p.name), field.el);
   };
 
+  /** The Dashboard-only Bool control. `active` carries the third, unset state:
+   * a native checkbox is indeterminate while inactive, then emits the same
+   * canonical strings the former true/false combobox options emitted. */
+  const buildBoolField = (p: FieldControl): HTMLElement => {
+    const active = !!app.state.filterActive[p.name];
+    const optionalHint = p.optional ? ' — optional: unset leaves its filter block out' : '';
+    const hintId = `var-bool-${idSafe(p.name)}-hint`;
+    const input = h('input', {
+      class: 'var-bool', type: 'checkbox',
+      checked: active && boolCheckboxChecked(app.state.varValues[p.name]),
+      title: p.name + ': ' + p.type + (active ? '' : ' — unset') + optionalHint,
+      ...(p.optional ? { 'aria-describedby': hintId } : {}),
+      onchange: () => {
+        const value = input.checked ? 'true' : 'false';
+        app.state.varValues[p.name] = value;
+        app.state.filterActive[p.name] = true;
+        options.onCommitVariable?.(p.name, value, true);
+      },
+    });
+    input.indeterminate = !active;
+    return h('div', { class: 'var-field var-bool-field' + (p.optional ? ' is-optional' : '') },
+      h('label', { class: 'var-bool-label' }, h('span', { class: 'var-name' }, p.name), input),
+      p.optional ? h('span', { class: 'sr-only', id: hintId }, 'Unset leaves its filter block out.') : null);
+  };
+
   const buildParamField = (
     p: FieldControl, unsupported?: { type: string; listable: boolean },
   ): HTMLElement => {
@@ -531,8 +557,8 @@ export function buildVariableBar(
     // The field stays free-text in every case; D3's debounce/Enter/blur
     // commit semantics are unchanged either way.
     // #447 phase 2: a Dashboard variable binds ONE scalar per name, so that
-    // surface opts into the scalar-controls policy (Bool gains true/false
-    // suggestions). Every other caller passes nothing and keeps the exact
+    // surface opts into the scalar-controls policy. Every other caller passes
+    // nothing and keeps the exact
     // enum > date > text dispatch it had before.
     const ctl = fieldControlKind(p, null, { scalarControls: !!variables });
     let combo: VariableBarComboField | null = null;
@@ -627,6 +653,9 @@ export function buildVariableBar(
     // A container with no flat element list: no control is inferable at all.
     if (kind === 'unsupported') return buildParamField(p, { type: p.type, listable: false });
     const spec = specOf(p.name);
+    // Bool is always a checkbox on Dashboard surfaces, even when option SQL is
+    // configured: its type is a stronger control contract than option rows.
+    if (kind === 'bool') return buildBoolField(p);
     if (kind === 'multi') {
       // The type CAN be multi-selected; whether there is anything to select from
       // is the spec's answer, which only this layer can see.
