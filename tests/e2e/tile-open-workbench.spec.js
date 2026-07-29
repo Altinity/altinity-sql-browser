@@ -324,17 +324,7 @@ test('a KPI tile in EDIT mode packs its two controls top-right, in reading order
 // happy-dom: the rendered column span, the pixel height, and whether the `hidden`
 // attribute actually hides a button whose author-sheet `display: inline-flex` beats
 // the UA sheet's `[hidden] { display: none }`.
-test('widen doubles a grid tile\'s rendered width and height, then wraps', async ({ page }) => {
-  // #565: KNOWN BROKEN on chromium, firefox AND webkit, and already broken at
-  // f68861c — before the batch that enabled this suite on PRs (#564), so this
-  // is not fallout from that batch. Widen still grows the tile's WIDTH; its
-  // HEIGHT no longer changes (`expect(wide.height).toBeGreaterThan(208)` gets
-  // exactly 208). Quarantined with `test.fail()`, deliberately NOT `skip`/
-  // `fixme`: the spec keeps running, so the day the underlying bug is fixed
-  // this reports "expected to fail, but passed" — which is the signal to
-  // delete this line, not to relax the assertions below. They encode #535's
-  // intended widen semantics and must not be rewritten to match the bug.
-  test.fail();
+test('widen doubles a grid tile\'s rendered width, preserves its height, then wraps', async ({ page }) => {
   // Wide enough that the grid host clears `effectiveGridColumns`' 1160px tier and
   // renders all 12 columns. At the default 1280 viewport the sidebar leaves it in
   // the 6-column tier, where the fixture's span-8 tile is ALREADY full width and a
@@ -358,11 +348,21 @@ test('widen doubles a grid tile\'s rendered width and height, then wraps', async
     const rect = el.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
   });
-  // Wider AND taller on screen, and the persisted placement says exactly why.
+  // Wider on screen, and the height deliberately UNCHANGED: `panel-widen.ts` is a
+  // one-dimensional step ("Height is preserved" — the corner drag, #291, owns
+  // free-form resize), so a widen that grew the tile vertically would be the bug.
+  // The fixture's `t-sales` authors no height, which resolves to
+  // DEFAULT_GRID_HEIGHT_UNITS (2) → `32 + 88*2` = 208px before AND after.
+  //
+  // #565: this spec used to assert `toBeGreaterThan` here and a flat
+  // `{ span: 12, height: 4 }` placement. Both were left behind by the
+  // grafana-grid@2 style-keyed placement shape — the widen step itself never
+  // changed. It went unnoticed because the browser suite did not run on PRs
+  // until #564.
   expect(wide.width).toBeGreaterThan(before.width);
-  expect(wide.height).toBeGreaterThan(before.height);
+  expect(wide.height).toBe(before.height);
   expect((await page.evaluate(() => window.__dashboard('sales'))).items['t-sales'])
-    .toEqual({ span: 12, height: 4 });
+    .toEqual({ grid: { span: 12, height: 2 } });
 
   // At the maximum the next press wraps to a single column.
   await widen.click();
@@ -377,12 +377,6 @@ test('widen doubles a grid tile\'s rendered width and height, then wraps', async
 // this particular TILE has no room to offer the shortcut. The menu row is unaffected
 // by either, so widen is never unreachable.
 test('a narrow tile drops the inline widen but keeps its menu row', async ({ page }) => {
-  // #565: KNOWN BROKEN on all three engines, same pre-existing regression as the
-  // widen spec above — the placement entry never appears at all
-  // (`items['t-sales']?.span` polls to `null`, not `2`). Same `test.fail()`
-  // quarantine and the same exit condition: when it starts passing, remove the
-  // line rather than weakening the poll.
-  test.fail();
   await open(page, { width: 1600, height: 900 });
   await openDashboard(page, 'sales', 'edit');
 
@@ -413,8 +407,14 @@ test('a narrow tile drops the inline widen but keeps its menu row', async ({ pag
   await menuRow(page, 'Widen to 2 columns').click();
   // Read defensively: the commit republishes, and a poll that THROWS mid-rebuild
   // aborts instead of retrying.
+  //
+  // #565: the placement is STYLE-KEYED under grafana-grid@2 — `items[tile].grid`,
+  // not a flat `items[tile]`. This poll read the flat v1 path, so it resolved to
+  // `undefined` and the `?? null` turned a shape mismatch into a plain timeout
+  // rather than a legible failure. The expected value (2) was always right: the
+  // two presses above wrap span to 1, and the menu row just clicked steps it to 2.
   await expect.poll(() => page.evaluate(
-    async () => (await window.__dashboard('sales'))?.items?.['t-sales']?.span ?? null,
+    async () => (await window.__dashboard('sales'))?.items?.['t-sales']?.grid?.span ?? null,
   )).toBe(2);
 });
 
