@@ -9,6 +9,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **The desktop left navigation's layout core and preferences** (#487, phase 1 of
+  4). A new pure `src/core/left-nav-layout.ts` owns every layout decision the
+  foldable left navigation needs: the named constants and thresholds, the
+  explicit `'wide' | 'rail'` mode, the hysteresis reducer that maps a proposed
+  width onto the next mode, the keyboard separator resolver, rail activation, the
+  separator's ARIA range, and the mobile projection that makes a phone ignore
+  rail mode without discarding the preference. Two new browser preferences back
+  it (`asb:leftNavMode`, `asb:leftNavDrawerPx`); the wide sidebar's width
+  deliberately stays on the existing `asb:sidebarPx` rather than gaining a second
+  owner, and the focused section is session state that does not reopen after a
+  reload. Hysteresis comes from the threshold *pair* — folding needs a proposal
+  below 140px and restoring one above 260px — so no single pointer pixel can
+  oscillate the mode, and the keyboard path routes through the same reducer as
+  the pointer path rather than reimplementing it. Every function takes the
+  navigation's proposed *total* width, which is what keeps a drag continuous
+  across a mode change: handing the reducer a mode-relative width instead made a
+  monotone rightward drag snap the navigation 108px backwards on the frame a
+  drawer converted to the sidebar. **No user-visible change yet**: the rail, the
+  docked focused drawer and the resize separator arrive in phase 3.
+- The sidebar's `'col'` drag axis now clamps through the same
+  `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
+  repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes
+  the second owner of a range whose whole point is having one.
+
 ### Changed
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
@@ -25,6 +50,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   adapter refactor — no user-visible behavior changes.
 
 ### Fixed
+- **A corrupt `asb:sidebarPx` decodes to the default width instead of `NaN`**
+  (#487). The width decoded through a bare `clamp(parseInt(stored), 180, 420)`,
+  and `clamp` is not NaN-safe (`Math.max(180, NaN)` is `NaN`), so a non-numeric
+  stored value would reach the DOM as `width: NaNpx` — which the browser drops,
+  collapsing the sidebar with nothing to explain why, and the bad value would
+  persist across reloads. It now falls back to the documented 248px default.
+  Hardening rather than a reproducible user-visible bug: no code path in the app
+  writes a non-numeric value (a real drag always carries a finite `clientX`), so
+  reaching it takes a hand-edited or foreign-origin `localStorage` entry. The
+  same hole in `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` is tracked
+  separately in #570.
 - **The Dashboard tree no longer reveals two rows' pencil/trash actions at
   once, and its `· N` count now sits inline after the label** (#568). The
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)
