@@ -201,6 +201,7 @@ interface ActiveRun {
   tick: ReturnType<typeof setInterval> | null;
   startedAt: number | null;
   cancelled: boolean;
+  registration: AuthenticatedExecutionRegistration | null;
   registrationReleased: boolean;
 }
 
@@ -249,6 +250,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       tick: null,
       startedAt: null,
       cancelled: false,
+      registration: null,
       registrationReleased: false,
     };
     activeRun = operation;
@@ -266,11 +268,14 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     return activeRun === operation;
   }
 
-  function isWaveCurrent(
-    operation: ActiveRun,
-    registration: AuthenticatedExecutionRegistration | null,
-  ): boolean {
-    return ownsWave(operation) && isCurrent(registration);
+  function isWaveCurrent(operation: ActiveRun): boolean {
+    return ownsWave(operation)
+      && !operation.registrationReleased
+      && isCurrent(operation.registration);
+  }
+
+  function isWaveRunnable(operation: ActiveRun): boolean {
+    return isWaveCurrent(operation) && !operation.cancelled;
   }
 
   /** Clears this wave's own timer unconditionally, but releases shared state
@@ -290,9 +295,9 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
   function registerWave(
     name: string,
     operation: ActiveRun,
-  ): AuthenticatedExecutionRegistration | null {
+  ): void {
     const scope = deps.executionScope();
-    return scope?.register({
+    operation.registration = scope?.register({
       name,
       abort: () => {
         operation.cancelled = true;
@@ -305,13 +310,16 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     }) || null;
   }
 
-  function releaseRegistration(
-    operation: ActiveRun,
-    registration: AuthenticatedExecutionRegistration | null,
-  ): void {
+  function releaseRegistration(operation: ActiveRun): void {
     if (operation.registrationReleased) return;
     operation.registrationReleased = true;
-    registration?.release();
+    operation.registration?.release();
+    operation.registration = null;
+  }
+
+  function retireWave(operation: ActiveRun): void {
+    releaseRegistration(operation);
+    settleWave(operation);
   }
 
   /** Complete the auth/config preflight for a registered wave. A rejected
@@ -319,26 +327,23 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
    * finally block to release the registration for it. */
   async function preflightWave(
     operation: ActiveRun,
-    registration: AuthenticatedExecutionRegistration | null,
   ): Promise<boolean> {
     let continueWave = false;
     try {
+      if (!isWaveRunnable(operation)) return false;
       await deps.ensureConfig();
-      if (!isWaveCurrent(operation, registration) || operation.cancelled) return false;
+      if (!isWaveRunnable(operation)) return false;
       if (!(await deps.getToken())) {
-        if (isWaveCurrent(operation, registration) && !operation.cancelled) hooks.onAuthFailed();
+        if (isWaveRunnable(operation)) hooks.onAuthFailed();
         return false;
       }
-      if (!isWaveCurrent(operation, registration) || operation.cancelled) return false;
+      if (!isWaveRunnable(operation)) return false;
       continueWave = true;
       return true;
     } finally {
       // The transport finally owns a successfully preflighted registration.
       // Every early return and rejected preflight is released here instead.
-      if (!continueWave) {
-        releaseRegistration(operation, registration);
-        settleWave(operation);
-      }
+      if (!continueWave) retireWave(operation);
     }
   }
 
@@ -367,9 +372,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // were sent.
     const src = hooks.prepareTabSource(srcSql, waveMs);
     const operation = claimWave();
-    const registration = registerWave('workbench run', operation);
+    registerWave('workbench run', operation);
     try {
-      if (!(await preflightWave(operation, registration))) return;
+      if (!(await preflightWave(operation))) return;
+      if (!isWaveRunnable(operation)) {
+        retireWave(operation);
+        return;
+      }
 
     hooks.cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
 
@@ -394,8 +403,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       Object.assign(tab, { result: kpiErrorResult });
       state.resultView.value = 'panel';
       hooks.renderResults();
-      releaseRegistration(operation, registration);
-      settleWave(operation);
+      retireWave(operation);
       return;
     }
 
@@ -459,19 +467,18 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         rowLimit,
         queryId: operation.queryId,
         signal: operation.controller.signal,
-        isCurrent: () => isWaveCurrent(operation, registration),
+        isCurrent: () => isWaveCurrent(operation),
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => {
-          if (isWaveCurrent(operation, registration)) hooks.renderResults();
+          if (isWaveCurrent(operation)) hooks.renderResults();
         },
       });
     } finally {
-      if (!isWaveCurrent(operation, registration)) {
-        settleWave(operation);
-        releaseRegistration(operation, registration);
+      if (!isWaveCurrent(operation)) {
+        retireWave(operation);
         return;
       }
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
@@ -515,12 +522,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         hooks.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
         if (isSchemaMutatingSql(runSql)) hooks.loadSchema(); // not awaited — fire and forget
       }
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
     }
     } catch (error) {
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
       throw error;
     }
   }
@@ -573,9 +578,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       return;
     }
     const operation = claimWave();
-    const registration = registerWave('workbench variable option', operation);
+    registerWave('workbench variable option', operation);
     try {
-      if (!(await preflightWave(operation, registration))) return;
+      if (!(await preflightWave(operation))) return;
+      if (!isWaveRunnable(operation)) {
+        retireWave(operation);
+        return;
+      }
 
     hooks.cancelSchemaGraph();
     state.forceExplain = false;
@@ -603,10 +612,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         rowLimit,
         queryId: operation.queryId,
         signal: operation.controller.signal,
-        isCurrent: () => isWaveCurrent(operation, registration),
+        isCurrent: () => isWaveCurrent(operation),
         params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
         onChunk: () => {
-          if (isWaveCurrent(operation, registration)) hooks.renderResults();
+          if (isWaveCurrent(operation)) hooks.renderResults();
         },
       });
       // Only the probe's own transport succeeding makes its response metadata
@@ -615,15 +624,14 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       // never fully arrived. Shape is checked before raw row count so a malformed
       // response retains the more fundamental column diagnostic; the count is
       // read before any future filtering or de-duplication can hide the sentinel.
-      if (isWaveCurrent(operation, registration) && !result.error && !result.cancelled) {
+      if (isWaveCurrent(operation) && !result.error && !result.cancelled) {
         const invalid = validateOptionColumns(result.columns)
           ?? validateOptionRowCount(result.rows.length);
         if (invalid) result.error = invalid.message;
       }
     } finally {
-      if (!isWaveCurrent(operation, registration)) {
-        settleWave(operation);
-        releaseRegistration(operation, registration);
+      if (!isWaveCurrent(operation)) {
+        retireWave(operation);
         return;
       }
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
@@ -636,12 +644,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         });
       }
       if (!result.error && !result.cancelled) hooks.recordHistory(tab, sql);
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
     }
     } catch (error) {
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
       throw error;
     }
   }
@@ -665,9 +671,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // await apply to the next run.
     const paramSrc = hooks.prepareTabSource(originalInput, waveMs);
     const operation = claimWave();
-    const registration = registerWave('workbench script', operation);
+    registerWave('workbench script', operation);
     try {
-      if (!(await preflightWave(operation, registration))) return;
+      if (!(await preflightWave(operation))) return;
+      if (!isWaveRunnable(operation)) {
+        retireWave(operation);
+        return;
+      }
 
     hooks.cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
     state.forceExplain = false;
@@ -704,15 +714,15 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
           params: { ...sp, ...paramSrc.statements[i].args },
         })),
         signal: operation.controller.signal,
-        isCurrent: () => isWaveCurrent(operation, registration),
+        isCurrent: () => isWaveCurrent(operation),
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
         onStatementStart: (_i, { queryId }) => {
-          if (!isWaveCurrent(operation, registration)) return;
+          if (!isWaveCurrent(operation)) return;
           operation.queryId = queryId;
         },
         onStatementResult: (i, entry) => {
-          if (!isWaveCurrent(operation, registration)) return;
+          if (!isWaveCurrent(operation)) return;
           entries.push(entry);
           // #171: THIS statement succeeded — record its own boundParams (per
           // statement, not per script: statement 1 of a later-failing script
@@ -721,11 +731,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
           hooks.renderResults();
         },
       });
-      if (isWaveCurrent(operation, registration)) aborted = res.aborted;
+      if (isWaveCurrent(operation)) aborted = res.aborted;
     } finally {
-      if (!isWaveCurrent(operation, registration)) {
-        settleWave(operation);
-        releaseRegistration(operation, registration);
+      if (!isWaveCurrent(operation)) {
+        retireWave(operation);
         return;
       }
       scriptResult.elapsedMs = deps.now() - t0;
@@ -740,12 +749,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         recordScriptHistory(state, originalInput, scriptResult.elapsedMs!, hooks.saveJSON);
         if (state.sidePanel.value === 'history') hooks.renderSavedHistory();
       }
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
     }
     } catch (error) {
-      settleWave(operation);
-      releaseRegistration(operation, registration);
+      retireWave(operation);
       throw error;
     }
   }
@@ -828,7 +835,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     operation.cancelled = true;
     operation.controller.abort();
     if (operation.queryId != null) deps.exec.kill(operation.queryId);
-    settleWave(operation);
+    retireWave(operation);
   }
 
   return { run, runScript, runEntry, cancel, elapsedMs, attachShell, destroy };

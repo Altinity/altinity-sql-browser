@@ -22,6 +22,7 @@ import type { AuthenticatedCancellationLease } from '../../src/application/authe
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 // ── Small deferred helper (mirrors the pattern query-execution-service.test.ts
@@ -339,6 +340,20 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.tab.result).toBe(completed);
     expect(h.hooks.onAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it('a scope already closed at registration retires the claim before config starts', async () => {
+    const tracked = trackingExecutionScope();
+    tracked.scope.close();
+    const h = makeHarness({ executionScope: tracked.scope, tab: { sqlDraft: 'SELECT 1' } });
+    const session = createWorkbenchSession(h.deps);
+
+    await session.run();
+
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
   });
 
   it('does not cross a scope closure that occurs while the ordinary-run token awaits', async () => {
@@ -1517,6 +1532,57 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
   });
 });
 
+// ── post-preflight ownership fence (#503 review) ─────────────────────────────
+
+describe('createWorkbenchSession: post-preflight ownership fence', () => {
+  it.each([
+    ['ordinary', 'scope close'],
+    ['ordinary', 'cancel'],
+    ['script', 'scope close'],
+    ['script', 'cancel'],
+    ['variable', 'scope close'],
+    ['variable', 'cancel'],
+  ] as const)('keeps %s setup inert when %s wins the caller-continuation race', async (mode, interruption) => {
+    const tracked = trackingExecutionScope();
+    const tokenGate = deferred<string | null>();
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      state: { forceExplain: true },
+      tab: mode === 'variable'
+        ? variableTab({ sqlDraft: 'SELECT a, b FROM t' })
+        : { sqlDraft: 'SELECT 1' },
+    });
+    h.deps.getToken = vi.fn(() => tokenGate.promise);
+    const previousResult = { rows: [['completed']] };
+    h.tab.result = previousResult as QueryTab['result'];
+    const previousSort = h.state.resultSort;
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const session = createWorkbenchSession(h.deps);
+    const pending = mode === 'script'
+      ? session.runScript(['SELECT 1'], 'SELECT 1')
+      : session.run();
+    await flushMicrotasks();
+    expect(h.deps.getToken).toHaveBeenCalledOnce();
+
+    const interruptionReaction = tokenGate.promise.then(() => {
+      if (interruption === 'scope close') tracked.scope.close();
+      else session.cancel();
+    });
+    tokenGate.resolve('tok');
+    await Promise.all([pending, interruptionReaction]);
+
+    expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
+    expect(h.tab.result).toBe(previousResult);
+    expect(h.state.resultSort).toBe(previousSort);
+    expect(h.state.forceExplain).toBe(true);
+    expect(intervalSpy).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
+  });
+});
+
 // ── cancel() ─────────────────────────────────────────────────────────────────
 
 describe('createWorkbenchSession: cancel()', () => {
@@ -1704,18 +1770,22 @@ describe('createWorkbenchSession: destroy()', () => {
 
   it('during pending authentication releases immediately and prevents a late transport', async () => {
     const configGate = deferred<unknown>();
-    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    const tracked = trackingExecutionScope();
+    const h = makeHarness({ executionScope: tracked.scope, tab: { sqlDraft: 'SELECT 1' } });
     h.deps.ensureConfig = vi.fn(() => configGate.promise);
     const session = createWorkbenchSession(h.deps);
     const pending = session.run();
 
     session.destroy();
     expect(h.state.running.value).toBe(false);
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(tracked.scope.isOpen()).toBe(true);
     configGate.resolve(undefined);
     await pending;
 
     expect(h.deps.getToken).not.toHaveBeenCalled();
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
   });
 
   it('mid-flight: clears the ticker, aborts, and kills the live query', async () => {
