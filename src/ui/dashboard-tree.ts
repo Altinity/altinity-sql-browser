@@ -576,7 +576,7 @@ function dropProps(app: DashboardTreeApp, row: DashboardTreeRow): Record<string,
     ondragenter: over,
     ondragover: over,
     ondragleave: (event: DragEvent) => {
-      // The row has eight child spans and drag events bubble, so a bare
+      // The row has several child spans and drag events bubble, so a bare
       // `dragleave` fires every time the pointer crosses onto one of them.
       const to = event.relatedTarget;
       const rowEl = event.currentTarget as HTMLElement;

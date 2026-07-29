@@ -34,7 +34,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   composite tab stop and its controls, respectively — `:has()`'s implicit
   descendant selector alone misses the row itself), which only a real
   keyboard Tab/Arrow grants, preserving reveal-on-keyboard-focus without
-  pinning a clicked row open. Separately, `Sales revenue · 2` read as a
+  pinning a clicked row open. A directly-focused action button (`.dash-tree-
+  act:focus`, no `:focus-visible`) reveals only itself regardless of
+  modality, so a programmatic focus-return or a test's direct `.focus()` —
+  the pre-existing contract `tests/e2e/tile-open-workbench.spec.js`'s
+  "Panels-row plus" test already relied on — still works. Separately,
+  `Sales revenue · 2` read as a
   right-aligned
   column rather than immediately after the name (`Library · 66`'s placement,
   as `dashboard-tree-model.ts` already documented as the intent): the label

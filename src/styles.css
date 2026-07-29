@@ -1828,13 +1828,23 @@ body.detached-tab .graph-overlay-panel {
    Deliberately not `:focus-within`, which matches on any focus regardless of
    modality — a row a user merely CLICKED to select keeps DOM focus, so
    `:focus-within` kept its actions revealed forever, alongside whichever row
-   the pointer was hovering, showing two pencil/trash pairs at once. Chromium
-   (and other engines) withhold `:focus-visible` after a pointer interaction
-   but grant it for real keyboard navigation — Tab/Arrow keys — even when the
-   resulting focus is set programmatically from a keydown handler (see the
-   Tab-walk and keyboard-delete tests in `tests/e2e/dashboard-tree.spec.js`),
-   so this still reveals the cluster for a sighted keyboard user and only for
-   one row at a time.
+   the pointer was hovering, showing two pencil/trash pairs at once. Ordinary
+   pointer focus on the ROW no longer pins it open this way — though a
+   different row's genuine hover and this row's genuine keyboard focus can
+   still be visible at once, which is correct: those are two independent,
+   live states, not the stale-selection bug. Chromium (and other engines)
+   withhold `:focus-visible` after a pointer interaction but grant it for real
+   keyboard navigation — Tab/Arrow keys — even when the resulting focus is set
+   programmatically from a keydown handler (see the Tab-walk and
+   keyboard-delete tests in `tests/e2e/dashboard-tree.spec.js`).
+   `.dash-tree-act:focus` (plain, not `:focus-visible`) is separate and
+   narrower: the button ITSELF holding any focus — Tab, a programmatic
+   focus-return once its own dialog closes, or a test's direct `.focus()` —
+   reveals only that one control, never a sibling or the whole row, so it
+   cannot resurrect the row-level bug above. This preserves the pre-existing
+   contract `tests/e2e/tile-open-workbench.spec.js`'s "Panels-row plus" test
+   and its sibling `.dash-tile-actions` ("Focus alone reveals it — a keyboard
+   user never hovers") already rely on.
    `[aria-expanded="true"]` holds it visible for its own dialog/confirmation's
    whole lifetime — both are body-mounted, so by the time one closes the
    pointer and focus have left the row, and an invisible trigger must not
@@ -1842,6 +1852,7 @@ body.detached-tab .graph-overlay-panel {
 .dash-tree-row:hover .dash-tree-act,
 .dash-tree-row:focus-visible .dash-tree-act,
 .dash-tree-row:has(:focus-visible) .dash-tree-act,
+.dash-tree-act:focus,
 .dash-tree-act[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
 /* #447's orphan-variable trash stays ALWAYS visible: it is the only way to
    remove stored SQL nothing references any more, and a hover-only affordance

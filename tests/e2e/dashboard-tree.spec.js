@@ -947,11 +947,35 @@ test.describe('direct row actions (#494)', () => {
   test('arrowing onto a row reveals its own actions, not just a descendant control\'s', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
+    const clicked = treeRow(page, 'workspace:sales');
+    const next = treeRow(page, 'workspace:ops');
+    // Establish POINTER modality first — a real click, the way a user actually
+    // lands keyboard focus on a row in practice — so the ArrowDown below is
+    // the thing that flips modality to keyboard, not a leftover from `open()`'s
+    // own setup. This isolates the historical cross-engine failure mode: a
+    // pointer→keyboard transition that lands on a DIFFERENT row entirely.
+    await clicked.click();
+    expect(await clicked.evaluate((el) => el.matches(':focus-visible'))).toBe(false);
+    await page.keyboard.press('ArrowDown');
+    await expect(next).toBeFocused();
+    expect(await next.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+    await expect(next.locator('.dash-tree-act').first()).toHaveCSS('opacity', '1');
+  });
+
+  // The DESCENDANT half of the reveal rule — `.dash-tree-row:has(:focus-
+  // visible)` — is exercised separately from the row's own composite tab stop
+  // above: Tab onto the chevron (a control, not the row, and not an action
+  // button, so `.dash-tree-act:focus` cannot be why this passes) and confirm
+  // the cluster stays visible with the pointer elsewhere.
+  test('tabbing onto the chevron reveals the row\'s actions via the descendant :has() branch', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
     const row = treeRow(page, 'workspace:sales');
     await row.focus();
-    await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('ArrowUp');
-    await expect(row).toBeFocused();
+    await page.keyboard.press('Tab');
+    const chevron = row.locator('.dash-tree-chev');
+    await expect(chevron).toBeFocused();
+    expect(await chevron.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
     await expect(row.locator('.dash-tree-act').first()).toHaveCSS('opacity', '1');
   });
 
@@ -1161,12 +1185,20 @@ test.describe('Dashboard tree counts at the narrow sidebar (#553)', () => {
     }
     // "Inline after the label" is a geometric claim, not just a text/visibility
     // one: the count must sit right next to the label's own box, not pushed
-    // into the row's right-aligned trailing cluster (meta/marker/actions).
+    // into the row's right-aligned trailing cluster (meta/marker/actions). The
+    // intended gap is the count's own 2px margin; the OLD (buggy) layout's gap
+    // was exactly `.tree-row`'s 6px flex `gap` PLUS that 2px margin = 8px, so
+    // the upper bound sits well clear of 8 rather than grazing it (a boundary
+    // right on the old value risks a sub-pixel rounding false pass), and a
+    // lower bound catches the count overlapping the label instead of merely
+    // failing to be far away from it.
     for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
       const row = treeRow(page, key);
       const labelBox = await row.locator('.label').boundingBox();
       const countBox = await row.locator('.dash-tree-count').boundingBox();
-      expect(countBox.x - (labelBox.x + labelBox.width)).toBeLessThan(8);
+      const gap = countBox.x - (labelBox.x + labelBox.width);
+      expect(gap).toBeGreaterThanOrEqual(-0.5);
+      expect(gap).toBeLessThan(5);
     }
   });
 
