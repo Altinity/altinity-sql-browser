@@ -7070,6 +7070,95 @@ describe('unified /sql routing', () => {
       expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
     });
 
+    // #535 — the tile's expand action. `openSavedQuery` opens a document;
+    // `openPanelQuery` opens a PANEL: same tab, plus a run and a tree reveal, so
+    // leaving the Dashboard neither loses the user's place in it nor drops them on
+    // an empty result pane.
+    describe('openPanelQuery', () => {
+      const panelWs = (app: ReturnType<typeof createApp>, sql: string): void => {
+        app.state.savedQueries = [savedQuery({ id: 'owned', name: 'Panel query', sql, view: 'panel' })];
+        app.currentWorkspace = {
+          storageVersion: 5, id: 'w', key: 'ops', name: 'Ops',
+          queries: app.state.savedQueries,
+          dashboards: [{
+            documentVersion: 2, id: 'a', title: 'A', revision: 1,
+            layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+            tiles: [{ id: 't1', queryId: 'owned' }],
+          }],
+        };
+      };
+
+      it('opens the tab, runs it on the query\'s own saved view, and reveals the tree row', () => {
+        const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+        app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+        panelWs(app, 'SELECT 1');
+        const run = vi.fn();
+        app.actions.run = run;
+
+        app.openPanelQuery({ dashboardId: 'a', tileId: 't1', queryId: 'owned' });
+
+        expect(app.mainSurface).toEqual({ kind: 'query' });
+        expect(app.state.tabs.value.some((tab) => tab.savedId === 'owned')).toBe(true);
+        // The saved view travels with the run, or a panel query would arrive as a
+        // raw table — the one thing the tile was NOT showing.
+        expect(run).toHaveBeenCalledExactlyOnceWith({ view: 'panel' });
+        // Revealed: the upper sidebar switched role and the panel's row is armed.
+        expect(app.state.upperRole.value).toBe('dashboards');
+        expect(readTreeUi(app.state.dashboardTreeUi, 'w').keyboardRowKey).toContain('tile:t1');
+      });
+
+      // Gated on the tab that ACTUALLY opened, not on the saved SQL:
+      // `loadIntoNewTab` re-selects an existing tab for the same `savedId`, and its
+      // unsaved draft is what `run` would execute.
+      it('does not run an effectful draft in a re-selected tab', () => {
+        const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+        panelWs(app, 'SELECT 1');
+        app.actions.loadIntoNewTab({ ...app.state.savedQueries[0] });
+        const tab = app.activeTab();
+        tab.sqlDraft = 'DROP TABLE t';
+        const run = vi.fn();
+        app.actions.run = run;
+
+        app.openPanelQuery({ dashboardId: 'a', tileId: 't1', queryId: 'owned' });
+
+        expect(app.state.tabs.value.filter((t) => t.savedId === 'owned')).toHaveLength(1);
+        expect(run).not.toHaveBeenCalled();
+      });
+
+      it('runs nothing on a Spec-mode tab, where run is a silent no-op anyway', () => {
+        const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+        panelWs(app, 'SELECT 1');
+        app.actions.loadIntoNewTab({ ...app.state.savedQueries[0] });
+        app.activeTab().editorMode = 'spec';
+        const run = vi.fn();
+        app.actions.run = run;
+        app.openPanelQuery({ dashboardId: 'a', tileId: 't1', queryId: 'owned' });
+        expect(run).not.toHaveBeenCalled();
+      });
+
+      // Same #443 pre-flight as `openSavedQuery`: an id that resolves to nothing
+      // must not move the surface, and must not reveal a tree row for a panel whose
+      // document is gone either.
+      it('an unresolved id changes no surface and reveals nothing', () => {
+        const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
+        app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+        const surface = app.mainSurface;
+        const run = vi.fn();
+        app.actions.run = run;
+        flashToast('seed', { document });
+        const toastEl = document.querySelector('.share-toast')!;
+        const raised = vi.spyOn(toastEl.classList, 'add');
+
+        app.openPanelQuery({ dashboardId: 'a', tileId: 't1', queryId: 'gone' });
+
+        expect(app.mainSurface).toEqual(surface);
+        expect(run).not.toHaveBeenCalled();
+        expect(app.state.upperRole.value).not.toBe('dashboards');
+        expect(raised).toHaveBeenCalledExactlyOnceWith('show');
+        expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
+      });
+    });
+
     it('clears the surface and invalidates pending Dashboard callbacks on sign-out', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });

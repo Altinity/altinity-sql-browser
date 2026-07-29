@@ -4153,16 +4153,16 @@ describe('renderDashboard — unified live modes (#407)', () => {
       const ws = wsWith({ queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
       const { app } = modeApp({ workspace: ws, mode });
       const showQuerySurface = vi.fn();
-      const openSavedQuery = vi.fn();
+      const openPanelQuery = vi.fn();
       app.showQuerySurface = showQuerySurface;
-      app.openSavedQuery = openSavedQuery;
+      app.openPanelQuery = openPanelQuery;
       await render(app);
       expect(qs(app.root, '.dash-back-to-query')).toBeNull();
       expect(qsa(app.root, '.dash-toolbar-primary .dash-tile-open')).toHaveLength(0);
       const open = qs<HTMLButtonElement>(app.root, '.dash-tile .dash-tile-open');
       open.click();
-      // The tile action names a DOCUMENT; it never means "generic back".
-      expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+      // The tile action names a DOCUMENT (and a PANEL); it never means "generic back".
+      expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
       expect(showQuerySurface).not.toHaveBeenCalled();
     }
   });
@@ -5341,10 +5341,10 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     const { app } = modeApp({ workspace: ws, mode: 'view' });
     await render(app);
     const [button] = openBtns(app);
-    expect(button.getAttribute('title')).toBe('Open in Workbench');
+    expect(button.getAttribute('title')).toBe('Open in Workbench and run');
     // The accessible name disambiguates WHICH tile — a bare "Open in Workbench"
     // repeated per tile is unusable in a screen-reader control list.
-    expect(button.getAttribute('aria-label')).toBe('Open Revenue by day in Workbench');
+    expect(button.getAttribute('aria-label')).toBe('Open Revenue by day in Workbench and run');
   });
 
   // #476 (via #429 phase 1) — a whitespace-only `tile.title` is schema-legal and
@@ -5363,7 +5363,7 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     await render(app);
     expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Revenue by day');
     expect(qs(app.root, '.dash-tile-name')?.getAttribute('title')).toBe('Revenue by day');
-    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Revenue by day in Workbench');
+    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Revenue by day in Workbench and run');
     expect(qs(app.root, '.dash-gg-del')?.getAttribute('aria-label'))
       .toBe('Remove Revenue by day from the dashboard');
   });
@@ -5376,7 +5376,7 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     const { app } = modeApp({ workspace: ws, mode: 'view' });
     await render(app);
     expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Q3 revenue');
-    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Q3 revenue in Workbench');
+    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Q3 revenue in Workbench and run');
   });
 
   it('opens the tile\'s own document — same-named copies in different tiles are different ids', async () => {
@@ -5391,14 +5391,17 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       tiles: [{ id: 't1', queryId: 'copy-a' }, { id: 't2', queryId: 'copy-b' }],
     });
     const { app } = modeApp({ workspace: ws, mode: 'view' });
-    const openSavedQuery = vi.fn();
-    app.openSavedQuery = openSavedQuery;
+    const openPanelQuery = vi.fn();
+    app.openPanelQuery = openPanelQuery;
     await render(app);
     const buttons = openBtns(app);
     expect(buttons).toHaveLength(2);
     buttons[0].click();
     buttons[1].click();
-    expect(openSavedQuery.mock.calls).toEqual([['copy-a'], ['copy-b']]);
+    expect(openPanelQuery.mock.calls).toEqual([
+      [{ dashboardId: 'd', tileId: 't1', queryId: 'copy-a' }],
+      [{ dashboardId: 'd', tileId: 't2', queryId: 'copy-b' }],
+    ]);
   });
 
   it('omits the action on a queryless (Text) tile rather than opening something unrelated', async () => {
@@ -5433,8 +5436,8 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
     });
     const { app, commit } = dashApp({ workspace: ws });
-    const openSavedQuery = vi.fn();
-    app.openSavedQuery = openSavedQuery;
+    const openPanelQuery = vi.fn();
+    app.openPanelQuery = openPanelQuery;
     await render(app);
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
     stubTileRects(cards);
@@ -5453,7 +5456,7 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(commit).not.toHaveBeenCalled(); // no reorder was committed
     // And the click itself still reaches the action.
     button.click();
-    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
   });
 
   // The keyboard half of the same defect, and the sharper one: Enter/Space on a
@@ -5468,8 +5471,8 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
     });
     const { app, commit } = dashApp({ workspace: ws });
-    const openSavedQuery = vi.fn();
-    app.openSavedQuery = openSavedQuery;
+    const openPanelQuery = vi.fn();
+    app.openPanelQuery = openPanelQuery;
     await render(app);
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
     stubTileRects(cards);
@@ -5483,7 +5486,7 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
     button.focus();
     button.click();
-    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
   });
 
   it('still opens on the first press after a drag that released away from its card', async () => {
@@ -5501,8 +5504,8 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       layout: { type: 'flow', version: 1, preset: 'report', items: {} },
     });
     const { app, commit } = dashApp({ workspace: ws });
-    const openSavedQuery = vi.fn();
-    app.openSavedQuery = openSavedQuery;
+    const openPanelQuery = vi.fn();
+    app.openPanelQuery = openPanelQuery;
     await render(app);
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
     stubTileRects(cards);
@@ -5519,9 +5522,9 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
     button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
     button.click();
-    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('q1');
+    expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
     await flush(); // the timer then finds the flag already cleared
-    expect(openSavedQuery).toHaveBeenCalledOnce();
+    expect(openPanelQuery).toHaveBeenCalledOnce();
   });
 
   const kpiWs = (layout: Record<string, unknown>): WsOver => ({
@@ -5542,13 +5545,13 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
         workspace: wsWith(kpiWs({ type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } })),
         mode,
       });
-      const openSavedQuery = vi.fn();
-      app.openSavedQuery = openSavedQuery;
+      const openPanelQuery = vi.fn();
+      app.openPanelQuery = openPanelQuery;
       await render(app);
       const button = qs<HTMLButtonElement>(app.root, '.dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-open');
       expect(button, mode).not.toBeNull();
       button.click();
-      expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('k1');
+      expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'k1' });
     }
   });
 
@@ -5563,8 +5566,8 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       workspace: wsWith(kpiWs({ type: 'flow', version: 1, preset: 'columns-2', items: {} })),
       mode: 'view',
     });
-    const openSavedQuery = vi.fn();
-    app.openSavedQuery = openSavedQuery;
+    const openPanelQuery = vi.fn();
+    app.openPanelQuery = openPanelQuery;
     await render(app);
     const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
     const card = qs<HTMLElement>(member, '.kpi-card, .dash-kpi-state-card');
@@ -5572,9 +5575,9 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(qsa(member, '.dash-tile-open')).toHaveLength(1);
     expect(qsa(member, ':scope > .dash-tile-open')).toHaveLength(0);
     const button = qs<HTMLButtonElement>(card, ':scope > .dash-tile-open');
-    expect(button.getAttribute('aria-label')).toBe('Open k1 in Workbench');
+    expect(button.getAttribute('aria-label')).toBe('Open k1 in Workbench and run');
     button.click();
-    expect(openSavedQuery).toHaveBeenCalledExactlyOnceWith('k1');
+    expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'k1' });
     // Nothing leaked into the toolbar, and the drag surface still reports the CARDS
     // as the member's children (the button is inside one, not beside them).
     expect(qsa(app.root, '.dash-topbar .dash-tile-open')).toHaveLength(0);
@@ -5596,18 +5599,21 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(qsa(app.root, '.dash-kpi-member .dash-tile-open')).toHaveLength(1);
   });
 
-  it('gives a grafana-grid KPI tile exactly ONE action, in its head', async () => {
+  it('gives a grafana-grid KPI tile exactly ONE of each action, in its head', async () => {
     // Regression guard for the flow/grid split: the grid engine paints KPI content
-    // through the same `renderKpiInto`, so attaching the card-anchored action there
-    // too would give one tile two buttons.
+    // through the same `renderKpiInto`, so attaching the card-anchored actions there
+    // too would give one tile two of each. Asserted in EDIT mode, where the head
+    // carries the whole trio, because that is where a double-attach would show.
     const { app } = modeApp({
       workspace: wsWith(kpiWs({ type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } })),
-      mode: 'view',
+      mode: 'edit',
     });
     await render(app);
-    expect(qsa(app.root, '.dash-tile-open')).toHaveLength(1);
-    expect(qsa(app.root, '.dash-tile-head > .dash-tile-open')).toHaveLength(1);
-    expect(qsa(app.root, '.dash-tile-body .dash-tile-open')).toHaveLength(0);
+    for (const cls of ['.dash-tile-open', '.dash-tile-dup', '.dash-tile-widen']) {
+      expect(qsa(app.root, cls), cls).toHaveLength(1);
+      expect(qsa(app.root, '.dash-tile-head > ' + cls), cls).toHaveLength(1);
+      expect(qsa(app.root, '.dash-tile-body ' + cls), cls).toHaveLength(0);
+    }
   });
 });
 
@@ -5644,5 +5650,287 @@ describe('renderDashboard — scroll offset (#471)', () => {
     // from "no offset owed" anyway.
     await render(app, { scrollTop: 0 });
     expect(qs<HTMLElement>(app.root, '.dash-page').scrollTop).toBe(0);
+  });
+});
+
+// ── #535: the tile head's duplicate and widen actions ────────────────────────
+// Both are EDIT-mode controls, and they take deliberately different routes:
+// widen is a layout-only `update-placement` through the optimistic command queue,
+// while duplicate is a two-resource workspace write that has to rebuild the route
+// (a duplicate's own query is one the live viewer session has never seen).
+describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
+  const dupBtns = (app: TestApp): HTMLButtonElement[] => qsa<HTMLButtonElement>(app.root, '.dash-tile-dup');
+  const widenBtn = (app: TestApp): HTMLButtonElement => qs<HTMLButtonElement>(app.root, '.dash-tile-widen');
+  const oneTile = (layout?: Record<string, unknown>): WsOver => ({
+    queries: [q('q1', 'SELECT 1')],
+    tiles: [{ id: 't1', queryId: 'q1' }],
+    ...(layout ? { layout } : {}),
+  });
+  const grid = (items: Record<string, unknown>): Record<string, unknown> =>
+    ({ type: 'grafana-grid', version: 1, items });
+  const flow = (preset: string, items: Record<string, unknown> = {}): Record<string, unknown> =>
+    ({ type: 'flow', version: 1, preset, items });
+  /** The committed placement for `t1`, read back off the stored aggregate. */
+  const placement = (app: TestApp): unknown =>
+    (app.currentWorkspace!.dashboards[0].layout.items as Record<string, unknown>).t1;
+  /** Two grid tiles, so a reorder has somewhere to go — a one-tile Dashboard could
+   *  not commit a `move-tile` even with the drag guard removed, which would make a
+   *  "never starts a drag" assertion vacuous. */
+  const twoTileGrid = () => dashApp({
+    workspace: wsWith({
+      queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+      tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      layout: grid({ t1: { span: 4, height: 2 }, t2: { span: 4, height: 2 } }),
+    }),
+  });
+  /** A modifier-held press on `el` followed by real movement and a release — the
+   *  gesture that WOULD arm a reorder from the tile body. Returns the pointerdown so
+   *  a caller can prove it was not `preventDefault`ed (which would eat the click). */
+  const pressAndDragFrom = (el: HTMLElement): PointerEvent => {
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: 75, clientY: 25, metaKey: true,
+    });
+    el.dispatchEvent(down);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 275, clientY: 25 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: 275, clientY: 25 }));
+    return down;
+  };
+
+  it('builds both actions in edit mode and neither in view mode', async () => {
+    for (const mode of ['edit', 'view'] as const) {
+      const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode });
+      await render(app);
+      const expected = mode === 'edit' ? 1 : 0;
+      expect(qsa(app.root, '.dash-tile-dup'), mode).toHaveLength(expected);
+      expect(qsa(app.root, '.dash-tile-widen'), mode).toHaveLength(expected);
+      // The expand action, by contrast, exists in BOTH (#471).
+      expect(qsa(app.root, '.dash-tile-open'), mode).toHaveLength(1);
+    }
+  });
+
+  it('orders the head actions duplicate, widen, expand, then delete', async () => {
+    const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+    await render(app);
+    const head = qs<HTMLElement>(app.root, '.dash-tile-head');
+    expect([...head.children].map((child) => child.className).filter((c) => c !== 'dash-tile-heading'))
+      .toEqual(['dash-gg-grip', 'dash-tile-dup', 'dash-tile-widen', 'dash-tile-open', 'dash-gg-del']);
+  });
+
+  it('names both actions after the tile they belong to', async () => {
+    const ws = wsWith({
+      queries: [q('q1', 'SELECT 1')],
+      tiles: [{ id: 't1', queryId: 'q1', title: 'Revenue by day' }],
+      layout: grid({ t1: { span: 3, height: 2 } }),
+    });
+    const { app } = modeApp({ workspace: ws, mode: 'edit' });
+    await render(app);
+    expect(dupBtns(app)[0].getAttribute('aria-label')).toBe('Duplicate Revenue by day');
+    expect(dupBtns(app)[0].getAttribute('title')).toBe('Duplicate panel');
+    // Widen's label names the DESTINATION, and carries the tile so a control list
+    // stays usable: three "Widen" buttons would be indistinguishable.
+    expect(widenBtn(app).getAttribute('title')).toBe('Widen to 6 columns');
+    expect(widenBtn(app).getAttribute('aria-label')).toBe('Widen to 6 columns: Revenue by day');
+  });
+
+  describe('widen', () => {
+    it('doubles span AND height in the grid, clamping each, then wraps to one column', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 3, height: 2 } }))), mode: 'edit' });
+      await render(app);
+      widenBtn(app).click();
+      await flush();
+      expect(placement(app)).toEqual({ span: 6, height: 4 });
+      // …and the button relabels itself from the NEW width, without a rebuild.
+      expect(widenBtn(app).getAttribute('title')).toBe('Widen to 12 columns');
+
+      widenBtn(app).click();
+      await flush();
+      expect(placement(app)).toEqual({ span: 12, height: 8 });
+      expect(widenBtn(app).getAttribute('title')).toBe('Shrink to 1 column');
+
+      widenBtn(app).click();
+      await flush();
+      expect(placement(app)).toEqual({ span: 1, height: 2 });
+    });
+
+    it('steps one column at a time under a flow preset, wrapping at the preset count', async () => {
+      const { app } = modeApp({
+        workspace: wsWith(oneTile(flow('columns-3', { t1: { span: 1, height: 'large' } }))),
+        mode: 'edit',
+      });
+      await render(app);
+      for (const expected of [2, 3, 1]) {
+        widenBtn(app).click();
+        await flush();
+        // The authored height rides through untouched — sending `{span}` alone
+        // would DELETE it, because a placement write replaces the whole object.
+        expect(placement(app)).toEqual({ span: expected, height: 'large' });
+      }
+    });
+
+    it('hides itself for the single-column styles, and re-shows on a switch back', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(flow('columns-2', { t1: { span: 1 } }))), mode: 'edit' });
+      await render(app);
+      expect(widenBtn(app).hidden).toBe(false);
+
+      // Report is one centred column: there is no width to step through.
+      pickLayout(app.root, 'report');
+      await flush();
+      expect(widenBtn(app).hidden).toBe(true);
+
+      pickLayout(app.root, 'columns-3');
+      await flush();
+      expect(widenBtn(app).hidden).toBe(false);
+      expect(widenBtn(app).getAttribute('title')).toBe('Widen to 2 columns');
+    });
+
+    // Below the mobile breakpoint flow renders ONE column and forces every
+    // effective span to 1, while the selected style is still `columns-2`. A press
+    // there would rewrite the persisted width with no visible effect — and
+    // `@media (hover: none)` leaves the button permanently visible on that
+    // viewport, so it would be an inviting no-op.
+    it('hides itself below the mobile breakpoint, and returns on desktop', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(flow('columns-2', { t1: { span: 1 } }))), mode: 'edit' });
+      app.state.isMobile.value = true;
+      await render(app);
+      expect(widenBtn(app).hidden).toBe(true);
+
+      app.state.isMobile.value = false;
+      await Promise.resolve();
+      expect(widenBtn(app).hidden).toBe(false);
+    });
+
+    // Full view is a TRANSIENT full-width render mode that never persists a width
+    // (#321), so a widen there would write something the view cannot show.
+    it('hides itself in Full view, over the same grid document', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+      await render(app);
+      expect(widenBtn(app).hidden).toBe(false);
+      pickLayout(app.root, 'full');
+      await flush();
+      expect(widenBtn(app).hidden).toBe(true);
+    });
+
+    // A hidden button is still clickable through a script or a stale a11y tree, so
+    // the refusal is at the interaction level too — not only in CSS.
+    it('does nothing when clicked while it has no style to step', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(flow('report', { t1: { span: 1 } }))), mode: 'edit' });
+      await render(app);
+      const before = JSON.stringify(app.currentWorkspace);
+      widenBtn(app).click();
+      await flush();
+      expect(JSON.stringify(app.currentWorkspace)).toBe(before);
+    });
+
+    it('never starts a tile drag, and its own click still lands', async () => {
+      const { app, commit } = twoTileGrid();
+      await render(app);
+      const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+      stubTileRects(cards);
+      const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-widen');
+      // A modifier-held press plus real movement: the SAME gesture on the tile body
+      // would arm a reorder, so this is the case the allowlist exists for.
+      const down = pressAndDragFrom(button);
+      expect(down.defaultPrevented).toBe(false);
+      expect(cards[0].classList.contains('dash-floating')).toBe(false);
+      expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+      expect(commit).not.toHaveBeenCalled();
+      // …and the press did not eat the click either.
+      button.click();
+      await flush();
+      expect(placement(app)).toEqual({ span: 8, height: 4 });
+    });
+  });
+
+  describe('duplicate', () => {
+    it('commits a copy right after the source, with its own owned query', async () => {
+      const ws = wsWith({
+        queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 2')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: grid({ t1: { span: 4, height: 3 }, t2: { span: 4 } }),
+      });
+      const { app } = modeApp({ workspace: ws, mode: 'edit' });
+      await render(app);
+      dupBtns(app)[0].click();
+      await flush();
+
+      const dashboard = app.currentWorkspace!.dashboards[0];
+      // Positional, not by minted id: the fixture's `genId` counter is shared with
+      // whatever else this render happened to mint, so pinning 'gen-1' would make
+      // the test a hostage of unrelated call counts.
+      const copyQueryId = dashboard.tiles[1].queryId;
+      expect(dashboard.tiles.map((tile) => tile.queryId)).toEqual(['q1', copyQueryId, 'q2']);
+      // Its own dedicated copy — a shared queryId would be an invalid workspace.
+      expect(copyQueryId).not.toBe('q1');
+      expect(app.currentWorkspace!.queries.map((query) => query.id)).toEqual(['q1', 'q2', copyQueryId]);
+      // Same size as the source, not the query's add-time size hint.
+      const items = dashboard.layout.items as Record<string, unknown>;
+      expect(items[dashboard.tiles[1].id]).toEqual({ span: 4, height: 3 });
+    });
+
+    it('rebuilds the surface so the copy actually renders', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+      await render(app);
+      expect(qsa(app.root, '.dash-tile')).toHaveLength(1);
+      dupBtns(app)[0].click();
+      await flush();
+      await flush();
+      // The optimistic command queue could not have done this: the live session has
+      // no runtime for a tile whose query it has never seen.
+      expect(qsa(app.root, '.dash-tile')).toHaveLength(2);
+    });
+
+    it('reports a refusal instead of failing silently', async () => {
+      const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+      await render(app);
+      // The tile is gone from committed truth by the time the write dequeues.
+      await app.mutateWorkspace((latest) => (latest ? {
+        candidate: {
+          ...latest,
+          dashboards: [{ ...latest.dashboards[0], tiles: [], revision: latest.dashboards[0].revision + 1 }],
+        },
+      } : null));
+      dupBtns(app)[0].click();
+      await flush();
+      expect(qs(document, '.share-toast')?.textContent)
+        .toBe('That panel is no longer part of this dashboard.');
+    });
+
+    it('never starts a tile drag, and its own click still lands', async () => {
+      const { app, commit } = twoTileGrid();
+      await render(app);
+      const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+      stubTileRects(cards);
+      const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-dup');
+      const down = pressAndDragFrom(button);
+      expect(down.defaultPrevented).toBe(false);
+      expect(cards[0].classList.contains('dash-floating')).toBe(false);
+      expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+      // A reorder would have committed a `move-tile`; nothing did.
+      expect(commit).not.toHaveBeenCalled();
+      button.click();
+      await flush();
+      expect(app.currentWorkspace!.dashboards[0].tiles).toHaveLength(3);
+    });
+
+    // A flow KPI tile's `.dash-tile` card is never inserted into the DOM at all, so
+    // its head is unreachable — without this the one panel type that lives in a band
+    // could not be duplicated under any flow preset.
+    it('reaches a flow KPI band member through its card, exactly once per publish', async () => {
+      const ws = wsWith({
+        queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 't1', queryId: 'k1' }],
+        layout: flow('columns-2'),
+      });
+      const { app } = modeApp({ workspace: ws, mode: 'edit' });
+      await render(app);
+      const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
+      const card = qs<HTMLElement>(member, '.kpi-card, .dash-kpi-state-card');
+      expect(qsa(card, ':scope > .dash-tile-dup')).toHaveLength(1);
+      // Widen is deliberately absent: a band ignores span entirely.
+      expect(qsa(member, '.dash-tile-widen')).toHaveLength(0);
+      // Re-attached on republish, not duplicated — `renderKpiInto` replaces the card.
+      await render(app);
+      expect(qsa(app.root, '.dash-kpi-member .dash-tile-dup')).toHaveLength(1);
+    });
   });
 });

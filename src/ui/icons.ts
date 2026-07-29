@@ -111,6 +111,19 @@ export const Icon = {
   // solid `[ ]` brackets while Safari kept them crisp. Centred + symmetric renders
   // consistently across engines.
   expand: () => iconEl('<path d="M2.5 5V2.5H5M7 2.5H9.5V5M9.5 7V9.5H7M5 9.5H2.5V7"/>', 12, 12, 1.4),
+  // #535 — the Dashboard tile's "widen" action: a horizontal double-headed arrow.
+  //
+  // The design draws this as four-way outward arrows (`DIcon.arrows`) at 24px. That
+  // does not survive the trip to this icon set's 12-box: eight subpaths with
+  // 1.25px arrowhead legs on half-pixel coordinates rasterise into an unreadable
+  // blob at the 13px the tile head renders (the failure mode `expand` documents
+  // above), and the result is nearly indistinguishable from `expand`'s brackets
+  // sitting immediately beside it in the same head.
+  //
+  // So the glyph says what the action does instead of what a 4-way resize looks
+  // like: this button only ever changes WIDTH — three strokes, integer
+  // coordinates, unmistakable at 12px and against both neighbours.
+  arrowsWide: () => svg('M2 6h8M4 4 2 6l2 2M8 4l2 2-2 2', 12, 12, { stroke: 1.5 }),
   // Zoom-out bar (pairs with plus for zoom-in).
   minus: () => svg('M2 6h8', 12, 12, { stroke: 1.6 }),
   // Curved-arrow undo / redo (mirror images) for the schema node-move history.

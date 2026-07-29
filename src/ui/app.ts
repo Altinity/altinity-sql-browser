@@ -17,7 +17,7 @@ import {
   findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
-import { splitStatements } from '../core/sql-split.js';
+import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
@@ -119,7 +119,7 @@ import { createQueryDocumentSession } from '../application/query-document-sessio
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 import { mountAppShell } from './app-shell.js';
-import { cancelDashboardTreeClicks } from './dashboard-tree.js';
+import { cancelDashboardTreeClicks, revealAssignedPanel } from './dashboard-tree.js';
 import { pruneTreeUi } from '../core/dashboard-tree-ui-state.js';
 import type { AppShellHandle } from './app-shell.js';
 import { buildAppHeader } from './app-header.js';
@@ -2908,18 +2908,53 @@ export function createApp(env: CreateAppEnv = {}): App {
   // caller (`dashboard-tree.ts`'s open-query command and its post-assignment
   // reveal, `dashboard.ts`'s Open in Workbench) addresses a query it just
   // resolved or just created, so none depended on the unconditional switch.
-  app.openSavedQuery = (queryId) => {
+  /** Resolve a saved query for opening, or report that it is gone. The shared
+   *  #443 pre-flight: nothing moves until the id resolves. */
+  const savedQueryToOpen = (queryId: string): SavedQueryV2 | null => {
     const query = app.state.savedQueries.find((saved) => saved.id === queryId);
-    if (!query) {
-      flashToast('That query is no longer part of this workspace.', { document: doc });
-      return;
-    }
+    if (query) return query;
+    flashToast('That query is no longer part of this workspace.', { document: doc });
+    return null;
+  };
+  /** Switch to Query mode and put `query` in a tab (re-selecting the tab already
+   *  open on it). Spread, like saved-history.ts's own two call sites:
+   *  `loadIntoNewTab` accepts the looser `string | Json` shape a `SavedQueryV2`
+   *  satisfies structurally but not nominally (no index signature). */
+  const openQueryDocument = (query: SavedQueryV2): void => {
     app.showQuerySurface();
-    // Spread, like saved-history.ts's own two call sites: `loadIntoNewTab`
-    // accepts the looser `string | Json` shape a `SavedQueryV2` satisfies
-    // structurally but not nominally (no index signature).
     loadIntoNewTab(app, { ...query });
     toEditorOnMobile();
+  };
+
+  app.openSavedQuery = (queryId) => {
+    const query = savedQueryToOpen(queryId);
+    if (query) openQueryDocument(query);
+  };
+
+  // #535 — the tile's expand action. Order matters: the tree is revealed FIRST,
+  // exactly as the Library-drop settlement does it (ui/dashboard-tree.ts), so the
+  // row is expanded and armed as the tree's position and then `loadIntoNewTab`
+  // moves focus on to the editor. Revealing afterwards would steal focus back out
+  // of the editor the user was just sent to.
+  app.openPanelQuery = ({ dashboardId, tileId, queryId }) => {
+    const query = savedQueryToOpen(queryId);
+    if (!query) return;
+    revealAssignedPanel(app, dashboardId, tileId);
+    openQueryDocument(query);
+    // The tile was showing a rendered result, so the editor should too — and on
+    // the query's OWN saved view, or a chart panel would arrive as a raw table.
+    // A queryless (text) panel never exposes this action, so there is no run-less
+    // view-restore branch to mirror from saved-history.ts here.
+    //
+    // Gated on the tab that ACTUALLY opened, not on `query.sql`: `loadIntoNewTab`
+    // re-selects an existing tab for the same `savedId`, and that tab may hold an
+    // unsaved draft the saved document knows nothing about — including a DDL
+    // statement, which must never auto-run. A Spec-mode tab is skipped too, since
+    // `run` silently does nothing there.
+    const tab = app.activeTab();
+    if (tab.editorMode !== 'spec' && isAutoRunnable(tab.sqlDraft)) {
+      app.actions.run({ view: queryView(query) });
+    }
   };
 
   // #457 — opening a variable's option SQL is a Query-mode act for exactly the

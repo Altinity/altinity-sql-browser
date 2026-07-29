@@ -17,10 +17,12 @@
 import { cloneJson } from '../../core/saved-query.js';
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { deriveFlowPlacement, resolvePlacement, setFlowPlacement } from '../layouts/flow-layout.js';
+import {
+  deriveFlowPlacement, flowPlacementAt, resolvePlacement, setFlowPlacement,
+} from '../layouts/flow-layout.js';
 import type { DashboardLayoutPlugin } from '../layouts/flow-layout.js';
 import {
-  deriveGrafanaGridPlacement, gridHeightUnitsFromFlowHeight, gridSpanFromFlowSpan,
+  deriveGrafanaGridPlacement, gridHeightUnitsFromFlowHeight, gridPlacementAt, gridSpanFromFlowSpan,
   regenerateGridFallback as regenerateGridLayoutFallback, setGridPlacement,
 } from '../layouts/grafana-grid-layout.js';
 import type { QueryResolver } from './dashboard-query-resolver.js';
@@ -37,6 +39,21 @@ export type DashboardCommand =
   | { type: 'add-query'; queryId: string }
   | { type: 'add-query-instance'; queryId: string; variant?: string }
   | { type: 'remove-tile'; tileId: string }
+  /**
+   * Place a second, independent copy of `tileId` immediately after it (#535).
+   *
+   * Both ids come from the CALLER, unlike `add-query`/`add-query-instance` which
+   * mint through `ctx.genTileId`: the Dashboard UI re-applies every pending
+   * command descriptor against committed truth at commit time, so an id minted
+   * inside the apply step would differ between the optimistic pass and the
+   * commit pass and one press could persist as two panels.
+   *
+   * `queryId` is the DEDICATED CLONE's id, never the source tile's. #427 makes
+   * every panel tile the sole owner of a saved-query copy, so two tiles sharing
+   * one query id is an invalid workspace (`dashboard-query-multiple-owners`) —
+   * the caller mints the clone into `queries[]` first and passes its id here.
+   */
+  | { type: 'duplicate-tile'; tileId: string; newTileId: string; queryId: string }
   | { type: 'move-tile'; tileId: string; toIndex: number }
   | { type: 'update-tile'; tileId: string; patch: DashboardTilePatch }
   | { type: 'update-placement'; tileId: string; placement: Record<string, unknown> }
@@ -74,7 +91,7 @@ const tileIndex = (tiles: unknown[], tileId: string): number =>
  *  directions); `update-tile` never touches tiles[] membership/order or
  *  placements, so it is deliberately excluded. */
 const GRID_FALLBACK_COMMANDS = new Set<DashboardCommand['type']>([
-  'add-query', 'add-query-instance', 'remove-tile', 'move-tile', 'update-placement',
+  'add-query', 'add-query-instance', 'duplicate-tile', 'remove-tile', 'move-tile', 'update-placement',
 ]);
 
 /** Set one tile's placement through whichever engine plugin is ACTIVE
@@ -87,6 +104,22 @@ function setPlacementForActiveEngine(
 ): void {
   if (plugin.type === 'grafana-grid') setGridPlacement(layout, tileId, placement);
   else setFlowPlacement(layout, tileId, placement);
+}
+
+/** One tile's STORED placement, read through whichever engine plugin is ACTIVE —
+ *  the read mirror of `setPlacementForActiveEngine`, and it has to go through the
+ *  plugin for the same reason the write does: flow keeps its placements on the
+ *  FALLBACK surface whenever the primary engine is not flow@1, so a bare
+ *  `layout.items[tileId]` would answer "no placement" for exactly the documents
+ *  the write path reaches through the fallback. The value is copied opaquely —
+ *  `duplicate-tile` never needs to know its shape, and the copy is re-validated
+ *  by the same plugin on write. */
+function placementForActiveEngine(
+  plugin: DashboardLayoutPlugin, layout: unknown, tileId: string,
+): unknown {
+  const placement = plugin.type === 'grafana-grid'
+    ? gridPlacementAt(layout, tileId) : flowPlacementAt(layout, tileId);
+  return isObject(placement) ? placement : undefined;
 }
 
 /** One-level merge of an `update-tile` presentation patch onto the tile's
@@ -158,6 +191,40 @@ function applyCommandToClone(
         ? deriveGrafanaGridPlacement(sizeHints) : deriveFlowPlacement(sizeHints);
       if (placement) setPlacementForActiveEngine(ctx.plugin, dashboard.layout, id, placement);
       return { ok: true, dashboard, value: { tileId: id } };
+    }
+
+    case 'duplicate-tile': {
+      const index = tileIndex(tiles, command.tileId);
+      if (index < 0) return failWith(missingTile(command.tileId));
+      const { newTileId, queryId } = command;
+      if (!ctx.resolver.has(queryId)) {
+        return failWith(diagnostic(['tiles'], 'dashboard-command-query-missing',
+          `No saved query ${JSON.stringify(queryId)} to add`, queryId));
+      }
+      // Its OWN code, not `dashboard-command-duplicate-instance`: that one means
+      // "this query already has a default tile" and its message says so.
+      if (tileIndex(tiles, newTileId) >= 0) {
+        return failWith(diagnostic(['tiles'], 'dashboard-command-tile-id-taken',
+          `Tile id ${JSON.stringify(newTileId)} is already on this Dashboard`, newTileId));
+      }
+      // Everything the source tile says about presentation carries over —
+      // selected variant, tile-local override patch, and any local
+      // title/description. A duplicate that reverted to the query's base panel
+      // would not be a duplicate of what the user is looking at.
+      const copy = cloneJson(tiles[index]) as DashboardTileV1;
+      copy.id = newTileId;
+      copy.queryId = queryId;
+      tiles.splice(index + 1, 0, copy);
+      // Same SIZE as the source, not the add-time size derived from the query's
+      // `sizeHints`: the source tile's placement is what the user just widened
+      // or dragged, and `sizeHints` would silently discard that. A source with no
+      // stored placement leaves the copy with none either, so both fall through
+      // to the engine's own default together.
+      const placement = placementForActiveEngine(ctx.plugin, dashboard.layout, command.tileId);
+      if (placement !== undefined) {
+        setPlacementForActiveEngine(ctx.plugin, dashboard.layout, newTileId, cloneJson(placement));
+      }
+      return { ok: true, dashboard, value: { tileId: newTileId } };
     }
 
     case 'remove-tile': {

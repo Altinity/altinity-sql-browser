@@ -109,6 +109,19 @@
       ],
     };
 
+    // #535: the expand action now RUNS the opened query, and a run needs
+    // `getToken()`/`ensureConfig()` to resolve. Both are captured from `conn` once
+    // at createApp() time, so stubbing them after the fact (the way
+    // `ensureFreshToken`/`loadSchema` are stubbed below) would not reach the
+    // already-wired workbench session — a run would attempt a real token refresh,
+    // find no config, and raise the blocking "session expired" login host over the
+    // whole page. Basic-auth mode short-circuits BOTH with no network call at all
+    // and is read from sessionStorage before `createConnectionSession` runs, so it
+    // has to be seeded here, before `createApp` (same reasoning as
+    // `variable-tab.html`).
+    sessionStorage.setItem('ch_basic_auth', 'e2e-token');
+    sessionStorage.setItem('ch_basic_user', 'e2e');
+
     const root = document.querySelector('#root');
     const app = createApp({
       root,
@@ -132,13 +145,19 @@
     app.catalog.loadVersion = async () => {};
     // Tiles must reach 'ready' for the KPI band to render its member content — a
     // real run would need a server.
+    // #535: counted, so a spec can prove the expand action RAN the query it opened
+    // rather than only opening it. Dashboard tile waves execute through the same
+    // seam, so a spec must compare a delta rather than an absolute count.
+    let execCalls = 0;
     app.exec.executeRead = async (result) => {
+      execCalls += 1;
       result.columns = [{ name: 'value', type: 'UInt8' }];
       result.rows = [[42]];
       result.progress = { rows: 1, bytes: 1 };
       result.error = null;
       return result;
     };
+    window.__execCalls = () => execCalls;
 
     // Reseeded on every load: these specs open tabs and navigate for real.
     await app.workspace.delete(seed.id);
@@ -166,6 +185,16 @@
       const read = await app.workspace.loadById(seed.id);
       return read.status === 'ok'
         ? read.workspace.queries.map((query) => ({ id: query.id, name: query.spec.name, sql: query.sql }))
+        : null;
+    };
+    /** #535: committed tile order + placements, so a spec can prove what a
+     *  duplicate or a widen actually PERSISTED rather than only what it painted. */
+    window.__dashboard = async (id) => {
+      const read = await app.workspace.loadById(seed.id);
+      if (read.status !== 'ok') return null;
+      const dashboard = read.workspace.dashboards.find((d) => d.id === id);
+      return dashboard
+        ? { tiles: dashboard.tiles.map((tile) => ({ id: tile.id, queryId: tile.queryId })), items: dashboard.layout.items }
         : null;
     };
     window.__libraryIds = async () => {
