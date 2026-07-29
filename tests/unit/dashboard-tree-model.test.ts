@@ -52,7 +52,9 @@ const variableRows = (rows: readonly DashboardTreeRow[]): DashboardTreeRow[] =>
   rows.filter((candidate) => candidate.kind === 'variable');
 
 describe('deriveDashboardTree — collection and ordering', () => {
-  it('renders Dashboards in array order, collapsed, with the panel count at the right', () => {
+  // #553: the Dashboard row's panel count is the SAME inline `· N` placement
+  // (`count`) as Variables/Panels, not the right-aligned `meta` it used before.
+  it('renders Dashboards in array order, collapsed, with the panel count inline after the label', () => {
     const tree = derive(ws({
       dashboards: [
         dashboard({ id: 'b', title: 'Beta', tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }] }),
@@ -61,7 +63,10 @@ describe('deriveDashboardTree — collection and ordering', () => {
       queries: [query('q1', 'Q1')],
     }));
     expect(labels(tree.rows)).toEqual(['Beta', 'Alpha']);
-    expect(tree.rows.map((r) => r.meta)).toEqual(['2', '0']);
+    expect(tree.rows.map((r) => r.count)).toEqual([2, 0]);
+    // The right-aligned `meta` slot is empty — #553 reserves it for a
+    // variable's type(s) only, never a Dashboard row's own count.
+    expect(tree.rows.map((r) => r.meta)).toEqual(['', '']);
     expect(tree.rows.every((r) => r.level === 1 && r.parentKey === null && r.expandable)).toBe(true);
     expect(tree.dashboardCount).toBe(2);
   });
@@ -75,7 +80,7 @@ describe('deriveDashboardTree — collection and ordering', () => {
       })],
       queries: [query('q1', 'Q1')],
     }));
-    expect(row(tree.rows, 'w1:d').meta).toBe('1');
+    expect(row(tree.rows, 'w1:d').count).toBe(1);
   });
 
   it('keys rows by workspace + Dashboard + member id, never by index or label', () => {
@@ -603,8 +608,7 @@ describe('deriveDashboardTree — search', () => {
     expect(dash.single).toMatchObject({ kind: 'open-dashboard', request: { mode: 'view' } });
     expect(dash.shift).toMatchObject({ kind: 'open-dashboard', request: { mode: 'edit' } });
     // The search forcing expansion open does not touch the row's OWN actions.
-    expect(dash.actions.map((a) => a.kind))
-      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
   });
 
   it('every row is toggleable again once the search clears', () => {
@@ -705,14 +709,29 @@ describe('deriveDashboardTree — command sets', () => {
     // Both requests name the Dashboard alone: a Dashboard row focuses no member.
     expect('focus' in (dash.single as { request: object }).request).toBe(false);
     // #494 removed the `⋯` menu — *Open in Edit* was its last item, and Shift
-    // (asserted above via `shift`) is still how Edit is reached. The row's
-    // vocabulary is now its three direct actions, and nothing else mirrors a menu.
+    // (asserted above via `shift`) is still how Edit is reached. #553 moved
+    // Add panel to the Panels group row, so the Dashboard row's own vocabulary
+    // is now its two direct actions, and nothing else mirrors a menu.
     expect(dash.actions.map((a) => a.kind))
-      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
+      .toEqual(['edit-dashboard', 'delete-dashboard']);
   });
 
-  it('gives a group row ONLY a toggle — no double, no Shift, no actions', () => {
-    const group = row(tree().rows, 'w1:d:group:panels');
+  // #553: Add panel now lives on the Panels group row — it creates a member of
+  // THAT group, not an operation on the Dashboard document.
+  it('gives the Panels group row an add-panel action too, but Variables and a group\'s toggle stay untouched', () => {
+    const rows = tree().rows;
+    const panels = row(rows, 'w1:d:group:panels');
+    expect(panels.actions.map((a) => a.kind)).toEqual(['add-panel']);
+    expect(panels.single).toEqual({ kind: 'toggle' });
+    expect(panels.double).toBeNull();
+    expect(panels.shift).toBeNull();
+    expect(row(rows, 'w1:d:group:variables').actions).toEqual([]);
+  });
+
+  it('gives a group row ONLY a toggle — no double, no Shift', () => {
+    // Variables, not Panels: #553 gave Panels its own add-panel action, so
+    // this is the one group row with NO actions at all.
+    const group = row(tree().rows, 'w1:d:group:variables');
     expect(group.single).toEqual({ kind: 'toggle' });
     expect(group.double).toBeNull();
     expect(group.shift).toBeNull();
@@ -806,50 +825,55 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
     ]);
   });
 
-  it('orders and names the Dashboard row add / edit / delete controls', () => {
+  it('orders and names the Dashboard row edit / delete controls', () => {
     const tree = derive(ws({ dashboards: [dashboard({ id: 'd', title: 'D' })] }));
     const dash = row(tree.rows, 'w1:d');
-    expect(dash.actions.map((a) => a.kind))
-      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
-    expect(dash.actions.map((a) => a.label))
-      .toEqual(['Add panel to D', 'Edit dashboard D', 'Delete dashboard D']);
-    expect(dash.actions[0]).toMatchObject({
-      tooltip: 'Add panel', target: { kind: 'dashboard', dashboardId: 'd' },
-      unavailable: null, confirm: null,
-    });
-    expect(dash.actions[2].confirm).toBe('Delete dashboard “D”? This also deletes every query its panels own.');
+    expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
+    expect(dash.actions.map((a) => a.label)).toEqual(['Edit dashboard D', 'Delete dashboard D']);
+    expect(dash.actions[1].confirm).toBe('Delete dashboard “D”? This also deletes every query its panels own.');
+  });
+
+  // #553: Add panel moved to the Panels group row.
+  it('names and resolves the Panels group row\'s add-panel control', () => {
+    const tree = derive(ws({ dashboards: [dashboard({ id: 'd', title: 'D' })] }),
+      toggleDashboardExpanded(EMPTY_TREE_UI, 'd'));
+    const panels = row(tree.rows, 'w1:d:group:panels');
+    expect(panels.actions).toEqual([{
+      kind: 'add-panel', label: 'Add panel to D', tooltip: 'Add panel',
+      target: { kind: 'dashboard', dashboardId: 'd' }, unavailable: null, confirm: null,
+    }]);
   });
 
   it('keeps Add panel visible but unavailable at the 100-tile limit', () => {
     const tiles = Array.from({ length: 100 }, (_, i) => ({ id: 't' + i, queryId: 'q' + i }));
-    const dash = row(derive(ws({
+    const panels = row(derive(ws({
       dashboards: [dashboard({ id: 'd', title: 'Full', tiles })],
-    })).rows, 'w1:d');
+    }), toggleDashboardExpanded(EMPTY_TREE_UI, 'd')).rows, 'w1:d:group:panels');
 
-    expect(dash.actions.map((action) => action.kind))
-      .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
-    expect(dash.actions[0]).toMatchObject({
+    expect(panels.actions.map((action) => action.kind)).toEqual(['add-panel']);
+    expect(panels.actions[0]).toMatchObject({
       label: 'Add panel to Full',
       target: null,
       unavailable: 'This dashboard already has the maximum of 100 panels, so another panel cannot be added.',
     });
   });
 
-  it('falls back to the row\'s own Untitled label in an action name, on both row kinds', () => {
+  it('falls back to the row\'s own Untitled label in an action name, on every row kind', () => {
     const tree = derive(ws({
       dashboards: [dashboard({ id: 'd', title: '   ', tiles: [{ id: 't1', queryId: 'q1' }] })],
       queries: [query('q1')],
     }), allOpen(['d']));
     const dash = row(tree.rows, 'w1:d');
+    const panels = row(tree.rows, 'w1:d:group:panels');
     const panel = row(tree.rows, 'w1:d:tile:t1');
     // Same fallback the ROW itself displays — never a second, disagreeing default.
     expect(dash.label).toBe(UNTITLED_DASHBOARD);
     expect(panel.label).toBe(UNTITLED_PANEL);
     expect(dash.actions.map((a) => a.label)).toEqual([
-      'Add panel to ' + UNTITLED_DASHBOARD,
       'Edit dashboard ' + UNTITLED_DASHBOARD,
       'Delete dashboard ' + UNTITLED_DASHBOARD,
     ]);
+    expect(panels.actions.map((a) => a.label)).toEqual(['Add panel to ' + UNTITLED_DASHBOARD]);
     expect(panel.actions.map((a) => a.label)).toEqual([
       'Edit ' + UNTITLED_PANEL, 'Remove ' + UNTITLED_PANEL + ' from dashboard',
     ]);
@@ -975,8 +999,7 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
       const dash0 = row(tree.rows, 'w1:d:dup:0');
       const dash1 = row(tree.rows, 'w1:d:dup:1');
       for (const dash of [dash0, dash1]) {
-        expect(dash.actions.map((a) => a.kind))
-          .toEqual(['add-panel', 'edit-dashboard', 'delete-dashboard']);
+        expect(dash.actions.map((a) => a.kind)).toEqual(['edit-dashboard', 'delete-dashboard']);
         for (const a of dash.actions) {
           expect(a.target).toBeNull();
           expect(a.confirm).toBeNull();
@@ -986,6 +1009,14 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
         // reasoning as the pencil/trash above: `dashboardId` alone has two
         // answers here.
         expect(dash.dropTarget).toBeNull();
+      }
+      // #553: the ambiguity reaches the Panels group row's add-panel too — it
+      // is addressed by `dashboardId` alone, same as the pencil/trash above.
+      for (const key of ['w1:d:dup:0:group:panels', 'w1:d:dup:1:group:panels']) {
+        const panelsGroup = row(tree.rows, key);
+        expect(panelsGroup.actions.map((a) => a.kind)).toEqual(['add-panel']);
+        expect(panelsGroup.actions[0].target).toBeNull();
+        expect(panelsGroup.actions[0].unavailable).toContain('share this id');
       }
       // The ambiguity cascades to the panels underneath: which Dashboard "d"
       // even is has no answer, so its tiles cannot be resolved either — and the
@@ -1038,12 +1069,15 @@ describe('deriveDashboardTree — direct actions (#494)', () => {
     });
   });
 
-  it('gives no actions to a group row or an ACTIVE (non-orphaned) variable row', () => {
+  // #553: the Panels group row now carries its own add-panel action, so this
+  // is no longer true of every group row — only Variables, and an active
+  // variable, offer nothing.
+  it('gives no actions to the Variables group row or an ACTIVE (non-orphaned) variable row', () => {
     const tree = derive(ws({
       dashboards: [dashboard({ id: 'd', title: 'D', tiles: [{ id: 't1', queryId: 'q1' }] })],
       queries: [query('q1', 'Q1', undefined, 'SELECT 1 WHERE c = {country:String}')],
     }), allOpen(['d']));
-    expect(row(tree.rows, 'w1:d:group:panels').actions).toEqual([]);
+    expect(row(tree.rows, 'w1:d:group:panels').actions.map((a) => a.kind)).toEqual(['add-panel']);
     expect(row(tree.rows, 'w1:d:group:variables').actions).toEqual([]);
     expect(row(tree.rows, 'w1:d:variable:country').actions).toEqual([]);
   });

@@ -1013,10 +1013,17 @@ h1, h2, h3, h4, h5, h6 {
    its separator dot share one text node, so hiding the element hides both).
    Widening the sidebar past 220px restores the icon/count with no JS state —
    see `.sidebar`'s container-type/-name declaration above, alongside
-   `.query-host`/`.dashboard-host`. */
+   `.query-host`/`.dashboard-host`.
+   #553 reuses this SAME axis for the Dashboard tree rows below
+   (`.dash-tree-count`, Dashboard/Variables/Panels' `· N`) rather than adding a
+   second container or threshold — one narrow-sidebar breakpoint, one place it
+   is declared. Hiding it is purely visual: `rowAccessibleName` in
+   `ui/dashboard-tree.ts` sets the row's `aria-label` explicitly, so a hidden
+   count never drops out of what a screen reader announces. */
 @container sidebar (max-width: 220px) {
   .side-tab svg { display: none; }
   .side-tab .side-count { display: none; }
+  .dash-tree-count { display: none; }
 }
 .history-row {
   position: relative;
