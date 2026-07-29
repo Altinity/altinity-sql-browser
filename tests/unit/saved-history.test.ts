@@ -36,6 +36,12 @@ const byTitle = (root: ParentNode, t: string): HTMLElement =>
 const savedList = (app: App): HTMLElement => app.dom.savedList!;
 const savedTabsRow = (app: App): HTMLElement => app.dom.savedTabsRow!;
 const savedSearch = (app: App): HTMLElement => app.dom.savedSearch!;
+// #487 phase 2: the History section renders into its OWN persistent pair, so every
+// History assertion below names those elements explicitly. Reading through an
+// "active section" helper instead would pass even if the renderer painted History
+// rows into the Library's list — which is the one thing this split has to prevent.
+const historyList = (app: App): HTMLElement => app.dom.historyList!;
+const historySearch = (app: App): HTMLElement => app.dom.historySearch!;
 
 describe('renderSavedHistory', () => {
   it('no-ops without mounts', () => {
@@ -558,7 +564,7 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'history';
     renderSavedHistory(app);
-    expect(savedList(app).textContent).toContain('No history yet.');
+    expect(historyList(app).textContent).toContain('No history yet.');
   });
 
   it('history: lists rows (with + without row count) and loads on click', () => {
@@ -569,7 +575,7 @@ describe('renderSavedHistory', () => {
       { id: 'h2', sql: 'INSERT …', ts: Date.now(), rows: null, ms: 1 },
     ];
     renderSavedHistory(app);
-    const rows = qsa(savedList(app), '.history-row');
+    const rows = qsa(historyList(app), '.history-row');
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain('3 rows');
     expect(rows[1].textContent).not.toContain('rows');
@@ -583,7 +589,7 @@ describe('renderSavedHistory', () => {
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'DROP TABLE t', ts: Date.now(), rows: null, ms: 1 }];
     renderSavedHistory(app);
-    click(qs(savedList(app), '.history-row'));
+    click(qs(historyList(app), '.history-row'));
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('From history', 'DROP TABLE t');
     expect(app.actions.run).not.toHaveBeenCalled();
   });
@@ -596,10 +602,27 @@ describe('renderSavedHistory', () => {
       { id: 'h2', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 2 },
     ];
     renderSavedHistory(app);
-    click(qs(savedList(app), '.history-row .del'));
+    click(qs(historyList(app), '.history-row .del'));
     expect(app.state.history.map((e: HistoryEntry) => e.id)).toEqual(['h2']);
     expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
-    expect(qsa(savedList(app), '.history-row')).toHaveLength(1);
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+  });
+
+  it('resolves an out-of-union sidePanel the SAME way the shell exposes it', () => {
+    // `state.ts` decodes `asb:sidePanel` at load, so this value cannot come from
+    // storage — but the signal is settable by any module, and the two readers must
+    // not be able to disagree. `app-shell.ts`'s exposure effect resolves anything
+    // that is not 'history' to the Library host; this renderer has to paint into
+    // the LIBRARY pair for the same input, or the pane shows an exposed empty host
+    // while the content sits inside the hidden one.
+    const app = makeApp();
+    (app.state.sidePanel as { value: string }).value = 'queries';
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
+    renderSavedHistory(app);
+
+    expect(qsa(savedList(app), '.saved-row')).toHaveLength(1);
+    expect(historyList(app).children.length).toBe(0);
+    expect(qsa(savedTabsRow(app), '.side-tab')[0].classList.contains('active')).toBe(true);
   });
 
   it('switching panels persists the choice', () => {
@@ -639,9 +662,16 @@ describe('renderSavedHistory — search/filter', () => {
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
-  it('collapses the search box when the active list is empty', () => {
-    const app = makeApp();
-    app.state.sidePanel.value = 'saved';
+  it('collapses the search box when the active list becomes empty', () => {
+    // Populate the box FIRST, then empty the list and re-render. Asserting
+    // `children.length === 0` on a freshly built fixture element proves nothing —
+    // `makeApp()` creates `savedSearch` empty, so that assertion held even if
+    // `renderSearch` never touched this element at all (which, since the two lower
+    // sections own separate boxes, is now a reachable bug rather than a hypothetical).
+    const app = savedApp();
+    expect(savedSearch(app).querySelector('.sv-search-input')).not.toBeNull();
+
+    app.state.savedQueries = [];
     renderSavedHistory(app);
     expect(savedSearch(app).children.length).toBe(0); // :empty → hidden via CSS
     expect(savedSearch(app).querySelector('.sv-search-input')).toBeNull();
@@ -653,7 +683,8 @@ describe('renderSavedHistory — search/filter', () => {
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
-    expect(input(app).placeholder).toBe('Search history…');
+    expect(qs<HTMLInputElement>(historySearch(app), '.sv-search-input').placeholder)
+      .toBe('Search history…');
   });
 
   it('filters saved by name / description / sql, case-insensitively, reusing the input node', () => {
@@ -691,12 +722,12 @@ describe('renderSavedHistory — search/filter', () => {
       { id: 'h2', sql: 'INSERT INTO t', ts: Date.now(), rows: null, ms: 1 },
     ];
     renderSavedHistory(app);
-    const i = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+    const i = qs<HTMLInputElement>(historySearch(app), '.sv-search-input');
     i.value = 'insert'; i.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(qsa(savedList(app), '.history-row')).toHaveLength(1);
-    expect(savedList(app).textContent).toContain('INSERT INTO t');
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+    expect(historyList(app).textContent).toContain('INSERT INTO t');
     i.value = 'nope'; i.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(savedList(app).textContent).toContain('No history matches');
+    expect(historyList(app).textContent).toContain('No history matches');
   });
 
   it('clears the filter when switching tabs', () => {
@@ -724,7 +755,7 @@ describe('drag a row into the editor', () => {
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
-    const row = qs(savedList(app), '.history-row');
+    const row = qs(historyList(app), '.history-row');
     expect(row.getAttribute('draggable')).toBe('true');
     const setData = dragStart(row);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');
@@ -777,7 +808,7 @@ describe('drag a Library row onto a Dashboard (#428)', () => {
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
-    const setData = dragStart(qs(savedList(app), '.history-row'));
+    const setData = dragStart(qs(historyList(app), '.history-row'));
 
     expect(setData).toHaveBeenCalledTimes(1);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');

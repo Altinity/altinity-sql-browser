@@ -73,11 +73,12 @@ export type LeftNavigationMode = 'wide' | 'rail';
  * "Library" and deliberately left the stored value alone, since migrating it
  * would discard every user's persisted lower-pane choice for no behavioural gain.
  *
- * So the vocabularies genuinely differ, and phase 2's navigation section registry
- * owns the mapping in exactly one place — `'library' ↔ 'saved'`, with the other
- * three sections identical. That mapping is deliberately NOT written here yet: it
- * has no caller until the registry exists, and a second copy of it is precisely
- * the duplication phase 2 is meant to prevent.
+ * So the vocabularies genuinely differ, and the mapping lives in exactly one
+ * place — `sectionForSidePanelKey` / `sidePanelKeyFor` below, added in phase 2.
+ * `ui/nav-sections.ts` (the navigation section registry) is its UI-side owner and
+ * only consumer of the section half; the *decode* half belongs here beside
+ * `decodeLeftNavigationMode`, because `state.ts` applies it at the load boundary
+ * and must not import from `src/ui/`.
  */
 export type LeftNavigationSection = 'databases' | 'dashboards' | 'library' | 'history';
 
@@ -86,6 +87,43 @@ export type LeftNavigationSection = 'databases' | 'dashboards' | 'library' | 'hi
  *  Library | History below). */
 export const LEFT_NAV_SECTIONS: readonly LeftNavigationSection[] =
   ['databases', 'dashboards', 'library', 'history'];
+
+/** The lower sidebar pane's two sections, in the registry's vocabulary. Derived
+ *  from `LeftNavigationSection` so the section names have exactly one source. */
+export type LowerNavigationSection = Extract<LeftNavigationSection, 'library' | 'history'>;
+
+/**
+ * What `AppState.sidePanel` actually stores. `'saved'` is the Library section:
+ * #427 renamed the visible label but deliberately left the persisted value at
+ * `asb:sidePanel` alone, since migrating it would discard every user's lower-pane
+ * choice for no behavioural gain.
+ */
+export type SidePanelKey = 'saved' | 'history';
+
+/** Section → stored value. */
+export function sidePanelKeyFor(section: LowerNavigationSection): SidePanelKey {
+  return section === 'library' ? 'saved' : 'history';
+}
+
+/**
+ * Stored value → section, and the DECODER for `asb:sidePanel`: a missing, invalid
+ * or obsolete stored value resolves to the Library section, which is that
+ * preference's documented default (`state.ts` reads it with `'saved'` as the
+ * fallback), rather than propagating an unrecognized string.
+ *
+ * That fallback direction matters, and it is a deliberate fix rather than
+ * preserved behaviour. Before phase 2 the lower pane's two sections shared one
+ * search/list pair and every reader compared `=== 'saved'`, so an unrecognized
+ * value fell through to the History branch — i.e. to neither the default nor the
+ * value's own meaning. With two hosts, two readers disagreeing about the fallback
+ * exposes one section's host while painting into the other's, which renders as a
+ * blank pane. `state.ts` now decodes once at load, so the signal only ever holds
+ * a `SidePanelKey` and the disagreement is unreachable rather than merely
+ * avoided by discipline.
+ */
+export function sectionForSidePanelKey(key: unknown): LowerNavigationSection {
+  return key === 'history' ? 'history' : 'library';
+}
 
 /**
  * The complete left-navigation layout. `wideWidthPx` is deliberately the SAME

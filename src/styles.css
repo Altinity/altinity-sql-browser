@@ -1704,18 +1704,24 @@ body.detached-tab .graph-overlay-panel {
 .schema-empty {
   padding: 24px 14px; color: var(--fg-faint); font-size: var(--text-body); text-align: center;
 }
-/* ------------ upper sidebar roles (#426) ------------
-   Databases | Dashboards over two persistent hosts, exactly one exposed. The tab
-   row reuses .side-tabs/.side-tab/.side-count from the lower switcher verbatim —
-   DESIGN.md asks for one tab vocabulary across the app. */
-.upper-role-host {
+/* ------------ navigation section hosts (#426, generalized in #487) ------------
+   One host per navigation section, exactly one exposed per pane: Databases |
+   Dashboards above, Library | History below. Each pane's tab row reuses
+   .side-tabs/.side-tab/.side-count verbatim — DESIGN.md asks for one tab
+   vocabulary across the app.
+
+   #487 phase 2 gave all four sections this one class (it was .upper-role-host,
+   for the upper pane's two) so that phase 3's focused drawer can host any of them
+   with no per-section layout rule. */
+.nav-section-host {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column;
 }
 /* A hidden host contributes no layout, so the exposed one owns the whole pane —
    but it keeps its DOM, which is what preserves search text, expansion, lazily
-   loaded columns and scroll across a role switch. */
-.upper-role-host[hidden] { display: none; }
+   loaded columns and scroll across a section switch, and (phase 3) across a move
+   between the wide sidebar and the focused drawer. */
+.nav-section-host[hidden] { display: none; }
 
 /* ------------ Dashboard hierarchy tree (#426) ------------ */
 .dash-tree-row { position: relative; }

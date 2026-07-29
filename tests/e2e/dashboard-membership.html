@@ -93,13 +93,21 @@
       const tabs = document.createElement('div');
       const search = document.createElement('div');
       const list = document.createElement('div');
+      // #487 phase 2: History has its own persistent search/list pair now. This
+      // harness only ever shows the Library section, so nothing here reads these
+      // two — they are mounted so the fixture matches the real shell's shape and a
+      // future spec that switches sections does not silently render into nothing.
+      const historySearch = document.createElement('div');
+      const historyList = document.createElement('div');
       const open = document.createElement('button');
       open.textContent = 'Open Dashboard';
       open.onclick = () => { void renderDashboard(app, dashboardTarget()); };
-      root.replaceChildren(tabs, search, list, open, headerSlot, dashboardHost);
+      root.replaceChildren(tabs, search, list, historySearch, historyList, open, headerSlot, dashboardHost);
       app.dom.savedTabsRow = tabs;
       app.dom.savedSearch = search;
       app.dom.savedList = list;
+      app.dom.historySearch = historySearch;
+      app.dom.historyList = historyList;
       renderSavedHistory(app);
     }
 

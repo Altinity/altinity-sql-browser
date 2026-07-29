@@ -25,6 +25,7 @@ import {
   effectiveLeftNavigationLayout, isLeftNavigationSection, leftNavigationLayoutIsCoherent,
   leftNavigationSeparatorAria, leftNavigationWidthPx, normalizeLeftNavigationLayout,
   resolveLeftNavigationDrag, resolveLeftNavigationKey, resolveRailActivation, resolveRailOpen,
+  sectionForSidePanelKey, sidePanelKeyFor,
 } from '../../src/core/left-nav-layout.js';
 import type { LeftNavigationLayout } from '../../src/core/left-nav-layout.js';
 
@@ -605,6 +606,41 @@ describe('decodeStoredPx', () => {
     expect(decodeStoredPx(null, 248)).toBe(248);
     expect(decodeStoredPx(undefined, 248)).toBe(248);
     expect(decodeStoredPx(300, 248)).toBe(248);
+  });
+});
+
+// The `'library' ↔ 'saved'` bridge (#487 phase 2). It lives here, beside the other
+// decoders, because `state.ts` applies it at the load boundary and must not import
+// from `src/ui/`; `ui/nav-sections.ts` is its UI-side owner and re-exports it.
+describe('sidePanelKeyFor / sectionForSidePanelKey', () => {
+  it('maps the Library section to the value `asb:sidePanel` has always stored', () => {
+    // #427 renamed the visible label and deliberately left the stored value alone.
+    expect(sidePanelKeyFor('library')).toBe('saved');
+    expect(sidePanelKeyFor('history')).toBe('history');
+  });
+
+  it('round-trips both sections', () => {
+    expect(sectionForSidePanelKey(sidePanelKeyFor('library'))).toBe('library');
+    expect(sectionForSidePanelKey(sidePanelKeyFor('history'))).toBe('history');
+  });
+
+  it('resolves a missing, invalid or obsolete stored value to Library, the default', () => {
+    expect(sectionForSidePanelKey('saved')).toBe('library');
+    expect(sectionForSidePanelKey('history')).toBe('history');
+    // The fallback direction is load-bearing, and it is a deliberate FIX rather
+    // than preserved behaviour: before the lower pane's two sections had separate
+    // hosts, every reader compared `=== 'saved'`, so an unrecognized value fell
+    // through to the History branch — neither the documented default nor the
+    // value's own meaning. With two hosts, two readers disagreeing here exposes
+    // one section's host while painting into the other's, i.e. a blank pane.
+    expect(sectionForSidePanelKey('queries')).toBe('library');
+    expect(sectionForSidePanelKey('')).toBe('library');
+    expect(sectionForSidePanelKey(undefined)).toBe('library');
+    expect(sectionForSidePanelKey(null)).toBe('library');
+    expect(sectionForSidePanelKey(0)).toBe('library');
+    // Not merely "anything truthy is History": only the exact key is.
+    expect(sectionForSidePanelKey('History')).toBe('library');
+    expect(sectionForSidePanelKey(' history ')).toBe('library');
   });
 });
 

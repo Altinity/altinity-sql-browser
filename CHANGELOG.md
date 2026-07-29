@@ -10,6 +10,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **A navigation section registry behind the left sidebar** (#487, phase 2 of 4).
+  Each of the four navigation sections — Databases, Dashboards, Library, History —
+  is now addressable through one registry (`src/ui/nav-sections.ts`) that owns its
+  label, its icon, its accessible label and its single *persistent* host element,
+  and both sidebar panes are composed out of those hosts. The lower pane's Library
+  and History sections gained separate persistent search/list element pairs; before
+  this they shared one pair that a tab switch repainted, which meant neither
+  section's live DOM could be handed to another container without taking the
+  other's content along. #426 established the pattern for the upper pane's two
+  sections; this generalizes it to all four, so the hosts all carry one
+  `.nav-section-host` class (it was `.upper-role-host`) and one `data-section`
+  attribute. The `'library' ↔ 'saved'` vocabulary bridge — `AppState.sidePanel`
+  still persists `'saved'` for the section #427 relabelled "Library" — now lives in
+  exactly one place instead of being re-derived per caller, and both wide switchers
+  take their label and icon from the registry so the two presentations of a section
+  cannot drift. **No user-visible change**: the same two panes, the same switchers,
+  the same splitters, and a section switch still clears the search exactly as
+  before. What it buys is
+  structural: phase 3's compact rail and docked focused drawer can *move* a
+  section's live DOM instead of rebuilding it, which is what makes "wide and
+  focused presentations share and preserve all navigation state" true by
+  construction rather than by save/restore logic.
 - **The desktop left navigation's layout core and preferences** (#487, phase 1 of
   4). A new pure `src/core/left-nav-layout.ts` owns every layout decision the
   foldable left navigation needs: the named constants and thresholds, the
@@ -38,12 +60,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   invariant is an unconditional postcondition rather than a precondition the
   caller has to honour. **No user-visible change yet**: the rail, the docked
   focused drawer and the resize separator arrive in phase 3.
+
+### Changed
 - The sidebar's `'col'` drag axis now clamps through the same
   `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
   repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes
   the second owner of a range whose whole point is having one.
-
-### Changed
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
   persistence even though Dashboard's own caller uses them for an unpersisted
@@ -59,6 +81,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   adapter refactor — no user-visible behavior changes.
 
 ### Fixed
+- **A corrupt `asb:sidePanel` decodes to the Library instead of propagating**
+  (#487). The lower pane's active section was read from localStorage undecoded,
+  and every reader compared `=== 'saved'`, so an unrecognized or obsolete value
+  fell through to the History branch — neither the documented default nor the
+  value's own meaning. It is now decoded once at load, like the `leftNavMode` and
+  width preferences beside it. This became load-bearing rather than cosmetic in
+  phase 2: with the pane's two sections on separate hosts, two readers resolving
+  one value differently expose one section's host while painting into the other's,
+  which renders as a blank pane.
 - **A corrupt `asb:sidebarPx` decodes to the default width instead of `NaN`**
   (#487). The width decoded through a bare `clamp(parseInt(stored), 180, 420)`,
   and `clamp` is not NaN-safe (`Math.max(180, NaN)` is `NaN`), so a non-numeric

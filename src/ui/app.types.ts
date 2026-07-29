@@ -116,8 +116,17 @@ export interface AppDom {
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
   runElapsedEl?: HTMLElement;
+  /** The LIBRARY section's list and search box. Since #487 phase 2 the lower
+   *  pane's two sections own separate, persistent element pairs (see
+   *  `historyList`/`historySearch`) — before that both rendered through this one
+   *  pair, which a section switch repainted. */
   savedList?: HTMLElement;
   savedSearch?: HTMLElement;
+  /** #487 phase 2 — the HISTORY section's own list and search box, so each lower
+   *  section has a persistent host a container can move without dragging the
+   *  other section's content along. */
+  historyList?: HTMLElement;
+  historySearch?: HTMLElement;
   savedTabsRow?: HTMLElement;
   schemaList?: HTMLElement;
   specEditorView?: EditorView;
