@@ -178,7 +178,7 @@ describe('renderDashboardTree — structure and ARIA', () => {
     const tabbableActions = [...list.querySelectorAll<HTMLElement>('.dash-tree-act')]
       .filter((action) => action.getAttribute('tabindex') === '0');
     expect(tabbableActions).toHaveLength(3);
-    expect(tabbableActions.every((action) => action.closest('.dash-tree-row')?.dataset.key === 'w1:sales'))
+    expect(tabbableActions.every((action) => action.closest<HTMLElement>('.dash-tree-row')?.dataset.key === 'w1:sales'))
       .toBe(true);
   });
 
