@@ -48,11 +48,12 @@
       ],
       dashboards: [{
         documentVersion: 2, id: 'dashboard', title: 'Membership', revision: 1,
-        // grafana-grid@1, because the per-tile remove affordance this spec drives
-        // (`.dash-gg-del`) is a grid-layout control.
+        // #537: flow/report ON PURPOSE. The per-tile remove affordance this spec
+        // drives used to be a grid-only control, so this fixture had to be a grid to
+        // reach it at all; it is a `⋯` menu row now, available under every style, and
+        // driving it from the style that previously had NO delete is what proves that.
         layout: {
-          type: 'grafana-grid', version: 1, items: { t1: { span: 12 } },
-          fallback: { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'medium' } } },
+          type: 'flow', version: 1, preset: 'report', items: { t1: { span: 1, height: 'medium' } },
         },
         tiles: [{ id: 't1', queryId: 'q1-owned' }],
       }],

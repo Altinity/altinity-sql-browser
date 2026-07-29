@@ -606,8 +606,9 @@ recording.
   ring and the `.dash-drop-target` outline already need for this host — which leaves
   the drag geometry untouched, because the button sits inside one of the very child
   boxes those rects are derived from. `renderKpiInto` replaces that card on every
-  publish, so the attachment is re-applied with each repaint rather than once.
-  (Giving the band a full chrome surface — it still has no delete affordance — remains
+  publish, so the control is MOVED into each repaint rather than rebuilt with it —
+  see the #544 addendum below, which is also where the band member finally gained a
+  delete. (Giving the band a full chrome surface — grip, resize, title — remains
   #475.)
 
 **Back is now a supported way home, which needed a per-entry memory.** #471's
@@ -919,6 +920,63 @@ option batch supports at most 1000 options.
 - **Overflow uses the existing failure gate.** The diagnostic is assigned
   before the success bookkeeping in `runVariableSql`, so an over-cap response
   creates neither History nor a detached-result source.
+
+## Addendum (#544, 2026-07-29): the tile head became a `⋯` menu
+
+#535 added duplicate, widen and expand to the tile head, which left it carrying
+five controls beside the tile title. Three decisions in this ADR are revised, and
+one of #494's is partly reversed.
+
+- **Four of the five controls moved into an overflow menu, and #494's argument
+  survives it.** #494 removed the `⋯` from every Dashboards-TREE row on the
+  grounds that nothing a row can do should hide behind a second press. That still
+  holds for rows: a tree row is two controls wide in a fixed-width side pane, and
+  directness there costs nothing. A tile head is a different surface — five
+  controls on a card the grid can render under 100px wide, sharing one flex row
+  with a title that ellipsizes to nothing first. Edit mode is now
+  *grip · title · widen · ⋯*; View mode keeps its single direct expand icon,
+  because a one-row menu is strictly worse than the button it would hide.
+
+- **"Nothing to open means no control, not a disabled one" is reversed FOR THE
+  MENU.** That rule (above) is right for a bare icon in a head: a disabled glyph
+  with only a tooltip advertises an affordance that can never work. Inside a menu
+  the row IS the explanation — the same argument #452 settled for the File menu,
+  and the reason `MenuRow` carries a `reason` slot — so all four rows are always
+  listed and an unavailable one states why in a sentence. A menu whose vocabulary
+  changed with the layout style would teach the user nothing. The inline widen
+  keeps the old rule, because it is still a bare icon.
+
+- **A tile's delete stopped being a layout command and became a two-resource
+  workspace write.** It was a document-only `remove-tile` dispatch, CSS-scoped to
+  `.dash-gg-grid` and click-gated on the active engine — so Report and the two
+  column presets had no delete at all, and a flow KPI band member had none under
+  any style. Since #427 made a panel tile the sole owner of a saved-query copy,
+  that dispatch also left the copy with zero owners, which is exactly what makes a
+  query a Library query, so a deleted panel returned as an apparently standalone
+  Library entry (#537). It now takes `commitPanelRemoval` — the same confirmed,
+  ownership-proven path the Dashboards tree uses — which is engine-independent by
+  construction and therefore fixes the availability gap and the orphan together.
+  The cost is deliberate and shared with #535's duplicate: a two-resource write
+  rebuilds the route from committed truth, re-running every tile's query, and the
+  transient Full view render mode does not survive that rebuild.
+
+- **Availability is answered by a DRY RUN of the transform, not a second copy of
+  its rules.** `panelRemovalRefusal` calls `removeDashboardPanel` and discards the
+  candidate workspace, so a "Remove tile" row can be disabled with a reason
+  instead of opening a confirmation that refuses at the end of itself (#494's
+  rule) — and the two answers cannot drift, because they are the same function.
+
+- **The narrow rule is a CSS container query, not JS state.** The inline widen is
+  a shortcut on top of its menu row, withdrawn below roughly 260px of tile. A
+  container query on the tile head reacts live during a #291 corner drag, which a
+  span-derived JS predicate would not, and a span is not a width in any case. It
+  is invisible to happy-dom, so it is proven by a real-browser test.
+
+- **A flow KPI band member's control is built once and MOVED.** `renderKpiInto`
+  replaces the card it lives inside on every publish, including every refresh
+  wave, and `openMenu` keys its one-menu-per-trigger registry on the trigger
+  element while holding `aria-expanded` there. A rebuilt trigger would strand an
+  open menu over a dead node, with focus-restore aimed at it.
 
 ## Alternatives considered
 

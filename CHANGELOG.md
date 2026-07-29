@@ -10,6 +10,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **Deleting a panel from its tile header no longer leaves its query behind in
+  Library** (#537). The tile-header trash dispatched a document-only tile
+  removal, which leaves `queries` untouched — and since every panel tile is the
+  sole owner of a dedicated saved-query copy (#427), that left the copy with zero
+  owners, which is precisely what makes a query a Library query. A deleted panel
+  therefore reappeared as an apparently standalone Library entry. The tile header
+  now uses the same confirmed, ownership-proven, atomic path the Dashboards tree
+  does: the tile and its dedicated query go in one commit, and the write refuses
+  outright — changing nothing, with a diagnostic — for a query that is missing,
+  shared, ambiguous, retargeted, or not a panel query. There is no implicit "move
+  this panel query into Library" behaviour.
 - **OAuth document-recovery E2E runs no longer reuse an incompatible stale
   harness server** (#533). Playwright now probes the fixture's server-only
   config route before accepting an existing process, preventing misleading
@@ -33,9 +44,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   blocking viewport overlay, rather than being pushed below a second,
   independently scrolling login region.
 
+### Changed
+- **A Dashboard panel tile head now carries two controls and a `⋯` menu**
+  (#544). #535 had left the head with five — grip, duplicate, widen, expand,
+  delete — competing with the tile title for one flex row, and a tile a single
+  grid column wide has no row left to compete for. Edit mode is now
+  *grip · title · widen · ⋯*; View mode is unchanged, keeping its single direct
+  expand icon, because one action does not need a menu. The `⋯` always lists all
+  four actions — Duplicate, Widen, Open in Workbench and run, and Remove tile —
+  and each row states why it cannot run when it cannot, so nothing is merely
+  absent. The inline widen is a shortcut on top of its row: a CSS container query
+  withdraws it below roughly 260px of tile, where the ellipsized title has nothing
+  left to give, and the row remains. **Remove now works under every layout
+  style**: it was gated twice to Grid Tiles — a CSS ancestor scope and an engine
+  check inside its own click handler — so Report, 2 columns and 3 columns had no
+  delete at all, and a flow KPI band member had none under any style. This
+  reintroduces an overflow menu on a surface #494 removed one from; that decision
+  was about a two-control row in a fixed-width side pane, and is not reopened
+  here.
+
 ### Added
-- **A Dashboard panel tile head now carries duplicate, widen and expand
-  actions** (#535). All three are revealed on tile hover or focus.
+- **A Dashboard panel tile head carries duplicate, widen and expand actions**
+  (#535, revised by #544 above — all but widen moved into the `⋯` menu in the
+  same release, and widen kept an inline button alongside its row).
   *Duplicate* (edit mode) places a copy of the panel immediately after the
   source, carrying its presentation, any local title/description and its size;
   because every panel tile solely owns a saved-query copy (#427), the copy gets

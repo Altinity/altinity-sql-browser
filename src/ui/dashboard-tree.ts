@@ -729,7 +729,7 @@ function buildRow(
   }, chevron, h('span', { class: 'icon' }, rowIcon(row)), label, count, status,
     h('span', { class: 'meta' }, row.meta), marker,
     // #494: the trailing DIRECT controls, in the model's own order — edit
-    // before delete, destructive rightmost. There is no `⋯` any more.
+    // before delete, destructive rightmost. No tree ROW carries a `⋯` any more.
     row.actions.map((act) => buildActionButton(app, doc, row, act)));
 
   return rowEl;
@@ -826,10 +826,15 @@ function pressRow(app: DashboardTreeApp, row: DashboardTreeRow, shift: boolean):
  * #494 — one trailing direct control, built from the model's resolved action.
  *
  * Every Dashboard/Panel operation is its own real `<button>` now: the `⋯`
- * overflow menu is gone from both, so nothing a row can do is hidden behind a
- * second press. The orphaned-variable trash (#447) came along, because it was
+ * overflow menu is gone from both ROWS, so nothing a row can do is hidden behind
+ * a second press. The orphaned-variable trash (#447) came along, because it was
  * already exactly this shape and keeping it separate would have meant two ways
  * of saying "a trailing control".
+ *
+ * #544 reintroduced a `⋯` on the Dashboard TILE head (`tileMenuAction` in
+ * ui/dashboard.ts), which does not reopen this decision: #494's argument is about
+ * a two-control row in a fixed-width side pane, and a tile head had grown to five
+ * controls on a card that can render under 100px wide.
  *
  * Availability is the MODEL's answer, never re-derived here (#494 forbids
  * reading capability off DOM classes): an unavailable action still renders, so

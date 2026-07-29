@@ -24,7 +24,7 @@ const actions = (over: Partial<PanelTileActionsInput> = {}): readonly PanelTileA
 const row = (kind: PanelTileActionKind, over: Partial<PanelTileActionsInput> = {}): PanelTileAction =>
   actions(over).find((action) => action.kind === kind)!;
 
-describe('panelTileActions — the menu vocabulary (#537 follow-up)', () => {
+describe('panelTileActions — the menu vocabulary (#544)', () => {
   it('always returns the same four kinds, in the design order, remove last', () => {
     // The vocabulary is the point: a menu that grows and shrinks with the layout
     // style teaches nothing, so every gate is a `reason`, never an absence.

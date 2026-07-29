@@ -1769,7 +1769,9 @@ body.detached-tab .graph-overlay-panel {
 }
 /* #494 — the trailing DIRECT action cluster: pencil + trash on Dashboard and
    Panel rows, and #447's orphan-variable trash, all one control vocabulary now
-   that the `⋯` overflow button is gone from every production row. */
+   that the `⋯` overflow button is gone from every production ROW. (#544 gave the
+   Dashboard tile HEAD one — a different surface, with a width constraint and five
+   controls; see `.dash-tile-menu`.) */
 .dash-tree-act {
   width: 18px; height: 18px; padding: 0;
   border: none; background: transparent;
@@ -3685,12 +3687,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-gg-grid .dash-gg-grip { display: inline-flex; }
 .dash-gg-grip::before { content: '⠿'; }
-/* #537 removed `.dash-gg-del` entirely. The trash was CSS-scoped to `.dash-gg-grid`
+/* #544/#537 removed `.dash-gg-del` entirely. The trash was CSS-scoped to `.dash-gg-grid`
    AND click-gated on `activeEngine === 'grafana-grid'`, so Report and the two
    column presets had no delete at all and a flow KPI band member had none under
    any style; it is a `⋯` menu row now, which is engine-independent by
    construction. */
-/* #471/#535/#537 — the tile head's trailing controls: at most TWO, and they are
+/* #471/#535/#544 — the tile head's trailing controls: at most TWO, and they are
    mode-exclusive. Edit shows the inline widen plus the `⋯` that holds
    duplicate/widen/expand/remove; View shows the direct expand and no menu.
    Deliberately NOT scoped to `.dash-gg-grid` — they exist in the flow renderer

@@ -31,20 +31,39 @@ test('the Library hides owned copies, and the star never changes membership', as
   // The starred query is still a LIBRARY query — starring did not make it a member.
   await expect(page.locator('.saved-row')).toHaveCount(1);
 
-  // Removing the tile in the Dashboard leaves the Library query's flag alone.
+  // #537: removing the tile takes its OWNED QUERY with it, atomically, and leaves
+  // the separate Library query's flag alone.
+  //
+  // This assertion used to run the other way — "the formerly owned copy has no
+  // owner now, so it joins the Library" — which was the bug: #427 makes a panel the
+  // SOLE OWNER of its copy, and zero owners is exactly what makes a query a Library
+  // query, so a deleted panel came back as an apparently standalone entry.
   await page.getByRole('button', { name: 'Open Dashboard' }).click();
   expect(pageErrors).toEqual([]);
   await expect(page.locator('.dash-tile-body')).toContainText('1');
-  await page.getByRole('button', { name: 'Remove Revenue from the dashboard' }).click();
+
+  // Under Report — a flow preset, which had NO tile-header delete at all before
+  // this. Reached through the `⋯`, behind a confirmation.
+  await page.locator('.dash-tile-menu').click();
+  await expect(page.locator('.dash-tile-actions')).toBeVisible();
+  await page.locator('.dash-tile-actions .fm-item', { hasText: 'Remove tile' }).click();
+  await expect(page.locator('.dash-tile-confirm .fm-section'))
+    .toHaveText('Remove panel “Revenue” from “Membership”? This also deletes its dedicated query copy.');
+  await page.locator('.dash-tile-confirm-go').click();
+
   await page.waitForFunction(async () => (await window.__workspace()).dashboards[0].tiles.length === 0);
   workspace = await page.evaluate(() => window.__workspace());
+  // The owned copy is GONE from the aggregate, not merely unreferenced.
+  expect(workspace.queries.map((query) => query.id)).toEqual(['q1']);
   expect(workspace.queries[0].spec.favorite).toBe(true);
   expect(workspace.dashboards[0].revision).toBe(2);
 
-  // The formerly owned copy has no owner now, so it joins the Library — the
-  // projection follows committed Dashboard content, not a stored flag.
+  // …and it does not reappear in Library across a reload, which is the acceptance
+  // criterion: the projection follows committed Dashboard content, and there is no
+  // implicit "move this panel query into Library" behaviour.
   await page.reload();
   await page.waitForFunction(() => window.__ready === true);
-  await expect(page.locator('.saved-row')).toHaveCount(2);
+  await expect(page.locator('.saved-row')).toHaveCount(1);
+  await expect(page.locator('.saved-row')).toContainText('Revenue');
   await expect(page.locator('.sv-star').first()).toHaveClass(/\bon\b/);
 });

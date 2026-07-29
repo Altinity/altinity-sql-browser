@@ -2489,7 +2489,7 @@ export async function renderDashboard(
   }
 
   /**
-   * #471/#535/#537 — give a FLOW band member the tile actions its head cannot
+   * #471/#535/#544 — give a FLOW band member the tile actions its head cannot
    * carry.
    *
    * Flow-only, and called right after `renderKpiInto` repaints the member: the GRID

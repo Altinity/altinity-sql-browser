@@ -26,6 +26,14 @@ const tileCard = (page, title) => page
   .locator('.dash-tile', { has: page.locator('.dash-tile-name', { hasText: title }) });
 const tileAction = (page, title) => tileCard(page, title).locator('.dash-tile-open');
 const tileNames = (page) => page.locator('.dash-tile .dash-tile-name');
+/** #544: in EDIT mode a tile's head carries the `⋯`, and every action except widen
+ *  is one of its rows. View mode keeps #471's direct expand icon. */
+const tileMenu = (page, title) => tileCard(page, title).locator('.dash-tile-menu');
+const menuRow = (page, label) => page.locator('.dash-tile-actions .fm-item', { hasText: label });
+const openTileMenu = async (page, title) => {
+  await tileMenu(page, title).click();
+  await expect(page.locator('.dash-tile-actions')).toBeVisible();
+};
 
 /** Open a Dashboard from the tree the way the shipped gestures do (#429/#472): the
  *  row's name opens it in View, Shift-click in Edit, and expansion belongs to the
@@ -199,12 +207,13 @@ test('a KPI tile in VIEW mode still exposes a reachable action', async ({ page }
   expect((await tabs(page)).at(-1)).toMatchObject({ savedId: 'q-kpi', active: true });
 });
 
-test('a KPI tile in EDIT mode packs all four actions top-right, in reading order', async ({ page }) => {
+test('a KPI tile in EDIT mode packs its two controls top-right, in reading order', async ({ page }) => {
   // Geometry, because CSS decides it and happy-dom sees none of it: a KPI tile has
-  // no heading to push its actions right, so the head squares them up itself. ONE
-  // `margin-left: auto` among the four would absorb the free space mid-group and
-  // strand everything before it at the LEFT edge — which is why #535 removed the one
-  // `.dash-gg-del` used to carry.
+  // no heading to push its controls right, so the head squares them up itself. ONE
+  // `margin-left: auto` inside the group would absorb the free space at that point
+  // and strand whatever precedes it at the LEFT edge. #544 cut the group from four
+  // to two (inline widen, then the `⋯`), which makes that failure mode easier to
+  // see, not harder: a split pair is unmistakable.
   await open(page);
   await openDashboard(page, 'sales', 'edit');
 
@@ -220,17 +229,19 @@ test('a KPI tile in EDIT mode packs all four actions top-right, in reading order
       headLeft: head.left,
       headRight: head.right,
       headWidth: head.width,
-      actions: ['.dash-tile-dup', '.dash-tile-widen', '.dash-tile-open', '.dash-gg-del'].map(box),
+      actions: ['.dash-tile-widen', '.dash-tile-menu'].map(box),
+      // …and nothing the head used to carry is left behind in it.
+      retired: ['.dash-tile-dup', '.dash-gg-del', '.dash-tile-open']
+        .map((sel) => tile.querySelector(sel)).filter(Boolean).length,
     };
   });
-  const [dup, widen, open_, del] = geometry.actions;
-  // The whole group is right-packed: the FIRST action starts past the head's
-  // midpoint, and each one follows the last with no gap opened between them.
-  expect(dup.left).toBeGreaterThan(geometry.headLeft + geometry.headWidth * 0.5);
-  expect(dup.right).toBeLessThanOrEqual(widen.left + 1);
-  expect(widen.right).toBeLessThanOrEqual(open_.left + 1);
-  expect(open_.right).toBeLessThanOrEqual(del.left + 1);
-  expect(del.right).toBeLessThanOrEqual(geometry.headRight + 1);
+  const [widen, menu] = geometry.actions;
+  expect(geometry.retired).toBe(0);
+  // The whole group is right-packed: the FIRST control starts past the head's
+  // midpoint, and the second follows it with no gap opened between them.
+  expect(widen.left).toBeGreaterThan(geometry.headLeft + geometry.headWidth * 0.5);
+  expect(widen.right).toBeLessThanOrEqual(menu.left + 1);
+  expect(menu.right).toBeLessThanOrEqual(geometry.headRight + 1);
 });
 
 // #535 — the widen step, in a real CSS grid. Everything here is invisible to
@@ -274,6 +285,79 @@ test('widen doubles a grid tile\'s rendered width and height, then wraps', async
     .toBeLessThan(wide.width / 2);
 });
 
+// #544 — the NARROW rule, which is a CSS container query and therefore invisible to
+// happy-dom in a way no JS assertion can substitute for. Two independent gates for
+// two independent questions: `hidden` says the STYLE has no width to step, this says
+// this particular TILE has no room to offer the shortcut. The menu row is unaffected
+// by either, so widen is never unreachable.
+test('a narrow tile drops the inline widen but keeps its menu row', async ({ page }) => {
+  await open(page, { width: 1600, height: 900 });
+  await openDashboard(page, 'sales', 'edit');
+
+  const tile = tileCard(page, 'Live KPIs');
+  const widen = tile.locator('.dash-tile-widen');
+  await tile.hover();
+  // Wide (span 8 of twelve): the shortcut is there.
+  await expect(widen).toBeVisible();
+  await expect.poll(() => widen.evaluate((el) => getComputedStyle(el).display)).not.toBe('none');
+
+  // Two presses take it from span 8 to the maximum and then WRAP to a single column
+  // — the same gesture a user makes, and the width where the ellipsized title has
+  // nothing left to give.
+  await widen.click();
+  await widen.click();
+  await expect.poll(() => tile.evaluate((el) => el.getBoundingClientRect().width))
+    .toBeLessThan(260);
+  await expect.poll(() => widen.evaluate((el) => getComputedStyle(el).display)).toBe('none');
+  // `hidden` is NOT what did it — the style still has widths to step.
+  await expect(widen).not.toHaveAttribute('hidden', '');
+
+  // The `⋯` survives at that width, and still offers the step.
+  const menu = tile.locator('.dash-tile-menu');
+  await tile.hover();
+  await expect(menu).toBeVisible();
+  await menu.click();
+  await expect(menuRow(page, 'Widen to 2 columns')).toBeVisible();
+  await menuRow(page, 'Widen to 2 columns').click();
+  // Read defensively: the commit republishes, and a poll that THROWS mid-rebuild
+  // aborts instead of retrying.
+  await expect.poll(() => page.evaluate(
+    async () => (await window.__dashboard('sales'))?.items?.['t-sales']?.span ?? null,
+  )).toBe(2);
+});
+
+// #544 — the `⋯` is the first `openMenu` trigger to sit at the viewport's RIGHT
+// edge; every earlier one (the File button, the style picker, a tree row) anchors
+// near the left, so a left-aligned 252px panel always fit. Only a real layout can
+// show the clamp working.
+test('a right-edge tile\'s menu stays inside the viewport', async ({ page }) => {
+  await open(page, { width: 1280, height: 900 });
+  await openDashboard(page, 'sales', 'edit');
+
+  // The rightmost tile's trigger, whichever tile that is at this width.
+  const triggers = page.locator('.dash-tile-menu');
+  const count = await triggers.count();
+  let rightmost = triggers.nth(0);
+  let maxRight = -Infinity;
+  for (let i = 0; i < count; i += 1) {
+    const card = triggers.nth(i);
+    await card.evaluate((el) => el.closest('.dash-tile').scrollIntoView({ block: 'nearest' }));
+    const box = await card.boundingBox();
+    if (box && box.x + box.width > maxRight) { maxRight = box.x + box.width; rightmost = card; }
+  }
+  await rightmost.evaluate((el) => el.closest('.dash-tile').scrollIntoView({ block: 'nearest' }));
+  await rightmost.click();
+
+  const menu = page.locator('.dash-tile-actions');
+  await expect(menu).toBeVisible();
+  const geometry = await menu.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, viewportWidth: window.innerWidth };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+});
+
 test('widen hides itself for a single-column style, and the hidden attribute really hides it', async ({ page }) => {
   await open(page);
   await openDashboard(page, 'sales', 'edit');
@@ -305,7 +389,8 @@ test('duplicate commits a copy right after the source, and it renders', async ({
 
   const tile = tileCard(page, 'Live KPIs');
   await tile.hover();
-  await tile.locator('.dash-tile-dup').click();
+  await openTileMenu(page, 'Live KPIs');
+  await menuRow(page, 'Duplicate panel').click();
 
   // The copy shares the source's NAME, so it is located by position, never by text.
   await expect(tileNames(page)).toHaveText(['Revenue KPI', 'Live KPIs', 'Live KPIs', 'Runbook']);
@@ -411,7 +496,9 @@ test('pressing the action never starts a tile drag or reorders the Dashboard', a
   // Edit mode is where the drag engine is wired at all.
   await openDashboard(page, 'sales', 'edit');
 
-  const action = tileAction(page, 'Live KPIs');
+  // The `⋯`, not #471's expand: drag is wired in EDIT mode only, and Edit's head
+  // carries the menu trigger.
+  const action = tileMenu(page, 'Live KPIs');
   const card = tileCard(page, 'Live KPIs');
   const before = await card.boundingBox();
   const box = await action.boundingBox();
@@ -453,13 +540,19 @@ test.describe('touch', () => {
     await expect.poll(() => action.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
     // Including a KPI tile, whose whole chrome overlay is otherwise hover-revealed —
     // and in EDIT mode, where that reveal is additionally `:not(.is-view)`-scoped, so
-    // a touch device satisfied neither half of it.
-    for (const mode of ['view', 'edit']) {
+    // a touch device satisfied neither half of it. #544: which control sits in that
+    // head depends on the mode — View has the direct expand, Edit has the `⋯`, and on
+    // a phone the `⋯` is the ONLY route to duplicate or remove.
+    for (const [mode, cls] of [['view', '.dash-tile-open'], ['edit', '.dash-tile-menu']]) {
       await openDashboard(page, 'sales', mode);
-      const kpiAction = page.locator('.dash-gg-tile.is-kpi .dash-tile-open');
+      const kpiAction = page.locator(`.dash-gg-tile.is-kpi ${cls}`);
       await expect.poll(
         () => kpiAction.evaluate((el) => getComputedStyle(el.parentElement).opacity),
         { message: `KPI head hidden on touch in ${mode} mode` },
+      ).toBe('1');
+      await expect.poll(
+        () => kpiAction.evaluate((el) => getComputedStyle(el).opacity),
+        { message: `${cls} hidden on touch in ${mode} mode` },
       ).toBe('1');
     }
     await openDashboard(page, 'sales');

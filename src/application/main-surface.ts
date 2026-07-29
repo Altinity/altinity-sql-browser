@@ -347,7 +347,7 @@ export function withCurrentMember(
 }
 
 /**
- * OWE a render-time focus delivery to the Dashboard's next render (#537).
+ * OWE a render-time focus delivery to the Dashboard's next render (#544/#537).
  *
  * The counterpart to `withoutPendingFocus`, for a write that REBUILDS the surface
  * it wanted to focus inside. #426's in-place path (`withCurrentMember` plus the

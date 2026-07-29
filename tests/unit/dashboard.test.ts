@@ -83,7 +83,7 @@ const confirmRemoveGo = (): HTMLButtonElement =>
 /**
  * Remove one tile the way a user does: `⋯` → Remove tile → confirm.
  *
- * A helper rather than three lines at each call site because #537 re-pointed a
+ * A helper rather than three lines at each call site because #544 re-pointed a
  * dozen existing tests at this path — but note what it does NOT hide: the
  * confirmation step is a real click on a real row, so a change that dropped the
  * confirmation entirely would make `confirmRemoveGo()` throw rather than quietly
@@ -5891,7 +5891,7 @@ describe('renderDashboard — scroll offset (#471)', () => {
 // while duplicate is a two-resource workspace write that has to rebuild the route
 // (a duplicate's own query is one the live viewer session has never seen).
 //
-// #537 moved duplicate into the `⋯` menu — widen keeps an inline button as well,
+// #544 moved duplicate into the `⋯` menu — widen keeps an inline button as well,
 // because it is the one size adjustment made constantly and the one the container
 // query can withdraw on a genuinely narrow tile.
 describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
