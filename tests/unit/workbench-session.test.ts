@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, type Mocked } from 'vitest';
+import { describe, it, expect, vi, afterEach, type Mocked } from 'vitest';
 import { signal } from '@preact/signals-core';
 import {
   createWorkbenchSession,
@@ -20,6 +20,11 @@ import {
 import type { AuthenticatedExecutionScope } from '../../src/application/authenticated-execution-scope.js';
 import type { AuthenticatedCancellationLease } from '../../src/application/authenticated-execution-scope.js';
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
 // ── Small deferred helper (mirrors the pattern query-execution-service.test.ts
 // uses for scripting async runQuery behaviors, adapted to a single promise a
 // test can resolve/reject on its own schedule). ────────────────────────────
@@ -32,11 +37,15 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: 
 }
 
 /** Flush every pending microtask (the `await ensureConfig()` / `await
- * getToken()` chain each real call makes before touching `running`) via a
+ * getToken()` chain each real call makes before starting transport) via a
  * macrotask boundary — simpler and more robust than counting `await
  * Promise.resolve()` calls by hand. */
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
 }
 
 function preparedStatement(over: Partial<PreparedStatement> = {}): PreparedStatement {
@@ -192,6 +201,40 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
   });
 
+  it('claims synchronously across a deferred config await, so only one competing run executes', async () => {
+    const configGate = deferred<unknown>();
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+
+    const first = session.run();
+    expect(h.state.running.value).toBe(true);
+    const second = session.run();
+    await second;
+    expect(h.deps.ensureConfig).toHaveBeenCalledOnce();
+
+    configGate.resolve(undefined);
+    await first;
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
+  });
+
+  it('uses one shared claim across execution modes while auth is pending', async () => {
+    const configGate = deferred<unknown>();
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+
+    const ordinary = session.run();
+    await session.runScript(['SELECT 2'], 'SELECT 2');
+    expect(h.deps.ensureConfig).toHaveBeenCalledOnce();
+    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
+
+    configGate.resolve(undefined);
+    await ordinary;
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+  });
+
   it('does nothing for blank/whitespace-only SQL', async () => {
     const h = makeHarness({ tab: { sqlDraft: '   ' } });
     const session = createWorkbenchSession(h.deps);
@@ -219,6 +262,10 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+    expect(h.state.running.value).toBe(false);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
   });
 
   it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
@@ -228,9 +275,51 @@ describe('createWorkbenchSession: run()', () => {
     if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
     else h.deps.getToken = vi.fn(async () => { throw failure; });
 
-    await expect(createWorkbenchSession(h.deps).run()).rejects.toBe(failure);
+    const session = createWorkbenchSession(h.deps);
+    await expect(session.run()).rejects.toBe(failure);
     expect(tracked.release).toHaveBeenCalledOnce();
     expect(tracked.scope.isOpen()).toBe(true);
+    expect(h.state.running.value).toBe(false);
+    h.deps.ensureConfig = vi.fn(async () => undefined);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+  });
+
+  it('releases its claim and registration when post-auth setup throws', async () => {
+    const tracked = trackingExecutionScope();
+    const failure = new Error('cancel graph failed');
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      tab: { sqlDraft: 'SELECT 1' },
+      hooks: { cancelSchemaGraph: vi.fn(() => { throw failure; }) },
+    });
+    const session = createWorkbenchSession(h.deps);
+
+    await expect(session.run()).rejects.toBe(failure);
+    expect(h.state.running.value).toBe(false);
+    expect(tracked.release).toHaveBeenCalledOnce();
+
+    h.hooks.cancelSchemaGraph = vi.fn();
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+  });
+
+  it('rolls back the claim if a running-signal subscriber throws', async () => {
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    const session = createWorkbenchSession(h.deps);
+    const failure = new Error('running effect failed');
+    const { effect } = await import('@preact/signals-core');
+    const dispose = effect(() => {
+      if (h.state.running.value) throw failure;
+    });
+
+    await expect(session.run()).rejects.toBe(failure);
+    expect(h.state.running.value).toBe(false);
+    dispose();
+
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
   });
 
   it('auth loss during preflight leaves a completed result intact and never starts a request', async () => {
@@ -251,6 +340,20 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.tab.result).toBe(completed);
     expect(h.hooks.onAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it('a scope already closed at registration retires the claim before config starts', async () => {
+    const tracked = trackingExecutionScope();
+    tracked.scope.close();
+    const h = makeHarness({ executionScope: tracked.scope, tab: { sqlDraft: 'SELECT 1' } });
+    const session = createWorkbenchSession(h.deps);
+
+    await session.run();
+
+    expect(h.deps.ensureConfig).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
   });
 
   it('does not cross a scope closure that occurs while the ordinary-run token awaits', async () => {
@@ -294,30 +397,45 @@ describe('createWorkbenchSession: run()', () => {
     expect((h.tab.result as { source?: unknown } | null)?.source).toBeUndefined();
   });
 
-  it('a replacement scope can run while an old scoped completion settles inertly', async () => {
+  it('a stale finaliser cannot clear a replacement operation, its query id, controller, or timer', async () => {
+    vi.useFakeTimers();
     const oldScope = executionScope();
     const newScope = executionScope(2);
     const oldGate = deferred<StreamResult>();
+    const newGate = deferred<StreamResult>();
     const h = makeHarness({ executionScope: oldScope, tab: { sqlDraft: 'SELECT 1' } });
     h.execFakes.executeRead.mockImplementationOnce(() => oldGate.promise);
-    h.execFakes.executeRead.mockImplementationOnce(async (result: StreamResult) => {
-      Object.assign(result, { columns: [{ name: 'fresh', type: 'String' }], rows: [['new']] });
-      return result;
-    });
+    h.execFakes.executeRead.mockImplementationOnce(() => newGate.promise);
     const session = createWorkbenchSession(h.deps);
     const stale = session.run();
-    await flush();
+    await flushMicrotasks();
+    const staleReq = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
     oldScope.close(cancellationLease());
     h.scopeRef.current = newScope;
-    await session.run();
+    const fresh = session.run();
+    await flushMicrotasks();
     expect(h.execFakes.executeRead).toHaveBeenCalledTimes(2);
-    const fresh = h.tab.result;
+    const freshReq = h.execFakes.executeRead.mock.calls[1][1] as ExecuteReadRequest;
+    const ticksBefore = vi.mocked(h.hooks.tickElapsed).mock.calls.length;
+
     oldGate.resolve({} as StreamResult);
     await stale;
 
-    expect(h.tab.result).toBe(fresh);
-    expect(h.hooks.recordHistory).toHaveBeenCalledTimes(1);
-    expect((fresh as { rows?: unknown[][] } | null)?.rows).toEqual([['new']]);
+    expect(h.state.running.value).toBe(true);
+    expect(staleReq.signal?.aborted).toBe(true);
+    vi.advanceTimersByTime(100);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksBefore + 1);
+    session.cancel();
+    expect(freshReq.signal?.aborted).toBe(true);
+    expect(h.execFakes.kill).toHaveBeenLastCalledWith('q-2');
+
+    newGate.resolve({} as StreamResult);
+    await fresh;
+    expect(h.state.running.value).toBe(false);
+    const ticksAfter = vi.mocked(h.hooks.tickElapsed).mock.calls.length;
+    vi.advanceTimersByTime(500);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksAfter);
+    vi.useRealTimers();
   });
 
   it('KPI panel: an explicit FORMAT clash sets an owned error result and never executes', async () => {
@@ -458,23 +576,23 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.state.resultView.value).toBe('json');
   });
 
-  it('sets bookkeeping (elapsedMs) BEFORE flipping `running` true (batch ordering)', async () => {
+  it('claims before auth and starts elapsed bookkeeping only when transport starts', async () => {
+    const configGate = deferred<unknown>();
+    const transportGate = deferred<StreamResult>();
     const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    h.execFakes.executeRead.mockImplementation(() => transportGate.promise);
     const session = createWorkbenchSession(h.deps);
-    let elapsedAtFlip: number | null = null;
-    let sawTrue = false;
-    const { effect } = await import('@preact/signals-core');
-    const dispose = effect(() => {
-      if (h.state.running.value && !sawTrue) {
-        sawTrue = true;
-        elapsedAtFlip = session.elapsedMs();
-      }
-    });
-    await session.run();
-    dispose();
-    expect(sawTrue).toBe(true);
-    expect(elapsedAtFlip).not.toBeNull();
-    expect(elapsedAtFlip).toBeGreaterThan(0);
+    const pending = session.run();
+
+    expect(h.state.running.value).toBe(true);
+    expect(session.elapsedMs()).toBe(0);
+    configGate.resolve(undefined);
+    await flush();
+    expect(session.elapsedMs()).toBeGreaterThan(0);
+
+    transportGate.resolve({} as StreamResult);
+    await pending;
   });
 
   it('records elapsed_ns BEFORE flipping `running` false (finally teardown order)', async () => {
@@ -507,6 +625,23 @@ describe('createWorkbenchSession: runScript()', () => {
     expect(h.execFakes.executeScript).not.toHaveBeenCalled();
   });
 
+  it('claims synchronously across a deferred config await, so only one competing script executes', async () => {
+    const configGate = deferred<unknown>();
+    const h = makeHarness();
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+
+    const first = session.runScript(['SELECT 1'], 'SELECT 1');
+    expect(h.state.running.value).toBe(true);
+    await session.runScript(['SELECT 1'], 'SELECT 1');
+    expect(h.deps.ensureConfig).toHaveBeenCalledOnce();
+
+    configGate.resolve(undefined);
+    await first;
+    expect(h.execFakes.executeScript).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
+  });
+
   it('blocks (no exec call) when the var gate is blocked', async () => {
     const h = makeHarness({ hooks: { varGateBlocked: vi.fn(() => true) } });
     const session = createWorkbenchSession(h.deps);
@@ -520,6 +655,10 @@ describe('createWorkbenchSession: runScript()', () => {
     await session.runScript(['SELECT 1'], 'SELECT 1');
     expect(h.execFakes.executeScript).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+    expect(h.state.running.value).toBe(false);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.runScript(['SELECT 1'], 'SELECT 1');
+    expect(h.execFakes.executeScript).toHaveBeenCalledOnce();
   });
 
   it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
@@ -529,9 +668,33 @@ describe('createWorkbenchSession: runScript()', () => {
     if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
     else h.deps.getToken = vi.fn(async () => { throw failure; });
 
-    await expect(createWorkbenchSession(h.deps).runScript(['SELECT 1'], 'SELECT 1')).rejects.toBe(failure);
+    const session = createWorkbenchSession(h.deps);
+    await expect(session.runScript(['SELECT 1'], 'SELECT 1')).rejects.toBe(failure);
     expect(tracked.release).toHaveBeenCalledOnce();
     expect(tracked.scope.isOpen()).toBe(true);
+    expect(h.state.running.value).toBe(false);
+    h.deps.ensureConfig = vi.fn(async () => undefined);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.runScript(['SELECT 1'], 'SELECT 1');
+    expect(h.execFakes.executeScript).toHaveBeenCalledOnce();
+  });
+
+  it('releases its claim and registration when post-auth script setup throws', async () => {
+    const tracked = trackingExecutionScope();
+    const failure = new Error('cancel graph failed');
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      hooks: { cancelSchemaGraph: vi.fn(() => { throw failure; }) },
+    });
+    const session = createWorkbenchSession(h.deps);
+
+    await expect(session.runScript(['SELECT 1'], 'SELECT 1')).rejects.toBe(failure);
+    expect(h.state.running.value).toBe(false);
+    expect(tracked.release).toHaveBeenCalledOnce();
+
+    h.hooks.cancelSchemaGraph = vi.fn();
+    await session.runScript(['SELECT 1'], 'SELECT 1');
+    expect(h.execFakes.executeScript).toHaveBeenCalledOnce();
   });
 
   it('reports a token failure while the captured script scope is still current', async () => {
@@ -601,7 +764,7 @@ describe('createWorkbenchSession: runScript()', () => {
     const session = createWorkbenchSession(h.deps);
 
     expect(() => session.cancel()).not.toThrow();
-    expect(h.execFakes.kill).toHaveBeenCalledWith(null);
+    expect(h.execFakes.kill).not.toHaveBeenCalled();
   });
 
   it('flips `running` true eagerly, before the transport resolves', async () => {
@@ -615,6 +778,25 @@ describe('createWorkbenchSession: runScript()', () => {
     gate.resolve({ entries: [], aborted: false });
     await p;
     expect(h.state.running.value).toBe(false);
+  });
+
+  it('clears its elapsed timer after a deferred script settles', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness();
+    const gate = deferred<ScriptExecutionResult>();
+    h.execFakes.executeScript.mockImplementation(() => gate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.runScript(['SELECT 1'], 'SELECT 1');
+    await flushMicrotasks();
+
+    vi.advanceTimersByTime(300);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(3);
+    gate.resolve({ entries: [], aborted: false });
+    await pending;
+    const ticksAfterSettlement = vi.mocked(h.hooks.tickElapsed).mock.calls.length;
+
+    vi.advanceTimersByTime(500);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksAfterSettlement);
   });
 
   it('publishes a live query_id via onStatementStart; cancel() targets it', async () => {
@@ -810,6 +992,23 @@ function variableTab(over: Partial<QueryTab> = {}): Partial<QueryTab> {
 }
 
 describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
+  it('claims synchronously across a deferred config await, so only one competing probe executes', async () => {
+    const configGate = deferred<unknown>();
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+
+    const first = session.run();
+    expect(h.state.running.value).toBe(true);
+    await session.run();
+    expect(h.deps.ensureConfig).toHaveBeenCalledOnce();
+
+    configGate.resolve(undefined);
+    await first;
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
+  });
+
   it('sends no request and reports the empty-SQL diagnostic for blank option SQL', async () => {
     const h = makeHarness({ tab: variableTab({ sqlDraft: '   ' }) });
     const session = createWorkbenchSession(h.deps);
@@ -1133,6 +1332,10 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(h.execFakes.executeRead).not.toHaveBeenCalled();
     expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
     expect(h.hooks.onAuthFailed).toHaveBeenCalledTimes(1);
+    expect(h.state.running.value).toBe(false);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
   });
 
   it.each(['ensureConfig', 'getToken'] as const)('releases its tracked scope registration when %s rejects', async (preflight) => {
@@ -1145,9 +1348,34 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     if (preflight === 'ensureConfig') h.deps.ensureConfig = vi.fn(async () => { throw failure; });
     else h.deps.getToken = vi.fn(async () => { throw failure; });
 
-    await expect(createWorkbenchSession(h.deps).run()).rejects.toBe(failure);
+    const session = createWorkbenchSession(h.deps);
+    await expect(session.run()).rejects.toBe(failure);
     expect(tracked.release).toHaveBeenCalledOnce();
     expect(tracked.scope.isOpen()).toBe(true);
+    expect(h.state.running.value).toBe(false);
+    h.deps.ensureConfig = vi.fn(async () => undefined);
+    h.deps.getToken = vi.fn(async () => 'tok');
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
+  });
+
+  it('releases its claim and registration when post-auth variable setup throws', async () => {
+    const tracked = trackingExecutionScope();
+    const failure = new Error('cancel graph failed');
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }),
+      hooks: { cancelSchemaGraph: vi.fn(() => { throw failure; }) },
+    });
+    const session = createWorkbenchSession(h.deps);
+
+    await expect(session.run()).rejects.toBe(failure);
+    expect(h.state.running.value).toBe(false);
+    expect(tracked.release).toHaveBeenCalledOnce();
+
+    h.hooks.cancelSchemaGraph = vi.fn();
+    await session.run();
+    expect(h.execFakes.executeRead).toHaveBeenCalledOnce();
   });
 
   it('reports a current variable-scope token failure, but ignores a scope closed during token resolution', async () => {
@@ -1283,6 +1511,76 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     const result = h.tab.result as { cancelled?: boolean } | null;
     expect(result?.cancelled).toBe(true);
   });
+
+  it('clears its elapsed timer after a deferred variable probe settles', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    const gate = deferred<StreamResult>();
+    h.execFakes.executeRead.mockImplementation(() => gate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flushMicrotasks();
+
+    vi.advanceTimersByTime(300);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(3);
+    gate.resolve({} as StreamResult);
+    await pending;
+    const ticksAfterSettlement = vi.mocked(h.hooks.tickElapsed).mock.calls.length;
+
+    vi.advanceTimersByTime(500);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksAfterSettlement);
+  });
+});
+
+// ── post-preflight ownership fence (#503 review) ─────────────────────────────
+
+describe('createWorkbenchSession: post-preflight ownership fence', () => {
+  it.each([
+    ['ordinary', 'scope close'],
+    ['ordinary', 'cancel'],
+    ['script', 'scope close'],
+    ['script', 'cancel'],
+    ['variable', 'scope close'],
+    ['variable', 'cancel'],
+  ] as const)('keeps %s setup inert when %s wins the caller-continuation race', async (mode, interruption) => {
+    const tracked = trackingExecutionScope();
+    const tokenGate = deferred<string | null>();
+    const h = makeHarness({
+      executionScope: tracked.scope,
+      state: { forceExplain: true },
+      tab: mode === 'variable'
+        ? variableTab({ sqlDraft: 'SELECT a, b FROM t' })
+        : { sqlDraft: 'SELECT 1' },
+    });
+    h.deps.getToken = vi.fn(() => tokenGate.promise);
+    const previousResult = { rows: [['completed']] };
+    h.tab.result = previousResult as QueryTab['result'];
+    const previousSort = h.state.resultSort;
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const session = createWorkbenchSession(h.deps);
+    const pending = mode === 'script'
+      ? session.runScript(['SELECT 1'], 'SELECT 1')
+      : session.run();
+    await flushMicrotasks();
+    expect(h.deps.getToken).toHaveBeenCalledOnce();
+
+    const interruptionReaction = tokenGate.promise.then(() => {
+      if (interruption === 'scope close') tracked.scope.close();
+      else session.cancel();
+    });
+    tokenGate.resolve('tok');
+    await Promise.all([pending, interruptionReaction]);
+
+    expect(h.hooks.cancelSchemaGraph).not.toHaveBeenCalled();
+    expect(h.tab.result).toBe(previousResult);
+    expect(h.state.resultSort).toBe(previousSort);
+    expect(h.state.forceExplain).toBe(true);
+    expect(intervalSpy).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.execFakes.executeScript).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(h.state.running.value).toBe(false);
+  });
 });
 
 // ── cancel() ─────────────────────────────────────────────────────────────────
@@ -1293,6 +1591,40 @@ describe('createWorkbenchSession: cancel()', () => {
     const session = createWorkbenchSession(h.deps);
     session.cancel();
     expect(h.execFakes.kill).not.toHaveBeenCalled();
+  });
+
+  it('during pending authentication prevents transport and releases the claim after the await', async () => {
+    const configGate = deferred<unknown>();
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+
+    expect(h.state.running.value).toBe(true);
+    session.cancel();
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null);
+    configGate.resolve(undefined);
+    await pending;
+
+    expect(h.deps.getToken).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.state.running.value).toBe(false);
+  });
+
+  it('during a pending token refresh prevents transport after the token resolves', async () => {
+    const tokenGate = deferred<string | null>();
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' }, getToken: () => tokenGate.promise });
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flushMicrotasks();
+
+    expect(h.state.running.value).toBe(true);
+    session.cancel();
+    tokenGate.resolve('tok');
+    await pending;
+
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(h.state.running.value).toBe(false);
   });
 
   it('aborts the in-flight signal and kills the live query_id while running', async () => {
@@ -1312,6 +1644,26 @@ describe('createWorkbenchSession: cancel()', () => {
     expect(h.execFakes.kill).toHaveBeenCalledWith('q-1');
     gate.resolve({ ...req } as unknown as StreamResult);
     await p;
+  });
+
+  it('clears the elapsed timer after a deferred execution settles', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ tab: { sqlDraft: 'SELECT 1' } });
+    const gate = deferred<StreamResult>();
+    h.execFakes.executeRead.mockImplementation(() => gate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+    await flushMicrotasks();
+
+    vi.advanceTimersByTime(300);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(3);
+    gate.resolve({} as StreamResult);
+    await pending;
+    const ticksAfterSettlement = vi.mocked(h.hooks.tickElapsed).mock.calls.length;
+
+    vi.advanceTimersByTime(500);
+    expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksAfterSettlement);
+    vi.useRealTimers();
   });
 });
 
@@ -1414,6 +1766,26 @@ describe('createWorkbenchSession: destroy()', () => {
     const session = createWorkbenchSession(h.deps);
     expect(() => session.destroy()).not.toThrow();
     expect(h.execFakes.kill).not.toHaveBeenCalled();
+  });
+
+  it('during pending authentication releases immediately and prevents a late transport', async () => {
+    const configGate = deferred<unknown>();
+    const tracked = trackingExecutionScope();
+    const h = makeHarness({ executionScope: tracked.scope, tab: { sqlDraft: 'SELECT 1' } });
+    h.deps.ensureConfig = vi.fn(() => configGate.promise);
+    const session = createWorkbenchSession(h.deps);
+    const pending = session.run();
+
+    session.destroy();
+    expect(h.state.running.value).toBe(false);
+    expect(tracked.release).toHaveBeenCalledOnce();
+    expect(tracked.scope.isOpen()).toBe(true);
+    configGate.resolve(undefined);
+    await pending;
+
+    expect(h.deps.getToken).not.toHaveBeenCalled();
+    expect(h.execFakes.executeRead).not.toHaveBeenCalled();
+    expect(tracked.release).toHaveBeenCalledOnce();
   });
 
   it('mid-flight: clears the ticker, aborts, and kills the live query', async () => {

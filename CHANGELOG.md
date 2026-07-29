@@ -16,6 +16,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   before History or detached-result source capture. Zero through 1000 raw rows
   remain valid, authored `LIMIT` text is not parsed, and transport errors or
   cancellation keep their original outcome.
+- **Workbench executions now claim one shared run slot before awaiting
+  authentication** (#503). Ordinary queries, scripts, and Dashboard-variable
+  probes can no longer race through a pending config load or token refresh;
+  cancellation during preflight prevents a late request, and operation-local
+  timers, query IDs, and controllers keep stale finalisers from disrupting a
+  newer run.
 - **In-place authentication recovery no longer compresses the mounted
   workspace** (#512). The preserved editor or Dashboard now stays behind a
   blocking viewport overlay, rather than being pushed below a second,
