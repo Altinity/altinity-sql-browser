@@ -32,6 +32,11 @@ const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
  *  `except` (optional) names specific files inside a forbidden directory
  *  that stay importable — for deliberate, documented carve-outs only. */
 const RULES = [
+  {
+    dir: 'src/core',
+    forbidden: ['src/workspace', 'src/application', 'src/ui', 'src/net'],
+    why: 'issue #455: core must not depend on higher-level workspace, application, UI, or network layers',
+  },
   { dir: 'src/application', forbidden: ['src/ui', 'src/editor'], why: 'issue #276 day-1 rule' },
   {
     dir: 'src/ui/workbench',
