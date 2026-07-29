@@ -14,14 +14,12 @@
 //
 // Which widths exist is the ACTIVE STYLE's business, not the tile's:
 //
-//   - `columns-2` / `columns-3` (flow@1): one more column per press, wrapping at
-//     the preset's own column count. Height is untouched — flow's `height` is a
-//     three-value enum the flow renderer never applies as pixels anyway
-//     (`ui/dashboard.ts` clears the inline height for flow rows).
-//   - `grafana-grid` in `tiles` mode: the grid is a 12-column surface with
-//     numeric row-unit heights, so "one more column" is far too small a step.
-//     Both dimensions DOUBLE (owner decision), each clamped to its own maximum,
-//     and the wrap resets to a single column at the grid's default height.
+//   - `columns-2` / `columns-3`: one more column per press, wrapping at the
+//     preview's own column count. The caller owns this session-local span map;
+//     no command or persisted flow placement is involved.
+//   - `grid`: the authored 12-column surface doubles span on each press and
+//     wraps to 1 at the maximum. Height is always resent unchanged because a
+//     placement write replaces the complete Grid placement object.
 //   - `report` and `full` have exactly one column each, so there is no width to
 //     step through and the action does not exist. `full` additionally never
 //     persists tile widths at all (#321).
@@ -32,13 +30,13 @@
 // through the active engine's own plugin.
 
 import {
-  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_HEIGHT_UNIT_MAX, resolveGridPlacement,
+  GRAFANA_GRID_MAX_COLUMNS, resolveGridPlacement,
 } from '../layouts/grafana-grid-layout.js';
 import { presetColumns, resolvePlacement } from '../layouts/flow-layout.js';
 import type { DashboardStyle } from './dashboard-viewer-session.js';
 
 /** The styles that expose a widen step: every multi-column one. */
-const WIDENABLE: ReadonlySet<string> = new Set(['columns-2', 'columns-3', 'grafana-grid']);
+const WIDENABLE: ReadonlySet<string> = new Set(['columns-2', 'columns-3', 'grid']);
 
 /** Whether the active style has more than one column to step through. `report`
  *  and `full` are single-column by definition, so they carry no widen action. */
@@ -49,27 +47,23 @@ export function canWidenPanel(style: DashboardStyle): boolean {
 /** The widest this style can render one tile: the grid's 12 columns, or the flow
  *  preset's own column count. Never called for a non-widenable style. */
 function maxSpan(style: DashboardStyle): number {
-  return style === 'grafana-grid' ? GRAFANA_GRID_MAX_COLUMNS : presetColumns(style);
+  return style === 'grid' ? GRAFANA_GRID_MAX_COLUMNS : presetColumns(style);
 }
 
 /**
  * The placement ONE widen press produces, as an `update-placement` payload for
  * the active engine.
  *
- * At the maximum the cycle wraps to a single column — for grid that also returns
- * the height to the engine default, because a wrapped tile that kept a doubled
- * height would be a one-column tile four rows tall, which is not a state any
- * press asked for.
+ * At the maximum the cycle wraps to a single column. Height is preserved.
  */
 export function nextPanelPlacement(
   input: { style: DashboardStyle; placement: unknown },
 ): Record<string, unknown> {
   const { style, placement } = input;
   const max = maxSpan(style);
-  if (style === 'grafana-grid') {
+  if (style === 'grid') {
     const { span, height } = resolveGridPlacement(placement);
-    if (span >= max) return { span: 1, height: DEFAULT_GRID_HEIGHT_UNITS };
-    return { span: Math.min(max, span * 2), height: Math.min(GRID_HEIGHT_UNIT_MAX, height * 2) };
+    return { span: span >= max ? 1 : Math.min(max, span * 2), height };
   }
   const { span, height } = resolvePlacement(placement);
   return { span: span >= max ? 1 : span + 1, height };
@@ -86,11 +80,11 @@ export function nextPanelPlacement(
 export function widenLabel(input: { style: DashboardStyle; placement: unknown }): string {
   const { style, placement } = input;
   const max = maxSpan(style);
-  const span = style === 'grafana-grid'
+  const span = style === 'grid'
     ? resolveGridPlacement(placement).span : resolvePlacement(placement).span;
   if (span >= max) return 'Shrink to 1 column';
   // Always ≥ 2: `span >= 1` and the maximum is at least 2 for every widenable
   // style, so there is no "widen to 1 column" wording to spell out.
-  const next = style === 'grafana-grid' ? Math.min(max, span * 2) : span + 1;
+  const next = style === 'grid' ? Math.min(max, span * 2) : span + 1;
   return 'Widen to ' + next + ' columns';
 }

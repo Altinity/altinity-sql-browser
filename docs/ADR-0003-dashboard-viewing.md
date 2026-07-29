@@ -1027,6 +1027,67 @@ one of #494's is partly reversed.
   element while holding `aria-expanded` there. A rebuilt trigger would strand an
   open menu over a dead node, with focus-restore aimed at it.
 
+## Addendum (follow-up to #538, 2026-07-29): authored styles own independent sizing
+
+The #321/#535 model mixed persisted flow presets, a transient Full render mode,
+and Grid dimensions that Widen changed in two axes. That made the Style menu
+look like five equivalent choices when only some choices had durable state.
+This follow-up replaces that model with one versioned layout-engine contract.
+
+- **`grafana-grid@2` is the canonical authored layout.** Its persisted preset is
+  `grid`, `full`, or `report`. Each tile carries independent optional maps:
+  Grid `{span,height}` (default 6×2), Full `{height}` (fixed width 12, default
+  height 2), and Report `{height}` (centered width 9/12, default height 5).
+  Switching styles never copies dimensions between maps. Full and Report resize
+  vertically only.
+- **2 columns and 3 columns are previews, not authored presets.** Selecting
+  either creates a fresh session-local span-1 map and renders every tile at
+  exactly 300px. It reads no saved tile dimension and writes no command,
+  revision, fallback, or workspace. Widen steps `1→2(→3)→1` only in that map.
+  Selecting any other style, rebuilding/navigating, reloading, or switching
+  between the previews discards it. The mobile breakpoint normalizes it to one
+  column and disables Widen.
+- **Widen is horizontal-only.** Grid doubles span up to 12 and then wraps to 1,
+  always resending the unchanged height because placement updates replace the
+  complete Grid object. Full and Report have fixed widths and expose no Widen
+  action. The menu row follows the same availability rule; it no longer lists a
+  disabled Widen for fixed-width authored styles.
+- **Compatibility lives at codec boundaries.** `grafana-grid@1` becomes v2 Grid
+  with its placements preserved. Flow Report becomes v2 Report and converts
+  explicit heights; missing heights use Report defaults. Persisted flow
+  2/3-column layouts become v2 Grid through the established flow-to-grid
+  conversion. Current v2 reads refresh the deterministic style-aware `flow@1`
+  fallback. Dashboard and workspace document versions do not change.
+- **All authored styles use the grid renderer.** This retires flow KPI bands for
+  canonical current workspaces: KPI panels are ordinary grid tiles under Grid,
+  Full, and Report, sharing the same reorder, action, and resize lifecycle.
+- **A primary engine this build cannot load is readable, not re-styleable.** An
+  unknown engine or a future `grafana-grid` version with a valid `flow@1`
+  fallback stays readable through that fallback (#280), but `change-layout` to
+  `grafana-grid@2` over it fails with
+  `dashboard-command-layout-engine-unsupported`. Converting was rejected: it
+  would discard a primary the user gets back by upgrading. Silently succeeding
+  was rejected outright — it bumped the revision, left the renderer on the
+  fallback, and made the Style menu claim a style the document did not have.
+- **The new contract keeps the `grafana-grid` engine id, and downgrades are
+  read-only by convention.** The registry keys plugins on `(id, version)`
+  precisely so one engine can carry several contract versions, so `@2` registers
+  under the same id as `@1`. The consequence is accepted deliberately: a build
+  predating `@2` resolves the document to its fallback and — because editability
+  is not gated on fallback use — still offers Edit mode, where its
+  version-blind fallback regeneration rebuilds `fallback` by reading `@2`'s
+  nested items as `@1` placements, discarding edits made in that session.
+  Authored `items` are never written by such a build and this one regenerates
+  the fallback deterministically at every codec boundary, so no authored data is
+  lost. Two alternatives were rejected: a DISTINCT engine id (the old build's
+  regeneration then no-ops, so its edits appear to persist and are discarded
+  later when this build regenerates the fallback — silent divergence instead of
+  visible loss), and bumping the Dashboard `documentVersion` so old builds fail
+  closed (correct failure direction, but it makes the migration a one-way door:
+  after one save, an artifact rollback leaves the whole workspace unreadable,
+  not just its dashboards — a rollout-policy decision, not a codec one). The
+  real gap, that `usedFallback` gates nothing, is #550.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

@@ -35,7 +35,7 @@ describe('helper predicates', () => {
     expect(isSupportedLayout('flow', 1)).toBe(true);
     expect(isSupportedLayout('flow', 2)).toBe(false);
     expect(isSupportedLayout('grafana-grid', 1)).toBe(true);
-    expect(isSupportedLayout('grafana-grid', 2)).toBe(false);
+    expect(isSupportedLayout('grafana-grid', 2)).toBe(true);
     expect(isSupportedLayout('grid', 1)).toBe(false);
     expect(isSupportedLayout(null, 1)).toBe(false);
     expect(isSupportedLayout('flow', '1')).toBe(false);

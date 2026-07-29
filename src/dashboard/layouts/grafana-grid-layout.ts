@@ -58,7 +58,7 @@ import { deriveFlowPlacement } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
 import type {
   DashboardDocumentV2, FlowHeightV1, FlowLayoutV1, FlowTilePlacementV1,
-  GrafanaGridHeightV1,
+  GrafanaGridHeightV1, GrafanaGridLayoutV2,
 } from '../../generated/json-schema.types.js';
 
 type Path = (string | number)[];
@@ -155,6 +155,19 @@ export function gridHeightUnitsToFlowHeight(units: unknown): FlowHeightV1 {
  *  grid), height 2 row units (the numeric equivalent of flow@1's own
  *  "medium" default). */
 export const DEFAULT_GRID_PLACEMENT: { span: number; height: number } = { span: 6, height: DEFAULT_GRID_HEIGHT_UNITS };
+export const DEFAULT_FULL_PLACEMENT: { height: number } = { height: 2 };
+export const DEFAULT_REPORT_PLACEMENT: { height: number } = { height: 5 };
+export const REPORT_GRID_SPAN = 9;
+
+export type AuthoredDashboardStyle = 'grid' | 'full' | 'report';
+export type TemporaryDashboardStyle = 'columns-2' | 'columns-3';
+export type DashboardLayoutStyle = AuthoredDashboardStyle | TemporaryDashboardStyle;
+
+interface GridTileStyles {
+  grid?: { span?: number; height?: number };
+  full?: { height?: number };
+  report?: { height?: number };
+}
 
 /** The object holding the active grid placements — the primary layout's
  *  `items` (grafana-grid@1 is never a fallback target, so there is no
@@ -180,6 +193,65 @@ export function setGridPlacement(layout: unknown, tileId: string, placement: unk
 export function gridPlacementAt(layout: unknown, tileId: string): unknown {
   if (!isObject(layout) || !isObject(layout.items)) return undefined;
   return layout.items[tileId];
+}
+
+function tileStylesAt(layout: unknown, tileId: string): GridTileStyles {
+  if (!isObject(layout) || layout.version !== 2 || !isObject(layout.items)) return {};
+  const entry = layout.items[tileId];
+  return isObject(entry) ? entry as GridTileStyles : {};
+}
+
+/** Resolve one tile's independent authored dimensions. Missing maps use the
+ * style's designed defaults and never inherit another style's dimensions. */
+export function resolveStylePlacement(
+  layout: unknown, tileId: string, style: AuthoredDashboardStyle,
+): { span: number; height: number } {
+  const styles = tileStylesAt(layout, tileId);
+  if (style === 'grid') {
+    const placement = isObject(styles.grid) ? styles.grid : {};
+    return resolveGridPlacement(placement);
+  }
+  if (style === 'full') {
+    const placement = isObject(styles.full) ? styles.full : {};
+    return {
+      span: GRAFANA_GRID_MAX_COLUMNS,
+      height: isValidGridHeightUnits(placement.height) ? placement.height : DEFAULT_FULL_PLACEMENT.height,
+    };
+  }
+  const placement = isObject(styles.report) ? styles.report : {};
+  return {
+    span: REPORT_GRID_SPAN,
+    height: isValidGridHeightUnits(placement.height) ? placement.height : DEFAULT_REPORT_PLACEMENT.height,
+  };
+}
+
+/** Set dimensions for exactly one authored style while preserving the other
+ * two style maps byte-for-byte. Width is accepted only for Grid. */
+export function setStylePlacement(
+  layout: unknown, tileId: string, style: AuthoredDashboardStyle, placement: unknown,
+): void {
+  if (!isObject(layout) || layout.version !== 2) return;
+  if (!isObject(layout.items)) layout.items = {};
+  const items = layout.items as Record<string, unknown>;
+  const current = isObject(items[tileId]) ? items[tileId] as Record<string, unknown> : {};
+  const candidate = isObject(placement) ? placement : {};
+  const next: Record<string, unknown> = {};
+  if (style === 'grid' && Object.prototype.hasOwnProperty.call(candidate, 'span')) {
+    next.span = candidate.span;
+  }
+  if (Object.prototype.hasOwnProperty.call(candidate, 'height')) {
+    next.height = candidate.height;
+  }
+  current[style] = next;
+  items[tileId] = current;
+}
+
+export function stylePlacementAt(
+  layout: unknown, tileId: string, style: AuthoredDashboardStyle,
+): unknown {
+  const styles = tileStylesAt(layout, tileId);
+  const placement = styles[style];
+  return isObject(placement) ? placement : undefined;
 }
 
 /** Derive an initial grid placement from a query's `sizeHints.preferred`,
@@ -279,6 +351,44 @@ export const grafanaGridLayoutPlugin: DashboardLayoutPlugin = {
   type: 'grafana-grid', version: 1, normalize, validatePlacement,
 };
 
+function normalizeV2(dashboard: DashboardDocumentV2): DashboardDocumentV2 {
+  const next = cloneJson(dashboard);
+  const tileIds = new Set((Array.isArray(next.tiles) ? next.tiles : [])
+    .filter((tile): tile is DashboardDocumentV2['tiles'][number] => isObject(tile) && typeof tile.id === 'string')
+    .map((tile) => tile.id));
+  if (!isObject(next.layout) || !isObject(next.layout.items)) return next;
+  for (const key of Object.keys(next.layout.items)) {
+    if (!tileIds.has(key)) delete next.layout.items[key];
+  }
+  return next;
+}
+
+function validateV2Placement(placement: unknown, path: Path = []): WorkspaceDiagnostic[] {
+  if (!isObject(placement)) {
+    return [diagnostic(path, 'layout-placement-invalid', 'Placement must be an object')];
+  }
+  const out: WorkspaceDiagnostic[] = [];
+  for (const key of Object.keys(placement)) {
+    if (!PLACEMENT_FIELDS.has(key)) {
+      out.push(diagnostic([...path, key], 'layout-placement-unknown-field',
+        `Unknown grafana-grid placement field ${JSON.stringify(key)}`));
+    }
+  }
+  if (Object.hasOwn(placement, 'span') && !isValidGridSpan(placement.span)) {
+    out.push(diagnostic([...path, 'span'], 'layout-placement-invalid-span',
+      'Grafana-grid placement span must be an integer from 1 to 12'));
+  }
+  if (Object.hasOwn(placement, 'height') && !isValidGridHeightUnits(placement.height)) {
+    out.push(diagnostic([...path, 'height'], 'layout-placement-invalid-height',
+      'Grafana-grid placement height must be an integer from 1 to 16'));
+  }
+  return out;
+}
+
+export const grafanaGridLayoutV2Plugin: DashboardLayoutPlugin = {
+  type: 'grafana-grid', version: 2, normalize: normalizeV2, validatePlacement: validateV2Placement,
+};
+
 // ── Pure render math: rowless packing (#291) ────────────────────────────────
 
 /** Effective column count for a container width (#291 "Responsive clamp"):
@@ -323,6 +433,9 @@ export interface GrafanaGridTileRender {
    *  height-units follow-up: renamed from `height` so a discriminating
    *  consumer never mistakes this for flow's own string `FlowHeightV1`). */
   heightUnits: number;
+  /** Exact session-preview height. Authored styles always leave this absent
+   * and use `heightUnits`; 2/3-column previews always publish 300. */
+  previewHeightPx?: number;
   isKpi: boolean;
   row: number;
   colStart: number;
@@ -335,6 +448,7 @@ export interface GrafanaGridLayoutModel {
   engine: 'grafana-grid';
   /** Effective columns for the given container width. */
   columns: number;
+  style: DashboardLayoutStyle;
   /** Every visible tile, positioned, in `dashboard.tiles[]` semantic order. */
   tiles: GrafanaGridTileRender[];
 }
@@ -347,11 +461,8 @@ export interface GrafanaGridVisibleTile {
   isKpi?: boolean;
 }
 
-/** The grafana-grid@1 render mode (#321 "Full view"): `'tiles'` is today's
- *  packed multi-tile-per-row grid; `'full'` renders every visible tile at the
- *  full effective column count — one tile per row — for the transient
- *  "Full view" render mode. Persistence is unaffected either way: the stored
- *  placement (`persistedSpan`) is never rewritten by a render-mode change. */
+/** Legacy grafana-grid@1 render override retained for readable v1 documents.
+ * Current grafana-grid@2 documents select the authored `style` instead. */
 export type GridRenderMode = 'tiles' | 'full';
 
 export interface ComputeGrafanaGridLayoutInput {
@@ -365,6 +476,9 @@ export interface ComputeGrafanaGridLayoutInput {
   /** Render mode (#321); defaults to `'tiles'` (today's packed behavior)
    *  when absent. */
   renderMode?: GridRenderMode;
+  style?: DashboardLayoutStyle;
+  previewSpans?: ReadonlyMap<string, number>;
+  mobile?: boolean;
 }
 
 function gridItemsFor(layout: unknown): Record<string, unknown> {
@@ -379,15 +493,27 @@ function gridItemsFor(layout: unknown): Record<string, unknown> {
  * no row-grouping type, band, or fold (rowless). Pure and non-mutating.
  */
 export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): GrafanaGridLayoutModel {
-  const { tiles, layout, containerWidth, renderMode = 'tiles' } = input;
-  const columns = effectiveGridColumns(containerWidth);
+  const {
+    tiles, layout, containerWidth, renderMode = 'tiles',
+    style = renderMode === 'full' ? 'full' : 'grid', previewSpans, mobile = false,
+  } = input;
+  const temporary = style === 'columns-2' || style === 'columns-3';
+  const columns = temporary
+    ? (mobile ? 1 : style === 'columns-2' ? 2 : 3)
+    : style === 'grid' ? effectiveGridColumns(containerWidth) : GRAFANA_GRID_MAX_COLUMNS;
   const items = gridItemsFor(layout);
 
   let row = 0;
   let cursor = 0;
   const renders: GrafanaGridTileRender[] = tiles.map((tile, index) => {
-    const placement = resolveGridPlacement(items[tile.id]);
-    const span = renderMode === 'full' ? columns : effectiveGridSpan(placement.span, columns);
+    const placement = isObject(layout) && layout.version === 2
+      ? resolveStylePlacement(layout, tile.id,
+        style === 'full' || style === 'report' ? style : 'grid')
+      : resolveGridPlacement(items[tile.id]);
+    const authoredSpan = style === 'full' ? columns
+      : style === 'report' ? REPORT_GRID_SPAN
+        : temporary ? (previewSpans?.get(tile.id) ?? 1) : placement.span;
+    const span = Math.min(columns, Math.max(1, authoredSpan));
     if (cursor + span > columns) {
       row += 1;
       cursor = 0;
@@ -398,6 +524,7 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
       span,
       persistedSpan: placement.span,
       heightUnits: placement.height,
+      ...(temporary ? { previewHeightPx: 300 } : {}),
       isKpi: !!tile.isKpi,
       row,
       colStart: cursor,
@@ -406,7 +533,7 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
     return render;
   });
 
-  return { engine: 'grafana-grid', columns, tiles: renders };
+  return { engine: 'grafana-grid', columns, style, tiles: renders };
 }
 
 // ── Engine conversion: grid → flow fallback (#291) ──────────────────────────
@@ -440,6 +567,33 @@ export function deriveFlowFallback(
     };
   }
   return { type: 'flow', version: 1, preset: 'columns-2', items: flowItems };
+}
+
+export function deriveAuthoredFlowFallback(
+  layout: unknown, tiles: readonly GrafanaGridFallbackTile[],
+): FlowLayoutV1 {
+  const preset: AuthoredDashboardStyle = isObject(layout)
+    && (layout.preset === 'grid' || layout.preset === 'full' || layout.preset === 'report')
+    ? layout.preset : 'grid';
+  if (!isObject(layout) || layout.version !== 2) return deriveFlowFallback(layout, tiles);
+  const flowItems: Record<string, FlowTilePlacementV1> = {};
+  for (const tile of tiles) {
+    const placement = resolveStylePlacement(layout, tile.id, preset);
+    flowItems[tile.id] = preset === 'grid'
+      ? {
+        span: flowSpanFromGridSpan(placement.span),
+        height: gridHeightUnitsToFlowHeight(placement.height),
+      }
+      : preset === 'full'
+        ? { span: 2, height: gridHeightUnitsToFlowHeight(placement.height) }
+        : { span: 1, height: gridHeightUnitsToFlowHeight(placement.height) };
+  }
+  return {
+    type: 'flow',
+    version: 1,
+    preset: preset === 'report' ? 'report' : 'columns-2',
+    items: flowItems,
+  };
 }
 
 // ── Pure resize math (#291 Wave 3 — corner-drag resize): the DOM listener in
@@ -502,7 +656,9 @@ function tileRefsOf(tiles: readonly unknown[]): GrafanaGridFallbackTile[] {
  *  the guard check, never a `tiles[]` walk that would just be thrown away. */
 export function regenerateGridFallback(layout: unknown, tiles: readonly unknown[]): void {
   if (!isObject(layout) || layout.type !== 'grafana-grid') return;
-  layout.fallback = deriveFlowFallback(layout, tileRefsOf(tiles));
+  layout.fallback = layout.version === 2
+    ? deriveAuthoredFlowFallback(layout, tileRefsOf(tiles))
+    : deriveFlowFallback(layout, tileRefsOf(tiles));
 }
 
 // ── Measurement math (#291 review F2): the grid host's `clientWidth` INCLUDES

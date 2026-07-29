@@ -749,6 +749,58 @@ export interface GrafanaGridLayoutV1 {
   items: Record<string, GrafanaGridTilePlacementV1>;
 }
 
+// dashboard-layout-grafana-grid v2 — https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v2.schema.json
+
+/**
+ * Tile height
+ *
+ * Numeric row units from 1 through 16; pixels = 32 + 88 × units.
+ */
+export type GrafanaGridHeightV2 = number;
+
+/** Grid dimensions */
+export interface GrafanaGridTilePlacementV2 {
+  /** Column span */
+  span?: number;
+  height?: GrafanaGridHeightV2;
+}
+
+/** Fixed-width style dimensions */
+export interface GrafanaGridFixedPlacementV2 {
+  height?: GrafanaGridHeightV2;
+}
+
+/** Independent tile dimensions by authored style */
+export interface GrafanaGridTileStylesV2 {
+  grid?: GrafanaGridTilePlacementV2;
+  full?: GrafanaGridFixedPlacementV2;
+  report?: GrafanaGridFixedPlacementV2;
+}
+
+/**
+ * Altinity SQL Browser Dashboard grafana-grid@2 layout
+ *
+ * The normative authored Dashboard layout. Grid, Full, and Report are persisted base styles with independent per-tile dimensions. Grid defaults to 6 columns by 2 height units, Full to fixed width 12 by height 2, and Report to centered fixed width 9/12 by height 5. A flow@1 fallback is carried by the Dashboard layout envelope and regenerated from the selected base style.
+ */
+export interface GrafanaGridLayoutV2 {
+  /** Layout engine */
+  type: "grafana-grid";
+  /** Layout engine version */
+  version: 2;
+  /**
+   * Authored base style
+   *
+   * The persisted base style. Two- and three-column choices are session previews and are never stored here.
+   */
+  preset: "grid" | "full" | "report";
+  /**
+   * Per-tile style dimensions
+   *
+   * Independent Grid, Full, and Report dimensions keyed by tile ID. Missing style entries use that style's designed defaults.
+   */
+  items: Record<string, GrafanaGridTileStylesV2>;
+}
+
 // dashboard v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json
 
 /**

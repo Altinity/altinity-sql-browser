@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   createLayoutRegistry, defaultLayoutRegistry, flowLayoutRegistration, grafanaGridLayoutRegistration,
+  grafanaGridLayoutV2Registration,
   resolveLayoutPluginSync,
 } from '../../src/dashboard/layouts/layout-registry.js';
 import { flowLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
-import { grafanaGridLayoutPlugin } from '../../src/dashboard/layouts/grafana-grid-layout.js';
+import {
+  grafanaGridLayoutPlugin, grafanaGridLayoutV2Plugin,
+} from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import type { DashboardLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
 import type { DashboardLayoutRegistration } from '../../src/dashboard/layouts/layout-registry.js';
 
@@ -28,7 +31,7 @@ describe('createLayoutRegistry', () => {
     expect(flowLayoutRegistration.id).toBe('flow');
   });
 
-  it('registers additional engines and ignores a shadowing or duplicate id', async () => {
+  it('registers engine versions independently and ignores a shadowing flow registration', async () => {
     const shadow: DashboardLayoutRegistration = {
       id: 'flow', versions: [1], load: () => Promise.reject(new Error('should never be used')),
     };
@@ -37,7 +40,7 @@ describe('createLayoutRegistry', () => {
     };
     const registry = createLayoutRegistry([gridRegistration, shadow, duplicateGrid]);
     expect(registry.supports('grid', 2)).toBe(true);
-    expect(registry.supports('grid', 3)).toBe(false); // duplicate id ignored
+    expect(registry.supports('grid', 3)).toBe(true);
     // The built-in flow load wins over the shadow registration.
     expect(await registry.load('flow', 1)).toBe(flowLayoutPlugin);
   });
@@ -110,16 +113,21 @@ describe('resolve', () => {
 });
 
 describe('defaultLayoutRegistry', () => {
-  it('exposes the built-in flow@1 and grafana-grid@1 engines (#291), and nothing else', () => {
+  it('exposes flow@1 and both readable grafana-grid versions', () => {
     expect(defaultLayoutRegistry.supports('flow', 1)).toBe(true);
     expect(defaultLayoutRegistry.supports('grafana-grid', 1)).toBe(true);
-    expect(defaultLayoutRegistry.supports('grafana-grid', 2)).toBe(false);
+    expect(defaultLayoutRegistry.supports('grafana-grid', 2)).toBe(true);
     expect(defaultLayoutRegistry.supports('grid', 2)).toBe(false);
   });
 
   it('registration-time-lazy loads the real grafana-grid@1 plugin instance', async () => {
     expect(grafanaGridLayoutRegistration.id).toBe('grafana-grid');
     expect(await defaultLayoutRegistry.load('grafana-grid', 1)).toBe(grafanaGridLayoutPlugin);
+  });
+
+  it('registration-time-lazy loads the canonical grafana-grid@2 plugin instance', async () => {
+    expect(grafanaGridLayoutV2Registration.id).toBe('grafana-grid');
+    expect(await defaultLayoutRegistry.load('grafana-grid', 2)).toBe(grafanaGridLayoutV2Plugin);
   });
 
   it('resolves a grafana-grid@1 primary layout directly (no fallback needed)', async () => {
@@ -147,9 +155,15 @@ describe('resolveLayoutPluginSync (#291)', () => {
     expect(resolveLayoutPluginSync({ type: 'grafana-grid', version: 1, items: {} })).toBe(grafanaGridLayoutPlugin);
   });
 
+  it('resolves the canonical grafana-grid@2 plugin', () => {
+    expect(resolveLayoutPluginSync({
+      type: 'grafana-grid', version: 2, preset: 'grid', items: {},
+    })).toBe(grafanaGridLayoutV2Plugin);
+  });
+
   it('resolves the flow@1 plugin for everything else — a flow primary, an unsupported grid version, an unknown type, or a non-object', () => {
     expect(resolveLayoutPluginSync(flow())).toBe(flowLayoutPlugin);
-    expect(resolveLayoutPluginSync({ type: 'grafana-grid', version: 2, items: {} })).toBe(flowLayoutPlugin);
+    expect(resolveLayoutPluginSync({ type: 'grafana-grid', version: 9, items: {} })).toBe(flowLayoutPlugin);
     expect(resolveLayoutPluginSync({ type: 'nope', version: 1 })).toBe(flowLayoutPlugin);
     expect(resolveLayoutPluginSync(null)).toBe(flowLayoutPlugin);
     expect(resolveLayoutPluginSync('nope')).toBe(flowLayoutPlugin);

@@ -10,7 +10,7 @@ type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
 type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
 type ShortcutDispatch = 'application' | 'editor';
 type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'g-v' | 'g-e' | 'g-g' | 'g-f' | 'g-r' | 'g-2' | 'g-3' | 'g-style' | 'question' | 'escape';
-type DashboardStyle = 'grafana-grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
+type DashboardStyle = 'grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
 
 export interface ShortcutDefinition {
   id: string;
@@ -44,8 +44,8 @@ export const SHORTCUT_CATALOG: readonly ShortcutDefinition[] = [
   { id: 'dashboard-refresh', label: 'Refresh all tiles', section: 'dashboard', surface: 'dashboard', key: 'mod-enter', dispatch: 'application', available: (a) => validDashboardPort(a), matches: (e) => modKey(e) && e.key === 'Enter' && !e.shiftKey, run: (e, a) => { e.preventDefault(); a.surfaceCommands!.refresh(); return 'dashboardRefresh'; } },
   { id: 'dashboard-view', label: 'View mode', section: 'dashboard', surface: 'dashboard', key: 'g-v', dispatch: 'application', sequence: ['g', 'v'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'view') return null; a.showDashboardSurface?.('view'); return 'dashboardView'; } },
   { id: 'dashboard-edit', label: 'Edit mode', section: 'dashboard', surface: 'dashboard', key: 'g-e', dispatch: 'application', sequence: ['g', 'e'], run: (e, a) => { e.preventDefault(); if (a.sqlRoute.mode === 'edit') return null; a.showDashboardSurface?.('edit'); return 'dashboardEdit'; } },
-  { id: 'dashboard-grid-tiles', label: 'Grid Tiles', section: 'dashboard', surface: 'dashboard', key: 'g-g', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'g'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('grafana-grid'); return 'dashboardGridTiles'; } },
-  { id: 'dashboard-full-view', label: 'Full view', section: 'dashboard', surface: 'dashboard', key: 'g-f', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'f'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('full'); return 'dashboardFullView'; } },
+  { id: 'dashboard-grid-tiles', label: 'Grid', section: 'dashboard', surface: 'dashboard', key: 'g-g', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'g'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('grid'); return 'dashboardGridTiles'; } },
+  { id: 'dashboard-full-view', label: 'Full', section: 'dashboard', surface: 'dashboard', key: 'g-f', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'f'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('full'); return 'dashboardFullView'; } },
   { id: 'dashboard-report', label: 'Report', section: 'dashboard', surface: 'dashboard', key: 'g-r', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', 'r'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('report'); return 'dashboardReport'; } },
   { id: 'dashboard-columns-2', label: '2 columns', section: 'dashboard', surface: 'dashboard', key: 'g-2', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', '2'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('columns-2'); return 'dashboardColumns2'; } },
   { id: 'dashboard-columns-3', label: '3 columns', section: 'dashboard', surface: 'dashboard', key: 'g-3', dispatch: 'application', available: (a) => validDashboardPort(a), help: false, sequence: ['g', '3'], run: (e, a) => { e.preventDefault(); a.surfaceCommands!.setDashboardStyle('columns-3'); return 'dashboardColumns3'; } },

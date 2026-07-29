@@ -72,7 +72,10 @@ const panelQuery = (id: string, name = id, sql = 'SELECT 1'): SavedQueryV2 => ({
 });
 const dashboardDoc = (over: Partial<DashboardDocumentV2> = {}): DashboardDocumentV2 => ({
   documentVersion: 2, id: 'd1', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  layout: {
+    type: 'grafana-grid', version: 2, preset: 'report', items: {},
+    fallback: { type: 'flow', version: 1, preset: 'report', items: {} },
+  },
   tiles: [], ...over,
 });
 const bundleDoc = (over: Partial<PortableBundleV2> = {}): PortableBundleV2 => ({

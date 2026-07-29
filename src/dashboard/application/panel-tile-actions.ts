@@ -14,13 +14,11 @@
 //
 // Two deliberate differences from #535's head buttons:
 //
-//   - All four kinds are ALWAYS returned, in one fixed order. A menu whose
-//     vocabulary changes with the layout style teaches the user nothing, and the
-//     row is itself the place to explain why an action is unavailable — the same
-//     argument #452 settled for the File menu, and the reason `MenuRow` carries a
-//     `reason` slot at all. #535's rule for the head was the opposite ("nothing
-//     to open means no control, not a disabled one"), which is right for a bare
-//     icon with only a tooltip to explain itself.
+//   - Actions with temporary capability gates stay listed and explain why they
+//     are unavailable — the same argument #452 settled for the File menu, and
+//     the reason `MenuRow` carries a `reason` slot at all. Widen is omitted only
+//     for authored Full/Report, where fixed width is the design rather than a
+//     temporary gate.
 //   - Widen's unavailability is a SENTENCE, not an absence. Under `report`/`full`
 //     and on a flow KPI band member there genuinely is no width to step, and
 //     saying so beats a row that silently vanishes.
@@ -58,6 +56,9 @@ export interface PanelTileActionsInput {
   /** The style whose widths a widen press steps through, or `null` when there
    *  are none (`report`, `full`, or flow below the mobile breakpoint). */
   widenStyle: DashboardStyle | null;
+  /** False only when fixed width is the authored style (Full/Report), where
+   *  Widen is not part of the action vocabulary at all. */
+  includeWiden: boolean;
   /** The tile's PERSISTED placement — never a render-mode-overridden effective
    *  span, or the label would name a width the next press does not produce. */
   placement: unknown;
@@ -126,16 +127,16 @@ function openUnavailable(input: PanelTileActionsInput): string | null {
 }
 
 /**
- * The four actions a panel tile's `⋯` menu offers, in paint order.
+ * The actions a panel tile's `⋯` menu offers, in paint order.
  *
- * Order is #535's design order — duplicate, widen, expand — with remove last.
+ * Order is #535's design order — duplicate, optional widen, expand — with remove last.
  * The destructive control is the one whose position must not shift as the labels
  * above it change, and it is the only one the render module separates.
  */
 export function panelTileActions(input: PanelTileActionsInput): readonly PanelTileAction[] {
   const removalUnavailable = input.removalRefusal === null
     ? null : REMOVAL_REASONS[input.removalRefusal];
-  return [
+  const actions: PanelTileAction[] = [
     {
       kind: 'duplicate',
       label: 'Duplicate panel',
@@ -143,13 +144,6 @@ export function panelTileActions(input: PanelTileActionsInput): readonly PanelTi
       // owned query clone, and its own refusals (a vanished source, a workspace
       // that moved on) are commit-time outcomes reported as a toast (#535).
       unavailable: null,
-      confirm: null,
-      destructive: false,
-    },
-    {
-      kind: 'widen',
-      label: widenRowLabel(input),
-      unavailable: widenUnavailable(input),
       confirm: null,
       destructive: false,
     },
@@ -173,4 +167,14 @@ export function panelTileActions(input: PanelTileActionsInput): readonly PanelTi
       destructive: true,
     },
   ];
+  if (input.includeWiden) {
+    actions.splice(1, 0, {
+      kind: 'widen',
+      label: widenRowLabel(input),
+      unavailable: widenUnavailable(input),
+      confirm: null,
+      destructive: false,
+    });
+  }
+  return actions;
 }

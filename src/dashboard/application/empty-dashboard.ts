@@ -2,7 +2,7 @@
 // session and the Workbench favorite -> tile bridge: both paths must mint the
 // same valid document when a workspace legitimately has no Dashboard yet.
 
-import { deriveFlowFallback } from '../layouts/grafana-grid-layout.js';
+import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import type { DashboardDocumentV2 } from '../../generated/json-schema.types.js';
 
 /** #429 phase 3: the one title every "New dashboard" prompt offers for
@@ -11,10 +11,11 @@ import type { DashboardDocumentV2 } from '../../generated/json-schema.types.js';
 export const DEFAULT_DASHBOARD_TITLE = 'Dashboard';
 
 export function createEmptyDashboard(id: string, title: string = DEFAULT_DASHBOARD_TITLE): DashboardDocumentV2 {
-  const layout = { type: 'grafana-grid' as const, version: 1 as const, items: {} };
-  return {
-    documentVersion: 2, id, title, revision: 1,
-    layout: { ...layout, fallback: deriveFlowFallback(layout, []) },
+  const dashboard: DashboardDocumentV2 = {
+    documentVersion: 2 as const, id, title, revision: 1,
+    layout: { type: 'grafana-grid' as const, version: 2 as const, preset: 'grid' as const, items: {} },
     tiles: [],
   };
+  regenerateGridFallback(dashboard.layout, dashboard.tiles);
+  return dashboard;
 }

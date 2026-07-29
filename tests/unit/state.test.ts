@@ -18,6 +18,7 @@ import type {
 } from '../../src/generated/json-schema.types.js';
 import { fakeMutateWorkspace } from '../helpers/fake-app.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
+import { upgradeDashboardLayout } from '../../src/dashboard/model/dashboard-document.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -1084,7 +1085,7 @@ describe('saved queries', () => {
     expect(s.savedQueries.map((query) => query.id)).toEqual(['owned']);
     const candidate = mutate.commit.mock.calls[0][0] as StoredWorkspaceV5;
     expect(candidate.dashboards).toEqual([current, other]);
-    expect(s.dashboard).toEqual(current);
+    expect(s.dashboard).toEqual(upgradeDashboardLayout(current));
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(s.tabs.value[0].editorMode).toBe('sql');
   });

@@ -34,6 +34,12 @@
       "path": "../dashboard-layout-grafana-grid-v1.schema.json"
     },
     {
+      "kind": "dashboard-layout-grafana-grid",
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v2.schema.json",
+      "path": "../dashboard-layout-grafana-grid-v2.schema.json"
+    },
+    {
       "kind": "dashboard",
       "version": 1,
       "id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json",

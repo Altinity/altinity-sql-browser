@@ -115,6 +115,14 @@ export const SAVED_QUERY_SHAPE: CanonicalShape = {
 };
 
 const FLOW_PLACEMENT_SHAPE: CanonicalShape = { order: ['span', 'height'] };
+const GRID_STYLE_ITEM_SHAPE: CanonicalShape = {
+  order: ['grid', 'full', 'report', 'span', 'height'],
+  fields: {
+    grid: FLOW_PLACEMENT_SHAPE,
+    full: { order: ['height'] },
+    report: { order: ['height'] },
+  },
+};
 
 export const FLOW_LAYOUT_SHAPE: CanonicalShape = {
   order: ['type', 'version', 'preset', 'items'],
@@ -127,7 +135,7 @@ export const FLOW_LAYOUT_SHAPE: CanonicalShape = {
 const LAYOUT_DOCUMENT_SHAPE: CanonicalShape = {
   order: ['type', 'version', 'preset', 'config', 'items', 'fallback'],
   fields: {
-    items: { map: FLOW_PLACEMENT_SHAPE },
+    items: { map: GRID_STYLE_ITEM_SHAPE },
     fallback: FLOW_LAYOUT_SHAPE,
   },
 };

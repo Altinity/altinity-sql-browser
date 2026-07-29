@@ -21,13 +21,18 @@ export const FLOW_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json';
 export const GRAFANA_GRID_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json';
+export const GRAFANA_GRID_LAYOUT_V2_SCHEMA_ID =
+  'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v2.schema.json';
 
 /** Every primary layout engine this build can render, and the compiled schema
  *  that validates its own document shape (#291 adds grafana-grid@1 as a
  *  second engine alongside flow@1). */
 const SUPPORTED_LAYOUT_SCHEMAS: Record<string, { versions: readonly number[]; schemaId: string }> = {
   flow: { versions: [1], schemaId: FLOW_LAYOUT_V1_SCHEMA_ID },
-  'grafana-grid': { versions: [1], schemaId: GRAFANA_GRID_LAYOUT_V1_SCHEMA_ID },
+  'grafana-grid': {
+    versions: [1, 2],
+    schemaId: GRAFANA_GRID_LAYOUT_V2_SCHEMA_ID,
+  },
 };
 
 /** True for any registered primary engine at a version this build renders
@@ -354,7 +359,10 @@ export function validateDashboardSemantics(dashboard: unknown, {
       // other engine is primary. A known non-flow engine ALSO gets its own
       // items validated against its own schema, in addition to the fallback.
       const primarySchema = isSupportedLayout(layout.type, layout.version)
-        ? SUPPORTED_LAYOUT_SCHEMAS[layout.type as string].schemaId : undefined;
+        ? (layout.type === 'grafana-grid' && layout.version === 1
+          ? GRAFANA_GRID_LAYOUT_V1_SCHEMA_ID
+          : SUPPORTED_LAYOUT_SCHEMAS[layout.type as string].schemaId)
+        : undefined;
       if (primarySchema !== undefined) {
         // Validate only the engine's own declared shape: `fallback`/`config`
         // are envelope-only slots (dashboardLayoutDocumentV1 in

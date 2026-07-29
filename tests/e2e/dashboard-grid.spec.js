@@ -278,9 +278,7 @@ test.describe('Dashboard grafana-grid layout', () => {
     await expect(page.locator('#viewonly-grid .dash-gg-resize')).toHaveCount(0);
   });
 
-  // #321 "Full view": a TRANSIENT grafana-grid render-mode override — every
-  // tile spans the full effective column count, and resize is vertical-only.
-  test('Full view renders every tile at the full effective column count (#321)', async ({ page }) => {
+  test('Full renders at fixed width 12 with its independent 2-unit default', async ({ page }) => {
     await openWide(page);
     const columns = await page.evaluate(() => window.__fullColumns());
     const cards = page.locator('#full-grid .dash-tile');
@@ -289,10 +287,8 @@ test.describe('Dashboard grafana-grid layout', () => {
       const card = page.locator(`#full-grid .dash-tile[data-tile-id="${id}"]`);
       expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${columns}`);
     }
-    // The authored (persisted) spans still travel on the model, unchanged by
-    // the full-width override.
-    expect(await page.evaluate(() => window.__fullPersistedSpan('f1'))).toBe(4);
-    expect(await page.evaluate(() => window.__fullPersistedSpan('f2'))).toBe(8);
+    expect(await page.evaluate(() => window.__fullHeight('f1'))).toBe(2);
+    expect(await page.evaluate(() => window.__fullHeight('f2'))).toBe(4);
     // The resize handle's accessible label reflects vertical-only resize.
     const handle = page.locator('#full-grid .dash-tile[data-tile-id="f1"] .dash-gg-resize');
     await expect(handle).toHaveAttribute('aria-label', 'Resize tile height');
@@ -301,7 +297,7 @@ test.describe('Dashboard grafana-grid layout', () => {
     expect(await page.locator('#full-grid .dash-gg-resize').first().evaluate((node) => getComputedStyle(node).cursor)).toBe('ns-resize');
   });
 
-  test('Full view resize is vertical-only: horizontal movement never changes span, and the dispatched span is the UNCHANGED persisted one', async ({ page }) => {
+  test('Full resize is vertical-only and persists independently from Report across reloads', async ({ page }) => {
     await openWide(page);
     const card = page.locator('#full-grid .dash-tile[data-tile-id="f1"]'); // authored span 4, rendered full width
     const handle = page.locator('#full-grid .dash-tile[data-tile-id="f1"] .dash-gg-resize');
@@ -335,10 +331,82 @@ test.describe('Dashboard grafana-grid layout', () => {
     await expect(card).not.toHaveClass(/dash-gg-resizing/);
     const events = await page.evaluate(() => window.__fullResizeEvents);
     expect(events).toHaveLength(1);
-    // The re-dispatched span is the tile's PERSISTED (authored) span, 4 —
-    // never the full-width rendered span (`columns`).
-    expect(events[0].tileId).toBe('f1');
-    expect(events[0].span).toBe(4);
+    expect(events[0]).toEqual({ tileId: 'f1', height: 4 });
+
+    await page.evaluate(() => window.__resizeReport('f1', 8));
+    await page.reload();
+    await page.waitForFunction(() => window.__ready === true);
+    expect(await page.evaluate(() => window.__fullHeight('f1'))).toBe(4);
+    expect(await page.evaluate(() => window.__reportModel.tiles.find((tile) => tile.tileId === 'f1').heightUnits)).toBe(8);
+  });
+
+  test('Report is centered at 9/12 width with a 5-unit default and no Widen action', async ({ page }) => {
+    await openWide(page);
+    const grid = page.locator('#report-grid');
+    const first = grid.locator('.dash-tile[data-tile-id="f1"]');
+    const geometry = await page.evaluate(() => {
+      const grid = document.getElementById('report-grid').getBoundingClientRect();
+      const card = document.querySelector('#report-grid [data-tile-id="f1"]').getBoundingClientRect();
+      return {
+        ratio: card.width / grid.width,
+        leftGap: card.left - grid.left,
+        rightGap: grid.right - card.right,
+      };
+    });
+    expect(geometry.ratio).toBeCloseTo(0.75, 1);
+    expect(geometry.leftGap).toBeCloseTo(geometry.rightGap, 0);
+    expect(await page.evaluate(() => window.__reportModel.tiles[0].heightUnits)).toBe(5);
+    const resize = first.locator('.dash-gg-resize');
+    await expect(resize).toHaveAttribute('aria-label', 'Resize tile height');
+    expect(await resize.evaluate((node) => getComputedStyle(node).cursor)).toBe('ns-resize');
+    await expect(first.locator('.dash-tile-widen')).toHaveCount(0);
+    await expect(page.locator('#full-grid .dash-tile-widen')).toHaveCount(0);
+  });
+
+  test('temporary 2/3-column previews ignore saved extremes, reset, stay at 300px, and collapse on mobile', async ({ page }) => {
+    await openWide(page);
+    const cards = page.locator('#preview-grid .dash-tile');
+    await expect(cards).toHaveCount(3);
+    expect(await cards.evaluateAll((nodes) => nodes.map((node) => ({
+      span: node.style.gridColumn, height: node.style.height,
+    })))).toEqual([
+      { span: 'span 1', height: '300px' },
+      { span: 'span 1', height: '300px' },
+      { span: 'span 1', height: '300px' },
+    ]);
+    expect(await page.evaluate(() => window.__previewModel.columns)).toBe(2);
+
+    await page.evaluate(() => window.__widenPreview('p1'));
+    expect(await cards.first().evaluate((node) => node.style.gridColumn)).toBe('span 2');
+    await page.evaluate(() => window.__selectPreview('columns-3'));
+    expect(await page.evaluate(() => window.__previewModel.columns)).toBe(3);
+    expect(await cards.first().evaluate((node) => node.style.gridColumn)).toBe('span 1');
+
+    await page.evaluate(() => {
+      window.__widenPreview('p1');
+      window.__selectPreview('columns-3');
+    });
+    expect(await cards.first().evaluate((node) => node.style.gridColumn)).toBe('span 1');
+    await page.evaluate(() => window.__selectPreview('columns-3', true));
+    expect(await page.evaluate(() => window.__previewModel.columns)).toBe(1);
+    expect(await page.evaluate(() => window.__previewWrites)).toBe(0);
+
+    await page.reload();
+    await page.waitForFunction(() => window.__ready === true);
+    expect(await page.evaluate(() => window.__previewModel.columns)).toBe(2);
+    expect(await page.locator('#preview-grid .dash-tile').first().evaluate((node) => node.style.gridColumn)).toBe('span 1');
+  });
+
+  test('Grid Widen changes width only and preserves the exact saved height through its cycle', async ({ page }) => {
+    await openWide(page);
+    const placements = await page.evaluate(() => [
+      window.__widenGrid(), window.__widenGrid(), window.__widenGrid(),
+    ]);
+    expect(placements).toEqual([
+      { span: 6, height: 4 },
+      { span: 12, height: 4 },
+      { span: 1, height: 4 },
+    ]);
   });
 
   // #331: tall Table/Markdown panel content must stay clipped/scrollable

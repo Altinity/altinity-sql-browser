@@ -20,7 +20,7 @@ import {
 } from './workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../../core/json-schema-validation.js';
-import { dropCuratedFilters } from './dashboard-document.js';
+import { dropCuratedFilters, upgradeDashboardLayout } from './dashboard-document.js';
 import type {
   DashboardDocumentV1, PortableBundleV1, PortableBundleV2,
 } from '../../generated/json-schema.types.js';
@@ -145,8 +145,15 @@ export function decodePortableBundleJson(
   if (identity.length) return { ok: false, diagnostics: sortDiagnostics(identity) };
   const version = (parsed.value as Record<string, unknown>).version as 1 | 2;
   if (version === CURRENT_PORTABLE_BUNDLE_VERSION) {
-    const diagnostics = validatePortableBundleDocument(parsed.value, options);
-    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: parsed.value as PortableBundleV2 };
+    const sourceDiagnostics = validatePortableBundleDocument(parsed.value, options);
+    if (sourceDiagnostics.length) return { ok: false, diagnostics: sourceDiagnostics };
+    const source = parsed.value as PortableBundleV2;
+    const canonical = {
+      ...source,
+      dashboards: source.dashboards.map(upgradeDashboardLayout),
+    };
+    const diagnostics = validatePortableBundleDocument(canonical, options);
+    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: canonical };
   }
   const structural = structuralBundleDiagnostics(parsed.value, 1, validationService);
   if (structural.length) return { ok: false, diagnostics: sortDiagnostics(structural) };
@@ -187,7 +194,7 @@ export function encodePortableBundleJson({
     exportedAt: nowISO,
     ...(metadata === undefined ? {} : { metadata }),
     queries,
-    dashboards,
+    dashboards: dashboards.map(upgradeDashboardLayout),
   };
   const diagnostics = validatePortableBundleDocument(document, options);
   if (diagnostics.length) return { ok: false, diagnostics };

@@ -11,6 +11,7 @@ const base: PanelTileActionsInput = {
   title: 'Revenue by day',
   dashboardTitle: 'Sales',
   widenStyle: 'columns-3',
+  includeWiden: true,
   placement: { span: 1, height: 'medium' },
   kpiBandMember: false,
   queryResolves: true,
@@ -25,14 +26,12 @@ const row = (kind: PanelTileActionKind, over: Partial<PanelTileActionsInput> = {
   actions(over).find((action) => action.kind === kind)!;
 
 describe('panelTileActions — the menu vocabulary (#544)', () => {
-  it('always returns the same four kinds, in the design order, remove last', () => {
-    // The vocabulary is the point: a menu that grows and shrinks with the layout
-    // style teaches nothing, so every gate is a `reason`, never an absence.
+  it('returns the four available kinds in the design order, remove last', () => {
     expect(actions().map((action) => action.kind))
       .toEqual(['duplicate', 'widen', 'open', 'remove']);
   });
 
-  it('keeps that order and length for the most degenerate tile there is', () => {
+  it('keeps temporary gates as explained unavailable rows', () => {
     const degenerate = actions({
       widenStyle: null, kpiBandMember: true, queryResolves: false, queryless: true,
       removalRefusal: 'ownership-unproven',
@@ -44,6 +43,11 @@ describe('panelTileActions — the menu vocabulary (#544)', () => {
       .toEqual(['widen', 'open', 'remove']);
     expect(degenerate.every((action) => action.unavailable === null || action.unavailable.length > 0))
       .toBe(true);
+  });
+
+  it('omits Widen when fixed width is the authored Full/Report design', () => {
+    expect(actions({ includeWiden: false, widenStyle: null }).map((action) => action.kind))
+      .toEqual(['duplicate', 'open', 'remove']);
   });
 
   it('marks exactly one action destructive', () => {
@@ -76,17 +80,17 @@ describe('panelTileActions — widen', () => {
   it('names the shrink at the maximum, because the action reverses there', () => {
     expect(row('widen', { widenStyle: 'columns-3', placement: { span: 3 } }).label)
       .toBe('Shrink to 1 column');
-    expect(row('widen', { widenStyle: 'grafana-grid', placement: { span: 12, height: 4 } }).label)
+    expect(row('widen', { widenStyle: 'grid', placement: { span: 12, height: 4 } }).label)
       .toBe('Shrink to 1 column');
   });
 
   it('doubles in the grid, matching the step the press actually takes', () => {
-    expect(row('widen', { widenStyle: 'grafana-grid', placement: { span: 3, height: 2 } }).label)
+    expect(row('widen', { widenStyle: 'grid', placement: { span: 3, height: 2 } }).label)
       .toBe('Widen to 6 columns');
   });
 
   it('is available whenever the style has a width to step', () => {
-    for (const widenStyle of ['columns-2', 'columns-3', 'grafana-grid'] as const) {
+    for (const widenStyle of ['columns-2', 'columns-3', 'grid'] as const) {
       expect(row('widen', { widenStyle }).unavailable, widenStyle).toBeNull();
     }
   });

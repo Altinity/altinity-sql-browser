@@ -1424,6 +1424,126 @@
         }
       }
     },
+    "dashboard-layout-grafana-grid-v2": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v2.schema.json",
+      "title": "Altinity SQL Browser Dashboard grafana-grid@2 layout",
+      "description": "The normative authored Dashboard layout. Grid, Full, and Report are persisted base styles with independent per-tile dimensions. Grid defaults to 6 columns by 2 height units, Full to fixed width 12 by height 2, and Report to centered fixed width 9/12 by height 5. A flow@1 fallback is carried by the Dashboard layout envelope and regenerated from the selected base style.",
+      "x-altinity-kind": "dashboard-layout-grafana-grid",
+      "x-altinity-version": 2,
+      "type": "object",
+      "required": [
+        "type",
+        "version",
+        "preset",
+        "items"
+      ],
+      "properties": {
+        "type": {
+          "title": "Layout engine",
+          "type": "string",
+          "const": "grafana-grid"
+        },
+        "version": {
+          "title": "Layout engine version",
+          "type": "integer",
+          "const": 2
+        },
+        "preset": {
+          "title": "Authored base style",
+          "description": "The persisted base style. Two- and three-column choices are session previews and are never stored here.",
+          "type": "string",
+          "enum": [
+            "grid",
+            "full",
+            "report"
+          ]
+        },
+        "items": {
+          "title": "Per-tile style dimensions",
+          "description": "Independent Grid, Full, and Report dimensions keyed by tile ID. Missing style entries use that style's designed defaults.",
+          "type": "object",
+          "maxProperties": 100,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/grafanaGridTileStylesV2"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "type",
+        "version",
+        "preset",
+        "items"
+      ],
+      "$defs": {
+        "grafanaGridHeightV2": {
+          "title": "Tile height",
+          "description": "Numeric row units from 1 through 16; pixels = 32 + 88 × units.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "grafanaGridTilePlacementV2": {
+          "title": "Grid dimensions",
+          "type": "object",
+          "properties": {
+            "span": {
+              "title": "Column span",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            },
+            "height": {
+              "$ref": "#/$defs/grafanaGridHeightV2"
+            }
+          },
+          "additionalProperties": false,
+          "x-altinity-order": [
+            "span",
+            "height"
+          ]
+        },
+        "grafanaGridFixedPlacementV2": {
+          "title": "Fixed-width style dimensions",
+          "type": "object",
+          "properties": {
+            "height": {
+              "$ref": "#/$defs/grafanaGridHeightV2"
+            }
+          },
+          "additionalProperties": false,
+          "x-altinity-order": [
+            "height"
+          ]
+        },
+        "grafanaGridTileStylesV2": {
+          "title": "Independent tile dimensions by authored style",
+          "type": "object",
+          "properties": {
+            "grid": {
+              "$ref": "#/$defs/grafanaGridTilePlacementV2"
+            },
+            "full": {
+              "$ref": "#/$defs/grafanaGridFixedPlacementV2"
+            },
+            "report": {
+              "$ref": "#/$defs/grafanaGridFixedPlacementV2"
+            }
+          },
+          "additionalProperties": false,
+          "x-altinity-order": [
+            "grid",
+            "full",
+            "report"
+          ]
+        }
+      }
+    },
     "dashboard-v1": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json",

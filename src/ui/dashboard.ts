@@ -70,9 +70,9 @@ import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/lay
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
 import {
   DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, GRID_HEIGHT_UNIT_MAX, GRID_HEIGHT_UNIT_MIN,
-  contentBoxWidth, deriveFlowFallback,
-  gridHeightUnitsToPx, snapGridHeight, snapGridSpan,
+  contentBoxWidth, gridHeightUnitsToPx, gridPlacementAt, snapGridHeight, snapGridSpan, stylePlacementAt,
 } from '../dashboard/layouts/grafana-grid-layout.js';
+import type { AuthoredDashboardStyle } from '../dashboard/layouts/grafana-grid-layout.js';
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
@@ -675,72 +675,47 @@ export async function renderDashboard(
   // synchronously, before the first publish) and kept current by the render
   // effect (Part D) whenever `sview.layout.renderMode` changes.
   let gridRenderMode: GridRenderMode = 'tiles';
+  let currentDashboardStyle: DashboardStyle = currentDoc.layout.preset as DashboardStyle;
   // 2026-07-18 owner override: moved off the variable toolbar and into the top
   // header row (right after File) so the toolbar's whole width is available
   // for variables; its File-style menu keeps the active layout visible without
   // a second header label.
-  // #321: "Full view" is a TRANSIENT runtime render-mode override over the
-  // grafana-grid engine (never persisted) — it sits alongside "Grid Tiles" in
-  // the editable menu. A read-only view gets a REDUCED
-  // menu with only those two entries — layout editing (the flow presets,
-  // and the flow<->grid engine switch) stays an edit-mode-only affordance,
-  // but the render-mode toggle is harmless to expose read-only since it never
-  // persists anything.
+  // Current documents author Grid, Full, or Report independently. View mode
+  // uses the same menu as a non-mutating preview; edit mode persists a base
+  // style. The 2/3-column entries are session previews in either mode.
   const EDITABLE_LAYOUT_OPTIONS: LayoutOption[] = [
-    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights', 'G'],
-    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved', 'F'],
+    ['grid', 'Grid', 'A responsive tile grid using authored spans and heights', 'G'],
+    ['full', 'Full', 'One full-width tile per row with independent saved heights', 'F'],
     ['report', 'Report', 'One centered, taller tile per row', 'R'],
-    ['columns-2', '2 columns', 'Arrange tiles in two columns', '2'],
-    ['columns-3', '3 columns', 'Arrange tiles in three columns', '3'],
+    ['columns-2', '2 columns', 'Temporary two-column preview at a fixed height', '2'],
+    ['columns-3', '3 columns', 'Temporary three-column preview at a fixed height', '3'],
   ];
-  const getActiveLayoutOption = (): string => (currentDoc.layout.type === 'grafana-grid'
-    ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
-    : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
   let layoutMenu: { el: HTMLButtonElement; sync: () => void };
   const selectLayout = (value: DashboardStyle): void => {
-      if (readOnly) {
-        session.setDashboardStyle(value as DashboardStyle);
-        layoutMenu.sync();
-        return;
-      }
-      if (value === 'grafana-grid') {
-        // Full view -> Grid Tiles: clear the transient override in place (no
-        // command). Flow -> Grid Tiles: the existing persisted engine switch.
-        // Already grid+tiles: no-op.
-        if (gridRenderMode === 'full') session.setGridRenderMode('tiles');
-        else if (currentDoc.layout.type !== 'grafana-grid') {
-          runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
-        }
-        layoutMenu.sync();
-        return;
-      }
-      if (value === 'full') {
-        // Grid already active: only the transient override changes. Flow
-        // active: persist the ONE flow->grid conversion, THEN apply the
-        // override (still transient) — the conversion is the only persisted
-        // change; the full-view override itself never is.
-        if (currentDoc.layout.type !== 'grafana-grid') {
-          runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
-        }
-        session.setGridRenderMode('full');
-        layoutMenu.sync();
-        return;
-      }
-      // A flow preset: clear any transient full-view override first (#321 —
-      // picking a flow preset always lands on 'tiles' semantics), then apply
-      // the existing persisted flow preset/engine-switch logic unchanged.
-      if (gridRenderMode === 'full') session.setGridRenderMode('tiles');
-      if (currentDoc.layout.type === 'grafana-grid') {
-        runCommand({ type: 'change-layout', layout: { type: 'flow', version: 1, preset: value as FlowPresetV1 } });
-      } else {
-        runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: value as FlowPresetV1 } });
-      }
+    if (readOnly || value === 'columns-2' || value === 'columns-3') {
+      session.setDashboardStyle(value);
       layoutMenu.sync();
+      return;
+    }
+    if (currentDoc.layout.type === 'grafana-grid'
+      && currentDoc.layout.version === 2
+      && currentDoc.layout.preset === value) {
+      session.setDashboardStyle(value);
+      layoutMenu.sync();
+      return;
+    }
+    runCommand({
+      type: 'change-layout',
+      layout: {
+        type: 'grafana-grid', version: 2, preset: value,
+      } as DashboardLayoutDocumentV1,
+    });
+    layoutMenu.sync();
   };
   layoutMenu = buildLayoutMenu(
     doc, keyboardOwnerChannel(app),
     EDITABLE_LAYOUT_OPTIONS,
-    () => readOnly ? session.state.value.style : getActiveLayoutOption(),
+    () => session.state.value.style,
     selectLayout,
     'Dashboard style',
   );
@@ -1153,72 +1128,73 @@ export async function renderDashboard(
     // A UI-driven command (drag move-tile, preset change-layout, grid
     // resize/delete) is always valid; a rejected candidate is simply ignored
     // (no draft change).
-    if (!applied.ok) return;
-    const normalized = resolveLayoutPluginSync(applied.dashboard.layout).normalize(applied.dashboard);
-    // Apply OPTIMISTICALLY first so a drag/resize preview stays instant — the
-    // commit below either confirms this (this command's own commit round-
-    // trips its own edit) or a rebase corrects it once resolutions land.
-    currentDoc = normalized;
-    layoutMenu.sync();
-    syncSessionDocument(normalized);
+    if (applied.ok) {
+      const normalized = resolveLayoutPluginSync(applied.dashboard.layout).normalize(applied.dashboard);
+      // Apply OPTIMISTICALLY first so a drag/resize preview stays instant — the
+      // commit below either confirms this (this command's own commit round-
+      // trips its own edit) or a rebase corrects it once resolutions land.
+      currentDoc = normalized;
+      layoutMenu.sync();
+      syncSessionDocument(normalized);
 
-    pendingCommands.push(command);
+      pendingCommands.push(command);
 
-    // `app.mutateWorkspace` reads the latest COMMITTED aggregate at DEQUEUE
-    // time and re-applies THIS descriptor to it — never to the (possibly
-    // already-stale) optimistic doc it was dispatched against — so the
-    // persisted revision is always base+1 over whatever the truth actually is
-    // by the time this op runs, regardless of who else committed meanwhile.
-    // #344 review 2: what the transform SAW as committed truth at dequeue
-    // time. A failure/abort must refresh the route cache from this before
-    // rebasing — the null-abort case exists precisely BECAUSE committed truth
-    // moved past the route cache, so rebasing from the stale cache would
-    // re-publish a document containing what the concurrent commit removed.
-    // Stays `undefined` when the queued op rejected before the transform ran.
-    let observed: StoredWorkspaceV5 | null | undefined;
-    void app.mutateWorkspace((latest) => {
-      observed = latest;
-      // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
-      // either nothing is committed, or (#424) THIS route's PINNED Dashboard is
-      // gone from committed truth — deleted, or replaced by an import while
-      // this command sat in the queue. Either way the command no longer
-      // applies: abort rather than retarget whichever Dashboard now happens to
-      // sit in the compatibility slot.
-      const base = latest && findDashboard(latest, selectedDashboardId);
-      if (!base) return null;
-      // `base` is truthy only when `latest` was, so the aggregate exists here.
-      const committed = latest as StoredWorkspaceV5;
-      const reapplied = applyRouteCommand(base, command, committed.queries);
-      if (!reapplied.ok) return null;
-      const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
-      // Replaces exactly this one entry, addressed by its stable id; every
-      // other stored Dashboard is carried through untouched, revisions
-      // included. `null` means the id became AMBIGUOUS (a duplicate reached
-      // committed truth) — never silently overwrite one of two matches.
-      const next = replaceDashboard(committed, selectedDashboardId, {
-        ...committedDoc, revision: base.revision + 1,
+      // `app.mutateWorkspace` reads the latest COMMITTED aggregate at DEQUEUE
+      // time and re-applies THIS descriptor to it — never to the (possibly
+      // already-stale) optimistic doc it was dispatched against — so the
+      // persisted revision is always base+1 over whatever the truth actually is
+      // by the time this op runs, regardless of who else committed meanwhile.
+      // #344 review 2: what the transform SAW as committed truth at dequeue
+      // time. A failure/abort must refresh the route cache from this before
+      // rebasing — the null-abort case exists precisely BECAUSE committed truth
+      // moved past the route cache, so rebasing from the stale cache would
+      // re-publish a document containing what the concurrent commit removed.
+      // Stays `undefined` when the queued op rejected before the transform ran.
+      let observed: StoredWorkspaceV5 | null | undefined;
+      void app.mutateWorkspace((latest) => {
+        observed = latest;
+        // ONE guard, exactly the pre-#424 `!latest || !latest.dashboard` shape:
+        // either nothing is committed, or (#424) THIS route's PINNED Dashboard is
+        // gone from committed truth — deleted, or replaced by an import while
+        // this command sat in the queue. Either way the command no longer
+        // applies: abort rather than retarget whichever Dashboard now happens to
+        // sit in the compatibility slot.
+        const base = latest && findDashboard(latest, selectedDashboardId);
+        if (!base) return null;
+        // `base` is truthy only when `latest` was, so the aggregate exists here.
+        const committed = latest as StoredWorkspaceV5;
+        const reapplied = applyRouteCommand(base, command, committed.queries);
+        if (!reapplied.ok) return null;
+        const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
+        // Replaces exactly this one entry, addressed by its stable id; every
+        // other stored Dashboard is carried through untouched, revisions
+        // included. `null` means the id became AMBIGUOUS (a duplicate reached
+        // committed truth) — never silently overwrite one of two matches.
+        const next = replaceDashboard(committed, selectedDashboardId, {
+          ...committedDoc, revision: base.revision + 1,
+        });
+        if (!next) return null;
+        return { candidate: { ...next, queries: reapplied.queries } };
+      }).then((outcome) => {
+        if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
+        // #343: adapt the shared outcome back to this route's descriptor-based
+        // settle contract — `null` on a transform abort (this command no longer
+        // applies), the commit result otherwise. Projection already happened in
+        // `mutateWorkspace` on success.
+        const result: WorkspaceCommitResult | null = outcome.ok
+          ? { ok: true, workspace: outcome.workspace, dashboardRevision: outcome.dashboardRevision }
+          : outcome.aborted ? null : { ok: false, diagnostics: outcome.diagnostics };
+        settleCommand(result, observed);
+      }, () => {
+        if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration)) return;
+        // The queued op itself REJECTED (blocked/quota/private-mode storage —
+        // the active-ID load/store threw, distinct from an `ok:false` commit).
+        // Without this handler the rejection is unhandled and, worse, this
+        // command would stay in `pendingCommands` forever, corrupting every
+        // future rebase.
+        settleCommand({ ok: false, diagnostics: [] }, observed);
       });
-      if (!next) return null;
-      return { candidate: { ...next, queries: reapplied.queries } };
-    }).then((outcome) => {
-      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return;
-      // #343: adapt the shared outcome back to this route's descriptor-based
-      // settle contract — `null` on a transform abort (this command no longer
-      // applies), the commit result otherwise. Projection already happened in
-      // `mutateWorkspace` on success.
-      const result: WorkspaceCommitResult | null = outcome.ok
-        ? { ok: true, workspace: outcome.workspace, dashboardRevision: outcome.dashboardRevision }
-        : outcome.aborted ? null : { ok: false, diagnostics: outcome.diagnostics };
-      settleCommand(result, observed);
-    }, () => {
-      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration)) return;
-      // The queued op itself REJECTED (blocked/quota/private-mode storage —
-      // the active-ID load/store threw, distinct from an `ok:false` commit).
-      // Without this handler the rejection is unhandled and, worse, this
-      // command would stay in `pendingCommands` forever, corrupting every
-      // future rebase.
-      settleCommand({ ok: false, diagnostics: [] }, observed);
-    });
+    }
   }
 
   // #350/#343 step 6: rebuild the WHOLE route from committed truth — a fresh
@@ -1443,8 +1419,21 @@ export async function renderDashboard(
   function resizeHandleLabel(full: boolean): string {
     return full ? 'Resize tile height' : 'Resize';
   }
+  /** True for the fixed-width authored styles (#535): Full and Report are both
+   *  one tile per row at a width the author cannot change. Two presentation
+   *  decisions follow from that and now read this ONE predicate rather than
+   *  re-listing the pair: the resize handle is vertical-only (below), and the
+   *  tile head has room for a description subtitle (`applyTileHeaderStyle`).
+   *
+   *  The resize label needs it because the render-mode mirror (`gridRenderMode`)
+   *  cannot answer the question — it is `'tiles'` for Report, so a Dashboard
+   *  that OPENS in Report saw neither a mode flip nor a style change on its
+   *  first publish and kept the generic "Resize" label (#549 review). */
+  const isFixedWidthStyle = (style: DashboardStyle): boolean => style === 'full' || style === 'report';
   function applyResizeHandleMode(tileEl: TileEl, full: boolean): void {
     if (!tileEl.resizeHandle) return;
+    tileEl.resizeHandle.hidden = currentDashboardStyle === 'columns-2'
+      || currentDashboardStyle === 'columns-3';
     const label = resizeHandleLabel(full);
     tileEl.resizeHandle.title = label;
     tileEl.resizeHandle.setAttribute('aria-label', label);
@@ -1471,7 +1460,7 @@ export async function renderDashboard(
    *  The denser Grid Tiles and 2/3-column styles keep only the name visible and
    *  expose the description itself as that name's native hover tooltip. */
   function applyTileHeaderStyle(ts: ViewerTileState, tileEl: TileEl): void {
-    const expanded = tileHeaderStyle === 'full' || tileHeaderStyle === 'report';
+    const expanded = isFixedWidthStyle(tileHeaderStyle);
     if (expanded) tileEl.headingName.title = ts.title;
     else if (ts.description) tileEl.headingName.title = ts.description;
     else tileEl.headingName.removeAttribute('title');
@@ -1479,20 +1468,25 @@ export async function renderDashboard(
   }
 
   /**
-   * `sview.style` is the ONE value that already folds engine, flow preset and grid
-   * render mode together (`dashboard-viewer-session.ts`), so this is a single read
+   * `sview.style` is the ONE value that already folds authored style, legacy
+   * engine state, and temporary preview together, so this is a single read
    * rather than a re-derivation that could disagree with what is on screen.
    *
    * Mobile is the one thing it does not fold in: `style` stays `'columns-2'` on a
-   * phone while `computeFlowLayout` forces every effective span to 1. A press there
-   * would rewrite the persisted width with no visible effect at all — and
+   * phone while the preview renderer forces every effective span to 1. A press
+   * there would have no visible effect at all — and
    * `@media (hover: none)` means the button is permanently visible on that
    * viewport, so it would be an inviting no-op. The grid needs no such guard: its
    * narrow behaviour is a responsive clamp over the authored span, and authoring
    * over the clamp is already the documented rule there (see `wireGridResize`).
    */
   function widenStyleFor(sview: DashboardViewState): DashboardStyle | null {
-    if (sview.layout.engine === 'flow' && sview.layout.mobile) return null;
+    if (
+      (sview.style === 'columns-2' || sview.style === 'columns-3')
+      && (sview.layout.engine === 'flow'
+        ? sview.layout.mobile
+        : sview.layout.grid.columns === 1)
+    ) return null;
     return canWidenPanel(sview.style) ? sview.style : null;
   }
 
@@ -1509,8 +1503,13 @@ export async function renderDashboard(
    * plugin-aware reader instead.
    */
   function storedPlacement(tileId: string): unknown {
-    const items = (currentDoc.layout as { items?: Record<string, unknown> }).items;
-    return items ? items[tileId] : undefined;
+    if (widenStyle === 'columns-2' || widenStyle === 'columns-3') {
+      const rendered = gridPlacementByTile.get(tileId);
+      return rendered ? { span: rendered.span, height: DEFAULT_GRID_HEIGHT_UNITS } : undefined;
+    }
+    return currentDoc.layout.version === 2
+      ? stylePlacementAt(currentDoc.layout, tileId, 'grid')
+      : gridPlacementAt(currentDoc.layout, tileId);
   }
 
   /** Show/hide and re-label one tile's widen button for the current style and the
@@ -1550,14 +1549,12 @@ export async function renderDashboard(
   // preview and the persisted span are clamped to `columns - colStart` for
   // the gesture. Widening further than that needs a second drag after the
   // next repack (deterministic beats a jumpy mid-drag reflow).
-  // #321 Full view (vertical-only resize): while `gridRenderMode === 'full'`
-  // every tile renders at the full effective column count (its EFFECTIVE
-  // `span`, in `gridPlacementByTile`) — horizontal pointer movement is
+  // Full/Report vertical-only resize: each style has a fixed effective width,
+  // so horizontal pointer movement is
   // ignored entirely (no `grid-column` re-pin: the card IS full width, there
   // is no sub-span to preview), and the pointerup dispatch re-sends the
-  // tile's UNCHANGED `persistedSpan` (the authored span `gridPlacementByTile`
-  // also carries — never the overridden full-width `span`) alongside the new
-  // height, so a Full-view resize can only ever change height.
+  // update writes only that style's `{height}` map. Grid keeps the two-axis
+  // resize and its independent `{span,height}` map.
   function wireGridResize(tileId: string, handle: HTMLElement, card: HTMLElement): void {
     handle.addEventListener('pointerdown', (event: Event) => {
       if (activeEngine !== 'grafana-grid') return;
@@ -1565,7 +1562,8 @@ export async function renderDashboard(
       if (start.button !== 0) return;
       start.preventDefault();
       start.stopPropagation(); // never let the resize handle start a card drag
-      const full = gridRenderMode === 'full';
+      const fixedWidth = currentDashboardStyle === 'full' || currentDashboardStyle === 'report';
+      if (currentDashboardStyle === 'columns-2' || currentDashboardStyle === 'columns-3') return;
       const columns = Math.max(1, currentGridColumns);
       const placement = gridPlacementByTile.get(tileId);
       const colStart = placement ? placement.colStart : 0;
@@ -1578,13 +1576,13 @@ export async function renderDashboard(
       let curHeight = placement ? placement.heightUnits : DEFAULT_GRID_HEIGHT_UNITS;
       const savedGridColumn = card.style.gridColumn;
       const savedHeight = card.style.height;
-      if (!full) card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
+      if (!fixedWidth) card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
       const rect = card.getBoundingClientRect();
       const colWidthPx = (measuredGridWidth() - GRID_GAP_PX * (columns - 1)) / columns;
       card.classList.add('dash-gg-resizing');
       const win = doc.defaultView || window;
       const move = (ev: PointerEvent): void => {
-        if (!full) {
+        if (!fixedWidth) {
           const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
           if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
         }
@@ -1608,7 +1606,13 @@ export async function renderDashboard(
           card.style.height = savedHeight;
           return;
         }
-        runCommand({ type: 'update-placement', tileId, placement: { span: full ? persistedSpan : curSpan, height: curHeight } });
+        const style = currentDashboardStyle as AuthoredDashboardStyle;
+        runCommand({
+          type: 'update-placement',
+          tileId,
+          style,
+          placement: fixedWidth ? { height: curHeight } : { span: curSpan, height: curHeight },
+        });
       };
       const up = (): void => cleanup(true);
       const cancel = (): void => cleanup(false);
@@ -1626,7 +1630,8 @@ export async function renderDashboard(
       if (activeEngine !== 'grafana-grid') return;
       const key = event as KeyboardEvent;
       const placement = gridPlacementByTile.get(tileId)!;
-      const full = gridRenderMode === 'full';
+      const fixedWidth = currentDashboardStyle === 'full' || currentDashboardStyle === 'report';
+      if (currentDashboardStyle === 'columns-2' || currentDashboardStyle === 'columns-3') return;
       let span = placement.persistedSpan;
       let height = placement.heightUnits;
       if (key.key === 'ArrowUp') height = Math.max(GRID_HEIGHT_UNIT_MIN, height - 1);
@@ -1635,12 +1640,17 @@ export async function renderDashboard(
       // effective span. A saved 12-column tile rendered in a 4-column narrow
       // grid therefore moves 12→11 on ArrowLeft and stays 12 on ArrowRight;
       // it never jumps to the visible clamp (3/4) and loses desktop intent.
-      else if (!full && key.key === 'ArrowLeft') span = Math.max(1, placement.persistedSpan - 1);
-      else if (!full && key.key === 'ArrowRight') span = Math.min(GRAFANA_GRID_MAX_COLUMNS, placement.persistedSpan + 1);
+      else if (!fixedWidth && key.key === 'ArrowLeft') span = Math.max(1, placement.persistedSpan - 1);
+      else if (!fixedWidth && key.key === 'ArrowRight') span = Math.min(GRAFANA_GRID_MAX_COLUMNS, placement.persistedSpan + 1);
       else return;
       key.preventDefault();
       if (span === placement.persistedSpan && height === placement.heightUnits) return;
-      runCommand({ type: 'update-placement', tileId, placement: { span, height } });
+      runCommand({
+        type: 'update-placement',
+        tileId,
+        style: currentDashboardStyle as AuthoredDashboardStyle,
+        placement: fixedWidth ? { height } : { span, height },
+      });
     });
   }
 
@@ -2092,6 +2102,7 @@ export async function renderDashboard(
       title: ts.title,
       dashboardTitle: currentDoc.title,
       widenStyle,
+      includeWiden: currentDashboardStyle !== 'full' && currentDashboardStyle !== 'report',
       placement: storedPlacement(ts.tileId),
       kpiBandMember: ts.isKpi && activeEngine === 'flow',
       queryResolves: queryById.has(ts.queryId),
@@ -2313,9 +2324,14 @@ export async function renderDashboard(
   function widenTile(tileId: string): void {
     const style = widenStyle;
     if (style === null) return;
+    if (style === 'columns-2' || style === 'columns-3') {
+      session.widenTemporaryTile(tileId);
+      return;
+    }
     runCommand({
       type: 'update-placement',
       tileId,
+      style: 'grid',
       placement: nextPanelPlacement({ style, placement: storedPlacement(tileId) }),
     });
   }
@@ -2374,7 +2390,7 @@ export async function renderDashboard(
       panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
       menuBtn, kpiActions: null,
     };
-    if (resizeHandle) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
+    if (resizeHandle) applyResizeHandleMode(tileEl, isFixedWidthStyle(currentDashboardStyle));
     // A tile built mid-session (a duplicate, an import) has to arrive already
     // gated: the effect below only re-labels tiles it can find in `tileEls`, and
     // this one is added to that map on the next line.
@@ -2708,13 +2724,18 @@ export async function renderDashboard(
       if (ts) reconcileGridTile(ts);
     }
     currentGridColumns = gridModel.columns;
-    const sig = JSON.stringify({ c: gridModel.columns, tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.heightUnits]) });
+    const sig = JSON.stringify({
+      c: gridModel.columns,
+      style: gridModel.style,
+      tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.heightUnits, t.previewHeightPx]),
+    });
     // Rebuild the host STRUCTURE only when the grid model changes (a reorder,
     // resize, delete, responsive clamp, or membership change) — moving stable
     // tile cards, so charts/KPI content are never thrashed mid-drag.
     if (sig === lastGridSig) return;
     lastGridSig = sig;
-    grid.classList.remove('is-report'); // flow-only preset modifier
+    grid.classList.toggle('is-report', gridModel.style === 'report');
+    grid.classList.toggle('is-full', gridModel.style === 'full');
     grid.classList.add('dash-gg-grid');
     grid.style.gridTemplateColumns = `repeat(${gridModel.columns}, 1fr)`;
     const cards: HTMLElement[] = [];
@@ -2730,8 +2751,17 @@ export async function renderDashboard(
       // (`is-kpi` + the group role/name are maintained by `reconcileGridTile`,
       // which runs on EVERY pass — this loop is signature-gated and would miss
       // a panel-type flip with unchanged placement.)
-      tileEl.card.style.gridColumn = `span ${t.span}`;
-      setGridHeightPx(tileEl.card, t.heightUnits);
+      if (gridModel.style === 'report') {
+        tileEl.card.style.gridColumn = '1 / -1';
+        tileEl.card.style.width = '75%';
+        tileEl.card.style.marginInline = 'auto';
+      } else {
+        tileEl.card.style.gridColumn = `span ${t.span}`;
+        tileEl.card.style.width = '';
+        tileEl.card.style.marginInline = '';
+      }
+      tileEl.card.style.height = t.previewHeightPx === undefined
+        ? gridHeightUnitsToPx(t.heightUnits) + 'px' : t.previewHeightPx + 'px';
       cards.push(tileEl.card);
     }
     grid.replaceChildren(...cards);
@@ -2906,12 +2936,15 @@ export async function renderDashboard(
     // Keep the local render-mode mirror current from the published session
     // layout. View mode can now project flow styles too, so leaving a Full
     // grid must also clear the grid host's vertical-only resize affordance.
-    const nextGridRenderMode = sview.layout.engine === 'grafana-grid' ? sview.layout.renderMode : 'tiles';
-    if (nextGridRenderMode !== gridRenderMode) {
+    const nextGridRenderMode = sview.style === 'full' ? 'full' : 'tiles';
+    if (nextGridRenderMode !== gridRenderMode || currentDashboardStyle !== sview.style) {
       gridRenderMode = nextGridRenderMode;
+      currentDashboardStyle = sview.style;
       layoutMenu.sync();
       grid.classList.toggle('is-full', gridRenderMode === 'full');
-      for (const tileEl of tileEls.values()) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
+      for (const tileEl of tileEls.values()) {
+        applyResizeHandleMode(tileEl, isFixedWidthStyle(sview.style));
+      }
     }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
     else reconcileGrid(sview, sview.layout);

@@ -8,6 +8,8 @@ import {
 } from '../../src/workspace/stored-workspace.js';
 import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
 import type { StoredWorkspaceV2 } from '../../src/generated/json-schema.types.js';
+import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
+import { GRAFANA_GRID_LAYOUT_V2_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 
 const codes = (d: WorkspaceDiagnostic[]): string[] => d.map((x) => x.code);
 const has = (d: WorkspaceDiagnostic[], code: string): boolean => d.some((x) => x.code === code);
@@ -267,6 +269,37 @@ describe('decodeStoredWorkspaceJson', () => {
     expect(result.ok && result.value.storageVersion).toBe(CURRENT_STORED_WORKSPACE_VERSION);
   });
 
+  it('rejects a structurally invalid current V5 source before normalization', () => {
+    const result = decodeStoredWorkspaceJson(JSON.stringify(workspace({
+      dashboards: [dashboardDoc({
+        layout: { type: 'flow', version: 1, preset: 'report', items: { ghost: {} } },
+      })],
+    })));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.diagnostics.some((item) => item.code === 'layout-orphan-placement')).toBe(true);
+  });
+
+  it('rejects a legacy source when its canonical v2 layout fails post-upgrade validation', () => {
+    const validationService = {
+      getSchema: (schemaId: string) => jsonSchemaValidationService.getSchema(schemaId),
+      validate: (schemaId: string, value: unknown) => (
+        schemaId === GRAFANA_GRID_LAYOUT_V2_SCHEMA_ID
+          ? [{
+            path: [], severity: 'error' as const, code: 'schema-invalid',
+            message: 'forced canonical failure', keyword: 'test', schemaId,
+          }]
+          : jsonSchemaValidationService.validate(schemaId, value)
+      ),
+    };
+    const result = decodeStoredWorkspaceJson(JSON.stringify(workspace({
+      dashboards: [dashboardDoc()],
+    })), { validationService });
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [expect.objectContaining({ code: 'schema-invalid', message: 'forced canonical failure' })],
+    });
+  });
+
   it('reads a persisted V2 record through the whole V2 -> V3 -> V5 chain', () => {
     const dashboard = { ...tiledV1('d1', 't1', 'p1'), revision: 7 };
     const decoded = decodeStoredWorkspaceJson(JSON.stringify(
@@ -395,6 +428,32 @@ describe('encodeStoredWorkspaceJson', () => {
   it('rejects an invalid workspace before encoding', () => {
     const result = encodeStoredWorkspaceJson({ storageVersion: 6 });
     expect(!result.ok && result.diagnostics[0].code).toBe('workspace-version-unsupported');
+  });
+
+  it('rejects when canonical fallback regeneration fails the second validation pass', () => {
+    let v2Calls = 0;
+    const validationService = {
+      getSchema: (schemaId: string) => jsonSchemaValidationService.getSchema(schemaId),
+      validate: (schemaId: string, value: unknown) => {
+        if (schemaId === GRAFANA_GRID_LAYOUT_V2_SCHEMA_ID && ++v2Calls === 2) {
+          return [{
+            path: [], severity: 'error' as const, code: 'schema-invalid',
+            message: 'forced canonical failure', keyword: 'test', schemaId,
+          }];
+        }
+        return jsonSchemaValidationService.validate(schemaId, value);
+      },
+    };
+    const current = workspace({
+      dashboards: [dashboardDoc({
+        layout: {
+          type: 'grafana-grid', version: 2, preset: 'grid', items: {},
+          fallback: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+        },
+      })],
+    });
+    const result = encodeStoredWorkspaceJson(current, { validationService });
+    expect(!result.ok && result.diagnostics[0].message).toBe('forced canonical failure');
   });
 
   it('rejects an encoded workspace larger than the decoded-JSON byte cap', () => {

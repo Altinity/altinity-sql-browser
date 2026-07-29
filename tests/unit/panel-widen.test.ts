@@ -22,7 +22,7 @@ describe('canWidenPanel (#535)', () => {
   it('exposes the step for every multi-column style', () => {
     expect(canWidenPanel('columns-2')).toBe(true);
     expect(canWidenPanel('columns-3')).toBe(true);
-    expect(canWidenPanel('grafana-grid')).toBe(true);
+    expect(canWidenPanel('grid')).toBe(true);
   });
 
   // `report` has one column by definition, and `full` renders every tile at the
@@ -63,33 +63,24 @@ describe('nextPanelPlacement — flow presets (#535)', () => {
   });
 });
 
-describe('nextPanelPlacement — grafana-grid (#535)', () => {
-  // 12 columns and 16 height units make "one more column" imperceptible, so both
-  // dimensions double (owner decision) and each clamps to its own maximum.
-  it('doubles span and height, clamping each independently', () => {
-    expect(step('grafana-grid', { span: 3, height: 2 })).toEqual({ span: 6, height: 4 });
-    expect(step('grafana-grid', { span: 6, height: 4 })).toEqual({ span: 12, height: 8 });
-    // Span clamps below its double (7*2 = 14 > 12) while height still doubles.
-    expect(step('grafana-grid', { span: 7, height: 2 })).toEqual({ span: 12, height: 4 });
-    // Height clamps (10*2 = 20 > 16) while span still doubles.
-    expect(step('grafana-grid', { span: 2, height: 10 })).toEqual({ span: 4, height: 16 });
+describe('nextPanelPlacement — Grid', () => {
+  it('doubles only the span, clamping at 12 and preserving height', () => {
+    expect(step('grid', { span: 3, height: 2 })).toEqual({ span: 6, height: 2 });
+    expect(step('grid', { span: 6, height: 4 })).toEqual({ span: 12, height: 4 });
+    expect(step('grid', { span: 7, height: 10 })).toEqual({ span: 12, height: 10 });
   });
 
-  // The wrap resets the height too: a one-column tile that kept a doubled height
-  // would be a narrow four-row column no press asked for.
-  it('wraps a full-width tile back to one column at the default height', () => {
-    expect(step('grafana-grid', { span: 12, height: 8 })).toEqual({ span: 1, height: 2 });
-    expect(spanCycle('grafana-grid', { span: 6, height: 2 }, 3)).toEqual([12, 1, 2]);
+  it('wraps a full-width tile back to one column without changing height', () => {
+    expect(step('grid', { span: 12, height: 8 })).toEqual({ span: 1, height: 8 });
+    expect(spanCycle('grid', { span: 6, height: 2 }, 3)).toEqual([12, 1, 2]);
   });
 
   it('resolves a missing placement through the grid default (span 6)', () => {
-    expect(step('grafana-grid', undefined)).toEqual({ span: 12, height: 4 });
+    expect(step('grid', undefined)).toEqual({ span: 12, height: 2 });
   });
 
-  // A legacy string height is canonicalized on read by `resolveGridPlacement`,
-  // so a document written before #291's numeric units still doubles correctly.
-  it('doubles a legacy string height through its canonical unit count', () => {
-    expect(step('grafana-grid', { span: 2, height: 'compact' })).toEqual({ span: 4, height: 2 });
+  it('canonicalizes a legacy string height without changing it', () => {
+    expect(step('grid', { span: 2, height: 'compact' })).toEqual({ span: 4, height: 1 });
   });
 });
 
@@ -99,14 +90,14 @@ describe('widenLabel (#535)', () => {
   it('names the width the next press produces', () => {
     expect(label('columns-3', { span: 1 })).toBe('Widen to 2 columns');
     expect(label('columns-3', { span: 2 })).toBe('Widen to 3 columns');
-    expect(label('grafana-grid', { span: 3, height: 2 })).toBe('Widen to 6 columns');
+    expect(label('grid', { span: 3, height: 2 })).toBe('Widen to 6 columns');
     // Clamped: 7*2 = 14, capped at the grid's 12.
-    expect(label('grafana-grid', { span: 7, height: 2 })).toBe('Widen to 12 columns');
+    expect(label('grid', { span: 7, height: 2 })).toBe('Widen to 12 columns');
   });
 
   it('announces the shrink at the maximum', () => {
     expect(label('columns-2', { span: 2 })).toBe('Shrink to 1 column');
     expect(label('columns-3', { span: 3 })).toBe('Shrink to 1 column');
-    expect(label('grafana-grid', { span: 12, height: 2 })).toBe('Shrink to 1 column');
+    expect(label('grid', { span: 12, height: 2 })).toBe('Shrink to 1 column');
   });
 });

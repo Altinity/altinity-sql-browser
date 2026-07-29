@@ -65,9 +65,23 @@
   </section>
 
   <section class="scenario">
-    <h2>Full view (#321 transient render-mode override) — vertical-only resize</h2>
+    <h2>Full authored style — fixed width and vertical-only resize</h2>
     <div class="dash-page">
       <div class="dash-grid dash-gg-grid is-full" id="full-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>Report authored style — centered 9/12 width</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid is-report" id="report-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>Temporary 2/3-column session preview</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="preview-grid"></div>
     </div>
   </section>
 
@@ -82,6 +96,7 @@
     import {
       computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, gridHeightUnitsToPx, snapGridSpan, snapGridHeight,
     } from '/src/dashboard/layouts/grafana-grid-layout.js';
+    import { nextPanelPlacement } from '/src/dashboard/application/panel-widen.js';
 
     // #291 height-units follow-up: height is a direct inline px style (from
     // numeric row units), not a `.dash-gg-h-*` class — mirrors
@@ -310,12 +325,18 @@
       }));
     }());
 
-    // ── Scenario 6: Full view (#321) — every tile full width, one per row;
-    // resize is VERTICAL-ONLY and re-dispatches the UNCHANGED persisted
-    // (authored) span, never the full-width override — mirrors
-    // `ui/dashboard.ts`'s `wireGridResize` full-mode branch.
+    // ── Scenario 6: authored Full — every tile full width, one per row;
+    // resize persists only Full's independent height.
     const fullTiles = [{ id: 'f1' }, { id: 'f2' }];
-    const fullLayout = { items: { f1: { span: 4, height: 2 }, f2: { span: 8, height: 2 } } };
+    const defaultAuthoredLayout = {
+      type: 'grafana-grid', version: 2, preset: 'full',
+      items: {
+        f1: { grid: { span: 1, height: 16 } },
+        f2: { grid: { span: 12, height: 1 }, full: { height: 4 }, report: { height: 7 } },
+      },
+    };
+    const fullLayout = JSON.parse(window.localStorage.getItem('full-report-layout')
+      || JSON.stringify(defaultAuthoredLayout));
     const fullGrid = document.getElementById('full-grid');
     let fullColumns = 12;
     const fullPlacementByTile = new Map();
@@ -325,7 +346,6 @@
         start.preventDefault();
         start.stopPropagation();
         const placement = fullPlacementByTile.get(tileId);
-        const persistedSpan = placement.persistedSpan;
         let curHeight = placement.heightUnits;
         const rect = card.getBoundingClientRect();
         card.classList.add('dash-gg-resizing');
@@ -339,9 +359,9 @@
           card.classList.remove('dash-gg-resizing');
           window.removeEventListener('pointermove', move);
           window.removeEventListener('pointerup', up);
-          // The re-dispatched span is the PERSISTED (authored) one, never the
-          // full-width override span the card is currently rendered at.
-          window.__fullResizeEvents.push({ tileId, span: persistedSpan, height: curHeight });
+          fullLayout.items[tileId] = { ...fullLayout.items[tileId], full: { height: curHeight } };
+          window.localStorage.setItem('full-report-layout', JSON.stringify(fullLayout));
+          window.__fullResizeEvents.push({ tileId, height: curHeight });
         };
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
@@ -349,7 +369,7 @@
     }
     function renderFull() {
       const model = computeGrafanaGridLayout({
-        tiles: fullTiles, layout: fullLayout, containerWidth: measuredWidth(fullGrid), renderMode: 'full',
+        tiles: fullTiles, layout: fullLayout, containerWidth: measuredWidth(fullGrid), style: 'full',
       });
       fullColumns = model.columns;
       fullGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
@@ -366,9 +386,89 @@
     }
     renderFull();
     window.__fullColumns = () => fullColumns;
-    window.__fullPersistedSpan = (tileId) => fullPlacementByTile.get(tileId).persistedSpan;
+    window.__fullHeight = (tileId) => fullPlacementByTile.get(tileId).heightUnits;
 
-    // ── Scenario 7: content containment (#331) ──────────────────────────────
+    // ── Scenario 7: authored Report — fixed centered 9/12 width and its own
+    // default/saved heights, independent from Grid and Full.
+    const reportGrid = document.getElementById('report-grid');
+    const reportModel = computeGrafanaGridLayout({
+      tiles: fullTiles, layout: fullLayout,
+      containerWidth: measuredWidth(reportGrid), style: 'report',
+    });
+    reportGrid.style.gridTemplateColumns = `repeat(${reportModel.columns}, 1fr)`;
+    reportGrid.replaceChildren(...reportModel.tiles.map((t) => {
+      const { card, resizeHandle } = buildTile(
+        { id: t.tileId, title: t.tileId, heightUnits: t.heightUnits },
+        'edit',
+      );
+      card.style.gridColumn = '1 / -1';
+      card.style.width = '75%';
+      card.style.marginInline = 'auto';
+      if (resizeHandle) {
+        resizeHandle.title = 'Resize tile height';
+        resizeHandle.setAttribute('aria-label', 'Resize tile height');
+      }
+      return card;
+    }));
+    window.__reportModel = reportModel;
+    window.__resizeReport = (tileId, height) => {
+      fullLayout.items[tileId] = { ...fullLayout.items[tileId], report: { height } };
+      window.localStorage.setItem('full-report-layout', JSON.stringify(fullLayout));
+    };
+
+    // ── Scenario 8: temporary previews ignore every authored dimension. Each
+    // selection creates a fresh span-1 map; widening mutates only that map.
+    const previewGrid = document.getElementById('preview-grid');
+    const previewTiles = [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }];
+    const previewLayout = {
+      type: 'grafana-grid', version: 2, preset: 'grid',
+      items: Object.fromEntries(previewTiles.map(({ id }) => [id, {
+        grid: { span: 12, height: 16 }, full: { height: 16 }, report: { height: 16 },
+      }])),
+    };
+    let previewStyle = 'columns-2';
+    let previewMobile = false;
+    let previewSpans = new Map();
+    window.__previewWrites = 0;
+    function renderPreview() {
+      const model = computeGrafanaGridLayout({
+        tiles: previewTiles, layout: previewLayout, style: previewStyle,
+        previewSpans, mobile: previewMobile, containerWidth: measuredWidth(previewGrid),
+      });
+      previewGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      previewGrid.replaceChildren(...model.tiles.map((t) => {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'edit');
+        card.style.gridColumn = 'span ' + t.span;
+        card.style.height = t.previewHeightPx + 'px';
+        return card;
+      }));
+      window.__previewModel = model;
+    }
+    window.__selectPreview = (style, mobile = false) => {
+      previewStyle = style;
+      previewMobile = mobile;
+      previewSpans = new Map(previewTiles.map(({ id }) => [id, 1]));
+      renderPreview();
+    };
+    window.__widenPreview = (tileId) => {
+      if (previewMobile) return;
+      const max = previewStyle === 'columns-2' ? 2 : 3;
+      const current = previewSpans.get(tileId) ?? 1;
+      previewSpans.set(tileId, current >= max ? 1 : current + 1);
+      renderPreview();
+    };
+    window.__selectPreview('columns-2');
+
+    // Grid Widen is horizontal-only and keeps the exact authored height.
+    window.__gridWidenPlacement = { span: 3, height: 4 };
+    window.__widenGrid = () => {
+      window.__gridWidenPlacement = nextPanelPlacement({
+        style: 'grid', placement: window.__gridWidenPlacement,
+      });
+      return window.__gridWidenPlacement;
+    };
+
+    // ── Scenario 9: content containment (#331) ──────────────────────────────
     // Real panel-root markup (`.res-table-wrap` / `.md-view`), the SAME
     // classes `ui/dashboard.ts`'s `paintPanel` appends into `.dash-tile-body`
     // (via `renderResolvedPanel` → the table/markdown result views) — a tall

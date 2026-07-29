@@ -19,7 +19,7 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { isFlowLayout } from '../model/workspace-semantics.js';
 import { flowLayoutPlugin } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
-import { grafanaGridLayoutPlugin } from './grafana-grid-layout.js';
+import { grafanaGridLayoutPlugin, grafanaGridLayoutV2Plugin } from './grafana-grid-layout.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
@@ -64,7 +64,9 @@ export interface DashboardLayoutRegistry {
  *  are still inlined in the one bundle (CLAUDE.md hard rule 4 forbids network
  *  code-splitting); a plugin is simply not CONSTRUCTED/imported by a caller
  *  until a Dashboard document actually requests its `type`. */
-const BUILTIN_SYNC_PLUGINS: readonly DashboardLayoutPlugin[] = [flowLayoutPlugin, grafanaGridLayoutPlugin];
+const BUILTIN_SYNC_PLUGINS: readonly DashboardLayoutPlugin[] = [
+  flowLayoutPlugin, grafanaGridLayoutPlugin, grafanaGridLayoutV2Plugin,
+];
 
 /** One registration for a built-in sync plugin — `load` needs no async work
  *  since the instance already exists. */
@@ -78,6 +80,7 @@ export const flowLayoutRegistration: DashboardLayoutRegistration = syncRegistrat
 
 /** The grafana-grid@1 registration (#291): a second built-in engine. */
 export const grafanaGridLayoutRegistration: DashboardLayoutRegistration = syncRegistration(grafanaGridLayoutPlugin);
+export const grafanaGridLayoutV2Registration: DashboardLayoutRegistration = syncRegistration(grafanaGridLayoutV2Plugin);
 
 /** Build a registry from a set of registrations. flow@1 is always present (a
  *  passed `flow` registration is ignored in favour of the built-in, so the
@@ -85,23 +88,27 @@ export const grafanaGridLayoutRegistration: DashboardLayoutRegistration = syncRe
 export function createLayoutRegistry(
   registrations: readonly DashboardLayoutRegistration[] = [],
 ): DashboardLayoutRegistry {
-  const byId = new Map<string, DashboardLayoutRegistration>();
-  byId.set('flow', flowLayoutRegistration);
+  const byVersion = new Map<string, DashboardLayoutRegistration>();
+  const key = (id: string, version: number): string => `${id}\0${version}`;
+  byVersion.set(key('flow', 1), flowLayoutRegistration);
   for (const registration of registrations) {
-    if (registration.id !== 'flow' && !byId.has(registration.id)) byId.set(registration.id, registration);
+    if (registration.id === 'flow') continue;
+    for (const version of registration.versions) {
+      const registrationKey = key(registration.id, version);
+      if (!byVersion.has(registrationKey)) byVersion.set(registrationKey, registration);
+    }
   }
 
   const supports = (id: unknown, version: unknown): boolean => {
     if (typeof id !== 'string' || typeof version !== 'number') return false;
-    const registration = byId.get(id);
-    return !!registration && registration.versions.includes(version);
+    return byVersion.has(key(id, version));
   };
 
   const load = async (id: string, version: number): Promise<DashboardLayoutPlugin | null> => {
     if (!supports(id, version)) return null;
     try {
       // `!`: supports() confirmed the registration exists.
-      return await byId.get(id)!.load(version);
+      return await byVersion.get(key(id, version))!.load(version);
     } catch {
       // A load failure is a fallback trigger, never a thrown error to the caller.
       return null;
