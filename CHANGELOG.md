@@ -25,6 +25,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   adapter refactor — no user-visible behavior changes.
 
 ### Fixed
+- **A detached Data pane's variable dropdown no longer shows a frozen
+  snapshot of recent values** (#478 follow-up). #555's caller-neutral
+  `VariableBarApp` adapter copied `varRecent` into `state` as a plain data
+  property, captured once at adapter-construction time — but unlike
+  `activeByName` (aliased, mutated in place), `varRecent` is *replaced*
+  wholesale on every record/clear (`workbench-parameter-session.ts`), so a
+  copy went stale immediately: a detached pane's "Clear recent" persisted but
+  the still-open dropdown kept listing the cleared values, and a re-run's
+  newly recorded value never appeared until the pane was closed and reopened.
+  The Dashboard adapter (`dashboard.ts`) had the identical staleness
+  pre-dating #555. `VariableBarApp` now exposes `getVarRecent(): RecentMap`,
+  a live-read callback both adapters implement by reading their own
+  `varRecent` reference at call time, instead of a `state.varRecent` snapshot.
 - **A Dashboard tile whose id is `__proto__` or `constructor` no longer loses
   its placement** (#551, found reviewing #549). Both are legal tile ids under
   `dashboardTileV1.id` (pattern `\S`), and a placement-map write of the shape

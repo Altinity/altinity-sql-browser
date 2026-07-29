@@ -176,7 +176,11 @@
     const draftActive = {};
     const variableBarApp = {
       document,
-      state: { varValues: draftValues, activeByName: draftActive, varRecent: {} },
+      state: { varValues: draftValues, activeByName: draftActive },
+      // #478: a live-read callback, not a copied `varRecent` property — this
+      // fixture never records recents, so an empty map is fine either way, but
+      // the SHAPE must match the port (`getVarRecent(): RecentMap`).
+      getVarRecent: () => ({ version: 1, nextSeq: 1, byName: {} }),
       params: { saveVarValues() {}, saveActive() {}, clearVarRecent() {} },
       wallNow: () => WALL,
     };

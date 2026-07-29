@@ -12,7 +12,7 @@ import { applyCommand } from '../../src/dashboard/application/dashboard-commands
 import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
 import { resolveLayoutPluginSync } from '../../src/dashboard/layouts/layout-registry.js';
 import { applyStreamLine } from '../../src/core/stream.js';
-import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
+import { emptyRecentMap, recordRecent, clearRecent } from '../../src/core/recent-values.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { createApp } from '../../src/ui/app.js';
@@ -1214,6 +1214,58 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     qs<HTMLInputElement>(sField, 'input').dispatchEvent(new Event('focus'));
     qs(sField, '.var-combo-footer button')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(app.params.clearVarRecent).toHaveBeenCalledWith('s');
+  });
+
+  // #478 regression (pre-dates #555): this viewer's adapter used to copy
+  // `state.varRecent` into `VariableBarApp.state` as a plain data property,
+  // captured once when the Dashboard rendered. `varRecent` is REPLACED
+  // wholesale, never mutated in place (`workbench-parameter-session.ts`'s
+  // `recordBoundParams`), so that copy went stale the instant a later run
+  // recorded a new value while the dashboard stayed open. The adapter now
+  // routes through `getVarRecent()`, read at call time — this must fail if
+  // the adapter reverts to a captured `varRecent` property.
+  it('#478: a value recorded after the dashboard renders is visible on the next dropdown open', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE s = {s:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const fieldFor = (name: string) => qsa(app.root, '.dash-variable-host .var-field')
+      .find((f) => qs(f, '.var-name')?.textContent === name)!;
+    const input = qs<HTMLInputElement>(fieldFor('s'), 'input');
+    input.dispatchEvent(new Event('focus'));
+    expect(qs(fieldFor('s'), '[role="option"]')).toBeNull(); // nothing recorded yet
+    // Simulate a successful run recording a new value — a fresh map object.
+    app.state.varRecent = recordRecent(emptyRecentMap(), 's', 'newval');
+    input.dispatchEvent(new Event('focus')); // reopen: re-derives options fresh
+    const opt = qs(fieldFor('s'), '[role="option"]');
+    expect(opt.textContent).toContain('newval');
+  });
+
+  it('#478: Clear recent, through a production-like clearVarRecent that replaces app.state.varRecent, empties the dropdown on reopen', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE s = {s:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    app.state.varRecent = recordRecent(emptyRecentMap(), 's', 'foo');
+    app.params.clearVarRecent = vi.fn((name: string) => {
+      app.state.varRecent = clearRecent(app.state.varRecent, name);
+    });
+    await render(app);
+    const fieldFor = (name: string) => qsa(app.root, '.dash-variable-host .var-field')
+      .find((f) => qs(f, '.var-name')?.textContent === name)!;
+    const sField = fieldFor('s');
+    const input = qs<HTMLInputElement>(sField, 'input');
+    input.dispatchEvent(new Event('focus'));
+    expect(qs(sField, '[role="option"]')).not.toBeNull(); // 'foo' is listed
+    qs(sField, '.var-combo-footer button')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('s');
+    input.dispatchEvent(new Event('focus')); // reopen after the clear
+    expect(qs(sField, '[role="option"]')).toBeNull(); // gone, not stale
   });
 });
 
