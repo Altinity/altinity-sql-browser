@@ -1,8 +1,8 @@
 // #276 Phase 3a WorkbenchSession — route-scoped owner of the workbench
 // running operation and its cancellation state (issue rule 5). Owns
-// run/runScript/runEntry/cancel orchestration; the run bookkeeping fields
-// (runT0/runQueryId/runTick) and the in-flight AbortController are PRIVATE
-// session state (formerly the RunState cast + AppState.abortController).
+// run/runScript/runEntry/cancel orchestration; each run's start time, query id,
+// interval, cancellation flag, and AbortController live in one PRIVATE
+// per-invocation object (formerly the RunState cast + AppState.abortController).
 // Coordinates — but does not own — the shared AppState signals (running/
 // resultView/...): the session is the sole production writer of `running`.
 // DOM/render stays in the shell via injected hooks. Lives under ui/workbench
@@ -195,6 +195,15 @@ interface KpiExecutionTransport {
   error: string | null;
 }
 
+interface ActiveRun {
+  controller: AbortController;
+  queryId: string | null;
+  tick: ReturnType<typeof setInterval> | null;
+  startedAt: number | null;
+  cancelled: boolean;
+  registrationReleased: boolean;
+}
+
 export interface WorkbenchSession {
   run(opts?: RunOpts): Promise<void>;
   runScript(statements: string[], originalInput: string): Promise<void>;
@@ -208,15 +217,11 @@ export interface WorkbenchSession {
 export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSession {
   const { state, hooks } = deps;
 
-  // `run()`/`runScript()`'s own bookkeeping — a live query's wall-clock start
-  // (`runT0`), its ClickHouse `query_id` (`runQueryId`, for Cancel's KILL
-  // QUERY), and the live-elapsed-ms ticker's interval handle (`runTick`); plus
-  // the in-flight `AbortController` (formerly `app.state.abortController`).
-  // All PRIVATE to this session — see the module doc above.
-  let runT0: number | null = null;
-  let runQueryId: string | null = null;
-  let runTick: ReturnType<typeof setInterval> | null = null;
-  let abortController: AbortController | null = null;
+  // One object owns the complete lifecycle of each admitted execution. The
+  // synchronous claim prevents a second run mode from entering while the first
+  // is awaiting configuration/token refresh, and the identity check in
+  // settleWave keeps a stale finaliser from clearing a replacement wave.
+  let activeRun: ActiveRun | null = null;
 
   // attachShell's registered effect disposers (preact-signals-core's `effect()`
   // returns a dispose function) — re-attaching (renderApp can re-run) disposes
@@ -230,70 +235,115 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
 
   // Milliseconds since the running query started (0 when idle).
   function elapsedMs(): number {
-    return runT0 != null ? deps.now() - runT0 : 0;
+    return activeRun?.startedAt != null ? deps.now() - activeRun.startedAt : 0;
   }
 
   function isCurrent(registration: AuthenticatedExecutionRegistration | null): boolean {
     return registration === null || registration.isCurrent();
   }
 
-  /** Clears only the bookkeeping still owned by this wave. A scope close can
-   * make a new epoch runnable before an old transport settles, so its finally
-   * block must never clear the replacement wave's state. */
-  function settleWave(controller: AbortController): void {
-    if (abortController !== controller) return;
-    if (runTick != null) {
-      clearInterval(runTick);
-      runTick = null;
+  function claimWave(): ActiveRun {
+    const operation: ActiveRun = {
+      controller: new AbortController(),
+      queryId: null,
+      tick: null,
+      startedAt: null,
+      cancelled: false,
+      registrationReleased: false,
+    };
+    activeRun = operation;
+    try {
+      state.running.value = true;
+    } catch (error) {
+      activeRun = null;
+      state.running.value = false;
+      throw error;
     }
-    abortController = null;
-    runQueryId = null;
-    runT0 = null;
+    return operation;
+  }
+
+  function ownsWave(operation: ActiveRun): boolean {
+    return activeRun === operation;
+  }
+
+  function isWaveCurrent(
+    operation: ActiveRun,
+    registration: AuthenticatedExecutionRegistration | null,
+  ): boolean {
+    return ownsWave(operation) && isCurrent(registration);
+  }
+
+  /** Clears this wave's own timer unconditionally, but releases shared state
+   * only while the same operation still owns the claim. */
+  function settleWave(operation: ActiveRun): void {
+    if (operation.tick != null) {
+      clearInterval(operation.tick);
+      operation.tick = null;
+    }
+    operation.queryId = null;
+    operation.startedAt = null;
+    if (!ownsWave(operation)) return;
+    activeRun = null;
     state.running.value = false;
   }
 
   function registerWave(
     name: string,
-    controller: AbortController,
-    queryId: () => string | null,
+    operation: ActiveRun,
   ): AuthenticatedExecutionRegistration | null {
     const scope = deps.executionScope();
     return scope?.register({
       name,
       abort: () => {
-        controller.abort();
+        operation.cancelled = true;
+        operation.controller.abort();
         // Scope close must settle the shell synchronously, but intentionally
         // leaves the tab's last result in place for the login transition.
-        settleWave(controller);
+        settleWave(operation);
       },
-      getQueryId: queryId,
+      getQueryId: () => operation.queryId,
     }) || null;
+  }
+
+  function releaseRegistration(
+    operation: ActiveRun,
+    registration: AuthenticatedExecutionRegistration | null,
+  ): void {
+    if (operation.registrationReleased) return;
+    operation.registrationReleased = true;
+    registration?.release();
   }
 
   /** Complete the auth/config preflight for a registered wave. A rejected
    * preflight must remain visible to the caller, but it has no transport
    * finally block to release the registration for it. */
-  async function preflightWave(registration: AuthenticatedExecutionRegistration | null): Promise<boolean> {
+  async function preflightWave(
+    operation: ActiveRun,
+    registration: AuthenticatedExecutionRegistration | null,
+  ): Promise<boolean> {
     let continueWave = false;
     try {
       await deps.ensureConfig();
-      if (!isCurrent(registration)) return false;
+      if (!isWaveCurrent(operation, registration) || operation.cancelled) return false;
       if (!(await deps.getToken())) {
-        if (isCurrent(registration)) hooks.onAuthFailed();
+        if (isWaveCurrent(operation, registration) && !operation.cancelled) hooks.onAuthFailed();
         return false;
       }
-      if (!isCurrent(registration)) return false;
+      if (!isWaveCurrent(operation, registration) || operation.cancelled) return false;
       continueWave = true;
       return true;
     } finally {
       // The transport finally owns a successfully preflighted registration.
       // Every early return and rejected preflight is released here instead.
-      if (!continueWave) registration?.release();
+      if (!continueWave) {
+        releaseRegistration(operation, registration);
+        settleWave(operation);
+      }
     }
   }
 
   async function run(opts?: RunOpts): Promise<void> {
-    if (state.running.value) return; // already running — cancel via cancel()/Esc
+    if (activeRun || state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = deps.activeTab();
     // `opts.sql` overrides the source SQL (a single selected statement); otherwise
     // the whole tab runs, byte-for-byte as before (FORMAT / EXPLAIN detection,
@@ -316,10 +366,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // recent-value recording (#171), so it reads exactly the boundParams that
     // were sent.
     const src = hooks.prepareTabSource(srcSql, waveMs);
-    const controller = new AbortController();
-    let waveQueryId: string | null = null;
-    const registration = registerWave('workbench run', controller, () => waveQueryId);
-    if (!(await preflightWave(registration))) return;
+    const operation = claimWave();
+    const registration = registerWave('workbench run', operation);
+    try {
+      if (!(await preflightWave(operation, registration))) return;
 
     hooks.cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
 
@@ -344,7 +394,8 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       Object.assign(tab, { result: kpiErrorResult });
       state.resultView.value = 'panel';
       hooks.renderResults();
-      registration?.release();
+      releaseRegistration(operation, registration);
+      settleWave(operation);
       return;
     }
 
@@ -387,23 +438,18 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     Object.assign(tab, { result });
     if (explainView) result.explainView = explainView;
     state.resultSort = { col: null, dir: 'asc' };
-    runT0 = t0;
-    waveQueryId = deps.uid('q');
-    runQueryId = waveQueryId;
-    abortController = controller;
-    runTick = setInterval(hooks.tickElapsed, 100);
+    operation.startedAt = t0;
+    operation.queryId = deps.uid('q');
+    operation.tick = setInterval(hooks.tickElapsed, 100);
     // Keep the current Table/JSON/Panel tab across re-runs (#34); a saved-query
     // open passes its remembered view in opts.view to restore that instead
     // (a stray legacy 'chart' value maps to 'panel' — #166).
     const view = opts && opts.view === 'chart' ? 'panel' : opts && opts.view;
-    // Flip the run signals last, in one batch: the results + Run-button effects
-    // fire on this write and read runT0/elapsed, so the bookkeeping above must
-    // already be set. (The old explicit setRunBtn(true)/renderResults are now
-    // those effects' job.)
+    // The synchronous claim already flipped `running`; only the remembered
+    // result view remains to publish here.
     batch(() => {
       state.resultView.value = view != null && ['table', 'json', 'panel'].includes(view)
         ? (view as WorkbenchResultView) : state.resultView.value;
-      state.running.value = true;
     });
 
     try {
@@ -411,21 +457,21 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         sql: runSql,
         format: fmt,
         rowLimit,
-        queryId: waveQueryId,
-        signal: controller.signal,
-        isCurrent: () => isCurrent(registration),
+        queryId: operation.queryId,
+        signal: operation.controller.signal,
+        isCurrent: () => isWaveCurrent(operation, registration),
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => {
-          if (isCurrent(registration)) hooks.renderResults();
+          if (isWaveCurrent(operation, registration)) hooks.renderResults();
         },
       });
     } finally {
-      if (!isCurrent(registration)) {
-        settleWave(controller);
-        registration?.release();
+      if (!isWaveCurrent(operation, registration)) {
+        settleWave(operation);
+        releaseRegistration(operation, registration);
         return;
       }
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
@@ -452,7 +498,6 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       // Flip running off last: the results + Run-button effects fire here and
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
-      state.running.value = false;
       if (!result.error && !result.cancelled) {
         // Spec completion is intentionally stable during a run and survives a
         // later failed/cancelled run. Snapshot only completed structured
@@ -470,8 +515,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         hooks.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
         if (isSchemaMutatingSql(runSql)) hooks.loadSchema(); // not awaited — fire and forget
       }
-      settleWave(controller);
-      registration?.release();
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+    }
+    } catch (error) {
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+      throw error;
     }
   }
 
@@ -522,10 +572,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       hooks.renderResults();
       return;
     }
-    const controller = new AbortController();
-    let waveQueryId: string | null = null;
-    const registration = registerWave('workbench variable option', controller, () => waveQueryId);
-    if (!(await preflightWave(registration))) return;
+    const operation = claimWave();
+    const registration = registerWave('workbench variable option', operation);
+    try {
+      if (!(await preflightWave(operation, registration))) return;
 
     hooks.cancelSchemaGraph();
     state.forceExplain = false;
@@ -542,24 +592,21 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const result: QueryResult = newResult('Table', rowLimit);
     Object.assign(tab, { result });
     state.resultSort = { col: null, dir: 'asc' };
-    runT0 = t0;
-    waveQueryId = deps.uid('q');
-    runQueryId = waveQueryId;
-    abortController = controller;
-    runTick = setInterval(hooks.tickElapsed, 100);
-    state.running.value = true;
+    operation.startedAt = t0;
+    operation.queryId = deps.uid('q');
+    operation.tick = setInterval(hooks.tickElapsed, 100);
 
     try {
       await deps.exec.executeRead(result, {
         sql: compileOptionProbe(sql),
         format: 'Table',
         rowLimit,
-        queryId: waveQueryId,
-        signal: controller.signal,
-        isCurrent: () => isCurrent(registration),
+        queryId: operation.queryId,
+        signal: operation.controller.signal,
+        isCurrent: () => isWaveCurrent(operation, registration),
         params: { readonly: 2, max_result_bytes: VARIABLE_OPTION_BYTE_CAP },
         onChunk: () => {
-          if (isCurrent(registration)) hooks.renderResults();
+          if (isWaveCurrent(operation, registration)) hooks.renderResults();
         },
       });
       // Only the probe's own transport succeeding makes its response metadata
@@ -568,15 +615,15 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       // never fully arrived. Shape is checked before raw row count so a malformed
       // response retains the more fundamental column diagnostic; the count is
       // read before any future filtering or de-duplication can hide the sentinel.
-      if (isCurrent(registration) && !result.error && !result.cancelled) {
+      if (isWaveCurrent(operation, registration) && !result.error && !result.cancelled) {
         const invalid = validateOptionColumns(result.columns)
           ?? validateOptionRowCount(result.rows.length);
         if (invalid) result.error = invalid.message;
       }
     } finally {
-      if (!isCurrent(registration)) {
-        settleWave(controller);
-        registration?.release();
+      if (!isWaveCurrent(operation, registration)) {
+        settleWave(operation);
+        releaseRegistration(operation, registration);
         return;
       }
       result.progress.elapsed_ns = (deps.now() - t0) * 1e6;
@@ -588,10 +635,14 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
           srcSql: sql, tabId: tab.id, rowLimit, tabName: tab.name, savedEntry: savedForTab(state, tab),
         });
       }
-      state.running.value = false;
       if (!result.error && !result.cancelled) hooks.recordHistory(tab, sql);
-      settleWave(controller);
-      registration?.release();
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+    }
+    } catch (error) {
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+      throw error;
     }
   }
 
@@ -603,7 +654,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
   // script is recorded as one history entry on a clean run. `originalInput` is the
   // exact text that was split (the selection or the whole editor).
   async function runScript(statements: string[], originalInput: string): Promise<void> {
-    if (state.running.value) return;
+    if (activeRun || state.running.value) return;
     const waveMs = deps.wallNow(); // one wall clock for the whole script wave
     if (hooks.varGateBlocked(waveMs)) return; // block a script run with unfilled variables
     // One prepared batch for the whole script (#173): `statements` came from
@@ -613,10 +664,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // gate and args see the same varValues snapshot; edits during the auth
     // await apply to the next run.
     const paramSrc = hooks.prepareTabSource(originalInput, waveMs);
-    const controller = new AbortController();
-    let waveQueryId: string | null = null;
-    const registration = registerWave('workbench script', controller, () => waveQueryId);
-    if (!(await preflightWave(registration))) return;
+    const operation = claimWave();
+    const registration = registerWave('workbench script', operation);
+    try {
+      if (!(await preflightWave(operation, registration))) return;
 
     hooks.cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
     state.forceExplain = false;
@@ -626,14 +677,12 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const scriptResult: ScriptResult = { script: entries };
     Object.assign(tab, { result: scriptResult });
     state.resultSort = { col: null, dir: 'asc' };
-    runT0 = t0;
-    abortController = controller;
-    runTick = setInterval(hooks.tickElapsed, 100);
+    operation.startedAt = t0;
+    operation.tick = setInterval(hooks.tickElapsed, 100);
     let aborted = false;
     // Attach a session only if the script needs one (TEMPORARY / SET) or the tab
     // already has one — same params for every statement, computed once.
     const sp = hooks.sessionParamsFor(tab, statements);
-    state.running.value = true; // the results effect paints the (empty) grid
     try {
       // Transport/retry loop (one ClickHouse request per statement, the
       // SESSION_IS_LOCKED / transient-network retry, stop-on-first-failure)
@@ -654,17 +703,16 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
           // script is sent with its {name:Type} placeholders intact.
           params: { ...sp, ...paramSrc.statements[i].args },
         })),
-        signal: controller.signal,
-        isCurrent: () => isCurrent(registration),
+        signal: operation.controller.signal,
+        isCurrent: () => isWaveCurrent(operation, registration),
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
         onStatementStart: (_i, { queryId }) => {
-          if (!isCurrent(registration)) return;
-          waveQueryId = queryId;
-          runQueryId = queryId;
+          if (!isWaveCurrent(operation, registration)) return;
+          operation.queryId = queryId;
         },
         onStatementResult: (i, entry) => {
-          if (!isCurrent(registration)) return;
+          if (!isWaveCurrent(operation, registration)) return;
           entries.push(entry);
           // #171: THIS statement succeeded — record its own boundParams (per
           // statement, not per script: statement 1 of a later-failing script
@@ -673,16 +721,15 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
           hooks.renderResults();
         },
       });
-      if (isCurrent(registration)) aborted = res.aborted;
+      if (isWaveCurrent(operation, registration)) aborted = res.aborted;
     } finally {
-      if (!isCurrent(registration)) {
-        settleWave(controller);
-        registration?.release();
+      if (!isWaveCurrent(operation, registration)) {
+        settleWave(operation);
+        releaseRegistration(operation, registration);
         return;
       }
       scriptResult.elapsedMs = deps.now() - t0;
       if (aborted) scriptResult.cancelled = true;
-      state.running.value = false;
       // A statement that actually ran (status !== 'error') and was schema-mutating
       // refreshes the tree even if a later statement in the script failed — it
       // already took effect server-side.
@@ -693,8 +740,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         recordScriptHistory(state, originalInput, scriptResult.elapsedMs!, hooks.saveJSON);
         if (state.sidePanel.value === 'history') hooks.renderSavedHistory();
       }
-      settleWave(controller);
-      registration?.release();
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+    }
+    } catch (error) {
+      settleWave(operation);
+      releaseRegistration(operation, registration);
+      throw error;
     }
   }
 
@@ -705,7 +757,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
   function runEntry(opts?: RunOpts): void | Promise<void> {
     const tab = deps.activeTab();
     if (tab.editorMode !== 'sql') return;
-    if (state.running.value) return;
+    if (activeRun || state.running.value) return;
     const sel = hooks.getSelectionText();
     const hasSel = sel.trim() !== '';
     const input = hasSel ? sel : tab.sqlDraft;
@@ -735,9 +787,11 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
 
   // Stop an in-flight query: abort the stream and KILL QUERY on the server.
   function cancel(): void {
-    if (!state.running.value) return;
-    if (abortController) abortController.abort();
-    deps.exec.kill(runQueryId); // fire-and-forget, same as before
+    const operation = activeRun;
+    if (!operation) return;
+    operation.cancelled = true;
+    operation.controller.abort();
+    deps.exec.kill(operation.queryId); // fire-and-forget, same as before
   }
 
   function attachShell(shellEffects: WorkbenchShellEffects): void {
@@ -769,19 +823,12 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
 
   function destroy(): void {
     disposeShellEffects();
-    if (runTick != null) {
-      clearInterval(runTick);
-      runTick = null;
-    }
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-    if (runQueryId != null) {
-      deps.exec.kill(runQueryId);
-      runQueryId = null;
-    }
-    runT0 = null;
+    const operation = activeRun;
+    if (!operation) return;
+    operation.cancelled = true;
+    operation.controller.abort();
+    if (operation.queryId != null) deps.exec.kill(operation.queryId);
+    settleWave(operation);
   }
 
   return { run, runScript, runEntry, cancel, elapsedMs, attachShell, destroy };
