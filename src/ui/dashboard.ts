@@ -78,6 +78,10 @@ import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layout
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { removeTileMembership } from '../dashboard/application/tile-membership.js';
+import { canWidenPanel, nextPanelPlacement, widenLabel } from '../dashboard/application/panel-widen.js';
+import {
+  commitPanelDuplication, panelDuplicateMessage,
+} from '../application/dashboard-panel-duplicate.js';
 import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
 import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
 import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
@@ -110,7 +114,7 @@ import type { WorkbenchParameterSession } from '../application/workbench-paramet
 import type { WorkspaceCommitResult, WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 
-// icons.js is unconverted — the six icons this module appends, pinned to the
+// icons.js is unconverted — the icons this module appends, pinned to the
 // one honest shape (same wrapper the pre-#286 module used).
 const Icon: {
   star(filled?: boolean): SVGElement;
@@ -120,7 +124,9 @@ const Icon: {
   moon(): SVGElement;
   trash(): SVGElement;
   chevDown(): SVGElement;
-  code(): SVGElement;
+  copy(): SVGElement;
+  arrowsWide(): SVGElement;
+  expand(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -175,18 +181,23 @@ export interface DashboardApp {
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
    *  navigation API its own View/Edit control transitions through. (#471's per-tile
-   *  Open in Workbench does not go through it: opening a document is not a surface
-   *  transition the Dashboard performs — see `openSavedQuery` below.) */
+   *  expand action does not go through it: opening a document is not a surface
+   *  transition the Dashboard performs — see `openPanelQuery` below.) */
   mainSurface: App['mainSurface'];
   openDashboard: App['openDashboard'];
   showDashboardSurface: App['showDashboardSurface'];
-  /** #471: a tile's own `Open in Workbench` action, by the tile's `queryId` — the
+  /** #471: a tile's own expand action, by the tile's `queryId` — the
    *  Dashboard-owned copy's stable id, which is what makes the opened tab, and
-   *  every later Save from it, target this Dashboard's document. This surface no
-   *  longer needs `showQuerySurface`: leaving a Dashboard used to be a generic
-   *  toolbar act and is now always a document-opening one, which routes through
-   *  here (`openSavedQuery` switches the surface itself). */
-  openSavedQuery: App['openSavedQuery'];
+   *  every later Save from it, target this Dashboard's document. This surface does
+   *  not need `showQuerySurface`: leaving a Dashboard used to be a generic
+   *  toolbar act and is now always a document-opening one, which switches the
+   *  surface itself.
+   *
+   *  #535 widened it from `openSavedQuery` to `openPanelQuery`: the action now also
+   *  RUNS the query and reveals this panel's Dashboards-tree row, and neither of
+   *  those is derivable from a bare `queryId` — the tree row is addressed by
+   *  Dashboard id plus tile id. */
+  openPanelQuery: App['openPanelQuery'];
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
   surfaceCommands: App['surfaceCommands'];
   keyboardOwner: App['keyboardOwner'];
@@ -384,6 +395,10 @@ interface TileEl {
    *  accessible label toggles between 'Resize' (tiles) and 'Resize tile
    *  height' (full view, vertical-only) as the render mode changes. */
   resizeHandle: HTMLElement | null;
+  /** #535: the widen button, when built (edit mode) — hidden for the
+   *  single-column styles and relabelled from the tile's current width on every
+   *  publish (`applyWidenMode`). */
+  widenBtn: HTMLElement | null;
 }
 
 /** #407 — an explicit workspace route that no longer resolves. */
@@ -1398,6 +1413,67 @@ export async function renderDashboard(
     tileEl.resizeHandle.setAttribute('aria-label', label);
   }
 
+  /**
+   * #535 — the style the widen button is currently stepping through, or `null` when
+   * there is nothing to step: a single-column style (`report`, `full`), or a flow
+   * layout collapsed to one column by the mobile breakpoint (which would let a press
+   * persist a width the viewport cannot show).
+   *
+   * Kept as state rather than re-derived per click because the layout menu changes
+   * it without rebuilding a single tile — every tile's button reads this one value.
+   * `null` until the first publish, which is also when the first tile is built.
+   */
+  let widenStyle: DashboardStyle | null = null;
+
+  /**
+   * `sview.style` is the ONE value that already folds engine, flow preset and grid
+   * render mode together (`dashboard-viewer-session.ts`), so this is a single read
+   * rather than a re-derivation that could disagree with what is on screen.
+   *
+   * Mobile is the one thing it does not fold in: `style` stays `'columns-2'` on a
+   * phone while `computeFlowLayout` forces every effective span to 1. A press there
+   * would rewrite the persisted width with no visible effect at all — and
+   * `@media (hover: none)` means the button is permanently visible on that
+   * viewport, so it would be an inviting no-op. The grid needs no such guard: its
+   * narrow behaviour is a responsive clamp over the authored span, and authoring
+   * over the clamp is already the documented rule there (see `wireGridResize`).
+   */
+  function widenStyleFor(sview: DashboardViewState): DashboardStyle | null {
+    if (sview.layout.engine === 'flow' && sview.layout.mobile) return null;
+    return canWidenPanel(sview.style) ? sview.style : null;
+  }
+
+  /**
+   * One tile's PERSISTED placement, read through the ACTIVE engine — never the
+   * rendered effective span, which a Full-view or mobile render overrides;
+   * widening from an override would silently rewrite the authored width (#321).
+   *
+   * Reading flow's placements off `currentDoc.layout.items` directly is safe HERE
+   * only because widen never runs for a document whose primary engine is
+   * unsupported: `sview.style` for such a document resolves to its (undefined)
+   * `layout.preset`, `canWidenPanel` refuses that, and the button is hidden. The
+   * `duplicate-tile` command, which CAN reach such a document, goes through the
+   * plugin-aware reader instead.
+   */
+  function storedPlacement(tileId: string): unknown {
+    const items = (currentDoc.layout as { items?: Record<string, unknown> }).items;
+    return items ? items[tileId] : undefined;
+  }
+
+  /** Show/hide and re-label one tile's widen button for the current style and the
+   *  tile's current width. Called on every publish, because a widen changes the
+   *  label the NEXT press needs ("Widen to 12 columns" → "Shrink to 1 column"). */
+  function applyWidenMode(ts: ViewerTileState, tileEl: TileEl): void {
+    const btn = tileEl.widenBtn;
+    if (!btn) return;
+    const style = widenStyle;
+    btn.hidden = style === null;
+    if (style === null) return;
+    const label = widenLabel({ style, placement: storedPlacement(ts.tileId) });
+    btn.title = label;
+    btn.setAttribute('aria-label', label + ': ' + ts.title);
+  }
+
   // #291 corner-drag resize (Workbench edit mode + grafana-grid engine only):
   // pointer math stays a THIN adapter over the pure `snapGridSpan`/
   // `snapGridHeight` (grafana-grid-layout.ts, rule 5) — live preview via
@@ -1547,12 +1623,12 @@ export async function renderDashboard(
       // timestamp window above — this covers a pointer gesture that begins inside
       // the window, which the window alone would still swallow.
       clickSuppressCard = null;
-      // The resize handle (own stopPropagation), the delete button and #471's
-      // Open-in-Workbench action own their own gestures — never start a move from
-      // them. Open-in-Workbench is the only one of the three that also exists in
-      // View mode, where this handler is never wired at all.
+      // Every head control owns its own gesture — the resize handle (which also
+      // stops propagation), delete, and #535's duplicate/widen/expand trio — so a
+      // press on one never starts a move. The expand action is the only one of them
+      // that also exists in View mode, where this handler is never wired at all.
       const target = pe.target as Element;
-      if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open')) return;
+      if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open, .dash-tile-dup, .dash-tile-widen')) return;
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
       const fromGrip = !!target.closest('.dash-gg-grip');
@@ -1863,8 +1939,8 @@ export async function renderDashboard(
   }
 
   /**
-   * #471 — the tile's own `Open in Workbench` action, or `null` when this tile has
-   * no query document to open.
+   * #471 — the tile's own expand action, or `null` when this tile has no query
+   * document to open.
    *
    * Deliberately NOT `!readOnly`-gated the way the grip and delete button are:
    * inspecting the query behind a tile is a View-mode act first, and the issue
@@ -1872,11 +1948,17 @@ export async function renderDashboard(
    *
    * The tile's `queryId` IS the stable document origin this action needs. #427 made
    * every panel tile reference a dedicated saved-query copy that exactly one member
-   * owns, so handing that id to `openSavedQuery` re-selects the tab already open on
+   * owns, so handing that id to `openPanelQuery` re-selects the tab already open on
    * the SAME copy (`loadIntoNewTab` dedups on `savedId`, never on the displayed
    * name) and every later Save from that tab keeps targeting this Dashboard's copy
    * rather than a same-named Library query. Two Dashboards holding same-named
    * copies are two ids, therefore two tabs.
+   *
+   * #535 — the tile ids travel with it now: the action also runs the query and
+   * reveals this panel's Dashboards-tree row, and a tree row is addressed by
+   * Dashboard id plus tile id, never by query id. `selectedDashboardId` is
+   * non-null for every render that builds a tile (the "Create dashboard" state has
+   * no tiles), so it is asserted rather than re-checked per button.
    *
    * `null` — never a disabled-and-silent button, and never a button pointing at
    * some other tile's document — when there is nothing to open: a `text` panel is
@@ -1887,10 +1969,78 @@ export async function renderDashboard(
   function tileOpenAction(ts: ViewerTileState): HTMLButtonElement | null {
     if (!queryById.has(ts.queryId) || isQuerylessPanel(ts.panel as Panel | null)) return null;
     return h('button', {
-      class: 'dash-tile-open', type: 'button', title: 'Open in Workbench',
-      'aria-label': 'Open ' + ts.title + ' in Workbench',
-      onclick: () => { app.openSavedQuery(ts.queryId); },
-    }, Icon.code());
+      class: 'dash-tile-open', type: 'button', title: 'Open in Workbench and run',
+      'aria-label': 'Open ' + ts.title + ' in Workbench and run',
+      onclick: () => {
+        app.openPanelQuery({
+          dashboardId: selectedDashboardId as string, tileId: ts.tileId, queryId: ts.queryId,
+        });
+      },
+    }, Icon.expand());
+  }
+
+  /**
+   * #535 — the tile's duplicate action (edit mode only).
+   *
+   * A two-resource write (a dedicated owned query clone plus the tile), so unlike
+   * every other tile control this one does NOT go through `runCommand`: see
+   * `application/dashboard-panel-duplicate.ts` for why an optimistic publish would
+   * leave the new panel invisible AND suppress the rebuild that would fix it. The
+   * commit rebuilds the route from committed truth, which is what makes the copy
+   * appear.
+   *
+   * Not gated on the active engine the way delete is: duplicating a panel is a
+   * membership act with no layout semantics of its own, and the copy's placement
+   * comes from the source tile through whichever engine is active.
+   */
+  function tileDuplicateAction(ts: ViewerTileState): HTMLButtonElement | null {
+    if (readOnly) return null;
+    return h('button', {
+      class: 'dash-tile-dup', type: 'button', title: 'Duplicate panel',
+      'aria-label': 'Duplicate ' + ts.title,
+      onclick: () => { void duplicateTile(ts.tileId); },
+    }, Icon.copy());
+  }
+
+  /** Commit one duplication and report a refusal. Nothing is done on success: the
+   *  route rebuild the commit triggers is the feedback. */
+  async function duplicateTile(tileId: string): Promise<void> {
+    const outcome = await commitPanelDuplication({
+      mutateWorkspace: app.mutateWorkspace,
+      onWorkspaceExternallyChanged: app.onWorkspaceExternallyChanged,
+      genId: app.genId,
+    }, { dashboardId: selectedDashboardId as string, tileId });
+    const message = panelDuplicateMessage(outcome);
+    if (message !== null) flashToast(message, { document: doc });
+  }
+
+  /**
+   * #535 — the tile's widen action (edit mode only).
+   *
+   * Built unconditionally for an editable tile and then HIDDEN per style, the same
+   * build-once-gate-later shape the grip and delete button use: the layout menu
+   * changes the active style without rebuilding a single tile, so a style-dependent
+   * button that only existed for the style at build time would be stale one press
+   * later. `applyWidenMode` is what keeps it honest — see it for the gate itself.
+   */
+  function tileWidenAction(ts: ViewerTileState): HTMLButtonElement | null {
+    if (readOnly) return null;
+    return h('button', {
+      class: 'dash-tile-widen', type: 'button', 'aria-label': 'Widen ' + ts.title,
+      onclick: () => {
+        // Re-read the style at CLICK time, not at build time — and refuse when it
+        // has none, the same interaction-level guard delete uses for its
+        // engine check: a hidden button is still clickable through a script or a
+        // stale accessibility tree.
+        const style = widenStyle;
+        if (style === null) return;
+        runCommand({
+          type: 'update-placement',
+          tileId: ts.tileId,
+          placement: nextPanelPlacement({ style, placement: storedPlacement(ts.tileId) }),
+        });
+      },
+    }, Icon.arrowsWide());
   }
 
   function ensureTileEl(ts: ViewerTileState): TileEl {
@@ -1913,12 +2063,17 @@ export async function renderDashboard(
       onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },
     }, Icon.trash()) : null;
     const openBtn = tileOpenAction(ts);
+    // #535 — the design's trailing action order: duplicate, widen, expand. Delete
+    // stays last, where it already was: the destructive control is the one that
+    // must not shift position as the other three come and go.
+    const dupBtn = tileDuplicateAction(ts);
+    const widenBtn = tileWidenAction(ts);
     const heading = h('div', { class: 'dash-tile-heading' },
       h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
       ts.description ? h('span', {
         class: 'dash-tile-desc', title: ts.description,
       }, ts.description) : null);
-    const head = h('div', { class: 'dash-tile-head' }, grip, heading, openBtn, delBtn);
+    const head = h('div', { class: 'dash-tile-head' }, grip, heading, dupBtn, widenBtn, openBtn, delBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly
@@ -1941,8 +2096,14 @@ export async function renderDashboard(
     }, head, body, foot, resizeHandle);
     if (!readOnly) wireTileDrag(ts.tileId, card);
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
-    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle };
+    const tileEl: TileEl = {
+      card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
+    };
     if (resizeHandle) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
+    // A tile built mid-session (a duplicate, an import) has to arrive already
+    // gated: the effect below only re-labels tiles it can find in `tileEls`, and
+    // this one is added to that map on the next line.
+    applyWidenMode(ts, tileEl);
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
@@ -2074,11 +2235,17 @@ export async function renderDashboard(
   }
 
   /**
-   * #471 — give a FLOW band member the tile's Open-in-Workbench action.
+   * #471/#535 — give a FLOW band member the tile actions its head cannot carry.
    *
    * Flow-only, and called right after `renderKpiInto` repaints the member: the GRID
-   * engine renders a KPI tile as a real card whose head carries the action already,
-   * so doing this there would give one tile two of them.
+   * engine renders a KPI tile as a real card whose head carries the actions already,
+   * so doing this there would give one tile two of each.
+   *
+   * Expand and duplicate, but NOT widen: a KPI band is a full-width flex stream
+   * that ignores span entirely (`computeFlowLayout`), so a band member has no width
+   * to step through. Duplicate has to be here or a KPI panel would be
+   * un-duplicable under every flow preset — a flow KPI tile's `.dash-tile` card is
+   * never inserted into the DOM at all, so its head is unreachable.
    *
    * The action is anchored INSIDE the first card rather than on the member host,
    * because `.dash-kpi-member` is `display: contents` and generates no box at all —
@@ -2089,12 +2256,19 @@ export async function renderDashboard(
    * `surfaceRect`/`hitRects` still read the member's card children, and the button
    * lives inside one of those boxes rather than beside them.
    *
-   * One action per TILE, so it goes on the first card of a multi-field KPI — and on a
-   * state card too, because a loading or failed tile is still query-backed and its
-   * query is exactly what the user wants to look at.
+   * One of each per TILE, so they go on the first card of a multi-field KPI — and on
+   * a state card too, because a loading or failed tile is still query-backed, and
+   * looking at (or copying) its query is exactly what a broken tile calls for.
    */
   function attachFlowKpiOpenAction(host: HTMLElement, ts: ViewerTileState): void {
     const anchor = host.firstElementChild;
+    // Duplicate first, so the DOM order matches the head's (duplicate then
+    // expand); CSS pins each to its own offset in the card's top-right corner.
+    // Each action is built only when there is somewhere to put it — the
+    // anchor-less host has no reachable render path, so it is tolerated in the
+    // same expression rather than given an early return no test could execute.
+    const dup = anchor ? tileDuplicateAction(ts) : null;
+    if (dup) anchor!.appendChild(dup);
     const action = anchor ? tileOpenAction(ts) : null;
     if (action) anchor!.appendChild(action);
   }
@@ -2419,6 +2593,16 @@ export async function renderDashboard(
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
+    // #535: the widen button's gate AND its label, resynced on every publish. Not
+    // folded into the render-mode branch below (which only fires on a grid
+    // tiles/full flip): a flow PRESET switch changes the gate without touching the
+    // render mode, and a widen changes the label with neither of them moving.
+    // Tiles this publish has not built yet are gated in `ensureTileEl` instead.
+    widenStyle = widenStyleFor(sview);
+    for (const ts of sview.tiles) {
+      const tileEl = tileEls.get(ts.tileId);
+      if (tileEl) applyWidenMode(ts, tileEl);
+    }
     // Keep the local render-mode mirror current from the published session
     // layout. View mode can now project flow styles too, so leaving a Full
     // grid must also clear the grid host's vertical-only resize affordance.

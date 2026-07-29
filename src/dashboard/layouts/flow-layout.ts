@@ -66,6 +66,25 @@ export function setFlowPlacement(layout: unknown, tileId: string, placement: unk
   if (items) items[tileId] = placement;
 }
 
+/** One tile's STORED flow placement, or `undefined` when the layout holds none
+ *  for it (#535). The read counterpart of `setFlowPlacement`, and it has to be a
+ *  counterpart rather than a bare `layout.items[tileId]`: flow placements live on
+ *  the FALLBACK surface whenever the primary engine is not flow@1, so reading the
+ *  primary's `items` would silently answer "no placement" for exactly the
+ *  documents `setFlowPlacement` writes through the fallback. Never mutates — a
+ *  reader that creates an empty `items` would dirty a document just by looking.
+ *
+ *  No `isFlowLayout` re-check on the fallback, unlike `flowItemsHost`: a
+ *  `fallback` is flow@1 by schema, and the write path only re-checks because it
+ *  must not CREATE an `items` object on a surface that could not hold flow
+ *  placements. Reading a missing `items` already answers `undefined`. */
+export function flowPlacementAt(layout: unknown, tileId: string): unknown {
+  if (!isObject(layout)) return undefined;
+  const surface = isFlowLayout(layout.type, layout.version) ? layout : layout.fallback;
+  if (!isObject(surface) || !isObject(surface.items)) return undefined;
+  return surface.items[tileId];
+}
+
 /** Derive an initial flow placement from a query's `sizeHints.preferred`
  *  (`compact|medium|wide` → span `1|2|3`), or `undefined` when there is no
  *  usable hint (the tile then renders at the flow default). */

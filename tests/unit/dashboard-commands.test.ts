@@ -88,6 +88,90 @@ describe('applyCommand — remove / move', () => {
   });
 });
 
+describe('applyCommand — duplicate-tile (#535)', () => {
+  const source = {
+    id: 'b', queryId: 'q', title: 'Q3 revenue', description: 'local note',
+    presentation: { variant: 'wide', override: { cfg: { type: 'bar', x: 1, y: [2] } } },
+  };
+  const seeded = () => draft({
+    tiles: [{ id: 'a', queryId: 'q' }, source, { id: 'c', queryId: 'q' }] as never,
+    layout: {
+      type: 'flow', version: 1, preset: 'columns-3',
+      items: { a: {}, b: { span: 2, height: 'large' } },
+    } as never,
+  });
+  const dup: DashboardCommand = { type: 'duplicate-tile', tileId: 'b', newTileId: 'b2', queryId: 'q-copy' };
+
+  it('inserts the copy immediately after the source and reports its id', () => {
+    const result = run(seeded(), dup, [query('q'), query('q-copy')]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.dashboard.tiles.map((t) => (t as { id: string }).id)).toEqual(['a', 'b', 'b2', 'c']);
+    expect(result.value).toEqual({ tileId: 'b2' });
+  });
+
+  it('carries the source tile\'s presentation, title and description, deeply cloned', () => {
+    const result = run(seeded(), dup, [query('q'), query('q-copy')]);
+    if (!result.ok) throw new Error('expected ok');
+    const copy = result.dashboard.tiles[2] as typeof source;
+    expect(copy).toEqual({ ...source, id: 'b2', queryId: 'q-copy' });
+    expect(copy.presentation).not.toBe(source.presentation);
+  });
+
+  it('copies the source placement through the ACTIVE engine, for both engines', () => {
+    const flow = run(seeded(), dup, [query('q'), query('q-copy')]);
+    expect(flow.ok && flow.dashboard.layout.items).toEqual({
+      a: {}, b: { span: 2, height: 'large' }, b2: { span: 2, height: 'large' },
+    });
+
+    const gridDoc = draft({
+      tiles: [source] as never,
+      layout: { type: 'grafana-grid', version: 1, items: { b: { span: 8, height: 5 } } } as never,
+    });
+    const grid = run(gridDoc, dup, [query('q'), query('q-copy')], grafanaGridLayoutPlugin);
+    expect(grid.ok && (grid.dashboard.layout.items as Record<string, unknown>).b2)
+      .toEqual({ span: 8, height: 5 });
+  });
+
+  // Flow keeps its placements on the FALLBACK surface when the primary engine is
+  // something else, which is exactly where `setFlowPlacement` writes them — so the
+  // read has to look there too or a duplicate silently loses the source's size.
+  it('reads a flow placement off the fallback surface when the primary is not flow', () => {
+    const doc = draft({
+      tiles: [source] as never,
+      layout: {
+        type: 'future-engine', version: 1,
+        fallback: { type: 'flow', version: 1, preset: 'columns-2', items: { b: { span: 2, height: 'compact' } } },
+      } as never,
+    });
+    const result = run(doc, dup, [query('q'), query('q-copy')]);
+    if (!result.ok) throw new Error('expected ok');
+    const fallback = result.dashboard.layout.fallback as { items: Record<string, unknown> };
+    expect(fallback.items.b2).toEqual({ span: 2, height: 'compact' });
+  });
+
+  it('leaves the copy placement-free when the source has none', () => {
+    const result = run(seeded(), { ...dup, tileId: 'c', newTileId: 'c2' }, [query('q'), query('q-copy')]);
+    expect(result.ok && Object.hasOwn(result.dashboard.layout.items as object, 'c2')).toBe(false);
+  });
+
+  it('fails for a missing source tile, an unresolvable clone id, and a taken tile id', () => {
+    const missing = run(seeded(), { ...dup, tileId: 'z' }, [query('q'), query('q-copy')]);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.diagnostics[0].code).toBe('dashboard-command-tile-missing');
+
+    // The clone must already be in the collection — the caller mints it first.
+    const noQuery = run(seeded(), dup, [query('q')]);
+    expect(noQuery.ok).toBe(false);
+    if (!noQuery.ok) expect(noQuery.diagnostics[0].code).toBe('dashboard-command-query-missing');
+
+    // Its OWN code, not the "already has a default tile" one.
+    const taken = run(seeded(), { ...dup, newTileId: 'a' }, [query('q'), query('q-copy')]);
+    expect(taken.ok).toBe(false);
+    if (!taken.ok) expect(taken.diagnostics[0].code).toBe('dashboard-command-tile-id-taken');
+  });
+});
+
 describe('applyCommand — update-tile', () => {
   const seeded = () => draft({ tiles: [{ id: 't1', queryId: 'q', title: 'old' }] as never });
 
@@ -357,6 +441,24 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
       expect(result.dashboard.layout.fallback).toEqual({
         type: 'flow', version: 1, preset: 'columns-2',
         items: { a: { span: 3, height: 'medium' }, 'tile-1': { span: 2, height: 'medium' } },
+      });
+    }
+  });
+
+  it('duplicate-tile regenerates the fallback to include the copy (#535)', () => {
+    const result = run(
+      seededGrid(),
+      { type: 'duplicate-tile', tileId: 'a', newTileId: 'a2', queryId: 'c' },
+      [query('q'), query('c')], grafanaGridLayoutPlugin,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.dashboard.layout.fallback).toEqual({
+        type: 'flow', version: 1, preset: 'columns-2',
+        items: {
+          a: { span: 1, height: 'medium' }, a2: { span: 1, height: 'medium' },
+          b: { span: 2, height: 'medium' },
+        },
       });
     }
   });
