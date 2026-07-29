@@ -107,6 +107,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   on `.sidebar`'s new `container-type: inline-size`) restores the full
   presentation the instant the sidebar widens past the threshold, with no JS
   state to reconcile.
+- **Dashboard tree rows now use one consistent column layout for counts and
+  actions, and Add panel moved to the Panels row** (#553). The Dashboard row's
+  panel count now renders as the same inline `· N` right after the label that
+  Variables/Panels already used, instead of competing right-aligned text next
+  to the action cluster; the rightmost column is actions only. The Add panel
+  (`+`) control moved from the Dashboard row to the Panels group row, since it
+  creates a member of that group. #552's narrow-sidebar container query
+  (`@container sidebar (max-width: 220px)`, reused verbatim — no second
+  breakpoint) now also hides the Dashboard tree's `· N` counts, recovering
+  space for the Dashboard/Variables/Panels labels; the count stays in each
+  row's accessible name even while visually hidden, and every row's
+  expand/collapse and direct actions remain reachable by mouse and keyboard.
 
 ## [0.7.2] - 2026-07-29
 

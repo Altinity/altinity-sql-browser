@@ -310,9 +310,11 @@ test.describe('Dashboard hierarchy tree', () => {
   // #472: "focus styling must visibly distinguish the disclosure control from the
   // navigation target from the trailing action". happy-dom can see none of this, and
   // `:focus-visible` only applies under real keyboard modality — so it has to be a
-  // real Tab walk in a real browser. Which doubles as proof that all five targets
-  // (#515 added the plus before the rename pencil) are keyboard-reachable, in row order,
-  // within ONE composite tab stop.
+  // real Tab walk in a real browser. Which doubles as proof that all four targets
+  // are keyboard-reachable, in row order, within ONE composite tab stop.
+  //
+  // #553 moved Add panel off this row onto the Panels group row (see the
+  // dedicated test below), so the Dashboard row's own cluster is pencil, trash.
   test('Tab walks the row, its chevron and its trailing actions, each ringed differently', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
@@ -336,17 +338,14 @@ test.describe('Dashboard hierarchy tree', () => {
     await page.keyboard.press('Tab');
     const chevron = await ring();
     await page.keyboard.press('Tab');
-    const plus = await ring();
-    await page.keyboard.press('Tab');
     const pencil = await ring();
     await page.keyboard.press('Tab');
     const trash = await ring();
 
-    // #515: the cluster is plus, pencil, trash — destructive last — and Tab
-    // reaches all three inside the one composite tab stop, in paint order.
-    expect([row.what, chevron.what, plus.what, pencil.what, trash.what]).toEqual([
-      'workspace:sales', 'chevron', 'Add panel to Sales revenue',
-      'Edit dashboard Sales revenue', 'Delete dashboard Sales revenue',
+    // The cluster is pencil, trash — destructive last — and Tab reaches both
+    // inside the one composite tab stop, in paint order.
+    expect([row.what, chevron.what, pencil.what, trash.what]).toEqual([
+      'workspace:sales', 'chevron', 'Edit dashboard Sales revenue', 'Delete dashboard Sales revenue',
     ]);
     // The row rings with a box-shadow and no outline; the chevron with an outline and
     // no shadow. Different channels, so neither reads as the other — and neither
@@ -355,12 +354,35 @@ test.describe('Dashboard hierarchy tree', () => {
     expect(row.outline).toBe('none');
     expect(chevron.outline).toContain('solid');
     expect(chevron.shadow).toBe('none');
-    expect(plus.outline).not.toBe(chevron.outline);
     expect(pencil.outline).not.toBe(chevron.outline);
     expect(trash.outline).not.toBe(chevron.outline);
     // Nothing was opened or expanded by walking the row.
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
     await expect(page.locator('.dash-tree-row')).toHaveCount(3);
+  });
+
+  // #553: Add panel's new home. The Panels group row's own composite tab stop
+  // is chevron then plus — proof the move did not strand it from the keyboard.
+  test('Tab walks the Panels group row to its own chevron and Add panel action', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.dash-tree-chev').click();
+    const panels = treeRow(page, 'workspace:sales:group:panels');
+    await panels.focus();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    await expect(panels).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(panels.locator('.dash-tree-chev')).toBeFocused();
+    await page.keyboard.press('Tab');
+    const plus = panels.locator('.dash-tree-act[aria-label="Add panel to Sales revenue"]');
+    await expect(plus).toBeFocused();
+    await expect(plus).toHaveAttribute('aria-haspopup', 'dialog');
+    // Reachable by mouse too: click opens the dialog, matching the keyboard path.
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Add panel' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Add panel' })).toBeHidden();
   });
 
   test('a variable row opens its variable tab immediately and never a query', async ({ page }) => {
@@ -857,11 +879,11 @@ test.describe('direct row actions (#494)', () => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     // Tab to the pencil the way a keyboard user reaches it — row, chevron,
-    // plus, pencil — rather than calling `.click()`, which is what let the #495
-    // review defect through: the tree's own Enter handler runs on the LIST and
-    // would otherwise navigate instead.
+    // pencil (#553 moved Add panel off this row onto the Panels group row) —
+    // rather than calling `.click()`, which is what let the #495 review defect
+    // through: the tree's own Enter handler runs on the LIST and would
+    // otherwise navigate instead.
     await treeRow(page, 'workspace:sales').focus();
-    await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await expect(treeRow(page, 'workspace:sales')
@@ -877,7 +899,6 @@ test.describe('direct row actions (#494)', () => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
     await treeRow(page, 'workspace:sales').focus();
-    await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Space');
@@ -1032,7 +1053,9 @@ test.describe('direct row actions (#494)', () => {
         rowOverflow: el.scrollWidth - list.clientWidth,
       };
     });
-    expect(box.actCount).toBe(3);
+    // #553: Add panel moved to the Panels group row, so a Dashboard row's own
+    // cluster is pencil + trash.
+    expect(box.actCount).toBe(2);
     expect(box.lines).toBeLessThanOrEqual(24);
     expect(box.clipped).toBe(true);
     expect(box.overlap).toBe(false);
@@ -1064,5 +1087,99 @@ test.describe('direct row actions (#494)', () => {
     const landed = await page.evaluate(() =>
       document.activeElement?.dataset?.key ?? document.activeElement?.tagName);
     expect(landed).toMatch(/:tile:t-rev$/);
+  });
+});
+
+// #553 — Dashboard, Variables and Panels counts share ONE inline `· N`
+// placement, and the narrow-sidebar breakpoint (#552's `@container sidebar
+// (max-width: 220px)`, reused verbatim — no second container or threshold)
+// hides all three uniformly. happy-dom cannot see any of this: the container
+// query is real CSS layout, and the drag that reaches it needs a real
+// `.col-resize` pointer sequence (`src/ui/splitters.ts`'s `dragValue('col',
+// ev)` reads `ev.clientX` directly), the same pattern `sidebar-tabs-narrow.spec.js`
+// (#552) uses.
+test.describe('Dashboard tree counts at the narrow sidebar (#553)', () => {
+  /** Drag `.col-resize` to `targetX` the way a real user does. */
+  const dragSidebarTo = async (page, targetX) => {
+    const handle = page.locator('.col-resize');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetX, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+  };
+  const expandSales = async (page) => {
+    await roleTab(page, 'Dashboards').click();
+    await treeRow(page, 'workspace:sales').locator('.dash-tree-chev').click();
+    await treeRow(page, 'workspace:sales:group:variables').click();
+    await treeRow(page, 'workspace:sales:group:panels').click();
+  };
+
+  test('the wide (default) sidebar shows Dashboard, Variables and Panels counts inline after the label', async ({ page }) => {
+    await open(page);
+    await expandSales(page);
+    const countText = (key) => treeRow(page, key).locator('.dash-tree-count').textContent();
+    await expect.poll(() => countText('workspace:sales')).toBe('· 2');
+    await expect.poll(() => countText('workspace:sales:group:variables')).toBe('· 2');
+    await expect.poll(() => countText('workspace:sales:group:panels')).toBe('· 2');
+    for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
+      await expect(treeRow(page, key).locator('.dash-tree-count')).toBeVisible();
+    }
+  });
+
+  test('dragging to <=220px hides every dot/count, but the count stays in the accessible name and actions stay reachable', async ({ page }) => {
+    await open(page);
+    await expandSales(page);
+    await dragSidebarTo(page, 200);
+    await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width))
+      .toBeLessThanOrEqual(220);
+
+    for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
+      await expect(treeRow(page, key).locator('.dash-tree-count')).toBeHidden();
+    }
+    // Hidden from sight only: `rowAccessibleName` sets the row's `aria-label`
+    // explicitly, so the count a sighted user no longer sees is still what a
+    // screen reader announces.
+    const tree = page.getByRole('tree', { name: 'Dashboards' });
+    await expect(tree.getByRole('treeitem', { name: 'Sales revenue 2', exact: true })).toHaveCount(1);
+    await expect(tree.getByRole('treeitem', { name: 'Variables 2', exact: true })).toHaveCount(1);
+    await expect(tree.getByRole('treeitem', { name: 'Panels 2', exact: true })).toHaveCount(1);
+
+    // The label recovered the space rather than being crushed, and Add panel —
+    // its new home on the Panels row — is still reachable by both mouse and
+    // keyboard at this width.
+    const panelsRow = treeRow(page, 'workspace:sales:group:panels');
+    const label = await panelsRow.locator('.label').boundingBox();
+    expect(label.width).toBeGreaterThan(0);
+    const plus = panelsRow.locator('.dash-tree-act[aria-label="Add panel to Sales revenue"]');
+    await plus.focus();
+    await expect(plus).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Add panel' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Add panel' })).toBeHidden();
+
+    // Expand/collapse by mouse still works too.
+    const chev = treeRow(page, 'workspace:sales').locator('.dash-tree-chev');
+    await expect(chev).toHaveAttribute('aria-expanded', 'true');
+    await chev.click();
+    await expect(chev).toHaveAttribute('aria-expanded', 'false');
+    await expect(treeRow(page, 'workspace:sales:group:panels')).toHaveCount(0);
+  });
+
+  test('widening the sidebar back past 220px restores every count', async ({ page }) => {
+    await open(page);
+    await expandSales(page);
+    await dragSidebarTo(page, 200);
+    await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width))
+      .toBeLessThanOrEqual(220);
+
+    await dragSidebarTo(page, 300);
+    await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width))
+      .toBeGreaterThan(220);
+
+    for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
+      await expect(treeRow(page, key).locator('.dash-tree-count')).toBeVisible();
+    }
   });
 });

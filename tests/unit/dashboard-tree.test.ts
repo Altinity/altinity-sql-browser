@@ -175,9 +175,11 @@ describe('renderDashboardTree — structure and ARIA', () => {
     expect(tabbableChevrons[0].closest('.dash-tree-row')!.getAttribute('data-key')).toBe('w1:sales');
     // WebKit needs explicit tabindex values on the hover-concealed actions;
     // they must rove with their row rather than create stops for every row.
+    // #553: the Dashboard row's own vocabulary is edit + delete (Add panel
+    // moved to the Panels group row), so its own tabbable cluster is 2.
     const tabbableActions = [...list.querySelectorAll<HTMLElement>('.dash-tree-act')]
       .filter((action) => action.getAttribute('tabindex') === '0');
-    expect(tabbableActions).toHaveLength(3);
+    expect(tabbableActions).toHaveLength(2);
     expect(tabbableActions.every((action) => action.closest<HTMLElement>('.dash-tree-row')?.dataset.key === 'w1:sales'))
       .toBe(true);
   });
@@ -709,8 +711,10 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     expect(name('w1:sales')).toBe('Sales 2');
     expect(name('w1:sales')).not.toContain('Expand');
     expect(name('w1:sales')).not.toContain('Actions for');
-    // Group row: the count is announced, the disclosure verb is not.
+    // Group row: the count is announced, the disclosure verb is not — the same
+    // placement as the Dashboard row above (#553), on Variables AND Panels.
     expect(name('w1:sales:group:variables')).toBe('Variables 2');
+    expect(name('w1:sales:group:panels')).toBe('Panels 2');
     // Everything that was announced before still is: the status WORD, the type meta
     // and the marker's severity label.
     expect(name('w1:sales:variable:region')).toBe('region unused String Unused');
@@ -719,12 +723,15 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     // The chevron and every trailing control keep their own, distinct names
     // (`openAll` expanded this row, so its verb is Collapse).
     expect(chevron(list, 'w1:sales').getAttribute('aria-label')).toBe('Collapse Sales');
-    expect(actionNames(list, 'w1:sales'))
-      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
+    // #553: Add panel moved to the Panels group row, so the Dashboard row's own
+    // vocabulary is now edit + delete only.
+    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
+    expect(actionNames(list, 'w1:sales:group:panels')).toEqual(['Add panel to Sales']);
     // …and none of those names leaks into the row's own.
-    for (const label of ['Add panel', 'Edit dashboard', 'Delete dashboard', 'Collapse']) {
+    for (const label of ['Edit dashboard', 'Delete dashboard', 'Collapse']) {
       expect(name('w1:sales')).not.toContain(label);
     }
+    expect(name('w1:sales:group:panels')).not.toContain('Add panel');
     expect(name('w1:sales:tile:t1')).toBe('Revenue');
     expect(name('w1:sales:variable:region')).not.toContain('Delete the stored option SQL');
   });
@@ -738,9 +745,10 @@ describe('renderDashboardTree — the disclosure control (#472)', () => {
     vi.advanceTimersByTime(400);
     expect(readTreeUi(app.state.dashboardTreeUi, 'w1').expandedDashboardIds.size).toBe(0);
     expect(app.openDashboard).not.toHaveBeenCalled();
-    // Chevron, row, plus, pencil, trash are independent targets.
+    // Chevron, row, pencil, trash are independent targets. #553 moved the plus
+    // to the (unrendered, since this Dashboard is collapsed) Panels group row.
     expect(row.querySelectorAll('.dash-tree-chev')).toHaveLength(1);
-    expect(row.querySelectorAll('.dash-tree-act')).toHaveLength(3);
+    expect(row.querySelectorAll('.dash-tree-act')).toHaveLength(2);
     vi.useRealTimers();
   });
 });
@@ -770,23 +778,24 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
     expect(list.querySelectorAll('[aria-label^="Actions for"]')).toHaveLength(0);
   });
 
-  it('gives the Dashboard row plus, pencil and trash, in that order', () => {
+  it('gives the Dashboard row pencil and trash, in that order', () => {
     const { list } = open();
     // Destructive rightmost — never where the pointer lands by habit.
-    expect(actionNames(list, 'w1:sales'))
-      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
+    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
+  });
+
+  // #553: Add panel moved off the Dashboard row onto the Panels group row —
+  // it creates a member of that group rather than acting on the Dashboard.
+  it('gives the Panels group row the plus, and the Variables group row none', () => {
+    const { list } = open();
+    expect(actionNames(list, 'w1:sales:group:panels')).toEqual(['Add panel to Sales']);
+    expect(actionNames(list, 'w1:sales:group:variables')).toEqual([]);
   });
 
   it('gives a Panel row a pencil and a trash that name the panel', () => {
     const { list } = open();
     expect(actionNames(list, 'w1:sales:tile:t1'))
       .toEqual(['Edit Revenue', 'Remove Revenue from dashboard']);
-  });
-
-  it('gives group rows none', () => {
-    const { list } = open();
-    expect(actionNames(list, 'w1:sales:group:panels')).toEqual([]);
-    expect(actionNames(list, 'w1:sales:group:variables')).toEqual([]);
   });
 
   it('makes every control a real, individually named button with a tooltip', () => {
@@ -810,7 +819,7 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
 
   it('marks the destructive one so it can be styled apart from the pencil', () => {
     const { list } = open();
-    expect(actionBtn(list, 'w1:sales', 'Add panel to Sales')!.classList.contains('dash-tree-act-danger'))
+    expect(actionBtn(list, 'w1:sales:group:panels', 'Add panel to Sales')!.classList.contains('dash-tree-act-danger'))
       .toBe(false);
     expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.classList.contains('dash-tree-act-danger'))
       .toBe(false);
@@ -830,7 +839,7 @@ describe('renderDashboardTree — direct row actions (#494)', () => {
   it('paints the plus, pencil and trash glyphs on their actions', () => {
     const { list } = open();
     // Swapping the two icons would otherwise pass every other assertion here.
-    expect(actionBtn(list, 'w1:sales', 'Add panel to Sales')!.innerHTML)
+    expect(actionBtn(list, 'w1:sales:group:panels', 'Add panel to Sales')!.innerHTML)
       .toBe(Icon.plus().outerHTML);
     expect(actionBtn(list, 'w1:sales', 'Edit dashboard Sales')!.innerHTML)
       .toBe(Icon.pencil().outerHTML);
@@ -1272,11 +1281,14 @@ describe('renderDashboardTree — Add panel (#515)', () => {
       genId: vi.fn(() => 'new-' + ++id),
       ...over,
     });
+    // #553: Add panel lives on the Panels group row now, which only paints
+    // once the Dashboard is expanded.
+    openAll(fixture.app, 'sales');
     renderDashboardTree(fixture.app);
     return fixture;
   };
   const plus = (list: HTMLElement): HTMLButtonElement =>
-    actionBtn(list, 'w1:sales', 'Add panel to Sales')!;
+    actionBtn(list, 'w1:sales:group:panels', 'Add panel to Sales')!;
   const nameInput = (): HTMLInputElement =>
     document.querySelector<HTMLInputElement>('#panel-create-name')!;
   const descInput = (): HTMLTextAreaElement =>
@@ -1285,10 +1297,10 @@ describe('renderDashboardTree — Add panel (#515)', () => {
     document.querySelector<HTMLButtonElement>('.fm-dialog-confirm')!;
   const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
-  it('renders a real dialog button immediately before the pencil', () => {
+  it('renders a real dialog button on the Panels group row, and only the Dashboard row\'s pencil/trash', () => {
     const { list } = open();
-    expect(actionNames(list, 'w1:sales'))
-      .toEqual(['Add panel to Sales', 'Edit dashboard Sales', 'Delete dashboard Sales']);
+    expect(actionNames(list, 'w1:sales:group:panels')).toEqual(['Add panel to Sales']);
+    expect(actionNames(list, 'w1:sales')).toEqual(['Edit dashboard Sales', 'Delete dashboard Sales']);
     expect(plus(list).getAttribute('aria-haspopup')).toBe('dialog');
     expect(plus(list).getAttribute('data-act')).toBe('add-panel');
     expect(plus(list).getAttribute('title')).toBe('Add panel');
@@ -1439,6 +1451,7 @@ describe('renderDashboardTree — Add panel (#515)', () => {
       id: 't' + i, queryId: 'q' + i,
     }));
     const fixture = treeApp({ currentWorkspace: full });
+    openAll(fixture.app, 'sales');
     renderDashboardTree(fixture.app);
     const button = plus(fixture.list);
     expect(button.getAttribute('aria-disabled')).toBe('true');
