@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mountAppShell } from '../../src/ui/app-shell.js';
 import { startDrag } from '../../src/ui/splitters.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 function mount() {
   const loadSchema = vi.fn(async () => {});
@@ -131,6 +132,27 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
     // switcher clears the shared search filter, so the list is rebuilt from
     // scratch. #487 phase 3 owns whether a drawer should preserve it instead.
     expect(libraryList.contains(marker)).toBe(false);
+    handle.dispose();
+  });
+
+  it('exposes and PAINTS the same lower section for an out-of-union sidePanel', () => {
+    // The blank-pane invariant, tested against the real shell rather than the
+    // renderer alone. `saved-history.test.ts` has a sibling case, but it calls
+    // `renderSavedHistory` directly — so it pins only the renderer's half and would
+    // still pass if this shell went back to resolving the value inline. Exposure and
+    // content have to be asserted in the SAME mounted shell, because the bug is
+    // precisely that the two halves can disagree: one host exposed, the other
+    // painted, nothing visible.
+    const { app, handle } = mount();
+    const host = hosts(app.root);
+    app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+
+    (app.state.sidePanel as { value: string }).value = 'queries';
+
+    expect(host.library.hidden).toBe(false);
+    expect(host.history.hidden).toBe(true);
+    expect(app.dom.savedList!.querySelectorAll('.saved-row')).toHaveLength(1);
+    expect(app.dom.historyList!.children.length).toBe(0);
     handle.dispose();
   });
 

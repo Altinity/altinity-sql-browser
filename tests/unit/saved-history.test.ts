@@ -3,6 +3,8 @@ import { renderSavedHistory } from '../../src/ui/saved-history.js';
 import { LIBRARY_QUERY_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { NAV_SECTION_META } from '../../src/ui/nav-sections.js';
+import { s as svgEl } from '../../src/ui/dom.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import { setTabSpecDraft, toggleFavorite, deleteSaved } from '../../src/state.js';
@@ -623,6 +625,62 @@ describe('renderSavedHistory', () => {
     expect(qsa(savedList(app), '.saved-row')).toHaveLength(1);
     expect(historyList(app).children.length).toBe(0);
     expect(qsa(savedTabsRow(app), '.side-tab')[0].classList.contains('active')).toBe(true);
+  });
+
+  it('takes the lower tabs\' labels and icons FROM the registry', () => {
+    // The mirror of `sidebar-upper.test.ts`'s equivalent. Asserting the rendered
+    // text is 'Library' cannot distinguish reading NAV_SECTION_META from
+    // hard-coding the same string next to it — so override the registry and
+    // require the tab row to follow. Phase 3's rail is the third consumer of
+    // these same labels; a second copy here is how the presentations drift.
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    const meta = NAV_SECTION_META.history as { label: string; icon: () => SVGElement };
+    const label = meta.label;
+    const icon = meta.icon;
+    try {
+      meta.label = 'Recent runs';
+      meta.icon = () => svgEl('svg', { 'data-registry-icon': 'yes' });
+      renderSavedHistory(app);
+      const tabs = qsa(savedTabsRow(app), '.side-tab');
+      expect(tabs[1].textContent).toBe('Recent runs');
+      expect(tabs[1].querySelector('[data-registry-icon="yes"]')).not.toBeNull();
+    } finally {
+      meta.label = label;
+      meta.icon = icon;
+    }
+  });
+
+  it('ignores input from a retained search box whose section is no longer active', () => {
+    // #487 phase 2: the inactive section's host keeps its DOM, so its search input
+    // and listeners OUTLIVE the switch away from it. `state.libraryFilter` is still
+    // one shared string and `renderList` paints the ACTIVE section, so a stale
+    // event would rewrite the filter and repaint the OTHER section's list with this
+    // section's text. CSS makes it unreachable today; phase 3 moves hosts into
+    // containers where a host can be visible while another section is active.
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Carrier delays', sql: 'SELECT 1' }]);
+    renderSavedHistory(app);
+    const staleInput = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+
+    app.state.sidePanel.value = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+
+    staleInput.value = 'zzzz';
+    staleInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // The shared filter is untouched and History still shows its row — no
+    // cross-section rewrite, no "No history matches “zzzz”".
+    expect(app.state.libraryFilter).toBe('');
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+    expect(historyList(app).textContent).not.toContain('zzzz');
+
+    // Escape on the stale input is inert for the same reason.
+    staleInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
   });
 
   it('switching panels persists the choice', () => {

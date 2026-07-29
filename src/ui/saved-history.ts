@@ -193,7 +193,8 @@ function renderSearch(app: App): void {
   const state = app.state;
   // Gated on the LIBRARY count (#427): a workspace whose every query is owned
   // has an empty list, so a search box over it would filter nothing.
-  const isLibrary = activeSection(app) === 'library';
+  const section = activeSection(app);
+  const isLibrary = section === 'library';
   const hasItems = isLibrary
     ? libraryEntries(app).length > 0
     : state.history.length > 0;
@@ -207,9 +208,28 @@ function renderSearch(app: App): void {
   });
   const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
   const syncClear = (): void => { clear.style.display = input.value ? '' : 'none'; };
-  const setFilter = (v: string): void => { input.value = v; state.libraryFilter = v; syncClear(); renderList(app); };
+  // These controls belong to the section that was active when they were built, and
+  // that host now OUTLIVES the switch away from it (#487 phase 2) — the inactive
+  // host keeps its DOM, listeners included. `state.libraryFilter` is still one
+  // shared string and `renderList` still paints the ACTIVE section, so an event
+  // from a stale input would rewrite the filter and repaint the OTHER section's
+  // list with this section's search text. Unreachable through the UI today (a
+  // `display: none` subtree receives no pointer or keyboard events) — but phase 3
+  // moves hosts between containers, where a host can be visible while a different
+  // section is active, so ownership is enforced here rather than left to CSS.
+  //
+  // A guard, not a redesign: per-section filter state is what actually fixes the
+  // shared-string design, and #487 phase 3 owns that (see the ship log).
+  const ownsTheList = (): boolean => activeSection(app) === section;
+  const setFilter = (v: string): void => {
+    if (!ownsTheList()) return;
+    input.value = v; state.libraryFilter = v; syncClear(); renderList(app);
+  };
 
-  input.addEventListener('input', () => { state.libraryFilter = input.value; syncClear(); renderList(app); });
+  input.addEventListener('input', () => {
+    if (!ownsTheList()) return;
+    state.libraryFilter = input.value; syncClear(); renderList(app);
+  });
   input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
   clear.addEventListener('click', () => { setFilter(''); input.focus(); });
   syncClear();

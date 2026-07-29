@@ -70,13 +70,18 @@ describe('NAV_SECTION_META', () => {
     }
   });
 
-  it('mints a FRESH icon per call, so two presentations can show one section at once', () => {
+  it('mints a FRESH icon per call, for EVERY section', () => {
     // One SVG node cannot be in the wide switcher and the rail launcher
     // simultaneously — appending it to the second would remove it from the first.
-    const first = NAV_SECTION_META.library.icon();
-    const second = NAV_SECTION_META.library.icon();
-    expect(first).not.toBe(second);
-    expect(first.tagName).toBe(second.tagName);
+    // Checked for all four, not just one: a single reused node among them is
+    // exactly the kind of asymmetry a one-section spot check misses.
+    for (const section of LEFT_NAV_SECTIONS) {
+      const first = NAV_SECTION_META[section].icon();
+      const second = NAV_SECTION_META[section].icon();
+      expect(first).not.toBe(second);
+      expect(first.tagName).toBe(second.tagName);
+      expect(first.isConnected).toBe(false);
+    }
   });
 
   it('places two sections in each wide pane', () => {

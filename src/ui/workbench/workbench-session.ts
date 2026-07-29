@@ -66,8 +66,16 @@ export interface WorkbenchStateSlice {
   forceExplain: boolean;
   resultRowLimit: number;
   serverVersion: string | null;
-  /** Read by runScript's clean-run history branch ('history' ⇒ repaint). */
-  sidePanel: Signal<string>;
+  /**
+   * Read by runScript's clean-run history branch ('history' ⇒ repaint).
+   *
+   * Derived from `AppState` rather than restated as `Signal<string>` (#487
+   * phase 2): the real signal holds a decoded `'saved' | 'history'`, and a
+   * structural `Signal<string>` here would leave this session type-authorized to
+   * write an arbitrary string into it — re-opening exactly the divergence the
+   * load-boundary decode closes. This slice only ever reads it.
+   */
+  sidePanel: AppState['sidePanel'];
   isMobile: Signal<boolean>;
   mobileView: Signal<'tables' | 'editor' | 'results'>;
   /** Read by the Run-button effect (Run ↔ "Run selection" label). */
