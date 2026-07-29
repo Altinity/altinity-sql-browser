@@ -897,6 +897,29 @@ batch-level failure.
   Explain button itself stays visible, same as the multi-statement case) and
   is checked first, since option SQL is always one statement.
 
+## Addendum (#496, 2026-07-29): Run consumes the probe's overflow sentinel
+
+The #465 probe already wrapped authored option SQL with
+`LIMIT VARIABLE_OPTION_CAP + 1` and requested the same 1001-row client bound,
+but Run validated only response columns. A query returning the sentinel row
+could therefore be recorded as a successful run even though the Dashboard
+option batch supports at most 1000 options.
+
+- **Raw row count follows successful column-shape validation.**
+  `validateOptionRowCount` is a pure companion to `validateOptionColumns`; the
+  Workbench applies it to `result.rows.length` only when the response completed
+  without a server error or cancellation. Column shape wins when both contracts
+  are invalid, and counting happens before any future filtering or
+  de-duplication.
+- **The authored SQL text is irrelevant to the verdict.** Zero through 1000
+  rows pass whether or not the query contains its own `LIMIT`; the bounded
+  probe's 1001st row fails with the specific maximum-option diagnostic. The
+  batch compiler, its independent per-variable truncation handling, transport
+  bounds, and read-only byte cap are unchanged.
+- **Overflow uses the existing failure gate.** The diagnostic is assigned
+  before the success bookkeeping in `runVariableSql`, so an over-cap response
+  creates neither History nor a detached-result source.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

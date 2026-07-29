@@ -906,6 +906,81 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
     expect(result?.rows).toEqual([]);
   });
 
+  it('exactly 1000 raw rows pass without requiring an authored LIMIT', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
+    const rows = Array.from({ length: VARIABLE_OPTION_CAP }, (_, i) => [`v${i}`, `l${i}`]);
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }],
+        rows,
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null; source?: unknown } | null;
+    expect(result?.error).toBeNull();
+    expect(result?.source).toBeDefined();
+    expect(h.hooks.recordHistory).toHaveBeenCalledWith(h.tab, 'SELECT a, b FROM t');
+  });
+
+  it('an authored LIMIT passes when the actual returned row count is within the cap', async () => {
+    const sql = 'SELECT a, b FROM t LIMIT 5';
+    const h = makeHarness({ tab: variableTab({ sqlDraft: sql }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }],
+        rows: [['v', 'l']],
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null; source?: unknown } | null;
+    expect(result?.error).toBeNull();
+    expect(result?.source).toBeDefined();
+    expect(h.hooks.recordHistory).toHaveBeenCalledWith(h.tab, sql);
+  });
+
+  it('rejects the 1001-row sentinel by actual count even when the authored SQL has a LIMIT', async () => {
+    const sql = 'SELECT a, b FROM t LIMIT 5000';
+    const h = makeHarness({ tab: variableTab({ sqlDraft: sql }) });
+    const rows = Array.from({ length: VARIABLE_OPTION_CAP + 1 }, (_, i) => [`v${i}`, `l${i}`]);
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }],
+        rows,
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
+    expect(req.sql).toContain(sql);
+    const result = h.tab.result as { error: string | null; source?: unknown } | null;
+    expect(result?.error).toBe('Dashboard variable option SQL may return at most 1000 rows.');
+    expect(result?.source).toBeUndefined();
+    expect(h.hooks.recordHistory).not.toHaveBeenCalled();
+    expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
+    expect(h.tab.lastSuccessfulResultColumns).toEqual([]);
+  });
+
+  it('checks column shape before the raw row count', async () => {
+    const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a FROM t' }) });
+    h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
+      Object.assign(result, {
+        columns: [{ name: 'a', type: 'String' }],
+        rows: Array.from({ length: VARIABLE_OPTION_CAP + 1 }, () => ['v']),
+      });
+      return result;
+    });
+    const session = createWorkbenchSession(h.deps);
+    await session.run();
+    const result = h.tab.result as { error: string | null } | null;
+    expect(result?.error).toMatch(/exactly two columns/);
+    expect(result?.error).not.toMatch(/at most 1000 rows/);
+  });
+
   it('a one-column result reports the actual column count', async () => {
     const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a FROM t' }) });
     h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
@@ -951,7 +1026,10 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
   it('preserves a transport error, never overwritten by shape validation', async () => {
     const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
     h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
-      result.error = 'Some server error';
+      Object.assign(result, {
+        error: 'Some server error',
+        rows: Array.from({ length: VARIABLE_OPTION_CAP + 1 }, () => ['v', 'l']),
+      });
       return result;
     });
     const session = createWorkbenchSession(h.deps);
@@ -963,7 +1041,10 @@ describe('createWorkbenchSession: dashboard-variable Run (#465)', () => {
   it('preserves cancellation, never overwritten by shape validation', async () => {
     const h = makeHarness({ tab: variableTab({ sqlDraft: 'SELECT a, b FROM t' }) });
     h.execFakes.executeRead.mockImplementation(async (result: StreamResult) => {
-      result.cancelled = true;
+      Object.assign(result, {
+        cancelled: true,
+        rows: Array.from({ length: VARIABLE_OPTION_CAP + 1 }, () => ['v', 'l']),
+      });
       return result;
     });
     const session = createWorkbenchSession(h.deps);

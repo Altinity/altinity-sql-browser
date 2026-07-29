@@ -34,7 +34,7 @@ import { newResult } from '../../core/stream.js';
 import { buildResultSource } from '../../core/query-source.js';
 import {
   VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
-  compileOptionProbe, optionSqlDiagnostics, validateOptionColumns,
+  compileOptionProbe, optionSqlDiagnostics, validateOptionColumns, validateOptionRowCount,
 } from '../../core/variable-options.js';
 import type { QueryResult, ScriptResult, ScriptEntry } from '../results.js';
 import type { QueryExecutionService } from '../../application/query-execution-service.js';
@@ -564,11 +564,14 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       });
       // Only the probe's own transport succeeding makes its response metadata
       // meaningful — a transport error or a cancellation already has its own
-      // story and must not be overwritten by a shape verdict about a response
-      // that never fully arrived.
+      // story and must not be overwritten by a verdict about a response that
+      // never fully arrived. Shape is checked before raw row count so a malformed
+      // response retains the more fundamental column diagnostic; the count is
+      // read before any future filtering or de-duplication can hide the sentinel.
       if (isCurrent(registration) && !result.error && !result.cancelled) {
-        const shape = validateOptionColumns(result.columns);
-        if (shape) result.error = shape.message;
+        const invalid = validateOptionColumns(result.columns)
+          ?? validateOptionRowCount(result.rows.length);
+        if (invalid) result.error = invalid.message;
       }
     } finally {
       if (!isCurrent(registration)) {
