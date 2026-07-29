@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-29
+
 ### Fixed
 - **Dashboard tile descriptions now match the selected presentation density.**
   Full view and Report show the saved-query description beneath the tile name;
