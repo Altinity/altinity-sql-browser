@@ -823,7 +823,13 @@ export async function renderDashboard(
     // map, never persisted, so `saveActive` is a no-op adapter (there is
     // nothing to save; unlike detached Data, this Dashboard draft has no
     // Workbench-persisted counterpart to route to).
-    state: { varValues: draftValues, activeByName: draftActive, varRecent: state.varRecent },
+    state: { varValues: draftValues, activeByName: draftActive },
+    // #478: a live read at call time, not a copied `state.varRecent` data
+    // property — `state.varRecent` (the real `AppState` field) is REPLACED
+    // wholesale by `clearVarRecent`/`recordBoundParams`, never mutated in
+    // place, so a snapshot taken here at adapter-construction time would go
+    // stale the moment either fires while this bar is still mounted.
+    getVarRecent: () => state.varRecent,
     params: {
       saveVarValues: () => {},
       saveActive: () => {},

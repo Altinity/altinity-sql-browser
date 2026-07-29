@@ -47,10 +47,16 @@ import type { VariableOption } from '../core/variable-options.types.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-range.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
- *  full ~50-member `App` contract (app.types.ts). A real `App` satisfies this
- *  directly, and so does tests/helpers/fake-app.js's long-standing minimal
- *  `makeApp()` fixture — no cast needed on either side (same convention
- *  shortcuts.ts established for its own narrow `ShortcutsApp` contract). */
+ *  full ~50-member `App` contract (app.types.ts). #478: this is an
+ *  ADAPTER-facing port, not a same-shape subset a real `App` satisfies
+ *  directly — both callers (`results.ts`'s detached Data pane and
+ *  `dashboard.ts`'s viewer) build an explicit `VariableBarApp` object rather
+ *  than casting `app as VariableBarApp`, because each names its own
+ *  activation/persistence semantics (see `activeByName` and `params.saveActive`
+ *  below). `tests/unit/variable-bar.test.ts`'s `asBarApp()` builds the same
+ *  kind of adapter, over tests/helpers/fake-app.js's fake `App`, to exercise
+ *  this module directly; `results.test.ts`/`dashboard.test.ts` instead drive
+ *  the real production adapters through `expandDataPane`/`renderDashboard`. */
 export interface VariableBarApp {
   document: Document;
   state: {
@@ -63,8 +69,19 @@ export interface VariableBarApp {
      *  activation-follows-value), so a copy would silently stop the caller's
      *  own reads (`effectiveFilterActive`, `activeMap`) from observing edits. */
     activeByName: Record<string, boolean>;
-    varRecent: RecentMap;
   };
+  /** #478 (fixing a #555 regression): a live-read CALLBACK, deliberately not a
+   *  `state.varRecent` data property. `varRecent` is REPLACED wholesale, never
+   *  mutated in place (`workbench-parameter-session.ts`'s `recordBoundParams`/
+   *  `clearVarRecent`/`clearAllVarRecent` all assign a new `RecentMap`) — an
+   *  adapter that copied it into `state` like `activeByName` would freeze a
+   *  snapshot from construction time, so a later replacement (a new recorded
+   *  value, a cleared field) would never reach an already-built bar. Reading
+   *  through a callback at call time (`getRecents` below, on every dropdown
+   *  open/keystroke) is what makes the source live regardless of how many
+   *  times the caller's own `varRecent` reference has been swapped since this
+   *  bar was built. */
+  getVarRecent(): RecentMap;
   /** #276 Phase 5: no flat `App.saveVarValues`/`saveFilterActive`/
    *  `clearVarRecent` delegates — this module reads `app.params.*` directly.
    *  #478: `saveActive` replaces the Workbench-named `saveFilterActive` — a
@@ -309,7 +326,8 @@ export interface VariableBarHandle {
 /**
  * Build a variable bar: one field per `{name:Type}` parameter in `params` (the
  * shape from `fieldControls(analysis)`), sharing `app.state.varValues` /
- * `app.state.activeByName` / `app.state.varRecent` with every other surface.
+ * `app.state.activeByName` with every other surface, and reading recents
+ * live through `app.getVarRecent()`.
  * Hidden entirely (no row, no spacing) when `params` is empty — same convention
  * as the workbench's var-strip. Typing debounces before calling `onCommit(name)`;
  * Enter or blur fires immediately, clearing any pending debounce so a value
@@ -598,7 +616,7 @@ export function buildVariableBar(
     // #171: live-filtered recents for this field (type + typed text), read
     // fresh on every open/keystroke (never a snapshot — see recent-field.js's
     // header comment).
-    const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, p.name, p.type, text);
+    const getRecents = (text: string): string[] => recentOptions(app.getVarRecent(), p.name, p.type, text);
     const onClearRecent = (): void => app.params.clearVarRecent(p.name);
     // A preset/recent pick is a deliberate, complete action (like Enter) —
     // run immediately, bypassing the debounce `onValueInput` just armed,

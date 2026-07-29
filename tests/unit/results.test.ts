@@ -10,7 +10,7 @@ import type {
 import { makeApp } from '../helpers/fake-app.js';
 import type { FakeChart } from '../helpers/fake-app.js';
 import { newResult as newResultUntyped } from '../../src/core/stream.js';
-import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
+import { emptyRecentMap, recordRecent, clearRecent } from '../../src/core/recent-values.js';
 import { formatRows } from '../../src/core/format.js';
 import { queryPanel } from '../../src/core/saved-query.js';
 import type { AppState, ResultSort } from '../../src/state.js';
@@ -959,6 +959,46 @@ describe('expandDataPane', () => {
       new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
     );
     expect(app.params.clearVarRecent).toHaveBeenCalledWith('level');
+  });
+
+  // #478 regression: this detached-Data adapter used to copy `app.state.varRecent`
+  // into `VariableBarApp.state` as a plain data property, captured once when the
+  // pane was expanded. `varRecent` is REPLACED wholesale, never mutated in place
+  // (`workbench-parameter-session.ts`'s `recordBoundParams`), so that copy went
+  // stale the instant a later run recorded a new value while the pane stayed
+  // open. The adapter now routes through `getVarRecent()`, read at call time —
+  // this must fail if the adapter reverts to a captured `varRecent` property.
+  it('#478: a value recorded after the pane opens is visible on the next dropdown open', () => {
+    const app = makeApp();
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    const input = qs<HTMLInputElement>(overlay, '.detached-variable-row .var-field input');
+    input.dispatchEvent(new Event('focus'));
+    expect(qs(overlay, '[role="option"]')).toBeNull(); // nothing recorded yet
+    // Simulate a successful re-run recording a new value — a fresh map object.
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'level', 'Critical');
+    input.dispatchEvent(new Event('focus')); // reopen: re-derives options fresh
+    const opt = qs(overlay, '[role="option"]');
+    expect(opt.textContent).toContain('Critical');
+  });
+
+  it('#478: Clear recent, through a production-like clearVarRecent that replaces app.state.varRecent, empties the dropdown on reopen', () => {
+    const app = makeApp();
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'level', 'Warning');
+    app.params.clearVarRecent = vi.fn((name: string) => {
+      app.state.varRecent = clearRecent(app.state.varRecent, name);
+    });
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    const input = qs<HTMLInputElement>(overlay, '.detached-variable-row .var-field input');
+    input.dispatchEvent(new Event('focus'));
+    expect(qs(overlay, '[role="option"]')).not.toBeNull(); // 'Warning' is listed
+    qs<HTMLButtonElement>(overlay, '.var-combo-footer button').dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    );
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('level');
+    input.dispatchEvent(new Event('focus')); // reopen after the clear
+    expect(qs(overlay, '[role="option"]')).toBeNull(); // gone, not stale
   });
 
   it('a retained Refresh button is inert after its detached view closes', async () => {

@@ -3,7 +3,7 @@ import { analyzeParameterizedSources, fieldControls } from '../../src/core/param
 import type { FieldControl, PreparedFieldState } from '../../src/core/param-pipeline.js';
 import { buildVariableBar, VARIABLE_DEBOUNCE_MS } from '../../src/ui/variable-bar.js';
 import type { VariableBarApp } from '../../src/ui/variable-bar.js';
-import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
+import { emptyRecentMap, recordRecent, clearRecent } from '../../src/core/recent-values.js';
 import { parseParamType } from '../../src/core/param-type.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../../src/core/time-range.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -17,7 +17,11 @@ import { makeApp } from '../helpers/fake-app.js';
 // through this adapter still observes the bar's own writes.
 const asBarApp = (app: ReturnType<typeof makeApp>): VariableBarApp => ({
   document: app.document,
-  state: { varValues: app.state.varValues, activeByName: app.state.filterActive, varRecent: app.state.varRecent },
+  state: { varValues: app.state.varValues, activeByName: app.state.filterActive },
+  // #478: a live read, not a captured `app.state.varRecent` snapshot — see
+  // `VariableBarApp.getVarRecent`'s doc comment (`varRecent` is replaced
+  // wholesale, never mutated in place).
+  getVarRecent: () => app.state.varRecent,
   params: {
     saveVarValues: () => app.params.saveVarValues(),
     saveActive: () => app.params.saveFilterActive(),
@@ -158,6 +162,55 @@ describe('buildVariableBar (shared variable row)', () => {
     input.dispatchEvent(new Event('focus'));
     bar.el.querySelector('.var-combo-footer button')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(app.params.clearVarRecent).toHaveBeenCalledWith('x'); // onClearRecent
+    bar.el.remove();
+  });
+
+  it('reads varRecent live: a wholesale replacement of app.state.varRecent after the bar is built surfaces the new value on reopen (#478)', () => {
+    // #478 regression: the detached-Data adapter used to copy `app.state.varRecent`
+    // into `VariableBarApp.state` as a plain data property, captured once at
+    // adapter-construction time. `varRecent` is REPLACED wholesale (never
+    // mutated in place — `workbench-parameter-session.ts`'s `recordBoundParams`),
+    // so that copy went stale the instant a later run recorded a new value.
+    // `asBarApp` now routes through `getVarRecent()`, read at call time — this
+    // must fail if that adapter reverts to `varRecent: app.state.varRecent`.
+    const app = makeApp();
+    const onCommit = vi.fn();
+    const bar = buildVariableBar(asBarApp(app), paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    document.body.appendChild(bar.el);
+    const input = bar.el.querySelector('input')!;
+    input.dispatchEvent(new Event('focus'));
+    expect(bar.el.querySelector('[role="option"]')).toBeNull(); // nothing recorded yet
+    // A successful run records a new value — a fresh map object, not a mutation.
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'newval');
+    input.dispatchEvent(new Event('focus')); // reopen: onFocus() always re-derives options
+    const opt = bar.el.querySelector('[role="option"]');
+    expect(opt).not.toBeNull();
+    expect(opt!.textContent).toContain('newval');
+    bar.el.remove();
+  });
+
+  it('Clear recent, through a production-like clearVarRecent that replaces app.state.varRecent, empties the dropdown on reopen (#478)', () => {
+    // #478 regression: the fake `clearVarRecent` is normally a no-op `vi.fn()`
+    // spy (asserted only for the call, never for its effect), which would
+    // still pass even if the adapter fed the bar a frozen snapshot. Here
+    // `clearVarRecent` actually replaces `app.state.varRecent`, mirroring
+    // `workbench-parameter-session.ts`'s real `clearVarRecent` — this exercises
+    // the same wholesale-replacement path a real Clear-recent click takes.
+    const app = makeApp();
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'foo');
+    app.params.clearVarRecent = vi.fn((name: string) => {
+      app.state.varRecent = clearRecent(app.state.varRecent, name);
+    });
+    const onCommit = vi.fn();
+    const bar = buildVariableBar(asBarApp(app), paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    document.body.appendChild(bar.el);
+    const input = bar.el.querySelector('input')!;
+    input.dispatchEvent(new Event('focus'));
+    expect(bar.el.querySelector('[role="option"]')).not.toBeNull(); // 'foo' is listed
+    bar.el.querySelector('.var-combo-footer button')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('x');
+    input.dispatchEvent(new Event('focus')); // reopen after the clear
+    expect(bar.el.querySelector('[role="option"]')).toBeNull(); // gone, not stale
     bar.el.remove();
   });
 

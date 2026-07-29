@@ -1120,7 +1120,12 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         // `saveActive` routes to the real persisted Workbench save.
         const variableBarApp: VariableBarApp = {
           document: doc,
-          state: { varValues: app.state.varValues, activeByName: app.state.filterActive, varRecent: app.state.varRecent },
+          state: { varValues: app.state.varValues, activeByName: app.state.filterActive },
+          // #478: a live read at call time — `app.state.varRecent` is REPLACED
+          // wholesale by `recordBoundParams`/`clearVarRecent` (never mutated in
+          // place), so copying it into `state` above like `activeByName` would
+          // freeze a stale snapshot from adapter-construction time.
+          getVarRecent: () => app.state.varRecent,
           params: {
             saveVarValues: () => app.params.saveVarValues(),
             saveActive: () => app.params.saveFilterActive(),
