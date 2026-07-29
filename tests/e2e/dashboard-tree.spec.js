@@ -921,6 +921,23 @@ test.describe('direct row actions (#494)', () => {
     await expect(row.getByRole('button', { name: 'Delete dashboard Ops latency' })).toBeFocused();
   });
 
+  // The bug this guards: `:focus-within` reveals a row's actions on ANY
+  // focus, including the focus a plain CLICK leaves behind on the row it
+  // selected — so that row's pencil/trash stayed revealed indefinitely,
+  // alongside whichever OTHER row the pointer moved on to hover next. Only
+  // real keyboard focus (`:focus-visible`) should pin a row's actions open
+  // once the pointer has left it.
+  test('clicking a row to select it does not leave its actions revealed once the pointer hovers another row', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const clicked = treeRow(page, 'workspace:ops');
+    const hovered = treeRow(page, 'workspace:long');
+    await clicked.click();
+    await hovered.hover();
+    await expect(clicked.locator('.dash-tree-act').first()).toHaveCSS('opacity', '0');
+    await expect(hovered.locator('.dash-tree-act').first()).toHaveCSS('opacity', '1');
+  });
+
   test('the dialog announces itself as a modal named by its heading', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
@@ -1124,6 +1141,15 @@ test.describe('Dashboard tree counts at the narrow sidebar (#553)', () => {
     await expect.poll(() => countText('workspace:sales:group:panels')).toBe('· 2');
     for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
       await expect(treeRow(page, key).locator('.dash-tree-count')).toBeVisible();
+    }
+    // "Inline after the label" is a geometric claim, not just a text/visibility
+    // one: the count must sit right next to the label's own box, not pushed
+    // into the row's right-aligned trailing cluster (meta/marker/actions).
+    for (const key of ['workspace:sales', 'workspace:sales:group:variables', 'workspace:sales:group:panels']) {
+      const row = treeRow(page, key);
+      const labelBox = await row.locator('.label').boundingBox();
+      const countBox = await row.locator('.dash-tree-count').boundingBox();
+      expect(countBox.x - (labelBox.x + labelBox.width)).toBeLessThan(8);
     }
   });
 
