@@ -1812,9 +1812,11 @@ body.detached-tab .graph-overlay-panel {
    box-shadow, the chevron with that outline, and these keep the user agent's
    own focus ring, which is what shipped with #429 phase 3's pencil. An e2e
    test compares all three and fails if any two collapse into one look. */
-/* The delete CONFIRMATION, built from the shared menu primitive (ui/menu.ts) and
-   anchored on the trash button. Wider than the action menu because its heading is
-   a sentence stating what is lost. */
+/* The delete CONFIRMATION, built from the shared `openConfirmMenu` (ui/confirm-menu.ts)
+   and anchored on the trash button. Wider than the action menu because its heading is
+   a sentence stating what is lost. The primitive shares the STRUCTURE and the focus
+   grammar; each consumer keeps its own three classes, per this file's convention —
+   see `.qtab-close-confirm*` and `.dash-tile-confirm*`. */
 .dash-tree-confirm { min-width: 268px; }
 .dash-tree-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
 .dash-tree-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
@@ -1968,7 +1970,7 @@ body.detached-tab .graph-overlay-panel {
 }
 .qtab .close:hover { background: var(--bg-hover); color: var(--fg); }
 /* #466: the confirm-before-close popover, mirroring `.dash-tree-confirm*`
-   (dashboard-tree.ts's own delete confirm) — same `openMenu` idiom, own
+   (dashboard-tree.ts's own delete confirm) — same shared `openConfirmMenu`, own
    classes per that file's per-consumer-styling convention. */
 .qtab-close-confirm { min-width: 268px; }
 .qtab-close-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
@@ -3564,27 +3566,24 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    be hovered either. */
 .dash-kpi-stream .kpi-card,
 .dash-kpi-stream .dash-kpi-state-card { position: relative; }
+/* ONE control per band member, so one corner offset — Edit shows the `⋯`, View the
+   direct expand, and they are mutually exclusive (see `attachFlowKpiActions`).
+   #535's second offset (`right: 28px`, for a duplicate button beside expand) is
+   gone with the button: duplicate is a menu row now. */
 .dash-kpi-stream .kpi-card > .dash-tile-open,
-.dash-kpi-stream .dash-kpi-state-card > .dash-tile-open {
+.dash-kpi-stream .dash-kpi-state-card > .dash-tile-open,
+.dash-kpi-stream .kpi-card > .dash-tile-menu,
+.dash-kpi-stream .dash-kpi-state-card > .dash-tile-menu {
   position: absolute; top: 4px; right: 4px; margin: 0;
-}
-/* #535: duplicate sits one button-width to expand's LEFT. Both are absolutely
-   positioned in the same corner, so the offset is explicit — without it the two
-   would stack on top of each other at `right: 4px`. Widen has no equivalent here
-   on purpose: a flow KPI band is a full-width flex stream that ignores span
-   entirely, so there is no width for a band member to step through. */
-.dash-kpi-stream .kpi-card > .dash-tile-dup,
-.dash-kpi-stream .dash-kpi-state-card > .dash-tile-dup {
-  position: absolute; top: 4px; right: 28px; margin: 0;
 }
 .dash-kpi-stream .kpi-card:hover > .dash-tile-open,
 .dash-kpi-stream .kpi-card:focus-within > .dash-tile-open,
 .dash-kpi-stream .dash-kpi-state-card:hover > .dash-tile-open,
 .dash-kpi-stream .dash-kpi-state-card:focus-within > .dash-tile-open,
-.dash-kpi-stream .kpi-card:hover > .dash-tile-dup,
-.dash-kpi-stream .kpi-card:focus-within > .dash-tile-dup,
-.dash-kpi-stream .dash-kpi-state-card:hover > .dash-tile-dup,
-.dash-kpi-stream .dash-kpi-state-card:focus-within > .dash-tile-dup { opacity: 1; }
+.dash-kpi-stream .kpi-card:hover > .dash-tile-menu,
+.dash-kpi-stream .kpi-card:focus-within > .dash-tile-menu,
+.dash-kpi-stream .dash-kpi-state-card:hover > .dash-tile-menu,
+.dash-kpi-stream .dash-kpi-state-card:focus-within > .dash-tile-menu { opacity: 1; }
 .dash-grid.modkey .dash-kpi-member:hover > * { cursor: grab; }
 .dash-kpi-member.dash-drop-target > * {
   outline: 2px dashed var(--accent); outline-offset: -2px;
@@ -3673,9 +3672,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    fixed-tier CSS class — there is no longer a closed set of tiers to
    enumerate as classes. */
 /* Dense Grafana chrome: a tighter head than flow's own tile head (13px name,
-   11px/9px padding) — smaller, ellipsized title, hover/focus-revealed grip +
-   delete (both build only in edit mode, ui/dashboard.ts; CSS additionally
-   keeps them invisible while flow renders a cached card). */
+   11px/9px padding) — smaller, ellipsized title, and a hover/focus-revealed grip
+   (edit mode only, ui/dashboard.ts; CSS additionally keeps it invisible while
+   flow renders a cached card). */
 .dash-gg-grid .dash-tile-head {
   display: flex; align-items: center; gap: 6px; padding: 6px 8px 4px; min-height: 22px;
 }
@@ -3686,29 +3685,22 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-gg-grid .dash-gg-grip { display: inline-flex; }
 .dash-gg-grip::before { content: '⠿'; }
-/* No `margin-left: auto` — see the note below `.dash-tile-open`: with four trailing
-   actions one auto margin absorbs the free space and splits the group, and the
-   heading's own `flex: 1` already pins them all right. */
-.dash-gg-del {
-  display: none; flex-shrink: 0; width: 20px; height: 20px;
-  align-items: center; justify-content: center; padding: 0; color: var(--fg-faint);
-  background: transparent; border: none; border-radius: var(--r-sm); cursor: pointer; opacity: 0;
-}
-.dash-gg-grid .dash-gg-del { display: inline-flex; }
-.dash-gg-grid .dash-gg-tile:hover .dash-gg-del,
-.dash-gg-del:focus-visible { opacity: 1; }
-.dash-gg-del:hover { color: var(--error-fg); background: var(--error-bg); }
-/* #471/#535 — the tile head's own action trio: duplicate, widen, expand. Same
-   subtle chrome as the delete button beside them, with three deliberate
-   differences: they are NOT scoped to `.dash-gg-grid` (they exist in the flow
-   renderer too), `display` is never used for the reveal — `opacity` is, so a
-   button stays focusable and `:focus-visible` can surface it for a keyboard user
-   who cannot hover — and expand is not edit-mode-only (View mode is where
-   inspecting a tile's query matters most; duplicate and widen only ever get
-   BUILT in edit mode, so they need no CSS gate of their own). */
+/* #537 removed `.dash-gg-del` entirely. The trash was CSS-scoped to `.dash-gg-grid`
+   AND click-gated on `activeEngine === 'grafana-grid'`, so Report and the two
+   column presets had no delete at all and a flow KPI band member had none under
+   any style; it is a `⋯` menu row now, which is engine-independent by
+   construction. */
+/* #471/#535/#537 — the tile head's trailing controls: at most TWO, and they are
+   mode-exclusive. Edit shows the inline widen plus the `⋯` that holds
+   duplicate/widen/expand/remove; View shows the direct expand and no menu.
+   Deliberately NOT scoped to `.dash-gg-grid` — they exist in the flow renderer
+   too — and `display` is never used for the reveal: `opacity` is, so a button
+   stays focusable and `:focus-visible` can surface it for a keyboard user who
+   cannot hover. Neither needs a CSS mode gate of its own, because each is only
+   ever BUILT for the mode it belongs to. */
 .dash-tile-open,
-.dash-tile-dup,
-.dash-tile-widen {
+.dash-tile-widen,
+.dash-tile-menu {
   display: inline-flex; flex-shrink: 0; width: 20px; height: 20px;
   align-items: center; justify-content: center; padding: 0; color: var(--fg-faint);
   background: transparent; border: none; border-radius: var(--r-sm); cursor: pointer;
@@ -3717,32 +3709,39 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-tile:hover .dash-tile-open,
 .dash-tile:focus-within .dash-tile-open,
 .dash-tile-open:focus-visible,
-.dash-tile:hover .dash-tile-dup,
-.dash-tile:focus-within .dash-tile-dup,
-.dash-tile-dup:focus-visible,
 .dash-tile:hover .dash-tile-widen,
 .dash-tile:focus-within .dash-tile-widen,
-.dash-tile-widen:focus-visible { opacity: 1; }
+.dash-tile-widen:focus-visible,
+.dash-tile:hover .dash-tile-menu,
+.dash-tile:focus-within .dash-tile-menu,
+.dash-tile-menu:focus-visible { opacity: 1; }
+/* The `⋯` must stay visible for its own menu's whole lifetime. The menu mounts on
+   the BODY and takes focus with it, so the tile loses `:focus-within` and the
+   pointer has usually left the card as well — without this the trigger fades out
+   from under an anchored menu, and focus-restore on close aims at an invisible
+   control. `openMenu` holds `aria-expanded="true"` for exactly that lifetime,
+   which is the same hook `.dash-tree-act` needs for the same reason. */
+.dash-tile-menu[aria-expanded="true"] { opacity: 1; }
 .dash-tile-open:hover,
-.dash-tile-dup:hover,
-.dash-tile-widen:hover { color: var(--accent-text); background: var(--bg-hover); }
+.dash-tile-widen:hover,
+.dash-tile-menu:hover { color: var(--accent-text); background: var(--bg-hover); }
 .dash-tile-open svg,
-.dash-tile-dup svg,
-.dash-tile-widen svg { width: 13px; height: 13px; }
-/* No `margin-left: auto` on any of these, and none on `.dash-gg-del` either: the
-   heading's `flex: 1` already pushes the whole trailing group right, and ONE auto
-   margin among four actions absorbs the free space at that point instead —
-   splitting the group rather than pinning it (visible only on a KPI tile, whose
-   heading is `display: none`; that head is squared up where it is styled, below). */
+.dash-tile-widen svg,
+.dash-tile-menu svg { width: 13px; height: 13px; }
+/* No `margin-left: auto` on any of these: the heading's own `flex: 1` already
+   pushes the trailing group right, and one auto margin INSIDE the group would
+   absorb the free space at that point instead — splitting it rather than pinning
+   it (visible only on a KPI tile, whose heading is `display: none`; that head is
+   squared up where it is styled, below). */
 /* A touch device has no hover and no keyboard: subtlety there would mean
-   invisible. On a phone expand is also the primary route off a Dashboard into the
-   query behind a tile, so it is always shown — and duplicate needs the same
-   treatment or an edit-mode phone has no way to reach it at all. Widen is absent
-   from this list on purpose: ui/dashboard.ts hides it outright below the mobile
-   breakpoint, where flow renders one column and a width has nothing to say. */
+   invisible. On a phone the `⋯` is the only route to every edit action, and
+   expand is the primary route off a Dashboard into the query behind a tile, so
+   both are always shown. The inline widen is absent from this list on purpose:
+   ui/dashboard.ts hides it outright below the mobile breakpoint (flow renders one
+   column, so a width has nothing to say), and the menu still carries the row. */
 @media (hover: none) {
   .dash-tile-open,
-  .dash-tile-dup { opacity: 1; }
+  .dash-tile-menu { opacity: 1; }
   /* The KPI tile's chrome OVERLAY needs the same treatment, but its rule has to sit
      with the KPI block further down: the selector there has identical specificity, so
      only source order decides, and an override here would lose. */
@@ -3752,11 +3751,40 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    sheet's `[hidden] { display: none }`, so `hidden` needs this rule to mean
    anything at all. */
 .dash-tile-widen[hidden] { display: none; }
+/* …and hidden per tile WIDTH by the container query below. Two independent gates
+   for two independent questions: `hidden` says this layout has no width to step,
+   the query says this particular tile has no room to offer the shortcut. The menu
+   row is unaffected by either, so widen is never unreachable. */
+.dash-tile-head { container-type: inline-size; container-name: dash-tile-head; }
+/* 236px is the HEAD's content box (`padding: 11px 12px 9px`), so this fires at a
+   tile around 260px wide. Below that, the two 20px controls and their gaps leave
+   the ellipsized name under ~12 characters, at which point a size shortcut is
+   costing more than it gives — and a span-1 grafana-grid tile (~93px at twelve
+   columns) is far past it. MUST stay after `.dash-tile-widen`'s own
+   `display: inline-flex`: a container query adds no specificity, so only source
+   order decides. */
+@container dash-tile-head (max-width: 236px) {
+  .dash-tile-widen { display: none; }
+}
+/* The `⋯` menu itself, and its removal confirmation. Both are wider than
+   `.file-menu`'s own 252px because every row here can carry a `.fm-reason` — a
+   full sentence saying why an action is unavailable — which wraps onto its own
+   line and clipped mid-word at the narrower width.
+   NOTE these class names reach the DOM through `openMenu`/`openConfirmMenu`
+   OPTIONS, not through an `h()` `class:` literal, so the typography contract's
+   unstyled-class scan cannot see them (issue #498). They are deliberate. */
+.dash-tile-actions { width: 268px; }
+.dash-tile-actions .fm-reason { white-space: normal; }
+.dash-tile-menu-danger { color: var(--error-fg); }
+.dash-tile-confirm { min-width: 268px; }
+.dash-tile-confirm .fm-section { white-space: normal; line-height: var(--lh-label); }
+.dash-tile-confirm-go { color: var(--error-fg); font-weight: var(--fw-medium); }
+.dash-tile-confirm-cancel { color: var(--fg-mute); }
 /* Corner-drag resize handle (bottom-right, edit mode only): nwse-resize
    cursor, hover-revealed diagonal glyph, accent highlight while resizing. */
 .dash-gg-tile { position: relative; }
 /* #332: edit chrome stays non-selectable */
-.dash-gg-del, .dash-gg-resize, .dash-tile-dup, .dash-tile-widen { user-select: none; }
+.dash-gg-resize, .dash-tile-widen, .dash-tile-menu { user-select: none; }
 .dash-gg-resize { display: none; }
 .dash-gg-grid .dash-gg-resize {
   display: block; position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; padding: 0;
@@ -3844,22 +3872,26 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 /* KPI values are the tile's identity. Hover chrome must never lay its saved
    query title/description over that evidence; retain the header only as the
-   positioning host for the remove control. The card itself already exposes
+   positioning host for the trailing controls. The card itself already exposes
    the query title through its accessible group name. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-heading { display: none; }
-/* With the heading gone this head has no `flex: 1` item to push its actions right,
-   so it squares them up itself. (#535: no `margin-left` reset is needed beside it
-   any more — `.dash-gg-del` no longer carries `margin-left: auto` at all, because
-   one auto margin among four actions would absorb the free space mid-group and
-   strand the buttons before it at the LEFT edge.) */
+/* With the heading gone this head has no `flex: 1` item to push its controls right,
+   so it squares them up itself. No `margin-left` reset is needed beside it: nothing
+   in this group carries `margin-left: auto`, because one auto margin inside the
+   group would absorb the free space mid-group and strand whatever precedes it at
+   the LEFT edge. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head { justify-content: flex-end; }
 /* The head is a pointer-transparent overlay, so every control it holds has to opt
-   back in. #471's expand action is the only one of the four that also exists in
-   View mode. */
-.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-gg-del,
-.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-dup,
+   back in. `.dash-tile-open` is the View-mode one; widen and the `⋯` are Edit's. */
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-widen,
+.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-menu,
 .dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-open { pointer-events: auto; }
+/* This whole head is `opacity: 0` until hover/focus, and ancestor opacity
+   COMPOSITES — so `.dash-tile-menu[aria-expanded="true"]`'s own `opacity: 1`
+   cannot rescue a trigger whose head is transparent. `showTileMenu` marks the head
+   itself for the menu's lifetime; without it, opening a grid KPI tile's menu makes
+   its own trigger vanish and focus-restore lands on an invisible control. */
+.dash-gg-grid .dash-gg-tile.is-kpi > .dash-tile-head.is-menu-open { opacity: 1; }
 /* #471: a View-mode KPI tile used to have NO chrome to reveal, so its head stayed
    hidden (`:not(.is-view)` on the reveal rules below). It has one control now, and
    the issue requires it in both modes — so View mode reveals the head too. The
@@ -3868,7 +3900,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-gg-grid .dash-gg-tile.is-kpi.is-view:focus-within > .dash-tile-head { opacity: 1; }
 /* #471, touch: every reveal rule for this overlay is `:hover`/`:focus-within`, and in
    Edit mode additionally `:not(.is-view)` — a touch device satisfies none of them, so
-   the whole head (this action AND the delete button) was unreachable there. Ancestor
+   the whole head, and therefore every control in it, was unreachable there. Ancestor
    opacity composites, so `.dash-tile-open`'s own `opacity: 1` cannot rescue it. This
    has to live HERE, next to the KPI block, rather than with that rule further up:
    the base `…is-kpi > .dash-tile-head { opacity: 0 }` above has identical
@@ -3896,8 +3928,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-gg-grid .dash-gg-tile.is-kpi:focus-within .dash-gg-resize::after,
 .dash-gg-grid.modkey .dash-gg-tile.is-kpi:hover .dash-gg-resize::after,
 .dash-gg-grid .dash-gg-tile.is-kpi .dash-gg-resize:focus-visible::after { opacity: 1; }
-.dash-gg-grid .dash-gg-tile.is-kpi:focus-within .dash-gg-del,
-.dash-gg-grid .dash-gg-tile.is-kpi:focus-within .dash-tile-dup,
+.dash-gg-grid .dash-gg-tile.is-kpi:focus-within .dash-tile-menu,
 .dash-gg-grid .dash-gg-tile.is-kpi:focus-within .dash-tile-widen { opacity: 1; }
 .dash-gg-grid .dash-gg-tile.is-kpi.dash-floating,
 .dash-gg-grid .dash-gg-tile.is-kpi.dash-gg-resizing {

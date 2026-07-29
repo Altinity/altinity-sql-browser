@@ -209,11 +209,21 @@ export function openMenu(opts: MenuOptions): MenuHandle {
     menu.style.overflowY = 'auto';
   }
   const r = trigger.getBoundingClientRect();
-  const panelH = menu.getBoundingClientRect().height;
-  // fixedAnchor's return type is a `{top,left}` / `{top,right}` union (the
-  // right-align branch only fires when a `viewportW` option is passed) — this
-  // call site never passes one, so it's always the `{top,left}` shape.
-  const a = fixedAnchor(r, { viewportH, panelH }) as { top: number; left: number };
+  const panelBox = menu.getBoundingClientRect();
+  const panelH = panelBox.height;
+  // #335's left-align-with-right-edge-CLAMP: every caller until the Dashboard
+  // tile head anchored a menu somewhere near the LEFT of the viewport (the File
+  // button, the style picker, a tree row in the side pane), so a fixed-width
+  // 252px panel left-aligned under the trigger always fit. A tile's own `⋯`
+  // sits at the right edge of a card that can BE the right edge of the window,
+  // where the same placement runs off screen. Passing both `viewportW` and
+  // `panelW` lowers the left inset just enough to keep the panel inside the
+  // gutter, and keeps the `{top,left}` shape (the `{top,right}` branch needs
+  // `viewportW` WITHOUT `panelW`), so no existing caller's placement moves
+  // unless it was already overflowing.
+  const a = fixedAnchor(r, {
+    viewportH, panelH, viewportW: doc.defaultView?.innerWidth, panelW: panelBox.width,
+  }) as { top: number; left: number };
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';
   doc.addEventListener('keydown', onKey, true);

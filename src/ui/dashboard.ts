@@ -32,7 +32,7 @@ import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
 import { buildAppHeader, routeButton } from './app-header.js';
 import { openMenu } from './menu.js';
-import type { MenuHandle } from './menu.js';
+import type { MenuHandle, MenuRow } from './menu.js';
 import { flashToast } from './toast.js';
 import { renderResolvedPanel } from './panels.js';
 import { openCellDetail } from './results.js';
@@ -49,7 +49,6 @@ import {
 } from '../core/format.js';
 import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeline.js';
 import type { ValidationMode } from '../core/param-pipeline.js';
-import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { queryFavorite } from '../core/saved-query.js';
 import { selectOutputColumns } from '../core/select-columns.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
@@ -77,12 +76,15 @@ import {
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
-import { removeTileMembership } from '../dashboard/application/tile-membership.js';
 import { canWidenPanel, nextPanelPlacement, widenLabel } from '../dashboard/application/panel-widen.js';
+import { panelTileActions } from '../dashboard/application/panel-tile-actions.js';
+import type { PanelTileAction, PanelTileActionKind } from '../dashboard/application/panel-tile-actions.js';
+import { panelRemovalRefusal } from '../dashboard/application/dashboard-removal.js';
+import { commitPanelRemoval, dashboardDeleteMessage } from '../application/dashboard-delete.js';
+import { openConfirmMenu } from './confirm-menu.js';
 import {
   commitPanelDuplication, panelDuplicateMessage,
 } from '../application/dashboard-panel-duplicate.js';
-import { buildQueryOwnershipIndex } from '../dashboard/model/query-ownership.js';
 import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
 import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
 import {
@@ -92,6 +94,7 @@ import { openNameDialog } from './dialog-shell.js';
 import type {
   DashboardFocusTarget, DashboardSurfaceMode,
 } from '../application/main-surface.js';
+import { withPendingFocus } from '../application/main-surface.js';
 import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
@@ -127,6 +130,7 @@ const Icon: {
   copy(): SVGElement;
   arrowsWide(): SVGElement;
   expand(): SVGElement;
+  more(): SVGElement;
   download(): SVGElement;
   upload(): SVGElement;
   search(): SVGElement;
@@ -399,6 +403,15 @@ interface TileEl {
    *  single-column styles and relabelled from the tile's current width on every
    *  publish (`applyWidenMode`). */
   widenBtn: HTMLElement | null;
+  /** The `⋯` trigger, when built (edit mode). Held so the flow KPI band variant
+   *  can MOVE this exact node into each repainted card rather than build a new
+   *  one — see `attachFlowKpiActions`. */
+  menuBtn: HTMLButtonElement | null;
+  /** A flow KPI band member's own overlay controls, built lazily on its first
+   *  band attach and moved into every later repaint of its card. `null` for a
+   *  tile that never renders inside a band, which is every non-KPI tile and
+   *  every KPI tile while the grid engine is active. */
+  kpiActions: { openBtn: HTMLButtonElement | null; menuBtn: HTMLButtonElement | null } | null;
 }
 
 /** #407 — an explicit workspace route that no longer resolves. */
@@ -1090,19 +1103,22 @@ export async function renderDashboard(
     };
   }
 
-  /** Apply a route command plus its workspace-level membership semantics. A
-   * raw remove-tile is first command-validated, then replaced by the shared
-   * transform that also cleans targets and synchronizes spec.favorite. */
+  /**
+   * Apply one route command.
+   *
+   * #537 removed the `remove-tile` arm this used to carry. The tile head was the
+   * only UI dispatcher of that command, and it now commits panel removal as a
+   * two-resource workspace write (`removeTile`) rather than a layout command — so
+   * the membership follow-up (`removeTileMembership`, target scrubbing,
+   * `spec.favorite` mirroring) happens inside `removeDashboardPanel` instead. The
+   * command itself survives in `dashboard-commands.ts` as model vocabulary with
+   * its own coverage; nothing in the UI sends it.
+   */
   function applyRouteCommand(
     baseDoc: DashboardDocumentV2, command: DashboardCommand, queriesForResolver: SavedQueryV2[],
   ) {
     const applied = applyCommand(baseDoc, command, ctxFor(baseDoc, queriesForResolver));
-    if (!applied.ok) return applied;
-    if (command.type !== 'remove-tile') return { ...applied, queries: queriesForResolver };
-    const membership = removeTileMembership(baseDoc, queriesForResolver, command.tileId);
-    return membership
-      ? { ...applied, dashboard: membership.dashboard, queries: membership.queries }
-      : { ...applied, queries: queriesForResolver };
+    return applied.ok ? { ...applied, queries: queriesForResolver } : applied;
   }
 
   // ── Structural commands (reorder via drag, preset) ────────────────────────
@@ -1221,6 +1237,12 @@ export async function renderDashboard(
     if (rebuilding || pendingCommands.length > 0) return;
     if (!app.isSurfaceGenerationCurrent(surfaceGeneration)) return;
     rebuilding = true;
+    // A tile menu is mounted on the BODY and anchored to a trigger inside a card
+    // this rebuild is about to discard, so it would survive its own tile —
+    // hovering over nothing, with every row acting on a tile id the replacement
+    // render may not even have. A surface TRANSITION is already covered
+    // (`closeOpenMenus` runs from the app shell); an in-place rebuild is not.
+    openTileMenu?.close();
     session.destroy();
     // Route the replacement through the app-owned wrapper so this renderer is
     // invalidated before the replacement captures its own generation.
@@ -1368,12 +1390,23 @@ export async function renderDashboard(
   // one is armed is ignored, so two live listener sets can't cross-contaminate.
   let gestureActive = false;
   // #291: which engine is active as of the last publish — read by the grid-
-  // only delete/resize handlers (built once per tile in `ensureTileEl`, below,
-  // and cached across engine switches) so a cached card's grid chrome stays
+  // only resize handler (built once per tile in `ensureTileEl`, below, and
+  // cached across engine switches) so a cached card's grid chrome stays
   // visually hidden AND inert while flow is active, instead of a per-switch
-  // DOM rebuild. `null` before the first publish (never actually read then —
-  // no pointer/click interaction can precede it).
+  // DOM rebuild, and by the tile menu to tell a flow KPI BAND member (which has
+  // no width of its own) from a grid KPI card. `null` before the first publish
+  // (never actually read then — no pointer/click interaction can precede it).
   let activeEngine: 'flow' | 'grafana-grid' | null = null;
+  // At most one tile menu open at a time, which `openMenu`'s own viewport overlay
+  // already guarantees: a press on a second tile's trigger hits `.fm-overlay`
+  // first and never reaches the button. Held so the trigger can TOGGLE, and so a
+  // route rebuild can close a menu whose tile is about to be replaced.
+  let openTileMenu: MenuHandle | null = null;
+  const tileMenuKeyboard = keyboardOwnerChannel(app);
+  // The tile ids the last publish rendered, in render order — the successor a
+  // removal hands its focus to comes from here (`neighbourTileId`). Empty until the
+  // first publish, which is also the earliest a removal can be triggered.
+  let publishedTileIds: string[] = [];
   // Retained from the window keyboard stream because WebKit may omit a held
   // Control key from a subsequent pointer event.
   let reorderModifierHeld = false;
@@ -1624,11 +1657,13 @@ export async function renderDashboard(
       // the window, which the window alone would still swallow.
       clickSuppressCard = null;
       // Every head control owns its own gesture — the resize handle (which also
-      // stops propagation), delete, and #535's duplicate/widen/expand trio — so a
-      // press on one never starts a move. The expand action is the only one of them
-      // that also exists in View mode, where this handler is never wired at all.
+      // stops propagation), the inline widen, and the `⋯` that holds the rest — so
+      // a press on one never starts a move. `.dash-tile-open` is View-mode-only,
+      // where this handler is never wired at all; it stays listed because a flow
+      // KPI band member's card is reused across a mode change within one session's
+      // cached `tileEls`.
       const target = pe.target as Element;
-      if (target.closest('.dash-gg-resize, .dash-gg-del, .dash-tile-open, .dash-tile-dup, .dash-tile-widen')) return;
+      if (target.closest('.dash-gg-resize, .dash-tile-open, .dash-tile-widen, .dash-tile-menu')) return;
       // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
       // A plain body press does neither → left alone for text selection.
       const fromGrip = !!target.closest('.dash-gg-grip');
@@ -1980,26 +2015,244 @@ export async function renderDashboard(
   }
 
   /**
-   * #535 — the tile's duplicate action (edit mode only).
+   * The tile's `⋯` overflow trigger (edit mode only).
    *
-   * A two-resource write (a dedicated owned query clone plus the tile), so unlike
-   * every other tile control this one does NOT go through `runCommand`: see
-   * `application/dashboard-panel-duplicate.ts` for why an optimistic publish would
-   * leave the new panel invisible AND suppress the rebuild that would fix it. The
-   * commit rebuilds the route from committed truth, which is what makes the copy
-   * appear.
+   * #535 put duplicate, widen and expand in the head beside the grip and the
+   * delete button, which made FIVE controls compete with the tile title for one
+   * flex row — and a tile one grid column wide has no row to compete for. Four of
+   * them live in this menu now; widen keeps an inline button as well, because it
+   * is the size adjustment users make constantly (#535) and it is the one the CSS
+   * container query can withdraw when the tile really is too narrow.
    *
-   * Not gated on the active engine the way delete is: duplicating a panel is a
-   * membership act with no layout semantics of its own, and the copy's placement
-   * comes from the source tile through whichever engine is active.
+   * View mode has no trigger at all: it carries exactly one action (expand), and a
+   * one-row menu is strictly worse than the button it would hide. `readOnly` is
+   * resolved once per render and never toggles mid-session, so this is a
+   * build-time branch like the grip's.
+   *
+   * Reintroducing a `⋯` is a partial reversal of #494, which removed one from
+   * every Dashboards-TREE row in favour of direct controls. That argument was
+   * about a two-control row in a fixed-width side pane; this is a five-control
+   * head on a card that can render under 100px wide.
    */
-  function tileDuplicateAction(ts: ViewerTileState): HTMLButtonElement | null {
-    if (readOnly) return null;
-    return h('button', {
-      class: 'dash-tile-dup', type: 'button', title: 'Duplicate panel',
-      'aria-label': 'Duplicate ' + ts.title,
-      onclick: () => { void duplicateTile(ts.tileId); },
-    }, Icon.copy());
+  function tileMenuAction(ts: ViewerTileState): HTMLButtonElement {
+    const trigger = h('button', {
+      class: 'dash-tile-menu', type: 'button', title: 'Panel actions',
+      // Names the TILE, like every other tile control: a screen-reader user meets
+      // these in sequence, and three buttons all called "Panel actions" name none
+      // of them.
+      'aria-label': 'Panel actions: ' + ts.title,
+      onclick: () => {
+        // The style picker's toggle idiom: `openMenu` itself only ever opens, so
+        // an explicit open/close press has to be tracked by the caller.
+        if (openTileMenu) { openTileMenu.close(); trigger.focus(); return; }
+        showTileMenu(ts, trigger);
+      },
+    }) as HTMLButtonElement;
+    trigger.appendChild(Icon.more());
+    return trigger;
+  }
+
+  /** The glyph per action kind — the same four #535 chose for the head buttons. */
+  const TILE_ACTION_ICON: Record<PanelTileActionKind, () => Node> = {
+    duplicate: Icon.copy, widen: Icon.arrowsWide, open: Icon.expand, remove: Icon.trash,
+  };
+
+  /**
+   * Build and open one tile's action menu.
+   *
+   * Every input is read at CLICK time, never at tile-build time — the same rule
+   * `tileWidenAction` already states for `widenStyle`. The layout menu changes the
+   * active style without rebuilding a single tile, the workspace moves under the
+   * route between publishes, and the removal's availability depends on committed
+   * ownership; a menu composed once at construction would be a lie one press
+   * later.
+   */
+  function showTileMenu(ts: ViewerTileState, trigger: HTMLButtonElement): void {
+    const actions = panelTileActions({
+      title: ts.title,
+      dashboardTitle: currentDoc.title,
+      widenStyle,
+      placement: storedPlacement(ts.tileId),
+      kpiBandMember: ts.isKpi && activeEngine === 'flow',
+      queryResolves: queryById.has(ts.queryId),
+      queryless: isQuerylessPanel(ts.panel as Panel | null),
+      removalRefusal: panelRemovalRefusal({
+        workspace: app.currentWorkspace as StoredWorkspaceV5,
+        dashboardId: selectedDashboardId as string,
+        tileId: ts.tileId,
+        queryId: ts.queryId,
+      }),
+    });
+    const rows: MenuRow[] = [];
+    for (const action of actions) {
+      // The destructive row is separated and last: the one control whose position
+      // must not shift as the labels above it change.
+      if (action.destructive) rows.push({ kind: 'sep' });
+      rows.push({
+        kind: 'item',
+        icon: TILE_ACTION_ICON[action.kind](),
+        label: action.label,
+        reason: action.unavailable,
+        disabled: action.unavailable !== null,
+        ...(action.destructive ? { extraClass: 'dash-tile-menu-danger' } : {}),
+        onClick: () => { runTileAction(action, ts, trigger); },
+      });
+    }
+    // The head reveals its controls with `opacity`, and this menu mounts on the
+    // BODY and takes focus with it — so the tile loses `:focus-within` and the
+    // trigger would fade out from under its own open menu. `aria-expanded` (set by
+    // `openMenu` for the popup's whole lifetime) is the CSS hook that holds it
+    // visible; a grid KPI tile additionally needs the class below, because its
+    // whole head is `opacity: 0` and ancestor opacity COMPOSITES — a child's own
+    // `opacity: 1` cannot win against it.
+    const head = trigger.closest('.dash-tile-head');
+    head?.classList.add('is-menu-open');
+    openTileMenu = openMenu({
+      document: doc,
+      trigger,
+      rows,
+      menuClass: 'dash-tile-actions',
+      ariaLabel: 'Panel actions: ' + ts.title,
+      onClose: () => {
+        openTileMenu = null;
+        head?.classList.remove('is-menu-open');
+      },
+      onKeyboardOwnerChange: tileMenuKeyboard,
+    });
+  }
+
+  /**
+   * The `⋯` trigger a tile is CURRENTLY showing, or `null`.
+   *
+   * A tile can own two: the one in its cached head, and — for a flow KPI band
+   * member, whose head is never inserted into the DOM at all — the one moved into
+   * its band card. `flowKpiHosts` is the same map the reconciler and
+   * `tileFocusTarget` already use to answer exactly this question, so which one is
+   * live is read from that rather than probed for with `isConnected` (which also
+   * answers "no" for every control on an unmounted surface, making it a different
+   * question than the one being asked).
+   */
+  function liveTileMenuBtn(tileId: string): HTMLButtonElement | null {
+    const tileEl = tileEls.get(tileId);
+    const band = flowKpiHosts.has(tileId) ? tileEl?.kpiActions?.menuBtn : null;
+    return band ?? tileEl?.menuBtn ?? null;
+  }
+
+  /** Run one chosen row.
+   *
+   *  Only ever reached for an AVAILABLE action: `openMenu` renders an unavailable
+   *  row with `aria-disabled` and NO click handler (#452's announced-but-inert
+   *  pattern), so unavailability is enforced one layer up rather than re-checked
+   *  here — a second guard would be a branch nothing can execute. The widen press
+   *  still re-reads its style at click time, because that one can go stale between
+   *  the menu opening and the row being chosen. */
+  function runTileAction(
+    action: PanelTileAction, ts: ViewerTileState, trigger: HTMLButtonElement,
+  ): void {
+    if (action.kind === 'duplicate') { void duplicateTile(ts.tileId); return; }
+    if (action.kind === 'widen') { widenTile(ts.tileId); return; }
+    if (action.kind === 'open') {
+      app.openPanelQuery({
+        dashboardId: selectedDashboardId as string, tileId: ts.tileId, queryId: ts.queryId,
+      });
+      return;
+    }
+    // `openMenu` closed this menu BEFORE calling us and cleared its
+    // `aria-expanded`, so a second `openMenu` on the same trigger is a fresh
+    // open rather than a stacked one.
+    openConfirmMenu({
+      document: doc,
+      trigger,
+      question: action.confirm as string,
+      confirmLabel: 'Remove tile',
+      menuClass: 'dash-tile-confirm',
+      goClass: 'dash-tile-confirm-go',
+      cancelClass: 'dash-tile-confirm-cancel',
+      ariaLabel: 'Confirm removing ' + ts.title,
+      onKeyboardOwnerChange: tileMenuKeyboard,
+      // A resolver, not this element: the confirmation can sit open across an
+      // unrelated repaint, and a flow KPI band member's card is replaced on
+      // every publish. Resolve the tile's CURRENT trigger instead.
+      returnFocusTo: () => liveTileMenuBtn(ts.tileId),
+      onConfirm: () => { void removeTile(ts); },
+    });
+  }
+
+  /**
+   * #537 — remove one panel from its tile head, atomically.
+   *
+   * The tile head used to dispatch the document-only `remove-tile` command, which
+   * takes the tile out of `dashboard.tiles[]` and deliberately leaves
+   * `workspace.queries` alone. Since #427 made every panel tile the SOLE OWNER of
+   * a dedicated saved-query copy, that left the copy with zero owners — which is
+   * exactly what makes a query a Library query — so a deleted panel reappeared in
+   * Library as an apparently standalone entry. This is the same confirmed,
+   * ownership-proven, two-resource path the Dashboards tree already uses.
+   *
+   * It also has no engine gate. The old delete button was inert unless
+   * `activeEngine === 'grafana-grid'` and CSS-hidden outside `.dash-gg-grid`, so
+   * Report and the two column presets had no delete at all, and a flow KPI band
+   * member had none under any style. Membership removal has no layout semantics
+   * of its own, so the menu row is simply always there.
+   *
+   * Like duplication (#535) this does NOT go through `runCommand`: it is a
+   * two-resource workspace write, and the route rebuild that
+   * `onWorkspaceExternallyChanged({queriesChanged: true})` triggers IS the
+   * feedback. Same known cost as duplication — that rebuild re-runs every tile's
+   * query.
+   */
+  async function removeTile(ts: ViewerTileState): Promise<void> {
+    // Resolved BEFORE the commit, from the tiles as currently PAINTED: afterwards
+    // this tile is gone and the order it stood in cannot be reconstructed.
+    const successorId = neighbourTileId(ts.tileId);
+    const outcome = await commitPanelRemoval({
+      mutateWorkspace: app.mutateWorkspace,
+      // The successor focus is OWED to the rebuild rather than delivered when
+      // this promise resolves: the hook fires (only on success) inside the
+      // commit, and the `queriesChanged` rebuild it triggers replaces every
+      // tile card — so a focus call made afterwards would aim at a node already
+      // on its way out, and `deliverFocus` would correctly report `pending` and
+      // do nothing. Setting it here, in the hook, means the surface owes the
+      // delivery to the one render where the successor actually exists.
+      onWorkspaceExternallyChanged: (info) => {
+        if (successorId !== null) {
+          app.mainSurface = withPendingFocus(app.mainSurface, { kind: 'tile', id: successorId });
+        }
+        app.onWorkspaceExternallyChanged(info);
+      },
+    }, {
+      dashboardId: selectedDashboardId as string, tileId: ts.tileId, queryId: ts.queryId,
+    });
+    const message = dashboardDeleteMessage(outcome);
+    if (message !== null) {
+      flashToast(message, { document: doc });
+      // A refusal changed nothing, so the control the user pressed is still
+      // there — and the confirmation's own restore already aimed at it, so this
+      // only matters when the menu closed some other way.
+      liveTileMenuBtn(ts.tileId)?.focus();
+      return;
+    }
+    // With no tiles left there is no successor to owe a delivery to, and the tile
+    // search is the route's always-present landing control — the grid's analogue
+    // of the tree's own `dashboardSearchInput` fallback.
+    if (successorId === null) tileSearchInput.focus();
+  }
+
+  /** The tile that should hold focus once `tileId` is gone: the next one published,
+   *  or the previous one when it was last. `null` when it was the only one.
+   *
+   *  Read from `publishedTileIds` rather than from `tileEls` (a write-only cache that
+   *  also holds cards the Dashboard's own tile search has filtered out) and never
+   *  from DOM connectivity — "next" has to mean next in what the user is looking at,
+   *  and a predicate over `isConnected` would answer differently depending on
+   *  whether the surface happens to be mounted. */
+  function neighbourTileId(tileId: string): string | null {
+    // A tile whose own menu the user just used was on screen, so `indexOf` cannot
+    // answer -1 here; that case is tolerated in the same expression rather than
+    // given an early return no test could execute (it would pick the first tile,
+    // which is a real one).
+    const at = publishedTileIds.indexOf(tileId);
+    return publishedTileIds[at + 1] ?? publishedTileIds[at - 1] ?? null;
   }
 
   /** Commit one duplication and report a refusal. Nothing is done on success: the
@@ -2027,53 +2280,53 @@ export async function renderDashboard(
     if (readOnly) return null;
     return h('button', {
       class: 'dash-tile-widen', type: 'button', 'aria-label': 'Widen ' + ts.title,
-      onclick: () => {
-        // Re-read the style at CLICK time, not at build time — and refuse when it
-        // has none, the same interaction-level guard delete uses for its
-        // engine check: a hidden button is still clickable through a script or a
-        // stale accessibility tree.
-        const style = widenStyle;
-        if (style === null) return;
-        runCommand({
-          type: 'update-placement',
-          tileId: ts.tileId,
-          placement: nextPanelPlacement({ style, placement: storedPlacement(ts.tileId) }),
-        });
-      },
+      onclick: () => { widenTile(ts.tileId); },
     }, Icon.arrowsWide());
+  }
+
+  /** One widen press, from either the inline button or the menu row.
+   *
+   *  The style is re-read at CLICK time and the press refuses when there is none:
+   *  a button hidden by `hidden` or by the container query is still clickable
+   *  through a script or a stale accessibility tree, and the menu row for a
+   *  single-column layout is disabled rather than absent. */
+  function widenTile(tileId: string): void {
+    const style = widenStyle;
+    if (style === null) return;
+    runCommand({
+      type: 'update-placement',
+      tileId,
+      placement: nextPanelPlacement({ style, placement: storedPlacement(tileId) }),
+    });
   }
 
   function ensureTileEl(ts: ViewerTileState): TileEl {
     const existing = tileEls.get(ts.tileId);
     if (existing) return existing;
-    // Grip (drag affordance) + delete are edit-mode-only (`!readOnly`, a
-    // static per-load condition like the drag wiring below); both are
-    // grafana-grid-only in PRACTICE, but built unconditionally once per tile
-    // and gated visually (CSS, ancestor `.dash-gg-grid` scope) + at the
-    // interaction level (`activeEngine` check on delete's click) so a cached
-    // card carries no leftover interactive affordance while flow is active.
-    // The grip is a pointer-only drag affordance (no keyboard reorder — a #332
-    // non-goal), so it stays aria-hidden; the tile carries its own accessible
-    // name. Dragging it starts a move with no modifier; the body needs ⌘/Ctrl.
+    // The grip is edit-mode-only (`!readOnly`, a static per-load condition like
+    // the drag wiring below) and grafana-grid-only in PRACTICE, but built
+    // unconditionally once per tile and gated visually (CSS, ancestor
+    // `.dash-gg-grid` scope) so a cached card carries no leftover affordance
+    // while flow is active. It is a pointer-only drag affordance (no keyboard
+    // reorder — a #332 non-goal), so it stays aria-hidden; the tile carries its
+    // own accessible name. Dragging it starts a move with no modifier; the body
+    // needs ⌘/Ctrl.
     const grip = !readOnly && !ts.isKpi
       ? h('span', { class: 'dash-gg-grip', title: 'Drag to move (or Command/Ctrl-drag the tile)', 'aria-hidden': 'true' })
       : null;
-    const delBtn = !readOnly ? h('button', {
-      class: 'dash-gg-del', title: 'Remove tile', 'aria-label': 'Remove ' + ts.title + ' from the dashboard',
-      onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },
-    }, Icon.trash()) : null;
-    const openBtn = tileOpenAction(ts);
-    // #535 — the design's trailing action order: duplicate, widen, expand. Delete
-    // stays last, where it already was: the destructive control is the one that
-    // must not shift position as the other three come and go.
-    const dupBtn = tileDuplicateAction(ts);
+    // Two trailing controls at most, and they are mode-exclusive: Edit gets the
+    // inline widen plus the `⋯` that holds duplicate/widen/expand/remove; View
+    // gets #471's direct expand and no menu, because View has exactly one action
+    // and a one-row menu is worse than the button it would hide.
+    const openBtn = readOnly ? tileOpenAction(ts) : null;
     const widenBtn = tileWidenAction(ts);
+    const menuBtn = readOnly ? null : tileMenuAction(ts);
     const heading = h('div', { class: 'dash-tile-heading' },
       h('span', { class: 'dash-tile-name', title: ts.title }, ts.title),
       ts.description ? h('span', {
         class: 'dash-tile-desc', title: ts.description,
       }, ts.description) : null);
-    const head = h('div', { class: 'dash-tile-head' }, grip, heading, dupBtn, widenBtn, openBtn, delBtn);
+    const head = h('div', { class: 'dash-tile-head' }, grip, heading, widenBtn, openBtn, menuBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly
@@ -2098,6 +2351,7 @@ export async function renderDashboard(
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
     const tileEl: TileEl = {
       card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
+      menuBtn, kpiActions: null,
     };
     if (resizeHandle) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
     // A tile built mid-session (a duplicate, an import) has to arrive already
@@ -2235,42 +2489,61 @@ export async function renderDashboard(
   }
 
   /**
-   * #471/#535 — give a FLOW band member the tile actions its head cannot carry.
+   * #471/#535/#537 — give a FLOW band member the tile actions its head cannot
+   * carry.
    *
    * Flow-only, and called right after `renderKpiInto` repaints the member: the GRID
-   * engine renders a KPI tile as a real card whose head carries the actions already,
-   * so doing this there would give one tile two of each.
+   * engine renders a KPI tile as a real card whose head carries these already, so
+   * doing this there would give one tile two of each.
    *
-   * Expand and duplicate, but NOT widen: a KPI band is a full-width flex stream
-   * that ignores span entirely (`computeFlowLayout`), so a band member has no width
-   * to step through. Duplicate has to be here or a KPI panel would be
-   * un-duplicable under every flow preset — a flow KPI tile's `.dash-tile` card is
-   * never inserted into the DOM at all, so its head is unreachable.
+   * ONE control, matching the head's own mode split: Edit gets the `⋯` (which is
+   * where a band member's delete finally comes from — it had none under any flow
+   * preset, because its `.dash-tile` card is never inserted into the DOM and its
+   * head is therefore unreachable), View gets the direct expand. The menu's Widen
+   * row is present but unavailable: a KPI band is a full-width flex stream that
+   * ignores span entirely (`computeFlowLayout`), so there is no width to step.
    *
-   * The action is anchored INSIDE the first card rather than on the member host,
-   * because `.dash-kpi-member` is `display: contents` and generates no box at all —
-   * an absolutely-positioned child of it resolves against the page instead, which put
+   * They are anchored INSIDE the first card rather than on the member host, because
+   * `.dash-kpi-member` is `display: contents` and generates no box at all — an
+   * absolutely-positioned child of it resolves against the page instead, which put
    * the button up in the Dashboard toolbar. That is the same reason the
-   * `.is-nav-target` ring and the `.dash-drop-target` outline already reach through to
-   * `> *`. Anchoring inside a card also leaves the drag geometry untouched:
+   * `.is-nav-target` ring and the `.dash-drop-target` outline already reach through
+   * to `> *`. Anchoring inside a card also leaves the drag geometry untouched:
    * `surfaceRect`/`hitRects` still read the member's card children, and the button
    * lives inside one of those boxes rather than beside them.
    *
-   * One of each per TILE, so they go on the first card of a multi-field KPI — and on
-   * a state card too, because a loading or failed tile is still query-backed, and
+   * The nodes are built ONCE per tile and MOVED into each repainted card, never
+   * rebuilt with it. `renderKpiInto` replaces the card on every publish — including
+   * every auto-refresh wave — and `openMenu` keys its one-menu-per-trigger registry
+   * on the trigger ELEMENT while holding `aria-expanded` on it, so a rebuilt
+   * trigger would strand an open menu over a dead node, with focus-restore aimed at
+   * it and its CSS reveal hook lost. `appendChild` on an already-parented node
+   * moves it, so the identity survives every repaint.
+   *
+   * They are the band member's OWN nodes rather than the head's: on a switch to the
+   * grid engine this KPI tile becomes a real card and `renderKpiInto` writes into
+   * `tileEl.body`, which would destroy anything borrowed out of the head.
+   *
+   * One per TILE, so it goes on the first card of a multi-field KPI — and on a
+   * state card too, because a loading or failed tile is still query-backed, and
    * looking at (or copying) its query is exactly what a broken tile calls for.
    */
-  function attachFlowKpiOpenAction(host: HTMLElement, ts: ViewerTileState): void {
+  function attachFlowKpiActions(host: HTMLElement, ts: ViewerTileState): void {
     const anchor = host.firstElementChild;
-    // Duplicate first, so the DOM order matches the head's (duplicate then
-    // expand); CSS pins each to its own offset in the card's top-right corner.
-    // Each action is built only when there is somewhere to put it — the
-    // anchor-less host has no reachable render path, so it is tolerated in the
-    // same expression rather than given an early return no test could execute.
-    const dup = anchor ? tileDuplicateAction(ts) : null;
-    if (dup) anchor!.appendChild(dup);
-    const action = anchor ? tileOpenAction(ts) : null;
-    if (action) anchor!.appendChild(action);
+    const tileEl = tileEls.get(ts.tileId);
+    // Built on the first attach only, and only for a tile that actually renders
+    // inside a band. An anchor-less host has no reachable render path, so it is
+    // tolerated in the same expression rather than given an early return no test
+    // could execute.
+    if (anchor && tileEl && !tileEl.kpiActions) {
+      tileEl.kpiActions = {
+        openBtn: readOnly ? tileOpenAction(ts) : null,
+        menuBtn: readOnly ? null : tileMenuAction(ts),
+      };
+    }
+    const actions = anchor ? tileEl?.kpiActions : null;
+    if (actions?.openBtn) anchor!.appendChild(actions.openBtn);
+    if (actions?.menuBtn) anchor!.appendChild(actions.menuBtn);
   }
 
   /** The KPI cards, or the one state card standing in for them (#316). */
@@ -2355,7 +2628,7 @@ export async function renderDashboard(
     // that repaint replaces the very card it is anchored inside.
     for (const host of grid.querySelectorAll('.dash-kpi-member')) {
       const ts = byId.get((host as HTMLElement).dataset.tile || '');
-      if (ts) { renderKpiInto(host as HTMLElement, ts); attachFlowKpiOpenAction(host as HTMLElement, ts); }
+      if (ts) { renderKpiInto(host as HTMLElement, ts); attachFlowKpiActions(host as HTMLElement, ts); }
     }
   }
 
@@ -2599,6 +2872,7 @@ export async function renderDashboard(
     // render mode, and a widen changes the label with neither of them moving.
     // Tiles this publish has not built yet are gated in `ensureTileEl` instead.
     widenStyle = widenStyleFor(sview);
+    publishedTileIds = sview.tiles.map((ts) => ts.tileId);
     for (const ts of sview.tiles) {
       const tileEl = tileEls.get(ts.tileId);
       if (tileEl) applyWidenMode(ts, tileEl);

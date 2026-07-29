@@ -146,6 +146,30 @@ export function removeDashboardPanel(input: {
   return { status: 'ok', workspace: next, queryId };
 }
 
+/**
+ * Why `removeDashboardPanel` would refuse this target right now, or `null` when
+ * it would go through.
+ *
+ * A DRY RUN of the transform itself rather than a second derivation of its
+ * rules. A caller that LISTS "Remove tile" before it is pressed has to know
+ * whether the operation is available — #494's rule is that a control must not
+ * open a confirmation only to refuse at the end of it — and the only way to
+ * answer that without drift is to ask the transform. Discarding a candidate
+ * workspace is cheap next to a wrong answer: the transform is pure and builds
+ * its ownership index over the same collections a re-derivation would have to
+ * walk anyway.
+ *
+ * The refusal is still re-proven inside `mutateWorkspace` at commit time
+ * (`commitPanelRemoval`) against committed truth. This is the availability
+ * question, never the authorization one.
+ */
+export function panelRemovalRefusal(
+  input: Parameters<typeof removeDashboardPanel>[0],
+): PanelRemovalRefusal | null {
+  const result = removeDashboardPanel(input);
+  return result.status === 'refused' ? result.reason : null;
+}
+
 export type DashboardRemovalResult =
   | { status: 'ok'; workspace: StoredWorkspaceV5; removedQueryIds: readonly string[] }
   | { status: 'refused'; reason: 'dashboard-missing' | 'dashboard-duplicate' };

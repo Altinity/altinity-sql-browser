@@ -3,7 +3,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { openMenu } from './menu.js';
+import { openConfirmMenu } from './confirm-menu.js';
 import {
   activeTab, allocTabId, findVariableTab, newTabObj, setTabSpecDraft, tabSaveDirty,
 } from '../state.js';
@@ -256,43 +256,32 @@ export function openVariableTab(
 
 /**
  * The tab strip's own close-button entry point (#466) — confirms before
- * discarding a dirty draft, anchored on the button that was clicked, the same
- * `openMenu`-confirm idiom the Dashboard tree's orphaned-variable trash button
- * uses (`dashboard-tree.ts`'s `buildDeleteButton`). `tabSaveDirty` is the SAME
- * predicate the dirty dot and the Save button already read — a variable tab's
- * Spec is never saved, so only its `dirtySql` counts; every other tab counts
- * `dirtySpec` too, `savedId` or not, so a never-saved scratch tab's unsaved
- * SQL gets the same protection as a saved query's.
+ * discarding a dirty draft, anchored on the button that was clicked, through the
+ * shared `openConfirmMenu` the Dashboard tree's delete controls also use.
+ * `tabSaveDirty` is the SAME predicate the dirty dot and the Save button already
+ * read — a variable tab's Spec is never saved, so only its `dirtySql` counts;
+ * every other tab counts `dirtySpec` too, `savedId` or not, so a never-saved
+ * scratch tab's unsaved SQL gets the same protection as a saved query's.
  *
  * A clean tab (nothing to lose) closes immediately, exactly as `closeTab`
  * always has — this only gates the destructive path.
  *
- * Cancel carries `autofocus: true` (`menu.ts`): the destructive row is still
- * listed FIRST, matching the Dashboard tree's own delete-confirm, but a
- * keyboard user who opens this and immediately presses Enter — the browser's
- * native focused-button activation — must land on Cancel, not on the row
- * that discards their draft.
+ * The primitive is what guarantees Cancel holds initial focus while the
+ * destructive row still reads first (#501): a keyboard user who opens this and
+ * presses Enter out of momentum must not discard their draft.
  */
 export function requestCloseTab(app: TabsApp, id: string, trigger: HTMLElement): void {
   const tab = app.state.tabs.value.find((t) => t.id === id)!;
   if (!tabSaveDirty(tab)) { closeTab(app, id); return; }
-  openMenu({
+  openConfirmMenu({
     document: app.document,
     trigger,
+    question: 'Close “' + tab.name + '”? Unsaved changes will be lost.',
+    confirmLabel: 'Close without saving',
     menuClass: 'qtab-close-confirm',
-    rows: [
-      { kind: 'section', label: 'Close “' + tab.name + '”? Unsaved changes will be lost.' },
-      {
-        kind: 'item',
-        label: 'Close without saving',
-        extraClass: 'qtab-close-confirm-go',
-        onClick: () => closeTab(app, id),
-      },
-      {
-        kind: 'item', label: 'Cancel', extraClass: 'qtab-close-confirm-cancel', autofocus: true,
-        onClick: () => {},
-      },
-    ],
+    goClass: 'qtab-close-confirm-go',
+    cancelClass: 'qtab-close-confirm-cancel',
+    onConfirm: () => closeTab(app, id),
   });
 }
 

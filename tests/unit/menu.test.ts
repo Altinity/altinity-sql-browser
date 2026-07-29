@@ -124,6 +124,58 @@ describe('openMenu — structure (every row kind)', () => {
     rect.mockRestore();
     viewport.mockRestore();
   });
+
+  // A Dashboard tile's `⋯` is the first trigger that sits at the RIGHT edge of
+  // the viewport; left-aligning a fixed-width panel under it would run the menu
+  // off screen. Every earlier caller anchors near the left, which is why this
+  // went unnoticed.
+  it('clamps a right-edge trigger\'s menu inside the viewport instead of overflowing', () => {
+    const btn = trigger();
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this === btn) {
+          // 20px control flush against the right edge of a 1000px viewport.
+          return { top: 40, bottom: 60, left: 976, right: 996, width: 20, height: 20, x: 976, y: 40, toJSON: () => ({}) };
+        }
+        if (this.classList.contains('file-menu')) {
+          return { top: 0, bottom: 120, left: 0, right: 252, width: 252, height: 120, x: 0, y: 0, toJSON: () => ({}) };
+        }
+        return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) };
+      });
+    const vw = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000);
+    const vh = vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(600);
+
+    const handle = openMenu({ document, trigger: btn, rows: [itemRow('X')] });
+    // 1000 - 252 - 8 gutter: the furthest right a 252px panel can start.
+    expect(handle.el.style.left).toBe('740px');
+
+    rect.mockRestore();
+    vw.mockRestore();
+    vh.mockRestore();
+  });
+
+  it('leaves a left-anchored trigger where it always was', () => {
+    // The clamp is a MAXIMUM, not a re-alignment: an existing caller whose menu
+    // already fit must not move by a pixel.
+    const btn = trigger();
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this === btn) {
+          return { top: 40, bottom: 60, left: 120, right: 140, width: 20, height: 20, x: 120, y: 40, toJSON: () => ({}) };
+        }
+        if (this.classList.contains('file-menu')) {
+          return { top: 0, bottom: 120, left: 0, right: 252, width: 252, height: 120, x: 0, y: 0, toJSON: () => ({}) };
+        }
+        return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) };
+      });
+    const vw = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000);
+
+    const handle = openMenu({ document, trigger: btn, rows: [itemRow('X')] });
+    expect(handle.el.style.left).toBe('120px');
+
+    rect.mockRestore();
+    vw.mockRestore();
+  });
 });
 
 describe('openMenu — item click', () => {

@@ -30,7 +30,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { openMenu } from './menu.js';
+import { openConfirmMenu } from './confirm-menu.js';
 import { flashToast } from './toast.js';
 import { LIBRARY_QUERY_MIME } from './dnd-mime.js';
 import { discardVariableDraft, reconcileVariableTab } from './tabs.js';
@@ -924,10 +924,10 @@ const CONFIRM_LABELS: Record<DashboardTreeActionKind, string> = {
  *
  * An unavailable action does nothing at all — the model already said why, and
  * the button carries that reason as its tooltip and `aria-disabled` state.
- * Destructive actions never run straight from the press: they open the
- * confirmation this repo already uses for the same job (`openMenu`, anchored
- * on the trigger), which gives them a real `role="menuitem"`, an explicit
- * Cancel, Escape/outside-click dismissal and focus restored to the trigger.
+ * Destructive actions never run straight from the press: they open the shared
+ * confirmation (`openConfirmMenu`, anchored on the trigger), which gives them a
+ * real `role="menuitem"`, an explicit Cancel, Escape/outside-click dismissal and
+ * focus restored to the trigger.
  */
 function runAction(
   app: DashboardTreeApp, doc: Document, row: DashboardTreeRow, act: DashboardTreeAction,
@@ -986,31 +986,23 @@ function openPanelCreationDialog(
   });
 }
 
-/** Ask before destroying something, anchored on the control that asked. */
+/** Ask before destroying something, anchored on the control that asked.
+ *
+ *  The shape — question, destructive row first, Cancel autofocused (#501) — now
+ *  lives in the shared `openConfirmMenu`; this supplies the tree's own wording
+ *  and its own three classes, so the rendered DOM is unchanged. */
 function confirmDestructive(
   doc: Document, trigger: HTMLButtonElement, act: DashboardTreeAction, go: () => void,
 ): void {
-  openMenu({
+  openConfirmMenu({
     document: doc,
     trigger,
+    question: act.confirm!,
+    confirmLabel: CONFIRM_LABELS[act.kind],
     menuClass: 'dash-tree-confirm',
-    rows: [
-      { kind: 'section', label: act.confirm! },
-      {
-        kind: 'item',
-        label: CONFIRM_LABELS[act.kind],
-        extraClass: 'dash-tree-confirm-go',
-        onClick: go,
-      },
-      // #501: the destructive row is listed FIRST (this app's visual
-      // convention — the action reads top, Cancel second), but `openMenu`
-      // autofocuses whichever row asks for it. A keyboard user who opens a
-      // confirmation and presses Enter out of momentum must land on Cancel.
-      {
-        kind: 'item', label: 'Cancel', extraClass: 'dash-tree-confirm-cancel', autofocus: true,
-        onClick: () => {},
-      },
-    ],
+    goClass: 'dash-tree-confirm-go',
+    cancelClass: 'dash-tree-confirm-cancel',
+    onConfirm: go,
   });
 }
 

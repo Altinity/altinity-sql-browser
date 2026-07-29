@@ -46,6 +46,54 @@ const runOnclick = (el: HTMLElement | null): unknown => ((el as HTMLElement).onc
  * attached div for every fixture this file builds. */
 const rootEl = (app: App): HTMLElement => app.root as HTMLElement;
 
+// ── The tile head's `⋯` menu ──────────────────────────────────────────────────
+// Four of the five head controls live in an overflow menu now. It and its
+// confirmation mount on `document.body`, NOT inside `app.root`, so every helper
+// below reads the global document — the same thing `dashboard-tree.test.ts`
+// already does for the tree's own confirm.
+
+/** Every tile's `⋯` trigger, in painted order. */
+const menuBtns = (app: TestApp): HTMLButtonElement[] =>
+  qsa<HTMLButtonElement>(app.root, '.dash-tile-menu');
+
+/** Open one tile's action menu (index into the painted tiles). */
+const openTileMenu = (app: TestApp, index = 0): void => { menuBtns(app)[index].click(); };
+
+/** The open menu's rows, in paint order. */
+const tileMenuRows = (): HTMLButtonElement[] =>
+  qsa<HTMLButtonElement>(document.body, '.dash-tile-actions .fm-item');
+
+const tileMenuLabels = (): string[] =>
+  tileMenuRows().map((row) => qs(row, '.fm-label').textContent as string);
+
+/** One row of the open menu, by its exact label. */
+const tileMenuRow = (label: string): HTMLButtonElement =>
+  tileMenuRows().find((row) => qs(row, '.fm-label').textContent === label)!;
+
+/** Open a tile's menu and activate one row by label. */
+const runTileMenu = (app: TestApp, label: string, index = 0): void => {
+  openTileMenu(app, index);
+  tileMenuRow(label).click();
+};
+
+/** The removal confirmation's go row, once `Remove tile` has been chosen. */
+const confirmRemoveGo = (): HTMLButtonElement =>
+  qs<HTMLButtonElement>(document.body, '.dash-tile-confirm-go');
+
+/**
+ * Remove one tile the way a user does: `⋯` → Remove tile → confirm.
+ *
+ * A helper rather than three lines at each call site because #537 re-pointed a
+ * dozen existing tests at this path — but note what it does NOT hide: the
+ * confirmation step is a real click on a real row, so a change that dropped the
+ * confirmation entirely would make `confirmRemoveGo()` throw rather than quietly
+ * still pass.
+ */
+const removeTileViaMenu = (app: TestApp, index = 0): void => {
+  runTileMenu(app, 'Remove tile', index);
+  confirmRemoveGo().click();
+};
+
 // (dashboardTileSql + parseJsonResult were retired in #193 — the tiles stream
 // through the shared app.exec.executeRead seam, so SQL prep is now just the shared
 // materialization (#165) and the client row bound is newResult's trim + `capped`
@@ -743,7 +791,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     card.dispatchEvent(right);
     expect(right.defaultPrevented).toBe(false);
     const action = document.createElement('button');
-    action.className = 'dash-gg-del';
+    action.className = 'dash-tile-menu';
     card.appendChild(action);
     const actionDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, metaKey: true });
     action.dispatchEvent(actionDown);
@@ -1674,7 +1722,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qs(card, '.dash-tile-head')).not.toBeNull(); // overlay host retained
     expect(qs(card, '.dash-tile-name')?.textContent).toBe('k1');
     expect(qs(card, '.dash-gg-grip')).toBeNull(); // modifier movement only
-    expect(qs(card, '.dash-gg-del')).not.toBeNull(); // remove retained
+    expect(qs(card, '.dash-tile-menu')).not.toBeNull(); // the actions menu, which now holds remove
     const resize = qs<HTMLElement>(card, '.dash-gg-resize');
     expect(resize).not.toBeNull(); // resize retained
     expect(resize.tagName).toBe('BUTTON');
@@ -1731,10 +1779,12 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const card = qs<HTMLElement>(app.root, '.dash-gg-tile');
     expect(card.classList.contains('is-kpi')).toBe(true);
     expect(card.classList.contains('is-view')).toBe(true);
-    // No drag/remove/resize affordances in view mode.
+    // No drag/edit-menu/resize affordances in view mode — but the direct expand
+    // action IS there, in place of the menu (#471 requires it in both modes).
     expect(qs(card, '.dash-gg-grip')).toBeNull();
-    expect(qs(card, '.dash-gg-del')).toBeNull();
+    expect(qs(card, '.dash-tile-menu')).toBeNull();
     expect(qs(card, '.dash-gg-resize')).toBeNull();
+    expect(qs(card, '.dash-tile-open')).not.toBeNull();
     // The hidden query title survives as the wrapper's accessible group name.
     expect(card.getAttribute('role')).toBe('group');
     expect(card.getAttribute('aria-label')).toBe('k1');
@@ -1824,12 +1874,14 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qsa(app.root, '.dash-row')[0].style.gridTemplateColumns).toContain('repeat(3');
   });
 
-  it('shows grip/delete/resize affordances only in edit mode (!readOnly)', async () => {
+  it('shows grip/menu/resize affordances only in edit mode (!readOnly)', async () => {
     const { app } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     expect(qsa(app.root, '.dash-gg-grip').length).toBe(2);
-    expect(qsa(app.root, '.dash-gg-del').length).toBe(2);
+    expect(qsa(app.root, '.dash-tile-menu').length).toBe(2);
     expect(qsa(app.root, '.dash-gg-resize').length).toBe(2);
+    // Edit mode has NO direct expand icon: it is a row of the menu instead.
+    expect(qsa(app.root, '.dash-tile-open').length).toBe(0);
 
     const detached = twoTilesGrid();
     const { app: readonlyApp } = modeApp({
@@ -1837,21 +1889,32 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     });
     await render(readonlyApp);
     expect(qsa(readonlyApp.root, '.dash-gg-grip').length).toBe(0);
-    expect(qsa(readonlyApp.root, '.dash-gg-del').length).toBe(0);
+    expect(qsa(readonlyApp.root, '.dash-tile-menu').length).toBe(0);
     expect(qsa(readonlyApp.root, '.dash-gg-resize').length).toBe(0);
+    // …and the mirror image: View has the direct action and no menu.
+    expect(qsa(readonlyApp.root, '.dash-tile-open').length).toBe(2);
   });
 
-  it('delete dispatches remove-tile and drops the tile from the grid', async () => {
+  // #537: removal is a two-resource workspace write now, not a layout command, so
+  // there is no optimistic single-frame removal to observe — the commit's own
+  // `queriesChanged` rebuild is what takes the tile off screen. What this asserts
+  // instead is that the commit happened and carried BOTH resources.
+  it('remove commits the tile and its owned query together', async () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     expect(qsa(app.root, '.dash-gg-tile').length).toBe(2);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
-    expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    removeTileViaMenu(app);
     await flush();
     expect(commit).toHaveBeenCalled();
+    const candidate = commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(candidate.dashboards[0]!.tiles.map((tile) => tile.id)).toEqual(['t2']);
+    expect(candidate.queries.map((query) => query.id)).toEqual(['q2']);
   });
 
-  it('a delete click is a no-op while flow (not grid) is active', async () => {
+  // The inverse of the old 'a delete click is a no-op while flow is active'. That
+  // gate — a CSS `.dash-gg-grid` scope plus an `activeEngine` check — is exactly
+  // what left Report and the column presets with no delete at all.
+  it('remove works under a flow preset, where the old grid-only trash did not', async () => {
     const { app, commit } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
@@ -1859,9 +1922,12 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
       }),
     });
     await render(app);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
-    expect(commit).not.toHaveBeenCalled();
-    expect(qsa(app.root, '.dash-tile').length).toBe(1);
+    removeTileViaMenu(app);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    const candidate = commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(candidate.dashboards[0]!.tiles).toEqual([]);
+    expect(candidate.queries).toEqual([]);
   });
 
   it('corner-drag resize snaps span/height live and dispatches one update-placement on pointerup', async () => {
@@ -2720,19 +2786,39 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(qs(app.root, '.dash-gg-grid')?.classList.contains('is-full')).toBe(false);
   });
 
-  it('delete still dispatches remove-tile and persists while Full view is active', async () => {
+  it('remove still commits and persists while Full view is active', async () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
-    // Delete still dispatches remove-tile and persists.
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
-    expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    // Full view is a transient render mode that never persists a width, so the
+    // menu still LISTS widen and says why it cannot run — the honest version of
+    // #535's "the button simply is not built here".
+    openTileMenu(app);
+    expect(tileMenuRow('Widen').getAttribute('aria-disabled')).toBe('true');
+    expect(qs(tileMenuRow('Widen'), '.fm-reason').textContent)
+      .toBe('This layout has a single column, so there is no width to change.');
+    tileMenuRow('Remove tile').click();
+    confirmRemoveGo().click();
     await flush();
     expect(commit).toHaveBeenCalled();
-    // Full view survives the commit-driven republish.
-    expect(layoutSelect(app.root).value).toBe('full');
-    expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+    const candidate = commit.mock.calls[0][0] as StoredWorkspaceV5;
+    expect(candidate.dashboards[0]!.tiles.map((tile) => tile.id)).toEqual(['t2']);
+    // Full view does NOT survive, and that is pre-existing rather than new: it is a
+    // transient render mode held on the viewer SESSION (#321), and every
+    // two-resource workspace write rebuilds the route from committed truth, which
+    // builds a fresh session at the persisted style. #535's duplicate already
+    // behaves exactly this way; #537's removal joins it on the same path. Asserted
+    // rather than wished away so the day it is fixed, this test says so.
+    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    // The SURVIVING tile's authored width is untouched by the round trip — Full
+    // view renders every tile at 12 columns but never writes that back (#321), so a
+    // removal made while it is active must not persist the override.
+    const items = (candidate.dashboards[0]!.layout as { items: Record<string, unknown> }).items;
+    expect(items.t2).toEqual(
+      ((twoTilesGrid().dashboards[0]!.layout as { items: Record<string, unknown> }).items).t2,
+    );
+    expect(items.t1).toBeUndefined();
   });
 
   it('reorder (drag) still dispatches move-tile and persists while Full view is active', async () => {
@@ -4159,11 +4245,13 @@ describe('renderDashboard — unified live modes (#407)', () => {
       await render(app);
       expect(qs(app.root, '.dash-back-to-query')).toBeNull();
       expect(qsa(app.root, '.dash-toolbar-primary .dash-tile-open')).toHaveLength(0);
-      const open = qs<HTMLButtonElement>(app.root, '.dash-tile .dash-tile-open');
-      open.click();
+      // Reached directly in View, through the `⋯` in Edit — either way it is a
+      // per-TILE route, never a toolbar-level "back".
+      if (mode === 'view') qs<HTMLButtonElement>(app.root, '.dash-tile .dash-tile-open').click();
+      else runTileMenu(app, 'Open in Workbench and run');
       // The tile action names a DOCUMENT (and a PANEL); it never means "generic back".
-      expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
-      expect(showQuerySurface).not.toHaveBeenCalled();
+      expect(openPanelQuery, mode).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
+      expect(showQuerySurface, mode).not.toHaveBeenCalled();
     }
   });
 
@@ -4485,10 +4573,10 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
-  it('a successful remove-tile (grafana-grid delete) projects the committed workspace with the tile gone', async () => {
+  it('a successful panel removal projects the committed workspace with the tile gone', async () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    removeTileViaMenu(app);
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
     expect(app.state.dashboard?.tiles).toHaveLength(1);
@@ -4496,12 +4584,13 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
-  // #447 dropped this case's explicit-filter-target half (`doc.filters[].targets`
-  // no longer exists — a variable binds by NAME to whichever panel queries
-  // declare it, so removing a tile needs no target rewrite at all). What is left
-  // is the #427 half: the removed tile's own query, and its Library favourite,
-  // survive the removal untouched.
-  it('remove-tile leaves the removed tile\'s query and its Library favourite alone', async () => {
+  // This case used to assert the #537 BUG: that the removed tile's own query
+  // survived, favourite and all. Under #427 a panel tile is the SOLE OWNER of a
+  // dedicated saved-query copy, so a surviving copy has zero owners — which is
+  // exactly what makes a query a Library query — and the deleted panel came back
+  // as an apparently standalone Library entry. The removal takes both resources
+  // now, and the favourite question goes with the query it was on.
+  it('removes the panel\'s sole-owned query along with the tile', async () => {
     const workspace = wsWith({
       queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
@@ -4509,17 +4598,19 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     });
     const { app, commit } = dashApp({ workspace });
     await render(app);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    removeTileViaMenu(app);
     await flush();
     const candidate = commit.mock.calls[0][0];
-    // #427: no favourite write-back. Removing a tile is a Dashboard-document
-    // change; the query's Library preference is not part of it.
-    expect(candidate.queries.find((query) => query.id === 'q1')?.spec.favorite).toBe(true);
+    expect(candidate.queries.map((query) => query.id)).toEqual(['q2']);
     expect(candidate.dashboards[0]?.tiles.map((tile) => tile.id)).toEqual(['t2']);
     expect(candidate.dashboards[0]?.revision).toBe(2);
   });
 
-  it('remove-tile keeps favorite true when another tile instance references the query', async () => {
+  // The other half of the same inversion. Two tiles on one query is the invalid
+  // multi-owner state #427 forbids reaching but a mid-edit or imported workspace
+  // can still be caught in; removing either tile alone would leave a query the
+  // OTHER tile still renders, or delete it out from under that tile. Fail closed.
+  it('refuses when a second tile references the same query, changing nothing', async () => {
     const workspace = wsWith({
       queries: [q('q1', 'SELECT 1', { favorite: true })],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q1' }],
@@ -4527,12 +4618,90 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     });
     const { app, commit } = dashApp({ workspace });
     await render(app);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    openTileMenu(app);
+    const row = tileMenuRow('Remove tile');
+    expect(row.getAttribute('aria-disabled')).toBe('true');
+    expect(qs(row, '.fm-reason').textContent)
+      .toBe('This panel’s query is shared, missing, or not a panel query.');
+    // Pressing it anyway opens no confirmation and writes nothing: `openMenu` gives
+    // a disabled row no handler, and `runTileAction` refuses a second time.
+    row.click();
     await flush();
-    const candidate = commit.mock.calls[0][0];
-    expect(candidate.dashboards[0]?.tiles).toEqual([{ id: 't2', queryId: 'q1' }]);
-    expect(candidate.queries[0].spec.favorite).toBe(true);
-    expect(candidate.dashboards[0]?.revision).toBe(2);
+    expect(qs(document.body, '.dash-tile-confirm')).toBeNull();
+    expect(commit).not.toHaveBeenCalled();
+    expect(app.state.dashboard?.tiles).toHaveLength(2);
+  });
+
+  // #537's commit-time refusal, as distinct from the pre-flight one above: the row
+  // was AVAILABLE when the menu opened, and committed truth moved under it while the
+  // confirmation was on screen. The write refuses inside `mutateWorkspace`, so the
+  // outcome is a toast rather than a disabled row.
+  it('toasts and changes nothing when the tile vanishes between the confirmation and the commit', async () => {
+    const { app, commit, loadActive } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    openTileMenu(app);
+    // Available at open time…
+    expect(tileMenuRow('Remove tile').getAttribute('aria-disabled')).toBeNull();
+    tileMenuRow('Remove tile').click();
+    // …and gone from committed truth before the user answers.
+    await app.mutateWorkspace((latest) => (latest ? {
+      candidate: {
+        ...latest,
+        dashboards: [{
+          ...latest.dashboards[0]!,
+          tiles: [latest.dashboards[0]!.tiles[1]],
+          revision: latest.dashboards[0]!.revision + 1,
+        }],
+      },
+    } : null));
+    const commitsBefore = commit.mock.calls.length;
+    confirmRemoveGo().click();
+    await flush();
+    expect(qs(document, '.share-toast')?.textContent)
+      .toBe('That panel is no longer part of this dashboard.');
+    // The refused removal wrote nothing of its own.
+    expect(commit.mock.calls).toHaveLength(commitsBefore);
+    // Its query survives, because nothing was deleted at all.
+    expect((await loadActive()).queries.map((query) => query.id)).toEqual(['q1', 'q2']);
+  });
+
+  // Focus after a removal: the tile the user was standing on is gone, and the
+  // confirmation's own restore already aimed at a control that left with it — so
+  // without an explicit successor, focus falls to `<body>`.
+  it('owes the successor tile a focus delivery, and lands on the tile search when none is left', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    // The surface the shell would have mounted: `withPendingFocus` only owes a
+    // delivery to a DASHBOARD surface, and the default fixture starts on Query.
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    await render(app);
+    removeTileViaMenu(app); // removes t1, leaving t2
+    await flush();
+    expect(app.mainSurface).toMatchObject({ kind: 'dashboard', pendingFocus: { kind: 'tile', id: 't2' } });
+
+    // …and removing the LAST tile has no successor to owe anything to, so focus
+    // lands on the route's always-present control instead of falling to <body>.
+    const { app: solo } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'grafana-grid', version: 1, items: {} },
+      }),
+    });
+    solo.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    await render(solo);
+    // Spied rather than read off `document.activeElement`: this fixture's `app.root`
+    // is not attached to the document, and `focus()` on a detached input is a no-op.
+    const search = qs<HTMLInputElement>(solo.root, '.dash-tile-search');
+    const focused = vi.spyOn(search, 'focus');
+    removeTileViaMenu(solo);
+    await flush();
+    expect((solo.mainSurface as { pendingFocus: unknown }).pendingFocus).toBeNull();
+    expect(focused).toHaveBeenCalled();
   });
 
   it('missing workspace renders a dedicated not-found state and never commits', async () => {
@@ -4673,12 +4842,20 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     });
     // Dispatch a Dashboard command while that mutation is still in flight
     // (both share the one `serializeWrite` chain, so this queues behind it).
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // removes q1's tile
+    // #537: driven by WIDEN (`update-placement`) rather than the tile trash — panel
+    // removal is a two-resource workspace write now and no longer travels through
+    // the route's optimistic command queue at all, which is what this asserts.
+    // t1's authored `{span: 4, height: 'compact'}` carries a FLOW height enum, which
+    // is not a valid grafana-grid placement — so it resolves to the grid default
+    // (span 6) and one widen press doubles that to 12.
+    qs<HTMLButtonElement>(app.root, '.dash-tile-widen').click();
     await Promise.all([extraQueryMutation, flush()]);
     await flush();
-    // Both edits are present: the extra query AND the tile removal.
+    // Both edits are present: the extra query AND the placement change.
     expect(app.state.savedQueries.map((sq) => sq.id)).toEqual(['q1', 'q2', 'q3']);
-    expect(app.state.dashboard?.tiles.map((t) => t.queryId)).toEqual(['q2']);
+    const layout = app.state.dashboard?.layout as { items: Record<string, { span?: number }> };
+    expect(layout.items.t1?.span).toBe(12);
+    expect(app.state.dashboard?.tiles.map((t) => t.queryId)).toEqual(['q1', 'q2']);
   });
 
   // #344 review fix: a command that applies cleanly against its OPTIMISTIC
@@ -4717,13 +4894,14 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // Dashboard, not restored by a stale two-tile rollback.
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
     expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
-    // The queue is not wedged — a later, valid command (removing t2, which IS
-    // still present in committed truth) still commits successfully. Committed
-    // truth only ever had t2 (the external mutation above already dropped t1),
-    // so removing it empties the persisted tiles list.
-    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[0].click();
+    // The queue is not wedged — a later, valid command (widening t2, which IS
+    // still present in committed truth) still commits successfully.
+    qsa<HTMLButtonElement>(app.root, '.dash-tile-widen')[0].click();
     await flush();
-    expect((await loadActive()).dashboards[0]?.tiles).toEqual([]);
+    const after = (await loadActive()).dashboards[0]?.layout as { items: Record<string, { span?: number }> };
+    // t2 had no authored placement, so it widens from the grid default span 6.
+    expect(after.items.t2?.span).toBe(12);
+    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t2']);
   });
 
   // #425: the same guarantee from a NON-FIRST selection — the case where an
@@ -4746,14 +4924,15 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
     Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
 
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    qs<HTMLButtonElement>(app.root, '.dash-tile-widen').click();
     await flush();
 
     const committed = await loadActive();
     expect(committed.dashboards.map((d) => d.id)).toEqual(['first', selected.id]);
     // The SELECTED entry advanced by exactly one revision…
     expect(committed.dashboards[1].revision).toBe(selected.revision + 1);
-    expect(committed.dashboards[1].tiles.map((t) => t.id)).toEqual(['t2']);
+    expect((committed.dashboards[1].layout as { items: Record<string, { span?: number }> }).items.t1?.span)
+      .toBe(12);
     // …and the first entry — which an unscoped write would have clobbered — is
     // byte-identical.
     expect(committed.dashboards[0]).toEqual(first);
@@ -4775,7 +4954,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     await render(app);
     Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
 
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    qs<HTMLButtonElement>(app.root, '.dash-tile-widen').click();
     await flush();
 
     const committed = await loadActive();
@@ -4783,7 +4962,8 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     // The visible Dashboard advanced…
     expect(committed.dashboards[0].id).toBe(base.dashboards[0].id);
     expect(committed.dashboards[0].revision).toBe(2);
-    expect(committed.dashboards[0].tiles.map((t) => t.id)).toEqual(['t2']);
+    expect((committed.dashboards[0].layout as { items: Record<string, { span?: number }> }).items.t1?.span)
+      .toBe(12);
     // …and the hidden one did not move at all.
     expect(committed.dashboards[1]).toEqual(hidden);
     // The visible surface still shows exactly one Dashboard and no selector.
@@ -4861,44 +5041,58 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(after.dashboards.map((d) => d.title)).toEqual([pinned.title, 'Duplicate']);
   });
 
-  // #350 (pulled into scope by review 2): a rebase that RESTORES membership —
-  // a remove-tile whose commit failed and rolled back — cannot be applied by
-  // `syncDocument` (the session already dropped the tile's runtime record and
-  // never reinstates unknown ids), so the route must REBUILD from committed
-  // truth: the restored tile's DOM comes back, not just `app.state`.
-  it('a failed remove-tile rolls back by rebuilding the route — the removed tile is rendered again', async () => {
-    const commit = vi.fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
-      })
-      .mockImplementation(async (candidate: StoredWorkspaceV5) => (
-        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboards[0] ? candidate.dashboards[0].revision : null }
-      ));
+  // #350 (pulled into scope by review 2): a rebase whose committed truth carries a
+  // tile the viewer session never tracked cannot be applied by `syncDocument` — it
+  // drops the runtime record of an absent tile but never REINSTATES one for an id
+  // it does not know — so the route must REBUILD from committed truth, and the new
+  // tile's DOM has to appear, not just `app.state`.
+  //
+  // #537 changed how this is reached, not what it guarantees. The old lever was a
+  // remove-tile whose commit failed: the optimistic removal dropped the runtime
+  // record, and the rollback restored the tile the session could no longer render.
+  // Panel removal is a two-resource workspace write now and never publishes
+  // optimistically, so that lever is gone — and re-pointing this test at it would
+  // have made it VACUOUS, because a refused atomic removal changes nothing at all
+  // and "both tiles are still rendered" would then be true whether or not any
+  // rebuild code existed. The reachable input instead: another producer ADDS a tile
+  // while a placement command is queued behind it.
+  it('rebuilds the route when committed truth carries a tile the session never tracked', async () => {
     const workspace = wsWith({
-      queries: [q('q1', 'SELECT {x:String}', { favorite: true }), q('q2', 'SELECT 2')],
+      queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 2')],
       tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
       layout: { type: 'grafana-grid', version: 1, items: {} },
     });
-    const { app, loadActive } = dashApp({ workspace, commit });
+    const { app, loadActive } = dashApp({ workspace });
     await render(app);
     expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
-    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // remove t1 — its commit fails
-    // Optimistic removal is instant.
-    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
-    await flush();
+
+    // Another producer adds t3 through the shared queue. The click below queues
+    // behind it, so by the time the placement command dequeues and rebases,
+    // committed truth holds a tile this route's session has no runtime for.
+    const foreign = app.mutateWorkspace((latest) => (latest ? {
+      candidate: {
+        ...latest,
+        queries: [...latest.queries, q('q3', 'SELECT 3')],
+        dashboards: [{
+          ...latest.dashboards[0]!,
+          tiles: [...latest.dashboards[0]!.tiles, { id: 't3', queryId: 'q3' }],
+          revision: latest.dashboards[0]!.revision + 1,
+        }],
+      },
+    } : null));
+    qs<HTMLButtonElement>(app.root, '.dash-tile-widen').click();
+    await Promise.all([foreign, flush()]);
     await flush(); // the rebuild is itself an async render pass
-    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ boom');
-    // Rolled back: BOTH tiles are rendered again (route rebuilt from committed
-    // truth), and nothing was persisted.
-    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
-    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
-    expect(queryFavorite(app.state.savedQueries.find((query) => query.id === 'q1'))).toBe(true);
-    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
-    // The rebuilt route is fully functional — a later command still commits.
-    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();
     await flush();
-    expect((await loadActive()).dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1']);
+
+    // The route rebuilt: t3 is on screen, not merely in state.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(3);
+    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2', 't3']);
+    // …and the placement command it rebased still committed.
+    const committed = await loadActive();
+    expect((committed.dashboards[0]?.layout as { items: Record<string, { span?: number }> }).items.t1?.span)
+      .toBe(12);
+    expect(committed.dashboards[0]?.tiles.map((t) => t.id)).toEqual(['t1', 't2', 't3']);
   });
 
   // #344 review fix (coordinator hardening): a commit that REJECTS (the store
@@ -5313,6 +5507,9 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     tiles: [{ id: 't1', queryId: 'q1' }],
   });
 
+  // Still reachable in BOTH modes and BOTH engines — but by two different routes
+  // since the head was cut to two controls: View keeps the direct icon, Edit lists
+  // it in the `⋯` menu. That split is the point of the assertion.
   it('exposes the action on a query-backed tile in BOTH modes, in BOTH layout engines', async () => {
     for (const mode of ['view', 'edit'] as const) {
       for (const layout of [
@@ -5321,14 +5518,25 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       ]) {
         const { app } = modeApp({ workspace: wsWith({ ...oneTile(), layout }), mode });
         await render(app);
-        const buttons = openBtns(app);
-        expect(buttons, `${mode}/${layout.type}`).toHaveLength(1);
-        // A real <button>, so Enter/Space activation and tab-order come from the
-        // platform rather than a hand-rolled keydown handler.
-        expect(buttons[0].tagName).toBe('BUTTON');
-        expect(buttons[0].type).toBe('button');
-        expect(buttons[0].getAttribute('aria-hidden')).toBeNull();
-        expect(buttons[0].disabled).toBe(false);
+        const where = `${mode}/${layout.type}`;
+        if (mode === 'view') {
+          const buttons = openBtns(app);
+          expect(buttons, where).toHaveLength(1);
+          // A real <button>, so Enter/Space activation and tab-order come from the
+          // platform rather than a hand-rolled keydown handler.
+          expect(buttons[0].tagName).toBe('BUTTON');
+          expect(buttons[0].type).toBe('button');
+          expect(buttons[0].getAttribute('aria-hidden')).toBeNull();
+          expect(buttons[0].disabled).toBe(false);
+          expect(menuBtns(app), where).toHaveLength(0);
+        } else {
+          expect(openBtns(app), where).toHaveLength(0);
+          expect(menuBtns(app), where).toHaveLength(1);
+          openTileMenu(app);
+          const row = tileMenuRow('Open in Workbench and run');
+          expect(row.getAttribute('aria-disabled'), where).toBeNull();
+          expect(qs(row, '.fm-reason'), where).toBeNull();
+        }
       }
     }
   });
@@ -5358,14 +5566,24 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       tiles: [{ id: 't1', queryId: 'q1', title: '   ' }],
       layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } },
     });
-    // Edit mode, so the destructive control's label is in the render too.
+    // Both modes, because the three composed names are split across them now: the
+    // direct expand's label is View's, and the `⋯` trigger plus the removal
+    // QUESTION are Edit's.
+    const { app: viewApp } = modeApp({ workspace: ws, mode: 'view' });
+    await render(viewApp);
+    expect(openBtns(viewApp)[0].getAttribute('aria-label')).toBe('Open Revenue by day in Workbench and run');
+
     const { app } = modeApp({ workspace: ws, mode: 'edit' });
     await render(app);
     expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Revenue by day');
     expect(qs(app.root, '.dash-tile-name')?.getAttribute('title')).toBe('Revenue by day');
-    expect(openBtns(app)[0].getAttribute('aria-label')).toBe('Open Revenue by day in Workbench and run');
-    expect(qs(app.root, '.dash-gg-del')?.getAttribute('aria-label'))
-      .toBe('Remove Revenue by day from the dashboard');
+    expect(menuBtns(app)[0].getAttribute('aria-label')).toBe('Panel actions: Revenue by day');
+    expect(menuBtns(app)[0].getAttribute('title')).toBe('Panel actions');
+    openTileMenu(app);
+    expect(tileMenuRow('Remove tile').getAttribute('aria-disabled')).toBeNull();
+    tileMenuRow('Remove tile').click();
+    expect(qs(document.body, '.dash-tile-confirm .fm-section').textContent)
+      .toBe('Remove panel “Revenue by day” from “My Dash”? This also deletes its dedicated query copy.');
   });
 
   it('keeps an authored title, trimmed of surrounding whitespace', async () => {
@@ -5441,7 +5659,9 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     await render(app);
     const cards = qsa<HTMLElement>(app.root, '.dash-tile');
     stubTileRects(cards);
-    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    // The `⋯` rather than #471's direct expand: drag is wired in EDIT mode only
+    // (`wireTileDrag`), and Edit's head carries the menu trigger, not that button.
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-menu');
     // A modifier-held press ON THE ACTION is the worst case: the same gesture on
     // the tile body WOULD arm a reorder.
     const down = new PointerEvent('pointerdown', {
@@ -5454,9 +5674,9 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
     expect(commit).not.toHaveBeenCalled(); // no reorder was committed
-    // And the click itself still reaches the action.
+    // And the click itself still reaches the action — the menu opens.
     button.click();
-    expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
+    expect(tileMenuLabels()).toContain('Open in Workbench and run');
   });
 
   // The keyboard half of the same defect, and the sharper one: Enter/Space on a
@@ -5483,9 +5703,11 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     // `.click()` IS what Enter on a focused button produces: a trusted click with no
     // preceding pointerdown. Its timestamp is well past the release, so the guard
     // must let it through.
-    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-menu');
     button.focus();
     button.click();
+    expect(tileMenuRows()).not.toHaveLength(0);
+    tileMenuRow('Open in Workbench and run').click();
     expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
   });
 
@@ -5519,9 +5741,11 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     // Pressed BEFORE the disarming timer runs, so this exercises the pointerdown
     // reset rather than the timer — both paths have to work, because a real press
     // races them.
-    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-open');
+    const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-menu');
     button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
     button.click();
+    expect(tileMenuRows()).not.toHaveLength(0);
+    tileMenuRow('Open in Workbench and run').click();
     expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'q1' });
     await flush(); // the timer then finds the flag already cleared
     expect(openPanelQuery).toHaveBeenCalledOnce();
@@ -5548,10 +5772,15 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
       const openPanelQuery = vi.fn();
       app.openPanelQuery = openPanelQuery;
       await render(app);
-      const button = qs<HTMLButtonElement>(app.root, '.dash-gg-tile.is-kpi > .dash-tile-head > .dash-tile-open');
+      // Whichever control this mode puts there, it has to be IN that overlay head —
+      // styles.css opts each one back into pointer events individually.
+      const cls = mode === 'view' ? '.dash-tile-open' : '.dash-tile-menu';
+      const button = qs<HTMLButtonElement>(app.root, `.dash-gg-tile.is-kpi > .dash-tile-head > ${cls}`);
       expect(button, mode).not.toBeNull();
       button.click();
-      expect(openPanelQuery).toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'k1' });
+      if (mode === 'edit') tileMenuRow('Open in Workbench and run').click();
+      expect(openPanelQuery, mode)
+        .toHaveBeenCalledExactlyOnceWith({ dashboardId: 'd', tileId: 't1', queryId: 'k1' });
     }
   });
 
@@ -5599,21 +5828,24 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     expect(qsa(app.root, '.dash-kpi-member .dash-tile-open')).toHaveLength(1);
   });
 
-  it('gives a grafana-grid KPI tile exactly ONE of each action, in its head', async () => {
+  it('gives a grafana-grid KPI tile exactly ONE of each control, in its head', async () => {
     // Regression guard for the flow/grid split: the grid engine paints KPI content
-    // through the same `renderKpiInto`, so attaching the card-anchored actions there
-    // too would give one tile two of each. Asserted in EDIT mode, where the head
-    // carries the whole trio, because that is where a double-attach would show.
+    // through the same `renderKpiInto`, so attaching the band's card-anchored
+    // controls there too would give one tile two of each. Asserted in EDIT mode,
+    // where the head carries both of them, because that is where a double-attach
+    // would show.
     const { app } = modeApp({
       workspace: wsWith(kpiWs({ type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } })),
       mode: 'edit',
     });
     await render(app);
-    for (const cls of ['.dash-tile-open', '.dash-tile-dup', '.dash-tile-widen']) {
+    for (const cls of ['.dash-tile-widen', '.dash-tile-menu']) {
       expect(qsa(app.root, cls), cls).toHaveLength(1);
       expect(qsa(app.root, '.dash-tile-head > ' + cls), cls).toHaveLength(1);
       expect(qsa(app.root, '.dash-tile-body ' + cls), cls).toHaveLength(0);
     }
+    // …and no View-mode expand icon leaked into an Edit render.
+    expect(qsa(app.root, '.dash-tile-open')).toHaveLength(0);
   });
 });
 
@@ -5658,8 +5890,11 @@ describe('renderDashboard — scroll offset (#471)', () => {
 // widen is a layout-only `update-placement` through the optimistic command queue,
 // while duplicate is a two-resource workspace write that has to rebuild the route
 // (a duplicate's own query is one the live viewer session has never seen).
+//
+// #537 moved duplicate into the `⋯` menu — widen keeps an inline button as well,
+// because it is the one size adjustment made constantly and the one the container
+// query can withdraw on a genuinely narrow tile.
 describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
-  const dupBtns = (app: TestApp): HTMLButtonElement[] => qsa<HTMLButtonElement>(app.root, '.dash-tile-dup');
   const widenBtn = (app: TestApp): HTMLButtonElement => qs<HTMLButtonElement>(app.root, '.dash-tile-widen');
   const oneTile = (layout?: Record<string, unknown>): WsOver => ({
     queries: [q('q1', 'SELECT 1')],
@@ -5696,27 +5931,72 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
     return down;
   };
 
-  it('builds both actions in edit mode and neither in view mode', async () => {
+  it('builds the edit-mode controls in edit mode and neither in view mode', async () => {
     for (const mode of ['edit', 'view'] as const) {
       const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode });
       await render(app);
       const expected = mode === 'edit' ? 1 : 0;
-      expect(qsa(app.root, '.dash-tile-dup'), mode).toHaveLength(expected);
       expect(qsa(app.root, '.dash-tile-widen'), mode).toHaveLength(expected);
-      // The expand action, by contrast, exists in BOTH (#471).
-      expect(qsa(app.root, '.dash-tile-open'), mode).toHaveLength(1);
+      expect(qsa(app.root, '.dash-tile-menu'), mode).toHaveLength(expected);
+      // Duplicate is a menu row, so it exists only where the menu does.
+      if (mode === 'edit') {
+        openTileMenu(app);
+        expect(tileMenuLabels()).toContain('Duplicate panel');
+      }
+      // The expand action exists in BOTH (#471) — directly in View, as a row in Edit.
+      expect(qsa(app.root, '.dash-tile-open'), mode).toHaveLength(mode === 'view' ? 1 : 0);
     }
   });
 
-  it('orders the head actions duplicate, widen, expand, then delete', async () => {
+  it('leaves the head two trailing controls: the inline widen, then the ⋯', async () => {
     const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
     await render(app);
     const head = qs<HTMLElement>(app.root, '.dash-tile-head');
     expect([...head.children].map((child) => child.className).filter((c) => c !== 'dash-tile-heading'))
-      .toEqual(['dash-gg-grip', 'dash-tile-dup', 'dash-tile-widen', 'dash-tile-open', 'dash-gg-del']);
+      .toEqual(['dash-gg-grip', 'dash-tile-widen', 'dash-tile-menu']);
   });
 
-  it('names both actions after the tile they belong to', async () => {
+  it('lists the menu rows in the design order, with remove separated and last', async () => {
+    const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+    await render(app);
+    openTileMenu(app);
+    expect(tileMenuLabels())
+      .toEqual(['Duplicate panel', 'Widen to 8 columns', 'Open in Workbench and run', 'Remove tile']);
+    // The destructive row is fenced off from the three ordinary ones.
+    const rows = qsa<HTMLElement>(document.body, '.dash-tile-actions > *');
+    const removeAt = rows.findIndex((row) => row.textContent?.startsWith('Remove tile'));
+    expect(rows[removeAt - 1].className).toBe('fm-sep');
+    expect(rows[removeAt].classList.contains('dash-tile-menu-danger')).toBe(true);
+  });
+
+  it('toggles closed on a second press, and hands focus back to the trigger', async () => {
+    // `openMenu` itself only ever OPENS (a second call on the same trigger returns
+    // the existing handle), so an explicit open/close press has to be tracked by the
+    // caller — the same idiom the Dashboard style picker uses.
+    const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
+    await render(app);
+    const trigger = menuBtns(app)[0];
+    trigger.click();
+    expect(qs(document.body, '.dash-tile-actions')).not.toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const focused = vi.spyOn(trigger, 'focus');
+    trigger.click();
+    expect(qs(document.body, '.dash-tile-actions')).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(focused).toHaveBeenCalled();
+  });
+
+  it('widens from the menu row too, not only from the inline button', async () => {
+    // Both routes have to reach the same step: the inline button is a shortcut the
+    // container query withdraws on a narrow tile, and the row is what remains.
+    const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 3, height: 2 } }))), mode: 'edit' });
+    await render(app);
+    runTileMenu(app, 'Widen to 6 columns');
+    await flush();
+    expect(placement(app)).toEqual({ span: 6, height: 4 });
+  });
+
+  it('names the controls and the rows after the tile they belong to', async () => {
     const ws = wsWith({
       queries: [q('q1', 'SELECT 1')],
       tiles: [{ id: 't1', queryId: 'q1', title: 'Revenue by day' }],
@@ -5724,12 +6004,17 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
     });
     const { app } = modeApp({ workspace: ws, mode: 'edit' });
     await render(app);
-    expect(dupBtns(app)[0].getAttribute('aria-label')).toBe('Duplicate Revenue by day');
-    expect(dupBtns(app)[0].getAttribute('title')).toBe('Duplicate panel');
     // Widen's label names the DESTINATION, and carries the tile so a control list
     // stays usable: three "Widen" buttons would be indistinguishable.
     expect(widenBtn(app).getAttribute('title')).toBe('Widen to 6 columns');
     expect(widenBtn(app).getAttribute('aria-label')).toBe('Widen to 6 columns: Revenue by day');
+    // Same for the `⋯`: "Panel actions" three times over names no panel at all.
+    expect(menuBtns(app)[0].getAttribute('aria-label')).toBe('Panel actions: Revenue by day');
+    openTileMenu(app);
+    expect(qs(document.body, '.dash-tile-actions').getAttribute('aria-label'))
+      .toBe('Panel actions: Revenue by day');
+    // The menu's widen row carries the same destination label as the button.
+    expect(tileMenuLabels()).toContain('Widen to 6 columns');
   });
 
   describe('widen', () => {
@@ -5850,7 +6135,7 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       });
       const { app } = modeApp({ workspace: ws, mode: 'edit' });
       await render(app);
-      dupBtns(app)[0].click();
+      runTileMenu(app, 'Duplicate panel');
       await flush();
 
       const dashboard = app.currentWorkspace!.dashboards[0];
@@ -5871,7 +6156,7 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
       await render(app);
       expect(qsa(app.root, '.dash-tile')).toHaveLength(1);
-      dupBtns(app)[0].click();
+      runTileMenu(app, 'Duplicate panel');
       await flush();
       await flush();
       // The optimistic command queue could not have done this: the live session has
@@ -5889,33 +6174,37 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
           dashboards: [{ ...latest.dashboards[0], tiles: [], revision: latest.dashboards[0].revision + 1 }],
         },
       } : null));
-      dupBtns(app)[0].click();
+      runTileMenu(app, 'Duplicate panel');
       await flush();
       expect(qs(document, '.share-toast')?.textContent)
         .toBe('That panel is no longer part of this dashboard.');
     });
 
-    it('never starts a tile drag, and its own click still lands', async () => {
+    it('never starts a tile drag from the ⋯, and its own click still lands', async () => {
       const { app, commit } = twoTileGrid();
       await render(app);
       const cards = qsa<HTMLElement>(app.root, '.dash-tile');
       stubTileRects(cards);
-      const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-dup');
+      const button = qs<HTMLButtonElement>(cards[0], '.dash-tile-menu');
       const down = pressAndDragFrom(button);
       expect(down.defaultPrevented).toBe(false);
       expect(cards[0].classList.contains('dash-floating')).toBe(false);
       expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
       // A reorder would have committed a `move-tile`; nothing did.
       expect(commit).not.toHaveBeenCalled();
+      // …and the press did not eat the click: the menu opens, and duplicating from
+      // it still reaches the workspace.
       button.click();
+      expect(tileMenuLabels()).toContain('Duplicate panel');
+      tileMenuRow('Duplicate panel').click();
       await flush();
       expect(app.currentWorkspace!.dashboards[0].tiles).toHaveLength(3);
     });
 
     // A flow KPI tile's `.dash-tile` card is never inserted into the DOM at all, so
     // its head is unreachable — without this the one panel type that lives in a band
-    // could not be duplicated under any flow preset.
-    it('reaches a flow KPI band member through its card, exactly once per publish', async () => {
+    // could be neither duplicated nor removed under any flow preset.
+    it('reaches a flow KPI band member through its card, with a STABLE trigger per publish', async () => {
       const ws = wsWith({
         queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
         tiles: [{ id: 't1', queryId: 'k1' }],
@@ -5925,12 +6214,33 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       await render(app);
       const member = qs<HTMLElement>(app.root, '.dash-kpi-member');
       const card = qs<HTMLElement>(member, '.kpi-card, .dash-kpi-state-card');
-      expect(qsa(card, ':scope > .dash-tile-dup')).toHaveLength(1);
-      // Widen is deliberately absent: a band ignores span entirely.
+      expect(qsa(card, ':scope > .dash-tile-menu')).toHaveLength(1);
+      // No inline widen: a band ignores span entirely. The menu still lists it, and
+      // says so.
       expect(qsa(member, '.dash-tile-widen')).toHaveLength(0);
-      // Re-attached on republish, not duplicated — `renderKpiInto` replaces the card.
-      await render(app);
-      expect(qsa(app.root, '.dash-kpi-member .dash-tile-dup')).toHaveLength(1);
+      const before = qs<HTMLButtonElement>(card, ':scope > .dash-tile-menu');
+      openTileMenu(app);
+      expect(qs(tileMenuRow('Widen'), '.fm-reason').textContent)
+        .toBe('A KPI band is one full-width stream, so this panel has no width to change.');
+      // …but remove IS available here, which it never was before: a band member had
+      // no trash at all under any flow preset.
+      expect(tileMenuRow('Remove tile').getAttribute('aria-disabled')).toBeNull();
+      qs<HTMLButtonElement>(document.body, '.fm-overlay').click();
+
+      // A REPUBLISH — a refresh wave, the frequent case — replaces the card the
+      // trigger lives inside. The trigger must be MOVED into the new card, not
+      // rebuilt with it: `openMenu` keys its one-menu-per-trigger registry on the
+      // element and holds `aria-expanded` there, so a fresh node would strand an
+      // open menu over a dead one, with focus-restore aimed at it.
+      app.surfaceCommands!.refresh();
+      await flush();
+      const after = qsa<HTMLButtonElement>(app.root, '.dash-kpi-member .dash-tile-menu');
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(before);
+      // Moved INTO the repainted card, not left behind in the discarded one.
+      const repainted = qs<HTMLElement>(app.root, '.dash-kpi-member .kpi-card, .dash-kpi-member .dash-kpi-state-card');
+      expect(after[0].parentElement).toBe(repainted);
+      expect(repainted).not.toBe(card);
     });
   });
 });
