@@ -28,6 +28,7 @@ jobs:
       build: ${{ steps.filter.outputs.build }}
       bundle: ${{ steps.filter.outputs.bundle }}
       docker: ${{ steps.filter.outputs.docker }}
+      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -66,6 +67,20 @@ jobs:
               - 'build/**'
               - 'deploy/**'
               - 'install.sh'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            # #564: the browser suite is the ONLY gate that can see CSS layout,
+            # container queries, real focus/hover, and IndexedDB — happy-dom sees
+            # none of it. Anything that can move rendered geometry or the
+            # harnesses themselves belongs here. `src/styles.css` is inside
+            # `src/**` and is the single biggest reason this filter exists.
+            e2e:
+              - 'src/**'
+              - 'schemas/**'
+              - 'tests/e2e/**'
+              - 'playwright.config.js'
+              - 'build/**'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
@@ -313,12 +328,29 @@ jobs:
   # cover each commit, while release tags validate the shipped image/artifact.
   # The harness imports /src directly over a python http.server (started by the
   # Playwright config's webServer), so no build step is needed.
+  # #564: until now this ran ONLY for tags, schedule and manual dispatch, so it
+  # reported `skipped` on every pull request and every push to `main` while the
+  # overall run still went green. A PR check that never runs is not a check: two
+  # `tile-open-workbench` specs had been failing on all three engines on `main`
+  # (#565) and nothing surfaced it until the workflow was dispatched by hand.
+  #
+  # Pull requests now get a **Chromium-only** run, path-gated on anything that
+  # can move rendered geometry — cheap enough to sit on every relevant PR, and
+  # both #565 failures reproduce on Chromium, so one engine would have caught
+  # them. Tags, nightly and manual dispatch keep the full three-engine matrix,
+  # because engine-specific breakage is real here (WebKit focus/IndexedDB
+  # behaviour especially) and that is what a release must clear.
   e2e:
+    needs: changes
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
       github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true')
     runs-on: ubuntu-latest
+    env:
+      # One engine on PRs, all three everywhere else.
+      PR_ONLY_CHROMIUM: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -327,9 +359,19 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
-      - name: E2E (Playwright — Chromium + Firefox + WebKit)
-        run: npm run test:e2e
+        run: |
+          if [ "$PR_ONLY_CHROMIUM" = "true" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install --with-deps chromium firefox webkit
+          fi
+      - name: E2E (Playwright)
+        run: |
+          if [ "$PR_ONLY_CHROMIUM" = "true" ]; then
+            npm run test:e2e -- --project=chromium
+          else
+            npm run test:e2e
+          fi
       - uses: actions/upload-artifact@v7
         if: ${{ failure() }}
         with:
