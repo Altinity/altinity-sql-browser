@@ -9,6 +9,8 @@
 
 import { build, transform } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { brotliCompress, constants, gzip, zstdCompress } from 'node:zlib';
+import { promisify } from 'node:util';
 import { buildFontFaces } from './fonts.mjs';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -17,6 +19,9 @@ import { dirname, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
+const compressBrotli = promisify(brotliCompress);
+const compressGzip = promisify(gzip);
+const compressZstd = promisify(zstdCompress);
 
 // The build stamp shown in the UI (user menu) and grep-able in dist/sql.html, so
 // a bug report can be tied to an exact build: `v<version> (<short-commit>)`, or
@@ -103,10 +108,29 @@ export async function buildArtifact({ metafile = false } = {}) {
   return { html, script, styles, thirdParty, fonts, metafile: result.metafile };
 }
 
-async function main() {
+// The ClickHouse and release-bundle delivery paths deliberately continue to
+// ship only sql.html. The container image additionally gets these immutable
+// sidecars, so Caddy can negotiate Content-Encoding without doing CPU work for
+// each request.
+export async function writeArtifact({ outDir = resolve(root, 'dist') } = {}) {
   const { html, fonts } = await buildArtifact();
-  await mkdir(resolve(root, 'dist'), { recursive: true });
-  await writeFile(resolve(root, 'dist/sql.html'), html);
+  const source = Buffer.from(html);
+  await mkdir(outDir, { recursive: true });
+  await Promise.all([
+    writeFile(resolve(outDir, 'sql.html'), source),
+    writeFile(resolve(outDir, 'sql.html.br'), await compressBrotli(source, {
+      params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
+    })),
+    writeFile(resolve(outDir, 'sql.html.zst'), await compressZstd(source, {
+      params: { [constants.ZSTD_c_compressionLevel]: 19 },
+    })),
+    writeFile(resolve(outDir, 'sql.html.gz'), await compressGzip(source, { level: 9 })),
+  ]);
+  return { html, fonts };
+}
+
+async function main() {
+  const { html, fonts } = await writeArtifact();
   console.log('built dist/sql.html (' + html.length + ' bytes, '
     + 'incl. ' + fonts.rawBytes + ' bytes of inlined woff2)');
 }

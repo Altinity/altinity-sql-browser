@@ -1,6 +1,6 @@
 apiVersion: v2
 name: altinity-sql-browser
-description: Helm chart for the Altinity SQL Browser (static nginx-served SPA)
+description: Helm chart for the Altinity SQL Browser (static Caddy-served SPA)
 type: application
 # version/appVersion are overwritten from the git tag at publish time by
 # .github/workflows/release.yml.

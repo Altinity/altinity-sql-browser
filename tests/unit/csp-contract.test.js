@@ -31,21 +31,21 @@ import { buildArtifact } from '../../build/build.mjs';
 const root = resolve(process.cwd());
 
 /** Files that ship a Content-Security-Policy to a browser. Both must agree: the
- *  ClickHouse `<http_handlers>` rule and the nginx container both serve the SPA,
+ *  ClickHouse `<http_handlers>` rule and the Caddy container both serve the SPA,
  *  and a scheme allowed by one but not the other is a deployment-shaped bug that
  *  only shows up for whichever half a given user installed. */
 const CSP_SOURCES = [
   'deploy/http_handlers.xml',
-  'deploy/nginx/default.conf.template',
+  'deploy/caddy/Caddyfile',
 ];
 
-/** Pull the policy text out of an XML element or an nginx `add_header` line. */
+/** Pull the policy text out of an XML element or a Caddy `header` line. */
 const readCsp = (file) => {
   const text = readFileSync(resolve(root, file), 'utf8');
   const xml = /<Content-Security-Policy>([\s\S]*?)<\/Content-Security-Policy>/.exec(text);
   if (xml) return xml[1].trim();
-  const nginx = /add_header\s+Content-Security-Policy\s+"([^"]+)"/.exec(text);
-  if (nginx) return nginx[1].trim();
+  const caddy = /Content-Security-Policy\s+"([^"]+)"/.exec(text);
+  if (caddy) return caddy[1].trim();
   throw new Error(`no Content-Security-Policy found in ${file}`);
 };
 
@@ -120,7 +120,7 @@ describe('CSP permits every scheme the artifact references', () => {
   }
 
   it('keeps every shipped CSP in agreement on its directives', async () => {
-    // connect-src legitimately differs (the nginx template interpolates
+    // connect-src legitimately differs (the Caddyfile interpolates
     // ${CONNECT_SRC}); everything else must match, or a scheme fix applied to one
     // deployment silently leaves the other broken.
     const policies = CSP_SOURCES.map((f) => parseCsp(readCsp(f)));

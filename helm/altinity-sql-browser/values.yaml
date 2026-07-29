@@ -21,7 +21,7 @@ podAnnotations: {}
 
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 101          # nginx-unprivileged
+  runAsUser: 101          # Caddy runtime
   seccompProfile:
     type: RuntimeDefault
 
@@ -30,12 +30,12 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
-# The container listens on 8080 (non-root nginx-unprivileged).
+# The container listens on 8080 (non-root Caddy).
 containerPort: 8080
 
 # CSP connect-src origins the browser must reach: the IdP endpoints plus every
 # ClickHouse cluster origin referenced in `config` below. Same-origin ('self')
-# is added by the image's nginx template. Fills the CONNECT_SRC env var.
+# is added by the image's Caddyfile. Fills the CONNECT_SRC env var.
 connectSrc: "https://accounts.google.com https://oauth2.googleapis.com https://antalya.demo.altinity.cloud https://github.demo.altinity.cloud"
 
 # Extra environment variables (list of {name,value}). CONNECT_SRC is injected

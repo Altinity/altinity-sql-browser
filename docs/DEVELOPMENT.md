@@ -42,7 +42,7 @@ port with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
 
 ## Docker
 
-The production image is a static **nginx** server for the single-file SPA — no
+The production image is a static **Caddy** server for the single-file SPA — no
 application backend. It serves `/sql`, including Workbench and Dashboard
 surfaces selected by query parameters, serves a `config.json` you provide at
 `/sql/config.json`, and answers `/healthz` for probes. Queries are **not**
@@ -60,7 +60,9 @@ docker run --rm -p 8900:8080 \
 Then open `http://localhost:8900/sql`. Tags: `latest` and `X.Y.Z` (releases),
 `edge` (main), `sha-<commit>`.
 
-The container listens on **8080** (non-root nginx). Provide your OAuth/host
+The container listens on **8080** (non-root Caddy). It ships prebuilt Brotli,
+Zstandard, and gzip variants of the SPA; Caddy selects one from
+`Accept-Encoding` without compressing responses at request time. Provide your OAuth/host
 config as a `config.json` (see [`deploy/config.json.example`](../deploy/config.json.example)
 and [LOGIN-SCREEN.md](LOGIN-SCREEN.md)) mounted at `/config/config.json`.
 **With no mount** the image serves a built-in demo config for the public

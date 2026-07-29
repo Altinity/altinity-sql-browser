@@ -1,0 +1,58 @@
+# Altinity SQL Browser — Caddy server for the container image.
+#
+# Caddy's {$CONNECT_SRC} environment placeholder is evaluated from the running
+# environment; no generated config is written at startup. The SPA sidecars are
+# produced during the image build and selected by standards-compliant
+# Accept-Encoding negotiation, never request-time compression.
+{
+	auto_https off
+	admin off
+	persist_config off
+}
+
+:8080 {
+	# Liveness/readiness: cheap, unauthenticated, no dependencies.
+	@healthz path /healthz
+	handle @healthz {
+		header Cache-Control "no-store"
+		respond "ok" 200
+	}
+
+	# Convenience: bare / → the workbench. This remains a relative redirect, so
+	# the internal 8080 never leaks through a proxy or published port.
+	@root path /
+	redir @root /sql 302
+
+	# The deployment's OAuth/host config. Baked default at /config/config.json;
+	# mount your own over it. The SPA fetches /sql/config.json when mounted at /sql.
+	@config path /sql/config.json
+	handle @config {
+		root * /config
+		rewrite * /config.json
+		header {
+			Cache-Control "no-store"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+		}
+		file_server
+	}
+
+	# Workbench and Dashboard are query-selected surfaces of /sql. `file_server`
+	# prefers Brotli, zstd, then gzip sidecars and falls back to raw HTML.
+	@sql path /sql /sql/
+	handle @sql {
+		root * /app
+		rewrite * /sql.html
+		header {
+			Cache-Control "no-store"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			Content-Security-Policy "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'self' data:; frame-src 'self'; connect-src 'self' {$CONNECT_SRC}; base-uri 'none'; frame-ancestors 'none'"
+		}
+		file_server {
+			precompressed br zstd gzip
+		}
+	}
+
+	respond "not found" 404
+}

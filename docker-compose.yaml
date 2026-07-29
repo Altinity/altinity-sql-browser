@@ -3,7 +3,7 @@ services:
     image: altinity-sql-browser:local
     build:
       context: .
-    # Container listens on 8080 (non-root nginx); publish it on $PORT locally.
+    # Container listens on 8080 (non-root Caddy); publish it on $PORT locally.
     ports:
       - "${PORT:-8900}:8080"
     # Serve your own OAuth/host config. The baked default is the public-demo
