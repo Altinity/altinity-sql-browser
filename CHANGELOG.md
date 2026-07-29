@@ -35,6 +35,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and this build regenerates the fallback deterministically on the next read).
   Gating editing on fallback use is tracked in #550.
 
+### Changed
+- **Sidebar tab headers go text-only once the sidebar is dragged to 220px or
+  narrower** (#552) — both the upper Databases/Dashboards role switcher and
+  the lower Library/History switcher hide their icons and `· N` counts at
+  that width, keeping the four labels readable, aligned and clickable with no
+  clipping or overlap even at the sidebar's 180px drag minimum. A pure CSS
+  container-query gate (`@container sidebar (max-width: 220px)`, named/scoped
+  on `.sidebar`'s new `container-type: inline-size`) restores the full
+  presentation the instant the sidebar widens past the threshold, with no JS
+  state to reconcile.
+
 ## [0.7.2] - 2026-07-29
 
 ### Fixed

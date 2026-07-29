@@ -866,6 +866,13 @@ h1, h2, h3, h4, h5, h6 {
   display: flex; flex-direction: column;
   background: var(--bg-side);
   min-height: 0; flex-shrink: 0;
+  /* #552: a container-query axis (not a viewport media query — the sidebar's
+     width is a dragged pixel value on `sidebar.style.width`, invisible to
+     `@media`) so the tab headers — and any future sidebar content, e.g. the
+     Dashboard tree rows — can react to the actual dragged width. Named
+     `sidebar`/220px is the shared axis; see `@container sidebar` below for
+     the first consumer. */
+  container-type: inline-size; container-name: sidebar;
 }
 .col-resize, .row-resize {
   position: relative; flex-shrink: 0; z-index: 1;
@@ -999,6 +1006,18 @@ h1, h2, h3, h4, h5, h6 {
 .saved-row:hover .sv-act { display: inline-flex; }
 .sv-act:hover { color: var(--fg); background: var(--bg-hover); }
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }
+/* #552: at a narrow sidebar (bottom quarter of the 180–420px drag range —
+   `src/ui/splitters.ts`'s `clamp(ev.clientX, 180, 420)`), both tab rows
+   (`.upper-role-tabs`'s Databases/Dashboard and this row's Library/History)
+   drop to text-only labels: the icon, and `.side-count`'s "· N" (the count AND
+   its separator dot share one text node, so hiding the element hides both).
+   Widening the sidebar past 220px restores the icon/count with no JS state —
+   see `.sidebar`'s container-type/-name declaration above, alongside
+   `.query-host`/`.dashboard-host`. */
+@container sidebar (max-width: 220px) {
+  .side-tab svg { display: none; }
+  .side-tab .side-count { display: none; }
+}
 .history-row {
   position: relative;
   padding: 8px 10px; cursor: pointer; user-select: none;
