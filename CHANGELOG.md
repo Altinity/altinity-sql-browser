@@ -10,6 +10,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **Dashboard variable option SQL can no longer pass Run with more than 1000
+  rows** (#496). The existing bounded probe still fetches one sentinel row, but
+  Run now rejects that 1001-row response after column-shape validation and
+  before History or detached-result source capture. Zero through 1000 raw rows
+  remain valid, authored `LIMIT` text is not parsed, and transport errors or
+  cancellation keep their original outcome.
 - **In-place authentication recovery no longer compresses the mounted
   workspace** (#512). The preserved editor or Dashboard now stays behind a
   blocking viewport overlay, rather than being pushed below a second,

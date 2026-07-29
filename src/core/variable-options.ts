@@ -25,9 +25,11 @@
 // metadata describes that query alone — which is what a variable's own
 // main-editor tab and the ordinary Run action are for (#457/#465):
 // `compileOptionProbe` embeds the SQL exactly as a batch branch would (so Run
-// cannot pass what the batch would reject) but drops the branch tag, and
+// cannot pass what the batch would reject) but drops the branch tag;
 // `validateOptionColumns` reads that probe's own, unmerged response metadata —
-// the one place the "exactly two String columns" rule is checkable at all.
+// the one place the "exactly two String columns" rule is checkable at all — and
+// `validateOptionRowCount` rejects the +1 sentinel row before Run can record the
+// response as a success.
 //
 // Deliberately NOT here: cascading/dependent option queries. Option SQL may not
 // reference `{name:Type}` parameters at all in this issue, which is what keeps
@@ -374,6 +376,19 @@ export function validateOptionColumns(
       + `this returns ${bad.map((column) => column.type).join(' and ')}.`);
   }
   return null;
+}
+
+/**
+ * Validate the raw row count of a SINGLE variable's successful option-query
+ * probe (#496). The probe is bounded at `VARIABLE_OPTION_CAP + 1`, so the extra
+ * row is a sentinel proving that the authored query exceeded the supported
+ * option count. Call this only after column validation and before any future
+ * filtering or de-duplication.
+ */
+export function validateOptionRowCount(rowCount: number): VariableOptionDiagnostic | null {
+  if (rowCount <= VARIABLE_OPTION_CAP) return null;
+  return diagnostic('variable-option-row-count',
+    `Dashboard variable option SQL may return at most ${VARIABLE_OPTION_CAP} rows.`);
 }
 
 /**

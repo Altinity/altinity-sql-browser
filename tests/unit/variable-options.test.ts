@@ -11,6 +11,7 @@ import {
   VARIABLE_OPTION_BYTE_CAP, VARIABLE_OPTION_CAP,
   compileOptionProbe, compileVariableOptionBatch, isOptionColumnType, normalizeOptionSql,
   optionBatchVariables, optionSqlDiagnostics, readVariableOptionBatch, validateOptionColumns,
+  validateOptionRowCount,
 } from '../../src/core/variable-options.js';
 import type { DashboardVariable } from '../../src/core/dashboard-variables.js';
 
@@ -352,6 +353,21 @@ describe('validateOptionColumns', () => {
   it('accepts zero returned rows — the count check is on columns, not rows', () => {
     expect(validateOptionColumns([{ name: 'v', type: 'String' }, { name: 'l', type: 'String' }]))
       .toBeNull();
+  });
+});
+
+describe('validateOptionRowCount', () => {
+  it('accepts every supported boundary count', () => {
+    expect(validateOptionRowCount(0)).toBeNull();
+    expect(validateOptionRowCount(VARIABLE_OPTION_CAP)).toBeNull();
+  });
+
+  it('rejects the probe sentinel and any defensive overage with a specific diagnostic', () => {
+    for (const count of [VARIABLE_OPTION_CAP + 1, VARIABLE_OPTION_CAP + 50]) {
+      const found = validateOptionRowCount(count)!;
+      expect(found.code).toBe('variable-option-row-count');
+      expect(found.message).toBe('Dashboard variable option SQL may return at most 1000 rows.');
+    }
   });
 });
 
