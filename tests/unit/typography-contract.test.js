@@ -42,6 +42,20 @@ const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '');
 /** Everything after the token block: the rules that must consume tokens. */
 const rules = declarations.slice(declarations.indexOf('*, *::before'));
 
+/** Every class name that has a real SELECTOR somewhere in the stylesheet.
+ *
+ *  Built from `declarations`, never from raw `css`, for exactly the reason the
+ *  comment above gives about px values: this file is heavily commented, and
+ *  those comments cross-reference sibling rules by name (e.g. `.dash-tree-confirm`'s
+ *  prose points at "`.qtab-close-confirm*` and `.dash-tile-confirm*`"). Scanning
+ *  raw CSS counted that prose as styling, so a class whose real rule was deleted
+ *  still looked styled as long as ANY comment mentioned it — the whole
+ *  "no class the UI renders may be left with no CSS rule" gate silently passed.
+ *  Demonstrated on `.qtab-close-confirm`: deleting both of its real rules while
+ *  leaving the comment kept all 338 assertions in this file green. */
+const styledClassNames = (source = declarations) =>
+  new Set([...source.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+
 const tokenValues = (prefix) => {
   const out = {};
   for (const m of rootBlock.matchAll(new RegExp(`(--${prefix}-[\\w-]+):\\s*([^;]+);`, 'g'))) {
@@ -327,7 +341,7 @@ describe('every text-bearing class the UI renders has a rule', () => {
       'src/ui/library-assign-menu.ts',
     ].map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
 
-    const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+    const styled = styledClassNames();
     const unstyled = [...sources.matchAll(/class:\s*'([^']+)'/g)]
       .map((m) => m[1].split(/\s+/).filter(Boolean))
       // A group is fine if ANY class in it is styled — modifier hooks like
@@ -341,9 +355,20 @@ describe('every text-bearing class the UI renders has a rule', () => {
     //   shortcut-section          : <section> wrapper; its children are styled
     //   docs-field*               : wrapper; .docs-field-label/-text are styled
     //   kpi-value-number          : span inside the styled .kpi-value
+    //   dash-row                  : flow@1 row wrapper; grid set INLINE (below)
     // Anything NOT on this list renders in user-agent chrome.
+    //
+    // `dash-row` (#554 review): surfaced the moment this scan stopped counting
+    // comment prose as styling — it had no rule and never has, and was only
+    // ever "covered" by the two `src/styles.css` comments that name it. That is
+    // correct by design, not an oversight to paper over: `.dash-grid`'s comment
+    // spells out that each row "is itself the grid that owns its column count …
+    // set inline by the flow renderer", and that the container must NOT impose
+    // `grid-template-columns` or the rows lay out side by side. A `.dash-row`
+    // rule would either duplicate the inline style or reintroduce that bug, so
+    // this is a genuine inline-presentation hook.
     const ALLOWED = new Set([
-      'surface-label', 'shortcut-section', 'exp-label', 'kpi-value-number',
+      'surface-label', 'shortcut-section', 'exp-label', 'kpi-value-number', 'dash-row',
       'docs-field', 'docs-field docs-syntax', 'docs-field docs-facts', 'docs-field docs-related',
     ]);
     expect([...new Set(unstyled)].filter((g) => !ALLOWED.has(g))).toEqual([]);
@@ -399,7 +424,7 @@ describe('openMenu extension classes have CSS rules', () => {
     return groups;
   }
 
-  const styledClasses = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+  const styledClasses = styledClassNames();
 
   it('every literal menuClass/extraClass value (incl. openConfirmMenu goClass/cancelClass) has a stylesheet rule', () => {
     const groups = literalClassGroups(uiSource);
@@ -423,11 +448,44 @@ describe('openMenu extension classes have CSS rules', () => {
     // real, single-purpose, and currently styled: a safe target to remove.
     const target = 'dash-tile-menu-danger';
     expect(found.has(target)).toBe(true);
-    const sabotagedCss = css.replace(/\.dash-tile-menu-danger\s*\{[^}]*\}\n?/, '');
-    expect(sabotagedCss).not.toEqual(css); // the removal must actually have taken effect
-    const sabotagedClasses = new Set([...sabotagedCss.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
-    const missing = [...found].filter((cls) => !sabotagedClasses.has(cls));
+    const sabotagedCss = declarations.replace(/\.dash-tile-menu-danger\s*\{[^}]*\}\n?/, '');
+    expect(sabotagedCss).not.toEqual(declarations); // the removal must actually have taken effect
+    const missing = [...found].filter((cls) => !styledClassNames(sabotagedCss).has(cls));
     expect(missing).toEqual([target]);
+  });
+
+  // The regression this gate has to survive, and did NOT before (#554 review).
+  // The sabotage above picks a class no comment happens to name, so it passed
+  // while the general contract leaked: every confirm menu's prose
+  // cross-references its siblings by name, so `.dash-tree-confirm`'s comment
+  // mentions "`.qtab-close-confirm*` and `.dash-tile-confirm*`" and vice versa.
+  // Scanning raw CSS let that prose stand in for a rule. Verified against the
+  // real stylesheet: deleting BOTH real `.qtab-close-confirm` rules while
+  // leaving the comment kept all 338 assertions in this file green.
+  it('sabotage check: a comment naming a class does not stand in for its rule', () => {
+    const target = 'qtab-close-confirm';
+    expect(literalClassGroups(uiSource).flat()).toContain(target);
+    // The masking is real in the shipped stylesheet, not hypothetical: the
+    // sibling confirm menu's prose names this class.
+    expect(css).toMatch(new RegExp(`\\.${target}\\*`));
+
+    // Build the bait deterministically rather than regex-surgering the real
+    // file: strip the class's rules from the COMMENT-FREE text (so no prose can
+    // confuse the match), then prepend a comment that names it. This is exactly
+    // the shape `src/styles.css` has today.
+    const withoutRules = declarations.replace(
+      new RegExp(`\\.${target}(?![\\w-])[^{}]*\\{[^}]*\\}\\n?`, 'g'), '',
+    );
+    expect(withoutRules).not.toEqual(declarations);
+    const baited = `/* see \`.${target}*\` for the sibling rule */\n${withoutRules}`;
+
+    // The OLD raw-CSS scan was fooled by precisely that comment — it still
+    // called the class styled. Pinned so the regression cannot come back
+    // unnoticed.
+    expect(new Set([...baited.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1])).has(target))
+      .toBe(true);
+    // The comment-stripped scan this file now uses is not fooled.
+    expect(styledClassNames(baited.replace(/\/\*[\s\S]*?\*\//g, '')).has(target)).toBe(false);
   });
 
   // Existing generic scanner keeps covering these directly, unaffected by the
