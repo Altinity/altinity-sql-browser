@@ -31,7 +31,11 @@ export type PreferenceKey =
   | 'sidePanel' | 'resultRowLimit'
   // #313 — the documentation pane's own persisted resize width, a sibling of
   // cellDrawerPx (never shared with it — see splitters.ts's 'docPane' axis).
-  | 'docPanePx';
+  | 'docPanePx'
+  // #487 — the desktop left navigation's semantic mode and its focused drawer's
+  // width. The WIDE sidebar width stays `sidebarPx` above: `core/left-nav-layout.ts`
+  // reuses that preference rather than introducing a second owner of one width.
+  | 'leftNavMode' | 'leftNavDrawerPx';
 
 /** The one state field this service reads/writes (`toggleTheme` only) — a
  *  plain settable property, not a signal (matches `AppState.theme`). */

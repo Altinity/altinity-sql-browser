@@ -146,6 +146,8 @@ describe('KEYS — persisted localStorage key names (#459)', () => {
       sideSplitPct: 'asb:sideSplitPct',
       cellDrawerPx: 'asb:cellDrawerPx',
       docPanePx: 'asb:docPanePx',
+      leftNavMode: 'asb:leftNavMode',
+      leftNavDrawerPx: 'asb:leftNavDrawerPx',
       sidePanel: 'asb:sidePanel',
       saved: 'asb:saved',
       history: 'asb:history',
@@ -191,6 +193,12 @@ describe('createState', () => {
     expect(s.sideSplitPct).toBe(58);
     expect(s.cellDrawerPx).toBe(560);
     expect(s.docPanePx).toBe(420); // #313 — a sibling default, independent of cellDrawerPx
+    // #487 — a fresh desktop session starts from the documented default: the
+    // established two-pane sidebar, a drawer width ready for its first open, and
+    // NO focused section (the drawer is session state and does not reopen).
+    expect(s.leftNavMode.value).toBe('wide');
+    expect(s.leftNavDrawerPx).toBe(240);
+    expect(s.leftNavSection.value).toBeNull();
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.savedQueryLoadDiagnostics).toEqual([]);
@@ -223,6 +231,8 @@ describe('createState', () => {
       [KEYS.sideSplitPct]: '99', // clamps to 85
       [KEYS.cellDrawerPx]: '100', // clamps up to the 320 floor
       [KEYS.docPanePx]: '50', // clamps up to the 320 floor, independent of cellDrawerPx
+      [KEYS.leftNavMode]: 'rail', // #487 — a valid persisted mode restores
+      [KEYS.leftNavDrawerPx]: '200',
       [KEYS.sidePanel]: 'history',
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
@@ -239,6 +249,11 @@ describe('createState', () => {
     expect(s.sideSplitPct).toBe(85);
     expect(s.cellDrawerPx).toBe(320);
     expect(s.docPanePx).toBe(320); // #313
+    expect(s.leftNavMode.value).toBe('rail'); // #487
+    expect(s.leftNavDrawerPx).toBe(200);
+    // …but the focused drawer still does not reopen: #487 makes `focusedSection`
+    // session UI state, so restoring rail mode restores a BARE rail.
+    expect(s.leftNavSection.value).toBeNull();
     expect(s.sidePanel.value).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);
@@ -252,6 +267,106 @@ describe('createState', () => {
     const s = createState();
     expect(s.tabs.value[0].id).toBe('t1');
     expect(s.theme).toBe('light');
+  });
+});
+
+// #487 phase 1 — the desktop left navigation's persisted preferences. The
+// transitions themselves live in `core/left-nav-layout.ts` (and its own spec);
+// what is asserted here is the STORAGE contract: which keys exist, what a fresh
+// session gets, that a hostile stored value can never reach the DOM, and that
+// none of it leaks into the workspace document.
+describe('createState — left navigation preferences (#487)', () => {
+  it('clamps every invalid or obsolete stored value back to its documented default', () => {
+    const s = createState(reader({
+      // An obsolete third mode from a future/older build is not a third mode.
+      [KEYS.leftNavMode]: 'collapsed',
+      [KEYS.leftNavDrawerPx]: 'not-a-number',
+      [KEYS.sidebarPx]: 'not-a-number',
+    }));
+    expect(s.leftNavMode.value).toBe('wide');
+    expect(s.leftNavDrawerPx).toBe(240);
+    // The regression this case exists for: `clamp(parseInt('not-a-number'), 180,
+    // 420)` is NaN (`Math.max(180, NaN)` is NaN), and a NaN width reaches the DOM
+    // as `width: NaNpx`, which the browser drops — silently collapsing the
+    // sidebar with nothing in the UI to explain it.
+    expect(s.sidebarPx).toBe(248);
+  });
+
+  it('rejects a partially numeric stored width instead of trusting its prefix', () => {
+    // `parseInt` accepted a numeric PREFIX, so a truncated write or a hand-edited
+    // CSS unit decoded to a plausible-looking width while the docs promised the
+    // default: `parseInt('12junk')` is 12 (then clamped to 180) and
+    // `parseInt('200px')` is 200 (accepted outright).
+    const s = createState(reader({
+      [KEYS.sidebarPx]: '12junk',
+      [KEYS.leftNavDrawerPx]: '200px',
+    }));
+    expect(s.sidebarPx).toBe(248);
+    expect(s.leftNavDrawerPx).toBe(240);
+    // A stored infinity is corruption too, not a width pressed against a bound.
+    expect(createState(reader({ [KEYS.sidebarPx]: 'Infinity' })).sidebarPx).toBe(248);
+    // …while a well-formed value still decodes, whitespace and decimals included.
+    expect(createState(reader({ [KEYS.sidebarPx]: ' 330 ' })).sidebarPx).toBe(330);
+  });
+
+  it('clamps an out-of-range drawer width into the drawer own band', () => {
+    // Not the wide sidebar's [180, 420]: a drawer wider than the wide threshold
+    // is unreachable, because a drag that far right converts to the sidebar.
+    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '9999' })).leftNavDrawerPx).toBe(260);
+    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '0' })).leftNavDrawerPx).toBe(140);
+  });
+
+  it('keeps the wide width on the ONE preference key, with no second owner', () => {
+    // #487 suggests a separate `wideWidthPx`; `asb:sidebarPx` already persists
+    // exactly that width over exactly that range, and two owners of one width is
+    // a bug waiting to happen. This pins the decision: the left-nav keys are the
+    // mode and the drawer, and nothing else. Order-independent — reordering two
+    // adjacent declarations in `KEYS` is not a semantic change.
+    const leftNavKeys = Object.keys(KEYS).filter((k) => k.startsWith('leftNav'));
+    expect(new Set(leftNavKeys)).toEqual(new Set(['leftNavMode', 'leftNavDrawerPx']));
+    expect(leftNavKeys).toHaveLength(2);
+    const s = createState(reader({ [KEYS.sidebarPx]: '330' }));
+    expect(s.sidebarPx).toBe(330);
+  });
+
+  it('never writes left-navigation state into the workspace document', async () => {
+    // #487: "none of this state belongs in StoredWorkspaceV3, Dashboard documents
+    // or query specs" (V5 today).
+    //
+    // This drives the REAL commit path — `createSavedQuery` builds its candidate
+    // through `state.ts`'s own `baselineWorkspace`/`candidateFrom` projection — and
+    // inspects the candidate that projection actually produced. Asserting over a
+    // hand-built workspace literal instead would be unfalsifiable: it would only
+    // prove the test didn't add the fields itself.
+    //
+    // Sabotage-checked, and the exercise located where the guarantee really lives:
+    // adding a field to `baselineWorkspace`'s fallback alone does NOT reach a
+    // commit, because `candidateFrom` re-enumerates the six aggregate fields
+    // explicitly and drops anything else. That enumeration is the structural
+    // guarantee, and adding `leftNavMode` to it fails this test.
+    const s = savedTestState({ [KEYS.leftNavMode]: 'rail', [KEYS.leftNavDrawerPx]: '200' });
+    s.leftNavSection.value = 'dashboards';
+    s.tabs.value[0].sqlDraft = 'SELECT 1';
+    const mutate = fakeMutateWorkspace(s);
+    expect(okEntry(await createSavedQuery(s, s.tabs.value[0], 'Q', '', mutate))).toBeTruthy();
+
+    const candidate = mutate.commit.mock.calls[0]![0] as StoredWorkspaceV5;
+    // The aggregate's own key set, exactly — no left-navigation field smuggled in.
+    expect(Object.keys(candidate).sort())
+      .toEqual(['dashboards', 'id', 'key', 'name', 'queries', 'storageVersion']);
+    for (const marker of ['leftNav', 'focusedSection', 'drawerWidth', 'sidebarPx']) {
+      expect(JSON.stringify(candidate)).not.toContain(marker);
+    }
+    // Second layer: the repository validated this candidate against the closed
+    // stored-workspace schema (`additionalProperties: false`), so an extra field
+    // would have been REJECTED rather than persisted. The commit succeeded, which
+    // is that check passing on the real record.
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
+    // And the preferences are localStorage keys, never workspace fields.
+    for (const key of [KEYS.leftNavMode, KEYS.leftNavDrawerPx]) {
+      expect(key.startsWith('asb:')).toBe(true);
+      expect(Object.keys(candidate)).not.toContain(key);
+    }
   });
 });
 

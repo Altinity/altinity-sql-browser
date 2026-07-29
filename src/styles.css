@@ -1007,7 +1007,8 @@ h1, h2, h3, h4, h5, h6 {
 .sv-act:hover { color: var(--fg); background: var(--bg-hover); }
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }
 /* #552: at a narrow sidebar (bottom quarter of the 180–420px drag range —
-   `src/ui/splitters.ts`'s `clamp(ev.clientX, 180, 420)`), both tab rows
+   `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` in `src/core/left-nav-layout.ts`,
+   applied to the 'col' drag axis by `splitters.ts`'s `clampWideWidthPx`), both tab rows
    (`.upper-role-tabs`'s Databases/Dashboard and this row's Library/History)
    drop to text-only labels: the icon, and `.side-count`'s "· N" (the count AND
    its separator dot share one text node, so hiding the element hides both).

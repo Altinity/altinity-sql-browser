@@ -3,6 +3,7 @@
 // (window + persistence) for testing.
 
 import { clamp } from '../core/format.js';
+import { clampWideWidthPx } from '../core/left-nav-layout.js';
 
 // 'docPane' (#313): the persistent documentation pane's own bounded-resize
 // axis — identical geometry to 'drawer' (right-edge anchored, same
@@ -45,9 +46,18 @@ export function clampDrawerWidth(px: number, viewportWidth: number): number {
  * container being split (unused for 'col'; `{ width }` — the viewport width —
  * for 'drawer'). 'drawer' is anchored to the *right* edge, so its width grows
  * as the cursor moves left: `viewportWidth - clientX`.
+ *
+ * 'col' defers to `clampWideWidthPx` (#487) rather than repeating the sidebar's
+ * [180, 420] bounds. This axis WRITES `sidebarPx`, the same preference
+ * `createState` reads back through that function, so a local copy of the bounds
+ * here would be a second owner of one width — exactly what
+ * `core/left-nav-layout.ts` exists to prevent. Behaviour is unchanged for a real
+ * drag (`clientX` is always finite); phase 3 replaces this axis outright with the
+ * left-navigation separator, which routes the same proposal through the mode
+ * reducer instead of a bare clamp.
  */
 export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): number {
-  if (axis === 'col') return clamp(ev.clientX, 180, 420);
+  if (axis === 'col') return clampWideWidthPx(ev.clientX);
   // `!`: every real caller (startDrag's onMove, via ctx.rectFor(axis)) supplies
   // `width` for 'drawer'/'docPane' and `top`/`bottom` for 'sideRow'/'row' —
   // the axis dispatch above is exactly the contract that guarantees the field

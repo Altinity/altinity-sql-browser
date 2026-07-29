@@ -30,6 +30,10 @@ describe('save()', () => {
       ['sideSplitPct', 58, '58'],
       ['cellDrawerPx', 560, '560'],
       ['docPanePx', 420, '420'],
+      // #487 — the left navigation's two browser preferences. The WIDE width is
+      // `sidebarPx` above, deliberately not a third key.
+      ['leftNavMode', 'rail', 'rail'],
+      ['leftNavDrawerPx', 200, '200'],
       ['sidePanel', 'history', 'history'],
       ['resultRowLimit', 1000, '1000'],
     ];

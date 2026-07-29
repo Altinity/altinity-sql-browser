@@ -35,6 +35,11 @@ import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
 import { materializeQueryTimeRange } from './core/query-time-range.js';
 import type { QueryTimeRangeInferenceDiagnostic } from './core/query-time-range.js';
 import { deriveWorkspaceKey } from './core/workspace-key.js';
+import {
+  LEFT_DRAWER_DEFAULT_PX, LEFT_WIDE_DEFAULT_PX,
+  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, decodeStoredPx,
+} from './core/left-nav-layout.js';
+import type { LeftNavigationMode, LeftNavigationSection } from './core/left-nav-layout.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -431,6 +436,31 @@ export interface AppState {
   workspaceKey: string;
   libraryFilter: string;
   shortcutsOpen: Signal<boolean>;
+  /**
+   * #487 — the desktop left navigation's explicit semantic mode: the established
+   * two-pane sidebar, or the compact icon rail. A signal because phase 3 repaints
+   * the shell from it; persisted at `asb:leftNavMode` because #487 makes it a
+   * browser preference.
+   *
+   * The WIDE width this mode pairs with is `sidebarPx` above — #487 suggests a
+   * separate `wideWidthPx`, but `asb:sidebarPx` already persists exactly that
+   * width over exactly the range the issue specifies, and one width with two
+   * owners is a bug waiting to happen. `core/left-nav-layout.ts` names it
+   * `wideWidthPx`; the mapping happens where the two meet.
+   */
+  leftNavMode: Signal<LeftNavigationMode>;
+  /** #487 — the focused drawer's persisted width, inside the drawer's own
+   *  [fold, wide] band (never the wide sidebar's [180, 420] — see
+   *  `clampDrawerWidthPx`). A plain number like the other splitter widths: the
+   *  drag writes it, then persists it on mouseup. */
+  leftNavDrawerPx: number;
+  /**
+   * #487 — which section the focused drawer is showing, or `null` for a bare
+   * rail. Deliberately NOT persisted: the issue specifies "`focusedSection` is
+   * session UI state and need not reopen automatically after reload". Session
+   * only; never part of `StoredWorkspaceV5`.
+   */
+  leftNavSection: Signal<LeftNavigationSection | null>;
   isMobile: Signal<boolean>;
   mobileView: Signal<'tables' | 'editor' | 'results'>;
   mobileTab: Signal<'schema' | 'library'>;
@@ -480,6 +510,12 @@ export const KEYS = {
   sideSplitPct: 'asb:sideSplitPct',
   cellDrawerPx: 'asb:cellDrawerPx',
   docPanePx: 'asb:docPanePx',
+  /** #487 — the desktop left navigation's semantic mode ('wide' | 'rail') and
+   *  the focused drawer's width. The WIDE sidebar's width is `sidebarPx` above,
+   *  not a third key: see `AppState.leftNavMode`'s comment for why that key is
+   *  reused rather than duplicated. */
+  leftNavMode: 'asb:leftNavMode',
+  leftNavDrawerPx: 'asb:leftNavDrawerPx',
   sidePanel: 'asb:sidePanel',
   saved: 'asb:saved',
   history: 'asb:history',
@@ -629,7 +665,14 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // One persisted preference, default 500; a non-option stored value snaps
     // back to the default so the selector always reflects a real choice.
     resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),
-    sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
+    // #487 — the WIDE left-navigation width, and the one width the fold/restore
+    // machine remembers. Same [180, 420] range and 248 default this key has always
+    // had, but decoded safely: the bare `clamp(parseInt(...))` it replaces was not
+    // NaN-safe (`Math.max(180, NaN)` is NaN, so a corrupt value reached the DOM as
+    // `width: NaNpx`, which the browser drops), and `parseInt` also accepted a
+    // numeric PREFIX, so `'12junk'` silently decoded to 12. `decodeStoredPx`
+    // requires the whole string to be a finite number before the clamp runs.
+    sidebarPx: clampWideWidthPx(decodeStoredPx(read.loadStr(KEYS.sidebarPx, ''), LEFT_WIDE_DEFAULT_PX)),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
     // Cell-detail / rows-viewer drawer width (issue #101). The 92vw upper
@@ -762,6 +805,17 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // a signal for consistency with the rest of the state (no reactive reader
     // today — shortcuts.js drives its own mount/unmount).
     shortcutsOpen: signal(false),
+    // #487 — the desktop left navigation. `leftNavMode` and `leftNavDrawerPx`
+    // are browser preferences; both decoders fall back to the documented default
+    // for a missing, invalid or obsolete stored value rather than propagating it
+    // (an unknown mode string is not a third mode, and a NaN width is not a
+    // width). `leftNavSection` is session-only by design — #487 specifies the
+    // focused drawer "need not reopen automatically after reload", so a fresh
+    // desktop session shows a bare rail even when rail mode was persisted.
+    leftNavMode: signal(decodeLeftNavigationMode(read.loadStr(KEYS.leftNavMode, 'wide'))),
+    leftNavDrawerPx: clampDrawerWidthPx(
+      decodeStoredPx(read.loadStr(KEYS.leftNavDrawerPx, ''), LEFT_DRAWER_DEFAULT_PX)),
+    leftNavSection: signal<LeftNavigationSection | null>(null),
     // Best-effort mobile mode (#126). `isMobile` mirrors the viewport width
     // against MOBILE_BREAKPOINT_PX — set once and on `change` by app.js's
     // injected matchMedia listener. Read by the schema tree (to drop
