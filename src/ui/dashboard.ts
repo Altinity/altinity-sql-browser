@@ -819,10 +819,14 @@ export async function renderDashboard(
   const draftActive: Record<string, boolean> = {};
   const variableBarApp: VariableBarApp = {
     document: doc,
-    state: { varValues: draftValues, filterActive: draftActive, varRecent: state.varRecent },
+    // #478: aliases the local draft maps above — an in-memory-only activation
+    // map, never persisted, so `saveActive` is a no-op adapter (there is
+    // nothing to save; unlike detached Data, this Dashboard draft has no
+    // Workbench-persisted counterpart to route to).
+    state: { varValues: draftValues, activeByName: draftActive, varRecent: state.varRecent },
     params: {
       saveVarValues: () => {},
-      saveFilterActive: () => {},
+      saveActive: () => {},
       clearVarRecent: (name: string) => app.params.clearVarRecent(name),
     },
     wallNow: () => app.wallNow(),
