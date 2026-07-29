@@ -72,13 +72,25 @@ describe('dropCuratedFilters', () => {
     const dashboard = dashV1('d1', {
       title: 'Analytics', revision: 4, description: 'kept',
       tiles: [{ id: 't1', queryId: 'p1' }],
-      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      layout: {
+        type: 'grafana-grid', version: 2, preset: 'report', items: {},
+        fallback: {
+          type: 'flow', version: 1, preset: 'report',
+          items: { t1: { span: 1, height: 'large' } },
+        },
+      },
       filters: [{ id: 'flt', parameter: 'country' }],
     });
     const result = dropCuratedFilters(dashboard);
     expect(result).toEqual({
       documentVersion: 2, id: 'd1', title: 'Analytics', revision: 4, description: 'kept',
-      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
+      layout: {
+        type: 'grafana-grid', version: 2, preset: 'report', items: {},
+        fallback: {
+          type: 'flow', version: 1, preset: 'report',
+          items: { t1: { span: 1, height: 'large' } },
+        },
+      },
       tiles: [{ id: 't1', queryId: 'p1' }],
     });
     expect(result).not.toHaveProperty('filters');
@@ -95,7 +107,11 @@ describe('dropCuratedFilters', () => {
     const dashboard = dashV1('d1', { filters: [] });
     expect(dropCuratedFilters(dashboard)).toEqual({
       documentVersion: 2, id: 'd1', title: 'D1', revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'report', items: {} }, tiles: [],
+      layout: {
+        type: 'grafana-grid', version: 2, preset: 'report', items: {},
+        fallback: { type: 'flow', version: 1, preset: 'report', items: {} },
+      },
+      tiles: [],
     });
   });
 });
@@ -191,11 +207,19 @@ describe('migrateStoredWorkspaceV3ToV5', () => {
     );
     const before = JSON.parse(JSON.stringify(source));
     const migrated = migrateStoredWorkspaceV3ToV5(source);
-    // Dashboard order and identity, member ids, layout and revisions: untouched.
+    // Dashboard order and identity, member ids and revisions survive; layouts
+    // normalize to the canonical authored-style engine.
     expect(migrated.dashboards.map((d) => d.id)).toEqual(['second', 'first']);
     expect(migrated.dashboards.map((d) => d.revision)).toEqual([9, 4]);
     expect(migrated.dashboards[0].tiles[0].id).toBe('t-b');
-    expect(migrated.dashboards[0].layout).toEqual(before.dashboards[0].layout);
+    expect(migrated.dashboards[0].layout).toEqual({
+      type: 'grafana-grid', version: 2, preset: 'grid',
+      items: { 't-b': { grid: { span: 4, height: 2 } } },
+      fallback: {
+        type: 'flow', version: 1, preset: 'columns-2',
+        items: { 't-b': { span: 1, height: 'medium' } },
+      },
+    });
     // #447: filters are gone and every Dashboard is document v2.
     expect(migrated.dashboards[1]).not.toHaveProperty('filters');
     expect(migrated.dashboards.map((d) => d.documentVersion)).toEqual([2, 2]);

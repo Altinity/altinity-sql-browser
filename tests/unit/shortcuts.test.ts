@@ -144,7 +144,7 @@ describe('handleKeydown', () => {
     expect(refresh).toHaveBeenCalledOnce();
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('dashboardGridTiles');
-    expect(setDashboardStyle).toHaveBeenLastCalledWith('grafana-grid');
+    expect(setDashboardStyle).toHaveBeenLastCalledWith('grid');
     expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');
     expect(handleKeydown(ev({ key: '2' }), app)).toBe('dashboardColumns2');
     expect(setDashboardStyle).toHaveBeenLastCalledWith('columns-2');
@@ -175,7 +175,7 @@ describe('handleKeydown', () => {
       surfaceCommands: { surface: 'dashboard', generation: 0, refresh: vi.fn(), setDashboardStyle, focusMember: stubFocusMember },
     });
     for (const [key, style, result] of [
-      ['g', 'grafana-grid', 'dashboardGridTiles'], ['f', 'full', 'dashboardFullView'],
+      ['g', 'grid', 'dashboardGridTiles'], ['f', 'full', 'dashboardFullView'],
       ['r', 'report', 'dashboardReport'], ['2', 'columns-2', 'dashboardColumns2'], ['3', 'columns-3', 'dashboardColumns3'],
     ] as const) {
       expect(handleKeydown(ev({ key: 'g' }), app)).toBe('chord');

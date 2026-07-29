@@ -10,6 +10,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Fixed
+- **Dashboard styles now persist independent dimensions and temporary column
+  previews no longer mutate authored layouts** (behavioral correction to
+  #535/#538). The new `grafana-grid@2` contract stores Grid `{span,height}`,
+  Full `{height}`, and Report `{height}` independently. Grid defaults to 6×2,
+  Full to fixed 12×2, and Report to a centered 9×5; Full and Report resize only
+  vertically and expose no Widen action. Grid Widen now changes width only,
+  preserving height through `span × 2` up to 12 and then wrapping to 1.
+  **2 columns** and **3 columns** are fresh session previews: every tile starts
+  at span 1 and exactly 300px high, saved dimensions are ignored, Widen changes
+  session state only, switching/rebuilding/reloading resets them, and mobile
+  collapses them to one column. Existing `grafana-grid@1` and `flow@1`
+  documents normalize deterministically at codec boundaries without changing
+  the Dashboard or workspace document version.
 - **Deleting a panel from its tile header no longer leaves its query behind in
   Library** (#537). The tile-header trash dispatched a document-only tile
   removal, which leaves `queries` untouched — and since every panel tile is the
@@ -94,9 +107,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   source, carrying its presentation, any local title/description and its size;
   because every panel tile solely owns a saved-query copy (#427), the copy gets
   its own dedicated clone rather than sharing the source's document. *Widen*
-  (edit mode) steps a tile through the widths the active style has: one more
-  column under the 2- and 3-column presets, doubled span and height in Grid
-  Tiles, each clamped, wrapping back to a single column at the maximum; its
+  (edit mode) steps a tile through the widths the active style has. The #538
+  behavioral correction above makes 2/3 columns session-only previews and
+  makes Grid widening horizontal-only: doubled span up to 12, then 1, with
+  height preserved. Its
   label names the width the next press produces, and it hides itself under
   Report, under Full view and below the mobile breakpoint, where there is no
   width to step. *Expand* — the existing Open in Workbench action, now on the

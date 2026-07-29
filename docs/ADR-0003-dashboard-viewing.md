@@ -1027,6 +1027,41 @@ one of #494's is partly reversed.
   element while holding `aria-expanded` there. A rebuilt trigger would strand an
   open menu over a dead node, with focus-restore aimed at it.
 
+## Addendum (follow-up to #538, 2026-07-29): authored styles own independent sizing
+
+The #321/#535 model mixed persisted flow presets, a transient Full render mode,
+and Grid dimensions that Widen changed in two axes. That made the Style menu
+look like five equivalent choices when only some choices had durable state.
+This follow-up replaces that model with one versioned layout-engine contract.
+
+- **`grafana-grid@2` is the canonical authored layout.** Its persisted preset is
+  `grid`, `full`, or `report`. Each tile carries independent optional maps:
+  Grid `{span,height}` (default 6×2), Full `{height}` (fixed width 12, default
+  height 2), and Report `{height}` (centered width 9/12, default height 5).
+  Switching styles never copies dimensions between maps. Full and Report resize
+  vertically only.
+- **2 columns and 3 columns are previews, not authored presets.** Selecting
+  either creates a fresh session-local span-1 map and renders every tile at
+  exactly 300px. It reads no saved tile dimension and writes no command,
+  revision, fallback, or workspace. Widen steps `1→2(→3)→1` only in that map.
+  Selecting any other style, rebuilding/navigating, reloading, or switching
+  between the previews discards it. The mobile breakpoint normalizes it to one
+  column and disables Widen.
+- **Widen is horizontal-only.** Grid doubles span up to 12 and then wraps to 1,
+  always resending the unchanged height because placement updates replace the
+  complete Grid object. Full and Report have fixed widths and expose no Widen
+  action. The menu row follows the same availability rule; it no longer lists a
+  disabled Widen for fixed-width authored styles.
+- **Compatibility lives at codec boundaries.** `grafana-grid@1` becomes v2 Grid
+  with its placements preserved. Flow Report becomes v2 Report and converts
+  explicit heights; missing heights use Report defaults. Persisted flow
+  2/3-column layouts become v2 Grid through the established flow-to-grid
+  conversion. Current v2 reads refresh the deterministic style-aware `flow@1`
+  fallback. Dashboard and workspace document versions do not change.
+- **All authored styles use the grid renderer.** This retires flow KPI bands for
+  canonical current workspaces: KPI panels are ordinary grid tiles under Grid,
+  Full, and Report, sharing the same reorder, action, and resize lifecycle.
+
 ## Alternatives considered
 
 - **Durable detached snapshots:** rejected because they silently diverge from

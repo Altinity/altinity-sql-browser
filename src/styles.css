@@ -3830,7 +3830,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    handle is VERTICAL-ONLY — a `ns-resize` cursor rather than the two-
    dimensional `nwse-resize` above, hinting that horizontal movement has no
    effect. */
-.dash-gg-grid.is-full .dash-gg-resize { cursor: ns-resize; }
+.dash-gg-grid.is-full .dash-gg-resize,
+.dash-gg-grid.is-report .dash-gg-resize { cursor: ns-resize; }
 /* A grid tile's KPI content (#291: KPI tiles render inline, no band) fills the
    tile body like a chart/table does. */
 .dash-gg-tile .dash-tile-body { flex-wrap: wrap; gap: 8px; }

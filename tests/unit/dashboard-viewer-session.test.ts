@@ -90,7 +90,6 @@ describe('createDashboardViewerSession', () => {
     expect(state.tiles[0].meta?.rows).toBe(1);
     expect(state.running).toBe(false);
     expect(state.updatedAt).not.toBeNull();
-    // Flow model reflects the columns-2 preset and the stored span-2 placement.
     expect(state.layout.engine).toBe('flow');
     if (state.layout.engine !== 'flow') throw new Error('expected flow engine');
     expect(state.layout.columns).toBe(2);
@@ -1161,7 +1160,7 @@ describe('per-tile control and lifecycle', () => {
     expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a']);
   });
 
-  it('tags the flow layout view with engine:\'flow\' — bit-identical otherwise', async () => {
+  it('tags the readable legacy flow layout with its engine', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
       tiles: [tile('a', 'qa')],
@@ -1254,7 +1253,7 @@ describe('grafana-grid engine routing (#291)', () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
       tiles: [tile('a', 'qa')],
-      layout: { type: 'grafana-grid', version: 2, items: {} } as unknown as DashboardDocumentV2['layout'],
+      layout: { type: 'grafana-grid', version: 9, items: {} } as unknown as DashboardDocumentV2['layout'],
     });
     const session = createDashboardViewerSession(makeDeps({ document, exec, queries: [query('qa', 'SELECT 1')] }));
     await session.start();
@@ -1299,7 +1298,6 @@ describe('setGridRenderMode / Full view (#321)', () => {
     if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
     expect(layout.renderMode).toBe('full');
     expect(layout.grid.tiles.every((t) => t.span === layout.grid.columns)).toBe(true);
-    // persistedSpan is untouched — the authored spans still travel.
     expect(layout.grid.tiles[0].persistedSpan).toBe(4);
     expect(layout.grid.tiles[1].persistedSpan).toBe(6);
     // The caller's own document object (and its items) is bit-identical.
@@ -1319,7 +1317,7 @@ describe('setGridRenderMode / Full view (#321)', () => {
     expect(layout.grid.tiles[1]).toMatchObject({ span: 6, persistedSpan: 6 });
   });
 
-  it('survives a subsequent syncDocument (placement command) — the render-mode override is session-owned, not document-owned', async () => {
+  it('syncDocument clears the legacy Full override and returns to the persisted base style', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = gridDoc();
     const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
@@ -1332,8 +1330,8 @@ describe('setGridRenderMode / Full view (#321)', () => {
     });
     const layout = session.state.value.layout;
     if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
-    expect(layout.renderMode).toBe('full');
-    expect(layout.grid.tiles.every((t) => t.span === layout.grid.columns)).toBe(true);
+    expect(layout.renderMode).toBe('tiles');
+    expect(layout.grid.style).toBe('grid');
     expect(layout.grid.tiles[0].heightUnits).toBe(5);
   });
 
@@ -1361,11 +1359,17 @@ describe('setGridRenderMode / Full view (#321)', () => {
     expect(session.state.value.layout.engine).toBe('grafana-grid');
     session.setDashboardStyle('report');
     expect(session.state.value.style).toBe('report');
-    expect(session.state.value.layout.engine).toBe('flow');
-    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.preset).toBe('report');
+    expect(session.state.value.layout.engine).toBe('grafana-grid');
+    if (session.state.value.layout.engine === 'grafana-grid') {
+      expect(session.state.value.layout.grid.style).toBe('report');
+      expect(session.state.value.layout.grid.tiles[0]).toMatchObject({ span: 9, heightUnits: 2 });
+    }
     session.setDashboardStyle('columns-3');
-    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.columns).toBe(3);
-    session.setDashboardStyle('grafana-grid');
+    if (session.state.value.layout.engine === 'grafana-grid') {
+      expect(session.state.value.layout.grid.columns).toBe(3);
+      expect(session.state.value.layout.grid.tiles[0]).toMatchObject({ span: 1, previewHeightPx: 300 });
+    }
+    session.setDashboardStyle('grid');
     expect(session.state.value.layout.engine).toBe('grafana-grid');
     expect(calls.length).toBe(executed);
     expect(JSON.stringify(document)).toBe(before);
@@ -1380,18 +1384,20 @@ describe('setGridRenderMode / Full view (#321)', () => {
     const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
     await session.start();
     session.setDashboardStyle('columns-3');
-    if (session.state.value.layout.engine === 'flow') expect(session.state.value.layout.rows[0].tiles[0].span).toBe(2);
+    if (session.state.value.layout.engine === 'grafana-grid') {
+      expect(session.state.value.layout.grid.tiles[0].span).toBe(1);
+    }
     session.setDashboardStyle('full');
-    expect(session.state.value.layout.engine).toBe('grafana-grid');
-    session.setDashboardStyle('full'); // duplicate selection is a no-op
+    expect(session.state.value.layout.engine).toBe('flow');
+    session.setDashboardStyle('full');
     session.destroy();
     session.setDashboardStyle('report');
     expect(session.state.value.style).toBe('full');
   });
 });
 
-describe('flow layout (mobile normalization)', () => {
-  it('normalizes the flow layout on mobile and coerces variable values to strings', async () => {
+describe('temporary preview mobile normalization', () => {
+  it('collapses a temporary columns preview on mobile and coerces variable values to strings', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     let mobile = true;
     const session = createDashboardViewerSession(makeDeps({
@@ -1402,10 +1408,12 @@ describe('flow layout (mobile normalization)', () => {
       exec, queries: [query('qa', 'SELECT {p:String} AS n')], isMobile: () => mobile,
     }));
     await session.start();
+    session.setDashboardStyle('columns-3');
     const mobileLayout = session.state.value.layout;
-    if (mobileLayout.engine !== 'flow') throw new Error('expected flow engine');
-    expect(mobileLayout.columns).toBe(1);
-    expect(mobileLayout.rows[0].tiles[0].span).toBe(1);
+    if (mobileLayout.engine !== 'grafana-grid') throw new Error('expected grid engine');
+    expect(mobileLayout.grid.columns).toBe(1);
+    expect(mobileLayout.grid.tiles[0].span).toBe(1);
+    expect(session.widenTemporaryTile('a')).toBe(false);
     // A numeric value coerces to a string on the way to the pipeline; setting
     // null clears it.
     await session.setVariable('p', 5);
@@ -1414,6 +1422,7 @@ describe('flow layout (mobile normalization)', () => {
     await session.setVariable('p', null);
     expect(session.state.value.variableStates[0].active).toBe(false);
     mobile = false;
+    expect(session.widenTemporaryTile('missing')).toBe(false);
   });
 });
 

@@ -47,6 +47,7 @@ import {
   validateQueryCollectionSemantics,
 } from '../dashboard/model/workspace-semantics.js';
 import { cloneJson } from '../core/saved-query.js';
+import { upgradeDashboardLayout } from '../dashboard/model/dashboard-document.js';
 import { jsonSchemaValidationService } from '../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../core/json-schema-validation.js';
 import {
@@ -202,6 +203,13 @@ export function validateStoredWorkspaceDocument(
 
 export type DecodeStoredWorkspaceResult = { ok: true; value: StoredWorkspaceV5 } | WorkspaceFailResult;
 
+function canonicalizeWorkspaceLayouts(workspace: StoredWorkspaceV5): StoredWorkspaceV5 {
+  return {
+    ...cloneJson(workspace),
+    dashboards: workspace.dashboards.map(upgradeDashboardLayout),
+  };
+}
+
 const LEGACY_BRANCH: Record<2 | 3 | 4, { schemaId: string; dashboardsKey: 'dashboard' | 'dashboards' }> = {
   2: { schemaId: STORED_WORKSPACE_V2_SCHEMA_ID, dashboardsKey: 'dashboard' },
   3: { schemaId: STORED_WORKSPACE_V3_SCHEMA_ID, dashboardsKey: 'dashboards' },
@@ -224,8 +232,11 @@ export function decodeStoredWorkspaceJson(
   const scan = scanStoredWorkspaceVersion(parsed.value, [2, 3, 4, 5]);
   if (!scan.ok) return { ok: false, diagnostics: sortDiagnostics(scan.diagnostics) };
   if (scan.version === 5) {
-    const diagnostics = validateStoredWorkspaceDocument(parsed.value, options);
-    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: parsed.value as StoredWorkspaceV5 };
+    const sourceDiagnostics = validateStoredWorkspaceDocument(parsed.value, options);
+    if (sourceDiagnostics.length) return { ok: false, diagnostics: sourceDiagnostics };
+    const canonical = canonicalizeWorkspaceLayouts(parsed.value as StoredWorkspaceV5);
+    const diagnostics = validateStoredWorkspaceDocument(canonical, options);
+    return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: canonical };
   }
   const legacy = parsed.value as Record<string, unknown>;
   // Each legacy branch is validated against its OWN schema at its own paths and
@@ -255,9 +266,12 @@ export type EncodeStoredWorkspaceResult = { ok: true; value: string } | Workspac
 export function encodeStoredWorkspaceJson(
   workspace: unknown, options: WorkspaceCodecOptions = {},
 ): EncodeStoredWorkspaceResult {
-  const diagnostics = validateStoredWorkspaceDocument(workspace, options);
+  const sourceDiagnostics = validateStoredWorkspaceDocument(workspace, options);
+  if (sourceDiagnostics.length) return { ok: false, diagnostics: sourceDiagnostics };
+  const canonical = canonicalizeWorkspaceLayouts(workspace as StoredWorkspaceV5);
+  const diagnostics = validateStoredWorkspaceDocument(canonical, options);
   if (diagnostics.length) return { ok: false, diagnostics };
-  const encoded = canonicalJson(workspace, STORED_WORKSPACE_SHAPE);
+  const encoded = canonicalJson(canonical, STORED_WORKSPACE_SHAPE);
   const bytes = utf8ByteLength(encoded);
   if (bytes > PORTABLE_LIMITS.maxDecodedJsonBytes) {
     return {

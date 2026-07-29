@@ -24,8 +24,11 @@ import type { DashboardLayoutPlugin } from '../layouts/flow-layout.js';
 import {
   deriveGrafanaGridPlacement, gridHeightUnitsFromFlowHeight, gridPlacementAt, gridSpanFromFlowSpan,
   regenerateGridFallback as regenerateGridLayoutFallback, setGridPlacement,
+  setStylePlacement,
 } from '../layouts/grafana-grid-layout.js';
+import type { AuthoredDashboardStyle } from '../layouts/grafana-grid-layout.js';
 import type { QueryResolver } from './dashboard-query-resolver.js';
+import { upgradeDashboardLayout } from '../model/dashboard-document.js';
 import type {
   DashboardDocumentV2, DashboardLayoutDocumentV1, DashboardTileV1,
 } from '../../generated/json-schema.types.js';
@@ -56,7 +59,12 @@ export type DashboardCommand =
   | { type: 'duplicate-tile'; tileId: string; newTileId: string; queryId: string }
   | { type: 'move-tile'; tileId: string; toIndex: number }
   | { type: 'update-tile'; tileId: string; patch: DashboardTilePatch }
-  | { type: 'update-placement'; tileId: string; placement: Record<string, unknown> }
+  | {
+    type: 'update-placement';
+    tileId: string;
+    style: AuthoredDashboardStyle;
+    placement: Record<string, unknown>;
+  }
   | { type: 'change-layout'; layout: DashboardLayoutDocumentV1 };
 
 export interface ApplyCommandContext {
@@ -101,8 +109,10 @@ const GRID_FALLBACK_COMMANDS = new Set<DashboardCommand['type']>([
  *  duplicated at both call sites). */
 function setPlacementForActiveEngine(
   plugin: DashboardLayoutPlugin, layout: unknown, tileId: string, placement: unknown,
+  style: AuthoredDashboardStyle = 'grid',
 ): void {
-  if (plugin.type === 'grafana-grid') setGridPlacement(layout, tileId, placement);
+  if (plugin.type === 'grafana-grid' && plugin.version === 2) setStylePlacement(layout, tileId, style, placement);
+  else if (plugin.type === 'grafana-grid') setGridPlacement(layout, tileId, placement);
   else setFlowPlacement(layout, tileId, placement);
 }
 
@@ -117,7 +127,9 @@ function setPlacementForActiveEngine(
 function placementForActiveEngine(
   plugin: DashboardLayoutPlugin, layout: unknown, tileId: string,
 ): unknown {
-  const placement = plugin.type === 'grafana-grid'
+  const placement = plugin.type === 'grafana-grid' && plugin.version === 2
+    ? (isObject(layout) && isObject(layout.items) ? layout.items[tileId] : undefined)
+    : plugin.type === 'grafana-grid'
     ? gridPlacementAt(layout, tileId) : flowPlacementAt(layout, tileId);
   return isObject(placement) ? placement : undefined;
 }
@@ -189,7 +201,7 @@ function applyCommandToClone(
       // contract being the grid default rather than flow's bare `undefined`.
       const placement = ctx.plugin.type === 'grafana-grid'
         ? deriveGrafanaGridPlacement(sizeHints) : deriveFlowPlacement(sizeHints);
-      if (placement) setPlacementForActiveEngine(ctx.plugin, dashboard.layout, id, placement);
+      if (placement) setPlacementForActiveEngine(ctx.plugin, dashboard.layout, id, placement, 'grid');
       return { ok: true, dashboard, value: { tileId: id } };
     }
 
@@ -222,7 +234,12 @@ function applyCommandToClone(
       // to the engine's own default together.
       const placement = placementForActiveEngine(ctx.plugin, dashboard.layout, command.tileId);
       if (placement !== undefined) {
-        setPlacementForActiveEngine(ctx.plugin, dashboard.layout, newTileId, cloneJson(placement));
+        if (ctx.plugin.type === 'grafana-grid' && ctx.plugin.version === 2
+          && isObject(dashboard.layout) && isObject(dashboard.layout.items)) {
+          (dashboard.layout.items as Record<string, unknown>)[newTileId] = cloneJson(placement);
+        } else {
+          setPlacementForActiveEngine(ctx.plugin, dashboard.layout, newTileId, cloneJson(placement));
+        }
       }
       return { ok: true, dashboard, value: { tileId: newTileId } };
     }
@@ -287,9 +304,18 @@ function applyCommandToClone(
       // resolved by the caller from the current document — grid: span
       // 1..12; flow: span 1..3) rather than a hardcoded flow plugin (#291).
       const placementDiags = ctx.plugin.validatePlacement(command.placement,
-        ['layout', 'items', command.tileId]);
+        ['layout', 'items', command.tileId, command.style]);
       if (placementDiags.length) return { ok: false, diagnostics: placementDiags };
-      setPlacementForActiveEngine(ctx.plugin, dashboard.layout, command.tileId, cloneJson(command.placement));
+      if (command.style !== 'grid' && Object.hasOwn(command.placement, 'span')) {
+        return failWith(diagnostic(
+          ['layout', 'items', command.tileId, command.style, 'span'],
+          'layout-placement-unknown-field',
+          `${command.style} uses a fixed width and cannot persist span`,
+        ));
+      }
+      setPlacementForActiveEngine(
+        ctx.plugin, dashboard.layout, command.tileId, cloneJson(command.placement), command.style,
+      );
       return { ok: true, dashboard, value: undefined };
     }
 
@@ -327,6 +353,16 @@ function applyCommandToClone(
     case 'change-layout': {
       const currentType = dashboard.layout.type;
       const targetType = command.layout.type;
+
+      if (targetType === 'grafana-grid' && command.layout.version === 2) {
+        const upgraded = upgradeDashboardLayout(dashboard);
+        const preset = command.layout.preset;
+        if (preset === 'grid' || preset === 'full' || preset === 'report') {
+          upgraded.layout.preset = preset;
+        }
+        regenerateGridLayoutFallback(upgraded.layout, upgraded.tiles);
+        return { ok: true, dashboard: upgraded, value: undefined };
+      }
 
       if (currentType === 'flow' && targetType === 'grafana-grid') {
         const flowItems = dashboard.layout.items ?? {};

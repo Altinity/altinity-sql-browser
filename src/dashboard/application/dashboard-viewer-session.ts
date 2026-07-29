@@ -174,7 +174,7 @@ export type DashboardLayoutView =
 /** The five presentation styles exposed by the Dashboard header. This is a
  * runtime choice: View mode can select any style without changing the shared
  * document, while Edit mode maps the same values to authoring commands. */
-export type DashboardStyle = 'grafana-grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
+export type DashboardStyle = 'grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
 
 export interface DashboardViewState {
   /** Search-matched tiles only, in their unchanged saved order. */
@@ -385,18 +385,15 @@ export interface DashboardViewerSession {
    *  flow model is recomputed. The tile SET must be unchanged (a membership
    *  change rebuilds the session). */
   syncDocument(next: DashboardDocumentV2): void;
-  /** #321 "Full view": set the TRANSIENT grafana-grid render-mode override
-   *  ('tiles' = today's packed multi-tile-per-row grid, 'full' = every tile
-   *  full-width, one per row). Runtime-only — never persisted, never a
-   *  document mutation, never a commit/revision bump; it just republishes the
-   *  current document through the new mode. Survives every other command
-   *  (add/remove/reorder/height/syncDocument) since it lives outside
-   *  `documentRef` entirely. A fresh session (reload/new viewer) always starts
-   *  at 'tiles'. */
+  /** Legacy grafana-grid@1 Full override. Current v2 callers select the
+   * authored/session-preview style through `setDashboardStyle`. */
   setGridRenderMode(mode: GridRenderMode): void;
   /** Select a complete session-local Dashboard style. Unlike `syncDocument`,
    * this never changes the source document or re-runs tile queries. */
   setDashboardStyle(style: DashboardStyle): void;
+  /** Advance one tile inside the active temporary preview. Returns false when
+   * no 2/3-column preview is active (including its mobile one-column form). */
+  widenTemporaryTile(tileId: string): boolean;
   /** Cancel all work and turn every later entry point into a no-op. */
   destroy(): void;
 }
@@ -532,13 +529,15 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // re-running tiles; the initial tile SET is fixed for the session's analysis.
   let documentRef: DashboardDocumentV2 = deps.document;
   let destroyed = false;
-  // #321 "Full view": a TRANSIENT runtime render-mode override, entirely
-  // outside `documentRef` — never read/written by any command, never
-  // persisted. A fresh session always starts at 'tiles'.
+  // Legacy grafana-grid@1 Full override; v2 uses authored style maps.
   let gridRenderMode: GridRenderMode = 'tiles';
   // View mode may preview any header style without authoring a layout. `null`
   // means render the document's authored style (plus the legacy Full override).
   let dashboardStyleOverride: DashboardStyle | null = null;
+  let temporaryPreview: {
+    style: 'columns-2' | 'columns-3';
+    spans: Map<string, number>;
+  } | null = null;
   let tileSearch = '';
   // #335: the single wall-clock snapshot the LATEST execution wave resolved its
   // relative tokens against (published as `state.waveWallNowMs`). `null` until
@@ -958,27 +957,36 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // primary with a valid flow@1 fallback still resolves to the flow plugin
     // here, exactly as before #291 (`computeFlowLayout`'s own fallback
     // handling, untouched) — flow behavior stays bit-identical.
-    const selectedStyle: DashboardStyle = dashboardStyleOverride
-      ?? (documentRef.layout.type === 'grafana-grid'
-        ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
-        : (documentRef.layout.preset as DashboardStyle));
-    const layoutDocument = dashboardStyleOverride === null
-      ? documentRef.layout
-      : selectedStyle === 'grafana-grid' || selectedStyle === 'full'
-        ? (documentRef.layout.type === 'grafana-grid'
-          ? documentRef.layout
-          : { type: 'grafana-grid', version: 1, items: {} })
-        : {
-          type: 'flow', version: 1, preset: selectedStyle,
-          items: documentRef.layout.type === 'flow' ? documentRef.layout.items : {},
-        };
+    const selectedStyle: DashboardStyle = temporaryPreview?.style
+      ?? dashboardStyleOverride
+      ?? (documentRef.layout.type === 'grafana-grid' && documentRef.layout.version === 2
+        ? documentRef.layout.preset as DashboardStyle
+        : documentRef.layout.type === 'grafana-grid'
+          ? (gridRenderMode === 'full' ? 'full' : 'grid')
+          : (documentRef.layout.preset === 'report'
+            || documentRef.layout.preset === 'columns-2'
+            || documentRef.layout.preset === 'columns-3'
+            ? documentRef.layout.preset : 'report'));
+    const layoutDocument = documentRef.layout;
     const renderMode: GridRenderMode = selectedStyle === 'full' ? 'full' : 'tiles';
     const plugin = resolveLayoutPluginSync(layoutDocument);
-    const layout: DashboardLayoutView = plugin.type === 'grafana-grid'
+    // A readable legacy flow@1 document may itself carry a columns-2/3 preset.
+    // That is authored legacy state, not the new session-only preview. Current
+    // codec boundaries upgrade it to grid@2, but direct readers must continue
+    // to render it with the flow engine. Only an explicitly-created preview
+    // crosses that legacy engine boundary.
+    const useGridRenderer = plugin.type === 'grafana-grid' || temporaryPreview !== null;
+    const layout: DashboardLayoutView = useGridRenderer
       ? {
         engine: 'grafana-grid',
         grid: computeGrafanaGridLayout({
-          tiles: visible, layout: layoutDocument, containerWidth: deps.containerWidth?.(), renderMode,
+          tiles: visible,
+          layout: layoutDocument,
+          containerWidth: deps.containerWidth?.(),
+          renderMode,
+          style: selectedStyle,
+          previewSpans: temporaryPreview?.spans,
+          mobile,
         }),
         renderMode,
       }
@@ -1577,6 +1585,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   function syncDocument(next: DashboardDocumentV2): void {
     if (destroyed) return;
     documentRef = next;
+    dashboardStyleOverride = null;
+    temporaryPreview = null;
+    gridRenderMode = 'tiles';
     // Reorder the runtime records to the new tile order, preserving each tile's
     // results by ID; unknown IDs are dropped (defensive — a membership change
     // should rebuild the session, not sync).
@@ -1594,13 +1605,34 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   function setGridRenderMode(mode: GridRenderMode): void {
     if (destroyed || gridRenderMode === mode) return;
     gridRenderMode = mode;
+    dashboardStyleOverride = mode === 'full' ? 'full' : 'grid';
+    temporaryPreview = null;
     publish();
   }
 
   function setDashboardStyle(style: DashboardStyle): void {
-    if (destroyed || dashboardStyleOverride === style) return;
-    dashboardStyleOverride = style;
+    if (destroyed) return;
+    if (style === 'columns-2' || style === 'columns-3') {
+      temporaryPreview = {
+        style,
+        spans: new Map(tiles.map((runtime) => [runtime.tile.id, 1])),
+      };
+      dashboardStyleOverride = null;
+    } else {
+      temporaryPreview = null;
+      dashboardStyleOverride = style;
+    }
     publish();
+  }
+
+  function widenTemporaryTile(tileId: string): boolean {
+    if (destroyed || temporaryPreview === null || !!deps.isMobile?.()) return false;
+    if (!temporaryPreview.spans.has(tileId)) return false;
+    const max = temporaryPreview.style === 'columns-2' ? 2 : 3;
+    const current = temporaryPreview.spans.get(tileId) ?? 1;
+    temporaryPreview.spans.set(tileId, current >= max ? 1 : current + 1);
+    publish();
+    return true;
   }
 
   function destroy(): void {
@@ -1623,6 +1655,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     state: stateSignal as ReadonlySignal<DashboardViewState>,
     controls, timeRangeGroups, getVariableField,
     start, refresh, refreshTile, setVariable, applyVariable, applyVariables, clearVariable, clearAllVariables, resetVariables,
-    setTileSearch, cancelTile, syncDocument, setGridRenderMode, setDashboardStyle, destroy,
+    setTileSearch, cancelTile, syncDocument, setGridRenderMode, setDashboardStyle, widenTemporaryTile, destroy,
   };
 }

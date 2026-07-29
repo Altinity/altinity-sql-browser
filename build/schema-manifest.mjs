@@ -46,6 +46,12 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateGrafanaGridLayoutV1',
     typeExport: 'GrafanaGridLayoutV1',
   },
+  {
+    path: 'schemas/dashboard-layout-grafana-grid-v2.schema.json',
+    schemaExport: 'grafanaGridLayoutV2Schema',
+    validatorExport: 'validateGrafanaGridLayoutV2',
+    typeExport: 'GrafanaGridLayoutV2',
+  },
   // dashboard v1 stays registered read-only (#447): stored-workspace v2/v3/v4
   // and portable-bundle-v1 all $ref it, so the codec still validates persisted
   // and imported v1 Dashboards through it before migrating them to v2. It also

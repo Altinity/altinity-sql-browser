@@ -33,8 +33,15 @@ const tiledQuery = (id: string): SavedQueryV2 => ({
 const twoTileDashboard = (): DashboardDocumentV2 => ({
   documentVersion: 2, id: 'dash', title: 'D', revision: 1,
   layout: {
-    type: 'flow', version: 1, preset: 'report',
-    items: { t1: { span: 1, height: 'medium' }, t2: { span: 1, height: 'medium' } },
+    type: 'grafana-grid', version: 2, preset: 'grid',
+    items: {
+      t1: { grid: { span: 6, height: 2 } },
+      t2: { grid: { span: 6, height: 2 } },
+    },
+    fallback: {
+      type: 'flow', version: 1, preset: 'columns-2',
+      items: { t1: { span: 1, height: 'medium' }, t2: { span: 1, height: 'medium' } },
+    },
   },
   tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
 } as DashboardDocumentV2);
@@ -51,8 +58,8 @@ async function committed(app: App): Promise<StoredWorkspaceV5> {
   return loaded.workspace;
 }
 
-const layoutItems = (workspace: StoredWorkspaceV5): Record<string, { span: number }> =>
-  workspace.dashboards[0].layout.items as Record<string, { span: number }>;
+const layoutItems = (workspace: StoredWorkspaceV5): Record<string, { grid: { span: number; height: number } }> =>
+  workspace.dashboards[0].layout.items as Record<string, { grid: { span: number; height: number } }>;
 const queryById = (workspace: StoredWorkspaceV5, id: string): SavedQueryV2 | undefined =>
   workspace.queries.find((q) => q.id === id);
 
@@ -73,16 +80,20 @@ describe('cross-tab read-before-write (#343)', () => {
 
     await a.mutateWorkspace((latest) => {
       const d = latest!.dashboards[0];
+      const items = (d.layout.items ?? {}) as Record<string, { grid?: { span: number; height: number } }>;
       return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1,
-        layout: { ...d.layout, items: { ...d.layout.items, t1: { span: 3, height: 'medium' } } },
+        layout: {
+          ...d.layout,
+          items: { ...items, t1: { ...items.t1, grid: { span: 3, height: 2 } } },
+        },
       }] } };
     });
     const renamed = await renameSaved(b.state, 'q1', 'Q1 renamed', undefined, b.mutateWorkspace);
     expect(renamed?.ok).toBe(true);
 
     const final = await committed(a);
-    expect(layoutItems(final).t1.span).toBe(3); // A's resize survives B's write
+    expect(layoutItems(final).t1.grid.span).toBe(3); // A's resize survives B's write
     expect(queryById(final, 'q1')!.spec.name).toBe('Q1 renamed'); // and B's rename
   });
 
@@ -115,14 +126,29 @@ describe('cross-tab read-before-write (#343)', () => {
     const a = tab(store); const b = tab(store);
     await seed(a, b, dashboardSeed());
 
-    await a.mutateWorkspace((latest) => {
+    const removed = await a.mutateWorkspace((latest) => {
       const d = latest!.dashboards[0];
       const items = { ...d.layout.items };
       delete (items as Record<string, unknown>).t2;
-      return { candidate: { ...latest!, dashboards: [{
-        ...d, revision: d.revision + 1, tiles: d.tiles.filter((t) => t.id !== 't2'), layout: { ...d.layout, items },
-      }] } };
+      const fallback = d.layout.fallback;
+      const fallbackItems = { ...(fallback?.items ?? {}) };
+      delete (fallbackItems as Record<string, unknown>).t2;
+      return { candidate: {
+        ...latest!,
+        queries: latest!.queries.filter((query) => query.id !== 'q2'),
+        dashboards: [{
+          ...d,
+          revision: d.revision + 1,
+          tiles: d.tiles.filter((t) => t.id !== 't2'),
+          layout: {
+            ...d.layout,
+            items,
+            ...(fallback ? { fallback: { ...fallback, items: fallbackItems } } : {}),
+          },
+        }],
+      } };
     });
+    expect(removed?.ok).toBe(true);
 
     const bTab = b.state.tabs.value[0];
     bTab.sqlDraft = 'SELECT unrelated';
@@ -146,15 +172,19 @@ describe('cross-tab read-before-write (#343)', () => {
 
     await b.mutateWorkspace((latest) => {
       const d = latest!.dashboards[0];
+      const items = (d.layout.items ?? {}) as Record<string, { grid?: { span: number; height: number } }>;
       return { candidate: { ...latest!, dashboards: [{
         ...d, revision: d.revision + 1,
-        layout: { ...d.layout, items: { ...d.layout.items, t1: { span: 2, height: 'large' } } },
+        layout: {
+          ...d.layout,
+          items: { ...items, t1: { ...items.t1, grid: { span: 2, height: 4 } } },
+        },
       }] } };
     });
 
     const final = await committed(a);
     expect(final.queries.some((q) => q.spec.name === 'Fresh')).toBe(true); // A's new query survives
-    expect(layoutItems(final).t1.span).toBe(2); // and B's layout change
+    expect(layoutItems(final).t1.grid.span).toBe(2); // and B's layout change
   });
 
   it('save-linked to an externally deleted query aborts and does not recreate it', async () => {

@@ -5,7 +5,7 @@ import type {
   WorkspaceStore, WorkspaceStoreCreateResult, WorkspaceStoreRecord,
   WorkspaceStoreReplaceResult,
 } from '../../src/workspace/workspace-store.types.js';
-import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV2, StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 
 const workspace = (over: Partial<StoredWorkspaceV5> = {}): StoredWorkspaceV5 => ({
   storageVersion: 5,
@@ -351,9 +351,12 @@ describe('implicit workspace resolution and opened metadata', () => {
 describe('workspace repository — StoredWorkspaceV5 (#424/#447)', () => {
   // The CURRENT (document v2) shape, used for every fixture that is created or
   // committed fresh in this describe block.
-  const dashboard = (id: string, revision = 1) => ({
+  const dashboard = (id: string, revision = 1): DashboardDocumentV2 => ({
     documentVersion: 2 as const, id, title: id.toUpperCase(), revision,
-    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    layout: {
+      type: 'grafana-grid', version: 2, preset: 'report', items: {},
+      fallback: { type: 'flow', version: 1, preset: 'report', items: {} },
+    },
     tiles: [],
   });
   // The LEGACY (document v1, curated filters) shape — used only to build raw

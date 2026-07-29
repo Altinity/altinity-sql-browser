@@ -224,12 +224,12 @@ describe('applyCommand — update-placement / change-layout', () => {
   const seeded = () => draft({ tiles: [{ id: 't1', queryId: 'q' }] as never });
 
   it('sets a valid placement and rejects an invalid one', () => {
-    const ok = run(seeded(), { type: 'update-placement', tileId: 't1', placement: { span: 2 } }, [query('q')]);
+    const ok = run(seeded(), { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 2 } }, [query('q')]);
     expect(ok.ok && ok.dashboard.layout.items).toEqual({ t1: { span: 2 } });
-    const bad = run(seeded(), { type: 'update-placement', tileId: 't1', placement: { span: 9 } }, [query('q')]);
+    const bad = run(seeded(), { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 9 } }, [query('q')]);
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.diagnostics[0].code).toBe('layout-placement-invalid-span');
-    const missing = run(seeded(), { type: 'update-placement', tileId: 'z', placement: {} }, [query('q')]);
+    const missing = run(seeded(), { type: 'update-placement', tileId: 'z', style: 'grid', placement: {} }, [query('q')]);
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.diagnostics[0].code).toBe('dashboard-command-tile-missing');
   });
@@ -278,19 +278,30 @@ describe('applyCommand — grafana-grid@1 engine awareness (#291)', () => {
   describe('update-placement bounds per engine', () => {
     it('validates through the ACTIVE grid plugin: spans up to 12 are valid, 13 is rejected', () => {
       const seeded = gridDraft({ tiles: [{ id: 't1', queryId: 'q' }] as never });
-      const ok = run(seeded, { type: 'update-placement', tileId: 't1', placement: { span: 9 } }, [query('q')], grafanaGridLayoutPlugin);
+      const ok = run(seeded, { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 9 } }, [query('q')], grafanaGridLayoutPlugin);
       expect(ok.ok && ok.dashboard.layout.items).toEqual({ t1: { span: 9 } });
-      const tooLarge = run(seeded, { type: 'update-placement', tileId: 't1', placement: { span: 13 } }, [query('q')], grafanaGridLayoutPlugin);
+      const tooLarge = run(seeded, { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 13 } }, [query('q')], grafanaGridLayoutPlugin);
       expect(tooLarge.ok).toBe(false);
       if (!tooLarge.ok) expect(tooLarge.diagnostics[0].code).toBe('layout-placement-invalid-span');
     });
 
     it('a span the flow engine would reject (9) is accepted only because ctx.plugin is the grid one — proves it is not hardcoded', () => {
       const seeded = gridDraft({ tiles: [{ id: 't1', queryId: 'q' }] as never });
-      const underFlow = run(seeded, { type: 'update-placement', tileId: 't1', placement: { span: 9 } }, [query('q')], flowLayoutPlugin);
+      const underFlow = run(seeded, { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 9 } }, [query('q')], flowLayoutPlugin);
       expect(underFlow.ok).toBe(false);
-      const underGrid = run(seeded, { type: 'update-placement', tileId: 't1', placement: { span: 9 } }, [query('q')], grafanaGridLayoutPlugin);
+      const underGrid = run(seeded, { type: 'update-placement', tileId: 't1', style: 'grid', placement: { span: 9 } }, [query('q')], grafanaGridLayoutPlugin);
       expect(underGrid.ok).toBe(true);
+    });
+
+    it('rejects a persisted span for fixed-width Full and Report style maps', () => {
+      const seeded = gridDraft({ tiles: [{ id: 't1', queryId: 'q' }] as never });
+      for (const style of ['full', 'report'] as const) {
+        const result = run(seeded, {
+          type: 'update-placement', tileId: 't1', style, placement: { span: 6, height: 3 },
+        }, [query('q')], grafanaGridLayoutPlugin);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.diagnostics[0].message).toContain('fixed width');
+      }
     });
   });
 });
@@ -485,7 +496,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
   });
 
   it('update-placement regenerates the fallback to reflect the new span', () => {
-    const result = run(seededGrid(), { type: 'update-placement', tileId: 'a', placement: { span: 12 } }, [query('q')], grafanaGridLayoutPlugin);
+    const result = run(seededGrid(), { type: 'update-placement', tileId: 'a', style: 'grid', placement: { span: 12 } }, [query('q')], grafanaGridLayoutPlugin);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({

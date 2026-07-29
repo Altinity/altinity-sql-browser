@@ -8056,7 +8056,7 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
     app.renderDashboard();
     const { commit, release } = deferNextCommit(app);
-    pickDashboardStyle(app, '2 columns');
+    pickDashboardStyle(app, 'Full');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({
@@ -8067,7 +8067,7 @@ describe('unified /sql routing', () => {
     release();
     await app.flushWorkspaceWrites();
     await vi.waitFor(() => {
-      expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('columns-2');
+      expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('full');
     });
 
     expect(app.sqlRoute).toEqual({
@@ -8084,7 +8084,7 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
     app.renderDashboard();
     const { commit, release } = deferNextCommit(app);
-    pickDashboardStyle(app, '3 columns');
+    pickDashboardStyle(app, 'Grid');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
@@ -8092,7 +8092,7 @@ describe('unified /sql routing', () => {
     release();
     await app.flushWorkspaceWrites();
     await vi.waitFor(() => {
-      expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('columns-3');
+      expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('grid');
     });
 
     expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'w' });
@@ -8110,7 +8110,7 @@ describe('unified /sql routing', () => {
       new Promise((_resolve, reject) => {
         rejectCommit = () => reject(new Error('boom'));
       }));
-    pickDashboardStyle(app, '2 columns');
+    pickDashboardStyle(app, 'Full');
     await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');

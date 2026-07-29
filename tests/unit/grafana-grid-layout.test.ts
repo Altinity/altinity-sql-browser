@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_GRID_HEIGHT_UNITS, DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX,
   GRID_HEIGHT_PX_BASE, GRID_HEIGHT_PX_PER_UNIT, GRID_HEIGHT_UNIT_MAX, GRID_HEIGHT_UNIT_MIN,
-  computeGrafanaGridLayout, contentBoxWidth, deriveFlowFallback, deriveGrafanaGridPlacement,
+  computeGrafanaGridLayout, contentBoxWidth, deriveAuthoredFlowFallback, deriveFlowFallback, deriveGrafanaGridPlacement,
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
+  grafanaGridLayoutV2Plugin,
   gridHeightUnitsFromFlowHeight, gridHeightUnitsToFlowHeight, gridHeightUnitsToPx,
   gridSpanFromFlowSpan, normalizeGridHeightUnits, regenerateGridFallback, resolveGridPlacement,
-  gridPlacementAt, setGridPlacement, snapGridHeight, snapGridSpan,
+  gridPlacementAt, resolveStylePlacement, setGridPlacement, setStylePlacement, snapGridHeight, snapGridSpan,
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
@@ -21,6 +22,68 @@ describe('constants', () => {
   it('exposes the grid default placement and max column count', () => {
     expect(GRAFANA_GRID_MAX_COLUMNS).toBe(12);
     expect(DEFAULT_GRID_PLACEMENT).toEqual({ span: 6, height: 2 });
+  });
+});
+
+describe('grafana-grid@2 plugin', () => {
+  it('prunes orphan style entries without mutating the source', () => {
+    const source = doc({
+      tiles: [{ id: 'a', queryId: 'qa' }],
+      layout: {
+        type: 'grafana-grid', version: 2, preset: 'grid',
+        items: { a: { grid: { span: 6, height: 2 } }, orphan: { full: { height: 3 } } },
+      } as never,
+    });
+    const result = grafanaGridLayoutV2Plugin.normalize(source);
+    expect(result.layout.items).toEqual({ a: { grid: { span: 6, height: 2 } } });
+    expect(source.layout.items).toHaveProperty('orphan');
+    expect(grafanaGridLayoutV2Plugin.normalize({ ...source, layout: null } as never).layout).toBeNull();
+  });
+
+  it('accepts valid numeric placements and diagnoses every invalid field shape', () => {
+    expect(grafanaGridLayoutV2Plugin.validatePlacement({ span: 6, height: 2 })).toEqual([]);
+    expect(grafanaGridLayoutV2Plugin.validatePlacement('bad').map((d) => d.code))
+      .toEqual(['layout-placement-invalid']);
+    const codes = grafanaGridLayoutV2Plugin.validatePlacement({
+      span: 13, height: 'large', extra: true,
+    }).map((d) => d.code);
+    expect(codes).toEqual([
+      'layout-placement-unknown-field',
+      'layout-placement-invalid-span',
+      'layout-placement-invalid-height',
+    ]);
+  });
+
+  it('uses independent defaults and writes only the named style map', () => {
+    expect(resolveStylePlacement(null, 'a', 'grid')).toEqual({ span: 6, height: 2 });
+    const layout: Record<string, unknown> = { type: 'grafana-grid', version: 2 };
+    setStylePlacement(layout, 'a', 'full', { height: 4 });
+    setStylePlacement(layout, 'a', 'report', { height: 7 });
+    expect(layout.items).toEqual({ a: { full: { height: 4 }, report: { height: 7 } } });
+    expect(resolveStylePlacement(layout, 'a', 'full')).toEqual({ span: 12, height: 4 });
+    expect(resolveStylePlacement(layout, 'a', 'report')).toEqual({ span: 9, height: 7 });
+    setStylePlacement({ type: 'grafana-grid', version: 1 }, 'a', 'grid', { span: 4, height: 2 });
+  });
+
+  it('preserves valid partial style maps without materializing undefined fields', () => {
+    const layout: Record<string, unknown> = { type: 'grafana-grid', version: 2 };
+    setStylePlacement(layout, 'a', 'grid', { span: 9 });
+    setStylePlacement(layout, 'b', 'report', {});
+    expect(layout.items).toEqual({
+      a: { grid: { span: 9 } },
+      b: { report: {} },
+    });
+    expect(JSON.stringify(layout)).not.toContain('undefined');
+    expect(resolveStylePlacement(layout, 'a', 'grid')).toEqual({ span: 9, height: 2 });
+    expect(resolveStylePlacement(layout, 'b', 'report')).toEqual({ span: 9, height: 5 });
+  });
+
+  it('routes legacy documents through the legacy fallback derivation', () => {
+    expect(deriveAuthoredFlowFallback(gridLayout({ a: { span: 4, height: 1 } }), [{ id: 'a' }]))
+      .toEqual({
+        type: 'flow', version: 1, preset: 'columns-2',
+        items: { a: { span: 1, height: 'compact' } },
+      });
   });
 });
 
@@ -403,16 +466,15 @@ describe('computeGrafanaGridLayout', () => {
       expect(withoutMode).toEqual(withMode);
     });
 
-    it.each([
-      [1200, 12], [800, 6], [500, 4], [300, 2],
-    ])('at containerWidth %d (columns %d), every tile spans the full column count and gets its own row', (containerWidth, columns) => {
+    it.each([1200, 800, 500, 300])
+    ('at containerWidth %d, Full remains a fixed 12-column row', (containerWidth) => {
       const layout = gridLayout({ a: { span: 4 }, b: { span: 8 }, c: { span: 12 } });
       const model = computeGrafanaGridLayout({
         tiles: tiles('a', 'b', 'c'), layout, containerWidth, renderMode: 'full',
       });
-      expect(model.columns).toBe(columns);
+      expect(model.columns).toBe(12);
       for (const render of model.tiles) {
-        expect(render.span).toBe(columns);
+        expect(render.span).toBe(12);
         expect(render.colStart).toBe(0);
       }
       expect(model.tiles.map((t) => t.row)).toEqual([0, 1, 2]); // each tile on its own row

@@ -350,7 +350,7 @@ const layoutOptions = (root: ParentNode | null): string[] => {
 };
 const pickLayout = (root: ParentNode | null, value: string): void => {
   const labels: Record<string, string> = {
-    'grafana-grid': 'Grid Tiles', full: 'Full view', report: 'Report',
+    'grafana-grid': 'Grid', grid: 'Grid', full: 'Full', report: 'Report',
     'columns-2': '2 columns', 'columns-3': '3 columns',
   };
   layoutSelect(root).click();
@@ -712,10 +712,10 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
     expect(layoutSelect(app.root).value).toBe('columns-2');
     const rows = qsa(app.root, '.dash-row');
     expect((rows[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(2');
-    // Switch to report — one column (full-width was removed, #321).
+    // Switch to authored Report — one centered 9/12-width tile per row.
     pickLayout(app.root, 'report');
     expect(layoutSelect(app.root).value).toBe('report');
-    expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
+    expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).width).toBe('75%');
     await flush();
     expect(commit).toHaveBeenCalled();
   });
@@ -1836,29 +1836,25 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // grafana-grid-related entries (Full view is a transient render-mode
     // override, never an engine of its own).
     expect(layoutOptions(app.root)).toEqual(
-      ['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns'],
+      ['Grid', 'Full', 'Report', '2 columns', '3 columns'],
     );
     expect(select.getAttribute('aria-label')).toBe('Dashboard style: 2 columns');
     expect(select.value).toBe('columns-2');
     // Picking "Grid Tiles" sends change-layout {type:'grafana-grid',version:1}.
     pickLayout(app.root, 'grafana-grid');
-    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grid');
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
     await flush();
     expect(commit).toHaveBeenCalled();
-    // Picking a flow preset while grid is active restores the regenerated
-    // flow@1 fallback (bare {type:'flow',version:1,preset} — grid carries no
-    // flow items/preset shape to spread).
+    // Report is another authored map on the same v2 grid engine.
     pickLayout(app.root, 'report');
     expect(layoutSelect(app.root).value).toBe('report');
-    expect(qs(app.root, '.dash-gg-grid')).toBeNull(); // cleaned up, not just hidden
-    expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
-    // The cached tile card sheds its grid-only chrome, not just the host.
-    expect(qs(app.root, '.dash-gg-tile')).toBeNull();
-    expect(qs(app.root, '.dash-tile')).not.toBeNull();
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    expect(qsa(app.root, '.dash-row')).toHaveLength(0);
+    expect(qs(app.root, '.dash-gg-tile')).not.toBeNull();
   });
 
-  it('preserves per-tile flow items when switching between flow presets (not an engine switch)', async () => {
+  it('uses a fresh fixed-height grid for a temporary 3-column preview', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
@@ -1869,9 +1865,11 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     await render(app);
     pickLayout(app.root, 'columns-3');
     expect(layoutSelect(app.root).value).toBe('columns-3');
-    // 3-column preset with a persisted span-2 tile — still a flow row (not
-    // dropped by the switch).
-    expect(qsa(app.root, '.dash-row')[0].style.gridTemplateColumns).toContain('repeat(3');
+    expect(qs<HTMLElement>(app.root, '.dash-gg-grid').style.gridTemplateColumns).toContain('repeat(3');
+    for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
+      expect(card.style.gridColumn).toBe('span 1');
+      expect(card.style.height).toBe('300px');
+    }
   });
 
   it('shows grip/menu/resize affordances only in edit mode (!readOnly)', async () => {
@@ -2001,9 +1999,20 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     let handle = qs<HTMLButtonElement>(app.root, '.dash-gg-resize');
-    const lastPlacement = (): { span: number; height: number } | undefined => {
-      const layout = commit.mock.calls.at(-1)?.[0].dashboards[0]?.layout as { items?: Record<string, { span: number; height: number }> } | undefined;
-      return layout?.items?.t1;
+    const lastPlacement = (style: 'grid' | 'full' = 'grid'): { span?: number; height: number } | undefined => {
+      const layout = commit.mock.calls.at(-1)?.[0].dashboards[0]?.layout as {
+        version?: number;
+        items?: Record<string, {
+          span?: number; height?: number;
+          grid?: { span: number; height: number }; full?: { height: number };
+        }>;
+      } | undefined;
+      const entry = layout?.items?.t1;
+      if (!entry) return undefined;
+      if (layout?.version === 1 && style === 'grid' && typeof entry.height === 'number') {
+        return { span: entry.span, height: entry.height };
+      }
+      return entry[style];
     };
     const press = (key: string): KeyboardEvent => {
       const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
@@ -2039,8 +2048,8 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(commit).toHaveBeenCalledTimes(before);
     expect(press('ArrowDown').defaultPrevented).toBe(true);
     await flush();
-    const fullPlacement = lastPlacement();
-    expect(fullPlacement).toEqual({ span: 4, height: 2 });
+    expect(lastPlacement('full')).toEqual({ height: 3 });
+    expect(lastPlacement('grid')).toEqual({ span: 4, height: 1 });
   });
 
   it('keyboard span resize preserves authored intent under a narrow responsive clamp', async () => {
@@ -2759,12 +2768,16 @@ describe('renderDashboard — Full view (#321)', () => {
     queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
     tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
     layout: {
-      type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 'compact' } },
-      fallback: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      type: 'grafana-grid', version: 2, preset: 'grid',
+      items: { t1: { grid: { span: 4, height: 1 } } },
+      fallback: {
+        type: 'flow', version: 1, preset: 'columns-2',
+        items: { t1: { span: 1, height: 'compact' }, t2: { span: 2, height: 'medium' } },
+      },
     },
   });
 
-  it('selecting Full view makes every tile span the full column count without committing; Grid Tiles restores authored spans', async () => {
+  it('persists Full independently, then Grid restores its authored spans', async () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     const gridEl = qs<HTMLElement>(app.root, '.dash-gg-grid');
@@ -2774,15 +2787,17 @@ describe('renderDashboard — Full view (#321)', () => {
     for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
       expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
     }
-    expect(commit).not.toHaveBeenCalled();
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
     expect(qs(app.root, '.dash-gg-grid')?.classList.contains('is-full')).toBe(true);
-    // Grid Tiles restores the exact authored spans — still no commit.
+    // Grid restores the exact independent authored spans.
     pickLayout(app.root, 'grafana-grid');
-    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    await flush();
+    expect(layoutSelect(app.root).value).toBe('grid');
     const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
     expect((cards[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
     expect((cards[1].style as CSSStyleDeclaration).gridColumn).toBe('span 6'); // grid default
-    expect(commit).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(2);
     expect(qs(app.root, '.dash-gg-grid')?.classList.contains('is-full')).toBe(false);
   });
 
@@ -2791,18 +2806,15 @@ describe('renderDashboard — Full view (#321)', () => {
     await render(app);
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
-    // Full view is a transient render mode that never persists a width, so the
-    // menu still LISTS widen and says why it cannot run — the honest version of
-    // #535's "the button simply is not built here".
+    // Full has a fixed authored width, so Widen is absent rather than disabled.
     openTileMenu(app);
-    expect(tileMenuRow('Widen').getAttribute('aria-disabled')).toBe('true');
-    expect(qs(tileMenuRow('Widen'), '.fm-reason').textContent)
-      .toBe('This layout has a single column, so there is no width to change.');
+    expect(qsa(document.body, '.dash-tile-actions .fm-label').map((el) => el.textContent))
+      .not.toContain('Widen');
     tileMenuRow('Remove tile').click();
     confirmRemoveGo().click();
     await flush();
     expect(commit).toHaveBeenCalled();
-    const candidate = commit.mock.calls[0][0] as StoredWorkspaceV5;
+    const candidate = commit.mock.calls.at(-1)![0] as StoredWorkspaceV5;
     expect(candidate.dashboards[0]!.tiles.map((tile) => tile.id)).toEqual(['t2']);
     // Full view does NOT survive, and that is pre-existing rather than new: it is a
     // transient render mode held on the viewer SESSION (#321), and every
@@ -2810,7 +2822,7 @@ describe('renderDashboard — Full view (#321)', () => {
     // builds a fresh session at the persisted style. #535's duplicate already
     // behaves exactly this way; #537's removal joins it on the same path. Asserted
     // rather than wished away so the day it is fixed, this test says so.
-    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('full');
     // The SURVIVING tile's authored width is untouched by the round trip — Full
     // view renders every tile at 12 columns but never writes that back (#321), so a
     // removal made while it is active must not persist the override.
@@ -2873,7 +2885,8 @@ describe('renderDashboard — Full view (#321)', () => {
       .find((card) => qs(card, '.dash-tile-name')?.getAttribute('title') === 'q3')!;
     expect(addedCard).toBeTruthy();
     expect((addedCard.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // full-width override
-    expect(commit).not.toHaveBeenCalled(); // Full view itself never persists
+    await flush();
+    expect(commit).toHaveBeenCalled(); // Full is an authored base style
 
     // Switch back to Grid Tiles: the PERSISTED default placement — span 6,
     // height 2 (208px = 32 + 88*2) — is exactly what add-query seeded, not
@@ -2904,8 +2917,7 @@ describe('renderDashboard — Full view (#321)', () => {
     expect((card.style as CSSStyleDeclaration).height).toBe('296px'); // height still snaps (3 row units)
     window.dispatchEvent(new PointerEvent('pointerup'));
     await flush();
-    expect(commit).toHaveBeenCalledTimes(1);
-    // The persisted (authored) span — 4, NOT the full-width 12 — survives.
+    expect(commit).toHaveBeenCalledTimes(2); // Full selection, then height resize
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
     expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // still rendered full width
     // Switching back to Grid Tiles proves the PERSISTED span was 4, not 12.
@@ -2927,7 +2939,7 @@ describe('renderDashboard — Full view (#321)', () => {
       workspace: detached, mode: 'view',
     });
     await render(app);
-    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
+    expect(layoutOptions(app.root)).toEqual(['Grid', 'Full', 'Report', '2 columns', '3 columns']);
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
     for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
@@ -2936,10 +2948,10 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(commit).not.toHaveBeenCalled();
     pickLayout(app.root, 'columns-3');
     expect(layoutSelect(app.root).value).toBe('columns-3');
-    expect(qs(app.root, '.dash-gg-grid')).toBeNull();
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
     expect(commit).not.toHaveBeenCalled();
     pickLayout(app.root, 'grafana-grid');
-    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grid');
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -2960,23 +2972,23 @@ describe('renderDashboard — Full view (#321)', () => {
     expect((qs<HTMLElement>(app.root, '.dash-gg-tile').style as CSSStyleDeclaration).gridColumn).toBe('span 12');
   });
 
-  it('selecting a flow preset from Full view clears the override and persists the selected flow layout', async () => {
+  it('selecting a temporary columns preview from Full never changes its persisted base style', async () => {
     const { app, commit } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     pickLayout(app.root, 'full');
-    expect(commit).not.toHaveBeenCalled();
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
     pickLayout(app.root, 'columns-2');
     expect(layoutSelect(app.root).value).toBe('columns-2');
     await flush();
-    expect(commit).toHaveBeenCalledTimes(1); // the grid->flow conversion
-    expect(qs(app.root, '.dash-gg-grid')).toBeNull();
-    expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
   });
 
   it('a fresh render (new viewer session) always starts in Grid Tiles mode', async () => {
     const { app } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
-    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grid');
     expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
   });
 
@@ -4073,7 +4085,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
     expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
     expect(layoutSelect(app.root)).not.toBeNull();
-    expect(layoutOptions(app.root)).toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
+    expect(layoutOptions(app.root)).toEqual(['Grid', 'Full', 'Report', '2 columns', '3 columns']);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -4342,7 +4354,7 @@ describe('renderDashboard — unified live modes (#407)', () => {
     const styleMenu = qs(document.body, '.dash-style-menu');
     expect(styleMenu.classList.contains('file-menu')).toBe(true);
     expect(qsa(styleMenu, '.fm-item .fm-label').map((item) => item.textContent))
-      .toEqual(['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns']);
+      .toEqual(['Grid', 'Full', 'Report', '2 columns', '3 columns']);
     expect(qsa(styleMenu, '.dash-style-item .fm-trailing').map((item) => item.textContent))
       .toEqual(['G + G', 'G + F', 'G + R', 'G + 2', 'G + 3']);
     expect(qsa(styleMenu, '.dash-style-item .fm-leading')).toHaveLength(0);
@@ -4571,13 +4583,15 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(qs(document, '.share-toast').textContent).toContain('no longer applies');
   });
 
-  it('a successful change-layout (flow preset) projects the committed workspace, including the new revision', async () => {
+  it('a successful authored-style change projects the committed workspace, including the new revision', async () => {
     const { app, commit } = dashApp({ workspace: twoTiles() });
     await render(app);
-    pickLayout(app.root, 'columns-2');
+    pickLayout(app.root, 'full');
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(app.state.dashboard?.layout).toEqual({ type: 'flow', version: 1, preset: 'columns-2', items: {} });
+    expect(app.state.dashboard?.layout).toMatchObject({
+      type: 'grafana-grid', version: 2, preset: 'full',
+    });
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
@@ -4744,29 +4758,29 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     let resolveFirst!: (v: unknown) => void;
     const commit = vi.fn((candidate: StoredWorkspaceV5) => {
       const layout = candidate.dashboards[0]!.layout;
-      seen.push(layout.type === 'flow' ? String(layout.preset) : layout.type);
+      seen.push(String(layout.preset));
       const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboards[0]!.revision };
       if (seen.length === 1) return new Promise((resolve) => { resolveFirst = resolve; }).then(() => result);
       return Promise.resolve(result);
     });
     const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);
-    pickLayout(app.root, 'columns-2'); // first — deliberately slow to resolve
-    pickLayout(app.root, 'columns-3'); // second — fired while the first is still pending
+    pickLayout(app.root, 'full'); // first — deliberately slow to resolve
+    pickLayout(app.root, 'grid'); // second — fired while the first is still pending
     // Neither op has reached `commit()` yet — `serializeWrite` + `mutateWorkspace`
     // defer even the FIRST call by a few microtask hops (`loadCurrent()`'s own
     // await, the `transform` await, the async return of `commit(...)` — all
     // plain microtask ticks, never a macrotask), so draining several here still
     // never gives the still-pending first commit a chance to resolve.
     for (let i = 0; i < 6; i++) await Promise.resolve();
-    expect(seen).toEqual(['columns-2']); // only the first has reached commit() — the second is queued behind it
+    expect(seen).toEqual(['full']); // only the first has reached commit() — the second is queued behind it
     resolveFirst(undefined);
     await flush();
-    expect(seen).toEqual(['columns-2', 'columns-3']); // commit order == invocation order, never reordered
+    expect(seen).toEqual(['full', 'grid']); // commit order == invocation order, never reordered
     // The LATER command's projection is what's left standing — the queue never
     // let the (slower-to-resolve, but earlier-invoked) first commit's
     // projection run after the second's.
-    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    expect(app.state.dashboard?.layout.preset).toBe('grid');
     // #341 (review): each candidate is built INSIDE its queued op from the
     // freshest committed baseline, so revisions stay strictly monotonic across
     // rapid commits — two successful commits advance the loaded revision 1 → 3,
@@ -4785,7 +4799,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
     await render(app);
-    pickLayout(app.root, 'columns-2'); // will fail
+    pickLayout(app.root, 'full'); // will fail
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
     // Rolled back to the last COMMITTED truth (the originally-loaded 'report'
@@ -4796,10 +4810,10 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     const toastEl = document.querySelector('.share-toast');
     expect(toastEl?.textContent).toBe('✕ boom');
     // The queue is NOT wedged — a later command still commits successfully.
-    pickLayout(app.root, 'columns-3');
+    pickLayout(app.root, 'grid');
     await flush();
     expect(commit).toHaveBeenCalledTimes(2);
-    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    expect(app.state.dashboard?.layout.preset).toBe('grid');
     expect(app.state.dashboard?.revision).toBe(2);
   });
 
@@ -5133,7 +5147,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
       ));
     const { app } = dashApp({ workspace: twoTiles(), commit });
     await render(app);
-    pickLayout(app.root, 'columns-2'); // its commit REJECTS (never resolves ok:false)
+    pickLayout(app.root, 'full'); // its commit REJECTS (never resolves ok:false)
     await flush();
     expect(commit).toHaveBeenCalledTimes(1);
     // Rolled back to the last committed truth, exactly like an ok:false.
@@ -5142,10 +5156,10 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(document.querySelector('.share-toast')?.textContent).toBe('✕ Could not save dashboard');
     // The descriptor was dropped from `pendingCommands` — a later command
     // rebases from clean bookkeeping and commits successfully.
-    pickLayout(app.root, 'columns-3');
+    pickLayout(app.root, 'grid');
     await flush();
     expect(commit).toHaveBeenCalledTimes(2);
-    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    expect(app.state.dashboard?.layout.preset).toBe('grid');
     expect(app.state.dashboard?.revision).toBe(2);
   });
 });
@@ -5226,7 +5240,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const { app, calls, loadActive } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);
     const before = calls.length;
-    pickLayout(app.root, 'columns-2'); // dispatch a command whose commit stays pending
+    pickLayout(app.root, 'full'); // dispatch a command whose commit stays pending
     for (let i = 0; i < 4; i++) await Promise.resolve(); // reach commit() — still unresolved
     // An external change arrives WHILE the command is pending: the rebuild must
     // defer (no resolution handler from this render may survive into the rebuilt one).
@@ -5927,12 +5941,15 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
     ...(layout ? { layout } : {}),
   });
   const grid = (items: Record<string, unknown>): Record<string, unknown> =>
-    ({ type: 'grafana-grid', version: 1, items });
+    ({
+      type: 'grafana-grid', version: 2, preset: 'grid',
+      items: Object.fromEntries(Object.entries(items).map(([id, placement]) => [id, { grid: placement }])),
+    });
   const flow = (preset: string, items: Record<string, unknown> = {}): Record<string, unknown> =>
     ({ type: 'flow', version: 1, preset, items });
   /** The committed placement for `t1`, read back off the stored aggregate. */
   const placement = (app: TestApp): unknown =>
-    (app.currentWorkspace!.dashboards[0].layout.items as Record<string, unknown>).t1;
+    ((app.currentWorkspace!.dashboards[0].layout.items as Record<string, { grid?: unknown }>).t1?.grid);
   /** Two grid tiles, so a reorder has somewhere to go — a one-tile Dashboard could
    *  not commit a `move-tile` even with the drag guard removed, which would make a
    *  "never starts a drag" assertion vacuous. */
@@ -5981,6 +5998,36 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       .toEqual(['dash-gg-grip', 'dash-tile-widen', 'dash-tile-menu']);
   });
 
+  it('selecting the already-authored v2 base style clears preview state without a write', async () => {
+    const { app, commit } = modeApp({
+      workspace: wsWith(oneTile(grid({ t1: { span: 4, height: 2 } }))), mode: 'edit',
+    });
+    await render(app);
+    pickLayout(app.root, 'columns-3');
+    expect(qs<HTMLElement>(app.root, '.dash-gg-tile').style.height).toBe('300px');
+    const previewHandle = qs<HTMLElement>(app.root, '.dash-gg-resize');
+    previewHandle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, bubbles: true }));
+    previewHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(qs<HTMLElement>(app.root, '.dash-gg-tile').classList.contains('dash-gg-resizing')).toBe(false);
+    pickLayout(app.root, 'grid');
+    expect(qs<HTMLElement>(app.root, '.dash-gg-tile').style.height).toBe('208px');
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('ignores an obsolete tile control whose command no longer applies', async () => {
+    const { app, commit } = modeApp({
+      workspace: wsWith(oneTile(grid({ t1: { span: 4, height: 2 } }))), mode: 'edit',
+    });
+    await render(app);
+    const obsoleteWiden = widenBtn(app);
+    removeTileViaMenu(app);
+    await flush();
+    const commits = commit.mock.calls.length;
+    obsoleteWiden.click();
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(commits);
+  });
+
   it('lists the menu rows in the design order, with remove separated and last', async () => {
     const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 4 } }))), mode: 'edit' });
     await render(app);
@@ -6018,7 +6065,7 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
     await render(app);
     runTileMenu(app, 'Widen to 6 columns');
     await flush();
-    expect(placement(app)).toEqual({ span: 6, height: 4 });
+    expect(placement(app)).toEqual({ span: 6, height: 2 });
   });
 
   it('names the controls and the rows after the tile they belong to', async () => {
@@ -6043,18 +6090,18 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
   });
 
   describe('widen', () => {
-    it('doubles span AND height in the grid, clamping each, then wraps to one column', async () => {
+    it('doubles only the grid span, preserving height, then wraps to one column', async () => {
       const { app } = modeApp({ workspace: wsWith(oneTile(grid({ t1: { span: 3, height: 2 } }))), mode: 'edit' });
       await render(app);
       widenBtn(app).click();
       await flush();
-      expect(placement(app)).toEqual({ span: 6, height: 4 });
+      expect(placement(app)).toEqual({ span: 6, height: 2 });
       // …and the button relabels itself from the NEW width, without a rebuild.
       expect(widenBtn(app).getAttribute('title')).toBe('Widen to 12 columns');
 
       widenBtn(app).click();
       await flush();
-      expect(placement(app)).toEqual({ span: 12, height: 8 });
+      expect(placement(app)).toEqual({ span: 12, height: 2 });
       expect(widenBtn(app).getAttribute('title')).toBe('Shrink to 1 column');
 
       widenBtn(app).click();
@@ -6062,19 +6109,22 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       expect(placement(app)).toEqual({ span: 1, height: 2 });
     });
 
-    it('steps one column at a time under a flow preset, wrapping at the preset count', async () => {
-      const { app } = modeApp({
+    it('steps temporary preview spans in session only and resets without persisting', async () => {
+      const { app, commit } = modeApp({
         workspace: wsWith(oneTile(flow('columns-3', { t1: { span: 1, height: 'large' } }))),
         mode: 'edit',
       });
       await render(app);
+      pickLayout(app.root, 'columns-3');
       for (const expected of [2, 3, 1]) {
         widenBtn(app).click();
         await flush();
-        // The authored height rides through untouched — sending `{span}` alone
-        // would DELETE it, because a placement write replaces the whole object.
-        expect(placement(app)).toEqual({ span: expected, height: 'large' });
+        expect(qs<HTMLElement>(app.root, '.dash-gg-tile').style.gridColumn).toBe(`span ${expected}`);
+        expect(qs<HTMLElement>(app.root, '.dash-gg-tile').style.height).toBe('300px');
       }
+      expect(commit).not.toHaveBeenCalled();
+      expect((app.currentWorkspace!.dashboards[0].layout.items as Record<string, unknown>).t1)
+        .toEqual({ span: 1, height: 'large' });
     });
 
     it('hides itself for the single-column styles, and re-shows on a switch back', async () => {
@@ -6107,6 +6157,25 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       app.state.isMobile.value = false;
       await Promise.resolve();
       expect(widenBtn(app).hidden).toBe(false);
+    });
+
+    it('disables Widen throughout a temporary preview collapsed on mobile', async () => {
+      const { app } = modeApp({
+        workspace: wsWith(oneTile(grid({ t1: { span: 12, height: 8 } }))),
+        mode: 'edit',
+      });
+      app.state.isMobile.value = true;
+      await render(app);
+      pickLayout(app.root, 'columns-3');
+      await flush();
+
+      expect(qs<HTMLElement>(app.root, '.dash-gg-grid').style.gridTemplateColumns)
+        .toContain('repeat(1');
+      expect(widenBtn(app).hidden).toBe(true);
+      openTileMenu(app);
+      expect(tileMenuRow('Widen').getAttribute('aria-disabled')).toBe('true');
+      expect(qs(tileMenuRow('Widen'), '.fm-reason').textContent)
+        .toBe('This layout has a single column, so there is no width to change.');
     });
 
     // Full view is a TRANSIENT full-width render mode that never persists a width
@@ -6147,7 +6216,7 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       // …and the press did not eat the click either.
       button.click();
       await flush();
-      expect(placement(app)).toEqual({ span: 8, height: 4 });
+    expect(placement(app)).toEqual({ span: 8, height: 2 });
     });
   });
 
@@ -6174,7 +6243,7 @@ describe('renderDashboard — duplicate + widen tile actions (#535)', () => {
       expect(app.currentWorkspace!.queries.map((query) => query.id)).toEqual(['q1', 'q2', copyQueryId]);
       // Same size as the source, not the query's add-time size hint.
       const items = dashboard.layout.items as Record<string, unknown>;
-      expect(items[dashboard.tiles[1].id]).toEqual({ span: 4, height: 3 });
+      expect(items[dashboard.tiles[1].id]).toEqual({ grid: { span: 4, height: 3 } });
     });
 
     it('rebuilds the surface so the copy actually renders', async () => {
