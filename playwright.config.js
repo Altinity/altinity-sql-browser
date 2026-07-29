@@ -14,10 +14,12 @@ export default defineConfig({
   // modules (/src/**) as native ESM — no bundling, always current. The server
   // is build/e2e-serve.mjs (not a plain static server) because the tree is
   // mixed .js/.ts under ADR-0002: an imported `./x.js` whose module converted
-  // to `x.ts` must be found and type-stripped, or the fixture pages 404.
+  // to `x.ts` must be found and type-stripped, or the fixture pages 404. Probe
+  // a server-only route rather than a static page: otherwise Playwright can
+  // reuse an older harness which lacks routes required by the current suite.
   webServer: {
     command: 'node build/e2e-serve.mjs 5599',
-    url: 'http://127.0.0.1:5599/tests/e2e/editor.html',
+    url: 'http://127.0.0.1:5599/tests/e2e/oauth-document-recovery/config.json',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
