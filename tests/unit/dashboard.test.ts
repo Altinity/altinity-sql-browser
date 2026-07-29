@@ -536,6 +536,60 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     await render(app);
   });
 
+  it('shows descriptions in Full/Report and moves them to the name tooltip in Grid Tiles and 2/3 columns', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [
+          q('described', 'SELECT 1', { name: 'Revenue', description: 'Monthly sales' }),
+          q('plain', 'SELECT 2', { name: 'Latency' }),
+        ],
+        tiles: [{ id: 't1', queryId: 'described' }, { id: 't2', queryId: 'plain' }],
+        layout: {
+          type: 'grafana-grid', version: 1, items: {},
+          fallback: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+        },
+      }),
+    });
+    await render(app);
+
+    const expectCompact = (): void => {
+      const names = qsa<HTMLElement>(app.root, '.dash-tile-name');
+      const description = qs<HTMLElement>(app.root, '.dash-tile-desc');
+      expect(description.hidden).toBe(true);
+      expect(names[0].getAttribute('title')).toBe('Monthly sales');
+      expect(names[1].getAttribute('title')).toBeNull();
+    };
+    const expectExpanded = (): void => {
+      const names = qsa<HTMLElement>(app.root, '.dash-tile-name');
+      const description = qs<HTMLElement>(app.root, '.dash-tile-desc');
+      expect(description.hidden).toBe(false);
+      expect(names[0].getAttribute('title')).toBe('Revenue');
+      expect(names[1].getAttribute('title')).toBe('Latency');
+    };
+
+    expectCompact(); // Grid Tiles
+    const gridName = qs(app.root, '.dash-tile-name');
+    const gridDescription = qs(app.root, '.dash-tile-desc');
+    pickLayout(app.root, 'full');
+    expectExpanded();
+    expect(qs(app.root, '.dash-tile-name')).toBe(gridName);
+    expect(qs(app.root, '.dash-tile-desc')).toBe(gridDescription);
+
+    pickLayout(app.root, 'report');
+    await flush();
+    expectExpanded();
+
+    pickLayout(app.root, 'columns-2');
+    await flush();
+    expectCompact();
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expectCompact();
+    pickLayout(app.root, 'grafana-grid');
+    await flush();
+    expectCompact();
+  });
+
   it('falls back to an empty dashboard when no workspace resolves', async () => {
     const { app } = dashApp({ workspace: null, savedQueries: [q('q1', 'SELECT 1', { favorite: true })] });
     await render(app);
@@ -2870,7 +2924,7 @@ describe('renderDashboard — Full view (#321)', () => {
     await render(app);
     pickLayout(app.root, 'full');
     const addedCard = qsa<HTMLElement>(app.root, '.dash-gg-tile')
-      .find((card) => qs(card, '.dash-tile-name')?.getAttribute('title') === 'q3')!;
+      .find((card) => qs(card, '.dash-tile-name')?.textContent === 'q3')!;
     expect(addedCard).toBeTruthy();
     expect((addedCard.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // full-width override
     expect(commit).not.toHaveBeenCalled(); // Full view itself never persists
@@ -2880,7 +2934,7 @@ describe('renderDashboard — Full view (#321)', () => {
     // the transient full-width render.
     pickLayout(app.root, 'grafana-grid');
     const restoredCard = qsa<HTMLElement>(app.root, '.dash-gg-tile')
-      .find((card) => qs(card, '.dash-tile-name')?.getAttribute('title') === 'q3')!;
+      .find((card) => qs(card, '.dash-tile-name')?.textContent === 'q3')!;
     expect((restoredCard.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
     expect((restoredCard.style as CSSStyleDeclaration).height).toBe('208px');
   });
@@ -5601,7 +5655,7 @@ describe('renderDashboard — per-tile Open in Workbench (#471)', () => {
     const { app } = modeApp({ workspace: ws, mode: 'edit' });
     await render(app);
     expect(qs(app.root, '.dash-tile-name')?.textContent).toBe('Revenue by day');
-    expect(qs(app.root, '.dash-tile-name')?.getAttribute('title')).toBe('Revenue by day');
+    expect(qs(app.root, '.dash-tile-name')?.getAttribute('title')).toBeNull();
     expect(menuBtns(app)[0].getAttribute('aria-label')).toBe('Panel actions: Revenue by day');
     expect(menuBtns(app)[0].getAttribute('title')).toBe('Panel actions');
     openTileMenu(app);
