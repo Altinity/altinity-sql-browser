@@ -264,6 +264,9 @@ function renderSaved(app: App, list: HTMLElement): void {
         h('span', { class: 'name' }, name),
         h('button', {
           class: 'sv-act sv-assign', title: 'Add to dashboard…', 'aria-label': 'Add to dashboard…',
+          // Explicit so WebKit includes the hover-concealed action in its
+          // native Tab sequence; the preceding star is the keyboard entry.
+          tabindex: '0',
           onclick: (e: Event) => {
             e.stopPropagation();
             openLibraryAssignMenu(app, q, e.currentTarget as HTMLElement);

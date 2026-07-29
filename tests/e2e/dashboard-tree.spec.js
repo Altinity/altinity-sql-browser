@@ -886,6 +886,20 @@ test.describe('direct row actions (#494)', () => {
     await page.keyboard.press('Escape');
   });
 
+  test('a pointer-opened pencil moves the composite Tab stop to its own row', async ({ page }) => {
+    await open(page);
+    await roleTab(page, 'Dashboards').click();
+    const row = treeRow(page, 'workspace:ops');
+    await row.hover();
+    const pencil = row.getByRole('button', { name: 'Edit dashboard Ops latency' });
+    await pencil.click();
+    await expect(page.getByRole('dialog', { name: 'Edit dashboard' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(pencil).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(row.getByRole('button', { name: 'Delete dashboard Ops latency' })).toBeFocused();
+  });
+
   test('the dialog announces itself as a modal named by its heading', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
