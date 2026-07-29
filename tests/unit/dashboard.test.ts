@@ -3280,6 +3280,24 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(ordinaryToolbar.contains(liveRegion)).toBe(false);
   });
 
+  // #473: the counterpart to the test above — the "shown" half of the same
+  // ternary (`src/ui/dashboard.ts`'s `hasOrdinaryVariables ? undefined : {
+  // display: 'none' }`) was asserted nowhere against a real `createApp`
+  // render; only the e2e fixture's hand-written markup modeled it. An ordinary
+  // (non-time-range) variable — `region` here — must leave the toolbar with NO
+  // inline display override at all, not merely "not none".
+  it('shows the ordinary-variable toolbar with no inline display override when an ordinary variable is present', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [paired(PAIR + ' AND r = {region:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const ordinaryToolbar = qs(app.root, '.dash-toolbar-variables');
+    expect(ordinaryToolbar.style.display).toBe('');
+  });
+
   it('Apply commits BOTH bounds through session.applyVariables in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),

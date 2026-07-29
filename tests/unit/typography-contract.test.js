@@ -22,7 +22,7 @@
 // size-report.test.js: it reads repo files through node: APIs, and the project
 // has no @types/node (a deliberate deferral — see CLAUDE.md / ADR-0002).
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FONTS, FONT_BYTE_BUDGET, buildFontFaces } from '../../build/fonts.mjs';
 import { buildArtifact } from '../../build/build.mjs';
@@ -347,6 +347,95 @@ describe('every text-bearing class the UI renders has a rule', () => {
       'docs-field', 'docs-field docs-syntax', 'docs-field docs-facts', 'docs-field docs-related',
     ]);
     expect([...new Set(unstyled)].filter((g) => !ALLOWED.has(g))).toEqual([]);
+  });
+});
+
+describe('openMenu extension classes have CSS rules', () => {
+  // #498: openMenu()/openConfirmMenu() consumers supply component-specific
+  // classes through the `menuClass`/`extraClass` OPTIONS rather than an `h()`
+  // `class:` literal, so the generic scanner above never sees them — and
+  // openMenu always layers on generic `.file-menu`/`.fm-item`/`.fm-section`
+  // chrome, so a missing consumer rule would not even produce a fully
+  // unstyled browser-default dialog the way the generic scanner's failure
+  // mode does. Kept as its OWN test (not folded into the generic scanner
+  // above) precisely because it needs different extraction (menuClass/
+  // extraClass properties, not a `class:` attribute) and no `ALLOWED`
+  // leniency: every literal found here must resolve to a real rule.
+  //
+  // Scans ALL of `src/ui/**/*.ts` — not a curated file list — so a future
+  // menu consumer is covered automatically without anyone remembering to add
+  // it here.
+  function collectUiFiles(dir) {
+    const out = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) out.push(...collectUiFiles(full));
+      else if (entry.name.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  }
+  const uiSource = collectUiFiles(resolve(root, 'src/ui'))
+    .map((f) => readFileSync(f, 'utf8')).join('\n');
+
+  // `ui/confirm-menu.ts`'s `openConfirmMenu` is the one indirection the plain
+  // `menuClass`/`extraClass` pattern cannot see through: its own options are
+  // named `menuClass` (caught directly), `goClass`, and `cancelClass` — the
+  // latter two become `extraClass` INSIDE confirm-menu.ts, so the literal
+  // value lives at the CALL site (dashboard-tree.ts's `dash-tree-confirm*`,
+  // tabs.ts's `qtab-close-confirm*`, dashboard.ts's `dash-tile-confirm*`),
+  // under different property names than the ones that reach openMenu.
+  function literalClassGroups(source) {
+    const groups = [];
+    for (const pattern of [
+      /\b(?:menuClass|extraClass):\s*'([^']+)'/g,
+      /\b(?:goClass|cancelClass):\s*'([^']+)'/g,
+    ]) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(source))) {
+        groups.push(match[1].split(/\s+/).filter(Boolean));
+      }
+    }
+    return groups;
+  }
+
+  const styledClasses = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+
+  it('every literal menuClass/extraClass value (incl. openConfirmMenu goClass/cancelClass) has a stylesheet rule', () => {
+    const groups = literalClassGroups(uiSource);
+    // The scan itself must find something, or this test would pass vacuously
+    // if the extraction regex ever stopped matching anything at all.
+    expect(groups.length).toBeGreaterThan(0);
+    const missing = new Set();
+    for (const group of groups) {
+      for (const cls of group) {
+        if (!styledClasses.has(cls)) missing.add(cls);
+      }
+    }
+    expect([...missing]).toEqual([]);
+  });
+
+  it('sabotage check: a class missing its CSS rule fails the contract above', () => {
+    const groups = literalClassGroups(uiSource);
+    const found = new Set(groups.flat());
+    // `dash-tile-menu-danger` (#537, the tile menu's destructive row —
+    // `extraClass` arriving directly, not through goClass/cancelClass) is
+    // real, single-purpose, and currently styled: a safe target to remove.
+    const target = 'dash-tile-menu-danger';
+    expect(found.has(target)).toBe(true);
+    const sabotagedCss = css.replace(/\.dash-tile-menu-danger\s*\{[^}]*\}\n?/, '');
+    expect(sabotagedCss).not.toEqual(css); // the removal must actually have taken effect
+    const sabotagedClasses = new Set([...sabotagedCss.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+    const missing = [...found].filter((cls) => !sabotagedClasses.has(cls));
+    expect(missing).toEqual([target]);
+  });
+
+  // Existing generic scanner keeps covering these directly, unaffected by the
+  // menuClass/extraClass extraction above (#498 acceptance: they stay covered).
+  it('still covers .file-menu / .fm-item / .fm-section directly (unaffected by this test)', () => {
+    for (const cls of ['file-menu', 'fm-item', 'fm-section']) {
+      expect(styledClasses.has(cls), cls).toBe(true);
+    }
   });
 });
 

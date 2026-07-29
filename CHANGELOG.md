@@ -34,6 +34,33 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   made there are lost (authored Grid/Full/Report dimensions are never touched,
   and this build regenerates the fallback deterministically on the next read).
   Gating editing on fallback use is tracked in #550.
+- **`build/check-boundaries.mjs` now enforces that `src/core` stays a pure,
+  reusable-logic leaf** (#455): a new `RULES` entry rejects any import from
+  `src/core/**` into `src/workspace/**`, `src/application/**`, `src/ui/**`, or
+  `src/net/**`, matching the invariant `src/application/main-surface.ts`
+  already documented but that nothing mechanically enforced. Deliberately
+  narrower than "no imports from any other layer": `src/editor` stays
+  reachable, preserving the documented legacy type-only import from
+  `core/saved-io.ts` to `editor/spec-editor.types.js`.
+- **The typography contract now catches `openMenu`/`openConfirmMenu` classes
+  supplied through options rather than an `h()` `class:` literal** (#498): a
+  new `openMenu extension classes have CSS rules` test scans all of
+  `src/ui/**/*.ts` for literal `menuClass`/`extraClass` values (handling
+  several whitespace-separated classes per value) and, separately, the
+  `goClass`/`cancelClass` values `openConfirmMenu` callers pass at their
+  `dash-tree-confirm*`/`qtab-close-confirm*`/`dash-tile-confirm*` call sites
+  (confirm-menu.ts forwards these as `extraClass`, so the literal lives at the
+  caller, not the shared helper). A sabotage test proves the contract actually
+  fails when a matching CSS rule is removed. The scan surfaced one real,
+  previously uncaught gap: `dash-style-item` (the Dashboard layout-picker row,
+  `dashboard.ts`) had no CSS rule at all; `src/styles.css` now gives it one.
+- **`tests/unit/filter-bar.test.ts`'s 4 raw NUL bytes were already resolved**
+  (#435) — the file was renamed to `tests/unit/variable-bar.test.ts` by the
+  #459 filter→variable rename, which replaced the four separate literal
+  NUL bytes with one `GROUP_KEY` constant built from the JavaScript escape
+  sequence for code point zero, matching the escape `src/core/time-range.ts`
+  uses in production. Verified no raw NUL bytes remain anywhere under `src/`
+  or `tests/`; no code change was needed.
 
 ### Changed
 - **Sidebar tab headers go text-only once the sidebar is dragged to 220px or

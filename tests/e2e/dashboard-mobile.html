@@ -30,7 +30,13 @@
       <div class="dash-topbar">
         <div id="shared-header"></div>
         <div id="primary-toolbar" class="dash-toolbar dash-toolbar-primary"></div>
-        <div class="dash-toolbar dash-toolbar-variables has-variables">
+        <!-- #473: the real `ui/dashboard.ts` toolbar carries only these two classes,
+             always — it never adds a visibility class. The show/hide contract is an
+             inline `style.display`, applied only in the hidden case (an omitted
+             style, as here, means "no ordinary variables to hide"). This harness's
+             scenario always has ordinary variables, so no inline style is present,
+             matching the app's own undefined-style branch. -->
+        <div class="dash-toolbar dash-toolbar-variables">
           <div class="dash-variable-host dash-variables" role="group" aria-label="Dashboard variables"><div class="dash-variable-ordinary"></div></div>
           <button class="dash-clear-variables">Clear all</button>
         </div>

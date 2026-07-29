@@ -9,7 +9,7 @@
 // typing the node: imports would need @types/node — a deferred decision).
 
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +19,14 @@ const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
 const FORBIDDEN = [
   'src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net', 'src/main.ts',
 ];
+
+// Issue #455: src/core is a pure, reusable-logic leaf — it must not depend on
+// workspace, application, UI, or network layers (mirrors the
+// `build/check-boundaries.mjs` RULES entry added for #455). Deliberately
+// narrower than FORBIDDEN above: `src/editor` is NOT listed, because
+// `core/saved-io.ts` keeps a documented legacy type-only import from
+// `editor/spec-editor.types.js`.
+const FORBIDDEN_CORE = ['src/workspace', 'src/application', 'src/ui', 'src/net'];
 
 function collectFiles(dir) {
   const out = [];
@@ -52,13 +60,13 @@ function resolveSpec(fromFile, spec) {
   return relative(repoRoot, found).split('\\').join('/');
 }
 
-function violations(dir) {
+function violations(dir, forbidden = FORBIDDEN) {
   const abs = join(repoRoot, dir);
   const found = [];
   for (const file of collectFiles(abs)) {
     for (const spec of relativeSpecifiers(file)) {
       const resolved = resolveSpec(file, spec);
-      const hit = FORBIDDEN.find((f) => resolved === f || resolved.startsWith(`${f}/`));
+      const hit = forbidden.find((f) => resolved === f || resolved.startsWith(`${f}/`));
       if (hit) found.push(`${relative(repoRoot, file)} → ${spec} (${hit})`);
     }
   }
@@ -88,6 +96,30 @@ describe('dashboard dependency boundaries', () => {
   // layer. It remains constructible without UI/App/editor/service/net modules.
   it('src/workspace imports no Workbench UI / App / AppState / editor / service / net modules', () => {
     expect(violations('src/workspace')).toEqual([]);
+  });
+
+  // #455: src/core is a pure, reusable-logic leaf and must not depend on
+  // workspace, application, UI, or network layers (the invariant
+  // `src/application/main-surface.ts` documents, and `build/check-boundaries.mjs`
+  // now mechanically enforces via its own RULES entry).
+  it('src/core imports no workspace / application / UI / net modules', () => {
+    expect(violations('src/core', FORBIDDEN_CORE)).toEqual([]);
+  });
+
+  // Sabotage check: the check above only proves the CURRENT tree is clean —
+  // it says nothing about whether the detector would actually catch a
+  // regression. Plant a real, throwaway file with a forbidden import inside
+  // src/core, confirm the same detection logic flags it, then remove it
+  // regardless of outcome so the source tree is left exactly as found.
+  it('flags a src/core import that reaches into src/workspace (proves the rule above is not vacuous)', () => {
+    const probe = join(repoRoot, 'src/core/__boundary_probe_455__.ts');
+    writeFileSync(probe, "import { nothing } from '../workspace/does-not-exist.js';\nexport const probe = nothing;\n");
+    try {
+      const found = violations('src/core', FORBIDDEN_CORE);
+      expect(found.some((line) => line.includes('__boundary_probe_455__') && line.includes('src/workspace'))).toBe(true);
+    } finally {
+      unlinkSync(probe);
+    }
   });
 
   it('does not restore the retired saved-query repair planner or its vocabulary', () => {

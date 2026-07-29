@@ -200,17 +200,24 @@ test.describe('Dashboard mobile layout', () => {
     await expect(list).toBeVisible();
     const popover = await list.evaluate((node) => {
       const input = document.querySelector('[aria-label="region"]');
-      const toolbar = document.querySelector('.dash-toolbar.has-variables');
+      // #473: `.dash-toolbar-variables` is the real class the app always builds;
+      // `ui/dashboard.ts` never sets a `has-variables`/`has-filters` class. The
+      // show/hide contract is its inline `style.display`, which the app leaves
+      // unset (not `'none'`) whenever ordinary variables are present, as here.
+      const toolbar = document.querySelector('.dash-toolbar-variables');
       const listRect = node.getBoundingClientRect();
       const inputRect = input.getBoundingClientRect();
       return {
         position: getComputedStyle(node).position,
         anchored: Math.abs(listRect.left - inputRect.left) < 2 && listRect.top >= inputRect.bottom,
         escapesToolbar: listRect.bottom > toolbar.getBoundingClientRect().bottom,
+        toolbarDisplay: toolbar.style.display,
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
-    expect(popover).toEqual({ position: 'fixed', anchored: true, escapesToolbar: true, pageOverflow: 0 });
+    expect(popover).toEqual({
+      position: 'fixed', anchored: true, escapesToolbar: true, toolbarDisplay: '', pageOverflow: 0,
+    });
     await first.press('Enter');
     await expect(first).toHaveValue('alpha');
   });
@@ -290,7 +297,11 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.locator('.dash-filter-count')).toHaveCount(0);
     await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
 
-    const toolbar = page.locator('.dash-toolbar.has-variables');
+    // #473: real class (never `has-variables`/`has-filters` — the app doesn't set
+    // one); the actual show/hide contract is the inline `style.display` the app
+    // sets only to hide the toolbar, asserted here directly.
+    const toolbar = page.locator('.dash-toolbar-variables');
+    expect(await toolbar.evaluate((node) => node.style.display)).toBe('');
     const before = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
 
     const layout = await page.evaluate(() => {
