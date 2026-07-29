@@ -107,6 +107,81 @@ describe('upgradeDashboardLayout', () => {
   });
 });
 
+describe('upgradeDashboardLayout — #551 __proto__/constructor tile ids', () => {
+  // A tile id of '__proto__' or 'constructor' is schema-legal
+  // (`dashboardTileV1.id` pattern `\S`); every placement-map write this
+  // migration performs must keep it as an own property with its exact
+  // span/height, never silently dropping it via the inherited
+  // Object.prototype setter.
+  for (const tileId of ['__proto__', 'constructor']) {
+    const protoTiles = [{ id: tileId, queryId: 'qa' }, { id: 'b', queryId: 'qb' }];
+
+    it(`preserves grafana-grid@1 -> @2 placement and its flow fallback for tile id ${JSON.stringify(tileId)}`, () => {
+      const source = {
+        documentVersion: 2, id: 'd', title: 'D', revision: 1, tiles: protoTiles,
+        layout: {
+          type: 'grafana-grid', version: 1,
+          items: { [tileId]: { span: 4, height: 'compact' } },
+        },
+      } as DashboardDocumentV2;
+      const result = upgradeDashboardLayout(source);
+      const items = result.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ grid: { span: 4, height: 1 } });
+      const fallbackItems = (result.layout.fallback as { items: Record<string, unknown> }).items;
+      expect(Object.hasOwn(fallbackItems, tileId)).toBe(true);
+      expect(fallbackItems[tileId]).toEqual({ span: 1, height: 'compact' });
+      expect(JSON.parse(JSON.stringify(result)).layout.items[tileId]).toEqual({ grid: { span: 4, height: 1 } });
+    });
+
+    it(`preserves flow@1 report -> grafana-grid@2 report placement for tile id ${JSON.stringify(tileId)}`, () => {
+      const source = {
+        documentVersion: 2, id: 'd', title: 'D', revision: 1, tiles: protoTiles,
+        layout: {
+          type: 'flow', version: 1, preset: 'report',
+          items: { [tileId]: { height: 'large' } },
+        },
+      } as DashboardDocumentV2;
+      const result = upgradeDashboardLayout(source);
+      const items = result.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ report: { height: 3 } });
+      const fallbackItems = (result.layout.fallback as { items: Record<string, unknown> }).items;
+      expect(Object.hasOwn(fallbackItems, tileId)).toBe(true);
+      expect(fallbackItems[tileId]).toEqual({ span: 1, height: 'large' });
+    });
+
+    it(`preserves flow@1 columns -> grafana-grid@2 grid placement for tile id ${JSON.stringify(tileId)}`, () => {
+      const source = {
+        documentVersion: 2, id: 'd', title: 'D', revision: 1, tiles: protoTiles,
+        layout: {
+          type: 'flow', version: 1, preset: 'columns-3',
+          items: { [tileId]: { span: 2, height: 'compact' } },
+        },
+      } as DashboardDocumentV2;
+      const result = upgradeDashboardLayout(source);
+      const items = result.layout.items as Record<string, unknown>;
+      expect(Object.hasOwn(items, tileId)).toBe(true);
+      expect(items[tileId]).toEqual({ grid: { span: 6, height: 1 } });
+    });
+
+    it(`regenerates a v2 fallback that keeps tile id ${JSON.stringify(tileId)}`, () => {
+      const source = {
+        documentVersion: 2, id: 'd', title: 'D', revision: 1, tiles: protoTiles,
+        layout: {
+          type: 'grafana-grid', version: 2, preset: 'grid',
+          items: { [tileId]: { grid: { span: 9, height: 3 } } },
+        },
+      } as DashboardDocumentV2;
+      const result = upgradeDashboardLayout(source);
+      const fallbackItems = (result.layout.fallback as { items: Record<string, unknown> }).items;
+      expect(Object.hasOwn(fallbackItems, tileId)).toBe(true);
+      expect(fallbackItems[tileId]).toEqual({ span: 3, height: 'large' });
+      expect(JSON.parse(JSON.stringify(result)).layout.fallback.items[tileId]).toEqual({ span: 3, height: 'large' });
+    });
+  }
+});
+
 describe('dropCuratedFilters', () => {
   it('drops filters while applying the same deterministic layout upgrade', () => {
     const source = {

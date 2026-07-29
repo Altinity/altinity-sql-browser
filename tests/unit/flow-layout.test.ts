@@ -57,6 +57,19 @@ describe('setFlowPlacement', () => {
     // A non-object layout is tolerated too.
     expect(() => setFlowPlacement(null, 't1', { span: 1 })).not.toThrow();
   });
+
+  // #551 — a tile whose id is '__proto__' or 'constructor' (both schema-legal)
+  // must keep its flow placement as an own property, asserted with the exact
+  // surviving span/height, not merely a no-throw.
+  it('preserves a placement for tile ids __proto__ and constructor', () => {
+    for (const tileId of ['__proto__', 'constructor']) {
+      const layout = flowLayout();
+      setFlowPlacement(layout, tileId, { span: 3, height: 'large' });
+      expect(Object.hasOwn(layout.items, tileId)).toBe(true);
+      expect(layout.items[tileId]).toEqual({ span: 3, height: 'large' });
+      expect(JSON.parse(JSON.stringify(layout)).items[tileId]).toEqual({ span: 3, height: 'large' });
+    }
+  });
 });
 
 describe('flowPlacementAt (#535)', () => {

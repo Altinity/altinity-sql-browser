@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  SPEC_VERSION, cloneJson, queryName, queryDescription, queryFavorite, queryView,
+  SPEC_VERSION, cloneJson, defineJsonField, queryName, queryDescription, queryFavorite, queryView,
   queryPanel, queryDashboard, withQuerySpec, patchQuerySpec, patchQueryPanel, patchQueryDashboard,
   upgradeV1Query, cloneV2Query, upgradeSavedQuery, queryContentKey, isPlainObject,
 } from '../../src/core/saved-query.js';
@@ -45,6 +45,25 @@ describe('saved-query model', () => {
     expect(Object.hasOwn(cloned.nested, '__proto__')).toBe(true);
     expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
     expect(queryContentKey(v2(source))).toContain('__proto__');
+  });
+
+  // #551 — the general safe-key-write primitive every Dashboard placement-map
+  // write reuses. A bare `target[key] = value` on a plain object invokes the
+  // inherited Object.prototype.__proto__ setter for exactly this key, so the
+  // write silently vanishes; defineJsonField must always create an own,
+  // enumerable, JSON.stringify-visible property instead — for both
+  // '__proto__' and 'constructor' (also inherited, also schema-legal as a
+  // Dashboard tile id: `pattern: "\\S"`) — without touching Object.prototype.
+  it('defineJsonField writes __proto__/constructor as own enumerable data, never touching Object.prototype', () => {
+    for (const key of ['__proto__', 'constructor']) {
+      const target: Record<string, unknown> = {};
+      defineJsonField(target, key, { span: 6, height: 2 });
+      expect(Object.hasOwn(target, key)).toBe(true);
+      expect(target[key]).toEqual({ span: 6, height: 2 });
+      expect(JSON.parse(JSON.stringify(target))[key]).toEqual({ span: 6, height: 2 });
+    }
+    expect((Object.prototype as Record<string, unknown>).span).toBeUndefined();
+    expect(Object.getPrototypeOf({})).toBe(Object.prototype);
   });
 
   it('reads known fields with safe defaults without stripping extensions', () => {
