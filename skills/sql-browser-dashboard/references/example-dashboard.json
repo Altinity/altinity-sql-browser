@@ -1,0 +1,139 @@
+{
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 2,
+  "exportedAt": "2026-07-28T12:00:00.000Z",
+  "metadata": {
+    "name": "Revenue overview",
+    "description": "Example business dashboard using SQL supplied by the user."
+  },
+  "queries": [
+    {
+      "id": "revenue-kpis",
+      "sql": "SELECT 1250000 AS revenue, 8.4 AS growth_pct, 842 AS customers",
+      "specVersion": 1,
+      "spec": {
+        "name": "Revenue KPIs",
+        "description": "Headline revenue, growth, and customer count.",
+        "favorite": false,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "kpi"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "—"
+            },
+            "columns": {
+              "revenue": {
+                "displayName": "Revenue",
+                "unit": " £",
+                "decimals": 0
+              },
+              "growth_pct": {
+                "displayName": "Growth",
+                "unit": "%",
+                "decimals": 1
+              },
+              "customers": {
+                "displayName": "Customers",
+                "decimals": 0
+              }
+            }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "revenue-by-region",
+      "sql": "SELECT region, revenue FROM supplied_business_view ORDER BY revenue DESC LIMIT 10",
+      "specVersion": 1,
+      "spec": {
+        "name": "Revenue by region",
+        "description": "Top regions ranked by revenue.",
+        "favorite": false,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "hbar",
+            "x": 0,
+            "y": [1],
+            "series": null,
+            "style": {
+              "mode": "grouped",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "hide",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "region": {
+                "displayName": "Region"
+              },
+              "revenue": {
+                "displayName": "Revenue",
+                "unit": " £",
+                "decimals": 0
+              }
+            }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.8
+          }
+        }
+      }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 2,
+      "id": "revenue-overview",
+      "title": "Revenue overview",
+      "description": "Headline revenue and regional contribution for business review.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-revenue-kpis": {
+            "span": 2,
+            "height": "compact"
+          },
+          "tile-revenue-region": {
+            "span": 2,
+            "height": "large"
+          }
+        }
+      },
+      "tiles": [
+        {
+          "id": "tile-revenue-kpis",
+          "queryId": "revenue-kpis"
+        },
+        {
+          "id": "tile-revenue-region",
+          "queryId": "revenue-by-region"
+        }
+      ],
+      "variableConfigs": {}
+    }
+  ]
+}

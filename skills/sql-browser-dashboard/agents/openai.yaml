@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQL Browser Dashboard"
+  short_description: "Build and publish SQL Browser business dashboards"
+  brand_color: "#4F8CFF"
