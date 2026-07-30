@@ -120,6 +120,25 @@ export interface LeftNavSeparatorHandle {
    * in-progress, not-yet-committed paint.
    */
   isSessionActive(): boolean;
+  /**
+   * Abandon an in-progress pointer-drag session without committing it — no
+   * `state`/pref write, no repaint. Used by `app-shell.ts` when `isMobile`
+   * changes mid-gesture (#487 phase-3 review, bug 2): a drag active across
+   * that exact crossing has no way to notice the viewport just left desktop
+   * under it, so its very next `mousemove` would otherwise repaint the
+   * now-stale desktop layout right back over the mobile-wide presentation the
+   * isMobile transition just forced. Nothing has been written to `state` by an
+   * in-progress session (only `commitSession` writes), so simply detaching the
+   * drag listeners and dropping the session is a clean no-op from `state`'s own
+   * perspective — unlike `endDrag`, this never calls `commitSession`.
+   *
+   * A no-op when no pointer session is active. The keyboard-resize path
+   * (`onKeyDown`) never needs this: it keeps its own session in a LOCAL
+   * `keySession` variable and commits synchronously within one keydown, so the
+   * module-level `session` this method reads is never set by a keyboard
+   * operation in the first place.
+   */
+  cancelActiveSession(): void;
 }
 
 /** Describe the OCCUPIED-width quantity `aria-valuenow` reports, in words —
@@ -244,18 +263,45 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
     advanceTo(ev.clientX);
   }
 
-  /** Stop listening for the mouse half of a drag and commit whatever the
-   *  session currently holds — used by mouseup (after one final `advanceTo`)
-   *  AND by blur/visibilitychange (with no final coordinate — commit the
-   *  session's CURRENT state as-is, never a rollback to session start). */
-  function endDrag(): void {
-    if (!session) return;
+  /** The shared "stop listening for the mouse half of a drag" steps —
+   *  factored out so both `endDrag()` and `cancelActiveSession()` (#487
+   *  phase-3 review, bug 2) can detach without duplicating the three lines. */
+  function detachDragListeners(): void {
     el.classList.remove('dragging');
     win.removeEventListener('mousemove', onMouseMove);
     win.removeEventListener('mouseup', onMouseUp);
-    const finished = session;
+  }
+
+  /** Stop listening for the mouse half of a drag and commit whatever the
+   *  session currently holds — used by mouseup (after one final `advanceTo`)
+   *  AND by blur/visibilitychange (with no final coordinate — commit the
+   *  session's CURRENT state as-is, never a rollback to session start).
+   *
+   *  Re-clamps against the CURRENT budget immediately before committing
+   *  (#487 phase-3 review, bug 3): `onMouseUp` already re-clamps via its own
+   *  `advanceTo(ev.clientX)` call just above this one, so for that path this
+   *  is a harmless redundant re-clamp against the identical, already-current
+   *  budget. For `onBlur`/`onVisibilityChange` — which call `endDrag()`
+   *  directly, with no fresh clamp first — this is the first real clamp
+   *  against whatever the budget is NOW, rather than committing a session
+   *  whose `effective`/`proposed` can still reflect a budget measured before
+   *  the window shrank while the drag was in progress (and the width
+   *  observer's own repaint was skipped because `isSessionActive()` was
+   *  true). Passing `session.proposed` back in as the raw proposal leaves the
+   *  raw proposal itself untouched — only `effective` is refreshed. */
+  function endDrag(): void {
+    if (!session) return;
+    detachDragListeners();
+    const reclamped = advanceLeftNavigationResize(session, session.proposed, deps.getMaxNavigationTotalPx());
     session = null;
-    commitSession(finished);
+    commitSession(reclamped);
+  }
+
+  /** See `LeftNavSeparatorHandle.cancelActiveSession`'s own doc comment. */
+  function cancelActiveSession(): void {
+    if (!session) return;
+    detachDragListeners();
+    session = null;
   }
 
   function onMouseUp(ev: LeftNavSeparatorPointerEvent): void {
@@ -336,5 +382,7 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
     session = null;
   }
 
-  return { dispose, refreshAria: applyAria, isSessionActive: () => session !== null };
+  return {
+    dispose, refreshAria: applyAria, isSessionActive: () => session !== null, cancelActiveSession,
+  };
 }

@@ -316,6 +316,32 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // mode/section coherence invariant (`core/left-nav-layout.ts`) regardless of
   // what this variable holds, so the restore branch below cannot fire either
   // way.
+  //
+  // #487 phase-3 review, bug 4 — this bookkeeping (both the restoration
+  // side-effect and the assignment at the end of the function) is read/written
+  // ONLY while `leftNavSeparator.isSessionActive()` is false. A non-monotone
+  // drag calls this function once per intermediate frame — e.g. Library drawer
+  // → past the wide threshold → back past the fold threshold to bare rail —
+  // and updating `previousFocusedSection` on every one of those frames
+  // corrupts it: the first frame (crossing to wide) would clear it to `null`,
+  // so the second frame (crossing back to rail) could no longer restore focus
+  // even where it should, and the reverse sequence (drawer → momentarily bare
+  // rail → back to wide) could just as easily clobber it to `null` right
+  // before the wide transition that actually needed it. So while a gesture is
+  // in progress this variable stays FROZEN at whatever it was before the
+  // gesture began, and the eventual committed transition — the only call that
+  // happens once `isSessionActive()` is false again, whether that is the
+  // pointer session's own `endDrag()`/`commitSession` call or a keyboard
+  // commit (see below) — is judged against where the gesture started, not
+  // against any intermediate frame's value.
+  //
+  // The keyboard path never sets this guard's condition to true in the first
+  // place: `left-nav-separator.ts`'s `onKeyDown` keeps its own session in a
+  // LOCAL `keySession` variable and commits synchronously within one keydown,
+  // never assigning to the module-level `session` `isSessionActive()` reads —
+  // so a keyboard commit's call into this function always sees
+  // `isSessionActive() === false`, and this bookkeeping fires for it exactly
+  // as it did before this fix.
   let previousFocusedSection: LeftNavigationSection | null = null;
 
   // #487 phase 3 — the SOLE writer of every left-navigation presentation
@@ -406,13 +432,15 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // the transition, never a cached reference: `renderUpperRoleTabs`/
     // `renderLowerTabs` both `.replaceChildren(...)` on every repaint, so an
     // element captured earlier can go stale.
-    if (navMode === 'wide' && priorFocusedSection !== null) {
-      const pane = NAV_SECTION_META[priorFocusedSection].pane;
-      const tabsRow = pane === 'upper' ? app.dom.upperRoleTabs : app.dom.savedTabsRow;
-      const tabButton = tabsRow?.querySelector<HTMLElement>('[data-section="' + priorFocusedSection + '"]');
-      tabButton?.focus();
+    if (!leftNavSeparator.isSessionActive()) {
+      if (navMode === 'wide' && priorFocusedSection !== null) {
+        const pane = NAV_SECTION_META[priorFocusedSection].pane;
+        const tabsRow = pane === 'upper' ? app.dom.upperRoleTabs : app.dom.savedTabsRow;
+        const tabButton = tabsRow?.querySelector<HTMLElement>('[data-section="' + priorFocusedSection + '"]');
+        tabButton?.focus();
+      }
+      previousFocusedSection = layout.focusedSection;
     }
-    previousFocusedSection = layout.focusedSection;
   }
 
   // #487 phase 3 — the ONE derivation path every trigger below funnels
@@ -492,19 +520,48 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // the width observer below: `isMobile` flipping to true mid-drag is a real
   // transition this effect must still force back to wide — a session cannot
   // stay in a desktop drawer/rail presentation once the viewport is mobile.
-  // Residual edge case, left unsolved here on purpose (fixing it needs a
-  // change to the separator's own session logic, not just an authority check):
-  // a drag active across that exact crossing can still have its very next
-  // `mousemove` repaint the now-stale desktop layout right back over the
-  // mobile-wide one this effect just forced, because the separator's own
-  // session has no way to notice `isMobile` changed under it. That is a
-  // narrow, transient visual glitch — one stale frame, resolved by the user's
-  // next action — not a persistent incorrect state, so it is out of scope for
-  // this fix.
+  //
+  // #487 phase-3 review, bugs 1 and 2 — an `isMobile` crossing (in EITHER
+  // direction) also needs two side effects BEFORE this call derives/paints,
+  // handled by tracking the previous `isMobile` value in `previousIsMobile`,
+  // a closure variable declared just above this effect:
+  //
+  // 1. (bug 2) `leftNavSeparator.cancelActiveSession()` — an active drag has
+  //    no way to notice `isMobile` changed under it, so without this its very
+  //    next `mousemove` would repaint the now-stale desktop layout right back
+  //    over the mobile-wide presentation this effect just forced — and if the
+  //    eventual commit happens to reproduce the same `mode`/`focusedSection`
+  //    as before the drag, no signal changes, so nothing would ever
+  //    re-correct it. Cancelling (never committing) is safe here because
+  //    nothing has been written to `state` by an in-progress session — see
+  //    `cancelActiveSession`'s own doc comment.
+  // 2. (bug 1) `state.leftNavSection.value = null` — `leftNavSection` is
+  //    session-only (never persisted) and mobile never touches it, so a
+  //    section focused on desktop can go stale across a mobile round-trip:
+  //    the mobile-visible wide switcher writes `sidePanel`/`upperRole`
+  //    directly (never `leftNavSection`), so returning to desktop could
+  //    otherwise show a drawer whose TITLE still names whatever was focused
+  //    before the trip while its CONTENT already reflects whatever the
+  //    mobile switcher picked. Clearing it on every crossing means a return
+  //    from mobile always shows a bare rail instead — matching the existing
+  //    precedent that `leftNavSection` "need not reopen automatically" (it
+  //    already does not survive a reload).
+  //
+  // Writing `state.leftNavSection.value` from inside an effect that also
+  // reads it schedules this effect to run again immediately — that second run
+  // is a harmless no-op (`mobile === previousIsMobile` by then), the same
+  // "harmless double-paint" tolerance this file's own `refreshAria` comment
+  // already documents elsewhere.
+  let previousIsMobile = state.isMobile.value;
   disposers.push(effect(() => {
     state.leftNavMode.value;
     state.leftNavSection.value;
-    state.isMobile.value;
+    const mobile = state.isMobile.value;
+    if (mobile !== previousIsMobile) {
+      previousIsMobile = mobile;
+      leftNavSeparator.cancelActiveSession();
+      state.leftNavSection.value = null;
+    }
     applyEffectiveLeftNavigationLayout(deriveLeftNavigationLayout());
   }));
   // #487 phase 3 — the shell-width observer (an injected seam; see

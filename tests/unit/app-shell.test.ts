@@ -534,6 +534,68 @@ describe('mountAppShell left navigation presentation (#487 phase 3)', () => {
   });
 });
 
+// #487 phase-3 review, bugs 1 and 2 — an `isMobile` crossing (in EITHER
+// direction) must clear the session-only `leftNavSection` (bug 1: it can
+// otherwise go stale across a mobile round-trip, since the mobile-visible
+// wide switcher writes `sidePanel`/`upperRole` directly and never touches
+// `leftNavSection`) and must cancel any active separator session (bug 2: an
+// abandoned drag has no way to notice `isMobile` changed under it, and can
+// otherwise keep repainting stale desktop chrome right back over the forced
+// mobile-wide presentation).
+describe('mountAppShell — isMobile crossing side effects (#487 phase-3 review, bugs 1 and 2)', () => {
+  it('bug 1: leftNavSection is cleared on a mobile round-trip, so a stale drawer title can never disagree with its content', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    expect(app.state.leftNavSection.value).toBe('library');
+
+    app.state.isMobile.value = true;
+    expect(app.state.leftNavSection.value).toBeNull();
+
+    // The mobile-visible wide switcher writes `sidePanel` DIRECTLY (mirroring
+    // `saved-history.ts`/`sidebar-upper.ts`, neither of which ever touches
+    // `leftNavSection`) — `leftNavSection` stays null throughout.
+    app.state.sidePanel.value = 'history';
+    expect(app.state.leftNavSection.value).toBeNull();
+
+    app.state.isMobile.value = false;
+
+    // A return from mobile always shows a bare rail — never a drawer whose
+    // stale title ("Library") would disagree with its now-different content
+    // (History, per the sidePanel write above).
+    expect(app.state.leftNavSection.value).toBeNull();
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail');
+
+    handle.dispose();
+  });
+
+  it('bug 2: an active separator drag is cancelled (not left fighting) when isMobile flips mid-drag', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 0 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 })); // crosses past the wide threshold
+    expect(mainRow.dataset.navMode).toBe('wide');
+
+    app.state.isMobile.value = true; // crosses mid-drag
+    expect(mainRow.dataset.navMode).toBe('wide'); // forced wide either way, fix or no fix
+
+    // Without the fix, the abandoned session is still live and its very next
+    // mousemove can repaint a non-wide mode right back over the forced mobile
+    // presentation — mobile must NEVER show rail/drawer.
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 20 })); // well below the fold threshold
+    expect(mainRow.dataset.navMode).toBe('wide');
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 20 }));
+    expect(mainRow.dataset.navMode).toBe('wide');
+    // No stray commit landed either — the session was cancelled, not committed.
+    expect(app.state.leftNavMode.value).toBe('rail');
+
+    app.root.remove();
+    handle.dispose();
+  });
+});
+
 // ChatGPT second-review bug fix #2: the separator's own aria-valuenow/
 // aria-valuemax/aria-valuetext must reflect the CURRENT layout even when
 // something OTHER than the separator's own gesture repaints the sidebar —
@@ -829,6 +891,42 @@ describe('mountAppShell — converting to wide restores focus to the section\'s 
 
     expect(focusSpy).not.toHaveBeenCalled();
 
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  // #487 phase-3 review, bug 4: a non-monotone drag calls
+  // `applyEffectiveLeftNavigationLayout` once per intermediate frame, not just
+  // on the final commit. Before the fix, the intermediate wide-crossing frame
+  // below wrongly fires the restoration (`previousFocusedSection` was still
+  // 'history' from the mount-time paint, and had not yet been corrupted to
+  // null by this very frame) — a premature focus move mid-gesture, on a
+  // transition the user has not actually committed to yet.
+  it('a non-monotone drag (drawer -> past wide -> back to bare rail) does not restore focus on the intermediate wide-crossing frame', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'history' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const historyTab = app.dom.savedTabsRow!.querySelector('[data-section="history"]') as HTMLElement;
+    const focusSpy = vi.spyOn(historyTab, 'focus');
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 0 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 })); // crosses past the wide threshold
+    expect(mainRow.dataset.navMode).toBe('wide');
+    expect(focusSpy).not.toHaveBeenCalled(); // the gesture has not committed yet
+
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 20 })); // back past the fold threshold, to bare rail
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 20 }));
+    // The final commit lands on bare rail (not wide), so there is nothing to
+    // restore focus TO either — but the point of this test is that the
+    // earlier wide-crossing frame never fired it in the first place.
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    app.root.remove();
     handle.dispose();
     focusSpy.mockRestore();
   });

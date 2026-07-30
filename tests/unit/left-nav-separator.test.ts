@@ -616,3 +616,122 @@ describe('mountLeftNavSeparator — keyboard input during an active pointer sess
     expect(state.leftNavMode.value).toBe('rail');
   });
 });
+
+// #487 phase-3 review, bug 2 — `cancelActiveSession()`: a caller outside this
+// module's own gesture (`app-shell.ts`'s `isMobile` transition handling) needs
+// to abandon an in-progress pointer session WITHOUT committing it, so a stale
+// desktop drag cannot keep fighting a forced mobile-wide presentation.
+describe('mountLeftNavSeparator — cancelActiveSession', () => {
+  it('is a safe no-op when no drag is active', () => {
+    const { deps, save } = makeDeps(makeState());
+    const handle = mountLeftNavSeparator(deps);
+
+    expect(() => handle.cancelActiveSession()).not.toThrow();
+
+    expect(save).not.toHaveBeenCalled();
+    expect(handle.isSessionActive()).toBe(false);
+  });
+
+  it('abandons an in-progress drag: listeners detached, .dragging cleared, session inactive, NOTHING committed to state/prefs', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win, save, applyEffectiveLayout } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 300 });
+    expect(handle.isSessionActive()).toBe(true);
+    expect(el.classList.contains('dragging')).toBe(true);
+    applyEffectiveLayout.mockClear();
+
+    handle.cancelActiveSession();
+
+    expect(handle.isSessionActive()).toBe(false);
+    expect(el.classList.contains('dragging')).toBe(false);
+    expect(win._has('mousemove')).toBe(false);
+    expect(win._has('mouseup')).toBe(false);
+    // No commit ran: `commitSession` was never called, so neither `state` nor
+    // `prefs.save` ever saw the mid-drag 300px proposal.
+    expect(save).not.toHaveBeenCalled();
+    expect(state.sidebarPx).toBe(248);
+    expect(applyEffectiveLayout).not.toHaveBeenCalled();
+
+    // A subsequent mousemove-shaped call does nothing further — proof the
+    // listener is actually gone, not merely that the session looks inactive.
+    win._fire('mousemove', { clientX: 400 });
+    expect(applyEffectiveLayout).not.toHaveBeenCalled();
+    expect(state.sidebarPx).toBe(248);
+  });
+
+  it('a later mousedown starts a genuinely fresh session after a cancel', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 300 });
+    handle.cancelActiveSession();
+
+    mousedown(el, 248);
+    win._fire('mouseup', { clientX: 260 });
+
+    expect(state.sidebarPx).toBe(260); // the fresh session's own outcome, unaffected by the cancelled one
+  });
+});
+
+// #487 phase-3 review, bug 3 — `endDrag()` re-clamps against the CURRENT
+// budget immediately before committing, so a `blur`/`visibilitychange` commit
+// (which, unlike `onMouseUp`, has no fresh `advanceTo` clamp immediately
+// before it) cannot paint a layout that violates a budget that shrank WHILE
+// the drag was in progress (the width observer's own repaint is skipped for
+// exactly that window, since `isSessionActive()` is true).
+describe('mountLeftNavSeparator — endDrag re-clamps against the current budget (#487 phase-3 review, bug 3)', () => {
+  it('a blur ending a drag after the viewport shrank mid-drag paints against the NEW smaller budget, not the stale drag-start one', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    let budget = LARGE_BUDGET;
+    const el = document.createElement('div');
+    const win = fakeWin();
+    const target = fakeTarget();
+    const save = vi.fn();
+    const applyEffectiveLayout = vi.fn();
+    const getMaxNavigationTotalPx = vi.fn(() => budget);
+    const deps: LeftNavSeparatorDeps = {
+      el, win, target, state, prefs: { save }, getMaxNavigationTotalPx, applyEffectiveLayout,
+    };
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 400 }); // proposes 400 while the budget is still huge
+    expect(applyEffectiveLayout).toHaveBeenLastCalledWith(
+      { mode: 'wide', wideWidthPx: 400, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
+
+    // The viewport shrinks WHILE the drag is still active — nothing else
+    // re-clamps during this window (the width observer skips a live session).
+    budget = 300;
+
+    win._fire('blur'); // no fresh advanceTo before this, unlike onMouseUp
+
+    // The PAINTED layout must respect the new, smaller budget — painting 400
+    // here would render a sidebar wider than the shrunk viewport can hold.
+    expect(applyEffectiveLayout).toHaveBeenLastCalledWith(
+      { mode: 'wide', wideWidthPx: 300, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
+    // The raw proposal itself is untouched by the reclamp (only `effective`
+    // is refreshed) — the committed PREFERENCE still honors the user's actual
+    // 400px request, exactly like the existing restore-while-clamped case
+    // above; the ARIA range also reflects the live, shrunk budget.
+    expect(save).toHaveBeenCalledWith('sidebarPx', 400);
+    expect(el.getAttribute('aria-valuemax')).toBe('300');
+  });
+
+  it('onMouseUp\'s own fresh advanceTo already re-clamps, so the reclamp in endDrag is a harmless no-op there', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win, applyEffectiveLayout } = makeDeps(state, 300);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 400 });
+    win._fire('mouseup', { clientX: 400 });
+
+    expect(applyEffectiveLayout).toHaveBeenLastCalledWith(
+      { mode: 'wide', wideWidthPx: 300, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
+  });
+});
