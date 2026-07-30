@@ -3,7 +3,8 @@ import { buildSidebarUpper, renderUpperRoleTabs } from '../../src/ui/sidebar-upp
 import type { SidebarUpperApp } from '../../src/ui/sidebar-upper.js';
 import { renderDashboardTree } from '../../src/ui/dashboard-tree.js';
 import { makeApp } from '../helpers/fake-app.js';
-import { h } from '../../src/ui/dom.js';
+import { h, s } from '../../src/ui/dom.js';
+import { NAV_SECTION_META } from '../../src/ui/nav-sections.js';
 import { readTreeUi, setTreeSearch } from '../../src/core/dashboard-tree-ui-state.js';
 import type { TreeWorkspace } from '../../src/application/dashboard-tree-model.js';
 
@@ -47,6 +48,29 @@ describe('buildSidebarUpper — role tabs', () => {
     app.state.schema.value = [{ db: 'a' }, { db: 'b' }, { db: 'c' }];
     renderUpperRoleTabs(app);
     expect(tabText(app)).toEqual(['Databases· 3', 'Dashboards· 2']);
+  });
+
+  it('takes both labels and both icons FROM the registry, not from a local copy', () => {
+    // Asserting the rendered text equals 'Databases' cannot distinguish reading
+    // `NAV_SECTION_META` from hard-coding the same string — and hard-coding it is
+    // exactly the drift #487 phase 2 exists to prevent, since phase 3's rail
+    // presents these same two sections. So override the registry and require the
+    // tab row to follow it.
+    const { app } = mount();
+    const meta = NAV_SECTION_META.databases as { label: string; icon: () => SVGElement };
+    const label = meta.label;
+    const icon = meta.icon;
+    try {
+      meta.label = 'Explore';
+      meta.icon = () => s('svg', { 'data-registry-icon': 'yes' });
+      renderUpperRoleTabs(app);
+      // No count: `mount()` leaves the schema unloaded, which omits it.
+      expect(tabText(app)[0]).toBe('Explore');
+      expect(tabs(app)[0].querySelector('[data-registry-icon="yes"]')).not.toBeNull();
+    } finally {
+      meta.label = label;
+      meta.icon = icon;
+    }
   });
 
   it('omits the Databases count while the schema is loading or failed', () => {
@@ -109,6 +133,19 @@ describe('buildSidebarUpper — role tabs', () => {
 });
 
 describe('buildSidebarUpper — persistent hosts', () => {
+  it('marks both hosts with the shared section-host contract (#487 phase 2)', () => {
+    const { upper } = mount();
+    // One class and one attribute vocabulary for all four navigation sections, so
+    // phase 3's focused drawer can host any of them with no per-section layout
+    // rule — and so `ui/nav-sections.ts` can address these two the same way it
+    // addresses the lower pane's.
+    for (const host of [upper.databasesHost, upper.dashboardsHost]) {
+      expect(host.classList.contains('nav-section-host')).toBe(true);
+    }
+    expect(upper.databasesHost.dataset.section).toBe('databases');
+    expect(upper.dashboardsHost.dataset.section).toBe('dashboards');
+  });
+
   it('exposes exactly one host at a time', () => {
     const { app, upper } = mount();
     expect(upper.databasesHost.hidden).toBe(false);

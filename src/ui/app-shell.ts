@@ -35,6 +35,8 @@ import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
+import { buildNavSectionRegistry, sectionForSidePanelKey } from './nav-sections.js';
+import type { NavSectionPane } from './nav-sections.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
 import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
@@ -126,21 +128,32 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
   });
   app.dom.schemaList = h('div', { class: 'schema-list' });
-  // #426: the upper pane now hosts TWO roles. The Databases content is built here
-  // exactly as before and handed to the role host, which only ever toggles
+  // #426: the upper pane hosts TWO sections. The Databases content is built here
+  // exactly as before and handed to the section host, which only ever toggles
   // `hidden` — so schema search text/focus, expansion, lazily-loaded columns and
-  // scroll all survive a trip through the Dashboards role by construction.
-  const upper = buildSidebarUpper(app, [
+  // scroll all survive a trip through the Dashboards section by construction.
+  //
+  // #487 phase 2: both panes are now composed out of the SAME registry, which owns
+  // all four sections' persistent hosts, their labels and their icons. This shell
+  // no longer builds the lower pane's search/list elements, and it does not name
+  // which sections belong to which pane — it asks the registry, which is the only
+  // way the claim stays true when phase 3 adds a third container. Phase 3's rail
+  // and focused drawer address exactly the same four hosts, which is what makes a
+  // mode change a MOVE of live DOM rather than a rebuild.
+  const registry = buildNavSectionRegistry(app, buildSidebarUpper(app, [
     h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
     app.dom.schemaList,
-  ]);
+  ]));
+  // `entries` is in rail order, so each pane's hosts come out in the order its
+  // switcher presents them (Databases | Dashboards above, Library | History below).
+  const hostsIn = (pane: NavSectionPane): HTMLElement[] =>
+    registry.entries.filter((entry) => entry.pane === pane).map((entry) => entry.host);
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
-    app.dom.upperRoleTabs!, upper.databasesHost, upper.dashboardsHost);
+    app.dom.upperRoleTabs!, ...hostsIn('upper'));
 
   app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
-  app.dom.savedSearch = h('div', { class: 'saved-search' });
-  app.dom.savedList = h('div', { class: 'saved-list' });
-  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
+  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } },
+    app.dom.savedTabsRow, ...hostsIn('lower'));
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
   // Only 'col' (sidebar width) and 'sideRow' (schema/saved split) run through
@@ -244,10 +257,19 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.dashboardTreeRevision.value;
     renderUpperRoleTabs(app);
   }));
-  // #426: expose exactly one role host, and repaint the Dashboard tree. Kept
-  // separate from the tab effect so a schema load does not rebuild the tree.
+  // #426: expose exactly one upper section host, and repaint the Dashboard tree.
+  // Kept separate from the tab effect so a schema load does not rebuild the tree.
   disposers.push(effect(() => {
-    upper.showRole(state.upperRole.value);
+    registry.showSection(state.upperRole.value);
+  }));
+  // #487 phase 2: the same rule for the lower pane, which until now had no
+  // exposure step at all — its two sections shared one search/list pair that the
+  // repaint below simply overwrote. Subscribed to `sidePanel` ALONE (unlike the
+  // repaint effect, which also tracks the projection revision): a Dashboard
+  // mutation changes which rows the Library shows, never which section is
+  // exposed.
+  disposers.push(effect(() => {
+    registry.showSection(sectionForSidePanelKey(state.sidePanel.value));
   }));
   disposers.push(effect(() => {
     // The ONE reactive input the tree has: every trigger #426 lists (workspace

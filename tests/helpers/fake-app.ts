@@ -848,8 +848,13 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       schemaList: document.createElement('div'),
       resultsRegion: document.createElement('div'),
       savedTabsRow: document.createElement('div'),
+      // #487 phase 2: the lower pane's two sections own separate persistent
+      // search/list pairs, so a fixture needs both — `renderSavedHistory` targets
+      // whichever pair the active `sidePanel` names.
       savedSearch: document.createElement('div'),
       savedList: document.createElement('div'),
+      historySearch: document.createElement('div'),
+      historyList: document.createElement('div'),
       saveBtn: document.createElement('button'),
     },
     actions: {

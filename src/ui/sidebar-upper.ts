@@ -12,11 +12,19 @@
 // The tab row reuses the lower switcher's `.side-tabs`/`.side-tab`/`.side-count`
 // vocabulary verbatim, as #426 asks and DESIGN.md requires (one tab/segmented
 // control language across the app).
+//
+// #487 phase 2 generalized this pattern to all four navigation sections: both
+// hosts below now carry the shared `.nav-section-host` class and a `data-section`
+// attribute, so the lower pane's Library/History hosts and phase 3's focused
+// drawer need no per-pane layout rule. `ui/nav-sections.ts` composes this builder
+// as the registry's upper half and delegates upper-pane exposure to `showRole`
+// below — this module still owns its own two hosts.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderDashboardTree, cancelDashboardTreeClicks, type DashboardTreeApp } from './dashboard-tree.js';
 import { readTreeUi, setTreeSearch } from '../core/dashboard-tree-ui-state.js';
+import { NAV_SECTION_META } from './nav-sections.js';
 import type { AppState } from '../state.js';
 import type { AppDom } from './app.types.js';
 
@@ -51,7 +59,7 @@ export function buildSidebarUpper(
 
   app.dom.upperRoleTabs = h('div', { class: 'side-tabs upper-role-tabs' });
 
-  const databasesHost = h('div', { class: 'upper-role-host', 'data-role': 'databases' }, ...databasesContent);
+  const databasesHost = h('div', { class: 'nav-section-host', 'data-section': 'databases' }, ...databasesContent);
 
   // Built ONCE and never inside the repainted row list, so typing keeps the caret
   // (the same reason `saved-history.ts` builds its search box outside `renderList`).
@@ -73,7 +81,7 @@ export function buildSidebarUpper(
     role: 'tree',
     'aria-label': 'Dashboards',
   });
-  const dashboardsHost = h('div', { class: 'upper-role-host', 'data-role': 'dashboards', hidden: true },
+  const dashboardsHost = h('div', { class: 'nav-section-host', 'data-section': 'dashboards', hidden: true },
     h('div', { class: 'schema-search' },
       h('div', { class: 'search-wrap' }, Icon.search(), app.dom.dashboardSearchInput)),
     app.dom.dashboardTreeList);
@@ -102,7 +110,12 @@ export function renderUpperRoleTabs(app: SidebarUpperApp): void {
   const databaseCount = state.schemaError.value || schema === null ? null : schema.length;
   const dashboardCount = app.currentWorkspace?.dashboards?.length ?? 0;
 
-  const tab = (role: UpperRole, label: string, icon: SVGElement, count: number | null): HTMLButtonElement =>
+  // #487 phase 2: the label and the icon come from the registry, not from here.
+  // Both wide switchers and phase 3's rail present the same four sections, so a
+  // second copy of either would let the presentations drift — which is the whole
+  // reason `NAV_SECTION_META` exists. (No import cycle: `nav-sections.ts` imports
+  // only this module's *type*, which esbuild erases.)
+  const tab = (role: UpperRole, count: number | null): HTMLButtonElement =>
     h('button', {
       class: 'side-tab' + (active === role ? ' active' : ''),
       type: 'button',
@@ -113,11 +126,11 @@ export function renderUpperRoleTabs(app: SidebarUpperApp): void {
         cancelDashboardTreeClicks(app);
         state.upperRole.value = role;
       },
-    }, icon, h('span', null, label),
+    }, NAV_SECTION_META[role].icon(), h('span', null, NAV_SECTION_META[role].label),
       count === null ? null : h('span', { class: 'side-count' }, '· ' + count));
 
   row.replaceChildren(
-    tab('databases', 'Databases', Icon.database(), databaseCount),
-    tab('dashboards', 'Dashboards', Icon.dashboard(), dashboardCount),
+    tab('databases', databaseCount),
+    tab('dashboards', dashboardCount),
   );
 }

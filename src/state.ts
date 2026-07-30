@@ -38,8 +38,11 @@ import { deriveWorkspaceKey } from './core/workspace-key.js';
 import {
   LEFT_DRAWER_DEFAULT_PX, LEFT_WIDE_DEFAULT_PX,
   clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, decodeStoredPx,
+  sectionForSidePanelKey, sidePanelKeyFor,
 } from './core/left-nav-layout.js';
-import type { LeftNavigationMode, LeftNavigationSection } from './core/left-nav-layout.js';
+import type {
+  LeftNavigationMode, LeftNavigationSection, SidePanelKey,
+} from './core/left-nav-layout.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -383,9 +386,17 @@ export interface AppState {
   filterActive: Record<string, boolean>;
   varRecent: RecentMap;
   varRecentDisabled: boolean;
-  /** 'saved' | 'history' at every write site; typed string because the
-   * initial value is an undecoded localStorage read (`asb:sidePanel`). */
-  sidePanel: Signal<string>;
+  /**
+   * The lower sidebar pane's active section, as `asb:sidePanel` stores it —
+   * `'saved'` is the Library (#427 relabelled it without migrating the value).
+   *
+   * #487 phase 2 narrowed this from `Signal<string>`: the stored value is now
+   * DECODED at load (below), so an obsolete or corrupt string can never reach a
+   * reader. It had to be, once the pane's two sections gained separate hosts —
+   * two readers disagreeing about what an unrecognized value means exposes one
+   * section while painting into the other, i.e. a blank pane.
+   */
+  sidePanel: Signal<SidePanelKey>;
   /**
    * #426 — the UPPER sidebar pane's role. Deliberately NOT persisted (unlike
    * `sidePanel`): the issue specifies "default to Databases for a fresh session",
@@ -763,7 +774,13 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // cleared (Clear all recent values / per-field Clear recent).
     // The `as` trusts the localStorage shape verbatim — no decoder exists today.
     varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false) as boolean,
-    sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
+    // Decoded, not passed through (#487 phase 2) — the same discipline
+    // `leftNavMode` below has, and for the same reason: an unknown stored string
+    // is not a third section. Round-tripping through the section vocabulary is
+    // what makes the fallback the documented default rather than whichever branch
+    // an `=== 'saved'` comparison happens to take.
+    sidePanel: signal(sidePanelKeyFor(
+      sectionForSidePanelKey(read.loadStr(KEYS.sidePanel, 'saved')))),
     upperRole: signal<'databases' | 'dashboards'>('databases'),
     dashboardTreeRevision: signal(0),
     dashboardTreeUi: new Map(),

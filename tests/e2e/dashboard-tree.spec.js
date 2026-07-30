@@ -24,22 +24,22 @@ test.describe('upper sidebar role switcher', () => {
     // The schema stub loads two databases; the seed has three Dashboards.
     await expect(roleTab(page, 'Databases')).toContainText('· 2');
     await expect(roleTab(page, 'Dashboards')).toContainText('· 3');
-    await expect(page.locator('.upper-role-host[data-role="databases"]')).toBeVisible();
-    await expect(page.locator('.upper-role-host[data-role="dashboards"]')).toBeHidden();
+    await expect(page.locator('.nav-section-host[data-section="databases"]')).toBeVisible();
+    await expect(page.locator('.nav-section-host[data-section="dashboards"]')).toBeHidden();
   });
 
   test('a hidden role host contributes NO layout, so the visible one owns the pane', async ({ page }) => {
     await open(page);
     const geometry = await page.evaluate(() => {
       const pane = document.querySelector('.schema-pane');
-      const databases = document.querySelector('.upper-role-host[data-role="databases"]');
+      const databases = document.querySelector('.nav-section-host[data-section="databases"]');
       const paneBox = pane.getBoundingClientRect();
       const dbBox = databases.getBoundingClientRect();
       return {
         paneHeight: paneBox.height,
         dbHeight: dbBox.height,
         tabsHeight: document.querySelector('.upper-role-tabs').getBoundingClientRect().height,
-        hiddenDisplay: getComputedStyle(document.querySelector('.upper-role-host[data-role="dashboards"]')).display,
+        hiddenDisplay: getComputedStyle(document.querySelector('.nav-section-host[data-section="dashboards"]')).display,
       };
     });
     expect(geometry.hiddenDisplay).toBe('none');
@@ -49,21 +49,70 @@ test.describe('upper sidebar role switcher', () => {
     expect(Math.abs(geometry.paneHeight - geometry.tabsHeight - geometry.dbHeight)).toBeLessThan(2);
   });
 
+  // #487 phase 2 wrapped the LOWER pane's two sections in section hosts as well, so
+  // `.saved-search`/`.saved-list` now sit one level deeper than the pane. happy-dom
+  // computes no layout, so the unit suite cannot see whether the scroller still
+  // fills its host — and this pane is the one the phase actually changed.
+  test('the lower pane\'s exposed section host fills it, and its list still scrolls', async ({ page }) => {
+    await open(page);
+    const geometry = await page.evaluate(() => {
+      const box = (selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { top: rect.top, height: rect.height, width: rect.width };
+      };
+      const library = document.querySelector('.nav-section-host[data-section="library"]');
+      const list = library.querySelector('.saved-list');
+      // Force the scroller past its host so overflow is actually exercised.
+      for (let i = 0; i < 40; i += 1) {
+        const row = document.createElement('div');
+        row.className = 'saved-row';
+        row.textContent = 'filler row ' + i;
+        list.appendChild(row);
+      }
+      const listBox = list.getBoundingClientRect();
+      return {
+        pane: box('.saved-pane'),
+        tabsHeight: box('.saved-pane .side-tabs').height,
+        host: { top: listBox.top, height: library.getBoundingClientRect().height },
+        hostTop: library.getBoundingClientRect().top,
+        listHeight: listBox.height,
+        searchHeight: library.querySelector('.saved-search').getBoundingClientRect().height,
+        overflowY: getComputedStyle(list).overflowY,
+        scrolls: list.scrollHeight > list.clientHeight,
+        horizontalOverflow: list.scrollWidth > list.clientWidth,
+        hiddenDisplay: getComputedStyle(document.querySelector('.nav-section-host[data-section="history"]')).display,
+      };
+    });
+
+    expect(geometry.hiddenDisplay).toBe('none');
+    // The exposed host starts below the tab row and fills the rest of the pane.
+    expect(Math.abs(geometry.hostTop - (geometry.pane.top + geometry.tabsHeight))).toBeLessThan(2);
+    expect(Math.abs(geometry.pane.height - geometry.tabsHeight - geometry.host.height)).toBeLessThan(2);
+    // Inside the host, the search box keeps its intrinsic height and the list
+    // takes the remainder — the flex chain the extra wrapper could have broken.
+    expect(geometry.searchHeight).toBeGreaterThan(0);
+    expect(Math.abs(geometry.host.height - geometry.searchHeight - geometry.listHeight)).toBeLessThan(2);
+    // Still a scroller, and still no sideways overflow at the sidebar's width.
+    expect(geometry.overflowY).toBe('auto');
+    expect(geometry.scrolls).toBe(true);
+    expect(geometry.horizontalOverflow).toBe(false);
+  });
+
   test('switching roles preserves the schema search text, scroll and expansion', async ({ page }) => {
     await open(page);
-    const schemaSearch = page.locator('.upper-role-host[data-role="databases"] input');
+    const schemaSearch = page.locator('.nav-section-host[data-section="databases"] input');
     await schemaSearch.fill('events');
     // Expand a database so there is lazily-built row state to lose.
-    await page.locator('.upper-role-host[data-role="databases"] .tree-row').first().click();
-    const rowsBefore = await page.locator('.upper-role-host[data-role="databases"] .tree-row').count();
+    await page.locator('.nav-section-host[data-section="databases"] .tree-row').first().click();
+    const rowsBefore = await page.locator('.nav-section-host[data-section="databases"] .tree-row').count();
 
     await roleTab(page, 'Dashboards').click();
-    await expect(page.locator('.upper-role-host[data-role="dashboards"]')).toBeVisible();
+    await expect(page.locator('.nav-section-host[data-section="dashboards"]')).toBeVisible();
     await roleTab(page, 'Databases').click();
 
     // Preserved BY CONSTRUCTION: the host is never rebuilt, only un-hidden.
     await expect(schemaSearch).toHaveValue('events');
-    expect(await page.locator('.upper-role-host[data-role="databases"] .tree-row').count()).toBe(rowsBefore);
+    expect(await page.locator('.nav-section-host[data-section="databases"] .tree-row').count()).toBe(rowsBefore);
   });
 
   test('the sidebar width and the upper/lower splitter survive a role switch', async ({ page }) => {
@@ -449,7 +498,7 @@ test.describe('Dashboard hierarchy tree', () => {
   test('search narrows the tree and clearing it restores the prior state', async ({ page }) => {
     await open(page);
     await roleTab(page, 'Dashboards').click();
-    const search = page.locator('.upper-role-host[data-role="dashboards"] input');
+    const search = page.locator('.nav-section-host[data-section="dashboards"] input');
     await search.fill('zone');
     // The variable's own NAME matches, so its ancestors are exposed.
     await expect(page.locator('.dash-tree-row .label')).toHaveText(['Sales revenue', 'Variables', 'zone', 'Panels']);

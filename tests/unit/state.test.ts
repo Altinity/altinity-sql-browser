@@ -282,9 +282,15 @@ describe('createState — left navigation preferences (#487)', () => {
       [KEYS.leftNavMode]: 'collapsed',
       [KEYS.leftNavDrawerPx]: 'not-a-number',
       [KEYS.sidebarPx]: 'not-a-number',
+      // #487 phase 2: `sidePanel` is decoded now too, not passed through. It has
+      // to be: the lower pane's two sections own separate hosts, so a value that
+      // one reader resolves to Library and another to History exposes one host
+      // while painting into the other — a visibly blank pane.
+      [KEYS.sidePanel]: 'queries',
     }));
     expect(s.leftNavMode.value).toBe('wide');
     expect(s.leftNavDrawerPx).toBe(240);
+    expect(s.sidePanel.value).toBe('saved');
     // The regression this case exists for: `clamp(parseInt('not-a-number'), 180,
     // 420)` is NaN (`Math.max(180, NaN)` is NaN), and a NaN width reaches the DOM
     // as `width: NaNpx`, which the browser drops — silently collapsing the
