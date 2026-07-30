@@ -119,10 +119,10 @@ import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
-import { mountAppShell } from './app-shell.js';
+import { mountAppShell } from './shell/shell-host.js';
 import { cancelDashboardTreeClicks, revealAssignedPanel } from './dashboard-tree.js';
 import { pruneTreeUi } from '../core/dashboard-tree-ui-state.js';
-import type { AppShellHandle } from './app-shell.js';
+import type { AppShellHandle } from './shell/shell-host.js';
 import { buildAppHeader } from './app-header.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a

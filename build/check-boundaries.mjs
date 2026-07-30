@@ -193,7 +193,8 @@ const connectionAuthorityFiles = [
   'src/application/connection-session.ts',
   'src/net/ch-client.ts',
   'src/ui/app-header.ts',
-  'src/ui/app-shell.ts',
+  'src/ui/shell/shell-host.ts',
+  'src/ui/shell/shell-view.ts',
 ];
 for (const relFile of connectionAuthorityFiles) {
   const file = path.join(repoRoot, relFile);

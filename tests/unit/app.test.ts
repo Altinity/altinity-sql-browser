@@ -5430,7 +5430,7 @@ describe('exhaustive controller coverage', () => {
     expect(app.state.savedQueries.length).toBe(1);
   });
 
-  it('drives the sideRow/row splitter handles through a drag', () => {
+  it('drives the sideRow/row splitter handles through a drag', async () => {
     const e = env();
     const app = createApp(e);
     app.renderApp();
@@ -5444,6 +5444,9 @@ describe('exhaustive controller coverage', () => {
     drag(app.dom.editorResultsSplit!, 'row');
     expect(app.dom.editorResultsSplit!.classList.contains('editor-results-split')).toBe(true);
     expect(app.state.sidebarPx).toBeDefined();
+    // #577 S2: the drag's state write now paints on Preact's next microtask,
+    // not synchronously — await it before reading the painted style.
+    await flush();
     // sideRow must resize the schema pane itself, not whichever element happens
     // to be the sidebar's first child (the mobile segmented control sits before
     // it in the DOM for #126) — regression guard, live bug found post-#126.
@@ -5461,7 +5464,7 @@ describe('exhaustive controller coverage', () => {
   // REAL mounted `app.prefs`/`localStorage` and the real DOM `mountAppShell`
   // built actually end up connected to `.col-resize`, not just each half in
   // isolation. This is that one end-to-end check, at app.ts's own level.
-  it('#487 phase 3: dragging the mounted .col-resize handle drives the left-navigation separator end to end', () => {
+  it('#487 phase 3: dragging the mounted .col-resize handle drives the left-navigation separator end to end', async () => {
     vi.stubGlobal('localStorage', memStore());
     const e = env();
     const app = createApp(e);
@@ -5477,6 +5480,9 @@ describe('exhaustive controller coverage', () => {
     expect(app.state.sidebarPx).toBe(300);
     expect(app.state.leftNavMode.value).toBe('wide');
     expect(globalThis.localStorage.getItem('asb:sidebarPx')).toBe('300');
+    // #577 S2: the separator's state commit paints on Preact's next
+    // microtask, not synchronously — await it before reading the mounted DOM.
+    await flush();
     // The real DOM `mountAppShell` built reflects the same commit — proof the
     // separator's `applyEffectiveLayout` callback really is app-shell.ts's own
     // `applyEffectiveLeftNavigationLayout`, not a stand-in that only updates
@@ -6450,13 +6456,17 @@ describe('mobile best-effort mode (#126)', () => {
     expect(app.state.isMobile.value).toBe(true);
   });
 
-  it('bottom-nav buttons switch the full-screen view (data-mobile-view)', () => {
+  it('bottom-nav buttons switch the full-screen view (data-mobile-view)', async () => {
     const { app } = mobileApp(true);
     const mainRow = qs(app.root, '.main-row');
     nav(app, 'tables').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.mobileView.value).toBe('tables');
+    // #577 S2: a nav click writes the mobileView signal, but the shell's
+    // `data-mobile-view` attribute now repaints on Preact's next microtask.
+    await flush();
     expect(mainRow.dataset.mobileView).toBe('tables');
     nav(app, 'results').dispatchEvent(new Event('click', { bubbles: true }));
+    await flush();
     expect(mainRow.dataset.mobileView).toBe('results');
   });
 
@@ -6495,13 +6505,17 @@ describe('mobile best-effort mode (#126)', () => {
     expect(app.state.mobileView.value).toBe('editor');
   });
 
-  it('the Schema | Library segmented switches the sidebar pane (data-mobile-tab)', () => {
+  it('the Schema | Library segmented switches the sidebar pane (data-mobile-tab)', async () => {
     const { app } = mobileApp(true);
     const sidebar = qs(app.root, '.sidebar');
     qs(app.root, '.mseg-btn[data-seg="library"]').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.mobileTab.value).toBe('library');
+    // #577 S2: the segmented control's state write repaints `data-mobile-tab`
+    // on Preact's next microtask, not synchronously.
+    await flush();
     expect(sidebar.dataset.mobileTab).toBe('library');
     qs(app.root, '.mseg-btn[data-seg="schema"]').dispatchEvent(new Event('click', { bubbles: true }));
+    await flush();
     expect(sidebar.dataset.mobileTab).toBe('schema');
   });
 
@@ -7312,11 +7326,14 @@ describe('unified /sql routing', () => {
     });
 
     // The surface-HOST contract: what a switch keeps mounted, and what it exposes.
-    it('a Dashboard owns the whole work area while the sidebar stays visible', () => {
+    it('a Dashboard owns the whole work area while the sidebar stays visible', async () => {
       const { app } = liveApp(['a']);
       app.renderCurrentSurface();
       expectSurface(app, 'query');
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
+      // #577 S2: the surface switch writes state, but the `.query-host` /
+      // `.dashboard-host` `hidden` flags repaint on Preact's next microtask.
+      await flush();
       expectSurface(app, 'dashboard');
       // The complete editor-plus-results surface is hidden, not merely covered —
       // so no invisible result drawer consumes layout space.
@@ -7388,6 +7405,9 @@ describe('unified /sql routing', () => {
     it('re-enables nothing and disables nothing on a same-workspace Back navigation', async () => {
       const { app, location } = liveApp(['a'], '?ws=ops&surface=dashboard');
       app.renderCurrentSurface();
+      // #577 S2: renderCurrentSurface's state write repaints `.query-host` /
+      // `.dashboard-host` `hidden` on Preact's next microtask, not synchronously.
+      await flush();
       expectSurface(app, 'dashboard');
       location.search = '?ws=ops';
       await app.handleSqlPopState();
@@ -7398,9 +7418,12 @@ describe('unified /sql routing', () => {
       expect(qs<HTMLInputElement>(app.root, '.schema-search input').disabled).toBe(false);
     });
 
-    it('RENDERS the Query surface when the selected Dashboard is deleted', () => {
+    it('RENDERS the Query surface when the selected Dashboard is deleted', async () => {
       const { app } = liveApp(['first', 'second'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
+      // #577 S2: openDashboard's state write repaints `.query-host` /
+      // `.dashboard-host` `hidden` on Preact's next microtask, not synchronously.
+      await flush();
       expectSurface(app, 'dashboard');
       // A commit that drops the selection must not just record the fallback in
       // state: leaving the Dashboard host exposed wedges the app, because every
@@ -7410,6 +7433,9 @@ describe('unified /sql routing', () => {
       });
       expect(app.mainSurface).toEqual({ kind: 'query' });
       expect(app.sqlRoute).toEqual({ surface: 'workspace', workspaceKey: 'ops' });
+      // #577 S2: the fallback-to-Query state write repaints `.query-host` /
+      // `.dashboard-host` `hidden` on Preact's next microtask, not synchronously.
+      await flush();
       expectSurface(app, 'query');
     });
 
@@ -8193,6 +8219,9 @@ describe('unified /sql routing', () => {
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'w', mode: 'view',
     });
+    // #577 S2: the route/surface state has settled, but `.query-host` /
+    // `.dashboard-host` `hidden` repaint on Preact's next microtask.
+    await flush();
     expectSurface(app, 'dashboard');
     expect(qs(app.root, '.dash-gg-del')).toBeNull();
   });
@@ -8269,6 +8298,9 @@ describe('unified /sql routing', () => {
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
     });
+    // #577 S2: the route/surface state has settled, but `.query-host` /
+    // `.dashboard-host` `hidden` repaint on Preact's next microtask.
+    await flush();
     expectSurface(app, 'dashboard');
     // #501-review: `commitLinkedQuery`'s own staleness bracket (the navigation
     // above made this save's surface generation stale) returns early, before
@@ -8300,6 +8332,9 @@ describe('unified /sql routing', () => {
     await vi.waitFor(() => expect(app.currentWorkspace!.queries).toHaveLength(1));
 
     expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 42');
+    // #577 S2: the route/surface state has settled, but `.query-host` /
+    // `.dashboard-host` `hidden` repaint on Preact's next microtask.
+    await flush();
     expectSurface(app, 'dashboard');
     expect(document.querySelector('.save-popover')).toBeNull();
   });

@@ -20,7 +20,8 @@ describe('connection lifecycle architecture', () => {
       'src/application/connection-session.ts',
       'src/net/ch-client.ts',
       'src/ui/app-header.ts',
-      'src/ui/app-shell.ts',
+      'src/ui/shell/shell-host.ts',
+  'src/ui/shell/shell-view.ts',
     ];
     const violations = authorityFiles.filter((file) => /\bserverVersion\b/.test(read(file)));
     expect(violations).toEqual([]);

@@ -310,7 +310,7 @@ describe('every text-bearing class the UI renders has a rule', () => {
     // frame, the sidebar, and the two surface hosts out of this gate's view. A
     // curated list has that failure mode; the fix is to follow the markup.
     const sources = [
-      'src/ui/conflict-resolution.ts', 'src/ui/app.ts', 'src/ui/app-shell.ts',
+      'src/ui/conflict-resolution.ts', 'src/ui/app.ts',
       'src/ui/workbench/workbench-shell.ts', 'src/ui/dashboard.ts',
       'src/ui/doc-pane.ts', 'src/ui/shortcuts.ts', 'src/ui/kpi-panel.ts',
       'src/ui/explain-graph.ts', 'src/ui/tabs.ts',
@@ -319,11 +319,14 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // is gated, and carving its markup out into unlisted files would silently
       // move the sidebar back out of this gate's view.
       'src/ui/sidebar-upper.ts', 'src/ui/dashboard-tree.ts',
-      // #577 evaluation control — the right inspector's markup lives in its own
-      // module, and the comment above is explicit that carving markup out into an
-      // unlisted file silently moves it out of this gate's view. Listed for
-      // exactly that reason.
-      'src/ui/right-inspector.ts',
+      // #577 state S2 — the vanilla shell (`app-shell.ts`) and the vanilla right
+      // inspector are GONE; their markup now lives in these three modules. They
+      // are listed for exactly the reason the comment at the top of this list
+      // gives: deleting a gated file and carving its markup into unlisted ones
+      // silently moves the whole application frame back out of this gate's view,
+      // which is the failure mode that shipped the 13px Arial conflict dialog.
+      'src/ui/shell/shell-view.ts', 'src/ui/shell/right-inspector-view.ts',
+      'src/ui/shell/shell-host.ts',
       // #457 deleted `src/ui/variable-editor.ts` (the per-variable option-SQL
       // drawer #447 had carved out of the tree's markup) — option SQL is edited in
       // the main editor now, whose markup is already covered by app-shell.ts,

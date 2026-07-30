@@ -3026,6 +3026,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .ri-tabs[hidden] { display: none; }
 .ri-tool { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .ri-tool[hidden] { display: none; }
+/* #577 state S2 — a tool body is FOREIGN DOM (the tool mounts itself), so the
+   component arm cannot put `hidden` on it directly and wraps each one in a
+   slot. `display: contents` keeps the rendered box tree identical to the
+   vanilla arm's, where the tool element was `.ri-body`'s direct child. */
+.ri-tool-slot { display: contents; }
+.ri-tool-slot[hidden] { display: none; }
 .ri-tool-note { color: var(--fg-mute); font-size: var(--text-body); }
 .ri-tool-input { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-input); color: var(--fg); padding: 5px 9px; font: inherit; font-size: var(--text-body); }
 
