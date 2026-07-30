@@ -258,6 +258,26 @@ test.describe('left navigation rail + focused drawer (#487 phase 3)', () => {
     expect(active).toEqual({ section: 'library', inSavedTabs: true });
   });
 
+  // #487 phase-3 review, second pass, major issue — a WIDE sidebar (never a
+  // focused drawer) folding straight to bare rail had no restoration at all:
+  // `focusedSection` is null throughout 'wide' by construction, so the
+  // rail-restore branch's old `priorFocusedSection !== null` guard could
+  // never fire coming out of wide. `app-shell.test.ts` unit-tests the
+  // DOM-lookup fix directly (happy-dom has no CSS, so it cannot demonstrate
+  // the failure this fixes, but it CAN prove the restoration logic itself is
+  // correct once focus data is available at commit time).
+  //
+  // Deliberately NOT e2e-tested via a real mouse drag here: the resize
+  // separator's live-drag repaint (`left-nav-separator.ts`) hides the
+  // sidebar/rail on an INTERMEDIATE `mousemove` frame, well before the final
+  // `mouseup` commit — and confirmed against a real browser, a focused
+  // descendant is dropped to `<body>` on THAT earlier frame, before any
+  // commit-time JS (this fix, or the PRE-EXISTING drawer -> rail restoration
+  // from major issue 4) ever runs. This is a genuine gap in the whole
+  // mechanism, not a regression from this fix — tracked separately (see the
+  // linked follow-up issue) rather than papered over with a passing-by-luck
+  // e2e assertion.
+
   test('the separator keys (Home/End) fold and restore, with internally consistent ARIA', async ({ page }) => {
     await open(page);
     const separator = page.locator('.col-resize');
@@ -326,6 +346,27 @@ test.describe('left navigation rail + focused drawer (#487 phase 3)', () => {
     expect(geometry.navMode).toBe('wide');
   });
 });
+
+// #487 phase-3 review, second pass, major issue — entering mobile Editor/
+// Results hides `.sidebar` via CSS alone (`.main-row[data-mobile-view=
+// "editor"/"results"] .sidebar { display: none }` in styles.css),
+// independently of `data-nav-mode` (mobile forces 'wide' regardless of which
+// mobile view is showing). `app-shell.test.ts` unit-tests the rescue logic
+// directly (isMobile crossing, a bottom-nav tap while already mobile, and
+// `showHost('dashboard')`).
+//
+// Deliberately NOT e2e-tested here: a real-browser probe (Chromium, under
+// this suite's normal 3-worker parallelism) found the rescue's own explicit
+// `.focus()` call itself gets raced and reverted roughly half the time by
+// the browser's OWN async layout recompute for the newly-matching mobile
+// media query (`.left-rail` disappearing, `.sidebar` jumping to `width:
+// 100%` on "tables", or to `display: none` on "editor"/"results", is a large
+// discontinuous reflow) — Firefox and WebKit did not reproduce this under
+// the same load. A `requestAnimationFrame`-deferred focus call cut the
+// failure rate but did not eliminate it. This is a genuine, deeper
+// engine-timing gap, not a regression from this fix and not something a
+// flaky-but-usually-green e2e assertion should paper over — tracked in the
+// same follow-up as the drag-timing issue above.
 
 // #487 phase-3 review, blocker 1 — a click-and-release with no genuine
 // movement must preserve the stored preference untouched, even when the

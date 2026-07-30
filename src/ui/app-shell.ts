@@ -32,7 +32,7 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { MOBILE_BREAKPOINT_PX } from '../state.js';
 import type { AppState as State } from '../state.js';
-import { effect } from '@preact/signals-core';
+import { effect, untracked } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
 import { buildNavSectionRegistry, sectionForSidePanelKey, NAV_SECTION_META } from './nav-sections.js';
@@ -46,7 +46,8 @@ import { startDrag } from './splitters.js';
 import { buildLeftRail } from './left-rail.js';
 import { mountLeftNavSeparator } from './left-nav-separator.js';
 import {
-  clampLeftNavigationToMaximumTotal, effectiveLeftNavigationLayout, LEFT_CENTRE_MIN_PX,
+  clampLeftNavigationToMaximumTotal, effectiveLeftNavigationLayout, isLeftNavigationSection,
+  LEFT_CENTRE_MIN_PX,
 } from '../core/left-nav-layout.js';
 import type { LeftNavigationLayout, LeftNavigationSection } from '../core/left-nav-layout.js';
 import { readLeftNavigationLayout, toggleFocusedSection } from '../application/left-nav.js';
@@ -358,6 +359,32 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     const navMode: 'wide' | 'rail' | 'drawer' = layout.mode === 'wide'
       ? 'wide'
       : layout.focusedSection === null ? 'rail' : 'drawer';
+    // #487 phase-3 review, second pass — captured BEFORE any hidden-state
+    // mutation below touches `.sidebar`, `leftRail.el` or `data-mobile-view`'s
+    // CSS: once an ancestor goes `display: none`/`[hidden]`, the focused
+    // descendant is still momentarily reported as `document.activeElement`
+    // (verified against a real Chromium instance), but the browser drops it to
+    // `<body>` on its own by the next microtask unless something explicitly
+    // moves it first. `focusedInSidebar` is the one fact every restoration
+    // branch below needs and none of them could previously get right for a
+    // WIDE sidebar: `focusedSection` is null throughout 'wide' by construction
+    // (`core/left-nav-layout.ts`'s own mode/section coherence invariant), so
+    // `priorFocusedSection` can never name which of the two simultaneously
+    // visible sections actually held focus — only the DOM itself knows that.
+    const activeBeforeEl = doc.activeElement;
+    const focusedInSidebar = activeBeforeEl instanceof Element && sidebar.contains(activeBeforeEl);
+    // `untracked`: this function is itself called from the "preferred-state
+    // effect" below (subscribed only to `leftNavMode`/`leftNavSection`/
+    // `isMobile`) — a PLAIN read of `state.mobileView.value` here would
+    // silently widen that effect's own reactive dependencies to include
+    // `mobileView` too (signals track every `.value` read during an effect's
+    // run, at any call depth), making every bottom-nav tap ALSO re-run the
+    // whole preferred-state derivation redundantly and race the dedicated
+    // `mobileView` effect below for which one actually performs the rescue.
+    // Reading it untracked keeps this function's own reactive footprint
+    // exactly what it was before this fix: still the CURRENT value, just not
+    // a new subscription.
+    const currentMobileView = untracked(() => state.mobileView.value);
     mainRow.dataset.navMode = navMode;
     sidebar.dataset.navMode = navMode;
     // The rail's own width never resizes, so only 'wide' (the whole nav) and
@@ -443,25 +470,59 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // #487 phase-3 review, major issue 4 — the `else if` restores focus to
     // the rail launcher on a committed drawer-to-BARE-RAIL transition, which
     // had no restoration at all before this fix. Scoped to
-    // `sidebar.contains(doc.activeElement)`, not every rail arrival: a
-    // POINTER drag's `mousedown` calls `preventDefault()` (this module's own
+    // `focusedInSidebar`, not every rail arrival: a POINTER drag's
+    // `mousedown` calls `preventDefault()` (this module's own
     // `onMouseDown`... i.e. `left-nav-separator.ts`'s), so focus is never
     // moved onto the separator and can be left stranded inside the
     // now-hidden drawer content — exactly the case that needs rescuing. A
     // KEYBOARD fold (Home, or ArrowLeft crossing the fold boundary) requires
     // the separator itself to already hold focus to receive that keydown at
-    // all, so `sidebar.contains(...)` is false there and this leaves the
+    // all, so `focusedInSidebar` is false there and this leaves the
     // separator's own, already-correct focus alone — redirecting it would
     // break the very next ArrowRight/End from reaching the control that
     // handles it.
+    //
+    // #487 phase-3 review, second pass, major issue — a WIDE sidebar folding
+    // straight to bare rail (a drag that never opened a focused drawer, or a
+    // non-monotone gesture that only passed through 'drawer' mid-session)
+    // used to hit this branch's old `priorFocusedSection !== null` guard,
+    // which is permanently false coming out of 'wide' (see `focusedInSidebar`
+    // above) — so the focused control was silently dropped with nothing
+    // rescuing it. `priorFocusedSection` still wins when it IS known (a
+    // genuinely focused drawer folding to rail), matching every existing
+    // drawer -> rail case exactly; the DOM lookup is only the fallback for
+    // the wide case that has no such tracked section to fall back on.
     if (!leftNavSeparator.isSessionActive()) {
       if (!state.isMobile.value && navMode === 'wide' && priorFocusedSection !== null) {
         const pane = NAV_SECTION_META[priorFocusedSection].pane;
         const tabsRow = pane === 'upper' ? app.dom.upperRoleTabs : app.dom.savedTabsRow;
         const tabButton = tabsRow?.querySelector<HTMLElement>('[data-section="' + priorFocusedSection + '"]');
         tabButton?.focus();
-      } else if (navMode === 'rail' && priorFocusedSection !== null && sidebar.contains(doc.activeElement)) {
-        leftRail.focusSection(priorFocusedSection);
+      } else if (navMode === 'rail' && focusedInSidebar) {
+        if (priorFocusedSection !== null) {
+          leftRail.focusSection(priorFocusedSection);
+        } else {
+          const activeSection = (activeBeforeEl as Element).closest<HTMLElement>('[data-section]')?.dataset.section;
+          if (isLeftNavigationSection(activeSection)) leftRail.focusSection(activeSection);
+        }
+      } else if (
+        state.isMobile.value
+        && (currentMobileView === 'editor' || currentMobileView === 'results')
+        && focusedInSidebar
+      ) {
+        // #487 phase-3 review, second pass, major issue — entering mobile
+        // Editor/Results hides `.sidebar` via CSS alone
+        // (`.main-row[data-mobile-view="editor"/"results"] .sidebar {
+        // display: none }` in styles.css), independently of `navMode` (mobile
+        // forces 'wide' regardless of which mobile view is showing, which is
+        // exactly why the branch above is guarded off by `!state.isMobile.value`
+        // — it must not steal focus onto a desktop tab the mobile layout hides
+        // entirely). Nothing was rescuing the focused sidebar control here
+        // before this fix; the mobile view's own bottom-nav button is the one
+        // stable, always-visible landing spot. Tables is deliberately excluded:
+        // its sidebar stays visible (`.main-row[data-mobile-view="tables"]
+        // .sidebar { display: flex }`), so there is nothing to rescue there.
+        app.dom.mobileNav?.querySelector<HTMLElement>('[data-view="' + currentMobileView + '"]')?.focus();
       }
       previousFocusedSection = layout.focusedSection;
     }
@@ -754,7 +815,25 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // Bottom-nav view switching: reflect the active mobile panel + Tables segmented
   // choice onto data-attributes the mobile CSS keys off (a no-op above the
   // breakpoint). Each runs once now for the initial paint.
-  disposers.push(effect(() => { mainRow.dataset.mobileView = state.mobileView.value; }));
+  //
+  // #487 phase-3 review, second pass, major issue — this is a SEPARATE trigger
+  // from `applyEffectiveLeftNavigationLayout`'s own isMobile-crossing rescue
+  // above: tapping the bottom nav from Tables straight to Editor/Results (no
+  // `isMobile`/`leftNavMode`/`leftNavSection` change at all) hides `.sidebar`
+  // via the exact same CSS rule but never runs that function, so a control
+  // focused in Tables would be dropped the same way. Focus is captured BEFORE
+  // the attribute write flips the CSS (same ordering reason as that rescue).
+  disposers.push(effect(() => {
+    const view = state.mobileView.value;
+    const activeBeforeEl = doc.activeElement;
+    const hidingSidebar = state.isMobile.value && (view === 'editor' || view === 'results')
+      && activeBeforeEl instanceof Element && sidebar.contains(activeBeforeEl);
+    mainRow.dataset.mobileView = view;
+    if (hidingSidebar) {
+      const navButton = app.dom.mobileNav?.querySelector<HTMLElement>('[data-view="' + view + '"]');
+      navButton?.focus();
+    }
+  }));
   disposers.push(effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; }));
   catalog.loadSchema();
   catalog.loadReference();
@@ -768,9 +847,20 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     queryHost,
     dashboardHost,
     showHost: (kind) => {
+      // #487 phase-3 review, second pass, major issue — a mobile Dashboard
+      // hides `.sidebar` via `.main-row[data-surface="dashboard"] .sidebar {
+      // display: none }` (styles.css), a THIRD trigger entirely outside
+      // `applyEffectiveLeftNavigationLayout`/the mobileView effect above. Same
+      // rescue shape: capture before the attribute write, land on the one
+      // bottom-nav button #471 keeps visible on this surface (Editor — the
+      // Dashboard's only route back to the Workbench).
+      const activeBeforeEl = doc.activeElement;
+      const hidingSidebarForDashboard = state.isMobile.value && kind === 'dashboard'
+        && activeBeforeEl instanceof Element && sidebar.contains(activeBeforeEl);
       queryHost.hidden = kind !== 'query';
       dashboardHost.hidden = kind !== 'dashboard';
       mainRow.dataset.surface = kind;
+      if (hidingSidebarForDashboard) app.dom.mobileNav?.querySelector<HTMLElement>('[data-view="editor"]')?.focus();
     },
     dispose: () => {
       // #426: a deferred single-click must not fire against a tree that is being

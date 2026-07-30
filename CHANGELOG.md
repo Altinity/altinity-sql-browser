@@ -412,6 +412,45 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `upperRole` write in wide mode (`resolveRailOpen` is a no-op there — wide-
   mode behavior is unchanged) and additionally opens/switches the focused
   drawer when the nav is folded.
+- **A focused control could be dropped to `<body>` on three transitions the
+  phase-3-review restoration logic didn't cover** (#487, phase 3 review,
+  second pass). `app-shell.ts`'s `applyEffectiveLeftNavigationLayout` only
+  ever restored focus using a TRACKED section (`priorFocusedSection`), which
+  `core/left-nav-layout.ts`'s own mode/section coherence invariant keeps
+  `null` throughout 'wide' — so a wide sidebar folding straight to bare rail
+  (no drawer step in between) had nothing to restore to, even with focus
+  genuinely inside it. Fixed by asking the DOM directly which
+  `[data-section]` host the actually-focused element sits under
+  (`nav-sections.ts`'s per-section wrapper), falling back to it only when no
+  tracked section is available — the existing drawer-to-rail/drawer-to-wide
+  paths are unchanged. Two further gaps existed for the same reason CSS alone
+  can hide `.sidebar` independently of `data-nav-mode`: entering mobile
+  Editor/Results (`.main-row[data-mobile-view="editor"/"results"] .sidebar {
+  display: none }`) and switching to the Dashboard surface on mobile
+  (`.main-row[data-surface="dashboard"] .sidebar { display: none }`) both now
+  land focus on a stable, always-visible bottom-nav button instead of
+  silently losing it. Verified against a real browser: a Chromium probe
+  confirmed a focused descendant is still momentarily reported as
+  `document.activeElement` immediately after an ancestor goes hidden, but
+  falls back to `<body>` by the next microtask unless something explicitly
+  moves it first — happy-dom, this project's unit-test DOM, applies no CSS at
+  all and cannot demonstrate the failure this fixes.
+
+  Two related gaps surfaced while proving this out in real browsers and are
+  **not** fixed here (tracked as a follow-up): the resize separator's live
+  multi-frame drag repaint hides the sidebar/rail on an intermediate
+  `mousemove` frame, well before the final `mouseup` commit, so a real
+  browser can blur the focused element before ANY commit-time restoration
+  (this fix's new wide→rail path, or the pre-existing drawer→rail
+  restoration from an earlier #487 review round) gets a chance to see it —
+  this is a pre-existing gap in the whole mechanism, only ever unit-tested
+  under happy-dom, which does not model the blur at all. Separately, the new
+  mobile-crossing rescue's own explicit `.focus()` call was found to race the
+  browser's own async layout recompute for the newly-matching mobile media
+  query under real parallel load (Chromium specifically, not Firefox/WebKit)
+  — a `requestAnimationFrame`-deferred focus call reduced but did not
+  eliminate the failure rate, so no e2e assertion claims that path is solid
+  end-to-end; it is unit-tested only.
 
 ### Changed
 - **Sidebar tab headers go text-only once the sidebar is dragged to 220px or

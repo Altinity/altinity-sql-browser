@@ -1157,3 +1157,271 @@ describe('mountAppShell — drag-folding an open drawer to bare rail restores fo
     focusSpy.mockRestore();
   });
 });
+
+// #487 phase-3 review, second pass, major issue — a WIDE sidebar (never a
+// focused drawer) folding straight to bare rail had no restoration at all:
+// `focusedSection` is null throughout 'wide' by construction, so the OLD
+// `priorFocusedSection !== null` guard could never fire coming out of wide.
+// Recovered by asking the DOM which of the four section hosts the actually-
+// focused control sits under, since a wide sidebar shows two sections at
+// once and only the DOM knows which one really held focus.
+describe('mountAppShell — a wide sidebar folding straight to bare rail restores focus (#487 phase-3 review, second pass, major issue)', () => {
+  it('a pointer drag-fold from WIDE with the schema search focused (upper pane) moves focus to the Databases rail launcher', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const databasesBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('databases')];
+    const focusSpy = vi.spyOn(databasesBtn, 'focus');
+
+    app.dom.schemaSearchInput!.focus();
+    expect(document.activeElement).toBe(app.dom.schemaSearchInput);
+
+    // Grabbed at the wide sidebar's own default total (248px) — a zero grip
+    // offset, mirroring this file's other drag helpers.
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 })); // well under the fold threshold
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail'); // wide -> rail in one step (no intermediate drawer)
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(databasesBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('a pointer drag-fold from WIDE with a Library list row focused (lower pane) moves focus to the Library rail launcher', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const libraryBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+    const focusSpy = vi.spyOn(libraryBtn, 'focus');
+
+    const insideLibrary = app.dom.savedList as HTMLElement;
+    insideLibrary.tabIndex = -1; // focusable, for this test only
+    insideLibrary.focus();
+    expect(document.activeElement).toBe(insideLibrary);
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(libraryBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('a genuinely focused drawer folding to rail still prefers the tracked section over the DOM lookup (no behavior change)', () => {
+    // Regression guard: the DOM-derived fallback must only kick in when
+    // `priorFocusedSection` is null (the wide case) — a committed drawer ->
+    // rail transition (major issue 4, above) must keep using the tracked
+    // section exactly as before.
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'history' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const historyBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('history')];
+    const focusSpy = vi.spyOn(historyBtn, 'focus');
+    const insideDrawer = app.dom.historyList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(historyBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('folding from WIDE with focus on the schema/saved splitter (no [data-section] ancestor) does not focus any rail launcher', () => {
+    // The splitter (`app.dom.sideSplit`) sits directly inside `.sidebar` but
+    // outside all four `[data-section]` hosts — the DOM-derived fallback must
+    // recognize it has no section to hand off to, rather than calling
+    // `leftRail.focusSection` with an invalid value.
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const railButtons = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')];
+    const focusSpies = railButtons.map((btn) => vi.spyOn(btn, 'focus'));
+
+    const splitter = app.dom.sideSplit as HTMLElement;
+    splitter.tabIndex = -1;
+    splitter.focus();
+    expect(document.activeElement).toBe(splitter);
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpies.some((spy) => spy.mock.calls.length > 0)).toBe(false);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpies.forEach((spy) => spy.mockRestore());
+  });
+});
+
+// #487 phase-3 review, second pass, major issue — entering mobile Editor/
+// Results hides `.sidebar` via CSS alone (`.main-row[data-mobile-view=
+// "editor"/"results"] .sidebar { display: none }`), independently of
+// `navMode` (mobile forces 'wide' regardless of which mobile view is
+// showing — major issue 3's guard correctly stops the wide-tab branch from
+// stealing focus onto a hidden DESKTOP tab here, but nothing was rescuing
+// the focus at all). Tables is excluded: its sidebar stays visible.
+describe('mountAppShell — crossing into mobile with an open drawer moves focus off the (CSS-)hidden sidebar (#487 phase-3 review, second pass, major issue)', () => {
+  it('mobileView "editor" (the default): moves a focused drawer control to the Editor bottom-nav button', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    const editorBtn = app.dom.mobileNav!.querySelector('[data-view="editor"]') as HTMLElement;
+    const focusSpy = vi.spyOn(editorBtn, 'focus');
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+    expect(document.activeElement).toBe(insideDrawer);
+
+    app.state.isMobile.value = true;
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(editorBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('mobileView "results": moves a focused drawer control to the Results bottom-nav button', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    app.state.mobileView.value = 'results';
+    const resultsBtn = app.dom.mobileNav!.querySelector('[data-view="results"]') as HTMLElement;
+    const focusSpy = vi.spyOn(resultsBtn, 'focus');
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+
+    app.state.isMobile.value = true;
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(resultsBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('mobileView "tables": does NOT move focus — that view keeps the sidebar visible', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    app.state.mobileView.value = 'tables';
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+
+    app.state.isMobile.value = true;
+
+    expect(document.activeElement).toBe(insideDrawer);
+
+    app.root.remove();
+    handle.dispose();
+  });
+});
+
+// #487 phase-3 review, second pass, major issue — tapping the bottom nav
+// straight from Tables to Editor/Results while ALREADY mobile hides
+// `.sidebar` via the same CSS rule, but through a SEPARATE effect
+// (`state.mobileView` alone, no `isMobile`/`leftNavMode`/`leftNavSection`
+// change) that the crossing-focused fix above never runs.
+describe('mountAppShell — tapping the bottom nav to Editor/Results while already mobile rescues focus (#487 phase-3 review, second pass, major issue)', () => {
+  it('moves a focused Tables control to the Editor bottom-nav button when mobileView changes to "editor"', () => {
+    const { app, handle } = mountWithLeftNav({ isMobile: true });
+    document.body.appendChild(app.root);
+    app.state.mobileView.value = 'tables';
+    const editorBtn = app.dom.mobileNav!.querySelector('[data-view="editor"]') as HTMLElement;
+    const focusSpy = vi.spyOn(editorBtn, 'focus');
+    app.dom.schemaSearchInput!.focus();
+    expect(document.activeElement).toBe(app.dom.schemaSearchInput);
+
+    app.state.mobileView.value = 'editor';
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(editorBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('does not force-refocus when nothing was focused inside the sidebar', () => {
+    const { app, handle } = mountWithLeftNav({ isMobile: true });
+    document.body.appendChild(app.root);
+    app.state.mobileView.value = 'tables';
+    const tablesBtn = app.dom.mobileNav!.querySelector('[data-view="tables"]') as HTMLElement;
+    tablesBtn.focus();
+    expect(document.activeElement).toBe(tablesBtn);
+
+    app.state.mobileView.value = 'editor';
+
+    expect(document.activeElement).toBe(tablesBtn); // unchanged — nothing to rescue
+
+    app.root.remove();
+    handle.dispose();
+  });
+});
+
+// #487 phase-3 review, second pass, major issue — a mobile Dashboard hides
+// `.sidebar` via `.main-row[data-surface="dashboard"] .sidebar { display:
+// none }`, a THIRD trigger entirely outside `applyEffectiveLeftNavigationLayout`
+// / the mobileView effect above (`showHost` is called from outside this
+// shell's own reactive effects). #471's Editor bottom-nav button is the one
+// control the Dashboard surface deliberately keeps visible on mobile.
+describe('mountAppShell — showHost("dashboard") on mobile rescues focus off the hidden sidebar (#487 phase-3 review, second pass, major issue)', () => {
+  it('moves a focused sidebar control to the Editor bottom-nav button', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: true });
+    document.body.appendChild(app.root);
+    const editorBtn = app.dom.mobileNav!.querySelector('[data-view="editor"]') as HTMLElement;
+    const focusSpy = vi.spyOn(editorBtn, 'focus');
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+    expect(document.activeElement).toBe(insideDrawer);
+
+    handle.showHost('dashboard');
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(editorBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('does nothing at desktop widths — the sidebar genuinely stays beside the Dashboard there', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1;
+    insideDrawer.focus();
+
+    handle.showHost('dashboard');
+
+    expect(document.activeElement).toBe(insideDrawer);
+
+    app.root.remove();
+    handle.dispose();
+  });
+});
