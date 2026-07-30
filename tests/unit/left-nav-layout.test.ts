@@ -18,10 +18,12 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  LEFT_DRAWER_DEFAULT_PX, LEFT_FOLD_THRESHOLD_PX, LEFT_NAV_LARGE_STEP_PX, LEFT_NAV_SECTIONS,
-  LEFT_NAV_STEP_PX, LEFT_PANEL_MAX_PX, LEFT_PANEL_MIN_PX, LEFT_RAIL_PX, LEFT_WIDE_DEFAULT_PX,
-  LEFT_WIDE_THRESHOLD_PX,
-  clampDrawerWidthPx, clampWideWidthPx, decodeLeftNavigationMode, decodeStoredPx,
+  LEFT_CENTRE_MIN_PX, LEFT_DRAWER_DEFAULT_PX, LEFT_FOLD_THRESHOLD_PX, LEFT_NAV_LARGE_STEP_PX,
+  LEFT_NAV_SECTIONS, LEFT_NAV_STEP_PX, LEFT_PANEL_MAX_PX, LEFT_PANEL_MIN_PX, LEFT_RAIL_PX,
+  LEFT_WIDE_DEFAULT_PX, LEFT_WIDE_THRESHOLD_PX,
+  advanceLeftNavigationResize, beginLeftNavigationResize, clampDrawerWidthPx,
+  clampLeftNavigationToMaximumTotal, clampWideWidthPx, commitLeftNavigationResize,
+  decodeLeftNavigationMode, decodeStoredPx,
   effectiveLeftNavigationLayout, isLeftNavigationSection, leftNavigationLayoutIsCoherent,
   leftNavigationSeparatorAria, leftNavigationWidthPx, normalizeLeftNavigationLayout,
   resolveLeftNavigationDrag, resolveLeftNavigationKey, resolveRailActivation, resolveRailOpen,
@@ -769,5 +771,231 @@ describe('leftNavigationSeparatorAria', () => {
       expect(valueNow).toBeGreaterThanOrEqual(valueMin);
       expect(valueNow).toBeLessThanOrEqual(valueMax);
     }
+  });
+
+  // #487 phase 3: an optional ceiling, added without disturbing any existing
+  // caller — this is the regression the "omitted" case guards.
+  describe('the optional maxNavigationTotalPx ceiling (#487 phase 3)', () => {
+    it('is unchanged from before phase 3 when the parameter is omitted', () => {
+      // Would fail if a phase-3 edit accidentally tightened the default ceiling.
+      expect(leftNavigationSeparatorAria(wide({ wideWidthPx: 300 })))
+        .toEqual({ valueMin: LEFT_RAIL_PX, valueMax: LEFT_PANEL_MAX_PX, valueNow: 300 });
+    });
+    it('ignores a non-finite or non-positive ceiling, exactly like omitting it', () => {
+      for (const bogus of [NaN, Infinity, -Infinity, 0, -100]) {
+        expect(leftNavigationSeparatorAria(wide({ wideWidthPx: 300 }), bogus).valueMax)
+          .toBe(LEFT_PANEL_MAX_PX);
+      }
+    });
+    it('shrinks valueMax to a smaller ceiling', () => {
+      expect(leftNavigationSeparatorAria(wide({ wideWidthPx: 200 }), 300).valueMax).toBe(300);
+    });
+    it('has no effect when the ceiling exceeds LEFT_PANEL_MAX_PX', () => {
+      expect(leftNavigationSeparatorAria(wide({ wideWidthPx: 200 }), 9999).valueMax)
+        .toBe(LEFT_PANEL_MAX_PX);
+    });
+  });
+});
+
+describe('clampLeftNavigationToMaximumTotal (#487 phase 3)', () => {
+  it('shrinks a wide layout that exceeds the budget', () => {
+    const next = clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), 300);
+    expect(next.mode).toBe('wide');
+    expect(next.wideWidthPx).toBe(300);
+  });
+  it('shrinks a drawer layout that exceeds the budget, measured beside the rail', () => {
+    const next = clampLeftNavigationToMaximumTotal(
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + 180);
+    expect(next.mode).toBe('rail');
+    expect(next.focusedSection).toBe('library');
+    expect(next.drawerWidthPx).toBe(180);
+  });
+  it('never changes mode, including for a bare rail (nothing to shrink)', () => {
+    expect(clampLeftNavigationToMaximumTotal(rail(), 0).mode).toBe('rail');
+    expect(clampLeftNavigationToMaximumTotal(rail(), 0)).toEqual(rail());
+    expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), 0).mode).toBe('wide');
+    expect(clampLeftNavigationToMaximumTotal(
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), 0).mode).toBe('rail');
+  });
+  it("returns wide's own floor, not NaN or a thrown error, for a budget below it", () => {
+    expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), 0).wideWidthPx)
+      .toBe(LEFT_PANEL_MIN_PX);
+    expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), LEFT_PANEL_MIN_PX - 1).wideWidthPx)
+      .toBe(LEFT_PANEL_MIN_PX);
+  });
+  it("returns the drawer's own floor for a budget below it", () => {
+    const next = clampLeftNavigationToMaximumTotal(
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX - 1);
+    expect(next.drawerWidthPx).toBe(LEFT_FOLD_THRESHOLD_PX);
+  });
+  it('is exact at the floor boundary — the floor itself still fits', () => {
+    expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), LEFT_PANEL_MIN_PX).wideWidthPx)
+      .toBe(LEFT_PANEL_MIN_PX);
+    const next = clampLeftNavigationToMaximumTotal(
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX);
+    expect(next.drawerWidthPx).toBe(LEFT_FOLD_THRESHOLD_PX);
+  });
+  it('does not propagate NaN or Infinity for a non-finite or negative budget', () => {
+    for (const bogus of [NaN, Infinity, -Infinity, -1, -9999]) {
+      const wideResult = clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 300 }), bogus);
+      expect(Number.isFinite(wideResult.wideWidthPx)).toBe(true);
+      const drawerResult = clampLeftNavigationToMaximumTotal(
+        rail({ focusedSection: 'library', drawerWidthPx: 200 }), bogus);
+      expect(Number.isFinite(drawerResult.drawerWidthPx)).toBe(true);
+    }
+  });
+  it('treats a non-finite or negative budget as no additional constraint', () => {
+    // Falls back to the mode's own existing band, not an artificially shrunk one.
+    for (const bogus of [NaN, Infinity, -Infinity, -1]) {
+      expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 300 }), bogus).wideWidthPx).toBe(300);
+    }
+  });
+  it('is a no-op — by identity — when the layout already fits the budget', () => {
+    const w = wide({ wideWidthPx: 300 });
+    expect(clampLeftNavigationToMaximumTotal(w, 9999)).toBe(w);
+    const d = rail({ focusedSection: 'library', drawerWidthPx: 200 });
+    expect(clampLeftNavigationToMaximumTotal(d, 9999)).toBe(d);
+    const b = rail();
+    expect(clampLeftNavigationToMaximumTotal(b, 0)).toBe(b);
+  });
+  it("LEFT_CENTRE_MIN_PX is exported for the UI layer's budget arithmetic", () => {
+    expect(LEFT_CENTRE_MIN_PX).toBe(480);
+  });
+});
+
+// The resize-session design's own comment block (above `LeftNavigationResizeSession`
+// in left-nav-layout.ts) explains WHY it is shaped the way it is; these tests are
+// the counter-examples that shape was reviewed against.
+describe('resize session (#487 phase 3)', () => {
+  it('begin captures both inputs, with effective starting equal to effectiveAtStart', () => {
+    const preferred = wide({ wideWidthPx: 420 });
+    const effective = wide({ wideWidthPx: 313 }); // squeezed by a narrow viewport
+    const session = beginLeftNavigationResize(preferred, effective);
+    expect(session.preferredAtStart).toBe(preferred);
+    expect(session.effectiveAtStart).toBe(effective);
+    expect(session.effective).toBe(effective);
+  });
+
+  it('advance replaces effective and returns the same session by reference when unchanged', () => {
+    const start = wide({ wideWidthPx: 300 });
+    const session = beginLeftNavigationResize(start, start);
+    const same = advanceLeftNavigationResize(session, start);
+    expect(same).toBe(session);
+    const moved = wide({ wideWidthPx: 320 });
+    const advanced = advanceLeftNavigationResize(session, moved);
+    expect(advanced).not.toBe(session);
+    expect(advanced.effective).toBe(moved);
+    expect(advanced.preferredAtStart).toBe(session.preferredAtStart);
+    expect(advanced.effectiveAtStart).toBe(session.effectiveAtStart);
+  });
+
+  // Each row of commitLeftNavigationResize's table, driven through a single
+  // begin -> advance -> commit step.
+  describe('commit table', () => {
+    it('a wide resize that changed width commits it, leaving the drawer memory untouched', () => {
+      const start = wide({ wideWidthPx: 250, drawerWidthPx: 210 });
+      let session = beginLeftNavigationResize(start, start);
+      session = advanceLeftNavigationResize(session, wide({ wideWidthPx: 320, drawerWidthPx: 210 }));
+      expect(commitLeftNavigationResize(session)).toEqual(wide({ wideWidthPx: 320, drawerWidthPx: 210 }));
+    });
+
+    it('a drawer resize that changed width commits it, leaving the wide memory untouched', () => {
+      const start = rail({ focusedSection: 'library', wideWidthPx: 260, drawerWidthPx: 200 });
+      let session = beginLeftNavigationResize(start, start);
+      session = advanceLeftNavigationResize(
+        session, rail({ focusedSection: 'library', wideWidthPx: 260, drawerWidthPx: 230 }));
+      expect(commitLeftNavigationResize(session)).toEqual(
+        rail({ focusedSection: 'library', wideWidthPx: 260, drawerWidthPx: 230 }));
+    });
+
+    it('a fold-through to bare rail preserves both remembered widths', () => {
+      const start = wide({ wideWidthPx: 300, drawerWidthPx: 210 });
+      let session = beginLeftNavigationResize(start, start);
+      session = advanceLeftNavigationResize(session, resolveLeftNavigationDrag(start, 10));
+      const committed = commitLeftNavigationResize(session);
+      expect(committed.mode).toBe('rail');
+      expect(committed.focusedSection).toBeNull();
+      expect(committed.wideWidthPx).toBe(300);
+      expect(committed.drawerWidthPx).toBe(210);
+    });
+
+    it('a no-op (advance to the same effective layout) commits both preserved', () => {
+      const start = wide({ wideWidthPx: 300, drawerWidthPx: 210 });
+      let session = beginLeftNavigationResize(start, start);
+      session = advanceLeftNavigationResize(session, wide({ wideWidthPx: 300, drawerWidthPx: 210 }));
+      expect(commitLeftNavigationResize(session)).toEqual(start);
+    });
+  });
+
+  it('the dormant-band case: a drawer resize followed by a crossing into wide does not commit the transient drawer width', () => {
+    const start = rail({ focusedSection: 'library', wideWidthPx: 260, drawerWidthPx: 200 });
+    let session = beginLeftNavigationResize(start, start);
+    // Resize the drawer open further …
+    session = advanceLeftNavigationResize(
+      session, rail({ focusedSection: 'library', wideWidthPx: 260, drawerWidthPx: 259 }));
+    // … then keep dragging past the wide threshold, converting to the wide sidebar.
+    const wideLayout = resolveLeftNavigationDrag(session.effective, LEFT_RAIL_PX + LEFT_WIDE_THRESHOLD_PX + 40);
+    session = advanceLeftNavigationResize(session, wideLayout);
+    const committed = commitLeftNavigationResize(session);
+    expect(committed.mode).toBe('wide');
+    // The wide memory reflects where the session actually ended.
+    expect(committed.wideWidthPx).toBe(wideLayout.wideWidthPx);
+    // The drawer memory is the ORIGINAL preferred value, not the 259px it
+    // transiently passed through mid-session.
+    expect(committed.drawerWidthPx).toBe(200);
+  });
+
+  it('the preferred/effective divergence case: a fold-through commits the PREFERRED wide width, not the viewport-clamped effective one', () => {
+    const preferred = wide({ wideWidthPx: 420, drawerWidthPx: 210 });
+    // The viewport at session start could only render 313px, well inside the
+    // legal wide band, so this is a legitimate effectiveAtStart on its own.
+    const effectiveAtStart = wide({ wideWidthPx: 313, drawerWidthPx: 210 });
+    let session = beginLeftNavigationResize(preferred, effectiveAtStart);
+    // The gesture keeps going left and folds all the way to bare rail.
+    session = advanceLeftNavigationResize(session, resolveLeftNavigationDrag(effectiveAtStart, 10));
+    const committed = commitLeftNavigationResize(session);
+    expect(committed.mode).toBe('rail');
+    // 420, the PREFERRED value — not 313, the clamped value the session actually
+    // rendered at the start.
+    expect(committed.wideWidthPx).toBe(420);
+    expect(committed.drawerWidthPx).toBe(210);
+  });
+
+  it('a dense sweep and a coarse sweep over the same drag commit the same result — even though the underlying reducer state they pass through provably disagrees', () => {
+    // This is the exact counter-example the "restore memory is sampling-dependent
+    // (phase 3 obligation)" test above pins at the raw-reducer level: dragging
+    // from a 300px wide sidebar to a fold, sampling a dead-zone point (179) along
+    // the way freezes the underlying layout's OWN wideWidthPx at the 180 floor,
+    // while jumping straight from 300 to the fold in one step leaves it at 300 —
+    // two different answers for what is, physically, the same gesture ending at
+    // the same pointer position. A session must not inherit that disagreement.
+    const start = wide({ wideWidthPx: 300, drawerWidthPx: 210 });
+
+    // Dense: samples the dead zone (179) before the fold.
+    let denseSession = beginLeftNavigationResize(start, start);
+    let denseLayout: LeftNavigationLayout = start;
+    for (const x of [200, 179, 139]) {
+      denseLayout = resolveLeftNavigationDrag(denseLayout, x);
+      denseSession = advanceLeftNavigationResize(denseSession, denseLayout);
+    }
+    // Sanity check on the known artifact this dense path produces.
+    expect(denseLayout.mode).toBe('rail');
+    expect(denseLayout.wideWidthPx).toBe(LEFT_PANEL_MIN_PX);
+
+    // Coarse: one jump straight past the fold threshold, skipping the dead zone.
+    let coarseSession = beginLeftNavigationResize(start, start);
+    const coarseLayout = resolveLeftNavigationDrag(start, 139);
+    coarseSession = advanceLeftNavigationResize(coarseSession, coarseLayout);
+    // Sanity check on the known — and DIFFERENT — artifact the coarse path
+    // produces for the very same underlying field.
+    expect(coarseLayout.mode).toBe('rail');
+    expect(coarseLayout.wideWidthPx).toBe(300);
+
+    // Despite that disagreement in the raw layouts, both sessions reconstruct
+    // from `preferredAtStart` on a fold-through, so both commit identically.
+    const denseCommitted = commitLeftNavigationResize(denseSession);
+    const coarseCommitted = commitLeftNavigationResize(coarseSession);
+    expect(denseCommitted).toEqual(coarseCommitted);
+    expect(denseCommitted).toEqual(rail({ wideWidthPx: 300, drawerWidthPx: 210 }));
   });
 });
