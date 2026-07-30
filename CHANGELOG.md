@@ -10,6 +10,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **A reproducible UI-complexity measurement instrument** (#577) —
+  `build/ui-complexity-report.mjs` plus its pure, unit-tested half
+  (`build/ui-complexity-lib.mjs`) and the committed, auditable
+  `build/ui-complexity-manifest.json`. Dev tooling only: nothing from it enters
+  `dist/sql.html`. It exists because #577 (evaluate migrating the UI composition
+  layer to Preact) has to decide on evidence, and the two obvious instruments
+  both lie about this repository. Physical LOC does: the five shell-plumbing
+  modules total 1791 physical lines but **709 lines of code**, because each
+  invariant is documented next to the review bug that found it — so any arm
+  written at normal comment density "wins" while containing more code. Regex
+  counts of manual DOM mutation do too: run over raw source they match the prose
+  *inside* those comments, and three of the four families #577 names (`hidden`,
+  `dataset`, `replaceChildren`) go syntactically invisible under a vDOM, scoring
+  ~0 for a component arm by construction. So every count runs over
+  esbuild-transformed source — comments stripped, formatting normalized, by the
+  repo's own build tool — and the report emits its own metric tiering, so a
+  metric demoted to explanatory cannot be quietly promoted to a deciding one.
+  One canonical manifest is measured against every evaluation state via
+  `--manifest`, with an absent file reported rather than skipped: the two most
+  decision-relevant facts in the comparison are a file appearing and a file
+  disappearing, and per-state manifests would erase both. Tests include a
+  sabotage suite and a structural guard that the runner counts stripped code
+  rather than raw source, verified falsifiable. The S0 baseline and S1 control
+  measurements are pinned under `docs/design/577/`.
+
 - **The foldable left navigation is reachable in the UI** (#487, phase 3 of 4 —
   the phase's own most complex wiring step). `app-shell.ts` composes phase 1's
   pure mode/resize-session core and phase 2's section registry with a new
