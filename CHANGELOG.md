@@ -33,13 +33,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   e2e assertions key off it) but no longer drives `splitters.ts`'s bare
   `'col'` width clamp — that axis is deleted outright (see Changed below), and
   the handle's mousedown/keydown belong entirely to `mountLeftNavSeparator`
-  now, which reports every mode/drawer-open-or-closed transition through a
-  new visually-hidden `role="status"` live region. The presentation also
-  re-derives on a live browser-window resize via a new optional injected
-  `observeElementWidth` seam on `mountAppShell`, which the production
-  `app.ts` call site wires to a real `ResizeObserver` when the platform has
-  one (omitted, as in every test, when it does not — the shell simply runs
-  without live-resize reclamping).
+  now, which reports a mode/drawer-open-or-closed transition it itself
+  commits (a pointer drag, or a keyboard Home/End/Arrow operation) through a
+  new visually-hidden `role="status"` live region — a rail-icon click or
+  Escape write `state` directly through `application/left-nav.ts`'s own seam
+  and are not announced through it. The presentation also re-derives on a
+  live browser-window resize via a new optional injected `observeElementWidth`
+  seam on `mountAppShell`, which the production `app.ts` call site wires to a
+  real `ResizeObserver` when the platform has one (omitted in production when
+  it does not, in which case the shell simply runs without live-resize
+  reclamping; several unit tests inject a fake implementation directly to
+  cover the callback regardless).
 - **A navigation section registry behind the left sidebar** (#487, phase 2 of 4).
   Each of the four navigation sections — Databases, Dashboards, Library, History —
   is now addressable through one registry (`src/ui/nav-sections.ts`) that owns its
@@ -105,7 +109,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   shrinking the centre surface arbitrarily thin; the full stored preference
   is never downgraded by the clamp and is restored in full the moment the
   viewport allows it again, the same rule phase 3's resize-session design
-  already guarantees for the focused drawer's own band.
+  already guarantees for the focused drawer's own band. This "never" is
+  scoped to phase 3's own budget (viewport width minus the separator minus
+  the centre minimum) — phase 4's optional right inspector is not yet a term
+  in that budget, so the guarantee will need re-verifying once it is.
 - The `.col-resize` handle no longer drives `splitters.ts`'s `'col'` drag
   axis at all (#487, phase 3 of 4) — that axis is deleted outright: the
   sidebar's own resize gesture now belongs entirely to
@@ -235,6 +242,52 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   rail → back to wide) could no longer find where to send focus. Both now run
   only while no separator session is active, so the bookkeeping stays frozen
   at wherever the gesture started until it actually commits.
+- **A click-and-release on the resize separator with no genuine movement
+  could silently overwrite the stored wide/drawer width preference** (#487,
+  phase 3 of 4, second PR review). `mousedown` recorded no starting pointer
+  coordinate and no grip offset, so `mouseup` always treated the release
+  `clientX` as a brand-new raw proposal — even a pure click, and even one
+  landing wherever a viewport clamp happened to be rendering the handle at
+  the time, which could be far from the actual stored preference (a 420px
+  preference clamped to a rendered 313px would commit 313 on a bare click).
+  The session now records the grip point at `mousedown` and skips advancing
+  entirely when `mouseup` sees no genuine movement, and every advance
+  subtracts the recorded grip offset from `clientX` so a drag started
+  anywhere within the 7px handle tracks the pointer from its own grab point
+  rather than the handle's left edge.
+- **A semantic left-navigation command (Escape, a rail click, a programmatic
+  reveal) running while a pointer resize was still in progress could be
+  silently undone by that drag's own eventual commit** (#487, phase 3 of 4,
+  second PR review). The drag keeps its own uncommitted layout snapshot
+  independent of `state`, so a command that wrote `state` directly mid-drag
+  left the drag's `mouseup`/`blur` free to fire from its stale snapshot
+  afterward and overwrite (or resurrect) exactly what the command just did —
+  concretely, Escape closing a drawer mid-drag, then releasing the mouse,
+  reopened it. `application/left-nav.ts`'s `openFocusedSection`/
+  `toggleFocusedSection` now call an injected `preemptActiveResize` seam
+  FIRST, which `app-shell.ts` wires to cancel the active session and repaint
+  from the committed layout — the one choke point every caller goes through,
+  rather than each call site having to remember it individually.
+- **Crossing into the mobile breakpoint from an open focused drawer could
+  move focus onto a hidden desktop tab button** (#487, phase 3 of 4, second
+  PR review). The wide-conversion focus restoration keyed only on `navMode
+  === 'wide'`, but the mobile projection also forces `navMode` to `'wide'` —
+  so a mobile crossing read identically to a genuine desktop drawer → wide
+  conversion and called `.focus()` on a tab the mobile layout never renders.
+  Now gated behind `!state.isMobile.value`.
+- **Folding an open drawer to the bare rail via a pointer drag left focus
+  stranded in the drawer's now-hidden content, with no restoration to the
+  rail launcher** (#487, phase 3 of 4, second PR review). Focus was already
+  restored for an Escape-close, a rail-icon close, and a drawer → wide
+  conversion, but not this fourth transition — a pointer drag's own
+  `mousedown` calls `preventDefault()`, so focus never moves onto the
+  separator and can be left on a drawer element that just became `display:
+  none`. A committed drawer → rail transition now moves focus to the
+  section's rail launcher whenever focus was left inside the drawer
+  (`sidebar.contains(document.activeElement)`) — scoped that way, rather than
+  on every rail arrival, so a keyboard fold (which needs the separator itself
+  focused to receive the keydown at all) keeps focus right there instead of
+  losing it to the rail button.
 - **The Dashboard tree no longer reveals two rows' pencil/trash actions at
   once, and its `· N` count now sits inline after the label** (#568). The
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)

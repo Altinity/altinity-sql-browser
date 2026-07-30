@@ -246,3 +246,63 @@ describe('wide mode — no drawer, only the pane switch applies', () => {
     expect(app.save).toHaveBeenCalledWith('sidePanel', 'saved');
   });
 });
+
+// #487 phase-3 review, major issue 2 — `preemptActiveResize` is the ONE
+// choke point every caller of `openFocusedSection`/`toggleFocusedSection`
+// gets for free: a caller (`app-shell.ts`) wires it to cancel an in-progress
+// separator resize session and repaint from the committed layout, BEFORE
+// this module's own write — otherwise the session's eventual mouseup/blur
+// commit, unaware the command ran, can silently overwrite or undo it. These
+// tests cover the seam itself, independent of `app-shell.ts`'s own wiring
+// (covered end-to-end in `app-shell.test.ts`).
+describe('preemptActiveResize — called before the write, optional for backward compatibility', () => {
+  it('openFocusedSection calls it BEFORE its own batched write', () => {
+    const state = makeState({ mode: 'rail', section: null });
+    const order: string[] = [];
+    const preemptActiveResize = vi.fn(() => { order.push('preempt'); });
+    const app: LeftNavApp = {
+      state, prefs: { save: vi.fn() }, preemptActiveResize,
+    };
+    const dispose = effect(() => {
+      state.leftNavSection.value;
+      order.push('write-observed');
+    });
+    order.length = 0; // drop the install-time baseline run
+
+    openFocusedSection(app, 'library');
+
+    expect(preemptActiveResize).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['preempt', 'write-observed']);
+    dispose();
+  });
+
+  it('toggleFocusedSection calls it BEFORE its own batched write', () => {
+    const state = makeState({ mode: 'rail', section: null });
+    const order: string[] = [];
+    const preemptActiveResize = vi.fn(() => { order.push('preempt'); });
+    const app: LeftNavApp = {
+      state, prefs: { save: vi.fn() }, preemptActiveResize,
+    };
+    const dispose = effect(() => {
+      state.leftNavSection.value;
+      order.push('write-observed');
+    });
+    order.length = 0;
+
+    toggleFocusedSection(app, 'library');
+
+    expect(preemptActiveResize).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['preempt', 'write-observed']);
+    dispose();
+  });
+
+  it('is optional — omitting it is a safe no-op for every existing caller', () => {
+    const state = makeState({ mode: 'rail', section: null });
+    const app: LeftNavApp = { state, prefs: { save: vi.fn() } }; // no preemptActiveResize at all
+
+    expect(() => openFocusedSection(app, 'library')).not.toThrow();
+    expect(state.leftNavSection.value).toBe('library');
+    expect(() => toggleFocusedSection(app, 'library')).not.toThrow();
+    expect(state.leftNavSection.value).toBeNull();
+  });
+});

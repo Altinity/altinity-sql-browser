@@ -18,8 +18,8 @@
 import { batch, effect } from '@preact/signals-core';
 import {
   advanceLeftNavigationResize, beginLeftNavigationResize, commitLeftNavigationResize,
-  leftNavigationSeparatorAria, normalizeLeftNavigationLayout, resolveLeftNavigationDrag,
-  resolveLeftNavigationKey,
+  leftNavigationSeparatorAria, leftNavigationWidthPx, normalizeLeftNavigationLayout,
+  resolveLeftNavigationDrag, resolveLeftNavigationKey,
 } from '../core/left-nav-layout.js';
 import type {
   LeftNavigationLayout, LeftNavigationResizeSession, LeftNavigationSeparatorAria,
@@ -173,6 +173,26 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
 
   // The in-progress drag/keyboard-resize session, or null between gestures.
   let session: LeftNavigationResizeSession | null = null;
+  // #487 phase-3 review, blocker 1 — a pointer drag's own grab point, recorded
+  // at `mousedown` and read only by `advanceTo` below. `dragGripOffsetPx` is
+  // the distance from the navigation's CURRENT occupied edge (where the
+  // handle is actually rendered right now — `leftNavigationWidthPx` of the
+  // session's own `effective` layout at begin time, never a DOM measurement)
+  // to wherever inside the handle the pointer actually grabbed: `clientX`
+  // alone is not the navigation's total width unless the grab happened to
+  // land exactly on the handle's left edge, and nothing forces that. Without
+  // subtracting it, a drag started mid-handle (or the handle's rendered
+  // position sitting somewhere the raw preference doesn't, e.g. viewport-
+  // clamped) reads every subsequent `clientX` as if it WERE the edge, and can
+  // report a proposal that differs from the true preference even when the
+  // pointer never moved from where it landed. `dragMoved` (set only by a real
+  // `mousemove`) plus `dragStartClientX` are what let `onMouseUp` recognize a
+  // pure click-and-release and skip advancing the session at all, rather than
+  // treating the release coordinate as a brand-new raw proposal — see
+  // `onMouseUp`'s own comment.
+  let dragGripOffsetPx = 0;
+  let dragStartClientX = 0;
+  let dragMoved = false;
 
   function applyAria(layout: LeftNavigationLayout): void {
     const normalized = normalizeLeftNavigationLayout(layout);
@@ -253,13 +273,22 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
     // `!`: `onMouseMove`/`onMouseUp` are only ever listening on `win` while a
     // session is active — attached in `onMouseDown`, detached in `endDrag` —
     // so `advanceTo` is never reached with `session` null.
-    const proposedLayout = resolveLeftNavigationDrag(session!.proposed, clientX);
+    //
+    // `dragGripOffsetPx` (#487 phase-3 review, blocker 1): the pointer's own
+    // `clientX` is the grab point, not the navigation edge — subtracting the
+    // grip offset recovers the edge regardless of where in the handle the
+    // drag started, so the panel's edge tracks under the SAME point the
+    // pointer grabbed rather than snapping to wherever the raw coordinate
+    // happens to sit.
+    const totalPx = clientX - dragGripOffsetPx;
+    const proposedLayout = resolveLeftNavigationDrag(session!.proposed, totalPx);
     session = advanceLeftNavigationResize(session!, proposedLayout, deps.getMaxNavigationTotalPx());
     deps.applyEffectiveLayout(session.effective);
     applyAria(session.effective);
   }
 
   function onMouseMove(ev: LeftNavSeparatorPointerEvent): void {
+    dragMoved = true;
     advanceTo(ev.clientX);
   }
 
@@ -305,9 +334,26 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
   }
 
   function onMouseUp(ev: LeftNavSeparatorPointerEvent): void {
-    // The LAST coordinate before committing — never whatever the last
-    // mousemove happened to leave (that can differ from the release point).
-    advanceTo(ev.clientX);
+    // #487 phase-3 review, blocker 1 — a pure click-and-release, with no
+    // genuine movement anywhere between `mousedown` and this event, must
+    // preserve `preferredAtStart` untouched: `session.proposed` is still
+    // exactly the preference `beginLeftNavigationResize` captured, and
+    // `endDrag`'s own reclamp-and-commit below already leaves an unchanged
+    // `proposed` alone (`commitLeftNavigationResize` only ever writes a
+    // band's width when the raw proposal actually differs from the start).
+    // Calling `advanceTo` here regardless — as before this fix — would treat
+    // the release coordinate as a brand-new raw proposal even though the user
+    // asked for no change, silently overwriting the stored preference with
+    // whatever pixel the handle happened to be rendered at (a viewport clamp
+    // makes this arbitrarily far from the real preference). `dragMoved` is
+    // set by any real `mousemove`; the `clientX` comparison also catches a
+    // release at a different point with no intervening `mousemove` at all
+    // (unusual, but not impossible for a synthetic or coalesced event).
+    if (dragMoved || ev.clientX !== dragStartClientX) {
+      // The LAST coordinate before committing — never whatever the last
+      // mousemove happened to leave (that can differ from the release point).
+      advanceTo(ev.clientX);
+    }
     endDrag();
   }
 
@@ -319,6 +365,15 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
     ev.preventDefault();
     el.classList.add('dragging');
     session = beginLeftNavigationResize(readLeftNavigationLayout(state), deps.getMaxNavigationTotalPx());
+    // The grip offset is measured against the session's own `effective`
+    // layout — the CURRENT rendered occupied width — never a DOM measurement:
+    // `leftNavigationWidthPx` is the same pure derivation `app-shell.ts`'s
+    // paint already used to get the sidebar to this pixel in the first place,
+    // so this needs no `getBoundingClientRect()` seam of its own and stays
+    // exact regardless of a viewport clamp.
+    dragGripOffsetPx = ev.clientX - leftNavigationWidthPx(session.effective);
+    dragStartClientX = ev.clientX;
+    dragMoved = false;
     win.addEventListener('mousemove', onMouseMove);
     win.addEventListener('mouseup', onMouseUp);
   }

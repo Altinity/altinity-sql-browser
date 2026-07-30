@@ -5468,7 +5468,9 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     const handle = qs(app.root, '.col-resize');
 
-    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    // Grabbed at the wide sidebar's own current width (248, the documented
+    // default for a fresh, unconfigured app) — a zero grip offset.
+    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 300 }));
     window.dispatchEvent(new MouseEvent('mouseup', { clientX: 300 }));
 

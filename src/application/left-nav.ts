@@ -42,6 +42,23 @@ export interface LeftNavStateSlice {
 export interface LeftNavApp {
   readonly state: LeftNavStateSlice;
   readonly prefs: { save(name: 'sidePanel', value: SidePanelKey): void };
+  /**
+   * #487 phase-3 review, major issue 2 — called BEFORE either function below
+   * runs its own batched write. An active pointer resize session
+   * (`ui/left-nav-separator.ts`) keeps its own uncommitted layout snapshot
+   * independent of `state`; without this, a semantic command that runs while
+   * a drag is still live (Escape closing a drawer, a rail click, a
+   * programmatic reveal) writes `state` correctly, but the drag's eventual
+   * `mouseup`/`blur` commit still fires from its OWN stale snapshot and can
+   * silently overwrite (or resurrect) exactly what this command just did.
+   * `app-shell.ts` wires this to cancel the active session (no commit) and
+   * repaint from the now-current committed layout, so there is nothing left
+   * to fight this write once it runs. This is the ONE choke point every
+   * caller of `openFocusedSection`/`toggleFocusedSection` gets it through —
+   * optional, so a caller with no separator session to preempt (a test, or a
+   * call before the shell has mounted one) simply omits it and gets a no-op.
+   */
+  preemptActiveResize?(): void;
 }
 
 /**
@@ -134,6 +151,7 @@ function writeLeftNavigationLayout(state: LeftNavStateSlice, layout: LeftNavigat
  * `leftNavSection` still stale) on the frame between them.
  */
 export function openFocusedSection(app: LeftNavApp, section: LeftNavigationSection): void {
+  app.preemptActiveResize?.();
   batch(() => {
     selectSectionInExistingPane(app, section);
     writeLeftNavigationLayout(app.state, resolveRailOpen(readLeftNavigationLayout(app.state), section));
@@ -147,6 +165,7 @@ export function openFocusedSection(app: LeftNavApp, section: LeftNavigationSecti
  * Same single-`batch()` requirement and rationale as `openFocusedSection`.
  */
 export function toggleFocusedSection(app: LeftNavApp, section: LeftNavigationSection): void {
+  app.preemptActiveResize?.();
   batch(() => {
     selectSectionInExistingPane(app, section);
     writeLeftNavigationLayout(

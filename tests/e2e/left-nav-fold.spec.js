@@ -26,14 +26,19 @@ const open = async (page, width = 1280, height = 800) => {
 };
 
 /** Drag `.col-resize` to `targetX` the way a real user does — mirrors
- *  `sidebar-tabs-narrow.spec.js`'s own helper. `left-nav-separator.ts`'s
- *  `advanceTo` reads only `ev.clientX` (the shell-left offset is 0 today per
- *  `core/left-nav-layout.ts`'s own note), so the resulting navigation TOTAL
- *  width IS `targetX`. */
+ *  `sidebar-tabs-narrow.spec.js`'s own helper. Grabs the handle at its own
+ *  LEFT EDGE (a zero grip offset, `#487 phase-3 review, blocker 1`): the
+ *  separator's own `advanceTo` corrects for wherever inside the handle the
+ *  pointer actually grabbed, so a grab anywhere else would report a total
+ *  offset by up to the handle's own width — grabbing at the edge is what
+ *  keeps this helper's contract exact. `left-nav-separator.ts`'s `advanceTo`
+ *  reads `ev.clientX` minus that grip offset (the shell-left offset is 0
+ *  today per `core/left-nav-layout.ts`'s own note), so the resulting
+ *  navigation TOTAL width IS `targetX`. */
 const dragSeparatorTo = async (page, targetX) => {
   const handle = page.locator('.col-resize');
   const box = await handle.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.move(box.x, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetX, box.y + box.height / 2, { steps: 5 });
   await page.mouse.up();
@@ -319,5 +324,62 @@ test.describe('left navigation rail + focused drawer (#487 phase 3)', () => {
     // preference was 'rail' — proving the mobile override, not merely that the
     // preference happened to already be 'wide'.
     expect(geometry.navMode).toBe('wide');
+  });
+});
+
+// #487 phase-3 review, blocker 1 — a click-and-release with no genuine
+// movement must preserve the stored preference untouched, even when the
+// separator happens to be RENDERED somewhere other than that preference (a
+// narrow viewport clamping a maximal stored width). Proved end-to-end in a
+// real browser: `page.mouse.down()`/`up()` with no intervening `move()` at
+// all, at the exact pixel the (clamped) handle currently renders at.
+test.describe('left navigation separator — click-without-drag (#487 phase-3 review, blocker 1)', () => {
+  test('a viewport-clamped 420px preference survives a click-and-release on the clamped handle, unchanged', async ({ page }) => {
+    // Narrow from the START (budget = 800 - 7 - 480 = 313) — this fixture
+    // wires no live-resize `observeElementWidth` seam, so the clamp has to
+    // come from the drag's OWN session, not a later viewport-resize repaint.
+    await open(page, 800, 800);
+    await dragSeparatorTo(page, 420); // a raw proposal well past what 313 can render
+
+    // The drag's own commit already proves the core "restore-while-clamped"
+    // contract: the RENDERED width is the viewport-clamped 313, but the
+    // PERSISTED preference is the full, honest 420.
+    expect(await page.locator('.sidebar').evaluate((el) => el.style.width)).toBe('313px');
+    expect(await page.evaluate(() => window.__app.state.sidebarPx)).toBe(420);
+    expect(await page.evaluate(() => localStorage.getItem('asb:sidebarPx'))).toBe('420');
+
+    // Click-and-release the separator with NO intervening mousemove at all,
+    // at the exact pixel the clamped handle renders at right now.
+    const handle = page.locator('.col-resize');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+
+    // The honest 420px preference must survive — not silently downgraded to
+    // the 313px pixel the clamped handle happened to be rendered at.
+    expect(await page.evaluate(() => window.__app.state.sidebarPx)).toBe(420);
+    expect(await page.evaluate(() => localStorage.getItem('asb:sidebarPx'))).toBe('420');
+
+    // Confirmed decoupled from any live-repaint mechanics: a fresh load at
+    // full width reads the SAME persisted preference back.
+    await open(page, 1280, 800);
+    expect(await page.locator('.sidebar').evaluate((el) => el.style.width)).toBe('420px');
+  });
+
+  test('clicking the left, centre, and right portions of the 7px handle all preserve an unclamped preference identically', async ({ page }) => {
+    await open(page);
+    await dragSeparatorTo(page, 300);
+
+    const handle = page.locator('.col-resize');
+    for (const fraction of [0, 0.5, 1]) { // left edge, centre, right edge
+      const box = await handle.boundingBox();
+      const x = box.x + box.width * fraction;
+      await page.mouse.move(x, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.up();
+      // eslint-disable-next-line no-await-in-loop
+      expect(await page.evaluate(() => window.__app.state.sidebarPx)).toBe(300);
+    }
   });
 });

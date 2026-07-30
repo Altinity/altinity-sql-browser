@@ -470,7 +470,9 @@ describe('mountAppShell left navigation presentation (#487 phase 3)', () => {
     const mainRow = app.root.querySelector('.main-row') as HTMLElement;
     const separator = app.root.querySelector('.col-resize') as HTMLElement;
 
-    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    // Grabbed at the wide sidebar's own current width (248, the documented
+    // default) — a zero grip offset, so `clientX` maps 1:1 onto the total.
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 })); // below the fold threshold
     window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
 
@@ -593,6 +595,61 @@ describe('mountAppShell — isMobile crossing side effects (#487 phase-3 review,
 
     app.root.remove();
     handle.dispose();
+  });
+});
+
+// #487 phase-3 review, major issue 3 — `navMode` is 'wide' on EVERY mobile
+// call (`effectiveLeftNavigationLayout` forces it), not only on a genuine
+// rail/drawer -> wide DESKTOP conversion. Without an explicit
+// `!state.isMobile.value` guard, a mobile crossing straight out of an open
+// drawer read as that same conversion and called `.focus()` on a desktop
+// wide-mode tab button the mobile layout hides entirely.
+describe('mountAppShell — mobile crossing must not run desktop-tab focus restoration (#487 phase-3 review, major issue 3)', () => {
+  it('does not call .focus() on the desktop tab when entering mobile from an open drawer', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    const libraryTab = app.dom.savedTabsRow!.querySelector('[data-section="library"]') as HTMLElement;
+    const focusSpy = vi.spyOn(libraryTab, 'focus');
+
+    app.state.isMobile.value = true;
+
+    expect(focusSpy).not.toHaveBeenCalled();
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('wide'); // still the mobile-forced projection
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('an UPPER section behaves the same on mobile entry', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'dashboards', isMobile: false });
+    document.body.appendChild(app.root);
+    const dashboardsTab = app.dom.upperRoleTabs!.querySelector('[data-section="dashboards"]') as HTMLElement;
+    const focusSpy = vi.spyOn(dashboardsTab, 'focus');
+
+    app.state.isMobile.value = true;
+
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('a GENUINE desktop drawer -> wide conversion still restores focus normally (the guard only excludes mobile)', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    document.body.appendChild(app.root);
+    const libraryTab = app.dom.savedTabsRow!.querySelector('[data-section="library"]') as HTMLElement;
+    const focusSpy = vi.spyOn(libraryTab, 'focus');
+
+    app.state.leftNavMode.value = 'wide'; // a genuine desktop conversion, e.g. via End
+
+    expect(focusSpy).toHaveBeenCalled();
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
   });
 });
 
@@ -843,6 +900,90 @@ describe('mountAppShell — Escape closes the focused drawer (#487 phase 3 step 
   });
 });
 
+// #487 phase-3 review, major issue 2 — a semantic left-navigation command
+// (Escape, a rail click) that runs while a pointer resize session is still
+// live must preempt that session FIRST: an active drag keeps its own
+// uncommitted layout snapshot, and its eventual mouseup was silently
+// overwriting (or undoing) whatever the command just did, because the drag
+// had no way to notice the command ran at all. The fix routes both
+// `application/left-nav.ts` seams through `app.preemptActiveResize` (wired by
+// `mountAppShell` to `leftNavSeparator.cancelActiveSession()` + a repaint) —
+// these tests exercise it at the shell's own real-DOM/real-listener level.
+describe('mountAppShell — a semantic command preempts an active resize session (#487 phase-3 review, major issue 2)', () => {
+  it('Escape closing a drawer mid-drag is not undone by the drag\'s own eventual mouseup', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    // A descendant of `.sidebar` (never the separator, a sibling) — mirrors
+    // the existing Escape-handler tests above, and stands in for wherever
+    // focus was left inside the drawer.
+    const target = app.dom.savedList!;
+
+    // Start dragging the drawer's own separator (grabbed at its current
+    // occupied width, rail + the 240px drawer default — a zero grip offset).
+    // `left-nav-separator.ts`'s own `mousedown` calls `preventDefault()`, so
+    // focus is never moved onto the separator by this drag.
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 260 })); // still within the drawer band
+    expect(sidebar.dataset.navMode).toBe('drawer'); // the drag hasn't left drawer mode
+
+    // While the mouse is STILL DOWN, Escape closes the drawer.
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    expect(app.state.leftNavSection.value).toBeNull();
+    expect(sidebar.dataset.navMode).toBe('rail');
+
+    // The user finally releases the mouse — before this fix, this silently
+    // reopened the drawer Escape had just closed.
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 260 }));
+
+    expect(app.state.leftNavSection.value).toBeNull();
+    expect(sidebar.dataset.navMode).toBe('rail');
+    expect(app.state.leftNavMode.value).toBe('rail');
+
+    app.root.remove();
+    handle.dispose();
+  });
+
+  it('a rail-icon click mid-drag closes the drawer permanently too, not just until the drag\'s own mouseup', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const libraryBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 260 }));
+    expect(sidebar.dataset.navMode).toBe('drawer');
+
+    // A second activation of the already-open section, mid-drag, closes it.
+    libraryBtn.click();
+    expect(app.state.leftNavSection.value).toBeNull();
+
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 260 }));
+    expect(app.state.leftNavSection.value).toBeNull();
+
+    app.root.remove();
+    handle.dispose();
+  });
+
+  it('preemption is a no-op when no session is active — an ordinary Escape/rail click outside a drag behaves exactly as before', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(event);
+
+    expect(app.state.leftNavSection.value).toBeNull();
+    expect(sidebar.dataset.navMode).toBe('rail');
+
+    app.root.remove();
+    handle.dispose();
+  });
+});
+
 // #487 phase 3 step 4 — converting a focused drawer to the wide sidebar (a
 // resize-separator drag past the wide threshold; `End`/bare-rail-`ArrowRight`
 // go through the identical `applyEffectiveLayout` callback) restores focus to
@@ -910,7 +1051,9 @@ describe('mountAppShell — converting to wide restores focus to the section\'s 
     const historyTab = app.dom.savedTabsRow!.querySelector('[data-section="history"]') as HTMLElement;
     const focusSpy = vi.spyOn(historyTab, 'focus');
 
-    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 0 }));
+    // Grabbed at the drawer's own current total (rail + the 240px drawer
+    // default) — a zero grip offset.
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 })); // crosses past the wide threshold
     expect(mainRow.dataset.navMode).toBe('wide');
     expect(focusSpy).not.toHaveBeenCalled(); // the gesture has not committed yet
@@ -924,6 +1067,89 @@ describe('mountAppShell — converting to wide restores focus to the section\'s 
     // restore focus TO either — but the point of this test is that the
     // earlier wide-crossing frame never fired it in the first place.
     expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+});
+
+// #487 phase-3 review, major issue 4 — a committed drawer -> BARE-RAIL
+// transition had no focus restoration at all before this fix. Scoped to
+// `sidebar.contains(document.activeElement)`, not every rail arrival: a
+// pointer drag's `mousedown` calls `preventDefault()`, so focus can be left
+// stranded inside the drawer's now-hidden content — that is the case this
+// fix rescues. A keyboard fold (Home, or ArrowLeft crossing the fold
+// boundary) requires the separator itself to already hold focus to receive
+// that keydown, so this must NOT redirect focus away from it — doing so
+// would break the very next ArrowRight/End from reaching the control that
+// handles it.
+describe('mountAppShell — drag-folding an open drawer to bare rail restores focus to the rail launcher (#487 phase-3 review, major issue 4)', () => {
+  it('a pointer drag-fold with focus stuck inside the drawer moves focus to the rail launcher', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const libraryBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+    const focusSpy = vi.spyOn(libraryBtn, 'focus');
+
+    // Focus something inside the drawer BEFORE the drag — mousedown's own
+    // `preventDefault()` means the drag never moves focus onto the
+    // separator, so this is exactly where a real drag-fold would leave it.
+    const insideDrawer = app.dom.savedList as HTMLElement;
+    insideDrawer.tabIndex = -1; // focusable, for this test only
+    insideDrawer.focus();
+    expect(document.activeElement).toBe(insideDrawer);
+
+    // Grabbed at the drawer's own current total (rail + the 240px default) —
+    // a zero grip offset.
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 })); // past the fold threshold
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail'); // confirms the fold actually committed
+    expect(focusSpy).toHaveBeenCalled();
+    expect(document.activeElement).toBe(libraryBtn);
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('a keyboard fold (Home, focus already on the separator) leaves focus on the separator, not the rail launcher', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const libraryBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+    const focusSpy = vi.spyOn(libraryBtn, 'focus');
+    separator.focus();
+
+    const event = new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true });
+    separator.dispatchEvent(event);
+
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(separator); // stays put — keyboard usability
+
+    app.root.remove();
+    handle.dispose();
+    focusSpy.mockRestore();
+  });
+
+  it('no restoration fires when nothing was focused inside the drawer to begin with', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const libraryBtn = [...app.root.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+    const focusSpy = vi.spyOn(libraryBtn, 'focus');
+    (document.body as HTMLElement).focus(); // focus is elsewhere entirely
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 288 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
     expect(focusSpy).not.toHaveBeenCalled();
 
     app.root.remove();

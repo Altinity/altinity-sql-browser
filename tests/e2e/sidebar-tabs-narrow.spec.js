@@ -33,12 +33,15 @@ const open = async (page) => {
 };
 
 /** Drag `.col-resize` to `targetX` the way a real user does: press on the
- *  handle, move the pointer, release. `dragValue`'s 'col' branch reads only
- *  `ev.clientX`, so the resulting sidebar width IS `targetX`. */
+ *  handle, move the pointer, release. Grabs the handle at its own LEFT EDGE
+ *  (a zero grip offset, #487 phase-3 review blocker 1) — `left-nav-
+ *  separator.ts`'s `advanceTo` corrects `ev.clientX` for wherever inside the
+ *  handle the pointer actually grabbed, so a zero offset is what keeps the
+ *  resulting sidebar width exactly `targetX`. */
 const dragSidebarTo = async (page, targetX) => {
   const handle = page.locator('.col-resize');
   const box = await handle.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.move(box.x, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetX, box.y + box.height / 2, { steps: 5 });
   await page.mouse.up();

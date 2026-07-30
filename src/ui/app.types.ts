@@ -571,6 +571,15 @@ export interface App {
    *  `resolveRailOpen`). In wide mode there is no drawer, so this only drives
    *  the existing upper/lower pane switch for `section`. */
   openFocusedSection(section: LeftNavigationSection): void;
+  /** #487 phase-3 review, major issue 2 — `application/left-nav.ts`'s
+   *  `LeftNavApp.preemptActiveResize` seam: `app-shell.ts`'s `mountAppShell`
+   *  wires this to cancel an in-progress separator resize session and
+   *  repaint from the committed layout, so `openFocusedSection`/
+   *  `toggleFocusedSection` can preempt a stale drag before writing —
+   *  otherwise the drag's own eventual commit can silently overwrite what a
+   *  semantic command (Escape, a rail click, a reveal action) just did.
+   *  Optional: unset before the shell mounts one. */
+  preemptActiveResize?(): void;
   /**
    * #535 — a Dashboard TILE's own expand action: everything `openSavedQuery`
    * does, plus the two things that make it an act of "go work on this panel"

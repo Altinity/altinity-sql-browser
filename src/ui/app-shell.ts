@@ -432,12 +432,36 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // the transition, never a cached reference: `renderUpperRoleTabs`/
     // `renderLowerTabs` both `.replaceChildren(...)` on every repaint, so an
     // element captured earlier can go stale.
+    //
+    // #487 phase-3 review, major issue 3 — `!state.isMobile.value` guards
+    // this branch: `navMode` is 'wide' on EVERY mobile call too
+    // (`effectiveLeftNavigationLayout` forces it), so without this guard a
+    // mobile crossing straight out of an open drawer read as "converted to
+    // wide" and called `.focus()` on a desktop tab button the mobile layout
+    // hides entirely — stealing focus for a control the user cannot even see.
+    //
+    // #487 phase-3 review, major issue 4 — the `else if` restores focus to
+    // the rail launcher on a committed drawer-to-BARE-RAIL transition, which
+    // had no restoration at all before this fix. Scoped to
+    // `sidebar.contains(doc.activeElement)`, not every rail arrival: a
+    // POINTER drag's `mousedown` calls `preventDefault()` (this module's own
+    // `onMouseDown`... i.e. `left-nav-separator.ts`'s), so focus is never
+    // moved onto the separator and can be left stranded inside the
+    // now-hidden drawer content — exactly the case that needs rescuing. A
+    // KEYBOARD fold (Home, or ArrowLeft crossing the fold boundary) requires
+    // the separator itself to already hold focus to receive that keydown at
+    // all, so `sidebar.contains(...)` is false there and this leaves the
+    // separator's own, already-correct focus alone — redirecting it would
+    // break the very next ArrowRight/End from reaching the control that
+    // handles it.
     if (!leftNavSeparator.isSessionActive()) {
-      if (navMode === 'wide' && priorFocusedSection !== null) {
+      if (!state.isMobile.value && navMode === 'wide' && priorFocusedSection !== null) {
         const pane = NAV_SECTION_META[priorFocusedSection].pane;
         const tabsRow = pane === 'upper' ? app.dom.upperRoleTabs : app.dom.savedTabsRow;
         const tabButton = tabsRow?.querySelector<HTMLElement>('[data-section="' + priorFocusedSection + '"]');
         tabButton?.focus();
+      } else if (navMode === 'rail' && priorFocusedSection !== null && sidebar.contains(doc.activeElement)) {
+        leftRail.focusSection(priorFocusedSection);
       }
       previousFocusedSection = layout.focusedSection;
     }
@@ -472,6 +496,22 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     applyEffectiveLayout: applyEffectiveLeftNavigationLayout,
     announce: (message) => { leftNavStatus.textContent = message; },
   });
+
+  // #487 phase-3 review, major issue 2 — `application/left-nav.ts`'s
+  // `openFocusedSection`/`toggleFocusedSection` call this FIRST, before their
+  // own write: an active pointer resize session keeps its own uncommitted
+  // layout snapshot, so a semantic command (Escape, a rail click, a reveal
+  // action) that writes `state` directly while a drag is still live left the
+  // drag's eventual mouseup/blur commit free to fire from that stale
+  // snapshot and silently overwrite (or resurrect) exactly what the command
+  // just did. A no-op when no session is active, which is the common case —
+  // this is not gated behind every call site remembering to preempt; it is a
+  // property of the one seam every caller already goes through.
+  app.preemptActiveResize = () => {
+    if (!leftNavSeparator.isSessionActive()) return;
+    leftNavSeparator.cancelActiveSession();
+    applyEffectiveLeftNavigationLayout(deriveLeftNavigationLayout());
+  };
 
   // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
   // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the

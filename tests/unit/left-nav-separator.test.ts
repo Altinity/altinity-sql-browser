@@ -158,7 +158,10 @@ describe('mountLeftNavSeparator — pointer drag', () => {
     const { deps, el, win, save, applyEffectiveLayout, announce } = makeDeps(state);
     mountLeftNavSeparator(deps);
 
-    mousedown(el, 0);
+    // Grabbed exactly at the handle's own left edge (a bare rail's occupied
+    // width, LEFT_RAIL_PX) — a zero grip offset, so every subsequent
+    // coordinate below still maps 1:1 onto the navigation total.
+    mousedown(el, LEFT_RAIL_PX);
     expect(el.classList.contains('dragging')).toBe(true);
 
     win._fire('mousemove', { clientX: 300 }); // crosses the wide threshold from a bare rail
@@ -365,8 +368,10 @@ describe('mountLeftNavSeparator — announce discipline', () => {
     const state = makeState({ mode: 'rail', section: 'library', leftNavDrawerPx: 200 });
     const { deps, el, announce } = makeDeps(state);
     mountLeftNavSeparator(deps);
-    // Drag the drawer closed without leaving rail mode.
-    mousedown(el, 0);
+    // Drag the drawer closed without leaving rail mode — grabbed at the
+    // drawer's own current occupied width (rail + drawer), a zero grip
+    // offset.
+    mousedown(el, LEFT_RAIL_PX + 200);
     (deps.win as ReturnType<typeof fakeWin>)._fire('mousemove', { clientX: LEFT_RAIL_PX - 20 });
     (deps.win as ReturnType<typeof fakeWin>)._fire('mouseup', { clientX: LEFT_RAIL_PX - 20 });
     expect(state.leftNavMode.value).toBe('rail');
@@ -735,3 +740,127 @@ describe('mountLeftNavSeparator — endDrag re-clamps against the current budget
       { mode: 'wide', wideWidthPx: 300, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
   });
 });
+
+// #487 phase-3 review, blocker 1 — a click-and-release with no genuine
+// movement must preserve the stored preference untouched, band by band,
+// regardless of where inside the 7px handle the pointer landed or whether a
+// viewport clamp is rendering the handle somewhere other than the raw
+// preference itself.
+describe('mountLeftNavSeparator — click-without-drag must not overwrite the stored preference (#487 phase-3 review, blocker 1)', () => {
+  it('an unclamped wide sidebar: click-and-release at the exact rendered edge changes nothing', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 300 });
+    const { deps, el, save, applyEffectiveLayout } = makeDeps(state); // LARGE_BUDGET: no viewport clamp
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 300); // the handle's own left edge — zero grip offset
+    win_fire_mouseupOnly(deps, 300);
+
+    // `save` still runs on every commit — the WIDTH it saves must be the
+    // preserved 300, not (say) a click that happened to land elsewhere.
+    expect(save).toHaveBeenCalledWith('sidebarPx', 300);
+    expect(state.sidebarPx).toBe(300);
+    // Still repaints/commits (mode/section/ARIA stay current) — only the
+    // WIDTH must be preserved, not the whole commit skipped outright.
+    expect(applyEffectiveLayout).toHaveBeenCalledWith(
+      { mode: 'wide', wideWidthPx: 300, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
+  });
+
+  it('a viewport-clamped wide sidebar with a larger stored preference: click-and-release at the CLAMPED rendered position preserves the full preference', () => {
+    // The exact reviewer scenario: a 420px preference, a viewport that can
+    // only render 313, and a release at the rendered (not preferred) pixel.
+    const state = makeState({ mode: 'wide', sidebarPx: 420 });
+    const { deps, el, save } = makeDeps(state, 313);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 313); // where the clamped handle actually renders
+    win_fire_mouseupOnly(deps, 313);
+
+    expect(state.sidebarPx).toBe(420); // the honest preference, not the rendered 313
+    expect(save).toHaveBeenCalledWith('sidebarPx', 420);
+    expect(save).not.toHaveBeenCalledWith('sidebarPx', 313);
+  });
+
+  it('a viewport-clamped drawer with a larger stored drawer preference: click-and-release preserves the full drawer preference', () => {
+    // A 258px drawer preference, but a viewport whose budget (300) can only
+    // render 300 - LEFT_RAIL_PX = 252 of it — the drawer's own counterpart to
+    // the wide-sidebar scenario above.
+    const state = makeState({ mode: 'rail', section: 'library', leftNavDrawerPx: 258 });
+    const { deps, el, save } = makeDeps(state, 300);
+    mountLeftNavSeparator(deps);
+    const renderedTotal = LEFT_RAIL_PX + 252; // the clamped rendered edge
+
+    mousedown(el, renderedTotal);
+    win_fire_mouseupOnly(deps, renderedTotal);
+
+    expect(state.leftNavDrawerPx).toBe(258); // the honest preference, not the clamped 252
+    expect(save).toHaveBeenCalledWith('leftNavDrawerPx', 258);
+    expect(save).not.toHaveBeenCalledWith('leftNavDrawerPx', 252);
+  });
+
+  it('an unclamped wide sidebar: click-and-release with a nonzero grip offset (mid-handle) still changes nothing', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 300 });
+    const { deps, el, save } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 304); // 4px INTO the 7px handle, not its left edge
+    win_fire_mouseupOnly(deps, 304); // released at the identical point — no movement
+
+    expect(state.sidebarPx).toBe(300);
+    expect(save).toHaveBeenCalledWith('sidebarPx', 300);
+    expect(save).not.toHaveBeenCalledWith('sidebarPx', 304);
+  });
+
+  it('clicking the left, centre, and right portions of the handle all preserve the preference identically when nothing moves', () => {
+    for (const grip of [0, 3, 6]) { // left edge, centre, right edge of the 7px handle
+      const state = makeState({ mode: 'wide', sidebarPx: 300 });
+      const { deps, el, save } = makeDeps(state);
+      mountLeftNavSeparator(deps);
+
+      mousedown(el, 300 + grip);
+      win_fire_mouseupOnly(deps, 300 + grip);
+
+      expect(state.sidebarPx).toBe(300);
+      expect(save).toHaveBeenCalledWith('sidebarPx', 300);
+    }
+  });
+
+  it('a genuine drag, grabbed mid-handle, still tracks the pointer from the SAME grab point (no per-drag skew)', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 300 });
+    const { deps, el, win, applyEffectiveLayout } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 304); // 4px into the handle
+    win._fire('mousemove', { clientX: 354 }); // pointer moves +50 from the grab point
+    win._fire('mouseup', { clientX: 354 });
+
+    // The navigation edge moves by the SAME +50 the pointer actually
+    // travelled — grip-offset-corrected, not skewed by the 4px grab offset.
+    expect(state.sidebarPx).toBe(350);
+    expect(applyEffectiveLayout).toHaveBeenCalledWith(
+      { mode: 'wide', wideWidthPx: 350, drawerWidthPx: LEFT_DRAWER_DEFAULT_PX, focusedSection: null });
+  });
+
+  it('a click-and-release still folds/opens correctly if the pointer DID move, even back to its own start (net-zero movement still commits via the normal path)', () => {
+    // Guards against over-correcting: `dragMoved` must not suppress a
+    // legitimate mousemove-bearing gesture that happens to end where it began.
+    const state = makeState({ mode: 'wide', sidebarPx: 300 });
+    const { deps, el, win, save } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 300);
+    win._fire('mousemove', { clientX: 350 }); // genuine movement away...
+    win._fire('mousemove', { clientX: 300 }); // ...and back to the exact start
+    win._fire('mouseup', { clientX: 300 });
+
+    // No net change either way — but this exercises the `dragMoved` branch,
+    // not the "mouseup never called advanceTo" branch.
+    expect(state.sidebarPx).toBe(300);
+    expect(save).toHaveBeenCalledWith('sidebarPx', 300);
+  });
+});
+
+/** Fires ONLY `mouseup` (no `mousemove` at all) — the "click and release
+ *  without ever moving" shape blocker 1 is about. */
+function win_fire_mouseupOnly(deps: LeftNavSeparatorDeps, clientX: number): void {
+  (deps.win as ReturnType<typeof fakeWin>)._fire('mouseup', { clientX });
+}
