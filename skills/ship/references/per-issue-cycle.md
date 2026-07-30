@@ -34,7 +34,19 @@ judge under-determined despite its acceptance criteria:
 1. **second opinion** — spawn a `Plan` subagent (`subagent_type: "Plan"`, read-only boundary
    stated) to independently stress the approach: seams, migration order, coverage strategy,
    rollback. Fold its critique into the plan;
-2. 🛑 **post the resulting plan and wait for approval** (I review on mobile).
+2. **third-party opinion** — invoke the `chatgpt-review` skill (`Skill` tool,
+   `skill: "chatgpt-review"`) on the plan itself, before any code exists. There is no diff yet,
+   so hand it the plan text plus enough issue/phase context to review cold (the phase contract,
+   the acceptance subset it claims, the files it intends to touch) and ask the same kind of
+   pointed question the skill asks of a diff: does this approach actually close the gap the
+   phase claims to close, is the seam/migration-order choice sound, is there a simpler design?
+   Open a **fresh tab** for this — never continue an earlier chatgpt.com conversation thread
+   into a new review, even though running several tabs in parallel is fine. Verify every claim
+   against the real repo (skill step 6) before folding it in — a second opinion, not a source of
+   truth, exactly like the post-PR case. Use the skill's paste-inline path, not its
+   point-at-GitHub path — this step must not post anything to GitHub, so it stays safe for a
+   worker to run directly in unattended mode too;
+3. 🛑 **post the resulting plan and wait for approval** (I review on mobile).
 
 Low-risk, well-specified work proceeds straight from the written plan with no approval gate.
 

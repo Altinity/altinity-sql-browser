@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/skills/sql-browser-dashboard-authoring-v1.schema.json",
+  "title": "SQL Browser Dashboard skill authoring profile",
+  "description": "A strict, self-contained authoring profile for one SQL Browser PortableBundleV2 Dashboard. SQL Browser production schemas remain authoritative.",
+  "type": "object",
+  "required": ["format", "version", "exportedAt", "queries", "dashboards"],
+  "properties": {
+    "$schema": {
+      "const": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v2.schema.json"
+    },
+    "format": {
+      "const": "altinity-sql-browser/portable-bundle"
+    },
+    "version": {
+      "const": 2
+    },
+    "exportedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 512 },
+        "description": { "type": "string", "maxLength": 16384 }
+      },
+      "additionalProperties": false
+    },
+    "queries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/savedQuery" }
+    },
+    "dashboards": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/dashboard" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonBlankId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "fieldConfigValue": {
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "description": { "type": "string" },
+        "unit": { "type": "string" },
+        "decimals": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "color": { "type": "string" },
+        "noValue": { "type": "string" },
+        "hidden": { "type": "boolean" },
+        "delta": {
+          "type": "object",
+          "properties": {
+            "displayName": { "type": "string" },
+            "unit": { "type": "string" },
+            "decimals": { "type": "integer", "minimum": 0, "maximum": 20 },
+            "positiveIsGood": { "type": "boolean" },
+            "show": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "fieldConfig": {
+      "type": "object",
+      "properties": {
+        "defaults": { "$ref": "#/$defs/fieldConfigValue" },
+        "columns": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/fieldConfigValue" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "chartStyle": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "chartCfg": {
+      "type": "object",
+      "required": ["type", "x", "y"],
+      "properties": {
+        "type": { "enum": ["bar", "hbar", "line", "area", "pie"] },
+        "x": { "type": "integer", "minimum": 0 },
+        "y": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "series": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "style": { "$ref": "#/$defs/chartStyle" }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "pie" } }, "required": ["type"] },
+          "then": { "properties": { "y": { "maxItems": 1 } } }
+        }
+      ]
+    },
+    "panelCfg": {
+      "oneOf": [
+        { "$ref": "#/$defs/chartCfg" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "kpi" } },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "table" } },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "logs" },
+            "time": { "type": "string", "minLength": 1 },
+            "msg": { "type": "string", "minLength": 1 },
+            "level": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["type", "content"],
+          "properties": {
+            "type": { "const": "text" },
+            "content": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "sizeHints": {
+      "type": "object",
+      "properties": {
+        "preferred": { "enum": ["compact", "medium", "wide"] },
+        "minimum": { "enum": ["compact", "medium", "wide"] },
+        "aspectRatio": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "savedQuery": {
+      "type": "object",
+      "required": ["id", "sql", "specVersion", "spec"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonBlankId" },
+        "sql": { "type": "string" },
+        "specVersion": { "const": 1 },
+        "spec": {
+          "type": "object",
+          "required": ["name", "view", "panel", "dashboard"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
+            "description": { "type": "string" },
+            "favorite": { "type": "boolean" },
+            "view": { "const": "panel" },
+            "panel": {
+              "type": "object",
+              "required": ["cfg"],
+              "properties": {
+                "cfg": { "$ref": "#/$defs/panelCfg" },
+                "key": { "type": ["string", "null"] },
+                "fieldConfig": { "$ref": "#/$defs/fieldConfig" }
+              },
+              "additionalProperties": true
+            },
+            "dashboard": {
+              "type": "object",
+              "required": ["role"],
+              "properties": {
+                "role": { "const": "panel" },
+                "defaultVariant": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "variants": {
+                  "type": "object",
+                  "maxProperties": 32,
+                  "additionalProperties": { "type": "object" }
+                },
+                "sizeHints": { "$ref": "#/$defs/sizeHints" }
+              },
+              "additionalProperties": true
+            },
+            "timeRanges": {
+              "type": "array",
+              "maxItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["from", "to"],
+                "properties": {
+                  "from": { "type": "string", "minLength": 1 },
+                  "to": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "tile": {
+      "type": "object",
+      "required": ["id", "queryId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonBlankId" },
+        "queryId": { "$ref": "#/$defs/nonBlankId" },
+        "title": { "type": "string", "maxLength": 512 },
+        "description": { "type": "string", "maxLength": 16384 },
+        "presentation": {
+          "type": "object",
+          "properties": {
+            "variant": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "override": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "flowPlacement": {
+      "type": "object",
+      "properties": {
+        "span": { "enum": [1, 2, 3] },
+        "height": { "enum": ["compact", "medium", "large"] }
+      },
+      "additionalProperties": false
+    },
+    "flowLayout": {
+      "type": "object",
+      "required": ["type", "version", "preset", "items"],
+      "properties": {
+        "type": { "const": "flow" },
+        "version": { "const": 1 },
+        "preset": { "enum": ["report", "columns-2", "columns-3"] },
+        "items": {
+          "type": "object",
+          "maxProperties": 100,
+          "additionalProperties": { "$ref": "#/$defs/flowPlacement" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "variableConfig": {
+      "type": "object",
+      "required": ["sql"],
+      "properties": {
+        "sql": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+        "lastKnownType": { "type": "string", "maxLength": 256 }
+      },
+      "additionalProperties": false
+    },
+    "dashboard": {
+      "type": "object",
+      "required": ["documentVersion", "id", "title", "revision", "layout", "tiles"],
+      "properties": {
+        "documentVersion": { "const": 2 },
+        "id": { "$ref": "#/$defs/nonBlankId" },
+        "title": { "type": "string", "maxLength": 512 },
+        "description": { "type": "string", "maxLength": 16384 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "layout": { "$ref": "#/$defs/flowLayout" },
+        "tiles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/tile" }
+        },
+        "variableConfigs": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": { "$ref": "#/$defs/variableConfig" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
