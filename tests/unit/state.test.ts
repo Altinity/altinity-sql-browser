@@ -209,6 +209,10 @@ describe('createState', () => {
     expect(s.expanded.value.size).toBe(0);
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
+    // #487 phase 3: each lower-navigation section keeps its own filter slot —
+    // both start empty, and (unlike the old single `libraryFilter` string)
+    // neither is ever cleared by the other switching.
+    expect(s.lowerNavigationFilters).toEqual({ library: '', history: '' });
     // #287 W4: no aggregate loaded yet — `dashboard` starts null;
     // `loadWorkspaceOnBoot` (app.ts's async boot step) projects the real
     // aggregate onto both after this synchronous constructor. `workspaceId`

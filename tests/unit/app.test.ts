@@ -2123,6 +2123,24 @@ describe('query run', () => {
     // a plain SELECT needs no session, so none is opened (avoids the session race)
     expect(asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
   });
+  // #487 phase 3 regression test: a run's history recording used to skip its
+  // repaint of History entirely whenever Library ('saved', the default side
+  // panel) was exposed — `app.recordHistory` guarded the call on
+  // `sidePanel.value === 'history'`. That left History's own DOM stale until
+  // some unrelated event happened to repaint it, which never happens for
+  // History on its own (`state.history` is a plain array, not a signal). The
+  // fix makes `app.recordHistory`'s repaint unconditional.
+  it('a recorded run repaints History even while Library is the exposed side panel', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    expect(app.state.sidePanel.value).toBe('saved'); // Library is the exposed section
+    app.activeTab().sqlDraft = 'SELECT 1';
+    await app.actions.run();
+    expect(app.state.history.length).toBe(1);
+    expect(app.dom.historyList!.querySelectorAll('.history-row')).toHaveLength(1);
+    expect(app.dom.historyList!.textContent).toContain('SELECT 1');
+  });
   it('captures result.source for a normal row-returning result (#185)', async () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],

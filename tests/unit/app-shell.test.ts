@@ -106,20 +106,24 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
   });
 
   it('switches the exposed lower host on sidePanel without rebuilding either', () => {
+    // #487 phase 3: content repaint is decoupled from `sidePanel` entirely (the
+    // Library-content effect keys only on `dashboardTreeRevision`, and History has
+    // no reactive trigger of its own) — a plain sidePanel flip now repaints ONLY
+    // the tab row (active class/count), never either section's own content, in
+    // EITHER direction.
     const { app, handle } = mount();
     const host = hosts(app.root);
     const libraryList = app.dom.savedList!;
     const historyList = app.dom.historyList!;
-    const marker = libraryList.appendChild(document.createElement('span'));
+    const libraryMarker = libraryList.appendChild(document.createElement('span'));
+    const historyMarker = historyList.appendChild(document.createElement('span'));
 
     app.state.sidePanel.value = 'history';
     expect(host.library.hidden).toBe(true);
     expect(host.history.hidden).toBe(false);
-    // A hidden host keeps its DOM: History's repaint went into History's OWN list
-    // and left the Library's content standing. Before the split both sections
-    // rendered through one pair, so this content could not have survived.
-    expect(libraryList.contains(marker)).toBe(true);
-    expect(historyList.textContent).toContain('No history yet.');
+    // A hidden host keeps its DOM, and switching TO it does not rebuild it either.
+    expect(libraryList.contains(libraryMarker)).toBe(true);
+    expect(historyList.contains(historyMarker)).toBe(true);
 
     app.state.sidePanel.value = 'saved';
     expect(host.library.hidden).toBe(false);
@@ -132,10 +136,49 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
     expect(app.dom.historyList).toBe(historyList);
     expect(app.root.contains(libraryList)).toBe(true);
     expect(app.root.contains(historyList)).toBe(true);
-    // Becoming active DOES repaint the section, exactly as it always has: the
-    // switcher clears the shared search filter, so the list is rebuilt from
-    // scratch. #487 phase 3 owns whether a drawer should preserve it instead.
-    expect(libraryList.contains(marker)).toBe(false);
+    // Becoming active again STILL does not repaint either section — the
+    // deliberate #487 phase 3 behavior change from "activating a pane clears and
+    // rebuilds its search/list."
+    expect(libraryList.contains(libraryMarker)).toBe(true);
+    expect(historyList.contains(historyMarker)).toBe(true);
+    handle.dispose();
+  });
+
+  // #487 phase 3: the search input node inside a section's host survives a plain
+  // sidePanel flip — proof that switching never triggers a destructive rebuild of
+  // either section's content (only the tab row/exposure react to it).
+  it('preserves node identity of a section\'s search input across a sidePanel flip', () => {
+    const { app, handle } = mount();
+    app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+    app.state.dashboardTreeRevision.value++; // force one real Library content paint
+    const libraryInput = app.dom.savedSearch!.querySelector('.sv-search-input');
+    expect(libraryInput).not.toBeNull();
+
+    app.state.sidePanel.value = 'history';
+    app.state.sidePanel.value = 'saved';
+
+    expect(app.dom.savedSearch!.querySelector('.sv-search-input')).toBe(libraryInput);
+    handle.dispose();
+  });
+
+  it('a bare dashboardTreeRevision bump (no sidePanel change) still repaints Library', () => {
+    const { app, handle } = mount();
+    app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+
+    app.state.dashboardTreeRevision.value++;
+
+    expect(app.dom.savedList!.querySelectorAll('.saved-row')).toHaveLength(1);
+    handle.dispose();
+  });
+
+  it('a sidePanel change alone still repaints the tab row\'s active class', () => {
+    const { app, handle } = mount();
+
+    app.state.sidePanel.value = 'history';
+
+    const tabs = [...app.dom.savedTabsRow!.querySelectorAll('.side-tab')];
+    expect(tabs[0].classList.contains('active')).toBe(false);
+    expect(tabs[1].classList.contains('active')).toBe(true);
     handle.dispose();
   });
 
@@ -150,13 +193,34 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
     const { app, handle } = mount();
     const host = hosts(app.root);
     app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+    app.state.dashboardTreeRevision.value++; // force Library's own content effect to (re)paint
 
     (app.state.sidePanel as { value: string }).value = 'queries';
 
     expect(host.library.hidden).toBe(false);
     expect(host.history.hidden).toBe(true);
     expect(app.dom.savedList!.querySelectorAll('.saved-row')).toHaveLength(1);
-    expect(app.dom.historyList!.children.length).toBe(0);
+    // #487 phase 3: History now ALSO always renders its own content — its host is
+    // never truly blank, even when Library is exposed.
+    expect(app.dom.historyList!.textContent).toContain('No history yet.');
+    handle.dispose();
+  });
+
+  // #487 phase 3 regression test: the section that was NOT active at mount used
+  // to never get its first paint at all (blank until the first switch to it).
+  it('paints BOTH lower sections at mount, before either is ever switched to', () => {
+    const loadSchema = vi.fn(async () => {});
+    const loadReference = vi.fn(async () => {});
+    const app = makeApp({ catalog: { loadSchema, loadReference }, prefs: { save: vi.fn() } });
+    app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    // sidePanel defaults to Library ('saved') — History is never exposed here.
+    const handle = mountAppShell({
+      app, root: app.root, document, state: app.state, catalog: app.catalog,
+      prefs: app.prefs, matchMedia: null, updateBanner: vi.fn(), startDrag,
+    });
+
+    expect(app.dom.historyList!.querySelectorAll('.history-row')).toHaveLength(1);
     handle.dispose();
   });
 

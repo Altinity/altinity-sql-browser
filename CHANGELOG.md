@@ -62,6 +62,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   focused drawer and the resize separator arrive in phase 3.
 
 ### Changed
+- **Switching between Library and History no longer clears the search box**
+  (#487, phase 3 of 4). Each lower-navigation section now keeps its own filter
+  text (`state.lowerNavigationFilters`, replacing the single shared
+  `state.libraryFilter`), preserved across every switch between them — a
+  deliberate, user-visible behavior change from phase 2's "a section switch
+  still clears the search exactly as before," required by phase 3's own
+  acceptance bullet that wide and focused presentations share and preserve all
+  navigation state. Both sections' own search box and list now also render
+  unconditionally, independently of which section is currently exposed
+  (mirroring the upper pane's `renderSchema`/`renderDashboardTree`), which
+  fixes two latent bugs: the section that wasn't active at mount never painted
+  until the first switch to it, and the section that wasn't active when its own
+  data changed (e.g. a query recorded to History while Library was shown) went
+  stale.
 - The sidebar's `'col'` drag axis now clamps through the same
   `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
   repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes

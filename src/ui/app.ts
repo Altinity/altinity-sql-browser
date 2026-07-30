@@ -56,7 +56,7 @@ import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
-import { renderSavedHistory } from './saved-history.js';
+import { renderSavedHistory, renderHistorySection } from './saved-history.js';
 import { applyFieldState, applyFieldWidth } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import type { RelativeTimeField } from './relative-time-field.js';
@@ -986,7 +986,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
-      renderSavedHistory: () => renderSavedHistory(app),
+      renderHistorySection: () => renderHistorySection(app),
       cancelSchemaGraph,
       loadSchema: () => { void catalog.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
@@ -1558,12 +1558,19 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- saved / history bridges ------------------------------------------
   // The history-recording POLICY itself now lives in `saved.recordHistory`
-  // (#276 Phase 4C) — this wrapper's own conditional History-panel repaint is
-  // a rendering concern the service must never own (see its header comment),
-  // so it stays here, unchanged.
+  // (#276 Phase 4C) — this wrapper's own History-panel repaint is a rendering
+  // concern the service must never own (see its header comment), so it stays
+  // here.
+  //
+  // #487 phase 3: unconditional — History's own content must stay current even
+  // while Library is the exposed section, since History repaints only at its
+  // own mutation sites (`state.history` is a plain array, not a signal, so it
+  // is not part of any reactive repaint effect). Only History's own data
+  // changed here, so this calls `renderHistorySection` rather than the full
+  // `renderSavedHistory` facade.
   app.recordHistory = (tab, sqlText) => {
     saved.recordHistory(tab, sqlText);
-    if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
+    renderHistorySection(app);
   };
 
   // --- share + star ------------------------------------------------------

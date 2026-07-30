@@ -14,7 +14,7 @@
 // Keyed by `StoredWorkspaceV5.id` — the immutable opaque application identity
 // (#406) — never by the mutable `name` or the rewritable URL `key`.
 //
-// Deliberately NOT a signal, matching `state.libraryFilter`'s precedent
+// Deliberately NOT a signal, matching `state.lowerNavigationFilters`'s precedent
 // (`src/state.ts`): if a repaint effect observed this state, every keystroke in
 // the search box and every scroll frame would repaint the tree — losing the caret
 // on the first and doing pointless work on the second. The tree's ONE reactive

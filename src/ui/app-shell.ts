@@ -24,7 +24,7 @@
 //
 // `deps.app` is kept for the same reasons `mountWorkbenchShell` keeps it
 // (see that module's own header comment): the render-module pass-through
-// (renderSchema/renderSavedHistory/renderLibraryTitle all
+// (renderSchema/renderLowerTabs/renderLibrarySection/renderLibraryTitle all
 // still take the full `App`), and the `app.dom` reset + population other
 // modules read `app.dom.*` off of directly.
 
@@ -38,7 +38,7 @@ import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
 import { buildNavSectionRegistry, sectionForSidePanelKey } from './nav-sections.js';
 import type { NavSectionPane } from './nav-sections.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
-import { renderSavedHistory } from './saved-history.js';
+import { renderLowerTabs, renderLibrarySection, renderHistorySection } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
 import { applyConnectionStatus } from './app-header.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
@@ -52,7 +52,7 @@ import type { AppPreferences, PreferenceKey } from '../application/app-preferenc
  *  shell's own logic, never through `app.*`. */
 export interface AppShellDeps {
   /** Kept ONLY for: the render-module pass-through (renderSchema/
-   *  renderSavedHistory/renderLibraryTitle), and the
+   *  renderLowerTabs/renderLibrarySection/renderLibraryTitle), and the
    *  `app.dom` reset + population (other modules read `app.dom.*`
    *  directly — see the header comment). */
   app: App;
@@ -285,20 +285,47 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.schemaError.value;
     updateBanner();
   }));
-  // Reactive repaint of the side panel: re-runs when the active panel changes
-  // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
-  // still call renderSavedHistory directly until those slices are signals too.
+  // Reactive repaint of the lower tab row: re-runs when the active panel changes
+  // (Library ↔ History) or the Library count might have (projection revision).
+  // #487 phase 3 split this from the content repaint below, mirroring the upper
+  // pane's own split (`renderUpperRoleTabs` vs `renderSchema`) — switching which
+  // section is exposed repaints only the tab row's active class/count, never
+  // either section's content.
+  disposers.push(effect(() => {
+    state.sidePanel.value;
+    state.dashboardTreeRevision.value;
+    renderLowerTabs(app);
+  }));
+  // Reactive repaint of Library's own content: re-runs on the projection
+  // revision alone, regardless of which lower section is exposed (#487 phase 3)
+  // — mirroring `renderSchema`, which does not subscribe to `upperRole` either.
+  // Data-driven repaints of ROW-level state (favorite/rename/delete) still call
+  // the full `renderSavedHistory` facade directly.
   //
   // #427 added the projection revision. Library membership is now a function of
   // `dashboards[]` — a query is in the Library exactly while no Dashboard member
   // references it — so a committed Dashboard change can move a query in or out of
   // this list without `savedQueries` changing at all. It is the same one signal
   // the Dashboard tree subscribes to, bumped from the single projection funnel.
+  //
+  // Deliberately no matching reactive effect for History's own content:
+  // `state.history` is a plain array, not a signal, so History has never been
+  // signal-driven — it stays current via direct calls at its mutation sites
+  // (`app.recordHistory`, the script-run history path, and the facade above).
   disposers.push(effect(() => {
-    state.sidePanel.value;
     state.dashboardTreeRevision.value;
-    renderSavedHistory(app);
+    renderLibrarySection(app);
   }));
+  // History's OWN initial paint: unlike Library, History has no signal to key a
+  // reactive effect off (see the comment above), so it cannot pick up its first
+  // paint by registering one. Without this direct, one-time call the History
+  // host would stay the empty div `nav-sections.ts` built it as until the first
+  // history-recording event — reintroducing, for History specifically, the exact
+  // "section that wasn't active at mount never got painted" bug this phase
+  // fixes for Library via the effect above. Not an effect itself (no signal
+  // read, so it never re-runs) — every subsequent History repaint still comes
+  // from its own mutation sites or the full `renderSavedHistory` facade.
+  renderHistorySection(app);
   // Reactive repaint of the header library title (name + unsaved-changes dot):
   // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
   // separately (editingLibrary is not a signal — file-menu.js renders it directly).
