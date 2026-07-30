@@ -1,16 +1,24 @@
 // The bottom sidebar pane: a Library / History switcher and, per section, its own
 // search box and list. Saved items support favorite (star), inline rename (pencil)
-// and delete (trash). The search filters the active list (name/description/sql for
-// Library, sql for History); it re-renders only the list so typing keeps focus.
+// and delete (trash). The search filters a section's own list (name/description/sql
+// for Library, sql for History); it re-renders only the list so typing keeps focus.
 //
 // #487 phase 2 split the two sections' DOM: each renders into its own persistent
 // search/list pair (`ui/nav-sections.ts` builds them and hosts them), where before
-// both shared one pair that a section switch repainted. Everything below still
-// renders ONLY the active section, exactly as it always did — the switcher's
-// clear-the-search semantics are unchanged, and the inactive host simply keeps the
-// DOM it last painted until it is shown again. What the split buys is that a
-// container can move one section's live elements (phase 3's focused drawer)
-// without taking the other section's content along.
+// both shared one pair that a section switch repainted.
+//
+// #487 phase 3 finishes the split: BOTH sections now render their own content
+// unconditionally, independently of which one is exposed — mirroring the upper
+// pane's `renderSchema`/`renderDashboardTree`, which have always painted on their
+// own data triggers regardless of `state.upperRole`. Exposure (which host is
+// visible) is a wholly separate concern, owned by `app-shell.ts`'s registry
+// effect. This fixes two real bugs the old "paint only the active section" design
+// had: the section that wasn't active at mount never got its first paint (blank
+// until the first switch), and the section that wasn't active when its own data
+// changed (e.g. a query runs and gets recorded to History while Library is shown)
+// went stale until the next unrelated repaint. Each section also now keeps its
+// OWN filter text (`state.lowerNavigationFilters`) rather than sharing one string,
+// so switching between them no longer clears anything.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -113,43 +121,55 @@ function libraryEntries(app: App): SavedQueryV2[] {
 }
 
 /**
- * The active section, in the registry's vocabulary. EVERY branch in this module
- * goes through this one function rather than comparing `sidePanel` to `'saved'`
- * directly (#487 phase 2). With two hosts, a reader that resolves an unrecognized
- * value differently from the shell's exposure effect would expose one section's
- * host and paint into the other's — a blank pane. `state.ts` also decodes the
- * stored value at load, so the two guards are belt and braces on purpose.
+ * The active section, in the registry's vocabulary — used ONLY to decide the tab
+ * row's "active" class/`aria-pressed` state. It no longer decides which section's
+ * content renders (#487 phase 3: both sections always render their own, regardless
+ * of which is exposed). `state.ts` also decodes the stored value at load.
  */
 const activeSection = (app: App): LowerNavigationSection =>
   sectionForSidePanelKey(app.state.sidePanel.value);
 
-/** The ACTIVE section's own search box and list (#487 phase 2) — the two lower
- *  sections no longer share one pair. */
-const activeEls = (app: App): { search: HTMLElement | undefined; list: HTMLElement | undefined } =>
-  activeSection(app) === 'library'
+/** A given section's OWN search box and list hosts. Deliberately keyed by an
+ *  explicit `section` parameter rather than "whichever is active" (#487 phase 3)
+ *  — each section's render functions always target their own hosts. */
+const elsFor = (app: App, section: LowerNavigationSection): { search: HTMLElement | undefined; list: HTMLElement | undefined } =>
+  section === 'library'
     ? { search: app.dom.savedSearch, list: app.dom.savedList }
     : { search: app.dom.historySearch, list: app.dom.historyList };
 
-export function renderSavedHistory(app: App): void {
+/** Read a section's own search filter text (#487 phase 3 — each lower-navigation
+ *  section keeps its own, so switching between them preserves both instead of
+ *  clearing one shared string). Exported for later phase-3 steps. */
+export function filterFor(state: AppState, section: LowerNavigationSection): string {
+  return state.lowerNavigationFilters[section];
+}
+
+/** Write a section's own search filter text. See `filterFor`. */
+export function setFilterFor(state: AppState, section: LowerNavigationSection, value: string): void {
+  state.lowerNavigationFilters[section] = value;
+}
+
+/**
+ * The tab row only: the Library/History switcher plus the Library count badge.
+ * #487 phase 2: the tab row speaks the registry's SECTION vocabulary and derives
+ * the persisted value once, through the one mapping — rather than repeating the
+ * `'library' means 'saved'` knowledge here.
+ *
+ * #487 phase 3: switching sections no longer clears anything — each section keeps
+ * its own filter text (`state.lowerNavigationFilters`), preserved across every
+ * switch. `switchTo` now only persists the choice and sets which section is
+ * exposed.
+ */
+export function renderLowerTabs(app: App): void {
   const tabsRow = app.dom.savedTabsRow;
-  const list = activeEls(app).list;
-  if (!tabsRow || !list) return;
+  if (!tabsRow) return;
   const state = app.state;
   // #427: the count is the LIBRARY count, not every stored query — the owned
   // copies are reachable through the Dashboard tree, not through this list.
   const count = libraryEntries(app).length;
 
-  // Switching panes clears the search so each tab starts unfiltered. Clear the
-  // (plain) filter first, then set the sidePanel signal — its render effect runs
-  // synchronously on assignment and must see the cleared filter. No manual
-  // re-render call: the effect in createApp() repaints.
-  //
-  // #487 phase 2: the tab row speaks the registry's SECTION vocabulary and derives
-  // the persisted value once, through the one mapping — rather than repeating the
-  // `'library' means 'saved'` knowledge here.
   const switchTo = (section: LowerNavigationSection): void => {
     const panel = sidePanelKeyFor(section);
-    state.libraryFilter = '';
     app.prefs.save('sidePanel', panel);
     state.sidePanel.value = panel;
   };
@@ -158,6 +178,9 @@ export function renderSavedHistory(app: App): void {
     const meta = NAV_SECTION_META[section];
     return h('button', {
       class: 'side-tab' + (active === section ? ' active' : ''),
+      type: 'button',
+      'data-section': section,
+      'aria-pressed': active === section ? 'true' : 'false',
       onclick: () => switchTo(section),
     }, meta.icon(), h('span', null, meta.label), extra);
   };
@@ -166,34 +189,34 @@ export function renderSavedHistory(app: App): void {
     tab('library', count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     tab('history', null),
   );
-
-  renderSearch(app);
-  renderList(app);
 }
 
-/** Re-render just the active list (called on every keystroke without rebuilding
- * the search input, so the caret/focus survive filtering). */
-function renderList(app: App): void {
-  // `!`: every caller (renderSavedHistory, renderSearch below) only reaches
-  // this after confirming the active section's list is mounted.
-  const list = activeEls(app).list!;
+/** Render a given section's own list into a given host — favorites/rename/delete
+ *  for Library, delete for History (`renderSaved`/`renderHistory` below), reading
+ *  that section's OWN filter. Independent of which section is exposed. */
+function renderSectionList(app: App, section: LowerNavigationSection, list: HTMLElement): void {
   list.replaceChildren();
-  if (activeSection(app) === 'library') renderSaved(app, list);
+  if (section === 'library') renderSaved(app, list);
   else renderHistory(app, list);
 }
 
 /**
- * Render the search box into the ACTIVE section's own search host (built once per
- * full render; a section with no items shows nothing). Its `input` handler mutates
- * `state.libraryFilter` and re-renders only the list, so it stays focused.
+ * Render the search box into a given section's OWN search host (built once per
+ * full render; a section with no items shows nothing). Its `input` handler
+ * mutates that section's own filter slot and re-renders only that section's own
+ * list, so it stays focused.
+ *
+ * #487 phase 3 removed the old "does this input still own the active list"
+ * guard: with one shared `libraryFilter` string, a stale/hidden input's events
+ * could corrupt the OTHER section's filter and repaint the wrong list. With
+ * per-section storage that is structurally impossible — a hidden Library input
+ * can only ever write Library's own filter and repaint Library's own list,
+ * which is correct regardless of whether Library is currently exposed.
  */
-function renderSearch(app: App): void {
-  const box = activeEls(app).search;
-  if (!box) return;
+function renderSectionSearch(app: App, section: LowerNavigationSection, box: HTMLElement): void {
   const state = app.state;
   // Gated on the LIBRARY count (#427): a workspace whose every query is owned
   // has an empty list, so a search box over it would filter nothing.
-  const section = activeSection(app);
   const isLibrary = section === 'library';
   const hasItems = isLibrary
     ? libraryEntries(app).length > 0
@@ -204,37 +227,65 @@ function renderSearch(app: App): void {
   const input = h('input', {
     class: 'sv-search-input', type: 'text',
     placeholder: isLibrary ? 'Search library queries…' : 'Search history…',
-    value: state.libraryFilter,
+    value: filterFor(state, section),
   });
   const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
   const syncClear = (): void => { clear.style.display = input.value ? '' : 'none'; };
-  // These controls belong to the section that was active when they were built, and
-  // that host now OUTLIVES the switch away from it (#487 phase 2) — the inactive
-  // host keeps its DOM, listeners included. `state.libraryFilter` is still one
-  // shared string and `renderList` still paints the ACTIVE section, so an event
-  // from a stale input would rewrite the filter and repaint the OTHER section's
-  // list with this section's search text. Unreachable through the UI today (a
-  // `display: none` subtree receives no pointer or keyboard events) — but phase 3
-  // moves hosts between containers, where a host can be visible while a different
-  // section is active, so ownership is enforced here rather than left to CSS.
-  //
-  // A guard, not a redesign: per-section filter state is what actually fixes the
-  // shared-string design, and #487 phase 3 owns that (see the ship log).
-  const ownsTheList = (): boolean => activeSection(app) === section;
+  const list = elsFor(app, section).list;
   const setFilter = (v: string): void => {
-    if (!ownsTheList()) return;
-    input.value = v; state.libraryFilter = v; syncClear(); renderList(app);
+    input.value = v;
+    setFilterFor(state, section, v);
+    syncClear();
+    if (list) renderSectionList(app, section, list);
   };
 
   input.addEventListener('input', () => {
-    if (!ownsTheList()) return;
-    state.libraryFilter = input.value; syncClear(); renderList(app);
+    setFilterFor(state, section, input.value);
+    syncClear();
+    if (list) renderSectionList(app, section, list);
   });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
+  // #487 phase 3 step 4: an EMPTY search box does not claim Escape — leaving it
+  // unclaimed (no `preventDefault()`) lets the key bubble up to the focused
+  // drawer's own Escape handler (`app-shell.ts`) so Escape can close the drawer
+  // even while this input is focused. A non-empty box still clears itself
+  // first, exactly as before — a genuinely active filter is this input's own
+  // business to consume.
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape' && input.value !== '') { e.preventDefault(); setFilter(''); } });
   clear.addEventListener('click', () => { setFilter(''); input.focus(); });
   syncClear();
 
   box.append(h('span', { class: 'sv-search-icon' }, Icon.search()), input, clear);
+}
+
+/** Library's own search + list, into Library's own hosts — unconditionally,
+ *  regardless of whether Library is currently exposed (#487 phase 3). */
+export function renderLibrarySection(app: App): void {
+  const { search, list } = elsFor(app, 'library');
+  if (search) renderSectionSearch(app, 'library', search);
+  if (list) renderSectionList(app, 'library', list);
+}
+
+/** History's own search + list, into History's own hosts — unconditionally,
+ *  regardless of whether History is currently exposed (#487 phase 3). */
+export function renderHistorySection(app: App): void {
+  const { search, list } = elsFor(app, 'history');
+  if (search) renderSectionSearch(app, 'history', search);
+  if (list) renderSectionList(app, 'history', list);
+}
+
+/**
+ * The facade: repaint the tab row and BOTH sections' own content, always (#487
+ * phase 3 — mirrors the upper pane, where `renderSchema`/`renderDashboardTree`
+ * each paint on their own triggers regardless of `state.upperRole`). Existing
+ * internal call sites (favorite toggle, inline edit commit, row delete,
+ * history-row delete) keep calling this facade unchanged — repainting all three
+ * on those broader events is simple, safe, and cheap enough for these small
+ * lists.
+ */
+export function renderSavedHistory(app: App): void {
+  renderLowerTabs(app);
+  renderLibrarySection(app);
+  renderHistorySection(app);
 }
 
 function renderSaved(app: App, list: HTMLElement): void {
@@ -250,9 +301,10 @@ function renderSaved(app: App, list: HTMLElement): void {
   }
   // Favourites first, then `workspace.queries[]` order — the projection filters,
   // it never reorders (#427).
-  const items = filterSaved(sortedSaved({ ...state, savedQueries: library }), state.libraryFilter);
+  const libraryFilter = filterFor(state, 'library');
+  const items = filterSaved(sortedSaved({ ...state, savedQueries: library }), libraryFilter);
   if (items.length === 0) {
-    list.appendChild(h('div', { class: 'saved-empty' }, 'No library queries match “' + state.libraryFilter.trim() + '”.'));
+    list.appendChild(h('div', { class: 'saved-empty' }, 'No library queries match “' + libraryFilter.trim() + '”.'));
     return;
   }
   for (const q of items) {
@@ -429,9 +481,10 @@ function renderHistory(app: App, list: HTMLElement): void {
     list.appendChild(h('div', { class: 'saved-empty' }, 'No history yet.'));
     return;
   }
-  const items = filterHistory(state.history, state.libraryFilter);
+  const historyFilter = filterFor(state, 'history');
+  const items = filterHistory(state.history, historyFilter);
   if (items.length === 0) {
-    list.appendChild(h('div', { class: 'saved-empty' }, 'No history matches “' + state.libraryFilter.trim() + '”.'));
+    list.appendChild(h('div', { class: 'saved-empty' }, 'No history matches “' + historyFilter.trim() + '”.'));
     return;
   }
   for (const ent of items as HistoryEntry[]) {

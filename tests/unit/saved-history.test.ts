@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderSavedHistory } from '../../src/ui/saved-history.js';
+import { renderSavedHistory, renderLibrarySection, renderHistorySection } from '../../src/ui/saved-history.js';
 import { LIBRARY_QUERY_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -614,17 +614,23 @@ describe('renderSavedHistory', () => {
     // `state.ts` decodes `asb:sidePanel` at load, so this value cannot come from
     // storage — but the signal is settable by any module, and the two readers must
     // not be able to disagree. `app-shell.ts`'s exposure effect resolves anything
-    // that is not 'history' to the Library host; this renderer has to paint into
-    // the LIBRARY pair for the same input, or the pane shows an exposed empty host
-    // while the content sits inside the hidden one.
+    // that is not 'history' to the Library host.
+    //
+    // #487 phase 3: content rendering no longer depends on this decoding at all
+    // — both sections always render their own content regardless of which is
+    // exposed. What this decoding still controls is only the tab row's "active"
+    // class / `aria-pressed`, asserted here.
     const app = makeApp();
     (app.state.sidePanel as { value: string }).value = 'queries';
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
     renderSavedHistory(app);
 
     expect(qsa(savedList(app), '.saved-row')).toHaveLength(1);
-    expect(historyList(app).children.length).toBe(0);
-    expect(qsa(savedTabsRow(app), '.side-tab')[0].classList.contains('active')).toBe(true);
+    const tabs = qsa<HTMLButtonElement>(savedTabsRow(app), '.side-tab');
+    expect(tabs[0].classList.contains('active')).toBe(true);
+    expect(tabs[0].getAttribute('aria-pressed')).toBe('true');
+    expect(tabs[1].classList.contains('active')).toBe(false);
+    expect(tabs[1].getAttribute('aria-pressed')).toBe('false');
   });
 
   it('takes the lower tabs\' labels and icons FROM the registry', () => {
@@ -651,13 +657,12 @@ describe('renderSavedHistory', () => {
     }
   });
 
-  it('ignores input from a retained search box whose section is no longer active', () => {
+  it('a retained search box whose section is no longer exposed still writes only its OWN section (#487 phase 3)', () => {
     // #487 phase 2: the inactive section's host keeps its DOM, so its search input
-    // and listeners OUTLIVE the switch away from it. `state.libraryFilter` is still
-    // one shared string and `renderList` paints the ACTIVE section, so a stale
-    // event would rewrite the filter and repaint the OTHER section's list with this
-    // section's text. CSS makes it unreachable today; phase 3 moves hosts into
-    // containers where a host can be visible while another section is active.
+    // and listeners OUTLIVE the switch away from it. #487 phase 3 gives each
+    // section its own filter slot (`state.lowerNavigationFilters`), so a "stale"
+    // Library input firing while History is exposed can only ever write Library's
+    // own filter and repaint Library's own (hidden) list — never History's.
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Carrier delays', sql: 'SELECT 1' }]);
@@ -672,14 +677,20 @@ describe('renderSavedHistory', () => {
     staleInput.value = 'zzzz';
     staleInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-    // The shared filter is untouched and History still shows its row — no
-    // cross-section rewrite, no "No history matches “zzzz”".
-    expect(app.state.libraryFilter).toBe('');
+    // Library's OWN filter took the input; History's own filter and rendered
+    // content are untouched — no cross-section rewrite, no "No history matches
+    // “zzzz”".
+    expect(app.state.lowerNavigationFilters.library).toBe('zzzz');
+    expect(app.state.lowerNavigationFilters.history).toBe('');
     expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
     expect(historyList(app).textContent).not.toContain('zzzz');
+    expect(savedList(app).textContent).toContain('No library queries match');
+    expect(savedList(app).textContent).toContain('zzzz');
 
-    // Escape on the stale input is inert for the same reason.
+    // Escape on the stale input clears LIBRARY's own filter, still without
+    // touching History.
     staleInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(app.state.lowerNavigationFilters.library).toBe('');
     expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
   });
 
@@ -694,6 +705,82 @@ describe('renderSavedHistory', () => {
     click(savedBtn);
     expect(app.state.sidePanel.value).toBe('saved');
     expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'saved');
+  });
+
+  // #572: the lower switcher's tabs had neither attribute, unlike the upper
+  // switcher's (`sidebar-upper.ts`), which already has both.
+  it('renders the lower tabs as real buttons with correct aria-pressed (#572)', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    renderSavedHistory(app);
+    const [libraryTab, historyTab] = qsa<HTMLButtonElement>(savedTabsRow(app), '.side-tab');
+    expect(libraryTab.type).toBe('button');
+    expect(libraryTab.getAttribute('aria-pressed')).toBe('true');
+    expect(historyTab.type).toBe('button');
+    expect(historyTab.getAttribute('aria-pressed')).toBe('false');
+    // #487 phase 3 step 4: the wide-mode restore-focus path
+    // (`app-shell.ts`'s `applyEffectiveLeftNavigationLayout`) finds a tab by
+    // `data-section` at the moment of the transition.
+    expect(libraryTab.dataset.section).toBe('library');
+    expect(historyTab.dataset.section).toBe('history');
+
+    click(historyTab);
+    renderSavedHistory(app);
+    const [libraryTab2, historyTab2] = qsa<HTMLButtonElement>(savedTabsRow(app), '.side-tab');
+    expect(libraryTab2.getAttribute('aria-pressed')).toBe('false');
+    expect(historyTab2.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('renderLibrarySection / renderHistorySection (#487 phase 3: independent of exposure)', () => {
+  // Direct regression test for the "first switch to a section shows empty" bug:
+  // before this phase, a section's content only ever painted while it was the
+  // ACTIVE section, so the section that was not active when the pane first
+  // mounted had never been painted.
+  it('renderHistorySection paints History\'s own host even while Library is the exposed section', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved'; // Library is exposed, not History
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderHistorySection(app);
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+  });
+
+  it('renderLibrarySection paints Library\'s own host even while History is the exposed section', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'history'; // History is exposed, not Library
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
+    renderLibrarySection(app);
+    expect(qsa(savedList(app), '.saved-row')).toHaveLength(1);
+  });
+
+  // Direct regression test for the "the section that wasn't active when its own
+  // data changed goes stale" bug, and its mirror.
+  it('a History-only mutation does not touch Library\'s DOM', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
+    renderSavedHistory(app);
+    const before = savedList(app).innerHTML;
+
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderHistorySection(app);
+
+    expect(savedList(app).innerHTML).toBe(before);
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+  });
+
+  it('a Library-only mutation does not touch History\'s DOM', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    const before = historyList(app).innerHTML;
+
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1' }]);
+    renderLibrarySection(app);
+
+    expect(historyList(app).innerHTML).toBe(before);
+    expect(qsa(savedList(app), '.saved-row')).toHaveLength(1);
   });
 });
 
@@ -763,12 +850,30 @@ describe('renderSavedHistory — search/filter', () => {
     expect(savedList(app).textContent).toContain('No library queries match');
     expect(savedList(app).textContent).toContain('zzzz');
     click(qs(savedSearch(app), '.sv-search-clear'));
-    expect(app.state.libraryFilter).toBe('');
+    expect(app.state.lowerNavigationFilters.library).toBe('');
     expect(names(app)).toHaveLength(3);
     type(app, 'busiest');
     expect(names(app)).toEqual(['Busiest airports']);
     input(app).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    expect(app.state.libraryFilter).toBe('');
+    expect(app.state.lowerNavigationFilters.library).toBe('');
+    expect(names(app)).toHaveLength(3);
+  });
+
+  // #487 phase 3 step 4: an EMPTY search box must not swallow Escape, or the
+  // focused drawer's own Escape-to-close handler (`app-shell.ts`) can never be
+  // reached while focus sits in an untouched search input. This is what makes
+  // the fix reachable: against the OLD code (Escape always clears + always
+  // `preventDefault()`s), this assertion on `defaultPrevented` fails.
+  it('does NOT swallow Escape on an already-EMPTY search box (so it can bubble to the drawer)', () => {
+    const app = savedApp();
+    const box = input(app);
+    expect(box.value).toBe(''); // genuinely empty — not merely "looks empty"
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    box.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(app.state.lowerNavigationFilters.library).toBe('');
     expect(names(app)).toHaveLength(3);
   });
 
@@ -788,12 +893,47 @@ describe('renderSavedHistory — search/filter', () => {
     expect(historyList(app).textContent).toContain('No history matches');
   });
 
-  it('clears the filter when switching tabs', () => {
+  // #487 phase 3: the OPPOSITE of the old behavior — switching used to clear
+  // the (single, shared) filter; now each section keeps its own, preserved
+  // across every switch. Sabotage-checked: reintroducing a clear on `switchTo`
+  // (or gating either section's render behind `activeSection`) makes this fail.
+  it('preserves each section\'s own filter text across every switch', () => {
     const app = savedApp();
     type(app, 'delay');
-    expect(app.state.libraryFilter).toBe('delay');
+    expect(app.state.lowerNavigationFilters.library).toBe('delay');
+
     click(qsa(savedTabsRow(app), '.side-tab')[1]); // → History
-    expect(app.state.libraryFilter).toBe('');
+    expect(app.state.sidePanel.value).toBe('history');
+    expect(app.state.lowerNavigationFilters.library).toBe('delay'); // NOT cleared
+    expect(app.state.lowerNavigationFilters.history).toBe('');
+
+    // Give History its OWN, independent filter text.
+    app.state.history = [
+      { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 },
+      { id: 'h2', sql: 'INSERT INTO t', ts: Date.now(), rows: null, ms: 1 },
+    ];
+    renderSavedHistory(app);
+    const historyInput = qs<HTMLInputElement>(historySearch(app), '.sv-search-input');
+    historyInput.value = 'insert';
+    historyInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.state.lowerNavigationFilters.history).toBe('insert');
+
+    click(qsa(savedTabsRow(app), '.side-tab')[0]); // → Library
+    expect(app.state.sidePanel.value).toBe('saved');
+    expect(app.state.lowerNavigationFilters.library).toBe('delay'); // still preserved
+    expect(app.state.lowerNavigationFilters.history).toBe('insert'); // still preserved
+
+    // Re-render (as the real app-shell repaint effects would) and confirm the
+    // preserved text is actually what's shown, not just stored.
+    renderSavedHistory(app);
+    expect(input(app).value).toBe('delay');
+    expect(names(app)).toEqual(['Carrier delays']);
+
+    click(qsa(savedTabsRow(app), '.side-tab')[1]); // → History again
+    renderSavedHistory(app);
+    expect(qs<HTMLInputElement>(historySearch(app), '.sv-search-input').value).toBe('insert');
+    expect(qsa(historyList(app), '.history-row')).toHaveLength(1);
+    expect(historyList(app).textContent).toContain('INSERT INTO t');
   });
 });
 

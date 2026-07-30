@@ -17,6 +17,7 @@ import type {
   WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
 } from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
+import type { LeftNavigationSection } from '../core/left-nav-layout.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { AuthenticatedExecutionScope } from '../application/authenticated-execution-scope.js';
@@ -129,6 +130,22 @@ export interface AppDom {
   historySearch?: HTMLElement;
   savedTabsRow?: HTMLElement;
   schemaList?: HTMLElement;
+  /** #487 phase 3 — the compact icon rail (`ui/left-rail.ts`), `.main-row`'s
+   *  first child. Exposed on `app.dom` for consistency with this interface's
+   *  existing pattern of exposing every shell-built element, even though
+   *  `app-shell.ts` itself already holds a local reference. */
+  leftRail?: HTMLElement;
+  /** #487 phase 3 — `.sidebar`'s own heading, shown only while it presents as
+   *  the rail's focused drawer (`data-nav-mode="drawer"`); its text names the
+   *  one section currently focused. */
+  leftNavTitle?: HTMLElement;
+  /** #487 phase 3 — the same element as the local `sideHandle`/`.col-resize`
+   *  in `app-shell.ts`; `ui/left-nav-separator.ts`'s `mountLeftNavSeparator`
+   *  attaches its mouse/keyboard listeners directly onto it. */
+  leftNavSeparator?: HTMLElement;
+  /** #487 phase 3 — a visually-hidden `role="status"` live region the resize
+   *  separator announces mode/drawer-open-or-closed changes through. */
+  leftNavStatus?: HTMLElement;
   specEditorView?: EditorView;
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;
@@ -345,6 +362,12 @@ export interface App {
   /** Mobile-breakpoint seam (#126), app.ts-internal (renderApp seeds/tracks
    * `state.isMobile` against it) — not read by any other module. */
   matchMedia: ((query: string) => MediaQueryList) | null;
+  /** #487 phase 3 — shell-width observer seam (app.ts-internal; passed straight
+   *  through to `mountAppShell`'s `AppShellDeps.observeElementWidth`, not read
+   *  by any other module). Resolved from `env.observeElementWidth` or a real
+   *  `ResizeObserver`-backed default; `undefined` when neither is available,
+   *  mirroring `matchMedia`'s "capability or absent" contract. */
+  observeElementWidth: ((element: Element, callback: (widthPx: number) => void) => () => void) | undefined;
   /** Build stamp shown in the user menu (app.ts's own openUserMenu) — not read
    * by any other module. */
   build: string;
@@ -542,6 +565,21 @@ export interface App {
    *  #443 — the id is resolved BEFORE anything moves: one that names no saved
    *  query reports a diagnostic and changes no surface, no route and no tab. */
   openSavedQuery(queryId: string): void;
+  /** #487 phase 3 — open (or re-assert open) the left navigation's focused
+   *  drawer on `section`, idempotently: repeated calls with the drawer already
+   *  showing this section are a no-op (`core/left-nav-layout.ts`'s
+   *  `resolveRailOpen`). In wide mode there is no drawer, so this only drives
+   *  the existing upper/lower pane switch for `section`. */
+  openFocusedSection(section: LeftNavigationSection): void;
+  /** #487 phase-3 review, major issue 2 — `application/left-nav.ts`'s
+   *  `LeftNavApp.preemptActiveResize` seam: `app-shell.ts`'s `mountAppShell`
+   *  wires this to cancel an in-progress separator resize session and
+   *  repaint from the committed layout, so `openFocusedSection`/
+   *  `toggleFocusedSection` can preempt a stale drag before writing —
+   *  otherwise the drag's own eventual commit can silently overwrite what a
+   *  semantic command (Escape, a rail click, a reveal action) just did.
+   *  Optional: unset before the shell mounts one. */
+  preemptActiveResize?(): void;
   /**
    * #535 — a Dashboard TILE's own expand action: everything `openSavedQuery`
    * does, plus the two things that make it an act of "go work on this panel"

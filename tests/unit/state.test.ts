@@ -209,6 +209,10 @@ describe('createState', () => {
     expect(s.expanded.value.size).toBe(0);
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
+    // #487 phase 3: each lower-navigation section keeps its own filter slot —
+    // both start empty, and (unlike the old single `libraryFilter` string)
+    // neither is ever cleared by the other switching.
+    expect(s.lowerNavigationFilters).toEqual({ library: '', history: '' });
     // #287 W4: no aggregate loaded yet — `dashboard` starts null;
     // `loadWorkspaceOnBoot` (app.ts's async boot step) projects the real
     // aggregate onto both after this synchronous constructor. `workspaceId`
@@ -318,8 +322,11 @@ describe('createState — left navigation preferences (#487)', () => {
   it('clamps an out-of-range drawer width into the drawer own band', () => {
     // Not the wide sidebar's [180, 420]: a drawer wider than the wide threshold
     // is unreachable, because a drag that far right converts to the sidebar.
+    // The floor is 180, not the fold threshold (140) — #487 phase 3's
+    // real-browser check raised it to match the wide sidebar's own floor (see
+    // `core/left-nav-layout.ts`'s `clampDrawerWidthPx`).
     expect(createState(reader({ [KEYS.leftNavDrawerPx]: '9999' })).leftNavDrawerPx).toBe(260);
-    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '0' })).leftNavDrawerPx).toBe(140);
+    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '0' })).leftNavDrawerPx).toBe(180);
   });
 
   it('keeps the wide width on the ONE preference key, with no second owner', () => {

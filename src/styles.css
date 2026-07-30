@@ -154,6 +154,14 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   --lh-data: 1.45;          /* mono data and diagnostics */
   --lh-body: 1.5;           /* prose */
   --lh-editor: 22px;        /* CodeMirror's fixed line box */
+
+  /* #487 phase 3 — the compact left-navigation rail's fixed width. Matches
+     `LEFT_RAIL_PX` in `core/left-nav-layout.ts` exactly (that module's own
+     doc comment explains why it is a mode, not a resizable dimension) — one
+     source for the number would be nicer still, but the pure layout module
+     cannot reach into a stylesheet, so the two are kept in agreement here by
+     being reviewed together rather than computed from one another. */
+  --left-rail-px: 48px;
 }
 
 /* ------------ KPI panel ------------ */
@@ -874,11 +882,63 @@ h1, h2, h3, h4, h5, h6 {
      the first consumer. */
   container-type: inline-size; container-name: sidebar;
 }
+/* #487 phase 3 — the compact icon rail, `.main-row`'s first child. Fixed
+   width (`--left-rail-px`) — it never resizes, since the rail IS the mode,
+   not a dimension (`core/left-nav-layout.ts`'s own `LEFT_RAIL_PX` doc
+   comment). `[hidden]` needs the explicit override for the same reason
+   `.query-host[hidden]`/`.nav-section-host[hidden]` already carry one: a
+   class rule's `display: flex` beats the UA stylesheet's bare `[hidden]`. */
+.left-rail {
+  flex: 0 0 var(--left-rail-px);
+  display: flex; flex-direction: column;
+  background: var(--bg-side);
+}
+.left-rail[hidden] { display: none; }
+.left-rail-btn {
+  width: 100%; height: var(--left-rail-px);
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--fg-mute); cursor: pointer;
+  padding: 0;
+}
+.left-rail-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.left-rail-btn:focus-visible { outline: none; box-shadow: var(--ring-nav); }
+/* The active-drawer indicator — `left-rail.ts` uses `aria-expanded` as the
+   ONLY active-state hook, so this is the one place that state is styled. */
+.left-rail-btn[aria-expanded="true"] {
+  color: var(--accent-text); background: var(--bg-highlight);
+}
+/* #487 phase 3 — the focused drawer's own heading, `.sidebar`'s first child.
+   Shown only while `.sidebar` presents as the drawer (`data-nav-mode` rules
+   below toggle it alongside everything else that mode implies); `[hidden]`
+   needs the explicit override for the same reason as every other host in
+   this file that a class rule could otherwise re-show. */
+.left-nav-title {
+  padding: 10px 12px 4px;
+  font-size: var(--text-micro); font-weight: var(--fw-semibold);
+  letter-spacing: .05em; text-transform: uppercase; color: var(--fg-faint);
+}
+.left-nav-title[hidden] { display: none; }
+/* #487 phase 3 — `.sidebar` is RE-PRESENTED via `data-nav-mode` rather than
+   moved or duplicated (`app-shell.ts`'s `applyEffectiveLeftNavigationLayout`
+   is the sole writer of the attribute); each rule below gives an EXPLICIT
+   `display` for both the rail and the sidebar in that mode, so nothing here
+   depends on the bare `[hidden]`/class-rule precedence footgun the comments
+   above already call out for other hosts. */
+.main-row[data-nav-mode="wide"] .left-rail { display: none; }
+.main-row[data-nav-mode="wide"] .sidebar { display: flex; }
+.main-row[data-nav-mode="rail"] .left-rail { display: flex; }
+.main-row[data-nav-mode="rail"] .sidebar { display: none; }
+.main-row[data-nav-mode="drawer"] .left-rail { display: flex; }
+.main-row[data-nav-mode="drawer"] .sidebar { display: flex; }
 .col-resize, .row-resize {
   position: relative; flex-shrink: 0; z-index: 1;
   background: transparent;
 }
 .col-resize { width: 7px; cursor: col-resize; }
+/* #487 phase 3: the handle is now genuinely keyboard-operable (`tabindex="0"`,
+   Left/Right/Home/End — `ui/left-nav-separator.ts`) where before it was a
+   mouse-only drag surface, so it needs a real focus indicator. */
+.col-resize:focus-visible { outline: none; box-shadow: var(--ring-nav); }
 .row-resize {
   height: 7px; cursor: row-resize;
 }
@@ -918,9 +978,23 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ------------ side panes ------------ */
 .side-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* #487 phase 3 — `app-shell.ts`'s `applyEffectiveLeftNavigationLayout` sets
+   `.hidden` on `schemaPane`/`savedPane` (both `.side-pane`) so a rail-mode
+   focused drawer shows exactly one of them, never both. `[hidden]` needs the
+   explicit override here for the same reason `.query-host[hidden]`,
+   `.dashboard-host[hidden]`, `.nav-section-host[hidden]`, `.left-rail[hidden]`
+   and `.left-nav-title[hidden]` already carry one: a class rule's
+   `display: flex` beats the UA stylesheet's bare `[hidden]`, so without this a
+   pane set `hidden` would keep rendering — both panes visible at once inside a
+   drawer meant to show only one. */
+.side-pane[hidden] { display: none; }
 
 /* ------------ saved + history ------------ */
 .side-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+/* Same footgun, same fix — `app.dom.upperRoleTabs`/`app.dom.savedTabsRow`
+   (both `.side-tabs`) are hidden by the same function whenever a wide-only
+   switcher has no drawer to switch inside. */
+.side-tabs[hidden] { display: none; }
 .side-tab {
   flex: 1; height: 30px;
   border: none; background: transparent;
@@ -1008,7 +1082,10 @@ h1, h2, h3, h4, h5, h6 {
 .side-count { color: var(--fg-faint); font-weight: var(--fw-regular); }
 /* #552: at a narrow sidebar (bottom quarter of the 180–420px drag range —
    `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` in `src/core/left-nav-layout.ts`,
-   applied to the 'col' drag axis by `splitters.ts`'s `clampWideWidthPx`), both tab rows
+   governing the wide sidebar's own width — #487 phase 3 moved that gesture off
+   `splitters.ts`'s old bare 'col' clamp and onto `ui/left-nav-separator.ts`'s
+   mode reducer/resize session, which the app shell applies through
+   `app-shell.ts`'s `applyEffectiveLeftNavigationLayout`), both tab rows
    (`.upper-role-tabs`'s Databases/Dashboard and this row's Library/History)
    drop to text-only labels: the icon, and `.side-count`'s "· N" (the count AND
    its separator dot share one text node, so hiding the element hides both).
@@ -1719,17 +1796,22 @@ body.detached-tab .graph-overlay-panel {
 }
 /* A hidden host contributes no layout, so the exposed one owns the whole pane —
    but it keeps its DOM. What that preserves differs by pane, and the distinction
-   matters to #487 phase 3:
+   matters to #487:
 
    - UPPER (Databases | Dashboards): everything, across a role switch. Each role
      owns its own search and expansion state, so switching only flips `hidden` and
      the schema search text, lazily loaded columns and scroll all survive (#426).
-   - LOWER (Library | History): NOT across a section switch. The switcher clears
-     the shared `libraryFilter`, and activating the destination repaints its search
-     box and list. Per-section lower search state is phase 3's, not solved here.
-   - BOTH, across a MOVE between containers (phase 3's wide sidebar ↔ focused
-     drawer): everything, because moving an element repaints nothing. That is the
-     guarantee the persistent hosts exist for. */
+   - LOWER (Library | History): everything too, across a section switch. Phase 3
+     step 3 replaced the one shared `libraryFilter` with per-section
+     `lowerNavigationFilters` (`state.ts`), and both sections now render
+     UNCONDITIONALLY (`app-shell.ts`'s reactive effects) rather than only the
+     active one — so a switch flips `hidden` alone, exactly like the upper pane.
+   - BOTH, across a phase-3 mode change (wide sidebar ↔ rail's focused drawer):
+     everything, because `.sidebar` is RE-PRESENTED via `data-nav-mode`
+     (`app-shell.ts`'s `applyEffectiveLeftNavigationLayout`), never moved between
+     containers or rebuilt — the four hosts below stay exactly where they are,
+     and only which one is exposed (plus the sidebar's own presentation) changes.
+     That is the guarantee the persistent hosts exist for. */
 .nav-section-host[hidden] { display: none; }
 
 /* ------------ Dashboard hierarchy tree (#426) ------------ */
@@ -3224,6 +3306,21 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
     font-family: var(--mono); display: flex; align-items: center; justify-content: center;
   }
   .mnav-badge:empty { display: none; }
+
+  /* #487 phase 3 — belt-and-braces: the desktop rail/focused-drawer
+     presentation must not reach a phone even if `data-nav-mode` ends up
+     stamped with a stale desktop value (`effectiveLeftNavigationLayout(_,
+     true)` already projects to wide/no-drawer in JS — this is CSS not
+     depending on that having run correctly). `.left-rail` has no mobile
+     "sometimes shown" case at all, so it is unconditionally hidden;
+     `.sidebar` is restated at the SAME specificity as the `[data-nav-mode]`
+     rules above (declared textually after them) rather than `!important`,
+     so every mobile view/tab rule below — which intentionally hides the
+     sidebar for Editor/Results/a Dashboard surface, or the non-selected
+     segmented pane — still wins exactly as it already does today. */
+  .left-rail { display: none !important; }
+  .main-row[data-nav-mode="rail"] .sidebar,
+  .main-row[data-nav-mode="drawer"] .sidebar { display: flex; }
 
   /* ---- Full-screen view switching (main-row[data-mobile-view]) ---- */
   /* Tables → sidebar fills; workbench hidden. Sidebar is a normal flow child

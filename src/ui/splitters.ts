@@ -3,14 +3,21 @@
 // (window + persistence) for testing.
 
 import { clamp } from '../core/format.js';
-import { clampWideWidthPx } from '../core/left-nav-layout.js';
 
 // 'docPane' (#313): the persistent documentation pane's own bounded-resize
 // axis — identical geometry to 'drawer' (right-edge anchored, same
 // clampDrawerWidth bounds) but writes `docPanePx` instead of `cellDrawerPx`,
 // so a docs-pane drag never clobbers (or reads) the cell-detail/rows-viewer
 // drawer's own persisted width.
-export type SplitterAxis = 'col' | 'sideRow' | 'row' | 'drawer' | 'docPane';
+//
+// #487 phase 3 removed 'col' (the wide sidebar's own width): the left
+// navigation's separator (`ui/left-nav-separator.ts`) now owns that gesture
+// entirely, routing every proposal through the mode reducer
+// (`core/left-nav-layout.ts`) instead of this module's bare clamp — a sidebar
+// drag can fold to a rail or restore, which a splitter axis has no vocabulary
+// for. `app-shell.ts` no longer wires `startDrag` to the `.col-resize` handle
+// at all.
+export type SplitterAxis = 'sideRow' | 'row' | 'drawer' | 'docPane';
 
 /** The subset of a real (or fake, in tests) pointer/mouse event `dragValue`/
  *  `startDrag` read — never the full DOM `MouseEvent`, so a plain test
@@ -22,7 +29,7 @@ export interface DragPoint {
 
 /** The subset of a bounding-rect-like `dragValue` reads, by axis: 'sideRow'/
  *  'row' need `top`/`bottom`; 'drawer'/'docPane' need `width` (the viewport
- *  width); 'col' reads neither. */
+ *  width). */
 export interface DragRect {
   top?: number;
   bottom?: number;
@@ -40,27 +47,17 @@ export function clampDrawerWidth(px: number, viewportWidth: number): number {
 }
 
 /**
- * Compute the new size for a drag. `axis` is 'col' (sidebar px), 'sideRow'
- * (sidebar vertical %), 'row' (editor/results %), or 'drawer' (cell-detail /
- * rows-viewer right-hand drawer px, #101). `rect` is the bounding rect of the
- * container being split (unused for 'col'; `{ width }` — the viewport width —
- * for 'drawer'). 'drawer' is anchored to the *right* edge, so its width grows
- * as the cursor moves left: `viewportWidth - clientX`.
- *
- * 'col' defers to `clampWideWidthPx` (#487) rather than repeating the sidebar's
- * [180, 420] bounds. This axis WRITES `sidebarPx`, the same preference
- * `createState` reads back through that function, so a local copy of the bounds
- * here would be a second owner of one width — exactly what
- * `core/left-nav-layout.ts` exists to prevent. Behaviour is unchanged for a real
- * drag (`clientX` is always finite); phase 3 replaces this axis outright with the
- * left-navigation separator, which routes the same proposal through the mode
- * reducer instead of a bare clamp.
+ * Compute the new size for a drag. `axis` is 'sideRow' (sidebar vertical %),
+ * 'row' (editor/results %), or 'drawer'/'docPane' (right-hand drawer px,
+ * #101/#313). `rect` is the bounding rect of the container being split
+ * (`{ width }` — the viewport width — for 'drawer'/'docPane'). 'drawer' is
+ * anchored to the *right* edge, so its width grows as the cursor moves left:
+ * `viewportWidth - clientX`.
  */
 export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): number {
-  if (axis === 'col') return clampWideWidthPx(ev.clientX);
   // `!`: every real caller (startDrag's onMove, via ctx.rectFor(axis)) supplies
   // `width` for 'drawer'/'docPane' and `top`/`bottom` for 'sideRow'/'row' —
-  // the axis dispatch above is exactly the contract that guarantees the field
+  // the axis dispatch below is exactly the contract that guarantees the field
   // this branch reads is present.
   if (axis === 'drawer' || axis === 'docPane') return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
   const pct = clamp(((ev.clientY - rect!.top!) / (rect!.bottom! - rect!.top!)) * 100,
@@ -86,9 +83,8 @@ export interface DragWindow {
 }
 
 /** The splitter-owning caller's persisted geometry (state.ts's AppState
- *  slice) — only the four fields a drag ever writes. */
+ *  slice) — only the fields a drag ever writes. */
 export interface DragState {
-  sidebarPx?: number;
   sideSplitPct?: number;
   editorPct?: number;
   cellDrawerPx?: number;
@@ -112,10 +108,10 @@ export interface DragCtx {
  * Begin a splitter drag. Returns a `cancel()` that stops listening without
  * persisting — for a caller whose drag surface can be torn down mid-drag
  * (e.g. the cell-detail drawer closing via Escape while the mouse button is
- * still down, #101); the plain splitters (col/sideRow/row) don't need it and
+ * still down, #101); the plain splitters (sideRow/row) don't need it and
  * ignore the return value.
  * @param ev      the mousedown event (currentTarget = the handle)
- * @param axis    'col' | 'sideRow' | 'row' | 'drawer'
+ * @param axis    'sideRow' | 'row' | 'drawer' | 'docPane'
  * @param ctx     { win, state, save, rectFor(axis), apply(axis, value) }
  */
 export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx): () => void {
@@ -125,8 +121,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
   handle.classList.add('dragging');
   const onMove = (move: DragPoint): void => {
     const value = dragValue(axis, move, ctx.rectFor(axis));
-    if (axis === 'col') ctx.state.sidebarPx = value;
-    else if (axis === 'sideRow') ctx.state.sideSplitPct = value;
+    if (axis === 'sideRow') ctx.state.sideSplitPct = value;
     else if (axis === 'row') ctx.state.editorPct = value;
     else if (axis === 'docPane') ctx.state.docPanePx = value;
     else ctx.state.cellDrawerPx = value;
@@ -141,8 +136,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
     stop();
     // `!`: onMove (above) just assigned this same axis's field before any
     // mouseup can fire — a drag always moves before it ends.
-    if (axis === 'col') ctx.save('sidebarPx', ctx.state.sidebarPx!);
-    else if (axis === 'sideRow') ctx.save('sideSplitPct', ctx.state.sideSplitPct!);
+    if (axis === 'sideRow') ctx.save('sideSplitPct', ctx.state.sideSplitPct!);
     else if (axis === 'row') ctx.save('editorPct', ctx.state.editorPct!);
     else if (axis === 'docPane') ctx.save('docPanePx', ctx.state.docPanePx!);
     else ctx.save('cellDrawerPx', ctx.state.cellDrawerPx!);

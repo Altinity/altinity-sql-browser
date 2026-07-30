@@ -119,6 +119,7 @@ export function renderUpperRoleTabs(app: SidebarUpperApp): void {
     h('button', {
       class: 'side-tab' + (active === role ? ' active' : ''),
       type: 'button',
+      'data-section': role,
       'aria-pressed': active === role ? 'true' : 'false',
       onclick: () => {
         // Changing role hides one tree and shows the other, so a deferred

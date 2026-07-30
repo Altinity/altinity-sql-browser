@@ -42,8 +42,17 @@ export const LEFT_WIDE_THRESHOLD_PX = 260;
 
 /** The WIDE two-pane sidebar's resize bounds — the range `asb:sidebarPx` has
  *  always used, preserved verbatim per #487 ("preserve the existing
- *  sidebar-width preference range"). These do NOT bound the focused drawer; see
- *  `clampDrawerWidthPx`. */
+ *  sidebar-width preference range"). `LEFT_PANEL_MAX_PX` bounds ONLY the wide
+ *  sidebar — a 420px drawer is impossible, since a drag that far right
+ *  converts to the wide sidebar first (see `clampDrawerWidthPx`).
+ *
+ *  `LEFT_PANEL_MIN_PX`, though, is now ALSO the focused drawer's own resizable
+ *  floor, reused rather than duplicated as a second "180" constant: phase 1
+ *  shipped the drawer's floor at the fold threshold (140) as an explicit open
+ *  question, and a real-browser check settled it — at 140px the Dashboards
+ *  section's three titles rendered as "Sa...", "O...", "A..." (unreadable and
+ *  indistinguishable), while at 180px they read as "Sales re...", "Ops
+ *  late...", "A very lo..." (ellipsized, but readable and distinguishable). */
 export const LEFT_PANEL_MIN_PX = 180;
 export const LEFT_PANEL_MAX_PX = 420;
 
@@ -236,20 +245,39 @@ export function clampWideWidthPx(px: number): number {
 }
 
 /**
- * Clamp a focused-drawer width into `[LEFT_FOLD_THRESHOLD_PX,
- * LEFT_WIDE_THRESHOLD_PX]` — the drawer's own band, NOT the wide sidebar's
- * `[MIN, MAX]`.
+ * Clamp a focused-drawer width into `[LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX]`
+ * — i.e. `[180, 260]` — the drawer's own band, NOT the wide sidebar's
+ * `[LEFT_PANEL_MIN_PX, LEFT_PANEL_MAX_PX]` (`[180, 420]`). The two bands now
+ * share a floor but not a ceiling: a drawer drag converts to the wide sidebar
+ * long before it would ever reach 420, so nothing above 260 is a legal drawer
+ * width. `clampWideWidthPx` governs the wide sidebar.
  *
- * That is a reading of #487's drawer-resize rules rather than of its constant
- * list: a drawer drag must fold closed below the fold threshold and convert to
- * the wide sidebar above the wide threshold, so everything in between is the
- * only width a drawer can hold. Giving the drawer the wide sidebar's 180 floor
- * and 420 ceiling would make most of that range unreachable — the drag would
- * have converted to wide long before 420. `MIN`/`MAX` govern the wide sidebar.
+ * **The floor is deliberately `LEFT_PANEL_MIN_PX`, not `LEFT_FOLD_THRESHOLD_PX`
+ * — a real, settled design decision, not phase 1's original shape.** Phase 1
+ * shipped this clamp's floor AT the fold threshold (`[140, 260]`), flagged as
+ * an explicit open question: a 140px drawer has to hold a title, a search box,
+ * tree indentation and action controls, and might be too narrow to do it
+ * legibly. A real-browser check confirmed it was: at 140px the Dashboards
+ * section's three titles rendered as "Sa...", "O...", "A..." — unreadable and
+ * indistinguishable from one another — while at 180px they read as "Sales
+ * re...", "Ops late...", "A very lo..." — still ellipsized, but genuinely
+ * readable and distinguishable. So the floor was raised to `LEFT_PANEL_MIN_PX`,
+ * reusing the wide sidebar's own floor constant rather than inventing a second
+ * "180" value, since the two are now the identical width for the identical
+ * reason.
+ *
+ * That reuse is also what gives the drawer the wide sidebar's own dead-zone
+ * mechanism FOR FREE, with no new branch anywhere: `resolveLeftNavigationDrag`'s
+ * drawer branch still folds only below `LEFT_FOLD_THRESHOLD_PX` (140,
+ * unchanged — that comparison runs on the RAW proposal, before this clamp), so
+ * a raw proposal between 140 and 180 no longer folds, and no longer clips at
+ * the raw proposed width either; it simply clamps UP to this floor and holds
+ * there — exactly mirroring `clampWideWidthPx`'s own dead zone, which falls out
+ * of its plain range clamp the same way.
  */
 export function clampDrawerWidthPx(px: number): number {
   if (Number.isNaN(px)) return LEFT_DRAWER_DEFAULT_PX;
-  return clamp(px, LEFT_FOLD_THRESHOLD_PX, LEFT_WIDE_THRESHOLD_PX);
+  return clamp(px, LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX);
 }
 
 /**
@@ -391,23 +419,30 @@ function restoreWide(layout: LeftNavigationLayout): LeftNavigationLayout {
  *
  * **Arrows resize within a band and perform the semantic transition at its edge.**
  * That edge case is not decoration: an arrow key carries a *relative* step, and
- * both bands are bounded by a dead zone wider than one step, so a purely relative
- * arrow gets stranded at a boundary forever.
+ * every band here is bounded by a dead zone wider than one step, so a purely
+ * relative arrow gets stranded at a boundary forever.
  *
- * Both ends had that failure, and they are exact mirrors:
+ * All three ends had that failure, and they are exact mirrors of each other:
  *
  * - a bare rail is 48px wide and the nearest legal wide width is 180, so a +16
  *   step proposes 64, lands in the sticky band and does nothing;
  * - a wide sidebar at its 180 floor folds only below 140, so a −16 step proposes
- *   164, clamps straight back to 180 and does nothing.
+ *   164, clamps straight back to 180 and does nothing;
+ * - an open drawer at its OWN 180 floor folds only below the identical 140, for
+ *   the identical reason, so a −16 step lands in that same 140–179 dead zone,
+ *   clamps straight back to 180 and does nothing. This third case is NEW: the
+ *   drawer's floor used to sit exactly AT the fold threshold (140), so any step
+ *   below it was already below the threshold too and folded on its own — only
+ *   raising the floor to 180 (see `clampDrawerWidthPx`) separated the two and
+ *   made a dead zone, and therefore a stranding, possible here as well.
  *
- * A *pointer* escapes both because `clientX` is absolute — it keeps travelling
- * until it crosses the threshold — so leaving them relative made the keyboard and
- * pointer disagree over a *sequence* even while agreeing on every single step.
- * Eleven ArrowLeft presses from a 300px sidebar used to sit at 180 forever while
- * the equivalent pointer path folded, with `aria-valuemin: 48` advertised
- * throughout. `Home`/`Shift+Arrow` escaping is not a defence: the W3C splitter
- * pattern makes plain Left/Right the separator's move keys.
+ * A *pointer* escapes all three because `clientX` is absolute — it keeps
+ * travelling until it crosses the threshold — so leaving them relative made the
+ * keyboard and pointer disagree over a *sequence* even while agreeing on every
+ * single step. Eleven ArrowLeft presses from a 300px sidebar used to sit at 180
+ * forever while the equivalent pointer path folded, with `aria-valuemin: 48`
+ * advertised throughout. `Home`/`Shift+Arrow` escaping is not a defence: the
+ * W3C splitter pattern makes plain Left/Right the separator's move keys.
  *
  * So the boundary step performs the transition the band edge implies, and every
  * step inside a band still routes through `resolveLeftNavigationDrag` — the
@@ -431,11 +466,22 @@ export function resolveLeftNavigationKey(
   if (layout.mode === 'rail' && layout.focusedSection === null) {
     return towardWide ? restoreWide(layout) : layout;
   }
-  // A wide sidebar already at its floor: leftward is the fold transition. An open
-  // drawer needs no equivalent — its own floor IS the fold threshold, so an
-  // ordinary step below it already closes it.
+  // A wide sidebar already at its floor: leftward is the fold transition.
   if (layout.mode === 'wide' && !towardWide && layout.wideWidthPx <= LEFT_PANEL_MIN_PX) {
     return foldToRail(layout);
+  }
+  // An open drawer now needs the IDENTICAL check, and that need is new: before
+  // the drawer's floor was raised to LEFT_PANEL_MIN_PX to match the wide
+  // sidebar's (see `clampDrawerWidthPx`), the drawer's floor WAS the fold
+  // threshold, so an ordinary relative step below it was already below the
+  // threshold too and folded on its own — no special case required. Now that
+  // the two values differ, a step below the drawer's floor lands IN the
+  // 140–179 dead zone instead of past it, and would strand there forever
+  // exactly like the wide sidebar's floor once did, absent this check. A
+  // 'rail' layout reaching here is never bare (the bare-rail branch above
+  // already returned), so `focusedSection` is guaranteed non-null.
+  if (layout.mode === 'rail' && !towardWide && layout.drawerWidthPx <= LEFT_PANEL_MIN_PX) {
+    return { ...layout, focusedSection: null };
   }
   const step = event.shiftKey ? LEFT_NAV_LARGE_STEP_PX : LEFT_NAV_STEP_PX;
   return resolveLeftNavigationDrag(layout, leftNavigationWidthPx(layout) + (towardWide ? step : -step));
@@ -524,12 +570,284 @@ export interface LeftNavigationSeparatorAria {
   readonly valueNow: number;
 }
 
-export function leftNavigationSeparatorAria(layout: LeftNavigationLayout): LeftNavigationSeparatorAria {
+/**
+ * `maxNavigationTotalPx` is optional and, when given, tightens `valueMax` to
+ * whatever the viewport currently allows — see `clampLeftNavigationToMaximumTotal`
+ * below, which computes the layout this ceiling must agree with. Omitted (or a
+ * non-finite/non-positive value, which cannot be a real viewport budget), the
+ * ceiling is `LEFT_PANEL_MAX_PX` exactly as before phase 3 — this parameter is
+ * additive and every existing caller (there is still none in production, but the
+ * unit tests below stand in for one) keeps its prior behaviour unconditionally.
+ *
+ * `valueMax` is floored at `valueMin` (`LEFT_RAIL_PX`) and `valueNow` is
+ * clamped into `[valueMin, valueMax]`, so the ARIA invariant `valueMin <=
+ * valueNow <= valueMax` holds for ANY budget, including one pathologically
+ * below the rail's own width or below the current mode's own floor. #487's
+ * planned production UI never reaches that range in practice — see
+ * `clampLeftNavigationToMaximumTotal`'s own comment for the arithmetic showing
+ * the realistic budget floor sits around 280px, well above every mode's own
+ * minimum — so this is defensive robustness on a PUBLIC pure helper rather
+ * than a behaviour change for any realistic budget: neither clamp does
+ * anything when `maxNavigationTotalPx` is omitted or at least `LEFT_RAIL_PX`.
+ */
+export function leftNavigationSeparatorAria(
+  layout: LeftNavigationLayout, maxNavigationTotalPx?: number,
+): LeftNavigationSeparatorAria {
+  const valueMin = LEFT_RAIL_PX;
+  const uncappedMax = Number.isFinite(maxNavigationTotalPx) && (maxNavigationTotalPx as number) > 0
+    ? Math.min(LEFT_PANEL_MAX_PX, maxNavigationTotalPx as number)
+    : LEFT_PANEL_MAX_PX;
+  const valueMax = Math.max(valueMin, uncappedMax);
+  // Normalized, so a caller holding a layout with a non-finite width cannot
+  // publish `aria-valuenow="NaN"` to assistive technology; clamped into the
+  // final [valueMin, valueMax] range so an occupied width that exceeds a
+  // pathologically small budget cannot publish an out-of-range valueNow either.
+  const rawValueNow = leftNavigationWidthPx(normalizeLeftNavigationLayout(layout));
+  const valueNow = clamp(rawValueNow, valueMin, valueMax);
+  return { valueMin, valueMax, valueNow };
+}
+
+/**
+ * The centre SQL/results surface's documented minimum width. Phase 4's
+ * viewport-resize handling subtracts this (plus the resize separator's own
+ * width and any docked panel) from the viewport to get the budget it hands to
+ * `clampLeftNavigationToMaximumTotal` below — this module does not read the
+ * viewport itself, so the constant lives here purely so the UI layer has one
+ * source for it rather than a second copy of the number.
+ */
+export const LEFT_CENTRE_MIN_PX = 480;
+
+/**
+ * Shrink `layout`'s CURRENT mode's own panel width so the navigation's total
+ * occupied width (`leftNavigationWidthPx`) fits inside `maxNavigationTotalPx`,
+ * without ever changing `mode`.
+ *
+ * This is a narrower job than the mode reducer above. #487 phase 4 is where a
+ * viewport too small for the centre surface's own minimum gets to fold a wide
+ * sidebar to rail or close an open drawer — a MODE decision, driven by the
+ * viewport crossing a breakpoint, not by a pointer or a key. Doing any of that
+ * here would duplicate `resolveLeftNavigationDrag`'s job with a second,
+ * viewport-shaped entry point, and the two would disagree about hysteresis the
+ * first time someone edited only one of them. So this function answers a
+ * strictly smaller question — "shrink the width THIS mode already has, inside
+ * the band this mode can already legally occupy" — and leaves whether to fold
+ * or close entirely to phase 4.
+ *
+ * That narrower scope is also why a budget below the mode's own floor is
+ * "best effort" rather than an error: `wide`'s floor is `LEFT_PANEL_MIN_PX`
+ * (180) and a bare `rail`'s occupied width is the fixed `LEFT_RAIL_PX` (48,
+ * nothing to shrink), so the only floor this function can be asked to violate
+ * is `LEFT_PANEL_MIN_PX` itself — the wide sidebar's floor AND, since #487
+ * phase 3's real-browser pass raised the drawer's floor to match (see
+ * `clampDrawerWidthPx`), an open drawer's floor too. Returning the floor
+ * anyway — rather than throwing, or returning something outside every mode's
+ * legal range — keeps the result always renderable; a caller that actually
+ * needs the navigation narrower than what a mode CAN render must change the
+ * mode, which is phase 4's job, not this function's.
+ *
+ * In practice that floor path is unreachable above the existing mobile
+ * breakpoint, so it is defensive rather than a state phase 4 has to design
+ * for today. `MOBILE_BREAKPOINT_PX` (`state.ts`) is 768, the resize separator
+ * that will subtract from the viewport is 7px wide (`.col-resize` in
+ * `styles.css`), and `LEFT_CENTRE_MIN_PX` above is 480 — so at the smallest
+ * viewport this function is ever consulted at (768px wide, the boundary where
+ * mobile's own two-pane layout stops standing in), the budget phase 4 would
+ * pass is `768 − 480 − 7 = 281`. That clears the wide sidebar's 180 floor with
+ * 101px to spare, and clears an open drawer's `281 − LEFT_RAIL_PX(48) = 233`
+ * against its own (now identical) 180 floor with 53px to spare — down from the
+ * 93px this margin had against the drawer's original 140 floor, but still
+ * comfortably positive. Below 768 the mobile layout replaces the rail and
+ * drawer entirely (`effectiveLeftNavigationLayout` above), so this function is
+ * never consulted there either.
+ *
+ * `maxNavigationTotalPx` itself is a plain number budget, not a viewport: a
+ * non-finite or NEGATIVE value (a corrupt measurement, or a caller that has
+ * not measured yet) is treated as "no additional constraint" rather than
+ * propagated into a NaN or Infinity output. Zero is not in that list — it is
+ * an extreme but legitimate budget, and clamping into either band's own range
+ * floors it exactly like any other too-small value.
+ */
+export function clampLeftNavigationToMaximumTotal(
+  layout: LeftNavigationLayout, maxNavigationTotalPx: number,
+): LeftNavigationLayout {
+  const normalized = normalizeLeftNavigationLayout(layout);
+  // Zero is a legitimate (if extreme) budget — clamping into either band's own
+  // range floors it correctly. Only a NEGATIVE or non-finite value cannot mean
+  // a real width, so those fall back to "no additional constraint" rather than
+  // being clamped into a nonsensical floor.
+  const budget = Number.isFinite(maxNavigationTotalPx) && maxNavigationTotalPx >= 0
+    ? maxNavigationTotalPx
+    : Infinity;
+  if (normalized.mode === 'wide') {
+    // The wide sidebar IS the total, so the budget applies to it directly.
+    const maxWideWidthPx = clamp(budget, LEFT_PANEL_MIN_PX, LEFT_PANEL_MAX_PX);
+    return normalized.wideWidthPx <= maxWideWidthPx
+      ? normalized
+      : { ...normalized, wideWidthPx: maxWideWidthPx };
+  }
+  if (normalized.focusedSection === null) return normalized; // bare rail: fixed width, nothing to shrink.
+  // An open drawer sits BESIDE the rail, so its own budget is the total minus
+  // the rail — mirroring `resolveLeftNavigationDrag`'s `panelPx` derivation.
+  // The floor is LEFT_PANEL_MIN_PX, matching `clampDrawerWidthPx` — NOT
+  // LEFT_FOLD_THRESHOLD_PX, which is a fold POINT for the raw drag proposal,
+  // not a legal width this clamp should ever produce.
+  const maxDrawerWidthPx = clamp(budget - LEFT_RAIL_PX, LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX);
+  return normalized.drawerWidthPx <= maxDrawerWidthPx
+    ? normalized
+    : { ...normalized, drawerWidthPx: maxDrawerWidthPx };
+}
+
+/**
+ * A resize SESSION — the drag/keyboard-resize memory phase 3 needs and a plain
+ * continuously-advancing width field cannot provide.
+ *
+ * **Why not just keep overwriting a remembered width on every frame?** That was
+ * tried and is exactly the bug this module's own
+ * "restore memory is sampling-dependent" test (above) already pins for the OLD
+ * design: which width ends up remembered depends on which intermediate pointer
+ * samples the browser happened to deliver, because one field was doing duty as
+ * both "the width currently on screen" and "the width to restore later". A
+ * session separates those two questions by keeping THREE layouts, not one:
+ *
+ * - `preferredAtStart` — the persisted preference as of when the gesture began.
+ *   This is the memory source `commitLeftNavigationResize` reconstructs from,
+ *   and it is captured ONCE, so no intermediate frame can overwrite it.
+ * - `proposed` — the latest RAW reducer proposal, BEFORE the viewport's
+ *   maximum-total clamp runs. This is the OTHER memory source
+ *   `commitLeftNavigationResize` reads: comparing the raw proposal against
+ *   `preferredAtStart` is what lets a restore command commit the user's actual
+ *   remembered width even while a narrow viewport cannot render it in full —
+ *   see the bug history below.
+ * - `effective` — `proposed` after `clampLeftNavigationToMaximumTotal` has run
+ *   against the current viewport budget. This is what gets rendered and
+ *   reported as the gesture continues; it is not memory, and
+ *   `commitLeftNavigationResize` never reads it for its width decision.
+ *
+ * **A real bug this shape fixes, not a hypothetical one.** An earlier version
+ * of this session compared `effective` against an `effectiveAtStart` snapshot —
+ * i.e. two POST-CLAMP layouts — to decide whether a band's width had "changed".
+ * That is wrong whenever a restore command (`Home`, `End`, or a bare-rail
+ * `ArrowRight`) runs while the clamp is active: starting at a bare rail,
+ * `effectiveAtStart.wideWidthPx` passes the dormant preferred width straight
+ * through unclamped (there is nothing to clamp — 'wide' is not the rendered
+ * mode yet), so it read as the full preference, e.g. 420. `End` then proposed
+ * exactly 420 back — correct — but if the viewport only allows 313, `effective`
+ * rendered 313, `effective.wideWidthPx (313) !== effectiveAtStart.wideWidthPx
+ * (420)` read as true, and the old logic committed 313: a transient,
+ * viewport-driven value the user never asked to keep, silently overwriting
+ * their real preference. Comparing the RAW `proposed` (420) against
+ * `preferredAtStart` (420) instead finds no change, because
+ * `clampLeftNavigationToMaximumTotal` never touches `mode` — so `mode`/
+ * `focusedSection` read identically off `proposed` or `effective`, and only the
+ * WIDTH needs the pre/post-clamp distinction the session now keeps.
+ *
+ * **`commitLeftNavigationResize`'s table, restated as one rule:** only commit a
+ * band's width if that band is the one the session's FINAL `proposed` layout is
+ * in, AND its raw proposed width actually differs from `preferredAtStart`'s.
+ * Every other case — a dormant band, a fold-through to bare rail, a
+ * click-and-release with no movement — preserves `preferredAtStart` for that
+ * band UNCONDITIONALLY. Two consequences fall out of that one rule rather than
+ * needing their own case:
+ *
+ * 1. **The dormant-band fix.** A gesture that resizes the drawer and THEN
+ *    crosses into wide mode must not commit the drawer's mid-gesture width,
+ *    because the drawer is no longer the band the FINAL `proposed` is in —
+ *    `drawerChanged` requires `proposed.mode === 'rail'`, which is false once
+ *    the session ends at wide, so the drawer memory falls through to
+ *    `preferredAtStart.drawerWidthPx` untouched regardless of what the
+ *    drawer's transient width was mid-drag.
+ * 2. **Preferred wins over a viewport clamp on ANY commit, not only a
+ *    fold-through.** Because the comparison is always RAW-proposed vs
+ *    preferred, never rendered-effective vs anything, a maximized 420px
+ *    preference that a narrow viewport can only render at a clamped 313px
+ *    still commits the user's honest 420 whenever the session ends without an
+ *    actual new proposal for that band — restoring it in full the next time
+ *    there is room, exactly as #487's "a viewport clamp must never downgrade a
+ *    stored preference" requires.
+ *
+ * `Home`/`End`/a bare-rail `ArrowRight` restore need no special case either:
+ * they are restore commands, so the RAW `proposed` layout they produce
+ * typically already equals `preferredAtStart`'s remembered width for the band
+ * they restore, which is exactly the "nothing changed" shape the general rule
+ * preserves correctly.
+ *
+ * `advanceLeftNavigationResize` performs the viewport clamp ITSELF now (taking
+ * the raw proposal and the current budget as arguments), rather than asking the
+ * caller to clamp first and hand in an already-clamped layout — a future
+ * caller (the pointer/keyboard handler a later phase-3 step builds, which does
+ * not exist yet) cannot forget the clamp, because it is part of this
+ * function's contract rather than caller discipline. The MODE arithmetic
+ * itself stays out of this module either way — `advanceLeftNavigationResize`
+ * still does not call `resolveLeftNavigationDrag`/`resolveLeftNavigationKey`;
+ * the caller runs the proposal through those first, then hands the raw result
+ * here alongside the viewport budget. Session bookkeeping and layout
+ * arithmetic stay two separate concerns, so the arithmetic keeps its one
+ * implementation.
+ */
+export interface LeftNavigationResizeSession {
+  /** The persisted preference as of session start — the memory source every
+   *  commit is reconstructed from, band by band. */
+  readonly preferredAtStart: LeftNavigationLayout;
+  /** The latest RAW reducer proposal, BEFORE the viewport clamp — the other
+   *  memory source `commitLeftNavigationResize` reads from. */
+  readonly proposed: LeftNavigationLayout;
+  /** The latest proposal AFTER the viewport clamp — what is rendered and
+   *  reported right now. Never read by the commit decision. */
+  readonly effective: LeftNavigationLayout;
+}
+
+/** Begin a resize session: `proposed` starts out equal to `preferred` (nothing
+ *  has moved yet), and `effective` is `preferred` clamped to the viewport
+ *  budget at hand — mirroring what a caller would render before any gesture
+ *  begins. */
+export function beginLeftNavigationResize(
+  preferred: LeftNavigationLayout, maxNavigationTotalPx: number,
+): LeftNavigationResizeSession {
   return {
-    valueMin: LEFT_RAIL_PX,
-    valueMax: LEFT_PANEL_MAX_PX,
-    // Normalized, so a caller holding a layout with a non-finite width cannot
-    // publish `aria-valuenow="NaN"` to assistive technology.
-    valueNow: leftNavigationWidthPx(normalizeLeftNavigationLayout(layout)),
+    preferredAtStart: preferred,
+    proposed: preferred,
+    effective: clampLeftNavigationToMaximumTotal(preferred, maxNavigationTotalPx),
   };
+}
+
+/**
+ * Advance a session to a new RAW proposal. The caller has already run the
+ * layout through `resolveLeftNavigationDrag`/`resolveLeftNavigationKey` to
+ * produce `proposedLayout`; this function applies the viewport clamp itself
+ * (see this section's block comment for why the clamp lives here rather than
+ * in the caller) and records both the raw proposal and its clamped `effective`
+ * counterpart. Returns the SAME session when neither changes by reference, so
+ * a caller can use identity to skip a repaint exactly as the mode reducers do.
+ */
+export function advanceLeftNavigationResize(
+  session: LeftNavigationResizeSession, proposedLayout: LeftNavigationLayout, maxNavigationTotalPx: number,
+): LeftNavigationResizeSession {
+  const effective = clampLeftNavigationToMaximumTotal(proposedLayout, maxNavigationTotalPx);
+  return proposedLayout === session.proposed && effective === session.effective
+    ? session
+    : { ...session, proposed: proposedLayout, effective };
+}
+
+/**
+ * Reconstruct the `LeftNavigationLayout` to persist from a resize session — see
+ * this section's block comment above for the rule and why it is shaped this
+ * way. `mode` and `focusedSection` always follow wherever the session ended
+ * (a legitimate mode transition, not a width memory question) — read off
+ * `effective`, since `clampLeftNavigationToMaximumTotal` never changes `mode`,
+ * so `effective.mode`/`effective.focusedSection` agree with `proposed`'s
+ * exactly. Only the two WIDTHS get the preserve-vs-commit treatment, band by
+ * band, and that decision is made against the RAW `proposed` width, never
+ * `effective`'s — the fix this function exists for.
+ */
+export function commitLeftNavigationResize(session: LeftNavigationResizeSession): LeftNavigationLayout {
+  const { preferredAtStart, proposed, effective } = session;
+  const wideChanged = proposed.mode === 'wide' && proposed.wideWidthPx !== preferredAtStart.wideWidthPx;
+  const drawerChanged = proposed.mode === 'rail' && proposed.focusedSection !== null
+    && proposed.drawerWidthPx !== preferredAtStart.drawerWidthPx;
+  return normalizeLeftNavigationLayout({
+    mode: effective.mode,
+    focusedSection: effective.focusedSection,
+    wideWidthPx: wideChanged ? proposed.wideWidthPx : preferredAtStart.wideWidthPx,
+    drawerWidthPx: drawerChanged ? proposed.drawerWidthPx : preferredAtStart.drawerWidthPx,
+  });
 }

@@ -10,6 +10,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **The foldable left navigation is reachable in the UI** (#487, phase 3 of 4 —
+  the phase's own most complex wiring step). `app-shell.ts` composes phase 1's
+  pure mode/resize-session core and phase 2's section registry with a new
+  controller seam this phase adds (`application/left-nav.ts`'s
+  `openFocusedSection`/`toggleFocusedSection`) and two new standalone UI
+  modules that had no consumer yet — `ui/left-rail.ts` (the compact icon
+  rail) and `ui/left-nav-separator.ts` (the resize/mode-changing separator) —
+  into one working feature: the sidebar's previously-always-wide presentation
+  now renders wide, a bare rail, or a rail-plus-focused-drawer, driven by the
+  `leftNavMode` preference and the `leftNavSection` session-only state phase 1
+  added (the state field is session-only by design — #487 specifies the
+  focused drawer need not reopen automatically after reload — unlike
+  `leftNavMode`, which IS a persisted browser preference). `.sidebar` is
+  RE-PRESENTED through a new
+  `data-nav-mode` attribute (`wide` | `rail` | `drawer`) rather than moved or
+  rebuilt — the four navigation-section hosts phase 2 built stay exactly where
+  they are, and only which one is exposed, plus the sidebar's own
+  width/visibility, changes, which is what makes "wide and focused
+  presentations share and preserve all navigation state" true by construction.
+  The old `.col-resize` handle keeps its class (the existing mobile CSS and
+  e2e assertions key off it) but no longer drives `splitters.ts`'s bare
+  `'col'` width clamp — that axis is deleted outright (see Changed below), and
+  the handle's mousedown/keydown belong entirely to `mountLeftNavSeparator`
+  now, which reports a mode/drawer-open-or-closed transition it itself
+  commits (a pointer drag, or a keyboard Home/End/Arrow operation) through a
+  new visually-hidden `role="status"` live region — a rail-icon click or
+  Escape write `state` directly through `application/left-nav.ts`'s own seam
+  and are not announced through it. The presentation also re-derives on a
+  live browser-window resize via a new optional injected `observeElementWidth`
+  seam on `mountAppShell`, which the production `app.ts` call site wires to a
+  real `ResizeObserver` when the platform has one (omitted in production when
+  it does not, in which case the shell simply runs without live-resize
+  reclamping; several unit tests inject a fake implementation directly to
+  cover the callback regardless).
 - **A navigation section registry behind the left sidebar** (#487, phase 2 of 4).
   Each of the four navigation sections — Databases, Dashboards, Library, History —
   is now addressable through one registry (`src/ui/nav-sections.ts`) that owns its
@@ -62,10 +96,64 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   focused drawer and the resize separator arrive in phase 3.
 
 ### Changed
-- The sidebar's `'col'` drag axis now clamps through the same
-  `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
-  repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes
-  the second owner of a range whose whole point is having one.
+- **The wide sidebar's resize range gained a viewport-aware upper bound**
+  (#487, phase 3 of 4). The documented `[180, 420]` px drag range is
+  unchanged at the constant level, but on a viewport narrower than roughly
+  907px (down to the 768px mobile breakpoint, below which the desktop rail/
+  drawer does not render at all), the separator and the keyboard path now
+  additionally clamp the reachable maximum so the centre SQL/results surface
+  never drops below its own documented 480px minimum
+  (`LEFT_CENTRE_MIN_PX`, `core/left-nav-layout.ts`) — the "new central
+  layout constraint" issue #487 explicitly allows for. A drag or an Arrow/End
+  keypress that would otherwise cross that floor stops at it instead of
+  shrinking the centre surface arbitrarily thin; the full stored preference
+  is never downgraded by the clamp and is restored in full the moment the
+  viewport allows it again, the same rule phase 3's resize-session design
+  already guarantees for the focused drawer's own band. This "never" is
+  scoped to phase 3's own budget (viewport width minus the separator minus
+  the centre minimum) — phase 4's optional right inspector is not yet a term
+  in that budget, so the guarantee will need re-verifying once it is.
+- The `.col-resize` handle no longer drives `splitters.ts`'s `'col'` drag
+  axis at all (#487, phase 3 of 4) — that axis is deleted outright: the
+  sidebar's own resize gesture now belongs entirely to
+  `ui/left-nav-separator.ts`'s mode reducer (see Added above), which folds
+  to a rail, opens/closes a focused drawer, and restores the wide sidebar,
+  none of which a bare width clamp on one axis could express.
+- **Switching between Library and History no longer clears the search box**
+  (#487, phase 3 of 4). Each lower-navigation section now keeps its own filter
+  text (`state.lowerNavigationFilters`, replacing the single shared
+  `state.libraryFilter`), preserved across every switch between them — a
+  deliberate, user-visible behavior change from phase 2's "a section switch
+  still clears the search exactly as before," required by phase 3's own
+  acceptance bullet that wide and focused presentations share and preserve all
+  navigation state. Both sections' own search box and list now also render
+  unconditionally, independently of which section is currently exposed
+  (mirroring the upper pane's `renderSchema`/`renderDashboardTree`), which
+  fixes two latent bugs: the section that wasn't active at mount never painted
+  until the first switch to it, and the section that wasn't active when its own
+  data changed (e.g. a query recorded to History while Library was shown) went
+  stale.
+- **The focused drawer's minimum resizable width is now 180px, not 140px**
+  (#487, phase 3 of 4) — a deliberate, user-visible behavior change from the
+  placeholder value phase 1 shipped, settled by a real-browser check rather
+  than left as-is. Phase 1 flagged the drawer's `[140, 260]` resize band as an
+  explicit open question, noting a 140px drawer has to hold a title, a search
+  box, tree indentation and action controls, and might be too narrow to do it
+  legibly. It was: at 140px the Dashboards section's three titles rendered as
+  "Sa...", "O...", "A..." — unreadable and indistinguishable from one another —
+  while at 180px they read as "Sales re...", "Ops late...", "A very lo..." —
+  still ellipsized, but genuinely readable and distinguishable. The drawer's
+  floor now reuses `LEFT_PANEL_MIN_PX`, the wide sidebar's own floor constant,
+  rather than a second "180" value, which also gives the drawer the wide
+  sidebar's own dead-zone behavior for free: a resize proposal between 140 and
+  180 now holds the drawer open at the 180 floor instead of folding it or
+  clipping it to the raw proposed width, exactly mirroring how the wide
+  sidebar already holds at its own 180 floor between the fold threshold and
+  180. The keyboard path gained the equivalent of the wide sidebar's own
+  at-the-floor boundary check for the same reason: once the drawer's floor
+  no longer coincided with the fold threshold, a plain `ArrowLeft` from the
+  floor could otherwise land in that same dead zone and get stranded there
+  rather than folding.
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
   persistence even though Dashboard's own caller uses them for an unpersisted
@@ -117,6 +205,102 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   reaching it takes a hand-edited or foreign-origin `localStorage` entry. The
   same NaN hole in `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` is
   tracked separately in #570.
+- **Closing a rail-launched drawer by clicking its own icon now returns focus
+  to that icon on WebKit/Safari too** (#487, phase 3 of 4). Chromium and
+  Firefox focus a clicked `<button>` natively, so `ui/left-rail.ts`'s click
+  handler happened to leave focus on the rail icon after a toggle-close — the
+  same outcome the Escape-to-close path already produces explicitly via
+  `leftRail.focusSection(section)` in `app-shell.ts`. WebKit does not natively
+  focus a clicked button (a real, long-standing engine difference), so on
+  Safari a click-close dropped focus to `<body>` instead, an inconsistency
+  with the keyboard path found in a real-browser e2e pass. The click handler
+  now calls `button.focus()` explicitly, matching the Escape path's behavior
+  in every engine rather than relying on each browser's own native click-focus
+  behavior.
+- **A focused drawer's identity could go stale across a visit to mobile width,
+  and an in-progress resize could keep painting stale desktop chrome through
+  that same crossing** (#487, phase 3 of 4, final PR review). `leftNavSection`
+  is session-only by design and the mobile projection deliberately never
+  touches it, but mobile's own wide-mode switchers write `sidePanel`/
+  `upperRole` directly — so opening a drawer on desktop, shrinking to mobile,
+  switching sections there, then widening back to desktop could show a drawer
+  whose title still named the section focused before the trip while its
+  content already reflected whichever section the mobile switcher last
+  picked. `leftNavMode`/`leftNavSection` and any active separator session
+  (which likewise has no way to notice the viewport left desktop out from
+  under it) are now reconciled together on every `isMobile` crossing: an
+  active drag is cancelled without committing, and `leftNavSection` clears —
+  a return from mobile always shows a bare rail rather than a possibly-stale
+  drawer, the same "need not reopen automatically" rule already applied to a
+  reload.
+- **A resize session ending via a tab-switch (`blur`) or the window going to
+  the background (`visibilitychange`) could commit against a budget measured
+  before the viewport shrank mid-drag** (#487, phase 3 of 4, final PR review).
+  `onMouseUp` re-clamps against the live budget immediately before committing,
+  but `blur`/`visibilitychange` had no coordinate to re-clamp from and
+  committed the session's already-computed `effective` layout as-is — stale
+  for exactly as long as the shell width changed after the session's last
+  `mousemove` and before it ended this way (the width observer skips a live
+  session, so nothing else re-clamps during that window). `endDrag` now
+  re-clamps the session's raw proposal against the current budget immediately
+  before every commit, regardless of which caller ended the drag.
+- **A non-monotone drag (past the wide threshold and back to a fold) could
+  move focus on an intermediate frame instead of only the transition it
+  actually commits to** (#487, phase 3 of 4, final PR review). The
+  wide-conversion focus restoration and its own `previousFocusedSection`
+  bookkeeping ran on every call to `applyEffectiveLeftNavigationLayout`,
+  including each intermediate frame of an in-progress drag — a drawer → past
+  wide → back to bare rail sequence cleared the bookkeeping on the first
+  frame, so a later legitimate restoration (e.g. drawer → momentarily bare
+  rail → back to wide) could no longer find where to send focus. Both now run
+  only while no separator session is active, so the bookkeeping stays frozen
+  at wherever the gesture started until it actually commits.
+- **A click-and-release on the resize separator with no genuine movement
+  could silently overwrite the stored wide/drawer width preference** (#487,
+  phase 3 of 4, second PR review). `mousedown` recorded no starting pointer
+  coordinate and no grip offset, so `mouseup` always treated the release
+  `clientX` as a brand-new raw proposal — even a pure click, and even one
+  landing wherever a viewport clamp happened to be rendering the handle at
+  the time, which could be far from the actual stored preference (a 420px
+  preference clamped to a rendered 313px would commit 313 on a bare click).
+  The session now records the grip point at `mousedown` and skips advancing
+  entirely when `mouseup` sees no genuine movement, and every advance
+  subtracts the recorded grip offset from `clientX` so a drag started
+  anywhere within the 7px handle tracks the pointer from its own grab point
+  rather than the handle's left edge.
+- **A semantic left-navigation command (Escape, a rail click, a programmatic
+  reveal) running while a pointer resize was still in progress could be
+  silently undone by that drag's own eventual commit** (#487, phase 3 of 4,
+  second PR review). The drag keeps its own uncommitted layout snapshot
+  independent of `state`, so a command that wrote `state` directly mid-drag
+  left the drag's `mouseup`/`blur` free to fire from its stale snapshot
+  afterward and overwrite (or resurrect) exactly what the command just did —
+  concretely, Escape closing a drawer mid-drag, then releasing the mouse,
+  reopened it. `application/left-nav.ts`'s `openFocusedSection`/
+  `toggleFocusedSection` now call an injected `preemptActiveResize` seam
+  FIRST, which `app-shell.ts` wires to cancel the active session and repaint
+  from the committed layout — the one choke point every caller goes through,
+  rather than each call site having to remember it individually.
+- **Crossing into the mobile breakpoint from an open focused drawer could
+  move focus onto a hidden desktop tab button** (#487, phase 3 of 4, second
+  PR review). The wide-conversion focus restoration keyed only on `navMode
+  === 'wide'`, but the mobile projection also forces `navMode` to `'wide'` —
+  so a mobile crossing read identically to a genuine desktop drawer → wide
+  conversion and called `.focus()` on a tab the mobile layout never renders.
+  Now gated behind `!state.isMobile.value`.
+- **Folding an open drawer to the bare rail via a pointer drag left focus
+  stranded in the drawer's now-hidden content, with no restoration to the
+  rail launcher** (#487, phase 3 of 4, second PR review). Focus was already
+  restored for an Escape-close, a rail-icon close, and a drawer → wide
+  conversion, but not this fourth transition — a pointer drag's own
+  `mousedown` calls `preventDefault()`, so focus never moves onto the
+  separator and can be left on a drawer element that just became `display:
+  none`. A committed drawer → rail transition now moves focus to the
+  section's rail launcher whenever focus was left inside the drawer
+  (`sidebar.contains(document.activeElement)`) — scoped that way, rather than
+  on every rail arrival, so a keyboard fold (which needs the separator itself
+  focused to receive the keydown at all) keeps focus right there instead of
+  losing it to the rail button.
 - **The Dashboard tree no longer reveals two rows' pencil/trash actions at
   once, and its `· N` count now sits inline after the label** (#568). The
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)
@@ -221,6 +405,65 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   sequence for code point zero, matching the escape `src/core/time-range.ts`
   uses in production. Verified no raw NUL bytes remain anywhere under `src/`
   or `tests/`; no code change was needed.
+- **The lower Library/History switcher's tabs are now real buttons with
+  correct `aria-pressed`** (#572). `ui/saved-history.ts`'s tabs had neither
+  attribute, unlike the upper Databases/Dashboards switcher
+  (`sidebar-upper.ts`), which already rendered both — landed as part of
+  #487 phase 3 step 4's rework of the lower switcher.
+- **Two pre-existing "reveal a Dashboard" actions bypassed the new left-
+  navigation controller seam, leaving the reveal invisible whenever the nav
+  was folded** (#487 phase 3 review). `ui/file-menu.ts`'s `revealDashboard`
+  (New dashboard / Import dashboard / Import example dashboard) and
+  `ui/dashboard-tree.ts`'s `revealAssignedPanel` (Library "Add to
+  dashboard…", the Panels-row create-and-assign action, and the drag-drop
+  settlement) both predate phase 3 and wrote `state.upperRole` directly,
+  which only ever moves the WIDE sidebar's pane. With the nav folded to the
+  rail — or its drawer open on a different section — `leftNavSection` stayed
+  untouched, so the Dashboards tree (and each action's own expand/scroll/
+  select work) happened inside a hidden pane. Both now route through
+  `application/left-nav.ts`'s `openFocusedSection`, which does the same
+  `upperRole` write in wide mode (`resolveRailOpen` is a no-op there — wide-
+  mode behavior is unchanged) and additionally opens/switches the focused
+  drawer when the nav is folded.
+- **A focused control could be dropped to `<body>` on three transitions the
+  phase-3-review restoration logic didn't cover** (#487, phase 3 review,
+  second pass). `app-shell.ts`'s `applyEffectiveLeftNavigationLayout` only
+  ever restored focus using a TRACKED section (`priorFocusedSection`), which
+  `core/left-nav-layout.ts`'s own mode/section coherence invariant keeps
+  `null` throughout 'wide' — so a wide sidebar folding straight to bare rail
+  (no drawer step in between) had nothing to restore to, even with focus
+  genuinely inside it. Fixed by asking the DOM directly which
+  `[data-section]` host the actually-focused element sits under
+  (`nav-sections.ts`'s per-section wrapper), falling back to it only when no
+  tracked section is available — the existing drawer-to-rail/drawer-to-wide
+  paths are unchanged. Two further gaps existed for the same reason CSS alone
+  can hide `.sidebar` independently of `data-nav-mode`: entering mobile
+  Editor/Results (`.main-row[data-mobile-view="editor"/"results"] .sidebar {
+  display: none }`) and switching to the Dashboard surface on mobile
+  (`.main-row[data-surface="dashboard"] .sidebar { display: none }`) both now
+  land focus on a stable, always-visible bottom-nav button instead of
+  silently losing it. Verified against a real browser: a Chromium probe
+  confirmed a focused descendant is still momentarily reported as
+  `document.activeElement` immediately after an ancestor goes hidden, but
+  falls back to `<body>` by the next microtask unless something explicitly
+  moves it first — happy-dom, this project's unit-test DOM, applies no CSS at
+  all and cannot demonstrate the failure this fixes.
+
+  Two related gaps surfaced while proving this out in real browsers and are
+  **not** fixed here (tracked as a follow-up): the resize separator's live
+  multi-frame drag repaint hides the sidebar/rail on an intermediate
+  `mousemove` frame, well before the final `mouseup` commit, so a real
+  browser can blur the focused element before ANY commit-time restoration
+  (this fix's new wide→rail path, or the pre-existing drawer→rail
+  restoration from an earlier #487 review round) gets a chance to see it —
+  this is a pre-existing gap in the whole mechanism, only ever unit-tested
+  under happy-dom, which does not model the blur at all. Separately, the new
+  mobile-crossing rescue's own explicit `.focus()` call was found to race the
+  browser's own async layout recompute for the newly-matching mobile media
+  query under real parallel load (Chromium specifically, not Firefox/WebKit)
+  — a `requestAnimationFrame`-deferred focus call reduced but did not
+  eliminate the failure rate, so no e2e assertion claims that path is solid
+  end-to-end; it is unit-tested only.
 
 ### Changed
 - **Sidebar tab headers go text-only once the sidebar is dragged to 220px or

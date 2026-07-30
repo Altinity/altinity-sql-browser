@@ -2123,6 +2123,24 @@ describe('query run', () => {
     // a plain SELECT needs no session, so none is opened (avoids the session race)
     expect(asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
   });
+  // #487 phase 3 regression test: a run's history recording used to skip its
+  // repaint of History entirely whenever Library ('saved', the default side
+  // panel) was exposed — `app.recordHistory` guarded the call on
+  // `sidePanel.value === 'history'`. That left History's own DOM stale until
+  // some unrelated event happened to repaint it, which never happens for
+  // History on its own (`state.history` is a plain array, not a signal). The
+  // fix makes `app.recordHistory`'s repaint unconditional.
+  it('a recorded run repaints History even while Library is the exposed side panel', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    expect(app.state.sidePanel.value).toBe('saved'); // Library is the exposed section
+    app.activeTab().sqlDraft = 'SELECT 1';
+    await app.actions.run();
+    expect(app.state.history.length).toBe(1);
+    expect(app.dom.historyList!.querySelectorAll('.history-row')).toHaveLength(1);
+    expect(app.dom.historyList!.textContent).toContain('SELECT 1');
+  });
   it('captures result.source for a normal row-returning result (#185)', async () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
@@ -5412,7 +5430,7 @@ describe('exhaustive controller coverage', () => {
     expect(app.state.savedQueries.length).toBe(1);
   });
 
-  it('drives each splitter handle through a drag', () => {
+  it('drives the sideRow/row splitter handles through a drag', () => {
     const e = env();
     const app = createApp(e);
     app.renderApp();
@@ -5422,7 +5440,6 @@ describe('exhaustive controller coverage', () => {
       window.dispatchEvent(new MouseEvent('mouseup'));
       return axis;
     };
-    drag(qs(app.root, '.col-resize'), 'col');
     drag(app.dom.sideSplit!, 'sideRow');
     drag(app.dom.editorResultsSplit!, 'row');
     expect(app.dom.editorResultsSplit!.classList.contains('editor-results-split')).toBe(true);
@@ -5433,6 +5450,40 @@ describe('exhaustive controller coverage', () => {
     const schemaPane = qs(app.root, '.schema-pane');
     expect(schemaPane.style.height).toBe(app.state.sideSplitPct + '%');
     expect(qs(app.root, '.mobile-segmented').style.height).toBe('');
+  });
+
+  // #487 phase 3: `.col-resize` used to drive a bare `startDrag`/'col' clamp —
+  // that axis is gone (splitters.ts), and the handle's real behaviour (the
+  // mode machine, session bookkeeping, ARIA) is already covered exhaustively
+  // by `left-nav-separator.test.ts`, with the shell-level wiring (hidden
+  // toggles, `data-nav-mode`, the rail) covered by `app-shell.test.ts`. What
+  // NEITHER of those exercises is app.ts's own `ensureShell` wiring: that the
+  // REAL mounted `app.prefs`/`localStorage` and the real DOM `mountAppShell`
+  // built actually end up connected to `.col-resize`, not just each half in
+  // isolation. This is that one end-to-end check, at app.ts's own level.
+  it('#487 phase 3: dragging the mounted .col-resize handle drives the left-navigation separator end to end', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const e = env();
+    const app = createApp(e);
+    app.renderApp();
+    const handle = qs(app.root, '.col-resize');
+
+    // Grabbed at the wide sidebar's own current width (248, the documented
+    // default for a fresh, unconfigured app) — a zero grip offset.
+    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 300 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 300 }));
+
+    expect(app.state.sidebarPx).toBe(300);
+    expect(app.state.leftNavMode.value).toBe('wide');
+    expect(globalThis.localStorage.getItem('asb:sidebarPx')).toBe('300');
+    // The real DOM `mountAppShell` built reflects the same commit — proof the
+    // separator's `applyEffectiveLayout` callback really is app-shell.ts's own
+    // `applyEffectiveLeftNavigationLayout`, not a stand-in that only updates
+    // `state`.
+    const sidebar = qs(app.root, '.sidebar');
+    expect(sidebar.dataset.navMode).toBe('wide');
+    expect(sidebar.style.width).toBe('300px');
   });
 
   it('run(): network error → "Network error"', async () => {
@@ -6507,6 +6558,60 @@ describe('mobile best-effort mode (#126)', () => {
   });
 });
 
+describe('shell-width observer seam (#487 phase 3)', () => {
+  // Same convention as the `matchMedia` seam's `FakeMQL` above: a minimal
+  // stand-in for the real `ResizeObserver` constructor, injected via the
+  // `window: asWindow({ ...window, ResizeObserver: … })` precedent already
+  // used elsewhere in this file (see the `open` override around line 1067).
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    observed: Element[] = [];
+    disconnected = false;
+    cb: ResizeObserverCallback;
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb;
+      FakeResizeObserver.instances.push(this);
+    }
+    observe(el: Element): void { this.observed.push(el); }
+    unobserve(): void {}
+    disconnect(): void { this.disconnected = true; }
+    fire(width: number): void {
+      this.cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+  }
+
+  it('uses the injected observeElementWidth seam when provided, identically to matchMedia', () => {
+    const observeElementWidth = vi.fn(() => vi.fn());
+    const app = createApp(env({ observeElementWidth }));
+    expect(app.observeElementWidth).toBe(observeElementWidth);
+  });
+
+  it('falls back to a real ResizeObserver-backed implementation when none is injected', () => {
+    FakeResizeObserver.instances.length = 0;
+    const app = createApp(env({
+      window: asWindow({ ...window, ResizeObserver: FakeResizeObserver as unknown as typeof ResizeObserver }),
+    }));
+    expect(typeof app.observeElementWidth).toBe('function');
+    const el = document.createElement('div');
+    const widths: number[] = [];
+    const dispose = app.observeElementWidth!(el, (w) => widths.push(w));
+    expect(FakeResizeObserver.instances).toHaveLength(1);
+    const [instance] = FakeResizeObserver.instances;
+    expect(instance.observed).toEqual([el]);
+    instance.fire(321);
+    expect(widths).toEqual([321]);
+    dispose();
+    expect(instance.disconnected).toBe(true);
+  });
+
+  it('resolves to undefined when neither observeElementWidth nor ResizeObserver is available — the same "feature simply doesn\'t run" contract as a matchMedia-less platform', () => {
+    const app = createApp(env({
+      window: asWindow({ history: { replaceState: vi.fn() }, navigator: {} }),
+    }));
+    expect(app.observeElementWidth).toBeUndefined();
+  });
+});
+
 // ── #407: unified route coordinator ──────────────────────────────────────────
 describe('unified /sql routing', () => {
   const dashboardWorkspace = (queries: SavedQueryV2[] = []): StoredWorkspaceV5 => ({
@@ -7091,6 +7196,21 @@ describe('unified /sql routing', () => {
       expect(app.state.tabs.value.length).toBe(tabs);
       expect(raised).toHaveBeenCalledExactlyOnceWith('show');
       expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
+    });
+
+    // #487 phase 3 — `app.openFocusedSection` is a thin controller-seam
+    // delegate to `application/left-nav.ts`'s own `openFocusedSection`
+    // (exhaustively covered in `left-nav.test.ts`); this just proves the
+    // wiring actually calls through into real `AppState`.
+    it('openFocusedSection delegates through to application/left-nav.ts', () => {
+      const { app } = readyApp(['a']);
+      app.state.leftNavMode.value = 'rail';
+      app.state.sidePanel.value = 'history';
+
+      app.openFocusedSection('library');
+
+      expect(app.state.sidePanel.value).toBe('saved');
+      expect(app.state.leftNavSection.value).toBe('library');
     });
 
     // #535 — the tile's expand action. `openSavedQuery` opens a document;

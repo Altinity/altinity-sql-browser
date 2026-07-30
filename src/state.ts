@@ -41,7 +41,7 @@ import {
   sectionForSidePanelKey, sidePanelKeyFor,
 } from './core/left-nav-layout.js';
 import type {
-  LeftNavigationMode, LeftNavigationSection, SidePanelKey,
+  LeftNavigationMode, LeftNavigationSection, LowerNavigationSection, SidePanelKey,
 } from './core/left-nav-layout.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
@@ -445,7 +445,13 @@ export interface AppState {
   workspaceId: string;
   /** Immutable canonical URL key for the active workspace. */
   workspaceKey: string;
-  libraryFilter: string;
+  /** #487 phase 3: each lower-navigation section (Library, History) keeps its
+   *  OWN search text, independently preserved across every switch between them
+   *  — switching no longer clears anything. Deliberately NOT a signal (see
+   *  `core/dashboard-tree-ui-state.ts`'s comment): a signal here would rebuild
+   *  the search input on every keystroke, and `renderList`-only re-renders is
+   *  how focus/caret survive typing today. */
+  lowerNavigationFilters: Record<LowerNavigationSection, string>;
   shortcutsOpen: Signal<boolean>;
   /**
    * #487 — the desktop left navigation's explicit semantic mode: the established
@@ -815,9 +821,10 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     dashboard: null,
     workspaceId: mintWorkspaceId(),
     workspaceKey: deriveWorkspaceKey(initialWorkspaceName),
-    // Transient search text for the Library/History side panel (session-only,
-    // cleared on a tab switch); never persisted.
-    libraryFilter: '',
+    // Transient search text for the Library/History side panel (session-only;
+    // never persisted). #487 phase 3: each section keeps its own slot, preserved
+    // across every switch between them.
+    lowerNavigationFilters: { library: '', history: '' },
     // Whether the keyboard-shortcuts modal is open (shortcuts.js). Session-only;
     // a signal for consistency with the rest of the state (no reactive reader
     // today — shortcuts.js drives its own mount/unmount).

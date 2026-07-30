@@ -66,16 +66,6 @@ export interface WorkbenchStateSlice {
   forceExplain: boolean;
   resultRowLimit: number;
   serverVersion: string | null;
-  /**
-   * Read by runScript's clean-run history branch ('history' ⇒ repaint).
-   *
-   * Derived from `AppState` rather than restated as `Signal<string>` (#487
-   * phase 2): the real signal holds a decoded `'saved' | 'history'`, and a
-   * structural `Signal<string>` here would leave this session type-authorized to
-   * write an arbitrary string into it — re-opening exactly the divergence the
-   * load-boundary decode closes. This slice only ever reads it.
-   */
-  sidePanel: AppState['sidePanel'];
   isMobile: Signal<boolean>;
   mobileView: Signal<'tables' | 'editor' | 'results'>;
   /** Read by the Run-button effect (Run ↔ "Run selection" label). */
@@ -97,15 +87,18 @@ export interface WorkbenchStateSlice {
 export interface WorkbenchHooks {
   /** Per-chunk (run) + per-statement (runScript) results-pane repaint. */
   renderResults(): void;
-  /** runScript's clean-run history repaint when `sidePanel === 'history'`. */
-  renderSavedHistory(): void;
+  /** runScript's clean-run History repaint — unconditional (#487 phase 3):
+   *  History's own content must stay current even while Library is the
+   *  exposed section, since History is not part of any reactive repaint
+   *  effect (`state.history` is a plain array, not a signal). */
+  renderHistorySection(): void;
   cancelSchemaGraph(): void;
   /** Fire-and-forget schema reload after schema-mutating SQL succeeds. */
   loadSchema(): void;
   /** Records a successful single-statement run in history (and, per the real
-   *  app.ts wrapper this replaces, repaints History when it's the open side
-   *  panel — that repaint is this hook's own responsibility, unlike
-   *  `renderSavedHistory` above which the session calls itself for the
+   *  app.ts wrapper this replaces, unconditionally repaints History's own
+   *  content — that repaint is this hook's own responsibility, unlike
+   *  `renderHistorySection` above which the session calls itself for the
    *  script-history path). */
   recordHistory(tab: QueryTab, sql?: string): void;
   recordBoundParams(bp: readonly BoundParamSnapshot[]): void;
@@ -755,7 +748,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       // run(): no history for an aborted or failed script).
       if (!aborted && !entries.some((e) => e.status === 'error')) {
         recordScriptHistory(state, originalInput, scriptResult.elapsedMs!, hooks.saveJSON);
-        if (state.sidePanel.value === 'history') hooks.renderSavedHistory();
+        // #487 phase 3: unconditional — History's own content must stay current
+        // even while Library is the exposed section (History is not part of any
+        // reactive repaint effect; see `renderHistorySection`'s own doc comment).
+        hooks.renderHistorySection();
       }
       retireWave(operation);
     }

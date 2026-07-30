@@ -50,6 +50,13 @@ export interface CreateAppEnv {
   isSecureContext?: boolean;
   build?: string;
   matchMedia?: ((query: string) => MediaQueryList) | null;
+  /** #487 phase 3 — shell-width observer seam, injected exactly like
+   *  `matchMedia` above so tests can drive it deterministically. Defaults to a
+   *  real `ResizeObserver`-backed implementation when the platform has one
+   *  (see `src/ui/app-shell.ts`'s `AppShellDeps.observeElementWidth` for the
+   *  contract this feeds and its "omitted = feature doesn't run" precedent),
+   *  else `undefined`. */
+  observeElementWidth?: (element: Element, callback: (widthPx: number) => void) => () => void;
   /** #343 §5: cross-tab invalidation channel factory — mirrors the matchMedia/
    *  showSaveFilePicker "capability or null" precedent. Defaults to a real
    *  `new BroadcastChannel(name)` when the platform has it, else `null` (the

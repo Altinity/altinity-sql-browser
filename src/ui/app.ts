@@ -43,6 +43,7 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTa
 import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { dashboardVariables } from '../application/dashboard-tree-model.js';
+import { openFocusedSection } from '../application/left-nav.js';
 import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
@@ -55,7 +56,7 @@ import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
-import { renderSavedHistory } from './saved-history.js';
+import { renderSavedHistory, renderHistorySection } from './saved-history.js';
 import { applyFieldState, applyFieldWidth } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import type { RelativeTimeField } from './relative-time-field.js';
@@ -149,6 +150,9 @@ interface WindowExtras {
   Blob?: typeof Blob;
   // #343 §5: the real cross-tab channel constructor, when the platform has it.
   BroadcastChannel?: new (name: string) => BroadcastChannelPort;
+  // #487 phase 3: the real shell-width observer constructor, when the
+  // platform has it (mirrors the BroadcastChannel entry above).
+  ResizeObserver?: typeof ResizeObserver;
 }
 
 /** `app.specValidators`'s full internal shape: the canonical schema +
@@ -180,6 +184,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     || ((name: string): BroadcastChannelPort | null =>
       (typeof win.BroadcastChannel === 'function' ? new win.BroadcastChannel(name) : null));
   const documentVisible = env.documentVisible || (() => doc.visibilityState !== 'hidden');
+  // #487 phase 3: the real ResizeObserver constructor, when the platform has
+  // one — captured once here (see `observeElementWidth` below for why).
+  const resizeObserverCtor = typeof win.ResizeObserver === 'function' ? win.ResizeObserver : undefined;
   // Epoch clock shared by persistence metadata and parameter execution.
   const wallNow = (): number => (env.wallNow || (() => Date.now()))();
 
@@ -232,6 +239,23 @@ export function createApp(env: CreateAppEnv = {}): App {
     // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
     // always-desktop — the mobile CSS still applies, just no JS branching).
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
+    // Shell-width observer seam (#487 phase 3): injected like matchMedia so
+    // tests can drive it; a real `ResizeObserver`-backed implementation when
+    // the platform has one, else `undefined` — `mountAppShell`'s own
+    // `AppShellDeps.observeElementWidth` already treats "omitted" as "this
+    // feature simply doesn't run" (see its doc comment). Captured to a local
+    // const first (rather than re-reading `win.ResizeObserver` inside the
+    // closure below) so TypeScript's narrowing of the `typeof … === 'function'`
+    // check survives into the nested arrow function.
+    observeElementWidth: env.observeElementWidth || (resizeObserverCtor
+      ? (element: Element, callback: (widthPx: number) => void): (() => void) => {
+        const ro = new resizeObserverCtor((entries) => {
+          for (const entry of entries) callback(entry.contentRect.width);
+        });
+        ro.observe(element);
+        return () => ro.disconnect();
+      }
+      : undefined),
   };
   const app = appBase as App;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
@@ -985,7 +1009,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
-      renderSavedHistory: () => renderSavedHistory(app),
+      renderHistorySection: () => renderHistorySection(app),
       cancelSchemaGraph,
       loadSchema: () => { void catalog.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
@@ -1557,12 +1581,19 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- saved / history bridges ------------------------------------------
   // The history-recording POLICY itself now lives in `saved.recordHistory`
-  // (#276 Phase 4C) — this wrapper's own conditional History-panel repaint is
-  // a rendering concern the service must never own (see its header comment),
-  // so it stays here, unchanged.
+  // (#276 Phase 4C) — this wrapper's own History-panel repaint is a rendering
+  // concern the service must never own (see its header comment), so it stays
+  // here.
+  //
+  // #487 phase 3: unconditional — History's own content must stay current even
+  // while Library is the exposed section, since History repaints only at its
+  // own mutation sites (`state.history` is a plain array, not a signal, so it
+  // is not part of any reactive repaint effect). Only History's own data
+  // changed here, so this calls `renderHistorySection` rather than the full
+  // `renderSavedHistory` facade.
   app.recordHistory = (tab, sqlText) => {
     saved.recordHistory(tab, sqlText);
-    if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
+    renderHistorySection(app);
   };
 
   // --- share + star ------------------------------------------------------
@@ -2101,6 +2132,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       catalog,
       prefs,
       matchMedia: app.matchMedia,
+      observeElementWidth: app.observeElementWidth,
       updateBanner: app.updateBanner,
       startDrag,
     });
@@ -2935,6 +2967,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     const query = savedQueryToOpen(queryId);
     if (query) openQueryDocument(query);
   };
+
+  // #487 phase 3 — the left navigation's controller seam. `app` (state +
+  // prefs) satisfies `left-nav.ts`'s narrow structural `LeftNavApp` directly.
+  app.openFocusedSection = (section) => { openFocusedSection(app, section); };
 
   // #535 — the tile's expand action. Order matters: the tree is revealed FIRST,
   // exactly as the Library-drop settlement does it (ui/dashboard-tree.ts), so the
