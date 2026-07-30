@@ -157,10 +157,32 @@ Costs the control does not pay, each found while building:
 
 > "One owner per subtree deletes the focus-rescue category."
 
-**Refuted.** Preact offers no before-the-DOM-changes hook — `useLayoutEffect`
-cleanups run after the diff — so capture cannot happen at paint time at all. The
-work survives in full; only its location moves, and finding 4 above shows the
-relocation introduced a failure the control does not have.
+**Refuted** — but the first version of this document refuted it with an
+overbroad claim, corrected here after third-party review.
+
+*What was claimed:* "Preact offers no before-the-DOM-changes hook."
+*What is true:* Preact 10 has no such hook **for function components**, which is
+what this arm uses (and the modern idiom): `useLayoutEffect` cleanups run after
+the diff. But `preact/src/diff/index.js` calls `componentWillUpdate` (`:203`) and
+`getSnapshotBeforeUpdate` (`:250`) **before** `diffChildren` (`:259`) — gated on
+`isClassComponent`. A class-component arm could therefore read the DOM before it
+mutates. The frozen `577/treatment` branch carries the same overbroad phrasing in
+`focus-settlement.ts`'s header comment; it is left as-is because the tag pins
+measured evidence, and this document is the corrected record.
+
+**The premise is still refuted, and the correct reason is stronger.**
+`getSnapshotBeforeUpdate` *is* a capture hook — React's own canonical example for
+it is preserving scroll position across a mutation. Having it does not delete the
+capture/restore work; it relocates it into a lifecycle method and hands you the
+captured value back in `componentDidUpdate`. That is the same protocol
+`focus-settlement.ts` implements by hand, under a different name. What the
+component model changes is *where* this code lives, never *whether* it exists —
+and finding 4 above shows the relocation introduced a failure mode the control
+does not have.
+
+Adopting class components to reach that hook was not attempted, and would have
+carried its own cost: a second component paradigm inside an arm whose whole
+premise is that one render model replaces the imperative one.
 
 ## Deviation from the plan
 
@@ -215,7 +237,37 @@ real browsers rather than in happy-dom alone.
 - the arm-agnostic parity suite (normalized subtree serialization, parametrized
   over both states, pinned assertion count);
 - the controlled-change experiment;
-- the whole-slice JSX sensitivity annex.
+- the whole-slice JSX sensitivity annex;
+- **a re-verification path for the pinned numbers.** The evaluation branches are
+  pushed refs outside CI, so nothing re-runs the instrument against them. A
+  reviewer who wants to trust this table has to re-measure by hand (the
+  reproduction recipe above is exactly that). Either a scheduled check or an
+  explicit "these numbers are pinned, not gated" caveat belongs in ADR-0004.
+  Raised by third-party review.
+
+## Third-party review
+
+A ChatGPT pass over this package produced two substantive points. It did not
+finish generating within the time budget, so this is what it reached, each
+verified against the repo before being accepted:
+
+1. *A superset manifest is the right anti-omission device, but it does not by
+   itself prove every included adapter was necessary.* Fair, and **not closed by
+   this evidence**. File-by-file the seven `src/ui/shell/*` modules map to
+   distinct responsibilities with no duplication — but "counted fairly" is not
+   "no smaller design exists". The strongest candidate for reduction is
+   `shell-host.ts`, which carries 636 of the 1072 plumbing lines and deliberately
+   keeps nine bare `effect()` calls alongside the component tree; a
+   hooks-throughout arm would trade them for different code rather than less, but
+   that is an assertion this evaluation has not measured. The controlled-change
+   experiment is where it should be settled.
+2. *The lifecycle claim was overbroad.* Verified and corrected above.
+
+One further observation from verification rather than from ChatGPT: cost 3 (the
+unwired signals bridge) is the one cost that is arguably a **footgun rather than
+a property** — two packages with near-identical names, one of which silently does
+nothing. It is preventable with a lint rule, and a fair reading should weight it
+lower than the structural costs.
 
 ## Reading against the precommitted rule
 
