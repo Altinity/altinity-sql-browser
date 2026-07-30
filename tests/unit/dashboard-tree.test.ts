@@ -1374,6 +1374,26 @@ describe('renderDashboardTree — Add panel (#515)', () => {
     expect(prematureRefresh).not.toHaveBeenCalled();
   });
 
+  // #487 phase 3 regression: before this fix, `revealAssignedPanel` wrote
+  // `state.upperRole` directly, which only ever moved the WIDE sidebar's
+  // pane. With the nav folded to the rail and focused on a different
+  // section, that left the Dashboards tree — and this reveal's own
+  // expand/scroll/select work — happening inside a hidden pane. Routing
+  // through `openFocusedSection` opens (or switches) the focused drawer too.
+  it('opens the folded drawer to Dashboards, without forcing wide mode, when the rail is folded on another section', async () => {
+    const { app, list } = open();
+    app.state.leftNavMode.value = 'rail';
+    app.state.leftNavSection.value = 'library';
+    click(plus(list));
+    nameInput().value = 'New panel';
+    nameInput().dispatchEvent(new Event('input', { bubbles: true }));
+    add().click();
+    await settle();
+    expect(app.state.upperRole.value).toBe('dashboards');
+    expect(app.state.leftNavSection.value).toBe('dashboards');
+    expect(app.state.leftNavMode.value).toBe('rail');
+  });
+
   it('keeps every dismiss path locked while Add is committing', async () => {
     let release = (_outcome: Awaited<ReturnType<App['mutateWorkspace']>>): void => {};
     const mutateWorkspace = vi.fn(() => new Promise<Awaited<ReturnType<App['mutateWorkspace']>>>(

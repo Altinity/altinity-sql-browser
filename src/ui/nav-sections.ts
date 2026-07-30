@@ -107,8 +107,9 @@ export const NAV_SECTION_META: Readonly<Record<LeftNavigationSection, NavSection
 
 export interface NavSectionEntry extends NavSectionMeta {
   readonly section: LeftNavigationSection;
-  /** The single persistent host. Built once, moved between containers, never
-   *  rebuilt. */
+  /** The single persistent host. Built once and never rebuilt — phase 3
+   *  re-presents `.sidebar` itself rather than moving this host between
+   *  containers. */
   readonly host: HTMLElement;
 }
 

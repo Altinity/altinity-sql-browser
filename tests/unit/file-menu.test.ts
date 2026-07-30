@@ -1793,6 +1793,24 @@ describe('New dashboard (#463)', () => {
     expect(toast()).toBe('Created dashboard');
   });
 
+  // #487 phase 3 regression: before this fix, `revealDashboard` wrote
+  // `state.upperRole` directly, which only ever moved the WIDE sidebar's
+  // pane. With the nav folded to the rail and focused on a different
+  // section, that left the Dashboards tree — and this reveal's own
+  // select/scroll work — happening inside a hidden pane. Routing through
+  // `openFocusedSection` opens (or switches) the focused drawer too.
+  it('opens the folded drawer to Dashboards, without forcing wide mode, when the rail is folded on another section', async () => {
+    const existing = dashboardDoc({ id: 'keep', title: 'Keep' });
+    const app = mountWith(wsWith(existing));
+    app.state.leftNavMode.value = 'rail';
+    app.state.leftNavSection.value = 'library';
+    create(app, 'Ingest health');
+    await flush();
+    expect(app.state.upperRole.value).toBe('dashboards');
+    expect(app.state.leftNavSection.value).toBe('dashboards');
+    expect(app.state.leftNavMode.value).toBe('rail');
+  });
+
   it('leaves the sidebar alone when the commit is refused', async () => {
     const committed = wsWith();
     const repo = statefulWorkspaceRepo(committed);

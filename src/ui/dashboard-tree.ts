@@ -70,6 +70,7 @@ import {
 import type { AppState } from '../state.js';
 import type { App, AppDom } from './app.types.js';
 import type { MainSurfaceState, OpenDashboardRequest } from '../application/main-surface.js';
+import { openFocusedSection } from '../application/left-nav.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the full
  *  `App` contract. A real `App` satisfies it directly, and so does the unit
@@ -107,6 +108,11 @@ export interface DashboardTreeApp {
    *  entry AND every linked draft through, inside the commit transform — the
    *  same injected seam the Library row's pencil passes to `renameSaved`. */
   specValidators: App['specValidators'];
+  /** #487 phase 3: `application/left-nav.ts`'s `openFocusedSection` needs this
+   *  to satisfy its narrow structural `LeftNavApp` — `revealAssignedPanel`
+   *  routes through that seam so a reveal also opens the focused drawer when
+   *  the nav is folded, instead of writing `state.upperRole` alone. */
+  prefs: App['prefs'];
   document?: Document;
   /** The window whose timers back the click arbiter; defaults to the row's own. */
   window?: Pick<Window, 'setTimeout' | 'clearTimeout'>;
@@ -447,11 +453,19 @@ function revealAssigned(app: DashboardTreeApp, dashboardId: string, rowKey: stri
  * Reveal the Dashboard tree at one newly-created panel. Assignment callers use
  * this shared settlement so drag/drop and the Library chooser both switch the
  * upper sidebar role, expand the same ancestors, and arm the same keyboard row.
+ *
+ * Routes through `application/left-nav.ts`'s `openFocusedSection` (#487 phase
+ * 3) rather than writing `state.upperRole` directly: in wide mode that seam
+ * reduces to exactly this same write (`resolveRailOpen` is a no-op there), but
+ * it ALSO opens the focused drawer when the nav is folded to the rail — a bare
+ * `upperRole` write left this reveal's own expand/scroll/select work happening
+ * inside a hidden pane whenever the rail was folded or focused on a different
+ * section.
  */
 export function revealAssignedPanel(
   app: DashboardTreeApp, dashboardId: string, tileId: string,
 ): void {
-  app.state.upperRole.value = 'dashboards';
+  openFocusedSection(app, 'dashboards');
   revealAssigned(app, dashboardId,
     tileRowKey(app.currentWorkspace?.id ?? '', dashboardId, tileId), 'panels');
 }

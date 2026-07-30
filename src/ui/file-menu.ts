@@ -66,6 +66,7 @@ import {
 } from '../workspace/workspace-operations.js';
 import { DEFAULT_DASHBOARD_TITLE } from '../dashboard/application/empty-dashboard.js';
 import { createDashboard, dashboardCreateMessage } from '../application/dashboard-create.js';
+import { openFocusedSection } from '../application/left-nav.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import type { App } from './app.types.js';
 import {
@@ -762,10 +763,17 @@ async function doNewDashboard(app: App, name: string): Promise<void> {
  * screen while the tree that lists it — and marks it selected — stayed hidden
  * behind the other tab. The command's promise is "here is the Dashboard you just
  * made"; half a surface switch does not keep it.
+ *
+ * Routes through `application/left-nav.ts`'s `openFocusedSection` (#487 phase 3)
+ * rather than writing `state.upperRole` directly: in wide mode that seam reduces
+ * to exactly this same write (`resolveRailOpen` is a no-op there), but it ALSO
+ * opens the focused drawer when the nav is folded to the rail — a bare
+ * `upperRole` write left the reveal happening inside a hidden pane whenever the
+ * rail was folded or focused on a different section.
  */
 function revealDashboard(app: App, dashboardId: string): void {
   app.openDashboard({ dashboardId, mode: 'edit' });
-  app.state.upperRole.value = 'dashboards';
+  openFocusedSection(app, 'dashboards');
 }
 
 // ── actions: rename ──────────────────────────────────────────────────────────

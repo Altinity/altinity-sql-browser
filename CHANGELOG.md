@@ -301,6 +301,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   sequence for code point zero, matching the escape `src/core/time-range.ts`
   uses in production. Verified no raw NUL bytes remain anywhere under `src/`
   or `tests/`; no code change was needed.
+- **The lower Library/History switcher's tabs are now real buttons with
+  correct `aria-pressed`** (#572). `ui/saved-history.ts`'s tabs had neither
+  attribute, unlike the upper Databases/Dashboards switcher
+  (`sidebar-upper.ts`), which already rendered both — landed as part of
+  #487 phase 3 step 4's rework of the lower switcher.
+- **Two pre-existing "reveal a Dashboard" actions bypassed the new left-
+  navigation controller seam, leaving the reveal invisible whenever the nav
+  was folded** (#487 phase 3 review). `ui/file-menu.ts`'s `revealDashboard`
+  (New dashboard / Import dashboard / Import example dashboard) and
+  `ui/dashboard-tree.ts`'s `revealAssignedPanel` (Library "Add to
+  dashboard…", the Panels-row create-and-assign action, and the drag-drop
+  settlement) both predate phase 3 and wrote `state.upperRole` directly,
+  which only ever moves the WIDE sidebar's pane. With the nav folded to the
+  rail — or its drawer open on a different section — `leftNavSection` stayed
+  untouched, so the Dashboards tree (and each action's own expand/scroll/
+  select work) happened inside a hidden pane. Both now route through
+  `application/left-nav.ts`'s `openFocusedSection`, which does the same
+  `upperRole` write in wide mode (`resolveRailOpen` is a no-op there — wide-
+  mode behavior is unchanged) and additionally opens/switches the focused
+  drawer when the nav is folded.
 
 ### Changed
 - **Sidebar tab headers go text-only once the sidebar is dragged to 220px or
