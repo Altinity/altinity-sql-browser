@@ -81,6 +81,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   adapter refactor — no user-visible behavior changes.
 
 ### Fixed
+- **`sql.demo.altinity.cloud` couldn't reach any host via "Advanced — connect to
+  another server."** The chart-default `connectSrc` bounds CSP `connect-src` to
+  a fixed 4-origin allowlist (README.md/docs/DEPLOYMENT.md's documented
+  security posture — same origins as `config.hosts`), so typing any other
+  ClickHouse host into the Advanced field was silently refused by the browser
+  with a bare "Failed to fetch" (no CSP-violation surfaced anywhere in the UI —
+  tracked separately as a UX gap, #575). This shared instance is used ad hoc
+  against arbitrary clusters, so `deploy/helm/values-demo.yaml` now overrides
+  `connectSrc: "https:"` (any HTTPS origin) instead of inheriting the fixed
+  allowlist. The chart's own default in `helm/altinity-sql-browser/values.yaml`
+  is unchanged — this only loosens the one shared demo release, trading away
+  its origin-allowlist defense-in-depth for the ability to point it at any
+  cluster.
 - **A corrupt `asb:sidePanel` decodes to the Library instead of propagating**
   (#487). The lower pane's active section was read from localStorage undecoded,
   and every reader compared `=== 'saved'`, so an unrecognized or obsolete value

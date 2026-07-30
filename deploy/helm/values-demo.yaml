@@ -5,12 +5,30 @@
 #   helm upgrade --install sql-browser helm/altinity-sql-browser \
 #     -n demo -f deploy/helm/values-demo.yaml
 #
-# connectSrc + config inherit the 4-entry public-demo defaults from values.yaml
-# (antalya + github.demo, each in demo:demo and Google-SSO modes).
+# config inherits the 4-entry public-demo defaults from values.yaml (antalya +
+# github.demo, each in demo:demo and Google-SSO modes) — those are just the
+# login-picker shortcuts. connectSrc is overridden below: this instance is
+# used ad hoc (via "Advanced — connect to another server") against ClickHouse
+# hosts that aren't known in advance, so it can't be pinned to a fixed origin
+# list the way values.yaml's chart default documents for other installs.
 
 image:
   # Pinned to the v0.6.4 release image for reproducibility.
   tag: "0.6.4"
+
+# Chart default (values.yaml) bounds connect-src to a fixed origin allowlist —
+# the security posture documented in README.md/docs/DEPLOYMENT.md and this
+# project's own blog post. This release intentionally opts out of that bound:
+# it's the shared entry point used to reach arbitrary ClickHouse clusters via
+# the "Advanced — connect to another server" field (e.g. investigating a
+# customer cluster's connectivity), so the fixed 4-origin list blocked every
+# such attempt with a bare "Failed to fetch" (no CSP-violation surfaced in the
+# UI — see the linked issue). "https:" is a CSP scheme-source: any HTTPS
+# origin is allowed, non-TLS schemes are still blocked. This trades away the
+# origin-allowlist's defense-in-depth against exfiltration if the page is ever
+# compromised (XSS/supply-chain) — deliberate for this instance, not a change
+# to the chart's secure-by-default posture for other installs.
+connectSrc: "https:"
 
 service:
   type: ClusterIP
