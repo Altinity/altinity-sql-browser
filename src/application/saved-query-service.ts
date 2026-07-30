@@ -146,8 +146,10 @@ export interface SavedQueryService {
   commit(tab: QueryTab, evaluated: { parsed: unknown; diagnostics: SpecValidationDiagnostic[] }): Promise<CommitLinkedResult>;
   /** Record a successful run in history (state.ts's own `recordHistory`) —
    *  never touches rendering; app.ts's own `app.recordHistory` delegate
-   *  conditionally repaints the History side panel itself after calling
-   *  this. */
+   *  unconditionally repaints History's own content after calling this
+   *  (#487 phase 3 removed the `sidePanel === 'history'` guard, since
+   *  History's content must stay current regardless of which lower-navigation
+   *  section is currently exposed). */
   recordHistory(tab: QueryTab, sqlText?: string): void;
   /** Build the shareable URL for an already-evaluated Spec, or a typed
    *  rejection reason — never writes `location`/clipboard itself. */

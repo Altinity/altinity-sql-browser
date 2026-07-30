@@ -175,8 +175,10 @@ forgettable as the old manual `renderSchema` calls, revisit via a fresh ADR.
 `state.shortcutsOpen`, `state.editingSavedId`, and `state.bannerDismissedFor`
 (previously bare fields — the latter two lived on `app` directly, not
 `app.state`) were converted to `signal(...)` and consolidated into `state.js`
-alongside the other session-only, non-persisted fields (`libraryFilter`,
-`resultSort`). None had a reactive reader before or after — each site that sets
+alongside the other session-only, non-persisted fields (`lowerNavigationFilters`
+— renamed from `libraryFilter` by #487 phase 3, which split the one field into
+per-section search text — and `resultSort`). None had a reactive reader before
+or after — each site that sets
 one already calls its own repaint (`renderSavedHistory`, `updateBanner`,
 `openShortcuts`'s own mount/unmount) — so this is a pure `.value` mechanical
 edit, not a new `effect()`. Housing them in `state.js` rather than on `app`

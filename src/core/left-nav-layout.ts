@@ -532,20 +532,33 @@ export interface LeftNavigationSeparatorAria {
  * ceiling is `LEFT_PANEL_MAX_PX` exactly as before phase 3 — this parameter is
  * additive and every existing caller (there is still none in production, but the
  * unit tests below stand in for one) keeps its prior behaviour unconditionally.
+ *
+ * `valueMax` is floored at `valueMin` (`LEFT_RAIL_PX`) and `valueNow` is
+ * clamped into `[valueMin, valueMax]`, so the ARIA invariant `valueMin <=
+ * valueNow <= valueMax` holds for ANY budget, including one pathologically
+ * below the rail's own width or below the current mode's own floor. #487's
+ * planned production UI never reaches that range in practice — see
+ * `clampLeftNavigationToMaximumTotal`'s own comment for the arithmetic showing
+ * the realistic budget floor sits around 280px, well above every mode's own
+ * minimum — so this is defensive robustness on a PUBLIC pure helper rather
+ * than a behaviour change for any realistic budget: neither clamp does
+ * anything when `maxNavigationTotalPx` is omitted or at least `LEFT_RAIL_PX`.
  */
 export function leftNavigationSeparatorAria(
   layout: LeftNavigationLayout, maxNavigationTotalPx?: number,
 ): LeftNavigationSeparatorAria {
-  const valueMax = Number.isFinite(maxNavigationTotalPx) && (maxNavigationTotalPx as number) > 0
+  const valueMin = LEFT_RAIL_PX;
+  const uncappedMax = Number.isFinite(maxNavigationTotalPx) && (maxNavigationTotalPx as number) > 0
     ? Math.min(LEFT_PANEL_MAX_PX, maxNavigationTotalPx as number)
     : LEFT_PANEL_MAX_PX;
-  return {
-    valueMin: LEFT_RAIL_PX,
-    valueMax,
-    // Normalized, so a caller holding a layout with a non-finite width cannot
-    // publish `aria-valuenow="NaN"` to assistive technology.
-    valueNow: leftNavigationWidthPx(normalizeLeftNavigationLayout(layout)),
-  };
+  const valueMax = Math.max(valueMin, uncappedMax);
+  // Normalized, so a caller holding a layout with a non-finite width cannot
+  // publish `aria-valuenow="NaN"` to assistive technology; clamped into the
+  // final [valueMin, valueMax] range so an occupied width that exceeds a
+  // pathologically small budget cannot publish an out-of-range valueNow either.
+  const rawValueNow = leftNavigationWidthPx(normalizeLeftNavigationLayout(layout));
+  const valueNow = clamp(rawValueNow, valueMin, valueMax);
+  return { valueMin, valueMax, valueNow };
 }
 
 /**
@@ -646,107 +659,142 @@ export function clampLeftNavigationToMaximumTotal(
  * - `preferredAtStart` — the persisted preference as of when the gesture began.
  *   This is the memory source `commitLeftNavigationResize` reconstructs from,
  *   and it is captured ONCE, so no intermediate frame can overwrite it.
- * - `effectiveAtStart` — what was actually rendered when the gesture began,
- *   i.e. `preferredAtStart` after `clampLeftNavigationToMaximumTotal` ran
- *   against whatever the viewport allowed at that moment. This can differ from
- *   `preferredAtStart` — a maximized preference squeezed by a narrow window —
- *   and the gap between the two is precisely what lets the commit step tell
- *   "the user actually resized this band" apart from "the band was just
- *   rendered smaller than preferred by an unrelated viewport constraint".
- * - `effective` — the live, post-clamp layout, replaced wholesale on every
- *   `advanceLeftNavigationResize` call. This is what gets rendered and reported
- *   as the gesture continues; it is not memory.
+ * - `proposed` — the latest RAW reducer proposal, BEFORE the viewport's
+ *   maximum-total clamp runs. This is the OTHER memory source
+ *   `commitLeftNavigationResize` reads: comparing the raw proposal against
+ *   `preferredAtStart` is what lets a restore command commit the user's actual
+ *   remembered width even while a narrow viewport cannot render it in full —
+ *   see the bug history below.
+ * - `effective` — `proposed` after `clampLeftNavigationToMaximumTotal` has run
+ *   against the current viewport budget. This is what gets rendered and
+ *   reported as the gesture continues; it is not memory, and
+ *   `commitLeftNavigationResize` never reads it for its width decision.
+ *
+ * **A real bug this shape fixes, not a hypothetical one.** An earlier version
+ * of this session compared `effective` against an `effectiveAtStart` snapshot —
+ * i.e. two POST-CLAMP layouts — to decide whether a band's width had "changed".
+ * That is wrong whenever a restore command (`Home`, `End`, or a bare-rail
+ * `ArrowRight`) runs while the clamp is active: starting at a bare rail,
+ * `effectiveAtStart.wideWidthPx` passes the dormant preferred width straight
+ * through unclamped (there is nothing to clamp — 'wide' is not the rendered
+ * mode yet), so it read as the full preference, e.g. 420. `End` then proposed
+ * exactly 420 back — correct — but if the viewport only allows 313, `effective`
+ * rendered 313, `effective.wideWidthPx (313) !== effectiveAtStart.wideWidthPx
+ * (420)` read as true, and the old logic committed 313: a transient,
+ * viewport-driven value the user never asked to keep, silently overwriting
+ * their real preference. Comparing the RAW `proposed` (420) against
+ * `preferredAtStart` (420) instead finds no change, because
+ * `clampLeftNavigationToMaximumTotal` never touches `mode` — so `mode`/
+ * `focusedSection` read identically off `proposed` or `effective`, and only the
+ * WIDTH needs the pre/post-clamp distinction the session now keeps.
  *
  * **`commitLeftNavigationResize`'s table, restated as one rule:** only commit a
- * band's width if that band is the one `effective` currently renders AND its
- * rendered width actually differs from `effectiveAtStart`'s. Every other case —
- * a dormant band, a fold-through to bare rail, a click-and-release with no
- * movement — preserves `preferredAtStart` for that band UNCONDITIONALLY. Two
- * consequences fall out of that one rule rather than needing their own case:
+ * band's width if that band is the one the session's FINAL `proposed` layout is
+ * in, AND its raw proposed width actually differs from `preferredAtStart`'s.
+ * Every other case — a dormant band, a fold-through to bare rail, a
+ * click-and-release with no movement — preserves `preferredAtStart` for that
+ * band UNCONDITIONALLY. Two consequences fall out of that one rule rather than
+ * needing their own case:
  *
  * 1. **The dormant-band fix.** A gesture that resizes the drawer and THEN
  *    crosses into wide mode must not commit the drawer's mid-gesture width,
- *    because the drawer is no longer the band `effective` renders once the
- *    session ends — `drawerChanged` requires `effective.mode === 'rail'`, which
- *    is false at wide, so the drawer memory falls through to
- *    `preferredAtStart.drawerWidthPx` untouched. Without that mode guard, a
- *    drag that opened the drawer to 300 before continuing on to a 350px wide
- *    sidebar would silently overwrite the drawer's remembered width with a
- *    value the user never asked to keep.
- * 2. **Preferred wins over effective on a fold-through.** Ending at bare rail
- *    preserves BOTH widths from `preferredAtStart`, never from `effectiveAtStart`
- *    or `effective` — so a maximized 420px preference that a narrow viewport
- *    rendered at a clamped 313px, then folded to rail by the same gesture,
- *    still remembers 420 for the next `End`/restore. Committing `313` instead
- *    would silently downgrade a preference the user never touched, purely
- *    because the viewport happened to be narrow during an unrelated fold.
+ *    because the drawer is no longer the band the FINAL `proposed` is in —
+ *    `drawerChanged` requires `proposed.mode === 'rail'`, which is false once
+ *    the session ends at wide, so the drawer memory falls through to
+ *    `preferredAtStart.drawerWidthPx` untouched regardless of what the
+ *    drawer's transient width was mid-drag.
+ * 2. **Preferred wins over a viewport clamp on ANY commit, not only a
+ *    fold-through.** Because the comparison is always RAW-proposed vs
+ *    preferred, never rendered-effective vs anything, a maximized 420px
+ *    preference that a narrow viewport can only render at a clamped 313px
+ *    still commits the user's honest 420 whenever the session ends without an
+ *    actual new proposal for that band — restoring it in full the next time
+ *    there is room, exactly as #487's "a viewport clamp must never downgrade a
+ *    stored preference" requires.
  *
  * `Home`/`End`/a bare-rail `ArrowRight` restore need no special case either:
- * they are restore commands, so the `effective` layout they produce typically
- * already equals `preferredAtStart`'s remembered width for the band they
- * restore, which is exactly the "nothing changed" shape the general rule
+ * they are restore commands, so the RAW `proposed` layout they produce
+ * typically already equals `preferredAtStart`'s remembered width for the band
+ * they restore, which is exactly the "nothing changed" shape the general rule
  * preserves correctly.
  *
- * A session is deliberately NOT a reducer step in `resolveLeftNavigationDrag`'s
- * family — `advanceLeftNavigationResize` does not call the mode reducer or the
- * maximum-total clamp itself. The caller runs those first to produce the next
- * `effective` layout (a pointer/keyboard event resolves through the existing
- * reducers, then `clampLeftNavigationToMaximumTotal` fits it to the viewport),
- * and only then advances the session with the result. Session bookkeeping and
- * layout arithmetic stay two separate concerns, so the arithmetic keeps its
- * one implementation.
+ * `advanceLeftNavigationResize` performs the viewport clamp ITSELF now (taking
+ * the raw proposal and the current budget as arguments), rather than asking the
+ * caller to clamp first and hand in an already-clamped layout — a future
+ * caller (the pointer/keyboard handler a later phase-3 step builds, which does
+ * not exist yet) cannot forget the clamp, because it is part of this
+ * function's contract rather than caller discipline. The MODE arithmetic
+ * itself stays out of this module either way — `advanceLeftNavigationResize`
+ * still does not call `resolveLeftNavigationDrag`/`resolveLeftNavigationKey`;
+ * the caller runs the proposal through those first, then hands the raw result
+ * here alongside the viewport budget. Session bookkeeping and layout
+ * arithmetic stay two separate concerns, so the arithmetic keeps its one
+ * implementation.
  */
 export interface LeftNavigationResizeSession {
   /** The persisted preference as of session start — the memory source every
    *  commit is reconstructed from, band by band. */
   readonly preferredAtStart: LeftNavigationLayout;
-  /** What was actually rendered when the session began, i.e.
-   *  `preferredAtStart` after the viewport's maximum-total clamp. */
-  readonly effectiveAtStart: LeftNavigationLayout;
-  /** The live, post-clamp layout — what is rendered and reported right now. */
+  /** The latest RAW reducer proposal, BEFORE the viewport clamp — the other
+   *  memory source `commitLeftNavigationResize` reads from. */
+  readonly proposed: LeftNavigationLayout;
+  /** The latest proposal AFTER the viewport clamp — what is rendered and
+   *  reported right now. Never read by the commit decision. */
   readonly effective: LeftNavigationLayout;
 }
 
-/** Begin a resize session: `effective` starts out equal to `effectiveAtStart`,
- *  since nothing has moved yet. */
+/** Begin a resize session: `proposed` starts out equal to `preferred` (nothing
+ *  has moved yet), and `effective` is `preferred` clamped to the viewport
+ *  budget at hand — mirroring what a caller would render before any gesture
+ *  begins. */
 export function beginLeftNavigationResize(
-  preferred: LeftNavigationLayout, effective: LeftNavigationLayout,
+  preferred: LeftNavigationLayout, maxNavigationTotalPx: number,
 ): LeftNavigationResizeSession {
-  return { preferredAtStart: preferred, effectiveAtStart: effective, effective };
+  return {
+    preferredAtStart: preferred,
+    proposed: preferred,
+    effective: clampLeftNavigationToMaximumTotal(preferred, maxNavigationTotalPx),
+  };
 }
 
 /**
- * Advance a session to a new live layout. Pure snapshot replacement — the
- * caller has already run the layout through `resolveLeftNavigationDrag` /
- * `resolveLeftNavigationKey` and `clampLeftNavigationToMaximumTotal` to produce
- * `nextEffectiveLayout`; this function does not call either. Returns the SAME
- * session when the layout is unchanged by reference, so a caller can use
- * identity to skip a repaint exactly as the mode reducers do.
+ * Advance a session to a new RAW proposal. The caller has already run the
+ * layout through `resolveLeftNavigationDrag`/`resolveLeftNavigationKey` to
+ * produce `proposedLayout`; this function applies the viewport clamp itself
+ * (see this section's block comment for why the clamp lives here rather than
+ * in the caller) and records both the raw proposal and its clamped `effective`
+ * counterpart. Returns the SAME session when neither changes by reference, so
+ * a caller can use identity to skip a repaint exactly as the mode reducers do.
  */
 export function advanceLeftNavigationResize(
-  session: LeftNavigationResizeSession, nextEffectiveLayout: LeftNavigationLayout,
+  session: LeftNavigationResizeSession, proposedLayout: LeftNavigationLayout, maxNavigationTotalPx: number,
 ): LeftNavigationResizeSession {
-  return nextEffectiveLayout === session.effective
+  const effective = clampLeftNavigationToMaximumTotal(proposedLayout, maxNavigationTotalPx);
+  return proposedLayout === session.proposed && effective === session.effective
     ? session
-    : { ...session, effective: nextEffectiveLayout };
+    : { ...session, proposed: proposedLayout, effective };
 }
 
 /**
  * Reconstruct the `LeftNavigationLayout` to persist from a resize session — see
  * this section's block comment above for the rule and why it is shaped this
  * way. `mode` and `focusedSection` always follow wherever the session ended
- * (a legitimate mode transition, not a width memory question); only the two
- * WIDTHS get the preserve-vs-commit treatment, band by band.
+ * (a legitimate mode transition, not a width memory question) — read off
+ * `effective`, since `clampLeftNavigationToMaximumTotal` never changes `mode`,
+ * so `effective.mode`/`effective.focusedSection` agree with `proposed`'s
+ * exactly. Only the two WIDTHS get the preserve-vs-commit treatment, band by
+ * band, and that decision is made against the RAW `proposed` width, never
+ * `effective`'s — the fix this function exists for.
  */
 export function commitLeftNavigationResize(session: LeftNavigationResizeSession): LeftNavigationLayout {
-  const { preferredAtStart, effectiveAtStart, effective } = session;
-  const wideChanged = effective.mode === 'wide' && effective.wideWidthPx !== effectiveAtStart.wideWidthPx;
-  const drawerChanged = effective.mode === 'rail' && effective.focusedSection !== null
-    && effective.drawerWidthPx !== effectiveAtStart.drawerWidthPx;
+  const { preferredAtStart, proposed, effective } = session;
+  const wideChanged = proposed.mode === 'wide' && proposed.wideWidthPx !== preferredAtStart.wideWidthPx;
+  const drawerChanged = proposed.mode === 'rail' && proposed.focusedSection !== null
+    && proposed.drawerWidthPx !== preferredAtStart.drawerWidthPx;
   return normalizeLeftNavigationLayout({
     mode: effective.mode,
     focusedSection: effective.focusedSection,
-    wideWidthPx: wideChanged ? effective.wideWidthPx : preferredAtStart.wideWidthPx,
-    drawerWidthPx: drawerChanged ? effective.drawerWidthPx : preferredAtStart.drawerWidthPx,
+    wideWidthPx: wideChanged ? proposed.wideWidthPx : preferredAtStart.wideWidthPx,
+    drawerWidthPx: drawerChanged ? proposed.drawerWidthPx : preferredAtStart.drawerWidthPx,
   });
 }

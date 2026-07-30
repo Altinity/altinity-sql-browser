@@ -72,19 +72,28 @@ export function readLeftNavigationLayout(state: LeftNavStateSlice): LeftNavigati
  * `sidePanel`, so a rail/drawer selection of the same section left the
  * signal's NEW value unpersisted — a reload would silently revert to
  * whichever pane was last chosen through the wide tabs. Persisting BEFORE
- * writing the signal mirrors `switchTo` exactly. `state.libraryFilter` is
- * deliberately untouched — a later phase-3 step owns per-section filters.
+ * writing the signal mirrors `switchTo` exactly. Per-section filters
+ * (`state.lowerNavigationFilters`, phase 3 step 3) are already implemented
+ * elsewhere and this module still correctly never touches them.
+ *
+ * Both branches are guarded to a no-op when the target value is already
+ * current: `openFocusedSection`'s documented caller is #428's bounded
+ * drag-hover, which can re-assert the SAME section repeatedly on every hover
+ * notification, and `sidePanel`'s write has a real synchronous side effect
+ * (`app.prefs.save`) that must not fire on every one of those.
  */
 function selectSectionInExistingPane(app: LeftNavApp, section: LeftNavigationSection): void {
   if (section === 'databases' || section === 'dashboards') {
     // Session-only, like `switchTo`'s counterpart for the upper pane: `upperRole`
     // is never persisted (state.ts), so there is nothing to save here.
-    app.state.upperRole.value = section;
+    if (app.state.upperRole.value !== section) app.state.upperRole.value = section;
     return;
   }
   const panel = sidePanelKeyFor(section);
-  app.prefs.save('sidePanel', panel);
-  app.state.sidePanel.value = panel;
+  if (app.state.sidePanel.value !== panel) {
+    app.prefs.save('sidePanel', panel);
+    app.state.sidePanel.value = panel;
+  }
 }
 
 /**

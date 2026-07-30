@@ -89,7 +89,6 @@ function makeState(over: Partial<WorkbenchStateSlice> = {}): WorkbenchStateSlice
     forceExplain: false,
     resultRowLimit: 500,
     serverVersion: null,
-    sidePanel: signal('saved'),
     isMobile: signal(false),
     mobileView: signal('editor'),
     hasSelection: signal(false),
@@ -846,8 +845,8 @@ describe('createWorkbenchSession: runScript()', () => {
     expect(h.hooks.renderHistorySection).not.toHaveBeenCalled();
   });
 
-  it('a clean run records one script history entry, and repaints History when it is the open panel', async () => {
-    const h = makeHarness({ state: { sidePanel: signal('history') } });
+  it('a clean run records one script history entry, and repaints History unconditionally', async () => {
+    const h = makeHarness();
     h.execFakes.executeScript.mockImplementation(async (req: ScriptExecutionRequest) => {
       const entry = { sql: 'SELECT 1', status: 'rows' as const, columns: [], rows: [], truncated: false, preview: '', ms: 5 };
       req.onStatementResult(0, entry);
@@ -865,9 +864,13 @@ describe('createWorkbenchSession: runScript()', () => {
   // whenever Library ('saved') was the exposed side panel, leaving History's
   // content stale until some unrelated repaint happened to fire (which, for
   // History, never does — `state.history` is a plain array, not part of any
-  // reactive effect). The fix makes this call unconditional.
-  it('a clean run repaints History even while a different side panel is open', async () => {
-    const h = makeHarness({ state: { sidePanel: signal('saved') } });
+  // reactive effect). The fix makes this call unconditional — and #487 phase 3
+  // step 4 later confirmed `WorkbenchStateSlice.sidePanel` unread by this
+  // session's own logic and removed the field entirely, so there is no longer
+  // any side-panel state to vary here; this test just re-confirms the repaint
+  // fires on every clean run regardless.
+  it('a clean run repaints History unconditionally, independent of any side-panel state', async () => {
+    const h = makeHarness();
     h.execFakes.executeScript.mockImplementation(async (req: ScriptExecutionRequest) => {
       const entry = { sql: 'SELECT 1', status: 'ok' as const, ms: 5 };
       req.onStatementResult(0, entry);

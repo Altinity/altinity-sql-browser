@@ -88,14 +88,55 @@ describe('openFocusedSection — lower sections persist sidePanel', () => {
     expect(app.save).toHaveBeenCalledWith('sidePanel', 'history');
   });
 
-  it('does not touch libraryFilter or any field beyond the four it owns', () => {
-    const state = makeState({ mode: 'rail' }) as LeftNavStateSlice & { libraryFilter: string };
-    state.libraryFilter = 'unchanged-marker';
+  it('does not touch lowerNavigationFilters or any field beyond the four it owns', () => {
+    const state = makeState({ mode: 'rail' }) as LeftNavStateSlice & {
+      lowerNavigationFilters: Record<'library' | 'history', string>;
+    };
+    state.lowerNavigationFilters = { library: 'unchanged-marker', history: 'also-unchanged' };
     const app = makeApp(state);
 
     openFocusedSection(app, 'library');
 
-    expect(state.libraryFilter).toBe('unchanged-marker');
+    expect(state.lowerNavigationFilters).toEqual({ library: 'unchanged-marker', history: 'also-unchanged' });
+  });
+});
+
+describe('idempotent side effects — no repeated writes for an already-selected section', () => {
+  it('opening the same lower section twice only persists sidePanel once (#428 bounded drag-hover re-asserts repeatedly)', () => {
+    const state = makeState({ mode: 'rail', sidePanel: 'history', section: 'history' });
+    const app = makeApp(state);
+
+    openFocusedSection(app, 'library');
+    expect(app.save).toHaveBeenCalledTimes(1);
+    expect(state.sidePanel.value).toBe('saved');
+
+    openFocusedSection(app, 'library');
+    expect(app.save).toHaveBeenCalledTimes(1);
+    expect(state.sidePanel.value).toBe('saved');
+  });
+
+  it('opening the same upper section twice does not rewrite upperRole redundantly', () => {
+    const state = makeState({ mode: 'rail', upperRole: 'databases', section: 'databases' });
+    const app = makeApp(state);
+
+    openFocusedSection(app, 'databases');
+    openFocusedSection(app, 'databases');
+
+    expect(state.upperRole.value).toBe('databases');
+    expect(app.save).not.toHaveBeenCalled();
+  });
+
+  it('toggleFocusedSection also skips the redundant sidePanel persistence when re-activating the open section', () => {
+    const state = makeState({ mode: 'rail', sidePanel: 'saved', section: 'library' });
+    const app = makeApp(state);
+
+    // toggleFocusedSection closes the drawer on the SAME section, but the pane
+    // switch itself (selectSectionInExistingPane) still runs first with the
+    // section still 'library' — sidePanel is already 'saved', so no save.
+    toggleFocusedSection(app, 'library');
+
+    expect(app.save).not.toHaveBeenCalled();
+    expect(state.leftNavSection.value).toBeNull();
   });
 });
 

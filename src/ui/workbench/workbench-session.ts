@@ -66,21 +66,6 @@ export interface WorkbenchStateSlice {
   forceExplain: boolean;
   resultRowLimit: number;
   serverVersion: string | null;
-  /**
-   * #487 phase 3: no longer read by this session's own logic — runScript's
-   * clean-run history repaint (`hooks.renderHistorySection()`) is now
-   * unconditional, since History's content must stay current regardless of
-   * which lower-navigation section is exposed. Kept on the slice because
-   * `AppState` carries it regardless (structural pass-through) and a later
-   * caller may still need it; if it stays unread, a future cleanup can drop it.
-   *
-   * Derived from `AppState` rather than restated as `Signal<string>` (#487
-   * phase 2): the real signal holds a decoded `'saved' | 'history'`, and a
-   * structural `Signal<string>` here would leave this session type-authorized to
-   * write an arbitrary string into it — re-opening exactly the divergence the
-   * load-boundary decode closes.
-   */
-  sidePanel: AppState['sidePanel'];
   isMobile: Signal<boolean>;
   mobileView: Signal<'tables' | 'editor' | 'results'>;
   /** Read by the Run-button effect (Run ↔ "Run selection" label). */
