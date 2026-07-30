@@ -35,6 +35,38 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   rather than raw source, verified falsifiable. The S0 baseline and S1 control
   measurements are pinned under `docs/design/577/`.
 
+- **The S2 Preact treatment arm, measured** (#577) — `docs/design/577/S2-EVIDENCE.md`
+  plus `docs/design/577/manifest-v2/`. The treatment lives on the unmerged
+  `eval-577/s2-treatment` branch (tag `577/treatment`): Preact owns shell
+  presentation and lifecycle, and `src/ui/app-shell.ts`, `ui/left-rail.ts` and
+  `ui/right-inspector.ts` are **deleted** — the esbuild per-input attribution in
+  `manifest-v2/s2/esbuild-inputs.json` is the proof they are absent from the
+  artifact rather than shipped beside the Preact one. Nothing from that branch is
+  merged; only this evidence is. All three states were re-measured in ONE run
+  from clean worktrees at their tagged SHAs over one 18-entry superset manifest,
+  because a treatment measured over a manifest omitting its own new files reports
+  a deletion with no matching cost. Result: **+330 code lines** and **+7.8 KB
+  gzip** against the S1 control for the same feature, with domain and island
+  lines byte-identical across all three states (the preservation constraint
+  holding). Repo-owned bytes in the artifact went **up** 3 536 B — deleting a
+  905-line module did not shrink the shipped application. Exactly one copy of
+  `@preact/signals-core` is present, proven by per-package attribution rather
+  than assumed. The evidence document also records nine costs the control does
+  not pay (asynchronous DOM updates relative to state writes; a `flushSync`
+  escape hatch wherever a caller reveals a host then acts inside it; a defect
+  class no gate can see, where importing the signals core instead of the Preact
+  bindings leaves the shell rendering once and never repainting; and — the
+  sharpest — that derived state has no *edge*, so a `computed` can report a value
+  change but never that a gesture ended, which silently cost a pointer drag-fold
+  its focus rescue), seven genuine improvements, and the refutation of the
+  evaluation's own flagged weak premise that one owner per subtree deletes the
+  focus-rescue category. Two real regressions were caught by Chromium/WebKit e2e
+  with 6 995 unit tests green; two remaining e2e failures were verified to fail
+  identically on the frozen control and are scored against neither arm. The
+  recommendation itself is ADR-0004's, and is not made here: the parity suite,
+  the controlled-change experiment and the JSX sensitivity annex are still
+  outstanding.
+
 - **The foldable left navigation is reachable in the UI** (#487, phase 3 of 4 —
   the phase's own most complex wiring step). `app-shell.ts` composes phase 1's
   pure mode/resize-session core and phase 2's section registry with a new

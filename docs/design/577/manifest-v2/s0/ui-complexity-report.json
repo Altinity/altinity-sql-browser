@@ -1,0 +1,344 @@
+{
+  "schemaVersion": 1,
+  "label": "s0",
+  "metricTiers": {
+    "deciding": {
+      "ownedProductionCode": {
+        "owner": "this instrument"
+      },
+      "parity": {
+        "owner": "tests/e2e/shell-parity.spec.js"
+      },
+      "artifact": {
+        "owner": "build/size-report.mjs"
+      },
+      "changeAmplification": {
+        "owner": "frozen controlled-change experiment"
+      },
+      "cleanupObligations": {
+        "owner": "leak invariant + manual obligation count"
+      }
+    },
+    "explanatory": {
+      "minifiedBytes": {
+        "demotedBecause": "ignores tree shaking, shared helpers, and complexity moved into a dependency"
+      },
+      "lcovBranches": {
+        "demotedBecause": "falls when mechanisms move into Preact — externalized, not eliminated"
+      },
+      "lcovFunctions": {
+        "demotedBecause": "falls when mechanisms move into Preact — externalized, not eliminated"
+      },
+      "lifecycleSites": {
+        "demotedBecause": "hidden/dataset/replaceChildren go syntactically invisible under a vDOM"
+      }
+    }
+  },
+  "environment": {
+    "commit": "d319847875b3b3eeff2c4ca4c43fd7dda12f8b40",
+    "commitDirty": "clean",
+    "node": "v25.9.0",
+    "esbuild": "0.28.1",
+    "platform": "darwin-arm64",
+    "packageLock": "sha256:9042ec0421903e38"
+  },
+  "ownedProductionCode": {
+    "plumbingNormalizedLines": 599,
+    "islandNormalizedLines": 199,
+    "domainNormalizedLines": 341
+  },
+  "byClass": {
+    "domain": {
+      "files": 4,
+      "absentFiles": 0,
+      "physicalLines": 1367,
+      "normalizedLines": 341,
+      "nonCodeLines": 953,
+      "minifiedBytes": 8984,
+      "lifecycle": {
+        "domMutation": 10,
+        "listener": 0,
+        "effect": 2,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcovBranchesFound": 0,
+      "lcovFunctionsFound": 0,
+      "lcovUnmatchedFiles": 4
+    },
+    "plumbing": {
+      "files": 4,
+      "absentFiles": 8,
+      "physicalLines": 1470,
+      "normalizedLines": 599,
+      "nonCodeLines": 817,
+      "minifiedBytes": 15143,
+      "lifecycle": {
+        "domMutation": 60,
+        "listener": 7,
+        "effect": 17,
+        "disposal": 34,
+        "focus": 7
+      },
+      "lcovBranchesFound": 0,
+      "lcovFunctionsFound": 0,
+      "lcovUnmatchedFiles": 4
+    },
+    "island": {
+      "files": 2,
+      "absentFiles": 0,
+      "physicalLines": 590,
+      "normalizedLines": 199,
+      "nonCodeLines": 350,
+      "minifiedBytes": 4156,
+      "lifecycle": {
+        "domMutation": 14,
+        "listener": 18,
+        "effect": 2,
+        "disposal": 4,
+        "focus": 0
+      },
+      "lcovBranchesFound": 0,
+      "lcovFunctionsFound": 0,
+      "lcovUnmatchedFiles": 2
+    }
+  },
+  "overall": {
+    "files": 10,
+    "absentFiles": 8,
+    "physicalLines": 3427,
+    "normalizedLines": 1139,
+    "nonCodeLines": 2120,
+    "minifiedBytes": 28283,
+    "lifecycle": {
+      "domMutation": 84,
+      "listener": 25,
+      "effect": 21,
+      "disposal": 38,
+      "focus": 7
+    },
+    "lcovBranchesFound": 0,
+    "lcovFunctionsFound": 0,
+    "lcovUnmatchedFiles": 10
+  },
+  "files": [
+    {
+      "path": "src/application/left-nav.ts",
+      "class": "domain",
+      "sliceItem": "2, 3 — the focused-section controller seam",
+      "physicalLines": 175,
+      "sourceBlankLines": 8,
+      "normalizedLines": 48,
+      "minifiedBytes": 951,
+      "lifecycle": {
+        "domMutation": 4,
+        "listener": 0,
+        "effect": 2,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/core/left-nav-layout.ts",
+      "class": "domain",
+      "sliceItem": "2, 3 — pure mode/resize reducers, DOM-free",
+      "physicalLines": 853,
+      "sourceBlankLines": 39,
+      "normalizedLines": 150,
+      "minifiedBytes": 4836,
+      "lifecycle": {
+        "domMutation": 0,
+        "listener": 0,
+        "effect": 0,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/app-shell.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 5, 6 — shell geometry below the header; desktop/mobile projection; Query/Dashboard host switching",
+      "physicalLines": 880,
+      "sourceBlankLines": 30,
+      "normalizedLines": 328,
+      "minifiedBytes": 7603,
+      "lifecycle": {
+        "domMutation": 39,
+        "listener": 3,
+        "effect": 14,
+        "disposal": 22,
+        "focus": 4
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/drawer.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — right-inspector chrome and bounded resize primitives the control composes",
+      "physicalLines": 144,
+      "sourceBlankLines": 7,
+      "normalizedLines": 56,
+      "minifiedBytes": 993,
+      "lifecycle": {
+        "domMutation": 2,
+        "listener": 0,
+        "effect": 0,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/left-nav-separator.ts",
+      "class": "island",
+      "sliceItem": "3 — the multi-frame fold transition's pointer/keyboard mechanics",
+      "physicalLines": 443,
+      "sourceBlankLines": 29,
+      "normalizedLines": 157,
+      "minifiedBytes": 3170,
+      "lifecycle": {
+        "domMutation": 12,
+        "listener": 14,
+        "effect": 2,
+        "disposal": 4,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/left-rail.ts",
+      "class": "plumbing",
+      "sliceItem": "2 — left navigation in rail presentation",
+      "physicalLines": 129,
+      "sourceBlankLines": 8,
+      "normalizedLines": 51,
+      "minifiedBytes": 775,
+      "lifecycle": {
+        "domMutation": 2,
+        "listener": 0,
+        "effect": 1,
+        "disposal": 6,
+        "focus": 3
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/nav-sections.ts",
+      "class": "domain",
+      "sliceItem": "2 — section registry shared by wide, rail and drawer presentations",
+      "physicalLines": 202,
+      "sourceBlankLines": 13,
+      "normalizedLines": 69,
+      "minifiedBytes": 1464,
+      "lifecycle": {
+        "domMutation": 2,
+        "listener": 0,
+        "effect": 0,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/right-inspector.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — the right-inspector host itself (absent in S0; added by the S1 control)",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/adopt.ts",
+      "class": "plumbing",
+      "sliceItem": "7 — the Preact/foreign-DOM boundary every imperative integration point crosses",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/focus-settlement.ts",
+      "class": "plumbing",
+      "sliceItem": "3 — capture/settle across a structural transition where the focused source disappears",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/right-inspector-view.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — the right-inspector host (replaces right-inspector.ts)",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/shell-context.types.ts",
+      "class": "plumbing",
+      "sliceItem": "1 — type-only seam contract for the view; erased by the build",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/shell-host.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 5, 6 — the composition root: shell geometry below the header, desktop/mobile projection, Query/Dashboard host switching (replaces app-shell.ts)",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/shell-layout.ts",
+      "class": "plumbing",
+      "sliceItem": "2, 3 — the left-navigation layout as derived state (replaces applyEffectiveLeftNavigationLayout)",
+      "absent": true
+    },
+    {
+      "path": "src/ui/shell/shell-view.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 2, 5, 6 — the rendered application frame, the left navigation in wide/rail/drawer presentations, and the mobile bottom nav (replaces app-shell.ts markup + left-rail.ts)",
+      "absent": true
+    },
+    {
+      "path": "src/ui/sidebar-upper.ts",
+      "class": "domain",
+      "sliceItem": "2 — upper-pane role switcher",
+      "physicalLines": 137,
+      "sourceBlankLines": 13,
+      "normalizedLines": 74,
+      "minifiedBytes": 1733,
+      "lifecycle": {
+        "domMutation": 4,
+        "listener": 0,
+        "effect": 0,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/splitters.ts",
+      "class": "island",
+      "sliceItem": "3, 4 — drag mechanics for both the left separator and the right inspector",
+      "physicalLines": 147,
+      "sourceBlankLines": 12,
+      "normalizedLines": 42,
+      "minifiedBytes": 986,
+      "lifecycle": {
+        "domMutation": 2,
+        "listener": 4,
+        "effect": 0,
+        "disposal": 0,
+        "focus": 0
+      },
+      "lcov": null
+    },
+    {
+      "path": "src/ui/workbench/workbench-shell.ts",
+      "class": "plumbing",
+      "sliceItem": "6 — Query surface host",
+      "physicalLines": 317,
+      "sourceBlankLines": 9,
+      "normalizedLines": 164,
+      "minifiedBytes": 5772,
+      "lifecycle": {
+        "domMutation": 17,
+        "listener": 4,
+        "effect": 2,
+        "disposal": 6,
+        "focus": 0
+      },
+      "lcov": null
+    }
+  ]
+}

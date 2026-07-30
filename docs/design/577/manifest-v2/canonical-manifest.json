@@ -1,0 +1,140 @@
+{
+  "_comment": [
+    "The auditable file set for #577's UI-complexity measurement. Acceptance",
+    "criterion 4 requires the report to distinguish product-specific domain logic",
+    "from framework-like rendering plumbing, so THIS FILE is the artifact that",
+    "claim rests on — a wrong `class` here is a wrong decision, not a wrong",
+    "number. Every file the report names comes from here and nowhere else.",
+    "",
+    "Classes:",
+    "  domain   — preserved verbatim by both the vanilla control and the Preact",
+    "             treatment. Any diff in these files during the evaluation is a",
+    "             finding against #577's own 'preserve proven non-rendering",
+    "             logic' constraint, not a licence.",
+    "  plumbing — genuinely replaceable by a component model. This is the only",
+    "             class the treatment may claim a reduction in.",
+    "  island   — stays imperative under ANY render model (CLAUDE.md hard rule 5:",
+    "             signals coordinate state, they do not own every mousemove).",
+    "             Counted so the report cannot present island code as a Preact",
+    "             win or a Preact cost.",
+    "",
+    "The `sliceItem` field maps each file to the numbered item in #577's",
+    "'Evaluation scope' list it covers, so a reader can check the slice is",
+    "actually covered rather than taking the report's word for it.",
+    "",
+    "Classification rationale for the three non-obvious calls (a first pass at",
+    "this plan mislabelled all three, which would have overstated the",
+    "replaceable baseline by roughly 1000 physical lines):",
+    "  - left-nav-separator.ts is an ISLAND, not plumbing: it is pointer/keyboard",
+    "    mechanics plus resize-session bookkeeping. Only its thin ARIA/paint glue",
+    "    is plumbing, and that is not separable at file granularity.",
+    "  - nav-sections.ts and sidebar-upper.ts are DOMAIN shared verbatim: they are",
+    "    NAV_SECTION_META plus persistent-host construction that BOTH arms need.",
+    "    Only a ~10-line showSection is replaceable.",
+    "",
+    "#577 state S2 extends this manifest with the seven src/ui/shell/* files the",
+    "Preact treatment adds. The manifest is a SUPERSET measured identically against",
+    "every state: the new entries report `absent` for S0 and S1, and app-shell.ts /",
+    "left-rail.ts / right-inspector.ts report `absent` for S2. That is the only way",
+    "the three states share one file set — a treatment measured over a manifest that",
+    "omitted its own new files would be reporting a deletion with no matching cost.",
+    "S0 and S1 were RE-MEASURED over this extended manifest from their own tags; the",
+    "original 11-file reports remain pinned beside them unchanged.",
+    "",
+    "shell-context.types.ts is type-only: esbuild erases it entirely, so it measures",
+    "0 code lines. It is listed anyway rather than quietly excluded — a reader can",
+    "see it costs nothing, which is a claim, not an omission."
+  ],
+  "files": [
+    {
+      "path": "src/ui/app-shell.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 5, 6 — shell geometry below the header; desktop/mobile projection; Query/Dashboard host switching"
+    },
+    {
+      "path": "src/ui/left-rail.ts",
+      "class": "plumbing",
+      "sliceItem": "2 — left navigation in rail presentation"
+    },
+    {
+      "path": "src/ui/nav-sections.ts",
+      "class": "domain",
+      "sliceItem": "2 — section registry shared by wide, rail and drawer presentations"
+    },
+    {
+      "path": "src/ui/sidebar-upper.ts",
+      "class": "domain",
+      "sliceItem": "2 — upper-pane role switcher"
+    },
+    {
+      "path": "src/ui/left-nav-separator.ts",
+      "class": "island",
+      "sliceItem": "3 — the multi-frame fold transition's pointer/keyboard mechanics"
+    },
+    {
+      "path": "src/core/left-nav-layout.ts",
+      "class": "domain",
+      "sliceItem": "2, 3 — pure mode/resize reducers, DOM-free"
+    },
+    {
+      "path": "src/application/left-nav.ts",
+      "class": "domain",
+      "sliceItem": "2, 3 — the focused-section controller seam"
+    },
+    {
+      "path": "src/ui/workbench/workbench-shell.ts",
+      "class": "plumbing",
+      "sliceItem": "6 — Query surface host"
+    },
+    {
+      "path": "src/ui/drawer.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — right-inspector chrome and bounded resize primitives the control composes"
+    },
+    {
+      "path": "src/ui/right-inspector.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — the right-inspector host itself (absent in S0; added by the S1 control)"
+    },
+    {
+      "path": "src/ui/splitters.ts",
+      "class": "island",
+      "sliceItem": "3, 4 — drag mechanics for both the left separator and the right inspector"
+    },
+    {
+      "path": "src/ui/shell/shell-host.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 5, 6 — the composition root: shell geometry below the header, desktop/mobile projection, Query/Dashboard host switching (replaces app-shell.ts)"
+    },
+    {
+      "path": "src/ui/shell/shell-view.ts",
+      "class": "plumbing",
+      "sliceItem": "1, 2, 5, 6 — the rendered application frame, the left navigation in wide/rail/drawer presentations, and the mobile bottom nav (replaces app-shell.ts markup + left-rail.ts)"
+    },
+    {
+      "path": "src/ui/shell/shell-layout.ts",
+      "class": "plumbing",
+      "sliceItem": "2, 3 — the left-navigation layout as derived state (replaces applyEffectiveLeftNavigationLayout)"
+    },
+    {
+      "path": "src/ui/shell/focus-settlement.ts",
+      "class": "plumbing",
+      "sliceItem": "3 — capture/settle across a structural transition where the focused source disappears"
+    },
+    {
+      "path": "src/ui/shell/right-inspector-view.ts",
+      "class": "plumbing",
+      "sliceItem": "4 — the right-inspector host (replaces right-inspector.ts)"
+    },
+    {
+      "path": "src/ui/shell/adopt.ts",
+      "class": "plumbing",
+      "sliceItem": "7 — the Preact/foreign-DOM boundary every imperative integration point crosses"
+    },
+    {
+      "path": "src/ui/shell/shell-context.types.ts",
+      "class": "plumbing",
+      "sliceItem": "1 — type-only seam contract for the view; erased by the build"
+    }
+  ]
+}

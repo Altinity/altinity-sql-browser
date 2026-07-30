@@ -1,0 +1,1077 @@
+{
+  "_comment": [
+    "Per-input attribution for the S2 artifact, extracted from the esbuild",
+    "metafile. This is the evidence that the vanilla shell is ABSENT from the",
+    "built artifact rather than shipped beside the Preact one — grep it for",
+    "app-shell.ts, left-rail.ts or right-inspector.ts and there is nothing to",
+    "find. Regenerate with: node build/size-report.mjs (writes esbuild-meta.json)."
+  ],
+  "output": "main.js",
+  "inputs": {
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@kurkle/color/dist/color.esm.js": {
+      "bytesInOutput": 7597
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/chart.js/dist/chunks/helpers.dataset.js": {
+      "bytesInOutput": 31641
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/chart.js/dist/chart.js": {
+      "bytesInOutput": 165504
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/chart.js/auto/auto.js": {
+      "bytesInOutput": 29
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/constants.js": {
+      "bytesInOutput": 186
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/constructFrom.js": {
+      "bytesInOutput": 141
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/toDate.js": {
+      "bytesInOutput": 35
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addDays.js": {
+      "bytesInOutput": 102
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addMonths.js": {
+      "bytesInOutput": 246
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addMilliseconds.js": {
+      "bytesInOutput": 48
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addHours.js": {
+      "bytesInOutput": 39
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/defaultOptions.js": {
+      "bytesInOutput": 34
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfWeek.js": {
+      "bytesInOutput": 229
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfISOWeek.js": {
+      "bytesInOutput": 52
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getISOWeekYear.js": {
+      "bytesInOutput": 248
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/getTimezoneOffsetInMilliseconds.js": {
+      "bytesInOutput": 200
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/normalizeDates.js": {
+      "bytesInOutput": 89
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfDay.js": {
+      "bytesInOutput": 64
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInCalendarDays.js": {
+      "bytesInOutput": 108
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfISOWeekYear.js": {
+      "bytesInOutput": 102
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addMinutes.js": {
+      "bytesInOutput": 74
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addQuarters.js": {
+      "bytesInOutput": 38
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addSeconds.js": {
+      "bytesInOutput": 40
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addWeeks.js": {
+      "bytesInOutput": 38
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/addYears.js": {
+      "bytesInOutput": 39
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/compareAsc.js": {
+      "bytesInOutput": 59
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/isDate.js": {
+      "bytesInOutput": 113
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/isValid.js": {
+      "bytesInOutput": 66
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInCalendarMonths.js": {
+      "bytesInOutput": 118
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInCalendarYears.js": {
+      "bytesInOutput": 81
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInDays.js": {
+      "bytesInOutput": 407
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/getRoundingMethod.js": {
+      "bytesInOutput": 76
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInHours.js": {
+      "bytesInOutput": 87
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInMilliseconds.js": {
+      "bytesInOutput": 37
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInMinutes.js": {
+      "bytesInOutput": 68
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfDay.js": {
+      "bytesInOutput": 69
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfMonth.js": {
+      "bytesInOutput": 121
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/isLastDayOfMonth.js": {
+      "bytesInOutput": 60
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInMonths.js": {
+      "bytesInOutput": 254
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInQuarters.js": {
+      "bytesInOutput": 69
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInSeconds.js": {
+      "bytesInOutput": 69
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInWeeks.js": {
+      "bytesInOutput": 69
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/differenceInYears.js": {
+      "bytesInOutput": 159
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfQuarter.js": {
+      "bytesInOutput": 103
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfMonth.js": {
+      "bytesInOutput": 77
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfYear.js": {
+      "bytesInOutput": 110
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfYear.js": {
+      "bytesInOutput": 99
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfHour.js": {
+      "bytesInOutput": 68
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfWeek.js": {
+      "bytesInOutput": 239
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfMinute.js": {
+      "bytesInOutput": 65
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfQuarter.js": {
+      "bytesInOutput": 110
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/endOfSecond.js": {
+      "bytesInOutput": 67
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US/_lib/formatDistance.js": {
+      "bytesInOutput": 1089
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/_lib/buildFormatLongFn.js": {
+      "bytesInOutput": 123
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US/_lib/formatLong.js": {
+      "bytesInOutput": 423
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US/_lib/formatRelative.js": {
+      "bytesInOutput": 169
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/_lib/buildLocalizeFn.js": {
+      "bytesInOutput": 400
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US/_lib/localize.js": {
+      "bytesInOutput": 1994
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/_lib/buildMatchFn.js": {
+      "bytesInOutput": 556
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/_lib/buildMatchPatternFn.js": {
+      "bytesInOutput": 271
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US/_lib/match.js": {
+      "bytesInOutput": 1866
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/locale/en-US.js": {
+      "bytesInOutput": 142
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/defaultLocale.js": {
+      "bytesInOutput": 0
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getDayOfYear.js": {
+      "bytesInOutput": 56
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getISOWeek.js": {
+      "bytesInOutput": 77
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getWeekYear.js": {
+      "bytesInOutput": 376
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfWeekYear.js": {
+      "bytesInOutput": 251
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getWeek.js": {
+      "bytesInOutput": 81
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/addLeadingZeros.js": {
+      "bytesInOutput": 86
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/format/lightFormatters.js": {
+      "bytesInOutput": 642
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/format/formatters.js": {
+      "bytesInOutput": 6951
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/format/longFormatters.js": {
+      "bytesInOutput": 718
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/_lib/protectedTokens.js": {
+      "bytesInOutput": 461
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/format.js": {
+      "bytesInOutput": 1303
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getDefaultOptions.js": {
+      "bytesInOutput": 44
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/getISODay.js": {
+      "bytesInOutput": 61
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/transpose.js": {
+      "bytesInOutput": 259
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/Setter.js": {
+      "bytesInOutput": 514
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/Parser.js": {
+      "bytesInOutput": 184
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/EraParser.js": {
+      "bytesInOutput": 458
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/constants.js": {
+      "bytesInOutput": 739
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/utils.js": {
+      "bytesInOutput": 1246
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/YearParser.js": {
+      "bytesInOutput": 609
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/LocalWeekYearParser.js": {
+      "bytesInOutput": 671
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ISOWeekYearParser.js": {
+      "bytesInOutput": 302
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ExtendedYearParser.js": {
+      "bytesInOutput": 268
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/QuarterParser.js": {
+      "bytesInOutput": 747
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/StandAloneQuarterParser.js": {
+      "bytesInOutput": 747
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/MonthParser.js": {
+      "bytesInOutput": 770
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/StandAloneMonthParser.js": {
+      "bytesInOutput": 770
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/setWeek.js": {
+      "bytesInOutput": 95
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/LocalWeekParser.js": {
+      "bytesInOutput": 367
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/setISOWeek.js": {
+      "bytesInOutput": 85
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ISOWeekParser.js": {
+      "bytesInOutput": 365
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/DateParser.js": {
+      "bytesInOutput": 550
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/DayOfYearParser.js": {
+      "bytesInOutput": 474
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/setDay.js": {
+      "bytesInOutput": 233
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/DayParser.js": {
+      "bytesInOutput": 816
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/LocalDayParser.js": {
+      "bytesInOutput": 1006
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/StandAloneLocalDayParser.js": {
+      "bytesInOutput": 1006
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/setISODay.js": {
+      "bytesInOutput": 70
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ISODayParser.js": {
+      "bytesInOutput": 961
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/AMPMParser.js": {
+      "bytesInOutput": 602
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/AMPMMidnightParser.js": {
+      "bytesInOutput": 602
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/DayPeriodParser.js": {
+      "bytesInOutput": 594
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/Hour1to12Parser.js": {
+      "bytesInOutput": 426
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/Hour0to23Parser.js": {
+      "bytesInOutput": 349
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/Hour0To11Parser.js": {
+      "bytesInOutput": 387
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/Hour1To24Parser.js": {
+      "bytesInOutput": 368
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/MinuteParser.js": {
+      "bytesInOutput": 330
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/SecondParser.js": {
+      "bytesInOutput": 328
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/FractionOfSecondParser.js": {
+      "bytesInOutput": 249
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ISOTimezoneWithZParser.js": {
+      "bytesInOutput": 419
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/ISOTimezoneParser.js": {
+      "bytesInOutput": 419
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/TimestampSecondsParser.js": {
+      "bytesInOutput": 188
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers/TimestampMillisecondsParser.js": {
+      "bytesInOutput": 184
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse/_lib/parsers.js": {
+      "bytesInOutput": 288
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parse.js": {
+      "bytesInOutput": 1940
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfHour.js": {
+      "bytesInOutput": 64
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfMinute.js": {
+      "bytesInOutput": 62
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/startOfSecond.js": {
+      "bytesInOutput": 65
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/date-fns/parseISO.js": {
+      "bytesInOutput": 2610
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.esm.js": {
+      "bytesInOutput": 1688
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@dagrejs/dagre/dist/dagre.esm.js": {
+      "bytesInOutput": 40422
+    },
+    "src/ui/dom.ts": {
+      "bytesInOutput": 1475
+    },
+    "src/ui/brand-logo.ts": {
+      "bytesInOutput": 3398
+    },
+    "src/ui/icons.ts": {
+      "bytesInOutput": 6678
+    },
+    "src/core/quoted-span.ts": {
+      "bytesInOutput": 183
+    },
+    "src/core/sql-spans.ts": {
+      "bytesInOutput": 1111
+    },
+    "src/core/sql-split.ts": {
+      "bytesInOutput": 874
+    },
+    "src/core/format.ts": {
+      "bytesInOutput": 3359
+    },
+    "src/core/saved-query.ts": {
+      "bytesInOutput": 2843
+    },
+    "src/generated/json-schemas.js": {
+      "bytesInOutput": 55086
+    },
+    "src/generated/json-schema-validators.js": {
+      "bytesInOutput": 214536
+    },
+    "src/core/json-schema-validation.ts": {
+      "bytesInOutput": 4983
+    },
+    "src/core/library-migrations.ts": {
+      "bytesInOutput": 1537
+    },
+    "src/core/param-scan.ts": {
+      "bytesInOutput": 512
+    },
+    "src/core/clickhouse-type.ts": {
+      "bytesInOutput": 3931
+    },
+    "src/core/param-type.ts": {
+      "bytesInOutput": 2278
+    },
+    "src/core/param-validate.ts": {
+      "bytesInOutput": 2561
+    },
+    "src/core/param-serialize.ts": {
+      "bytesInOutput": 1400
+    },
+    "src/core/optional-blocks.ts": {
+      "bytesInOutput": 2464
+    },
+    "src/core/relative-time.ts": {
+      "bytesInOutput": 4942
+    },
+    "src/core/param-pipeline.ts": {
+      "bytesInOutput": 4475
+    },
+    "src/core/query-time-range.ts": {
+      "bytesInOutput": 1471
+    },
+    "src/core/library-codec.ts": {
+      "bytesInOutput": 4510
+    },
+    "src/core/storage.ts": {
+      "bytesInOutput": 420
+    },
+    "src/core/recent-values.ts": {
+      "bytesInOutput": 1257
+    },
+    "src/core/spec-schema.ts": {
+      "bytesInOutput": 8272
+    },
+    "src/core/spec-draft.ts": {
+      "bytesInOutput": 3111
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@preact/signals-core/dist/signals-core.module.js": {
+      "bytesInOutput": 4749
+    },
+    "src/dashboard/model/portable-limits.ts": {
+      "bytesInOutput": 341
+    },
+    "src/dashboard/model/workspace-diagnostics.ts": {
+      "bytesInOutput": 718
+    },
+    "src/dashboard/model/json-limits.ts": {
+      "bytesInOutput": 973
+    },
+    "src/dashboard/model/canonical-json.ts": {
+      "bytesInOutput": 2504
+    },
+    "src/dashboard/model/query-ownership.ts": {
+      "bytesInOutput": 632
+    },
+    "src/dashboard/model/workspace-semantics.ts": {
+      "bytesInOutput": 8724
+    },
+    "src/dashboard/model/dashboard-document.ts": {
+      "bytesInOutput": 1981
+    },
+    "src/workspace/stored-workspace-ownership.ts": {
+      "bytesInOutput": 1369
+    },
+    "src/workspace/stored-workspace.ts": {
+      "bytesInOutput": 3014
+    },
+    "src/workspace/workspace-sync.ts": {
+      "bytesInOutput": 550
+    },
+    "src/core/workspace-key.ts": {
+      "bytesInOutput": 371
+    },
+    "src/core/left-nav-layout.ts": {
+      "bytesInOutput": 3123
+    },
+    "src/state.ts": {
+      "bytesInOutput": 11052
+    },
+    "src/workspace/workspace-dashboards.ts": {
+      "bytesInOutput": 961
+    },
+    "src/core/export.ts": {
+      "bytesInOutput": 1609
+    },
+    "src/core/stream.ts": {
+      "bytesInOutput": 1674
+    },
+    "src/core/field-config.ts": {
+      "bytesInOutput": 927
+    },
+    "src/core/chart-data.ts": {
+      "bytesInOutput": 12062
+    },
+    "src/core/logs.ts": {
+      "bytesInOutput": 1717
+    },
+    "src/core/kpi.ts": {
+      "bytesInOutput": 4242
+    },
+    "src/core/panel-cfg.ts": {
+      "bytesInOutput": 3720
+    },
+    "src/core/sql-lex.ts": {
+      "bytesInOutput": 1443
+    },
+    "src/core/schema-graph.ts": {
+      "bytesInOutput": 4642
+    },
+    "src/net/ch-client.ts": {
+      "bytesInOutput": 9860
+    },
+    "src/editor/editor-port.ts": {
+      "bytesInOutput": 247
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@marijn/find-cluster-break/src/index.js": {
+      "bytesInOutput": 2332
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/state/dist/index.js": {
+      "bytesInOutput": 46747
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/style-mod/src/style-mod.js": {
+      "bytesInOutput": 2202
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/w3c-keyname/index.js": {
+      "bytesInOutput": 1520
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/crelt/index.js": {
+      "bytesInOutput": 611
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/view/dist/index.js": {
+      "bytesInOutput": 186268
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@lezer/common/dist/index.js": {
+      "bytesInOutput": 20388
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@lezer/highlight/dist/index.js": {
+      "bytesInOutput": 7218
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/language/dist/index.js": {
+      "bytesInOutput": 24521
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/commands/dist/index.js": {
+      "bytesInOutput": 23371
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/autocomplete/dist/index.js": {
+      "bytesInOutput": 31522
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@lezer/lr/dist/index.js": {
+      "bytesInOutput": 26552
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@lezer/json/dist/index.js": {
+      "bytesInOutput": 1607
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/lang-json/dist/index.js": {
+      "bytesInOutput": 274
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/search/dist/index.js": {
+      "bytesInOutput": 18472
+    },
+    "src/editor/codemirror-base.ts": {
+      "bytesInOutput": 658
+    },
+    "src/core/spec-completion.ts": {
+      "bytesInOutput": 6416
+    },
+    "src/editor/spec-json-context.ts": {
+      "bytesInOutput": 5765
+    },
+    "src/editor/spec-completion-adapter.ts": {
+      "bytesInOutput": 2770
+    },
+    "src/editor/spec-editor.ts": {
+      "bytesInOutput": 4129
+    },
+    "src/ui/menu.ts": {
+      "bytesInOutput": 2370
+    },
+    "src/ui/confirm-menu.ts": {
+      "bytesInOutput": 418
+    },
+    "src/dashboard/model/tab-origin-badges.ts": {
+      "bytesInOutput": 2539
+    },
+    "src/ui/tabs.ts": {
+      "bytesInOutput": 4447
+    },
+    "src/application/dashboard-variable-config.ts": {
+      "bytesInOutput": 284
+    },
+    "src/core/dashboard-tree-ui-state.ts": {
+      "bytesInOutput": 1434
+    },
+    "src/core/dashboard-variables.ts": {
+      "bytesInOutput": 1307
+    },
+    "src/application/dashboard-tree-model.ts": {
+      "bytesInOutput": 7569
+    },
+    "src/application/left-nav.ts": {
+      "bytesInOutput": 684
+    },
+    "src/ui/placeholder.ts": {
+      "bytesInOutput": 216
+    },
+    "src/core/cell.ts": {
+      "bytesInOutput": 534
+    },
+    "src/core/doc-capability.ts": {
+      "bytesInOutput": 8016
+    },
+    "src/core/doc-documentation.ts": {
+      "bytesInOutput": 2458
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/marked/lib/marked.esm.js": {
+      "bytesInOutput": 41843
+    },
+    "src/core/doc-markdown.ts": {
+      "bytesInOutput": 5830
+    },
+    "src/ui/doc-markdown-view.ts": {
+      "bytesInOutput": 2277
+    },
+    "src/ui/chart-render.ts": {
+      "bytesInOutput": 2464
+    },
+    "src/core/sort.ts": {
+      "bytesInOutput": 290
+    },
+    "src/ui/grid-render.ts": {
+      "bytesInOutput": 2677
+    },
+    "src/ui/logs.ts": {
+      "bytesInOutput": 1084
+    },
+    "src/ui/kpi-panel.ts": {
+      "bytesInOutput": 1737
+    },
+    "src/core/result-choice.ts": {
+      "bytesInOutput": 598
+    },
+    "src/ui/panels.ts": {
+      "bytesInOutput": 6329
+    },
+    "src/core/explain.ts": {
+      "bytesInOutput": 1582
+    },
+    "src/core/script-result.ts": {
+      "bytesInOutput": 396
+    },
+    "src/core/dot.ts": {
+      "bytesInOutput": 585
+    },
+    "src/core/dot-layout.ts": {
+      "bytesInOutput": 1666
+    },
+    "src/core/type-display.ts": {
+      "bytesInOutput": 2022
+    },
+    "src/core/schema-cards.ts": {
+      "bytesInOutput": 1623
+    },
+    "src/core/panzoom.ts": {
+      "bytesInOutput": 439
+    },
+    "src/core/graph-layout.ts": {
+      "bytesInOutput": 868
+    },
+    "src/ui/toast.ts": {
+      "bytesInOutput": 728
+    },
+    "src/ui/schema-detail.ts": {
+      "bytesInOutput": 4600
+    },
+    "src/ui/detached-view.ts": {
+      "bytesInOutput": 1578
+    },
+    "src/ui/explain-graph.ts": {
+      "bytesInOutput": 11980
+    },
+    "src/core/variable-width.ts": {
+      "bytesInOutput": 409
+    },
+    "src/ui/var-field.ts": {
+      "bytesInOutput": 365
+    },
+    "src/ui/combobox.ts": {
+      "bytesInOutput": 2455
+    },
+    "src/ui/combo-footer.ts": {
+      "bytesInOutput": 448
+    },
+    "src/ui/relative-time-field.ts": {
+      "bytesInOutput": 2962
+    },
+    "src/ui/recent-field.ts": {
+      "bytesInOutput": 1028
+    },
+    "src/ui/enum-field.ts": {
+      "bytesInOutput": 1596
+    },
+    "src/ui/popover.ts": {
+      "bytesInOutput": 1570
+    },
+    "src/core/time-range.ts": {
+      "bytesInOutput": 4932
+    },
+    "src/ui/time-range-field.ts": {
+      "bytesInOutput": 4692
+    },
+    "src/ui/variable-option-field.ts": {
+      "bytesInOutput": 1800
+    },
+    "src/core/variable-selection.ts": {
+      "bytesInOutput": 391
+    },
+    "src/ui/multi-select-field.ts": {
+      "bytesInOutput": 3558
+    },
+    "src/ui/variable-bar.ts": {
+      "bytesInOutput": 6502
+    },
+    "src/ui/splitters.ts": {
+      "bytesInOutput": 984
+    },
+    "src/ui/drawer.ts": {
+      "bytesInOutput": 790
+    },
+    "src/core/panel-execution.ts": {
+      "bytesInOutput": 439
+    },
+    "src/ui/results.ts": {
+      "bytesInOutput": 18812
+    },
+    "src/core/connection-lifecycle.ts": {
+      "bytesInOutput": 2141
+    },
+    "src/ui/dialog-shell.ts": {
+      "bytesInOutput": 3346
+    },
+    "src/core/file-menu-model.ts": {
+      "bytesInOutput": 1707
+    },
+    "src/ui/dnd-mime.ts": {
+      "bytesInOutput": 178
+    },
+    "src/core/library-drag.ts": {
+      "bytesInOutput": 369
+    },
+    "src/core/tree-click-arbiter.ts": {
+      "bytesInOutput": 327
+    },
+    "src/application/dashboard-title.ts": {
+      "bytesInOutput": 284
+    },
+    "src/core/dashboard.ts": {
+      "bytesInOutput": 167
+    },
+    "src/dashboard/layouts/flow-layout.ts": {
+      "bytesInOutput": 2642
+    },
+    "src/dashboard/layouts/grafana-grid-layout.ts": {
+      "bytesInOutput": 5707
+    },
+    "src/dashboard/layouts/layout-registry.ts": {
+      "bytesInOutput": 1100
+    },
+    "src/dashboard/application/tile-membership.ts": {
+      "bytesInOutput": 218
+    },
+    "src/dashboard/application/dashboard-removal.ts": {
+      "bytesInOutput": 1505
+    },
+    "src/application/dashboard-delete.ts": {
+      "bytesInOutput": 1385
+    },
+    "src/application/dashboard-panel-metadata.ts": {
+      "bytesInOutput": 662
+    },
+    "src/dashboard/application/dashboard-commands.ts": {
+      "bytesInOutput": 5413
+    },
+    "src/dashboard/application/dashboard-query-resolver.ts": {
+      "bytesInOutput": 352
+    },
+    "src/dashboard/application/panel-creation.ts": {
+      "bytesInOutput": 812
+    },
+    "src/application/panel-creation-service.ts": {
+      "bytesInOutput": 883
+    },
+    "src/dashboard/application/library-assignment.ts": {
+      "bytesInOutput": 1464
+    },
+    "src/application/library-assignment-service.ts": {
+      "bytesInOutput": 2007
+    },
+    "src/ui/dashboard-tree.ts": {
+      "bytesInOutput": 13899
+    },
+    "src/ui/library-assign-menu.ts": {
+      "bytesInOutput": 2166
+    },
+    "src/ui/nav-sections.ts": {
+      "bytesInOutput": 1175
+    },
+    "src/ui/saved-history.ts": {
+      "bytesInOutput": 6841
+    },
+    "src/core/saved-io.ts": {
+      "bytesInOutput": 617
+    },
+    "src/dashboard/model/portable-bundle-codec.ts": {
+      "bytesInOutput": 2851
+    },
+    "src/dashboard/model/legacy-bundle.ts": {
+      "bytesInOutput": 561
+    },
+    "src/dashboard/model/bundle-order.ts": {
+      "bytesInOutput": 244
+    },
+    "src/dashboard/model/dashboard-export.ts": {
+      "bytesInOutput": 327
+    },
+    "src/workspace/workspace-operations.ts": {
+      "bytesInOutput": 412
+    },
+    "src/workspace/import-planner.ts": {
+      "bytesInOutput": 3673
+    },
+    "src/dashboard/application/empty-dashboard.ts": {
+      "bytesInOutput": 190
+    },
+    "src/application/dashboard-create.ts": {
+      "bytesInOutput": 277
+    },
+    "src/generated/example-dashboards.ts": {
+      "bytesInOutput": 187686
+    },
+    "src/ui/file-menu.ts": {
+      "bytesInOutput": 12919
+    },
+    "src/ui/app-header.ts": {
+      "bytesInOutput": 2001
+    },
+    "src/core/tile-reorder.ts": {
+      "bytesInOutput": 431
+    },
+    "src/core/dashboard-autoscroll.ts": {
+      "bytesInOutput": 837
+    },
+    "src/ui/dashboard-chart-interaction.ts": {
+      "bytesInOutput": 5559
+    },
+    "src/core/variable-options.ts": {
+      "bytesInOutput": 3298
+    },
+    "src/dashboard/model/json-merge-patch.ts": {
+      "bytesInOutput": 253
+    },
+    "src/dashboard/model/presentation-resolver.ts": {
+      "bytesInOutput": 2230
+    },
+    "src/dashboard/application/dashboard-viewer-session.ts": {
+      "bytesInOutput": 15281
+    },
+    "src/dashboard/application/panel-widen.ts": {
+      "bytesInOutput": 496
+    },
+    "src/dashboard/application/panel-tile-actions.ts": {
+      "bytesInOutput": 1563
+    },
+    "src/dashboard/application/panel-duplication.ts": {
+      "bytesInOutput": 796
+    },
+    "src/application/dashboard-panel-duplicate.ts": {
+      "bytesInOutput": 1094
+    },
+    "src/application/main-surface.ts": {
+      "bytesInOutput": 2166
+    },
+    "src/dashboard/model/dashboard-variable-store.ts": {
+      "bytesInOutput": 685
+    },
+    "src/ui/dashboard.ts": {
+      "bytesInOutput": 35352
+    },
+    "src/ui/theme-toggle.ts": {
+      "bytesInOutput": 188
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/lang-sql/dist/index.js": {
+      "bytesInOutput": 32160
+    },
+    "src/editor/ch-lang.ts": {
+      "bytesInOutput": 344
+    },
+    "src/ui/doc-pane.ts": {
+      "bytesInOutput": 7280
+    },
+    "src/core/param-comparison.ts": {
+      "bytesInOutput": 1451
+    },
+    "src/ui/login.ts": {
+      "bytesInOutput": 7493
+    },
+    "src/ui/shortcuts.ts": {
+      "bytesInOutput": 10307
+    },
+    "src/application/query-execution-service.ts": {
+      "bytesInOutput": 2184
+    },
+    "src/core/jwt.ts": {
+      "bytesInOutput": 277
+    },
+    "src/core/pkce.ts": {
+      "bytesInOutput": 474
+    },
+    "src/core/target.ts": {
+      "bytesInOutput": 177
+    },
+    "src/net/oauth.ts": {
+      "bytesInOutput": 1366
+    },
+    "src/net/oauth-config.ts": {
+      "bytesInOutput": 2003
+    },
+    "src/application/connection-session.ts": {
+      "bytesInOutput": 7117
+    },
+    "src/core/oauth-document-recovery.ts": {
+      "bytesInOutput": 4980
+    },
+    "src/application/oauth-document-recovery-session.ts": {
+      "bytesInOutput": 4494
+    },
+    "src/application/authenticated-execution-scope.ts": {
+      "bytesInOutput": 748
+    },
+    "src/core/sql-reference.ts": {
+      "bytesInOutput": 1110
+    },
+    "src/core/completions.ts": {
+      "bytesInOutput": 4174
+    },
+    "src/application/schema-catalog-service.ts": {
+      "bytesInOutput": 7232
+    },
+    "src/core/from-scope.ts": {
+      "bytesInOutput": 2208
+    },
+    "src/application/workbench-parameter-session.ts": {
+      "bytesInOutput": 1985
+    },
+    "src/application/ch-session-params.ts": {
+      "bytesInOutput": 286
+    },
+    "src/application/export-service.ts": {
+      "bytesInOutput": 6158
+    },
+    "src/application/schema-graph-session.ts": {
+      "bytesInOutput": 3425
+    },
+    "src/application/app-preferences.ts": {
+      "bytesInOutput": 189
+    },
+    "src/workspace/workspace-repository.ts": {
+      "bytesInOutput": 3459
+    },
+    "src/workspace/indexeddb-workspace-store.ts": {
+      "bytesInOutput": 2930
+    },
+    "src/ui/conflict-resolution.ts": {
+      "bytesInOutput": 732
+    },
+    "src/core/sql-route.ts": {
+      "bytesInOutput": 772
+    },
+    "src/core/query-source.ts": {
+      "bytesInOutput": 236
+    },
+    "src/ui/workbench/workbench-session.ts": {
+      "bytesInOutput": 6168
+    },
+    "src/application/query-document-session.ts": {
+      "bytesInOutput": 1208
+    },
+    "src/core/share.ts": {
+      "bytesInOutput": 961
+    },
+    "src/application/saved-query-service.ts": {
+      "bytesInOutput": 1137
+    },
+    "src/ui/workbench/workbench-shell.ts": {
+      "bytesInOutput": 5368
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/preact/dist/preact.module.js": {
+      "bytesInOutput": 10686
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/preact/hooks/dist/hooks.module.js": {
+      "bytesInOutput": 1833
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@preact/signals/dist/signals.module.js": {
+      "bytesInOutput": 3140
+    },
+    "src/ui/schema.ts": {
+      "bytesInOutput": 4408
+    },
+    "src/ui/sidebar-upper.ts": {
+      "bytesInOutput": 1393
+    },
+    "src/ui/left-nav-separator.ts": {
+      "bytesInOutput": 2678
+    },
+    "src/ui/shell/shell-layout.ts": {
+      "bytesInOutput": 431
+    },
+    "src/ui/shell/focus-settlement.ts": {
+      "bytesInOutput": 264
+    },
+    "src/ui/shell/adopt.ts": {
+      "bytesInOutput": 211
+    },
+    "src/ui/shell/right-inspector-view.ts": {
+      "bytesInOutput": 2440
+    },
+    "src/ui/shell/shell-view.ts": {
+      "bytesInOutput": 3262
+    },
+    "src/ui/shell/shell-host.ts": {
+      "bytesInOutput": 5822
+    },
+    "src/ui/app.ts": {
+      "bytesInOutput": 41350
+    },
+    "src/core/doc-context.ts": {
+      "bytesInOutput": 6944
+    },
+    "src/editor/codemirror-adapter.ts": {
+      "bytesInOutput": 7363
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@lezer/xml/dist/index.js": {
+      "bytesInOutput": 8583
+    },
+    "../../../../Workspaces/altinity/altinity-sql-browser/node_modules/@codemirror/lang-xml/dist/index.js": {
+      "bytesInOutput": 5975
+    },
+    "src/editor/code-viewer.ts": {
+      "bytesInOutput": 875
+    },
+    "src/main.ts": {
+      "bytesInOutput": 2643
+    }
+  }
+}
