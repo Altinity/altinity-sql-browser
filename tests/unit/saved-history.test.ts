@@ -718,6 +718,11 @@ describe('renderSavedHistory', () => {
     expect(libraryTab.getAttribute('aria-pressed')).toBe('true');
     expect(historyTab.type).toBe('button');
     expect(historyTab.getAttribute('aria-pressed')).toBe('false');
+    // #487 phase 3 step 4: the wide-mode restore-focus path
+    // (`app-shell.ts`'s `applyEffectiveLeftNavigationLayout`) finds a tab by
+    // `data-section` at the moment of the transition.
+    expect(libraryTab.dataset.section).toBe('library');
+    expect(historyTab.dataset.section).toBe('history');
 
     click(historyTab);
     renderSavedHistory(app);
@@ -850,6 +855,24 @@ describe('renderSavedHistory — search/filter', () => {
     type(app, 'busiest');
     expect(names(app)).toEqual(['Busiest airports']);
     input(app).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(app.state.lowerNavigationFilters.library).toBe('');
+    expect(names(app)).toHaveLength(3);
+  });
+
+  // #487 phase 3 step 4: an EMPTY search box must not swallow Escape, or the
+  // focused drawer's own Escape-to-close handler (`app-shell.ts`) can never be
+  // reached while focus sits in an untouched search input. This is what makes
+  // the fix reachable: against the OLD code (Escape always clears + always
+  // `preventDefault()`s), this assertion on `defaultPrevented` fails.
+  it('does NOT swallow Escape on an already-EMPTY search box (so it can bubble to the drawer)', () => {
+    const app = savedApp();
+    const box = input(app);
+    expect(box.value).toBe(''); // genuinely empty — not merely "looks empty"
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    box.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
     expect(app.state.lowerNavigationFilters.library).toBe('');
     expect(names(app)).toHaveLength(3);
   });

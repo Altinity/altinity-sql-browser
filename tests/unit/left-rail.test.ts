@@ -179,6 +179,21 @@ describe('buildLeftRail', () => {
     handle.dispose();
   });
 
+  // #487 phase 3 step 4: `app-shell.ts`'s Escape handler returns focus to the
+  // rail launcher that opened a now-closed drawer via this method.
+  it('focusSection moves focus to that section\'s OWN button, not any other', () => {
+    const handle = buildLeftRail(makeDeps(makeState()));
+    const buttons = Array.from(handle.el.querySelectorAll('button'));
+    document.body.appendChild(handle.el); // focus() is a no-op on a detached element
+
+    handle.focusSection('history');
+
+    expect(document.activeElement).toBe(buttons[LEFT_NAV_SECTIONS.indexOf('history')]);
+    expect(document.activeElement).not.toBe(buttons[LEFT_NAV_SECTIONS.indexOf('databases')]);
+    handle.el.remove();
+    handle.dispose();
+  });
+
   it('dispose() stops the reactive effect — a later signal write does not update the DOM', () => {
     const state = makeState({ section: null });
     const handle = buildLeftRail(makeDeps(state));

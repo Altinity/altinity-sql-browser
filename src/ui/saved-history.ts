@@ -179,6 +179,7 @@ export function renderLowerTabs(app: App): void {
     return h('button', {
       class: 'side-tab' + (active === section ? ' active' : ''),
       type: 'button',
+      'data-section': section,
       'aria-pressed': active === section ? 'true' : 'false',
       onclick: () => switchTo(section),
     }, meta.icon(), h('span', null, meta.label), extra);
@@ -243,7 +244,13 @@ function renderSectionSearch(app: App, section: LowerNavigationSection, box: HTM
     syncClear();
     if (list) renderSectionList(app, section, list);
   });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
+  // #487 phase 3 step 4: an EMPTY search box does not claim Escape — leaving it
+  // unclaimed (no `preventDefault()`) lets the key bubble up to the focused
+  // drawer's own Escape handler (`app-shell.ts`) so Escape can close the drawer
+  // even while this input is focused. A non-empty box still clears itself
+  // first, exactly as before — a genuinely active filter is this input's own
+  // business to consume.
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape' && input.value !== '') { e.preventDefault(); setFilter(''); } });
   clear.addEventListener('click', () => { setFilter(''); input.focus(); });
   syncClear();
 

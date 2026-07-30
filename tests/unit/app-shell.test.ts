@@ -4,6 +4,7 @@ import type { AppShellDeps } from '../../src/ui/app-shell.js';
 import { startDrag } from '../../src/ui/splitters.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import { LEFT_NAV_SECTIONS } from '../../src/core/left-nav-layout.js';
 import type { LeftNavigationSection } from '../../src/core/left-nav-layout.js';
 
 function mount(overrides: Partial<AppShellDeps> = {}) {
@@ -660,5 +661,175 @@ describe('mountAppShell left navigation presentation — observer vs. an active 
     expect(runs).toBe(1);
 
     handle.dispose();
+  });
+});
+
+// #487 phase 3 step 4 — Escape closes a focused drawer and returns focus to
+// the rail launcher that opened it. `saved-history.ts`'s search-box Escape
+// handler (Part 1's fix) and the saved-row edit form's own Escape-to-cancel
+// handlers are the ones expected to claim the key first (`defaultPrevented`);
+// this handler must never act on top of one of those.
+describe('mountAppShell — Escape closes the focused drawer (#487 phase 3 step 4)', () => {
+  it('Escape on a descendant of .sidebar closes the drawer, consumes the key, and returns focus to the rail launcher', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    document.body.appendChild(app.root); // .focus() is a no-op on a detached element
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const rail = app.root.querySelector('.left-rail') as HTMLElement;
+    const libraryBtn = [...rail.querySelectorAll<HTMLButtonElement>('.left-rail-btn')][LEFT_NAV_SECTIONS.indexOf('library')];
+    // Dispatched on a DESCENDANT, never `sidebar` itself — proves the handler
+    // relies on bubbling rather than requiring the event to land exactly on it.
+    const target = app.dom.savedList!;
+    expect(sidebar.contains(target)).toBe(true);
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+
+    expect(app.state.leftNavSection.value).toBeNull();
+    expect(sidebar.dataset.navMode).toBe('rail');
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(libraryBtn);
+
+    app.root.remove();
+    handle.dispose();
+  });
+
+  it('ignores a non-Escape key entirely', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(app.state.leftNavSection.value).toBe('library');
+    handle.dispose();
+  });
+
+  it('does nothing when not in drawer mode — wide', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(app.state.leftNavMode.value).toBe('wide');
+    handle.dispose();
+  });
+
+  it('does nothing when not in drawer mode — bare rail (no focused section)', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: null });
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(app.state.leftNavSection.value).toBeNull();
+    expect(sidebar.dataset.navMode).toBe('rail');
+    handle.dispose();
+  });
+
+  // The regression Part 1's fix makes reachable at all: a NON-empty search
+  // filter still legitimately claims Escape for itself, and this handler must
+  // respect that claim rather than also closing the drawer on the same key.
+  it('respects a nested handler that already claimed Escape (a non-empty search filter) — the drawer stays open', () => {
+    const loadSchema = vi.fn(async () => {});
+    const loadReference = vi.fn(async () => {});
+    const app = makeApp({ catalog: { loadSchema, loadReference }, prefs: { save: vi.fn() } });
+    app.state.savedQueries = [savedQuery({ id: 's1', name: 'Q1', sql: 'SELECT 1' })];
+    app.state.leftNavMode.value = 'rail';
+    app.state.leftNavSection.value = 'library';
+    const handle = mountAppShell({
+      app, root: app.root, document, state: app.state, catalog: app.catalog,
+      prefs: app.prefs, matchMedia: null, updateBanner: vi.fn(), startDrag,
+    });
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const input = app.dom.savedSearch!.querySelector<HTMLInputElement>('.sv-search-input')!;
+    expect(input).not.toBeNull();
+    input.value = 'zzzz';
+    input.dispatchEvent(new Event('input', { bubbles: true })); // commit a genuinely non-empty filter
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true); // the search box's own handler claimed it
+    expect(app.state.leftNavSection.value).toBe('library'); // the drawer's own handler did NOT also act
+    expect(sidebar.dataset.navMode).toBe('drawer');
+    handle.dispose();
+  });
+
+  // The `section === null` guard is defensive against the mode/section
+  // coherence invariant (`core/left-nav-layout.ts`) ever being violated — which
+  // no normal interaction can reach, since every write to `leftNavMode`/
+  // `leftNavSection` goes through the reducers that maintain it. Forcing the
+  // violation by hand (clear the section, then hand-restore the now-stale
+  // 'drawer' dataset the reactive effect just corrected) is the only way to
+  // exercise this line at all, and it proves the guard: with no section to
+  // toggle, the handler does nothing rather than throwing or acting on `null`.
+  it('the defensive section===null guard: a hand-forced coherence violation still does nothing (never throws)', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library' });
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    app.state.leftNavSection.value = null; // the effect immediately flips navMode back to 'rail'...
+    sidebar.dataset.navMode = 'drawer'; // ...so re-force it, simulating the invariant being violated.
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    expect(() => sidebar.dispatchEvent(event)).not.toThrow();
+
+    expect(event.defaultPrevented).toBe(false);
+    handle.dispose();
+  });
+});
+
+// #487 phase 3 step 4 — converting a focused drawer to the wide sidebar (a
+// resize-separator drag past the wide threshold; `End`/bare-rail-`ArrowRight`
+// go through the identical `applyEffectiveLayout` callback) restores focus to
+// the section's own wide-mode tab. This is a SEPARATE trigger from Escape
+// (Escape only ever converts drawer -> bare rail, never all the way to wide).
+describe('mountAppShell — converting to wide restores focus to the section\'s wide-mode tab (#487 phase 3 step 4)', () => {
+  it('a LOWER section (History): dragging the separator past the wide threshold focuses the History tab', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'history' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 })); // past the wide threshold
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 400 }));
+
+    expect(app.state.leftNavMode.value).toBe('wide');
+    const historyTab = app.dom.savedTabsRow!.querySelector('[data-section="history"]');
+    expect(historyTab).not.toBeNull();
+    expect(document.activeElement).toBe(historyTab);
+
+    app.root.remove();
+    handle.dispose();
+  });
+
+  it('an UPPER section (Dashboards): dragging the separator past the wide threshold focuses the Dashboards tab', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'dashboards' });
+    document.body.appendChild(app.root);
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 400 }));
+
+    expect(app.state.leftNavMode.value).toBe('wide');
+    const dashboardsTab = app.dom.upperRoleTabs!.querySelector('[data-section="dashboards"]');
+    expect(dashboardsTab).not.toBeNull();
+    expect(document.activeElement).toBe(dashboardsTab);
+
+    app.root.remove();
+    handle.dispose();
+  });
+
+  it('the very first presentation call (initial mount) never moves focus — nothing was previously focused', () => {
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+    const { handle } = mountWithLeftNav({ mode: 'wide' });
+
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    handle.dispose();
+    focusSpy.mockRestore();
   });
 });

@@ -48,8 +48,8 @@ import { mountLeftNavSeparator } from './left-nav-separator.js';
 import {
   clampLeftNavigationToMaximumTotal, effectiveLeftNavigationLayout, LEFT_CENTRE_MIN_PX,
 } from '../core/left-nav-layout.js';
-import type { LeftNavigationLayout } from '../core/left-nav-layout.js';
-import { readLeftNavigationLayout } from '../application/left-nav.js';
+import type { LeftNavigationLayout, LeftNavigationSection } from '../core/left-nav-layout.js';
+import { readLeftNavigationLayout, toggleFocusedSection } from '../application/left-nav.js';
 import type { App } from './app.types.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
@@ -252,6 +252,34 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   });
   app.dom.leftRail = leftRail.el;
 
+  // #487 phase 3 step 4 — Escape closes a focused drawer and returns focus to
+  // the rail launcher that opened it. Attached ONCE, directly on `sidebar`
+  // (the drawer container), and relies entirely on bubbling from whatever
+  // descendant currently has focus — this is not keyboard ownership, it only
+  // ever reacts to a keydown that already landed inside `.sidebar`.
+  sidebar.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    // Something nested already claimed this Escape — the search box (when its
+    // own filter is non-empty, `saved-history.ts`) or a saved-row edit form's
+    // own Escape-to-cancel handler. Respect that claim: do not also close the
+    // drawer on the same keystroke.
+    if (e.defaultPrevented) return;
+    // Escape is only this handler's concern while a focused drawer is
+    // actually showing — in 'wide'/'rail' mode there is nothing to close.
+    if (sidebar.dataset.navMode !== 'drawer') return;
+    const section = state.leftNavSection.value;
+    // The mode/section coherence invariant (`core/left-nav-layout.ts`)
+    // guarantees `section` is non-null whenever `navMode === 'drawer'` — this
+    // guard is defensive only, never expected to trip.
+    if (section === null) return;
+    // A second activation of the already-open section CLOSES it
+    // (`resolveRailActivation`'s toggle semantics) — exactly what this
+    // handler wants.
+    toggleFocusedSection(app, section);
+    e.preventDefault();
+    leftRail.focusSection(section);
+  });
+
   app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
   // The workbench column's mount point (#425 follow-up prep). Its sizing lives
   // in styles.css alongside `.dashboard-host` (static layout, not state-driven
@@ -275,6 +303,21 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   const getMaxNavigationTotalPx = (): number =>
     mainRow.getBoundingClientRect().width - LEFT_NAV_SEPARATOR_WIDTH_PX - LEFT_CENTRE_MIN_PX;
 
+  // #487 phase 3 step 4 — the ONE piece of state this presentation function
+  // needs beyond `layout` itself: which section was focused on the PREVIOUS
+  // call, read before this call's own `layout.focusedSection` overwrites it.
+  // That is what lets a rail/drawer → wide transition (the resize separator
+  // converting past the wide threshold, or the `End`/bare-rail-`ArrowRight`
+  // keyboard restore) know which section's wide-mode tab to hand focus back
+  // to — Escape's drawer→rail close (this file's `sidebar` keydown listener,
+  // below) is a SEPARATE trigger and never reaches 'wide' here. Starting at
+  // `null` spuriously "restores" nothing on the very first call: if that
+  // first layout is already 'wide', `focusedSection` is `null` by the
+  // mode/section coherence invariant (`core/left-nav-layout.ts`) regardless of
+  // what this variable holds, so the restore branch below cannot fire either
+  // way.
+  let previousFocusedSection: LeftNavigationSection | null = null;
+
   // #487 phase 3 — the SOLE writer of every left-navigation presentation
   // attribute. `data-nav-mode` ('wide' | 'rail' | 'drawer') is derived from
   // `layout.mode`/`layout.focusedSection` and written onto BOTH `.main-row`
@@ -285,6 +328,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // computes no CSS and this is the one seam `app-shell.test.ts` can assert
   // the whole table against as real DOM property writes.
   function applyEffectiveLeftNavigationLayout(layout: LeftNavigationLayout): void {
+    const priorFocusedSection = previousFocusedSection;
     const navMode: 'wide' | 'rail' | 'drawer' = layout.mode === 'wide'
       ? 'wide'
       : layout.focusedSection === null ? 'rail' : 'drawer';
@@ -352,6 +396,23 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // during the separator's own active session too — it just redundantly
     // re-applies the same values `advanceTo`/`commitSession` already set.
     leftNavSeparator.refreshAria(layout);
+
+    // #487 phase 3 step 4 — converting a focused drawer to the wide sidebar
+    // (a resize-separator drag past the wide threshold, or the `End`/
+    // bare-rail-`ArrowRight` keyboard restore) hands focus to the section's
+    // OWN wide-mode tab, so keyboard/AT users land somewhere meaningful
+    // rather than on whatever the drawer's last-focused element happened to
+    // be (now hidden). Resolved by a LIVE `querySelector` at the moment of
+    // the transition, never a cached reference: `renderUpperRoleTabs`/
+    // `renderLowerTabs` both `.replaceChildren(...)` on every repaint, so an
+    // element captured earlier can go stale.
+    if (navMode === 'wide' && priorFocusedSection !== null) {
+      const pane = NAV_SECTION_META[priorFocusedSection].pane;
+      const tabsRow = pane === 'upper' ? app.dom.upperRoleTabs : app.dom.savedTabsRow;
+      const tabButton = tabsRow?.querySelector<HTMLElement>('[data-section="' + priorFocusedSection + '"]');
+      tabButton?.focus();
+    }
+    previousFocusedSection = layout.focusedSection;
   }
 
   // #487 phase 3 — the ONE derivation path every trigger below funnels

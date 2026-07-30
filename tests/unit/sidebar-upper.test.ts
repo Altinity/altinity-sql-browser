@@ -103,6 +103,16 @@ describe('buildSidebarUpper — role tabs', () => {
     expect(tabs(app)[1].getAttribute('aria-pressed')).toBe('false');
   });
 
+  // #487 phase 3 step 4: the wide-mode restore-focus path
+  // (`app-shell.ts`'s `applyEffectiveLeftNavigationLayout`) finds a tab by
+  // `data-section` at the moment of the transition — each button must carry
+  // its own section name.
+  it('carries its own section as data-section (#487 phase 3 step 4)', () => {
+    const { app } = mount();
+    expect(tabs(app)[0].dataset.section).toBe('databases');
+    expect(tabs(app)[1].dataset.section).toBe('dashboards');
+  });
+
   it('clicking a tab selects that role', () => {
     const { app } = mount();
     tabs(app)[1].click();

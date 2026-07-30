@@ -59,6 +59,14 @@ export interface LeftRailHandle {
   readonly el: HTMLElement;
   /** Stop every per-button reactive effect. Idempotent-safe to call once. */
   dispose(): void;
+  /**
+   * Move focus to `section`'s own launcher button. #487 phase 3 step 4's
+   * Escape handler (`app-shell.ts`) calls this to return focus to the rail
+   * icon that opened a focused drawer once Escape has closed it — a no-op if
+   * `section` somehow has no button (unreachable in practice: every member of
+   * `LEFT_NAV_SECTIONS` gets one below).
+   */
+  focusSection(section: LeftNavigationSection): void;
 }
 
 /**
@@ -76,6 +84,10 @@ export interface LeftRailHandle {
 export function buildLeftRail(deps: LeftRailDeps): LeftRailHandle {
   const { app, registry, state, drawerElementId } = deps;
   const disposers: (() => void)[] = [];
+  // Keyed by section rather than array index, so `focusSection` reads as "the
+  // button for THIS section" rather than relying on `LEFT_NAV_SECTIONS` order
+  // staying in sync with wherever a caller indexes from.
+  const buttonsBySection = new Map<LeftNavigationSection, HTMLButtonElement>();
 
   const buttons = LEFT_NAV_SECTIONS.map((section) => {
     const entry = registry.entry(section);
@@ -88,6 +100,7 @@ export function buildLeftRail(deps: LeftRailDeps): LeftRailHandle {
       'aria-expanded': 'false',
       onclick: () => toggleFocusedSection(app, section),
     }, entry.icon());
+    buttonsBySection.set(section, button);
     disposers.push(effect(() => {
       button.setAttribute('aria-expanded', state.leftNavSection.value === section ? 'true' : 'false');
     }));
@@ -99,5 +112,6 @@ export function buildLeftRail(deps: LeftRailDeps): LeftRailHandle {
   return {
     el,
     dispose: () => { for (const dispose of disposers) dispose(); },
+    focusSection: (section) => { buttonsBySection.get(section)?.focus(); },
   };
 }
