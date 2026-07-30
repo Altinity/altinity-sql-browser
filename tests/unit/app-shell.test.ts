@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mountAppShell } from '../../src/ui/app-shell.js';
+import type { AppShellDeps } from '../../src/ui/app-shell.js';
 import { startDrag } from '../../src/ui/splitters.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import type { LeftNavigationSection } from '../../src/core/left-nav-layout.js';
 
-function mount() {
+function mount(overrides: Partial<AppShellDeps> = {}) {
   const loadSchema = vi.fn(async () => {});
   const loadReference = vi.fn(async () => {});
   const save = vi.fn();
@@ -22,8 +24,37 @@ function mount() {
     matchMedia: null,
     updateBanner: vi.fn(),
     startDrag,
+    ...overrides,
   });
-  return { app, handle, loadSchema, loadReference };
+  return { app, handle, loadSchema, loadReference, save };
+}
+
+/** Like `mount()`, but sets the left-navigation signals BEFORE mounting, so
+ *  the shell's own mount-time paint (the preferred-state effect's first run)
+ *  reflects them — the only way to exercise 'rail'/'drawer' presentation or
+ *  an `isMobile`-from-the-start mount. */
+function mountWithLeftNav(over: {
+  mode?: 'wide' | 'rail'; section?: LeftNavigationSection | null; isMobile?: boolean;
+} = {}, overrides: Partial<AppShellDeps> = {}) {
+  const loadSchema = vi.fn(async () => {});
+  const loadReference = vi.fn(async () => {});
+  const app = makeApp({ catalog: { loadSchema, loadReference }, prefs: { save: vi.fn() } });
+  if (over.mode !== undefined) app.state.leftNavMode.value = over.mode;
+  if (over.section !== undefined) app.state.leftNavSection.value = over.section;
+  if (over.isMobile !== undefined) app.state.isMobile.value = over.isMobile;
+  const handle = mountAppShell({
+    app,
+    root: app.root,
+    document,
+    state: app.state,
+    catalog: app.catalog,
+    prefs: app.prefs,
+    matchMedia: null,
+    updateBanner: vi.fn(),
+    startDrag,
+    ...overrides,
+  });
+  return { app, handle };
 }
 
 /** Every mounted section host, keyed by its `data-section`. */
@@ -37,21 +68,24 @@ const hosts = (root: ParentNode): Record<string, HTMLElement> => Object.fromEntr
 // unchanged": the same two panes, the same switchers, the same splitters, and the
 // rail that phase 3 introduces is not here yet.
 describe('mountAppShell wide navigation (#487 phase 2)', () => {
-  it('renders no rail — the sidebar is the only container hosting a section', () => {
+  it('the sidebar is the only container HOSTING a section — the rail is a re-presentation, not a second container', () => {
     const { app, handle } = mount();
     const sidebar = app.root.querySelector('.sidebar')!;
 
     expect(app.root.querySelectorAll('.sidebar')).toHaveLength(1);
     // Stated positively, so it is falsifiable TODAY rather than an assertion about
     // class names no code emits yet: every section host lives inside the one
-    // sidebar, and the `.main-row` holds only the sidebar, its width handle and the
-    // two work-surface hosts. Phase 3 moving a host into a rail-side drawer — or
-    // adding a second navigation column — has to fail this.
+    // sidebar, and the `.main-row` holds the rail, the sidebar, its width handle
+    // and the two work-surface hosts. #487 phase 3 adds the rail as `.main-row`'s
+    // FIRST child (never a second section-hosting container — see
+    // `## Tests` → "left navigation presentation" below for the rail/drawer
+    // presentation itself) — a host moving OUT of the sidebar, or a second
+    // navigation column, has to fail this.
     const hosts = [...app.root.querySelectorAll('.nav-section-host')];
     expect(hosts).toHaveLength(4);
     expect(hosts.every((host) => sidebar.contains(host))).toBe(true);
     expect([...app.root.querySelector('.main-row')!.children].map((el) => el.className))
-      .toEqual(['sidebar', 'col-resize', 'query-host', 'dashboard-host']);
+      .toEqual(['left-rail', 'sidebar', 'col-resize', 'query-host', 'dashboard-host']);
     handle.dispose();
   });
 
@@ -285,5 +319,216 @@ describe('mountAppShell authentication host', () => {
     handle.dispose();
     expect(app.root.children[1]).toBe(host);
     expect(host.firstElementChild).toBe(controls);
+  });
+});
+
+// #487 phase 3 — the composition step that makes the rail + focused drawer
+// reachable: `.sidebar` is RE-PRESENTED (never moved/rebuilt) via
+// `data-nav-mode`, and `applyEffectiveLeftNavigationLayout` is the sole writer
+// of every attribute/hidden toggle the table in the phase's own spec names.
+describe('mountAppShell left navigation presentation (#487 phase 3)', () => {
+  it('wide mode: rail hidden, sidebar visible, every wide-only control visible', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const rail = app.root.querySelector('.left-rail') as HTMLElement;
+
+    expect(mainRow.dataset.navMode).toBe('wide');
+    expect(sidebar.dataset.navMode).toBe('wide');
+    expect(rail.hidden).toBe(true);
+    expect(sidebar.hidden).toBe(false);
+    expect(app.dom.upperRoleTabs!.hidden).toBe(false);
+    expect(app.dom.savedTabsRow!.hidden).toBe(false);
+    expect(app.dom.sideSplit!.hidden).toBe(false);
+    expect((app.root.querySelector('.schema-pane') as HTMLElement).hidden).toBe(false);
+    expect((app.root.querySelector('.saved-pane') as HTMLElement).hidden).toBe(false);
+    expect(app.dom.leftNavTitle!.hidden).toBe(true);
+    expect(sidebar.hasAttribute('aria-labelledby')).toBe(false);
+    handle.dispose();
+  });
+
+  it('rail mode (no focused section): rail visible, sidebar and every wide-only control hidden', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: null });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const rail = app.root.querySelector('.left-rail') as HTMLElement;
+
+    expect(mainRow.dataset.navMode).toBe('rail');
+    expect(sidebar.dataset.navMode).toBe('rail');
+    expect(rail.hidden).toBe(false);
+    expect(sidebar.hidden).toBe(true);
+    expect(app.dom.upperRoleTabs!.hidden).toBe(true);
+    expect(app.dom.savedTabsRow!.hidden).toBe(true);
+    expect(app.dom.sideSplit!.hidden).toBe(true);
+    handle.dispose();
+  });
+
+  it('drawer mode, upper section focused: rail + sidebar visible, upper pane shown, lower pane + wide-only chrome hidden, title names the section', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'dashboards' });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const rail = app.root.querySelector('.left-rail') as HTMLElement;
+    const schemaPane = app.root.querySelector('.schema-pane') as HTMLElement;
+    const savedPane = app.root.querySelector('.saved-pane') as HTMLElement;
+
+    expect(mainRow.dataset.navMode).toBe('drawer');
+    expect(sidebar.dataset.navMode).toBe('drawer');
+    expect(rail.hidden).toBe(false);
+    expect(sidebar.hidden).toBe(false);
+    expect(schemaPane.hidden).toBe(false);
+    expect(savedPane.hidden).toBe(true);
+    expect(app.dom.upperRoleTabs!.hidden).toBe(true);
+    expect(app.dom.savedTabsRow!.hidden).toBe(true);
+    expect(app.dom.sideSplit!.hidden).toBe(true);
+    expect(app.dom.leftNavTitle!.hidden).toBe(false);
+    expect(app.dom.leftNavTitle!.textContent).toBe('Dashboards');
+    expect(sidebar.getAttribute('aria-labelledby')).toBe(app.dom.leftNavTitle!.id);
+    handle.dispose();
+  });
+
+  it('drawer mode, lower section focused: lower pane shown, upper pane hidden, title names the section', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'history' });
+    const schemaPane = app.root.querySelector('.schema-pane') as HTMLElement;
+    const savedPane = app.root.querySelector('.saved-pane') as HTMLElement;
+
+    expect(schemaPane.hidden).toBe(true);
+    expect(savedPane.hidden).toBe(false);
+    expect(app.dom.leftNavTitle!.textContent).toBe('History');
+    handle.dispose();
+  });
+
+  it('the rail\'s four launchers exist and every aria-controls matches the real sidebar id', () => {
+    const { app, handle } = mountWithLeftNav();
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    const buttons = [...app.root.querySelectorAll('.left-rail-btn')];
+
+    expect(buttons).toHaveLength(4);
+    expect(sidebar.id).toBeTruthy();
+    for (const btn of buttons) expect(btn.getAttribute('aria-controls')).toBe(sidebar.id);
+    handle.dispose();
+  });
+
+  it('mounting with state.isMobile.value = true from the start renders wide regardless of the stored leftNavMode', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: true });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+
+    expect(mainRow.dataset.navMode).toBe('wide');
+    expect(sidebar.dataset.navMode).toBe('wide');
+    expect(sidebar.hidden).toBe(false);
+    handle.dispose();
+  });
+
+  it('crossing the mobile breakpoint after mount forces the presentation back to wide', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'rail', section: 'library', isMobile: false });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+
+    expect(mainRow.dataset.navMode).toBe('drawer');
+    app.state.isMobile.value = true;
+    expect(mainRow.dataset.navMode).toBe('wide');
+    handle.dispose();
+  });
+
+  it('a mode/section change re-runs the presentation function exactly once — not zero, not twice', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    const title = app.dom.leftNavTitle!;
+    // `leftNavTitle.hidden` is written by nothing in this module except the
+    // presentation function's own unconditional assignment (a local closure
+    // with no other exposed hook) — shadowing its accessor on the instance
+    // turns "how many times did it run" into a directly countable,
+    // falsifiable signal, the same "install something that counts runs"
+    // technique `left-nav.test.ts`'s atomicity test uses for a batched write.
+    let runs = 0;
+    let hiddenValue = title.hidden;
+    Object.defineProperty(title, 'hidden', {
+      configurable: true,
+      get: () => hiddenValue,
+      set: (v: boolean) => { hiddenValue = v; runs++; },
+    });
+
+    app.state.leftNavMode.value = 'rail';
+
+    expect(runs).toBe(1);
+    handle.dispose();
+  });
+
+  it('dispose() stops the reactive effect, the rail and the separator — a later signal write no longer changes the DOM', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const rail = app.root.querySelector('.left-rail') as HTMLElement;
+
+    handle.dispose();
+    app.state.leftNavMode.value = 'rail';
+
+    expect(mainRow.dataset.navMode).toBe('wide');
+    expect(rail.hidden).toBe(true);
+  });
+
+  it('the separator repaints through the SAME presentation function during a drag (mode changes, DOM reflects it)', () => {
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50 })); // below the fold threshold
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 50 }));
+
+    expect(app.state.leftNavMode.value).toBe('rail');
+    expect(mainRow.dataset.navMode).toBe('rail');
+    handle.dispose();
+  });
+
+  it('an injected observeElementWidth seam is called once with .main-row and its disposer is invoked on dispose()', () => {
+    const observeElementWidth = vi.fn((_el: Element, _cb: (widthPx: number) => void) => vi.fn());
+    const { handle } = mountWithLeftNav({ mode: 'wide' }, { observeElementWidth });
+
+    expect(observeElementWidth).toHaveBeenCalledTimes(1);
+    const [observedEl] = observeElementWidth.mock.calls[0];
+    expect((observedEl as HTMLElement).className).toBe('main-row');
+    const disposer = observeElementWidth.mock.results[0].value;
+    expect(disposer).not.toHaveBeenCalled();
+
+    handle.dispose();
+    expect(disposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('the observeElementWidth callback re-derives and re-applies the layout, and ignores a non-positive/non-finite width', () => {
+    let capturedCallback: ((widthPx: number) => void) | null = null;
+    const observeElementWidth = vi.fn((_el: Element, cb: (widthPx: number) => void) => {
+      capturedCallback = cb;
+      return vi.fn();
+    });
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' }, { observeElementWidth });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+
+    // A pre-mount mode write with no repaint trigger yet — the width observer
+    // callback is what has to notice it, not a signal effect.
+    app.state.leftNavMode.value = 'rail';
+    expect(mainRow.dataset.navMode).toBe('rail'); // the preferred-state effect already caught this one…
+    app.state.leftNavMode.value = 'wide';
+    expect(mainRow.dataset.navMode).toBe('wide');
+
+    // Defensive guards: neither call throws, and neither repaints from a
+    // bogus measurement.
+    expect(() => capturedCallback!(0)).not.toThrow();
+    expect(() => capturedCallback!(-5)).not.toThrow();
+    expect(() => capturedCallback!(NaN)).not.toThrow();
+    expect(mainRow.dataset.navMode).toBe('wide');
+
+    // A real, live width re-derives through the SAME pipeline — it does not
+    // itself change the outcome here (no active drag, same preferred state),
+    // but it must not throw and must actually invoke the presentation
+    // function again.
+    let runs = 0;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    let widthValue = sidebar.style.width;
+    Object.defineProperty(sidebar.style, 'width', {
+      configurable: true,
+      get: () => widthValue,
+      set: (v: string) => { widthValue = v; runs++; },
+    });
+    capturedCallback!(900);
+    expect(runs).toBe(1);
+    handle.dispose();
   });
 });

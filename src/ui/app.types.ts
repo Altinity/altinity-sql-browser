@@ -130,6 +130,22 @@ export interface AppDom {
   historySearch?: HTMLElement;
   savedTabsRow?: HTMLElement;
   schemaList?: HTMLElement;
+  /** #487 phase 3 — the compact icon rail (`ui/left-rail.ts`), `.main-row`'s
+   *  first child. Exposed on `app.dom` for consistency with this interface's
+   *  existing pattern of exposing every shell-built element, even though
+   *  `app-shell.ts` itself already holds a local reference. */
+  leftRail?: HTMLElement;
+  /** #487 phase 3 — `.sidebar`'s own heading, shown only while it presents as
+   *  the rail's focused drawer (`data-nav-mode="drawer"`); its text names the
+   *  one section currently focused. */
+  leftNavTitle?: HTMLElement;
+  /** #487 phase 3 — the same element as the local `sideHandle`/`.col-resize`
+   *  in `app-shell.ts`; `ui/left-nav-separator.ts`'s `mountLeftNavSeparator`
+   *  attaches its mouse/keyboard listeners directly onto it. */
+  leftNavSeparator?: HTMLElement;
+  /** #487 phase 3 — a visually-hidden `role="status"` live region the resize
+   *  separator announces mode/drawer-open-or-closed changes through. */
+  leftNavStatus?: HTMLElement;
   specEditorView?: EditorView;
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;
@@ -346,6 +362,12 @@ export interface App {
   /** Mobile-breakpoint seam (#126), app.ts-internal (renderApp seeds/tracks
    * `state.isMobile` against it) — not read by any other module. */
   matchMedia: ((query: string) => MediaQueryList) | null;
+  /** #487 phase 3 — shell-width observer seam (app.ts-internal; passed straight
+   *  through to `mountAppShell`'s `AppShellDeps.observeElementWidth`, not read
+   *  by any other module). Resolved from `env.observeElementWidth` or a real
+   *  `ResizeObserver`-backed default; `undefined` when neither is available,
+   *  mirroring `matchMedia`'s "capability or absent" contract. */
+  observeElementWidth: ((element: Element, callback: (widthPx: number) => void) => () => void) | undefined;
   /** Build stamp shown in the user menu (app.ts's own openUserMenu) — not read
    * by any other module. */
   build: string;

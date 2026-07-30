@@ -10,6 +10,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **The foldable left navigation is reachable in the UI** (#487, phase 3 of 4 —
+  the phase's own most complex wiring step). `app-shell.ts` composes phase 1's
+  pure mode/resize-session core, phase 1/2's controller seam and section
+  registry, and two new standalone UI modules that had no consumer yet —
+  `ui/left-rail.ts` (the compact icon rail) and `ui/left-nav-separator.ts` (the
+  resize/mode-changing separator) — into one working feature: the sidebar's
+  previously-always-wide presentation now renders wide, a bare rail, or a
+  rail-plus-focused-drawer, driven by the `leftNavMode`/`leftNavSection`
+  preferences phase 1 added. `.sidebar` is RE-PRESENTED through a new
+  `data-nav-mode` attribute (`wide` | `rail` | `drawer`) rather than moved or
+  rebuilt — the four navigation-section hosts phase 2 built stay exactly where
+  they are, and only which one is exposed, plus the sidebar's own
+  width/visibility, changes, which is what makes "wide and focused
+  presentations share and preserve all navigation state" true by construction.
+  The old `.col-resize` handle keeps its class (the existing mobile CSS and
+  e2e assertions key off it) but no longer drives `splitters.ts`'s bare
+  `'col'` width clamp — that axis is deleted outright (see Changed below), and
+  the handle's mousedown/keydown belong entirely to `mountLeftNavSeparator`
+  now, which reports every mode/drawer-open-or-closed transition through a
+  new visually-hidden `role="status"` live region. The presentation also
+  re-derives on a live browser-window resize via a new optional injected
+  `observeElementWidth` seam on `mountAppShell` (disabled by default; the
+  production `app.ts` call site does not yet pass a real `ResizeObserver` —
+  that wiring is a follow-up, not part of this step).
 - **A navigation section registry behind the left sidebar** (#487, phase 2 of 4).
   Each of the four navigation sections — Databases, Dashboards, Library, History —
   is now addressable through one registry (`src/ui/nav-sections.ts`) that owns its
@@ -62,6 +86,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   focused drawer and the resize separator arrive in phase 3.
 
 ### Changed
+- **The wide sidebar's resize range gained a viewport-aware upper bound**
+  (#487, phase 3 of 4). The documented `[180, 420]` px drag range is
+  unchanged at the constant level, but on a viewport narrower than roughly
+  907px (down to the 768px mobile breakpoint, below which the desktop rail/
+  drawer does not render at all), the separator and the keyboard path now
+  additionally clamp the reachable maximum so the centre SQL/results surface
+  never drops below its own documented 480px minimum
+  (`LEFT_CENTRE_MIN_PX`, `core/left-nav-layout.ts`) — the "new central
+  layout constraint" issue #487 explicitly allows for. A drag or an Arrow/End
+  keypress that would otherwise cross that floor stops at it instead of
+  shrinking the centre surface arbitrarily thin; the full stored preference
+  is never downgraded by the clamp and is restored in full the moment the
+  viewport allows it again, the same rule phase 3's resize-session design
+  already guarantees for the focused drawer's own band.
+- The `.col-resize` handle no longer drives `splitters.ts`'s `'col'` drag
+  axis at all (#487, phase 3 of 4) — that axis, and the entry just below this
+  one describing its former clamp, are both superseded: the sidebar's own
+  resize gesture now belongs entirely to `ui/left-nav-separator.ts`'s mode
+  reducer (see Added above), which folds to a rail, opens/closes a focused
+  drawer, and restores the wide sidebar, none of which a bare width clamp on
+  one axis could express.
 - **Switching between Library and History no longer clears the search box**
   (#487, phase 3 of 4). Each lower-navigation section now keeps its own filter
   text (`state.lowerNavigationFilters`, replacing the single shared

@@ -403,6 +403,7 @@ const appDefaults: App = {
   state: {} as AppState,
   dom: {},
   matchMedia: null,
+  observeElementWidth: undefined,
   build: 'v0.0.0-test',
   root: null,
   document,

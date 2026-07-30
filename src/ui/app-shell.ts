@@ -35,17 +35,35 @@ import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
-import { buildNavSectionRegistry, sectionForSidePanelKey } from './nav-sections.js';
+import { buildNavSectionRegistry, sectionForSidePanelKey, NAV_SECTION_META } from './nav-sections.js';
 import type { NavSectionPane } from './nav-sections.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
 import { renderLowerTabs, renderLibrarySection, renderHistorySection } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
 import { applyConnectionStatus } from './app-header.js';
-import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
+import type { DragCtx, DragRect, DragStartEvent } from './splitters.js';
 import { startDrag } from './splitters.js';
+import { buildLeftRail } from './left-rail.js';
+import { mountLeftNavSeparator } from './left-nav-separator.js';
+import {
+  clampLeftNavigationToMaximumTotal, effectiveLeftNavigationLayout, LEFT_CENTRE_MIN_PX,
+} from '../core/left-nav-layout.js';
+import type { LeftNavigationLayout } from '../core/left-nav-layout.js';
+import { readLeftNavigationLayout } from '../application/left-nav.js';
 import type { App } from './app.types.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
+
+/** #487 phase 3 — the stable DOM ids the rail's four launchers address via
+ *  `aria-controls`, and the focused drawer's own title via `aria-labelledby`.
+ *  Defined once here since this module is the sole place that builds both the
+ *  sidebar/drawer element and the rail that points at it. */
+const LEFT_NAV_DRAWER_ID = 'left-nav-drawer';
+const LEFT_NAV_TITLE_ID = 'left-nav-title';
+/** `.col-resize { width: 7px; }` in styles.css — the resize separator's own
+ *  width, which the navigation's total pixel budget must also exclude
+ *  (`getMaxNavigationTotalPx` below). */
+const LEFT_NAV_SEPARATOR_WIDTH_PX = 7;
 
 /** `mountAppShell`'s dependency bag. See this file's header comment for the
  *  `app` field's rationale — every other field is read directly by this
@@ -62,6 +80,22 @@ export interface AppShellDeps {
   catalog: Pick<SchemaCatalogService, 'loadSchema' | 'loadReference'>;
   prefs: Pick<AppPreferences, 'save'>;
   matchMedia: ((query: string) => MediaQueryList) | null;
+  /**
+   * #487 phase 3 — an injected shell-width observer seam, mirroring the
+   * `matchMedia` seam above: a raw `ResizeObserver` construction here would add
+   * an untestable branch under this file's 100/95/90/100 coverage floor. When
+   * provided, called ONCE with `.main-row` and a callback that re-derives and
+   * re-applies the effective left-navigation layout whenever the row's own
+   * content width changes — keeping the centre-content minimum honored across
+   * a plain browser-window resize, not only a separator drag. Returns a
+   * disposer this shell's own `dispose()` calls.
+   *
+   * Omitted (the default in every test and any caller that doesn't pass one):
+   * no live-resize reclamping runs, nothing throws, and the rest of the shell
+   * works normally — the same "feature simply doesn't run" contract
+   * `matchMedia: null` already has here.
+   */
+  observeElementWidth?: (element: Element, callback: (widthPx: number) => void) => () => void;
   updateBanner(): void;
   startDrag: typeof startDrag;
 }
@@ -106,7 +140,7 @@ export interface AppShellHandle {
 export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   const {
     app, root, document: doc, state, catalog, prefs, matchMedia, updateBanner,
-    startDrag: doStartDrag,
+    startDrag: doStartDrag, observeElementWidth,
   } = deps;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
@@ -155,20 +189,33 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } },
     app.dom.savedTabsRow, ...hostsIn('lower'));
 
-  const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  // Only 'col' (sidebar width) and 'sideRow' (schema/saved split) run through
-  // this ctx — the editor/results 'row' splitter is workbench-shell's own,
-  // over elements this shell has no business touching (a Dashboard-only
-  // surface may one day mount here with neither `editorRegion` nor
-  // `resultsRegion` present at all).
-  const rectFor = (axis: SplitterAxis): DragRect => (axis === 'sideRow' ? sidebar.getBoundingClientRect() : {});
+  // #487 phase 3: `.sidebar` is RE-PRESENTED, never moved or duplicated — the
+  // same element renders as the wide two-pane sidebar OR the rail's focused
+  // drawer depending on `data-nav-mode` (`applyEffectiveLeftNavigationLayout`
+  // below is the sole writer of that attribute and everything it implies). The
+  // stable `id` is what the rail's four launchers address via
+  // `aria-controls` — `buildLeftRail`'s `drawerElementId` below must name this
+  // exact string.
+  const sidebar = h('div', { class: 'sidebar', id: LEFT_NAV_DRAWER_ID, style: { width: state.sidebarPx + 'px' } });
+  // The focused drawer's own heading — shown ONLY in drawer mode (one section,
+  // one name), so `.sidebar`'s `aria-labelledby` only ever points at it while
+  // drawer mode is active (see `applyEffectiveLeftNavigationLayout`).
+  const leftNavTitle = app.dom.leftNavTitle = h('div', { class: 'left-nav-title', id: LEFT_NAV_TITLE_ID, hidden: true });
+  // Only 'sideRow' (schema/saved split) ever runs through this ctx — the
+  // editor/results 'row' splitter is workbench-shell's own, over elements this
+  // shell has no business touching (a Dashboard-only surface may one day mount
+  // here with neither `editorRegion` nor `resultsRegion` present at all). The
+  // wide sidebar's OWN width used to be this ctx's 'col' axis (with its own
+  // `rectFor` branch, unused for 'col'); #487 phase 3 moved that gesture
+  // entirely to `left-nav-separator.ts`, which this shell mounts onto
+  // `sideHandle` below instead of wiring it through `startDrag` — so `rectFor`
+  // no longer needs to branch on `axis` at all, it only ever measures the
+  // sidebar for the one axis this ctx still serves.
+  const rectFor = (): DragRect => sidebar.getBoundingClientRect();
   const dragCtx: DragCtx = {
     state,
     rectFor,
-    apply: (axis, value) => {
-      if (axis === 'col') sidebar.style.width = value + 'px';
-      else schemaPane.style.height = value + '%';
-    },
+    apply: (_axis, value) => { schemaPane.style.height = value + '%'; },
     save: (name, value) => prefs.save(name as PreferenceKey, value),
   };
   app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'sideRow', dragCtx) });
@@ -185,8 +232,25 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
     h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Explore')),
     h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Library')));
-  sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
-  const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
+  sidebar.append(leftNavTitle, app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
+  // #487 phase 3: the element keeps its `.col-resize` class (`tests/e2e/
+  // dashboard-mobile.spec.js`'s display-state assertion and the mobile CSS's
+  // `display: none !important` rule both key off it) but no longer wires
+  // `startDrag`'s bare 'col' clamp — `mountLeftNavSeparator` below attaches its
+  // own mousedown/keydown listeners directly onto this element instead.
+  const sideHandle = h('div', { class: 'col-resize' });
+  app.dom.leftNavSeparator = sideHandle;
+
+  // #487 phase 3 — the compact icon rail, built from the SAME section registry
+  // the wide sidebar's two panes read (`registry.entry`), so a rail tooltip can
+  // never disagree with a wide switcher's label for the same section.
+  const leftRail = buildLeftRail({
+    app,
+    registry,
+    state: { leftNavSection: state.leftNavSection },
+    drawerElementId: LEFT_NAV_DRAWER_ID,
+  });
+  app.dom.leftRail = leftRail.el;
 
   app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
   // The workbench column's mount point (#425 follow-up prep). Its sizing lives
@@ -198,7 +262,114 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // toggles which of the two is exposed without rebuilding the sidebar (or the
   // query surface's own state) around them.
   const dashboardHost = h('div', { class: 'dashboard-host', hidden: true });
-  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost);
+  // The rail is the FIRST child — #487 phase 3's compact presentation reads
+  // left-to-right as rail, then whatever `.sidebar` is currently presenting.
+  const mainRow = h('div', { class: 'main-row' }, leftRail.el, sidebar, sideHandle, queryHost, dashboardHost);
+
+  // #487 phase 3 — the navigation's live pixel budget: `.main-row`'s own
+  // current width, minus the resize separator's own footprint, minus the
+  // centre work surface's documented minimum (`LEFT_CENTRE_MIN_PX`). Read
+  // fresh on every call (never cached), so the mount-time call, the
+  // preferred-state effect, the separator's own session, and the width
+  // observer below all derive from the SAME live measurement.
+  const getMaxNavigationTotalPx = (): number =>
+    mainRow.getBoundingClientRect().width - LEFT_NAV_SEPARATOR_WIDTH_PX - LEFT_CENTRE_MIN_PX;
+
+  // #487 phase 3 — the SOLE writer of every left-navigation presentation
+  // attribute. `data-nav-mode` ('wide' | 'rail' | 'drawer') is derived from
+  // `layout.mode`/`layout.focusedSection` and written onto BOTH `.main-row`
+  // and `.sidebar` — `.sidebar` itself is re-presented, never moved or
+  // rebuilt, so every one of the four section hosts phase 2 built keeps its
+  // exact DOM identity across a mode change. Every `hidden`/text toggle below
+  // is set UNCONDITIONALLY (never left to CSS alone), because happy-dom
+  // computes no CSS and this is the one seam `app-shell.test.ts` can assert
+  // the whole table against as real DOM property writes.
+  function applyEffectiveLeftNavigationLayout(layout: LeftNavigationLayout): void {
+    const navMode: 'wide' | 'rail' | 'drawer' = layout.mode === 'wide'
+      ? 'wide'
+      : layout.focusedSection === null ? 'rail' : 'drawer';
+    mainRow.dataset.navMode = navMode;
+    sidebar.dataset.navMode = navMode;
+    // The rail's own width never resizes, so only 'wide' (the whole nav) and
+    // 'drawer' (the panel beside the rail) have a meaningful pixel width here;
+    // 'rail' mode hides `.sidebar` entirely, so `wideWidthPx` is a harmless,
+    // non-stale filler rather than an untouched leftover from whatever mode
+    // came before it.
+    sidebar.style.width = (navMode === 'drawer' ? layout.drawerWidthPx : layout.wideWidthPx) + 'px';
+
+    leftRail.el.hidden = navMode === 'wide';
+    sidebar.hidden = navMode === 'rail';
+
+    const focused = layout.focusedSection;
+    leftNavTitle.hidden = navMode !== 'drawer';
+    leftNavTitle.textContent = navMode === 'drawer' && focused ? NAV_SECTION_META[focused].label : '';
+    // Only the focused drawer has one single-purpose heading to label itself
+    // with — the wide sidebar shows two panes (each already labelled by its
+    // own switcher) and a bare rail shows nothing at all, so pointing
+    // `aria-labelledby` at a hidden title in either of those would be a stale
+    // reference, not a helpful one. Omitting the attribute there is the
+    // deliberate choice.
+    if (navMode === 'drawer') sidebar.setAttribute('aria-labelledby', LEFT_NAV_TITLE_ID);
+    else sidebar.removeAttribute('aria-labelledby');
+
+    const upperFocused = navMode === 'drawer' && (focused === 'databases' || focused === 'dashboards');
+    const lowerFocused = navMode === 'drawer' && (focused === 'library' || focused === 'history');
+    schemaPane.hidden = !(navMode === 'wide' || upperFocused);
+    savedPane.hidden = !(navMode === 'wide' || lowerFocused);
+    // A drawer showing ONLY the upper pane must fill the sidebar's whole
+    // height — its inline height is otherwise the wide two-pane split
+    // percentage, which would leave the bottom of the drawer empty once
+    // `savedPane` collapses to `hidden` (the same one-pane-fills-the-column
+    // fix the mobile segmented control already applies via CSS, at
+    // `.sidebar[data-mobile-tab="schema"] .schema-pane` in styles.css — this
+    // is the same override, applied inline for the desktop drawer case).
+    if (upperFocused) {
+      schemaPane.style.flex = '1';
+      schemaPane.style.height = 'auto';
+    } else {
+      schemaPane.style.flex = '';
+      schemaPane.style.height = state.sideSplitPct + '%';
+    }
+
+    // No redundant switcher inside a drawer already showing exactly one
+    // section, and no resize handle between two panes when only one is
+    // visible — hidden in both 'rail' (where `.sidebar` itself is hidden, so
+    // this is moot) and 'drawer'.
+    const hideWideOnlyChrome = navMode !== 'wide';
+    app.dom.upperRoleTabs!.hidden = hideWideOnlyChrome;
+    app.dom.savedTabsRow!.hidden = hideWideOnlyChrome;
+    app.dom.sideSplit!.hidden = hideWideOnlyChrome;
+  }
+
+  // #487 phase 3 — the ONE derivation path every trigger below funnels
+  // through: read the persisted/session preference, project it for the
+  // current viewport class (mobile forces 'wide'/no-drawer), then clamp it to
+  // whatever the live shell width currently allows.
+  const deriveLeftNavigationLayout = (): LeftNavigationLayout => clampLeftNavigationToMaximumTotal(
+    effectiveLeftNavigationLayout(readLeftNavigationLayout(state), state.isMobile.value),
+    getMaxNavigationTotalPx(),
+  );
+
+  // #487 phase 3 — a visually-hidden `role="status"` live region for the
+  // separator's mode/drawer-open-or-closed announcements (mouse drags and
+  // keyboard operations alike go through this one seam).
+  const leftNavStatus = app.dom.leftNavStatus = h('div', {
+    class: 'sr-only', role: 'status', 'aria-live': 'polite',
+  });
+
+  // #487 phase 3 — the resize/mode-changing separator. It owns pointer/
+  // keyboard mechanics and session bookkeeping; every pixel decision still
+  // routes through `core/left-nav-layout.ts`'s reducers, and every paint routes
+  // back through `applyEffectiveLeftNavigationLayout` above (already correctly
+  // clamped by the separator's own session — never re-clamped here).
+  const leftNavSeparator = mountLeftNavSeparator({
+    el: sideHandle,
+    state,
+    prefs: { save: (name, value) => prefs.save(name as PreferenceKey, value) },
+    getMaxNavigationTotalPx,
+    applyEffectiveLayout: applyEffectiveLeftNavigationLayout,
+    announce: (message) => { leftNavStatus.textContent = message; },
+  });
 
   // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
   // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the
@@ -229,9 +400,39 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     navBtn('editor', Icon.code(), 'Editor'),
     navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
 
-  root!.replaceChildren(headerSlot, authHost, app.dom.banner, mainRow, app.dom.mobileNav);
+  root!.replaceChildren(headerSlot, authHost, app.dom.banner, mainRow, leftNavStatus, app.dom.mobileNav);
 
   const disposers: (() => void)[] = [];
+  // #487 phase 3 — the "preferred-state effect": the sole reactive trigger for
+  // `applyEffectiveLeftNavigationLayout` outside the separator's own drag/
+  // keyboard sessions and the width observer below. Subscribes to the two
+  // SIGNALS a mode/section transition writes (`sidebarPx`/`leftNavDrawerPx`
+  // are plain fields with no signal to key an effect off — a width-only change
+  // relies on whichever caller already painted it directly) plus `isMobile`,
+  // so crossing the mobile breakpoint in either direction re-derives the
+  // effective layout too. Registered here (post-mount, mirroring every other
+  // effect in this file), it also runs once immediately for the initial paint
+  // — no separate explicit mount-time call needed.
+  disposers.push(effect(() => {
+    state.leftNavMode.value;
+    state.leftNavSection.value;
+    state.isMobile.value;
+    applyEffectiveLeftNavigationLayout(deriveLeftNavigationLayout());
+  }));
+  // #487 phase 3 — the shell-width observer (an injected seam; see
+  // `AppShellDeps.observeElementWidth`'s own doc comment). A live
+  // browser-window resize with NO active separator session still has to keep
+  // the centre-content minimum honored, and this is the only trigger that
+  // notices one: the separator's own session re-clamps on every step it takes,
+  // but takes none while the pointer/keyboard is idle. Both derive from the
+  // exact same `getMaxNavigationTotalPx()` reading the live `.main-row` width,
+  // so an observer firing mid-drag is naturally consistent with the
+  // separator's own concurrent calls rather than fighting them — there is only
+  // ONE derivation path, called from four triggers, never four different ones.
+  const disposeWidthObserver = observeElementWidth?.(mainRow, (widthPx) => {
+    if (!(widthPx > 0) || !Number.isFinite(widthPx)) return; // defensive: a detached/not-yet-laid-out element can report 0.
+    applyEffectiveLeftNavigationLayout(deriveLeftNavigationLayout());
+  }) || null;
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()
   // calls: re-runs on schema load, load error, filter text, or expand/collapse.
   // Registered here (post-mount) so app.dom.schemaList already exists; the effect
@@ -381,6 +582,12 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       cancelDashboardTreeClicks(app);
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);
+      // #487 phase 3 — the rail's per-button effects, the separator's own
+      // listeners + ARIA effect, and (when provided) the injected width
+      // observer all outlive `disposers` above unless stopped here too.
+      leftRail.dispose();
+      leftNavSeparator.dispose();
+      disposeWidthObserver?.();
     },
   };
 }

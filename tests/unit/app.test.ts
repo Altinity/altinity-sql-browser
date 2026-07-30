@@ -5430,7 +5430,7 @@ describe('exhaustive controller coverage', () => {
     expect(app.state.savedQueries.length).toBe(1);
   });
 
-  it('drives each splitter handle through a drag', () => {
+  it('drives the sideRow/row splitter handles through a drag', () => {
     const e = env();
     const app = createApp(e);
     app.renderApp();
@@ -5440,7 +5440,6 @@ describe('exhaustive controller coverage', () => {
       window.dispatchEvent(new MouseEvent('mouseup'));
       return axis;
     };
-    drag(qs(app.root, '.col-resize'), 'col');
     drag(app.dom.sideSplit!, 'sideRow');
     drag(app.dom.editorResultsSplit!, 'row');
     expect(app.dom.editorResultsSplit!.classList.contains('editor-results-split')).toBe(true);
@@ -5451,6 +5450,38 @@ describe('exhaustive controller coverage', () => {
     const schemaPane = qs(app.root, '.schema-pane');
     expect(schemaPane.style.height).toBe(app.state.sideSplitPct + '%');
     expect(qs(app.root, '.mobile-segmented').style.height).toBe('');
+  });
+
+  // #487 phase 3: `.col-resize` used to drive a bare `startDrag`/'col' clamp —
+  // that axis is gone (splitters.ts), and the handle's real behaviour (the
+  // mode machine, session bookkeeping, ARIA) is already covered exhaustively
+  // by `left-nav-separator.test.ts`, with the shell-level wiring (hidden
+  // toggles, `data-nav-mode`, the rail) covered by `app-shell.test.ts`. What
+  // NEITHER of those exercises is app.ts's own `ensureShell` wiring: that the
+  // REAL mounted `app.prefs`/`localStorage` and the real DOM `mountAppShell`
+  // built actually end up connected to `.col-resize`, not just each half in
+  // isolation. This is that one end-to-end check, at app.ts's own level.
+  it('#487 phase 3: dragging the mounted .col-resize handle drives the left-navigation separator end to end', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const e = env();
+    const app = createApp(e);
+    app.renderApp();
+    const handle = qs(app.root, '.col-resize');
+
+    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 300 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 300 }));
+
+    expect(app.state.sidebarPx).toBe(300);
+    expect(app.state.leftNavMode.value).toBe('wide');
+    expect(globalThis.localStorage.getItem('asb:sidebarPx')).toBe('300');
+    // The real DOM `mountAppShell` built reflects the same commit — proof the
+    // separator's `applyEffectiveLayout` callback really is app-shell.ts's own
+    // `applyEffectiveLeftNavigationLayout`, not a stand-in that only updates
+    // `state`.
+    const sidebar = qs(app.root, '.sidebar');
+    expect(sidebar.dataset.navMode).toBe('wide');
+    expect(sidebar.style.width).toBe('300px');
   });
 
   it('run(): network error → "Network error"', async () => {
@@ -6522,6 +6553,60 @@ describe('mobile best-effort mode (#126)', () => {
     over.dataTransfer = { types: ['application/x-asb-schema-graph'] };
     app.dom.resultsRegion!.dispatchEvent(over);
     expect(over.defaultPrevented).toBe(false); // guard returns before preventDefault
+  });
+});
+
+describe('shell-width observer seam (#487 phase 3)', () => {
+  // Same convention as the `matchMedia` seam's `FakeMQL` above: a minimal
+  // stand-in for the real `ResizeObserver` constructor, injected via the
+  // `window: asWindow({ ...window, ResizeObserver: … })` precedent already
+  // used elsewhere in this file (see the `open` override around line 1067).
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    observed: Element[] = [];
+    disconnected = false;
+    cb: ResizeObserverCallback;
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb;
+      FakeResizeObserver.instances.push(this);
+    }
+    observe(el: Element): void { this.observed.push(el); }
+    unobserve(): void {}
+    disconnect(): void { this.disconnected = true; }
+    fire(width: number): void {
+      this.cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+  }
+
+  it('uses the injected observeElementWidth seam when provided, identically to matchMedia', () => {
+    const observeElementWidth = vi.fn(() => vi.fn());
+    const app = createApp(env({ observeElementWidth }));
+    expect(app.observeElementWidth).toBe(observeElementWidth);
+  });
+
+  it('falls back to a real ResizeObserver-backed implementation when none is injected', () => {
+    FakeResizeObserver.instances.length = 0;
+    const app = createApp(env({
+      window: asWindow({ ...window, ResizeObserver: FakeResizeObserver as unknown as typeof ResizeObserver }),
+    }));
+    expect(typeof app.observeElementWidth).toBe('function');
+    const el = document.createElement('div');
+    const widths: number[] = [];
+    const dispose = app.observeElementWidth!(el, (w) => widths.push(w));
+    expect(FakeResizeObserver.instances).toHaveLength(1);
+    const [instance] = FakeResizeObserver.instances;
+    expect(instance.observed).toEqual([el]);
+    instance.fire(321);
+    expect(widths).toEqual([321]);
+    dispose();
+    expect(instance.disconnected).toBe(true);
+  });
+
+  it('resolves to undefined when neither observeElementWidth nor ResizeObserver is available — the same "feature simply doesn\'t run" contract as a matchMedia-less platform', () => {
+    const app = createApp(env({
+      window: asWindow({ history: { replaceState: vi.fn() }, navigator: {} }),
+    }));
+    expect(app.observeElementWidth).toBeUndefined();
   });
 });
 

@@ -150,6 +150,9 @@ interface WindowExtras {
   Blob?: typeof Blob;
   // #343 §5: the real cross-tab channel constructor, when the platform has it.
   BroadcastChannel?: new (name: string) => BroadcastChannelPort;
+  // #487 phase 3: the real shell-width observer constructor, when the
+  // platform has it (mirrors the BroadcastChannel entry above).
+  ResizeObserver?: typeof ResizeObserver;
 }
 
 /** `app.specValidators`'s full internal shape: the canonical schema +
@@ -181,6 +184,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     || ((name: string): BroadcastChannelPort | null =>
       (typeof win.BroadcastChannel === 'function' ? new win.BroadcastChannel(name) : null));
   const documentVisible = env.documentVisible || (() => doc.visibilityState !== 'hidden');
+  // #487 phase 3: the real ResizeObserver constructor, when the platform has
+  // one — captured once here (see `observeElementWidth` below for why).
+  const resizeObserverCtor = typeof win.ResizeObserver === 'function' ? win.ResizeObserver : undefined;
   // Epoch clock shared by persistence metadata and parameter execution.
   const wallNow = (): number => (env.wallNow || (() => Date.now()))();
 
@@ -233,6 +239,23 @@ export function createApp(env: CreateAppEnv = {}): App {
     // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
     // always-desktop — the mobile CSS still applies, just no JS branching).
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
+    // Shell-width observer seam (#487 phase 3): injected like matchMedia so
+    // tests can drive it; a real `ResizeObserver`-backed implementation when
+    // the platform has one, else `undefined` — `mountAppShell`'s own
+    // `AppShellDeps.observeElementWidth` already treats "omitted" as "this
+    // feature simply doesn't run" (see its doc comment). Captured to a local
+    // const first (rather than re-reading `win.ResizeObserver` inside the
+    // closure below) so TypeScript's narrowing of the `typeof … === 'function'`
+    // check survives into the nested arrow function.
+    observeElementWidth: env.observeElementWidth || (resizeObserverCtor
+      ? (element: Element, callback: (widthPx: number) => void): (() => void) => {
+        const ro = new resizeObserverCtor((entries) => {
+          for (const entry of entries) callback(entry.contentRect.width);
+        });
+        ro.observe(element);
+        return () => ro.disconnect();
+      }
+      : undefined),
   };
   const app = appBase as App;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
@@ -2109,6 +2132,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       catalog,
       prefs,
       matchMedia: app.matchMedia,
+      observeElementWidth: app.observeElementWidth,
       updateBanner: app.updateBanner,
       startDrag,
     });

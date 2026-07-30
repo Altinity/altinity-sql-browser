@@ -14,10 +14,14 @@
 // The hosts are built ONCE and never rebuilt, extending #426's `buildSidebarUpper`
 // contract from the upper pane to the lower one. That is what makes #487's "Wide
 // and focused presentations share and preserve all navigation state" true by
-// construction rather than by restoration logic: a phase-3 mode change MOVES a
-// host element between containers, and a moved element keeps its input values, its
-// expansion, its lazily-loaded rows and its scroll offset. Nothing here restores
-// anything, because nothing here destroys anything.
+// construction rather than by restoration logic: a phase-3 mode change
+// RE-PRESENTS `.sidebar` itself (`app-shell.ts`'s `data-nav-mode` attribute,
+// written by its own `applyEffectiveLeftNavigationLayout`) rather than moving a
+// host element between containers — the four hosts below stay exactly where
+// they are, and only which one is exposed, plus the sidebar's own presentation,
+// changes. A host's input values, expansion, lazily-loaded rows and scroll
+// offset all survive for the same reason either design would have preserved
+// them: nothing here restores anything, because nothing here destroys anything.
 //
 // What this module deliberately does NOT own: any section's rendering, search or
 // domain behaviour. `buildSidebarUpper` still builds the Databases/Dashboards
@@ -118,8 +122,11 @@ export interface NavSectionRegistry {
    *
    * Scoped to the pane because the wide sidebar shows one upper section AND one
    * lower section simultaneously; a global "exactly one of four" would blank half
-   * the sidebar. Phase 3's drawer shows one of four, and gets there by moving the
-   * host rather than by widening this rule.
+   * the sidebar. Phase 3's drawer shows one of four, and gets there by
+   * re-presenting `.sidebar` itself (`app-shell.ts`'s `data-nav-mode`) — this
+   * `showSection` rule stays exactly as-is, per-pane, unchanged; the drawer's
+   * "show only one" additionally hides whichever pane the focused section is
+   * NOT in, one level up, not by widening what this method does.
    */
   showSection(section: LeftNavigationSection): void;
 }
