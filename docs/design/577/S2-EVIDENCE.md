@@ -176,11 +176,27 @@ check that this deviation cost the treatment nothing it was owed.
 ## Browser evidence
 
 Chromium and WebKit, full suite: **417 passed**. Two `tile-open-workbench`
-specs (`:327`, `:453`) fail on both engines — and fail **identically on
-`eval-577/s1-control` from a clean worktree**, so they belong to neither arm and
-are not scored. Checking that mattered: an earlier S2 run failed a *different*
-subset of the same file, so it is partly order-dependent, and reading either run
-as a verdict without the baseline would have been wrong in both directions.
+specs (`:327`, `:453`) fail on both engines, and fail **identically on
+`eval-577/s1-control` from a clean worktree** — so they do not differentiate the
+arms and are not scored against either.
+
+They are **not** pre-existing, and the first version of this document was wrong
+to imply it. `origin/main` passes all 21 specs in that file from a clean
+worktree. The failures are introduced by the **S1 control's own inspector**: it
+defaults to `inspectorPx` 420 (`state.ts`), so it occupies 420px as the last
+child of `.main-row`, narrowing the Dashboard grid enough to break two tile
+geometry assertions. S2 inherits the same pane and the same failures.
+
+That makes them a cost of the evaluation **slice**, not of either architecture —
+a mock pane added for the comparison perturbing unrelated layout assertions. It
+is worth recording for two reasons: the slice's own side effects are exactly the
+kind of thing that quietly contaminates a comparison, and #577's gate wording
+("passes every behavioural gate") is not cleanly met by *either* arm here.
+
+Checking this mattered twice over: an earlier S2 run failed a *different* subset
+of the same file, so it is partly order-dependent, and reading any single run as
+a verdict — without both the control and `main` as baselines — would have been
+wrong in both directions.
 
 Two genuine regressions were found by real-browser e2e **with 6 995 unit tests
 green**, and both are fixed:
