@@ -6,7 +6,7 @@ Reached only via the literal word `unattended`:
 - `/ship 424,425,426 unattended` — several whole **issues**.
 
 Both are the same machine: a **unit** is a phase or an issue, and units run in dependency
-order. This file replaces `SKILL.md` steps 1, 6 and 7. Steps 2–5 stay exactly as written in
+order. This file replaces `SKILL.md` steps 1, 6, 7 and 8. Steps 2–5 stay exactly as written in
 `references/per-issue-cycle.md` — that is the worker contract, quoted, not paraphrased.
 
 You are the **coordinator**. You do not implement units yourself. You plan waves, spawn
@@ -69,7 +69,7 @@ The worker prompt must contain, explicitly:
 - **the mutation boundary**: Edit/Write + local `git commit` on its own branch only — **no
   push, no PR, no `gh` mutations, no issue edits, no phase-log writes, no memory writes, no
   `CHANGELOG.md` beyond its own entry, no TaskCreate/TaskUpdate**;
-- the instruction to follow `.claude/skills/ship/references/per-issue-cycle.md` steps 2–4 and
+- the instruction to follow `skills/ship/references/per-issue-cycle.md` steps 2–4 and
   the CHANGELOG part of 5 — **the phase log is yours, not the worker's**;
 - commit message `<type>(#<ISSUE>): <summary>` + the repo footer convention;
 - what to return: plan summary, files touched, test/build output tail, and the contract
@@ -107,6 +107,11 @@ agents on this repo have edited files despite an explicit report-only boundary.
 4. **One PR** (`gh pr create --base main`), body per the PR template, with one `Closes #<n>`
    line per fully completed issue (partially completed or skipped: `Part of #<n>`), a per-unit
    summary table, and the repo PR footer.
-5. 🛑 **Merge gate — the only stop.** Report: PR URL, per-unit status (shipped / skipped +
-   why), review findings applied, CI status. Do not merge.
-6. Friction → memory. The coordinator writes it, not a subagent.
+5. **Third-party review**: invoke the `chatgpt-review` skill on the PR just opened, per
+   `SKILL.md` step 7. A negative or contested verdict doesn't stop the line, but apply every
+   claim you verify as real, `npm test`, and push before continuing — this is coordinator work,
+   never delegated to a worker. If ChatGPT is unreachable, note the skip in the final report and
+   continue.
+6. 🛑 **Merge gate — the only stop.** Report: PR URL, per-unit status (shipped / skipped +
+   why), review findings applied (including the ChatGPT pass), CI status. Do not merge.
+7. Friction → memory. The coordinator writes it, not a subagent.

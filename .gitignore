@@ -28,12 +28,10 @@
 /.wiki/
 
 # impeccable design skill — vendored dev tool + its local state; kept local, not in the repo
-/.claude/skills/impeccable/
+/skills/impeccable/
 /.impeccable/
-# Codex agent-skills mirror: ignore the vendored content, keep only the ship/ship-phase symlinks
-/.agents/skills/*
-!/.agents/skills/ship
-!/.agents/skills/ship-phase
+
+# .claude/skills, .codex/skills, .agents/skills are symlinks to /skills/ (checked in, see /skills/)
 
 # OS / editor
 .DS_Store

@@ -37,9 +37,13 @@ unattended mode, which has no gates but the last (see step 0).
 > mid-run. Inheriting these steps is not the same as being told to execute them. State the
 > boundary explicitly in every subagent prompt (no Edit/Write, no git/gh mutating commands, no
 > TaskCreate/TaskUpdate, no memory writes — return only the requested output), and prefer a
-> fresh non-`fork` agent for this kind of fan-out. **Steps 5–7 — reconcile, PR, and the merge
-> gate — are performed by this session only, never delegated.** After any batch of subagents
-> returns, verify with `git diff`, `git log`, and `gh pr list` before trusting a self-report.
+> fresh non-`fork` agent for this kind of fan-out. **Steps 5–8 — reconcile, PR, the post-PR
+> ChatGPT second opinion, and the merge gate — are performed by this session only, never
+> delegated.** The high-risk *plan*-stage `chatgpt-review` call in step 2
+> (`references/per-issue-cycle.md`) is different: it never touches git/gh, so a worker may run
+> it directly even in unattended mode — only the post-PR call in step 7 is session-only.
+> After any batch of subagents returns, verify with `git diff`, `git log`, and `gh pr list`
+> before trusting a self-report.
 
 ## 0 — Resolve the argument
 
@@ -52,8 +56,8 @@ unattended mode, which has no gates but the last (see step 0).
 
 Attended is always the default. **Unattended requires the literal word** — never infer it.
 
-For unattended, Read `references/unattended.md` now and follow it; it replaces steps 1, 6 and
-7 below and reuses steps 2–5 as the worker contract.
+For unattended, Read `references/unattended.md` now and follow it; it replaces steps 1, 6, 7
+and 8 below and reuses steps 2–5 as the worker contract.
 
 ## 1 — Orient, resolve the phase, set up the workspace
 
@@ -145,7 +149,25 @@ are held to — one source of truth, so the two paths cannot drift.
   final phase. Every earlier phase uses **`Part of #<ISSUE>`**.
 - Tick the checklist (gate, layers, deps, CHANGELOG, reconcile). Report the **PR URL**.
 
-## 7 — 🛑 Merge gate — STOP
+## 7 — Third-party review (ChatGPT)
+
+Invoke the `chatgpt-review` skill (`Skill` tool, `skill: "chatgpt-review"`) on the PR just
+opened in step 6, passing its number/URL as the argument. Read `chatgpt-review`'s own
+`SKILL.md` and follow it as written — it already covers gathering the diff, prompting
+ChatGPT, waiting for the full answer, and verifying every claim against the real repo before
+trusting it.
+
+- This is a **second opinion, not a gate** — a negative or contested verdict does not block
+  progress to step 8, but every claim you accept as real must be fixed here.
+- Apply real findings, commit (`fix(#<ISSUE>): address ChatGPT review feedback` or fold into
+  the PR's existing commits per the repo's amend policy), `npm test`, and `git push` before
+  moving on.
+- If `chatgpt-review` reports it couldn't reach ChatGPT (agent Chrome down, network denied),
+  don't block the ship on it — note the skip in the merge-gate summary (step 8) and continue.
+- Note what you verified vs. dismissed in the phase log / PR comment so the human at the merge
+  gate sees it, not just a silent pass.
+
+## 8 — 🛑 Merge gate — STOP
 
 Do **not** merge. Merging to `main` is a human call.
 
