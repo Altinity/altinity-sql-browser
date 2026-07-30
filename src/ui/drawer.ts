@@ -58,11 +58,11 @@ export function buildDrawerChrome(doc: Document, opts: DrawerChromeOptions): Dra
  *  passes its `ResultsApp` straight through. Both fields are optional so a
  *  caller only needs to carry whichever one its `stateKey` option (below)
  *  actually targets — the real `AppState` (state.ts) always has both
- *  (`cellDrawerPx`/`docPanePx`, #313), so no real caller ever hits the
+ *  (`cellDrawerPx`/`docPanePx`/`inspectorPx`, #313/#577), so no real caller hits the
  *  `undefined` branch; only a narrowly-typed test fixture (or a future
  *  third consumer) would omit the other key entirely. */
 export interface DrawerResizeApp {
-  state: { cellDrawerPx?: number; docPanePx?: number };
+  state: { cellDrawerPx?: number; docPanePx?: number; inspectorPx?: number };
   prefs: { save(name: PreferenceKey, value: unknown): void };
 }
 
@@ -74,7 +74,7 @@ export interface DrawerResizeApp {
  *  passes `{ stateKey: 'docPanePx', axis: 'docPane' }` so its own resize drag
  *  never reads or persists the cell-detail drawer's width, and vice versa. */
 export interface DrawerResizeOptions {
-  stateKey?: 'cellDrawerPx' | 'docPanePx';
+  stateKey?: 'cellDrawerPx' | 'docPanePx' | 'inspectorPx';
   axis?: SplitterAxis;
 }
 

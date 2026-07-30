@@ -45,6 +45,7 @@ import type { DragCtx, DragRect, DragStartEvent } from './splitters.js';
 import { startDrag } from './splitters.js';
 import { buildLeftRail } from './left-rail.js';
 import { mountLeftNavSeparator } from './left-nav-separator.js';
+import { mountRightInspector, RIGHT_INSPECTOR_TOOLS } from './right-inspector.js';
 import {
   clampLeftNavigationToMaximumTotal, effectiveLeftNavigationLayout, isLeftNavigationSection,
   LEFT_CENTRE_MIN_PX,
@@ -544,6 +545,27 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     class: 'sr-only', role: 'status', 'aria-live': 'polite',
   });
 
+  // #577 evaluation control (S1) — the right inspector, appended as the LAST
+  // child of `.main-row` so the row reads left-to-right as rail, sidebar,
+  // separator, work surfaces, inspector. Mounted HERE rather than in the
+  // `mainRow` constructor above because it reuses `leftNavStatus` (declared just
+  // above) as its announce seam, so both shell edges narrate through one live
+  // region instead of two.
+  //
+  // Its own fold/resize mechanics live in `ui/right-inspector.ts`; this shell
+  // only places it, exposes it on `app.dom`, and disposes it — exactly the
+  // relationship it already has with `leftRail`. Wiring it here rather than
+  // leaving a module with no caller is deliberate: #577 measures what the NEXT
+  // shell feature costs, and integration IS part of that cost.
+  const rightInspector = mountRightInspector({
+    app: { state, prefs: { save: (name, value) => prefs.save(name as PreferenceKey, value) } },
+    document: doc,
+    tools: RIGHT_INSPECTOR_TOOLS,
+    announce: (message) => { leftNavStatus.textContent = message; },
+  });
+  app.dom.rightInspector = rightInspector.el;
+  mainRow.append(rightInspector.el);
+
   // #487 phase 3 — the resize/mode-changing separator. It owns pointer/
   // keyboard mechanics and session bookkeeping; every pixel decision still
   // routes through `core/left-nav-layout.ts`'s reducers, and every paint routes
@@ -874,6 +896,9 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       // observer all outlive `disposers` above unless stopped here too.
       leftRail.dispose();
       leftNavSeparator.dispose();
+      // #577 control — the inspector's retained tool DOM and any live resize
+      // gesture outlive `disposers` above unless stopped here too.
+      rightInspector.dispose();
       disposeWidthObserver?.();
     },
   };

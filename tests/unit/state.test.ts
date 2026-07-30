@@ -146,6 +146,9 @@ describe('KEYS — persisted localStorage key names (#459)', () => {
       sideSplitPct: 'asb:sideSplitPct',
       cellDrawerPx: 'asb:cellDrawerPx',
       docPanePx: 'asb:docPanePx',
+      // #577 evaluation control — the right inspector's own width, a third
+      // sibling of cellDrawerPx/docPanePx on the #313 pattern.
+      inspectorPx: 'asb:inspectorPx',
       leftNavMode: 'asb:leftNavMode',
       leftNavDrawerPx: 'asb:leftNavDrawerPx',
       sidePanel: 'asb:sidePanel',

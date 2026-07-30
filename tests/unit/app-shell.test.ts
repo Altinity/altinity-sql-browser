@@ -85,8 +85,12 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
     const hosts = [...app.root.querySelectorAll('.nav-section-host')];
     expect(hosts).toHaveLength(4);
     expect(hosts.every((host) => sidebar.contains(host))).toBe(true);
+    // #577 evaluation control appends `.right-inspector` as the LAST child. The
+    // invariant this assertion actually protects is unchanged and still asserted
+    // above: all four section hosts stay inside `.sidebar`, and the inspector is
+    // not a second navigation column.
     expect([...app.root.querySelector('.main-row')!.children].map((el) => el.className))
-      .toEqual(['left-rail', 'sidebar', 'col-resize', 'query-host', 'dashboard-host']);
+      .toEqual(['left-rail', 'sidebar', 'col-resize', 'query-host', 'dashboard-host', 'right-inspector']);
     handle.dispose();
   });
 
@@ -1423,5 +1427,54 @@ describe('mountAppShell — showHost("dashboard") on mobile rescues focus off th
 
     app.root.remove();
     handle.dispose();
+  });
+});
+
+describe('mountAppShell right-inspector integration (#577 evaluation control)', () => {
+  const inspector = (app: { root: Element }): HTMLElement =>
+    app.root.querySelector('.right-inspector') as HTMLElement;
+
+  it('appends the inspector as .main-row\'s last child and exposes it on app.dom', () => {
+    const { app, handle } = mount();
+    const el = inspector(app);
+    expect(el).not.toBeNull();
+    expect(app.root.querySelector('.main-row')!.lastElementChild).toBe(el);
+    expect(app.dom.rightInspector).toBe(el);
+    handle.dispose();
+  });
+
+  it('narrates fold changes through the SAME live region the left separator uses', () => {
+    // One `role="status"` region for both shell edges, not two competing ones —
+    // this is the wiring the shell owns, so it is asserted here rather than in
+    // right-inspector.test.ts (which injects its own announce spy).
+    const { app, handle } = mount();
+    (inspector(app).querySelector('.ri-chevron') as HTMLElement)
+      .dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.dom.leftNavStatus!.textContent).toBe('Inspector collapsed');
+    (inspector(app).querySelector('.ri-chevron') as HTMLElement)
+      .dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.dom.leftNavStatus!.textContent).toBe('Inspector expanded');
+    handle.dispose();
+  });
+
+  it('persists an inspector resize through the shell\'s own prefs seam', () => {
+    const { app, handle, save } = mount();
+    (inspector(app).querySelector('.cd-resize-h') as HTMLElement)
+      .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 900 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 700 }));
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(save).toHaveBeenCalledWith('inspectorPx', expect.any(Number));
+    handle.dispose();
+  });
+
+  it('disposes the inspector with the shell, cancelling a live resize', () => {
+    const { app, handle, save } = mount();
+    (inspector(app).querySelector('.cd-resize-h') as HTMLElement)
+      .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 900 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 700 }));
+    handle.dispose();
+    save.mockClear();
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(save).not.toHaveBeenCalled();
   });
 });

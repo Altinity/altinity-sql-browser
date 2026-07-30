@@ -367,6 +367,14 @@ export interface AppState {
    *  (splitters.ts) and `attachDrawerResize`'s `stateKey: 'docPanePx'` option
    *  (drawer.ts); never shared with the cell-detail/rows-viewer drawer. */
   docPanePx: number;
+  /** #577 evaluation control — the right inspector's own persisted resize
+   *  width, a third sibling of `cellDrawerPx`/`docPanePx` on exactly the #313
+   *  pattern: read/written only by the 'inspector' splitter axis
+   *  (splitters.ts) and `attachDrawerResize`'s `stateKey: 'inspectorPx'`
+   *  option (drawer.ts), never shared with either of the other two. Added by
+   *  the #577 vertical-slice control (`ui/right-inspector.ts`); see that
+   *  module's header for why the control exists at all. */
+  inspectorPx: number;
   tabs: Signal<QueryTab[]>;
   activeTabId: Signal<string>;
   schema: Signal<unknown[] | null>;
@@ -527,6 +535,7 @@ export const KEYS = {
   sideSplitPct: 'asb:sideSplitPct',
   cellDrawerPx: 'asb:cellDrawerPx',
   docPanePx: 'asb:docPanePx',
+  inspectorPx: 'asb:inspectorPx',
   /** #487 — the desktop left navigation's semantic mode ('wide' | 'rail') and
    *  the focused drawer's width. The WIDE sidebar's width is `sidebarPx` above,
    *  not a third key: see `AppState.leftNavMode`'s comment for why that key is
@@ -702,6 +711,9 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // [320, 92vw] bound whenever the pane is opened/resized against the live
     // viewport).
     docPanePx: clamp(parseInt(read.loadStr(KEYS.docPanePx, '420'), 10), 320, Infinity),
+    // #577 control — the right inspector's own width, same floor-only load-time
+    // clamp as its two siblings above.
+    inspectorPx: clamp(parseInt(read.loadStr(KEYS.inspectorPx, '420'), 10), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through
     // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;

@@ -146,6 +146,11 @@ export interface AppDom {
   /** #487 phase 3 — a visually-hidden `role="status"` live region the resize
    *  separator announces mode/drawer-open-or-closed changes through. */
   leftNavStatus?: HTMLElement;
+  /** #577 evaluation control — the right inspector pane (`ui/right-inspector.ts`),
+   *  `.main-row`'s last child. Exposed on the same "every shell-built element is
+   *  reachable from `app.dom`" pattern as `leftRail` above; the shell also keeps
+   *  its own handle for fold/dispose. */
+  rightInspector?: HTMLElement;
   specEditorView?: EditorView;
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;

@@ -17,7 +17,13 @@ import { clamp } from '../core/format.js';
 // drag can fold to a rail or restore, which a splitter axis has no vocabulary
 // for. `app-shell.ts` no longer wires `startDrag` to the `.col-resize` handle
 // at all.
-export type SplitterAxis = 'sideRow' | 'row' | 'drawer' | 'docPane';
+//
+// 'inspector' (#577 evaluation control): the right inspector's own
+// bounded-resize axis — identical geometry to 'drawer'/'docPane' again, writing
+// `inspectorPx`. Added on exactly the #313 precedent rather than by sharing
+// `docPanePx`: two panes that can be open at once must not read or clobber one
+// another's persisted width.
+export type SplitterAxis = 'sideRow' | 'row' | 'drawer' | 'docPane' | 'inspector';
 
 /** The subset of a real (or fake, in tests) pointer/mouse event `dragValue`/
  *  `startDrag` read — never the full DOM `MouseEvent`, so a plain test
@@ -28,8 +34,8 @@ export interface DragPoint {
 }
 
 /** The subset of a bounding-rect-like `dragValue` reads, by axis: 'sideRow'/
- *  'row' need `top`/`bottom`; 'drawer'/'docPane' need `width` (the viewport
- *  width). */
+ *  'row' need `top`/`bottom`; 'drawer'/'docPane'/'inspector' need `width` (the
+ *  viewport width). */
 export interface DragRect {
   top?: number;
   bottom?: number;
@@ -48,10 +54,10 @@ export function clampDrawerWidth(px: number, viewportWidth: number): number {
 
 /**
  * Compute the new size for a drag. `axis` is 'sideRow' (sidebar vertical %),
- * 'row' (editor/results %), or 'drawer'/'docPane' (right-hand drawer px,
- * #101/#313). `rect` is the bounding rect of the container being split
- * (`{ width }` — the viewport width — for 'drawer'/'docPane'). 'drawer' is
- * anchored to the *right* edge, so its width grows as the cursor moves left:
+ * 'row' (editor/results %), or 'drawer'/'docPane'/'inspector' (right-hand
+ * drawer px, #101/#313/#577). `rect` is the bounding rect of the container
+ * being split (`{ width }` — the viewport width — for those three). All three
+ * are anchored to the *right* edge, so width grows as the cursor moves left:
  * `viewportWidth - clientX`.
  */
 export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): number {
@@ -59,7 +65,9 @@ export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): n
   // `width` for 'drawer'/'docPane' and `top`/`bottom` for 'sideRow'/'row' —
   // the axis dispatch below is exactly the contract that guarantees the field
   // this branch reads is present.
-  if (axis === 'drawer' || axis === 'docPane') return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
+  if (axis === 'drawer' || axis === 'docPane' || axis === 'inspector') {
+    return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
+  }
   const pct = clamp(((ev.clientY - rect!.top!) / (rect!.bottom! - rect!.top!)) * 100,
     axis === 'sideRow' ? 25 : 15, 85);
   return pct;
@@ -91,6 +99,9 @@ export interface DragState {
   /** The docs pane's own persisted width (#313) — a sibling of `cellDrawerPx`,
    *  never read/written by the 'drawer' axis. */
   docPanePx?: number;
+  /** The right inspector's own persisted width (#577 control) — a third
+   *  sibling, never read/written by the 'drawer' or 'docPane' axes. */
+  inspectorPx?: number;
 }
 
 /** `startDrag`'s injected context: the window seam, the caller's mutable
@@ -111,7 +122,7 @@ export interface DragCtx {
  * still down, #101); the plain splitters (sideRow/row) don't need it and
  * ignore the return value.
  * @param ev      the mousedown event (currentTarget = the handle)
- * @param axis    'sideRow' | 'row' | 'drawer' | 'docPane'
+ * @param axis    'sideRow' | 'row' | 'drawer' | 'docPane' | 'inspector'
  * @param ctx     { win, state, save, rectFor(axis), apply(axis, value) }
  */
 export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx): () => void {
@@ -124,6 +135,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
     if (axis === 'sideRow') ctx.state.sideSplitPct = value;
     else if (axis === 'row') ctx.state.editorPct = value;
     else if (axis === 'docPane') ctx.state.docPanePx = value;
+    else if (axis === 'inspector') ctx.state.inspectorPx = value;
     else ctx.state.cellDrawerPx = value;
     ctx.apply(axis, value);
   };
@@ -139,6 +151,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
     if (axis === 'sideRow') ctx.save('sideSplitPct', ctx.state.sideSplitPct!);
     else if (axis === 'row') ctx.save('editorPct', ctx.state.editorPct!);
     else if (axis === 'docPane') ctx.save('docPanePx', ctx.state.docPanePx!);
+    else if (axis === 'inspector') ctx.save('inspectorPx', ctx.state.inspectorPx!);
     else ctx.save('cellDrawerPx', ctx.state.cellDrawerPx!);
   };
   win.addEventListener('mousemove', onMove);

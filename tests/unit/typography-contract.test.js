@@ -319,6 +319,11 @@ describe('every text-bearing class the UI renders has a rule', () => {
       // is gated, and carving its markup out into unlisted files would silently
       // move the sidebar back out of this gate's view.
       'src/ui/sidebar-upper.ts', 'src/ui/dashboard-tree.ts',
+      // #577 evaluation control — the right inspector's markup lives in its own
+      // module, and the comment above is explicit that carving markup out into an
+      // unlisted file silently moves it out of this gate's view. Listed for
+      // exactly that reason.
+      'src/ui/right-inspector.ts',
       // #457 deleted `src/ui/variable-editor.ts` (the per-variable option-SQL
       // drawer #447 had carved out of the tree's markup) — option SQL is edited in
       // the main editor now, whose markup is already covered by app-shell.ts,

@@ -2982,6 +2982,53 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-back-row { flex-shrink: 0; }
 .docs-back { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: var(--r-sm); padding: 4px 10px; font: inherit; font-size: var(--text-body); }
 .docs-back:hover { background: var(--bg-hover); }
+/* Right inspector (#577 evaluation control): buildDrawerChrome's non-modal
+   chrome again, under its own 'ri' prefix — but DOCKED, not overlaid. Unlike
+   .docs-panel above (position: fixed, floating over the work surface), this is
+   an in-row flex child of .main-row, so opening it narrows the work surface the
+   way the left focused drawer does. That docked geometry is what makes it a fair
+   comparison subject for #577: an overlay has no layout relationship to the rest
+   of the shell, and the whole question is who owns shell geometry.
+
+   Width is set inline by attachDrawerResize's 'inspectorPx' stateKey from the
+   persisted pref, clamped to [320, 92vw] — see clampDrawerWidth (#101/#313/#577).
+   Folding zeroes that width down to the chevron strip via the [data-folded]
+   rule, WITHOUT clearing the inline width, so an unfold restores the user's own
+   resized width rather than a default. */
+.right-inspector { display: flex; flex-shrink: 0; min-width: 0; }
+.right-inspector[hidden] { display: none; }
+.ri-panel {
+  display: flex; flex-direction: column;
+  min-width: 0; height: 100%;
+  position: relative;
+  background: var(--bg-editor);
+  border-left: 1px solid var(--border);
+}
+/* Folded: the inline width loses to this, and the head keeps only the chevron.
+   !important is required because the width is an inline style the resize drag
+   owns — this is the one rule allowed to overrule it. */
+.ri-panel[data-folded='true'] { width: 38px !important; min-width: 38px; }
+.ri-panel[data-folded='true'] .ri-title { justify-content: center; }
+.ri-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.ri-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.ri-close { border: none; background: transparent; color: var(--fg-mute); cursor: pointer; border-radius: var(--r-xs); width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
+.ri-close:hover { background: var(--bg-hover); color: var(--fg); }
+/* The fold control, and the documented focus destination for a fold — so it
+   carries a real focus ring rather than inheriting a suppressed one. */
+.ri-chevron { border: none; background: transparent; color: var(--fg-mute); cursor: pointer; border-radius: var(--r-xs); width: 22px; height: 22px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+.ri-chevron:hover { background: var(--bg-hover); color: var(--fg); }
+.ri-tabs { display: flex; gap: 2px; min-width: 0; overflow: hidden; }
+.ri-tab { border: none; background: transparent; color: var(--fg-mute); cursor: pointer; border-radius: var(--r-sm); padding: 3px 9px; font: inherit; font-size: var(--text-label); white-space: nowrap; }
+.ri-tab:hover { background: var(--bg-hover); color: var(--fg); }
+.ri-tab.active { background: var(--bg-chip); color: var(--fg); font-weight: var(--fw-semibold); }
+.ri-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.ri-body[hidden] { display: none; }
+.ri-tabs[hidden] { display: none; }
+.ri-tool { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ri-tool[hidden] { display: none; }
+.ri-tool-note { color: var(--fg-mute); font-size: var(--text-body); }
+.ri-tool-input { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-input); color: var(--fg); padding: 5px 9px; font: inherit; font-size: var(--text-body); }
+
 /* #315 phase-3 markdown-subset pane elements */
 .docs-md-entry { gap: 10px; }
 .docs-md-source { font-size: var(--text-label); color: var(--fg-faint); word-break: break-word; }

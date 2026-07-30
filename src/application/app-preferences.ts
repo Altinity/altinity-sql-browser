@@ -32,6 +32,9 @@ export type PreferenceKey =
   // #313 — the documentation pane's own persisted resize width, a sibling of
   // cellDrawerPx (never shared with it — see splitters.ts's 'docPane' axis).
   | 'docPanePx'
+  // #577 evaluation control — the right inspector's own persisted width, a
+  // third sibling of cellDrawerPx/docPanePx on the same #313 pattern.
+  | 'inspectorPx'
   // #487 — the desktop left navigation's semantic mode and its focused drawer's
   // width. The WIDE sidebar width stays `sidebarPx` above: `core/left-nav-layout.ts`
   // reuses that preference rather than introducing a second owner of one width.
