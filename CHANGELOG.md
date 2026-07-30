@@ -31,9 +31,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   now, which reports every mode/drawer-open-or-closed transition through a
   new visually-hidden `role="status"` live region. The presentation also
   re-derives on a live browser-window resize via a new optional injected
-  `observeElementWidth` seam on `mountAppShell` (disabled by default; the
-  production `app.ts` call site does not yet pass a real `ResizeObserver` —
-  that wiring is a follow-up, not part of this step).
+  `observeElementWidth` seam on `mountAppShell`, which the production
+  `app.ts` call site wires to a real `ResizeObserver` when the platform has
+  one (omitted, as in every test, when it does not — the shell simply runs
+  without live-resize reclamping).
 - **A navigation section registry behind the left sidebar** (#487, phase 2 of 4).
   Each of the four navigation sections — Databases, Dashboards, Library, History —
   is now addressable through one registry (`src/ui/nav-sections.ts`) that owns its

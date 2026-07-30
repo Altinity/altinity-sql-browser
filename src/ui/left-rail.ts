@@ -13,8 +13,11 @@
 // reading `state.leftNavSection` — a section's drawer is "open" exactly when
 // `state.leftNavSection.value === section` (`application/left-nav.ts`'s own
 // notion of the focused section). One effect per button, not one for the whole
-// rail, so a section switch touches only the two buttons whose expanded state
-// actually changed.
+// rail — all four still subscribe to the same signal and so all four re-run on
+// every change (signals have no per-effect diffing that would let only the two
+// buttons whose expanded state actually flipped react), but each is a single
+// attribute write, so four small effects stay a reasonable design without
+// claiming a selectivity the primitive doesn't provide.
 //
 // A rail click is a TOGGLE (`toggleFocusedSection`), not an idempotent open
 // (`openFocusedSection`): clicking the already-open section's icon closes the

@@ -466,4 +466,153 @@ describe('mountLeftNavSeparator — dispose', () => {
     state.leftNavSection.value = 'history';
     expect(el.getAttribute('aria-valuenow')).toBe('48'); // still the bare-rail value
   });
+
+  it('a dispose() mid-drag leaves the element clean: no lingering .dragging class, no lingering session', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 300 });
+    expect(el.classList.contains('dragging')).toBe(true);
+    expect(handle.isSessionActive()).toBe(true);
+
+    handle.dispose();
+
+    expect(el.classList.contains('dragging')).toBe(false);
+    expect(handle.isSessionActive()).toBe(false);
+  });
+});
+
+// Bug fix #2 (#487 phase-3 ChatGPT review): the separator's own ARIA
+// attributes must be refreshable from OUTSIDE its own gesture/signal-driven
+// effect — a caller (app-shell.ts) that just repainted the sidebar at a new
+// width for a reason this module never observes (a mount-time viewport clamp,
+// a plain window resize) needs a way to tell this separator its own
+// advertised range/value just changed too.
+describe('mountLeftNavSeparator — refreshAria', () => {
+  it('updates aria-valuenow/valuemax/valuetext to match the given layout, independent of any signal change', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el } = makeDeps(state, 10_000);
+    const handle = mountLeftNavSeparator(deps);
+    expect(el.getAttribute('aria-valuenow')).toBe('248');
+
+    // Neither `state.leftNavMode` nor `state.leftNavSection` changes here —
+    // only the ARIA-carried WIDTH does, which is exactly the case the
+    // module's own signal-keyed effect cannot see.
+    handle.refreshAria({ mode: 'wide', wideWidthPx: 300, drawerWidthPx: 240, focusedSection: null });
+
+    expect(el.getAttribute('aria-valuenow')).toBe('300');
+    expect(el.getAttribute('aria-valuetext')).toBe('Wide sidebar, 300 pixels');
+    // The signals themselves are untouched — this is a pure ARIA refresh, not
+    // a state write.
+    expect(state.leftNavMode.value).toBe('wide');
+    expect(state.sidebarPx).toBe(248);
+  });
+
+  it('respects the live viewport budget exactly like the module\'s own internal applyAria', () => {
+    const state = makeState({ mode: 'rail', section: 'library', leftNavDrawerPx: 240 });
+    const { deps, el } = makeDeps(state, 200); // budget below the drawer's un-clamped occupied width
+    const handle = mountLeftNavSeparator(deps);
+
+    handle.refreshAria({ mode: 'rail', wideWidthPx: 248, drawerWidthPx: 240, focusedSection: 'library' });
+
+    expect(el.getAttribute('aria-valuemax')).toBe('200');
+    expect(Number(el.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(200);
+  });
+});
+
+// Bug fix #3 (#487 phase-3 ChatGPT review): expose whether a gesture is
+// currently authoritative, so a caller like the shell's `ResizeObserver`
+// callback can avoid repainting from stale committed state mid-gesture.
+describe('mountLeftNavSeparator — isSessionActive', () => {
+  it('is false before any gesture, true during a pointer drag, and false again after mouseup', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    expect(handle.isSessionActive()).toBe(false);
+    mousedown(el, 248);
+    expect(handle.isSessionActive()).toBe(true);
+    win._fire('mousemove', { clientX: 300 });
+    expect(handle.isSessionActive()).toBe(true);
+    win._fire('mouseup', { clientX: 300 });
+    expect(handle.isSessionActive()).toBe(false);
+  });
+
+  it('is false after blur/visibilitychange ends an active drag', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win, target } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    expect(handle.isSessionActive()).toBe(true);
+    win._fire('blur');
+    expect(handle.isSessionActive()).toBe(false);
+
+    mousedown(el, 248);
+    expect(handle.isSessionActive()).toBe(true);
+    target._fire('visibilitychange');
+    expect(handle.isSessionActive()).toBe(false);
+  });
+
+  it('a one-shot keyboard resize never leaves a session active afterwards', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el } = makeDeps(state);
+    const handle = mountLeftNavSeparator(deps);
+
+    keydown(el, { key: 'ArrowRight' });
+
+    expect(handle.isSessionActive()).toBe(false);
+  });
+});
+
+// Bug fix #4 (#487 phase-3 ChatGPT review): a keydown reachable while a
+// pointer session is still installed (Tab-focus the separator, then
+// mousedown it too — focus survives a mousedown on an already-focused
+// element — then press an arrow/Home/End while the button is still held)
+// must not start a second, conflicting session.
+describe('mountLeftNavSeparator — keyboard input during an active pointer session', () => {
+  it('ignores a keydown while a pointer drag is active: not prevented, no state change from it', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win, save } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 300 });
+
+    const ev = keydown(el, { key: 'Home' });
+
+    expect(ev.defaultPrevented).toBe(false); // "not handled right now", not "handled and consumed"
+    expect(state.leftNavMode.value).toBe('wide'); // Home was ignored — no fold happened
+    expect(save).not.toHaveBeenCalled(); // no keyboard session was committed
+  });
+
+  it('the original pointer session still commits correctly on mouseup, unaffected by the ignored keydown', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win, save } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mousemove', { clientX: 300 });
+    keydown(el, { key: 'Home' }); // ignored — see the test above
+    win._fire('mouseup', { clientX: 320 });
+
+    expect(state.leftNavMode.value).toBe('wide');
+    expect(state.sidebarPx).toBe(320); // the drag's own outcome, not Home's fold
+    expect(save).toHaveBeenCalledWith('sidebarPx', 320);
+  });
+
+  it('a keydown after the pointer session ends is handled normally again', () => {
+    const state = makeState({ mode: 'wide', sidebarPx: 248 });
+    const { deps, el, win } = makeDeps(state);
+    mountLeftNavSeparator(deps);
+
+    mousedown(el, 248);
+    win._fire('mouseup', { clientX: 248 });
+
+    const ev = keydown(el, { key: 'Home' });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(state.leftNavMode.value).toBe('rail');
+  });
 });

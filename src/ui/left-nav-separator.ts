@@ -1,7 +1,8 @@
-// #487 phase 3 — the left navigation's resize/mode-changing separator. A
-// STANDALONE module today: it will replace `splitters.ts`'s `'col'` axis in a
-// later step, but nothing here is wired into the app shell yet, and nothing in
-// `splitters.ts` is touched by this change.
+// #487 phase 3 — the left navigation's resize/mode-changing separator. Wired
+// into `ui/app-shell.ts` (`mountLeftNavSeparator` is mounted onto the shell's
+// `.col-resize` handle, and `applyEffectiveLeftNavigationLayout` is the
+// `applyEffectiveLayout` callback every session paints through) — it replaced
+// `splitters.ts`'s `'col'` axis outright, which no longer exists.
 //
 // Deliberately mirrors `splitters.ts`'s existing MOUSE-event drag model
 // (mousedown/mousemove/mouseup on an injected `window`-shaped seam) rather than
@@ -92,6 +93,33 @@ export interface LeftNavSeparatorHandle {
    *  (every underlying `removeEventListener` is a no-op for an
    *  already-removed listener). */
   dispose(): void;
+  /**
+   * Re-apply this separator's own ARIA attributes (`aria-valuemin/max/now`,
+   * `aria-valuetext`) from `layout`, without waiting for a
+   * `leftNavMode`/`leftNavSection` signal change. The module's own
+   * `disposeAriaEffect` above only re-runs on THOSE two signals — a WIDTH-only
+   * change (a mount-time paint clamped by the live shell width, or a plain
+   * window resize re-deriving the same mode at a different pixel budget) never
+   * touches either signal, so nothing would otherwise tell this separator its
+   * own advertised width just went stale. `app-shell.ts`'s
+   * `applyEffectiveLeftNavigationLayout` calls this on every one of its own
+   * invocations (mount, the preferred-state effect, the width observer) so the
+   * separator's ARIA is never more stale than the sidebar it describes. Safe
+   * to call during this separator's OWN active gesture too — it just
+   * redundantly re-applies the same values `advanceTo`/`commitSession` already
+   * did, mirroring the "harmless double-paint" tolerance already established
+   * elsewhere in this phase.
+   */
+  refreshAria(layout: LeftNavigationLayout): void;
+  /**
+   * True while a pointer drag or a keyboard-resize is in progress (the
+   * module-level `session` below is non-null). `app-shell.ts` reads this to
+   * decide whether a trigger OTHER than this separator's own gesture (the
+   * `ResizeObserver` callback) is safe to repaint from — repainting from the
+   * committed preference mid-gesture would visibly fight the gesture's own
+   * in-progress, not-yet-committed paint.
+   */
+  isSessionActive(): boolean;
 }
 
 /** Describe the OCCUPIED-width quantity `aria-valuenow` reports, in words —
@@ -256,6 +284,19 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
   function onVisibilityChange(): void { endDrag(); }
 
   function onKeyDown(ev: KeyboardEvent): void {
+    // A pointer session is authoritative while it is in progress (reachable:
+    // Tab-focus the separator, then mousedown it too — focus survives a
+    // mousedown on an already-focused element — and press an arrow while the
+    // button is still held). Building and committing a SECOND, keyboard-only
+    // session here would leave the original pointer session still installed,
+    // ready to overwrite this keydown's outcome on its own eventual
+    // mouseup/blur. The simpler, less surprising policy is to ignore keyboard
+    // input entirely until the pointer gesture ends, rather than merging or
+    // cancelling one session in favour of the other. No `preventDefault()`
+    // either — this is "not handled right now", not "handled and consumed",
+    // mirroring `resolveLeftNavigationKey`'s own null-return convention for a
+    // key this module does not act on.
+    if (session) return;
     const layout = readLeftNavigationLayout(state);
     const resolved = resolveLeftNavigationKey(layout, ev);
     if (resolved === null) return; // not one of ours — no preventDefault, no session.
@@ -285,7 +326,15 @@ export function mountLeftNavSeparator(deps: LeftNavSeparatorDeps): LeftNavSepara
     // lingering mousemove/mouseup handler if dispose() runs mid-drag.
     win.removeEventListener('mousemove', onMouseMove);
     win.removeEventListener('mouseup', onMouseUp);
+    // Leave no half-finished gesture behind regardless of what called
+    // dispose() mid-drag: the shell's own teardown path typically replaces
+    // this DOM shortly afterward anyway, but this module's own contract
+    // should not depend on that — a caller that inspects `el` or a would-be
+    // `isSessionActive()` after dispose() should see a clean state, not a
+    // dangling `.dragging` class or a session nothing will ever commit.
+    el.classList.remove('dragging');
+    session = null;
   }
 
-  return { dispose };
+  return { dispose, refreshAria: applyAria, isSessionActive: () => session !== null };
 }

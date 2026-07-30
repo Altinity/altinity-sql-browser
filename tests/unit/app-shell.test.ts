@@ -532,3 +532,133 @@ describe('mountAppShell left navigation presentation (#487 phase 3)', () => {
     handle.dispose();
   });
 });
+
+// ChatGPT second-review bug fix #2: the separator's own aria-valuenow/
+// aria-valuemax/aria-valuetext must reflect the CURRENT layout even when
+// something OTHER than the separator's own gesture repaints the sidebar —
+// the separator's own internal ARIA effect only re-runs on a
+// `leftNavMode`/`leftNavSection` signal change, never on a width-only
+// change, so nothing else would tell it its own advertised width just
+// went stale.
+describe('mountAppShell left navigation presentation — separator ARIA staleness (#487 phase-3 review, bug 2)', () => {
+  it('reflects the viewport-clamped width after the mount-time paint, not the pre-attach measurement, and stays correct after an observer-driven re-derivation', () => {
+    // `mainRowWidthPx` only applies once `.main-row` is actually attached to
+    // the document — mirroring the real bug: `mountLeftNavSeparator`'s own
+    // internal ARIA effect runs at construction time, BEFORE `.main-row` is
+    // attached (`root!.replaceChildren(...)` runs after), so its first
+    // measurement sees a zero/unattached width and lands on a DIFFERENT
+    // (unconstrained) value than the real, attached budget the
+    // preferred-state effect derives moments later.
+    let mainRowWidthPx = 800; // once "attached": budget = 800 - 7 (separator) - 480 (centre min) = 313
+    // The fake-app helper's `root` is a detached `<div>` (never appended to
+    // `document.body`), so happy-dom's own `isConnected` cannot stand in for
+    // "measured before vs. after `.main-row` is attached" here. A call
+    // counter models the same real sequence directly: the FIRST measurement
+    // of `.main-row` is `mountLeftNavSeparator`'s own construction-time
+    // effect, which genuinely runs before `root!.replaceChildren(...)`
+    // attaches `.main-row` under `root` in the real module — so it reports 0,
+    // exactly like a real unattached element would. Every later measurement
+    // is the preferred-state effect (and, later, the observer), both of
+    // which run after attachment, so they report the real width.
+    let mainRowCallCount = 0;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (!this.classList.contains('main-row')) {
+          return { width: 0, top: 0, bottom: 0, left: 0, right: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+        }
+        mainRowCallCount++;
+        const width = mainRowCallCount === 1 ? 0 : mainRowWidthPx;
+        return { width, top: 0, bottom: 0, left: 0, right: width, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      });
+    let capturedCallback: ((widthPx: number) => void) | null = null;
+    const observeElementWidth = vi.fn((_el: Element, cb: (widthPx: number) => void) => {
+      capturedCallback = cb;
+      return vi.fn();
+    });
+
+    const loadSchema = vi.fn(async () => {});
+    const loadReference = vi.fn(async () => {});
+    const app = makeApp({ catalog: { loadSchema, loadReference }, prefs: { save: vi.fn() } });
+    app.state.leftNavMode.value = 'wide';
+    // Larger than the 313px the (attached) viewport currently allows —
+    // exactly the "preferred wide width larger than getMaxNavigationTotalPx
+    // would allow" case.
+    app.state.sidebarPx = 420;
+    const handle = mountAppShell({
+      app, root: app.root, document, state: app.state, catalog: app.catalog,
+      prefs: app.prefs, matchMedia: null, updateBanner: vi.fn(), startDrag, observeElementWidth,
+    });
+
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    // The rendered width is correctly clamped by the mount-time paint...
+    expect(sidebar.style.width).toBe('313px');
+    // ...and, with the fix, the separator's OWN ARIA agrees with it — not
+    // the pre-attach (unconstrained, 420) measurement its own internal
+    // effect happened to run with first.
+    expect(separator.getAttribute('aria-valuenow')).toBe('313');
+    expect(separator.getAttribute('aria-valuemax')).toBe('313');
+
+    // The viewport grows enough to render the full 420px preference — the
+    // width observer notices and re-derives.
+    mainRowWidthPx = 1000; // budget = 1000 - 7 - 480 = 513, capped to LEFT_PANEL_MAX_PX (420)
+    capturedCallback!(1000);
+
+    expect(sidebar.style.width).toBe('420px');
+    expect(separator.getAttribute('aria-valuenow')).toBe('420');
+    expect(separator.getAttribute('aria-valuemax')).toBe('420');
+
+    handle.dispose();
+    rectSpy.mockRestore();
+  });
+});
+
+// ChatGPT second-review bug fix #3: an active drag/keyboard session on the
+// separator is authoritative — the `ResizeObserver`-driven callback must not
+// repaint from the last COMMITTED preference while a gesture is still in
+// progress (that preference is stale for as long as the gesture has not yet
+// committed).
+describe('mountAppShell left navigation presentation — observer vs. an active session (#487 phase-3 review, bug 3)', () => {
+  it('does not repaint from the observer while a drag is active, but repaints normally once the drag ends', () => {
+    let capturedCallback: ((widthPx: number) => void) | null = null;
+    const observeElementWidth = vi.fn((_el: Element, cb: (widthPx: number) => void) => {
+      capturedCallback = cb;
+      return vi.fn();
+    });
+    const { app, handle } = mountWithLeftNav({ mode: 'wide' }, { observeElementWidth });
+    const mainRow = app.root.querySelector('.main-row') as HTMLElement;
+    const separator = app.root.querySelector('.col-resize') as HTMLElement;
+
+    separator.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 248 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 300 }));
+    expect(mainRow.dataset.navMode).toBe('wide');
+    const sidebarWidthDuringDrag = (app.root.querySelector('.sidebar') as HTMLElement).style.width;
+    expect(sidebarWidthDuringDrag).toBe('300px'); // the drag's own last painted value
+
+    // The observer fires mid-drag (e.g. a window resize while the mouse
+    // button is still down) — it must NOT repaint from the stale committed
+    // state (which would visibly snap the sidebar away from the pointer).
+    capturedCallback!(900);
+    expect((app.root.querySelector('.sidebar') as HTMLElement).style.width).toBe('300px');
+
+    // Release the drag — the session ends and commits normally.
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 300 }));
+    expect(app.state.leftNavMode.value).toBe('wide');
+    expect(app.state.sidebarPx).toBe(300);
+
+    // A SUBSEQUENT observer callback repaints normally again (no active
+    // session left to protect).
+    let runs = 0;
+    const sidebar = app.root.querySelector('.sidebar') as HTMLElement;
+    let widthValue = sidebar.style.width;
+    Object.defineProperty(sidebar.style, 'width', {
+      configurable: true,
+      get: () => widthValue,
+      set: (v: string) => { widthValue = v; runs++; },
+    });
+    capturedCallback!(900);
+    expect(runs).toBe(1);
+
+    handle.dispose();
+  });
+});

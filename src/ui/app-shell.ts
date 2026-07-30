@@ -339,6 +339,19 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     app.dom.upperRoleTabs!.hidden = hideWideOnlyChrome;
     app.dom.savedTabsRow!.hidden = hideWideOnlyChrome;
     app.dom.sideSplit!.hidden = hideWideOnlyChrome;
+
+    // The separator's OWN aria-valuenow/valuemax/valuetext describe exactly
+    // this layout, but its own internal ARIA effect only re-runs on a
+    // `leftNavMode`/`leftNavSection` signal change — never on a width-only
+    // change, since `sidebarPx`/`leftNavDrawerPx` are plain fields with no
+    // signal to key an effect off. Every trigger of THIS function (the
+    // mount-time paint, the preferred-state effect, the width observer, and
+    // the separator's own gesture callback) can change the rendered width
+    // without changing either signal, so this call is what keeps the
+    // separator's ARIA from going stale between gestures. Harmless to call
+    // during the separator's own active session too — it just redundantly
+    // re-applies the same values `advanceTo`/`commitSession` already set.
+    leftNavSeparator.refreshAria(layout);
   }
 
   // #487 phase 3 — the ONE derivation path every trigger below funnels
@@ -413,6 +426,20 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // effective layout too. Registered here (post-mount, mirroring every other
   // effect in this file), it also runs once immediately for the initial paint
   // — no separate explicit mount-time call needed.
+  //
+  // Deliberately NOT gated behind `leftNavSeparator.isSessionActive()`, unlike
+  // the width observer below: `isMobile` flipping to true mid-drag is a real
+  // transition this effect must still force back to wide — a session cannot
+  // stay in a desktop drawer/rail presentation once the viewport is mobile.
+  // Residual edge case, left unsolved here on purpose (fixing it needs a
+  // change to the separator's own session logic, not just an authority check):
+  // a drag active across that exact crossing can still have its very next
+  // `mousemove` repaint the now-stale desktop layout right back over the
+  // mobile-wide one this effect just forced, because the separator's own
+  // session has no way to notice `isMobile` changed under it. That is a
+  // narrow, transient visual glitch — one stale frame, resolved by the user's
+  // next action — not a persistent incorrect state, so it is out of scope for
+  // this fix.
   disposers.push(effect(() => {
     state.leftNavMode.value;
     state.leftNavSection.value;
@@ -429,8 +456,20 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // so an observer firing mid-drag is naturally consistent with the
   // separator's own concurrent calls rather than fighting them — there is only
   // ONE derivation path, called from four triggers, never four different ones.
+  //
+  // Skipped entirely while the separator itself has an active session: this
+  // callback derives from `readLeftNavigationLayout(state)` — the last
+  // COMMITTED preference — which is stale for exactly as long as a gesture is
+  // in progress (a drag paints intermediate positions via its own
+  // `applyEffectiveLayout` callback without writing to `state` until it
+  // commits). Repainting from that stale state here would visibly snap the
+  // sidebar away from the pointer on a mid-drag window resize, then snap back
+  // on the next mousemove. The separator's own gesture is authoritative during
+  // that window; when it ends, `commitSession` already repaints the final,
+  // correctly-clamped state through the same `applyEffectiveLayout` callback.
   const disposeWidthObserver = observeElementWidth?.(mainRow, (widthPx) => {
     if (!(widthPx > 0) || !Number.isFinite(widthPx)) return; // defensive: a detached/not-yet-laid-out element can report 0.
+    if (leftNavSeparator.isSessionActive()) return;
     applyEffectiveLeftNavigationLayout(deriveLeftNavigationLayout());
   }) || null;
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()

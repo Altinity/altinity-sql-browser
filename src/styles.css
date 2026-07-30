@@ -978,9 +978,23 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ------------ side panes ------------ */
 .side-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* #487 phase 3 — `app-shell.ts`'s `applyEffectiveLeftNavigationLayout` sets
+   `.hidden` on `schemaPane`/`savedPane` (both `.side-pane`) so a rail-mode
+   focused drawer shows exactly one of them, never both. `[hidden]` needs the
+   explicit override here for the same reason `.query-host[hidden]`,
+   `.dashboard-host[hidden]`, `.nav-section-host[hidden]`, `.left-rail[hidden]`
+   and `.left-nav-title[hidden]` already carry one: a class rule's
+   `display: flex` beats the UA stylesheet's bare `[hidden]`, so without this a
+   pane set `hidden` would keep rendering — both panes visible at once inside a
+   drawer meant to show only one. */
+.side-pane[hidden] { display: none; }
 
 /* ------------ saved + history ------------ */
 .side-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+/* Same footgun, same fix — `app.dom.upperRoleTabs`/`app.dom.savedTabsRow`
+   (both `.side-tabs`) are hidden by the same function whenever a wide-only
+   switcher has no drawer to switch inside. */
+.side-tabs[hidden] { display: none; }
 .side-tab {
   flex: 1; height: 30px;
   border: none; background: transparent;
