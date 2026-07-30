@@ -169,6 +169,32 @@ describe('buildLeftRail', () => {
     handle.dispose();
   });
 
+  // A real, confirmed WebKit-specific gap found in the e2e pass: Chromium/
+  // Firefox focus a clicked `<button>` natively, but WebKit does not — so
+  // without an explicit `button.focus()` call, closing a drawer by clicking
+  // its own rail icon left focus on `<body>` on Safari instead of returning it
+  // to the icon, unlike the Escape path's explicit `focusSection` call. These
+  // assertions don't depend on native click-focus behaviour at all, so they
+  // hold identically in every engine, including happy-dom.
+  it('clicking a launcher moves focus to that SAME button — both opening and closing (toggle-off) the drawer', () => {
+    const state = makeState({ mode: 'rail', section: null });
+    const handle = buildLeftRail(makeDeps(state));
+    const buttons = Array.from(handle.el.querySelectorAll('button'));
+    const dashboardsBtn = buttons[LEFT_NAV_SECTIONS.indexOf('dashboards')];
+    document.body.appendChild(handle.el); // focus() is a no-op on a detached element
+
+    dashboardsBtn.click(); // opens
+    expect(state.leftNavSection.value).toBe('dashboards');
+    expect(document.activeElement).toBe(dashboardsBtn);
+
+    dashboardsBtn.click(); // closes (toggle-off)
+    expect(state.leftNavSection.value).toBeNull();
+    expect(document.activeElement).toBe(dashboardsBtn);
+
+    handle.el.remove();
+    handle.dispose();
+  });
+
   it('switching between two different sections opens the new one without closing first (no toggle-off)', () => {
     const state = makeState({ mode: 'rail', section: 'library' });
     const deps = makeDeps(state);

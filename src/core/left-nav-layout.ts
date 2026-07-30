@@ -42,8 +42,17 @@ export const LEFT_WIDE_THRESHOLD_PX = 260;
 
 /** The WIDE two-pane sidebar's resize bounds — the range `asb:sidebarPx` has
  *  always used, preserved verbatim per #487 ("preserve the existing
- *  sidebar-width preference range"). These do NOT bound the focused drawer; see
- *  `clampDrawerWidthPx`. */
+ *  sidebar-width preference range"). `LEFT_PANEL_MAX_PX` bounds ONLY the wide
+ *  sidebar — a 420px drawer is impossible, since a drag that far right
+ *  converts to the wide sidebar first (see `clampDrawerWidthPx`).
+ *
+ *  `LEFT_PANEL_MIN_PX`, though, is now ALSO the focused drawer's own resizable
+ *  floor, reused rather than duplicated as a second "180" constant: phase 1
+ *  shipped the drawer's floor at the fold threshold (140) as an explicit open
+ *  question, and a real-browser check settled it — at 140px the Dashboards
+ *  section's three titles rendered as "Sa...", "O...", "A..." (unreadable and
+ *  indistinguishable), while at 180px they read as "Sales re...", "Ops
+ *  late...", "A very lo..." (ellipsized, but readable and distinguishable). */
 export const LEFT_PANEL_MIN_PX = 180;
 export const LEFT_PANEL_MAX_PX = 420;
 
@@ -236,20 +245,39 @@ export function clampWideWidthPx(px: number): number {
 }
 
 /**
- * Clamp a focused-drawer width into `[LEFT_FOLD_THRESHOLD_PX,
- * LEFT_WIDE_THRESHOLD_PX]` — the drawer's own band, NOT the wide sidebar's
- * `[MIN, MAX]`.
+ * Clamp a focused-drawer width into `[LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX]`
+ * — i.e. `[180, 260]` — the drawer's own band, NOT the wide sidebar's
+ * `[LEFT_PANEL_MIN_PX, LEFT_PANEL_MAX_PX]` (`[180, 420]`). The two bands now
+ * share a floor but not a ceiling: a drawer drag converts to the wide sidebar
+ * long before it would ever reach 420, so nothing above 260 is a legal drawer
+ * width. `clampWideWidthPx` governs the wide sidebar.
  *
- * That is a reading of #487's drawer-resize rules rather than of its constant
- * list: a drawer drag must fold closed below the fold threshold and convert to
- * the wide sidebar above the wide threshold, so everything in between is the
- * only width a drawer can hold. Giving the drawer the wide sidebar's 180 floor
- * and 420 ceiling would make most of that range unreachable — the drag would
- * have converted to wide long before 420. `MIN`/`MAX` govern the wide sidebar.
+ * **The floor is deliberately `LEFT_PANEL_MIN_PX`, not `LEFT_FOLD_THRESHOLD_PX`
+ * — a real, settled design decision, not phase 1's original shape.** Phase 1
+ * shipped this clamp's floor AT the fold threshold (`[140, 260]`), flagged as
+ * an explicit open question: a 140px drawer has to hold a title, a search box,
+ * tree indentation and action controls, and might be too narrow to do it
+ * legibly. A real-browser check confirmed it was: at 140px the Dashboards
+ * section's three titles rendered as "Sa...", "O...", "A..." — unreadable and
+ * indistinguishable from one another — while at 180px they read as "Sales
+ * re...", "Ops late...", "A very lo..." — still ellipsized, but genuinely
+ * readable and distinguishable. So the floor was raised to `LEFT_PANEL_MIN_PX`,
+ * reusing the wide sidebar's own floor constant rather than inventing a second
+ * "180" value, since the two are now the identical width for the identical
+ * reason.
+ *
+ * That reuse is also what gives the drawer the wide sidebar's own dead-zone
+ * mechanism FOR FREE, with no new branch anywhere: `resolveLeftNavigationDrag`'s
+ * drawer branch still folds only below `LEFT_FOLD_THRESHOLD_PX` (140,
+ * unchanged — that comparison runs on the RAW proposal, before this clamp), so
+ * a raw proposal between 140 and 180 no longer folds, and no longer clips at
+ * the raw proposed width either; it simply clamps UP to this floor and holds
+ * there — exactly mirroring `clampWideWidthPx`'s own dead zone, which falls out
+ * of its plain range clamp the same way.
  */
 export function clampDrawerWidthPx(px: number): number {
   if (Number.isNaN(px)) return LEFT_DRAWER_DEFAULT_PX;
-  return clamp(px, LEFT_FOLD_THRESHOLD_PX, LEFT_WIDE_THRESHOLD_PX);
+  return clamp(px, LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX);
 }
 
 /**
@@ -391,23 +419,30 @@ function restoreWide(layout: LeftNavigationLayout): LeftNavigationLayout {
  *
  * **Arrows resize within a band and perform the semantic transition at its edge.**
  * That edge case is not decoration: an arrow key carries a *relative* step, and
- * both bands are bounded by a dead zone wider than one step, so a purely relative
- * arrow gets stranded at a boundary forever.
+ * every band here is bounded by a dead zone wider than one step, so a purely
+ * relative arrow gets stranded at a boundary forever.
  *
- * Both ends had that failure, and they are exact mirrors:
+ * All three ends had that failure, and they are exact mirrors of each other:
  *
  * - a bare rail is 48px wide and the nearest legal wide width is 180, so a +16
  *   step proposes 64, lands in the sticky band and does nothing;
  * - a wide sidebar at its 180 floor folds only below 140, so a −16 step proposes
- *   164, clamps straight back to 180 and does nothing.
+ *   164, clamps straight back to 180 and does nothing;
+ * - an open drawer at its OWN 180 floor folds only below the identical 140, for
+ *   the identical reason, so a −16 step lands in that same 140–179 dead zone,
+ *   clamps straight back to 180 and does nothing. This third case is NEW: the
+ *   drawer's floor used to sit exactly AT the fold threshold (140), so any step
+ *   below it was already below the threshold too and folded on its own — only
+ *   raising the floor to 180 (see `clampDrawerWidthPx`) separated the two and
+ *   made a dead zone, and therefore a stranding, possible here as well.
  *
- * A *pointer* escapes both because `clientX` is absolute — it keeps travelling
- * until it crosses the threshold — so leaving them relative made the keyboard and
- * pointer disagree over a *sequence* even while agreeing on every single step.
- * Eleven ArrowLeft presses from a 300px sidebar used to sit at 180 forever while
- * the equivalent pointer path folded, with `aria-valuemin: 48` advertised
- * throughout. `Home`/`Shift+Arrow` escaping is not a defence: the W3C splitter
- * pattern makes plain Left/Right the separator's move keys.
+ * A *pointer* escapes all three because `clientX` is absolute — it keeps
+ * travelling until it crosses the threshold — so leaving them relative made the
+ * keyboard and pointer disagree over a *sequence* even while agreeing on every
+ * single step. Eleven ArrowLeft presses from a 300px sidebar used to sit at 180
+ * forever while the equivalent pointer path folded, with `aria-valuemin: 48`
+ * advertised throughout. `Home`/`Shift+Arrow` escaping is not a defence: the
+ * W3C splitter pattern makes plain Left/Right the separator's move keys.
  *
  * So the boundary step performs the transition the band edge implies, and every
  * step inside a band still routes through `resolveLeftNavigationDrag` — the
@@ -431,11 +466,22 @@ export function resolveLeftNavigationKey(
   if (layout.mode === 'rail' && layout.focusedSection === null) {
     return towardWide ? restoreWide(layout) : layout;
   }
-  // A wide sidebar already at its floor: leftward is the fold transition. An open
-  // drawer needs no equivalent — its own floor IS the fold threshold, so an
-  // ordinary step below it already closes it.
+  // A wide sidebar already at its floor: leftward is the fold transition.
   if (layout.mode === 'wide' && !towardWide && layout.wideWidthPx <= LEFT_PANEL_MIN_PX) {
     return foldToRail(layout);
+  }
+  // An open drawer now needs the IDENTICAL check, and that need is new: before
+  // the drawer's floor was raised to LEFT_PANEL_MIN_PX to match the wide
+  // sidebar's (see `clampDrawerWidthPx`), the drawer's floor WAS the fold
+  // threshold, so an ordinary relative step below it was already below the
+  // threshold too and folded on its own — no special case required. Now that
+  // the two values differ, a step below the drawer's floor lands IN the
+  // 140–179 dead zone instead of past it, and would strand there forever
+  // exactly like the wide sidebar's floor once did, absent this check. A
+  // 'rail' layout reaching here is never bare (the bare-rail branch above
+  // already returned), so `focusedSection` is guaranteed non-null.
+  if (layout.mode === 'rail' && !towardWide && layout.drawerWidthPx <= LEFT_PANEL_MIN_PX) {
+    return { ...layout, focusedSection: null };
   }
   const step = event.shiftKey ? LEFT_NAV_LARGE_STEP_PX : LEFT_NAV_STEP_PX;
   return resolveLeftNavigationDrag(layout, leftNavigationWidthPx(layout) + (towardWide ? step : -step));
@@ -591,7 +637,9 @@ export const LEFT_CENTRE_MIN_PX = 480;
  * "best effort" rather than an error: `wide`'s floor is `LEFT_PANEL_MIN_PX`
  * (180) and a bare `rail`'s occupied width is the fixed `LEFT_RAIL_PX` (48,
  * nothing to shrink), so the only floor this function can be asked to violate
- * is the wide sidebar's 180 or an open drawer's 140. Returning the floor
+ * is `LEFT_PANEL_MIN_PX` itself — the wide sidebar's floor AND, since #487
+ * phase 3's real-browser pass raised the drawer's floor to match (see
+ * `clampDrawerWidthPx`), an open drawer's floor too. Returning the floor
  * anyway — rather than throwing, or returning something outside every mode's
  * legal range — keeps the result always renderable; a caller that actually
  * needs the navigation narrower than what a mode CAN render must change the
@@ -606,9 +654,11 @@ export const LEFT_CENTRE_MIN_PX = 480;
  * mobile's own two-pane layout stops standing in), the budget phase 4 would
  * pass is `768 − 480 − 7 = 281`. That clears the wide sidebar's 180 floor with
  * 101px to spare, and clears an open drawer's `281 − LEFT_RAIL_PX(48) = 233`
- * against its 140 floor with 93px to spare. Below 768 the mobile layout
- * replaces the rail and drawer entirely (`effectiveLeftNavigationLayout`
- * above), so this function is never consulted there either.
+ * against its own (now identical) 180 floor with 53px to spare — down from the
+ * 93px this margin had against the drawer's original 140 floor, but still
+ * comfortably positive. Below 768 the mobile layout replaces the rail and
+ * drawer entirely (`effectiveLeftNavigationLayout` above), so this function is
+ * never consulted there either.
  *
  * `maxNavigationTotalPx` itself is a plain number budget, not a viewport: a
  * non-finite or NEGATIVE value (a corrupt measurement, or a caller that has
@@ -638,7 +688,10 @@ export function clampLeftNavigationToMaximumTotal(
   if (normalized.focusedSection === null) return normalized; // bare rail: fixed width, nothing to shrink.
   // An open drawer sits BESIDE the rail, so its own budget is the total minus
   // the rail — mirroring `resolveLeftNavigationDrag`'s `panelPx` derivation.
-  const maxDrawerWidthPx = clamp(budget - LEFT_RAIL_PX, LEFT_FOLD_THRESHOLD_PX, LEFT_WIDE_THRESHOLD_PX);
+  // The floor is LEFT_PANEL_MIN_PX, matching `clampDrawerWidthPx` — NOT
+  // LEFT_FOLD_THRESHOLD_PX, which is a fold POINT for the raw drag proposal,
+  // not a legal width this clamp should ever produce.
+  const maxDrawerWidthPx = clamp(budget - LEFT_RAIL_PX, LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX);
   return normalized.drawerWidthPx <= maxDrawerWidthPx
     ? normalized
     : { ...normalized, drawerWidthPx: maxDrawerWidthPx };

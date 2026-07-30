@@ -322,8 +322,11 @@ describe('createState — left navigation preferences (#487)', () => {
   it('clamps an out-of-range drawer width into the drawer own band', () => {
     // Not the wide sidebar's [180, 420]: a drawer wider than the wide threshold
     // is unreachable, because a drag that far right converts to the sidebar.
+    // The floor is 180, not the fold threshold (140) — #487 phase 3's
+    // real-browser check raised it to match the wide sidebar's own floor (see
+    // `core/left-nav-layout.ts`'s `clampDrawerWidthPx`).
     expect(createState(reader({ [KEYS.leftNavDrawerPx]: '9999' })).leftNavDrawerPx).toBe(260);
-    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '0' })).leftNavDrawerPx).toBe(140);
+    expect(createState(reader({ [KEYS.leftNavDrawerPx]: '0' })).leftNavDrawerPx).toBe(180);
   });
 
   it('keeps the wide width on the ONE preference key, with no second owner', () => {

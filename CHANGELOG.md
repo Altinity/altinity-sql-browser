@@ -126,6 +126,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `LEFT_PANEL_MIN_PX`/`LEFT_PANEL_MAX_PX` constants as the load path, instead of
   repeating `180`/`420` as literals (#487). Behaviour is unchanged; it removes
   the second owner of a range whose whole point is having one.
+- **The focused drawer's minimum resizable width is now 180px, not 140px**
+  (#487, phase 3 of 4) — a deliberate, user-visible behavior change from the
+  placeholder value phase 1 shipped, settled by a real-browser check rather
+  than left as-is. Phase 1 flagged the drawer's `[140, 260]` resize band as an
+  explicit open question, noting a 140px drawer has to hold a title, a search
+  box, tree indentation and action controls, and might be too narrow to do it
+  legibly. It was: at 140px the Dashboards section's three titles rendered as
+  "Sa...", "O...", "A..." — unreadable and indistinguishable from one another —
+  while at 180px they read as "Sales re...", "Ops late...", "A very lo..." —
+  still ellipsized, but genuinely readable and distinguishable. The drawer's
+  floor now reuses `LEFT_PANEL_MIN_PX`, the wide sidebar's own floor constant,
+  rather than a second "180" value, which also gives the drawer the wide
+  sidebar's own dead-zone behavior for free: a resize proposal between 140 and
+  180 now holds the drawer open at the 180 floor instead of folding it or
+  clipping it to the raw proposed width, exactly mirroring how the wide
+  sidebar already holds at its own 180 floor between the fold threshold and
+  180. The keyboard path gained the equivalent of the wide sidebar's own
+  at-the-floor boundary check for the same reason: once the drawer's floor
+  no longer coincided with the fold threshold, a plain `ArrowLeft` from the
+  floor could otherwise land in that same dead zone and get stranded there
+  rather than folding.
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
   persistence even though Dashboard's own caller uses them for an unpersisted
@@ -164,6 +185,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   reaching it takes a hand-edited or foreign-origin `localStorage` entry. The
   same NaN hole in `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` is
   tracked separately in #570.
+- **Closing a rail-launched drawer by clicking its own icon now returns focus
+  to that icon on WebKit/Safari too** (#487, phase 3 of 4). Chromium and
+  Firefox focus a clicked `<button>` natively, so `ui/left-rail.ts`'s click
+  handler happened to leave focus on the rail icon after a toggle-close — the
+  same outcome the Escape-to-close path already produces explicitly via
+  `leftRail.focusSection(section)` in `app-shell.ts`. WebKit does not natively
+  focus a clicked button (a real, long-standing engine difference), so on
+  Safari a click-close dropped focus to `<body>` instead, an inconsistency
+  with the keyboard path found in a real-browser e2e pass. The click handler
+  now calls `button.focus()` explicitly, matching the Escape path's behavior
+  in every engine rather than relying on each browser's own native click-focus
+  behavior.
 - **The Dashboard tree no longer reveals two rows' pencil/trash actions at
   once, and its `· N` count now sits inline after the label** (#568). The
   hover/focus reveal rule (`.dash-tree-row:focus-within .dash-tree-act`)

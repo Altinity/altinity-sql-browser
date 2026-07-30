@@ -98,7 +98,19 @@ export function buildLeftRail(deps: LeftRailDeps): LeftRailHandle {
       'aria-label': entry.accessibleLabel,
       'aria-controls': drawerElementId,
       'aria-expanded': 'false',
-      onclick: () => toggleFocusedSection(app, section),
+      // Explicit `button.focus()`, not left to the browser's native
+      // click-focus behaviour: Chromium/Firefox focus a clicked `<button>`
+      // automatically, so closing an open drawer by clicking its own icon
+      // happens to leave focus on that icon there — matching the Escape path's
+      // EXPLICIT `leftRail.focusSection(section)` call in `app-shell.ts`.
+      // WebKit/Safari does NOT natively focus a clicked button (a real,
+      // long-standing engine difference), so without this call Safari drops
+      // focus to `<body>` on close instead of returning it to the rail icon,
+      // an inconsistency with the Escape path's cross-browser-reliable
+      // behaviour. Ordering relative to `toggleFocusedSection` does not
+      // matter — focusing the button does not depend on the section's
+      // resulting open/closed state.
+      onclick: () => { toggleFocusedSection(app, section); button.focus(); },
     }, entry.icon());
     buttonsBySection.set(section, button);
     disposers.push(effect(() => {

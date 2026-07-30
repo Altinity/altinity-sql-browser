@@ -4,9 +4,22 @@ import { test, expect } from '@playwright/test';
 // see CSS layout (the `@container sidebar (max-width: 220px)` gate lives in
 // `src/styles.css`), so this is the only place the breakpoint is provable:
 // dragging the real `.col-resize` handle the way the app does (mousedown on
-// the handle, then a real `mousemove`/`mouseup` — `src/ui/splitters.ts`'s
-// `dragValue('col', ev)` reads `ev.clientX` directly, unclamped by any rect),
-// and reading the resulting `getComputedStyle` on both tab rows.
+// the handle, then a real `mousemove`/`mouseup` — `left-nav-separator.ts`'s
+// `advanceTo` reads `ev.clientX` directly, unclamped by any rect), and
+// reading the resulting `getComputedStyle` on both tab rows.
+//
+// #487 phase 3 added a SECOND, lower threshold below the 180px floor this
+// file originally tested: `LEFT_FOLD_THRESHOLD_PX` (140, `core/
+// left-nav-layout.ts`). Dragging past 180 down to 140 is a dead zone — the
+// wide sidebar holds at its 180px floor, exactly as before phase 3 — but
+// dragging BELOW 140 now folds the sidebar into the compact icon rail instead
+// of clamping. That means a drag to `clientX=100` (this file's original
+// "180px minimum" target) no longer holds at 180 — it folds. This file's own
+// tests below cover both: the dead-zone floor-hold at a retargeted coordinate
+// inside `[140, 180)`, and the new fold transition itself. The rail + focused
+// drawer's OWN geometry (icons, drawer content, drawer-pushes-the-work-surface)
+// is covered separately in `left-nav-fold.spec.js`, not here — this file stays
+// scoped to the wide sidebar's own tab-header compaction (#552/#553).
 //
 // Reuses `dashboard-tree.html` (#426's fixture): it already mounts the real
 // `mountAppShell` with both tab rows live — the upper role tabs (Databases ·2
@@ -101,10 +114,22 @@ test.describe('sidebar tab headers at narrow widths (#552)', () => {
     await expect(page.locator('.saved-pane > .side-tabs .side-tab', { hasText: 'History' })).toHaveClass(/active/);
   });
 
-  test('the 180px minimum sidebar still shows compact, unclipped, non-overlapping labels', async ({ page }) => {
+  // #487 phase 3: `clientX=160` sits inside the dead zone `[LEFT_FOLD_THRESHOLD_PX
+  // (140), LEFT_PANEL_MIN_PX (180))` — the wide sidebar still holds at its 180px
+  // floor rather than folding (phase 1's documented dead-zone behavior). This is
+  // the retargeted version of this file's original "drag to 100" test: 100 is now
+  // BELOW the fold threshold and folds instead (see the new test below), so this
+  // one confirms the real drag pixel-for-pixel still produces the pre-#487 floor
+  // outcome at a coordinate that remains inside the wide band.
+  test('the 180px minimum sidebar still shows compact, unclipped, non-overlapping labels (dead zone, no fold)', async ({ page }) => {
     await open(page);
-    await dragSidebarTo(page, 100); // below the 180px floor — dragValue clamps it there
+    await dragSidebarTo(page, 160); // inside [140, 180) — holds at the floor, does not fold
     await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(180, 0);
+    // Confirms the drag stayed in 'wide' mode rather than folding: the sidebar is
+    // still the one presenting (not `hidden`), and the rail never appears.
+    await expect(page.locator('.sidebar')).not.toBeHidden();
+    await expect(page.locator('.left-rail')).toBeHidden();
+    expect(await page.evaluate(() => document.querySelector('.main-row').dataset.navMode)).toBe('wide');
 
     const [upper, lower] = await page.evaluate(tabsGeometry);
     for (const row of [upper, lower]) {
@@ -118,6 +143,31 @@ test.describe('sidebar tab headers at narrow widths (#552)', () => {
         prevRight = tab.tabRect.right;
       }
     }
+  });
+
+  // #487 phase 3: dragging BELOW the fold threshold (140) is a real mode
+  // transition, not a clamp — the sidebar folds into the compact rail entirely.
+  // The #552/#553 tab-compaction machinery this file otherwise tests is moot once
+  // folded: both tab rows are not merely compacted, they are not rendered at all
+  // (`display: none`, not just the `.hidden` DOM property — the exact CSS-cascade
+  // gap a confirmed #487 phase 3 bug lived in, so this checks computed style).
+  test('dragging below the fold threshold folds the sidebar into the compact rail', async ({ page }) => {
+    await open(page);
+    await dragSidebarTo(page, 50); // comfortably under LEFT_FOLD_THRESHOLD_PX (140)
+
+    const geometry = await page.evaluate(() => ({
+      navMode: document.querySelector('.main-row').dataset.navMode,
+      sidebarNavMode: document.querySelector('.sidebar').dataset.navMode,
+      sidebarDisplay: getComputedStyle(document.querySelector('.sidebar')).display,
+      railDisplay: getComputedStyle(document.querySelector('.left-rail')).display,
+      tabRowDisplays: [...document.querySelectorAll('.side-tabs')].map((row) => getComputedStyle(row).display),
+    }));
+    expect(geometry.navMode).toBe('rail');
+    expect(geometry.sidebarNavMode).toBe('rail');
+    expect(geometry.sidebarDisplay).toBe('none');
+    expect(geometry.railDisplay).not.toBe('none');
+    expect(geometry.tabRowDisplays).toHaveLength(2);
+    for (const display of geometry.tabRowDisplays) expect(display).toBe('none');
   });
 
   test('widening the sidebar back past 220px restores the full tab presentation', async ({ page }) => {

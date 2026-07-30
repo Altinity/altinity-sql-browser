@@ -80,6 +80,13 @@
 
     const root = document.querySelector('#root');
     const app = createApp({ root, broadcastChannel: () => null });
+    // #487 phase 3 — exposed for `left-nav-fold.spec.js`, mirroring the
+    // `window.__app` convention already used by `editor.html`/
+    // `tile-open-workbench.html`/`variable-tab.html`: lets a test read
+    // `app.state.leftNavMode`/`leftNavSection` directly for internal
+    // consistency, alongside the real computed-style assertions that are
+    // this fixture's whole point.
+    window.__app = app;
     // #524: expanding a schema row enters authenticated work. The fixture
     // mounts the shell directly (without normal sign-in bootstrap), so keep an
     // explicit open test epoch for those otherwise stubbed requests.

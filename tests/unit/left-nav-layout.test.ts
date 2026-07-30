@@ -84,7 +84,10 @@ describe('constants (#487)', () => {
   it('keeps both documented defaults inside their own band', () => {
     expect(LEFT_WIDE_DEFAULT_PX).toBeGreaterThanOrEqual(LEFT_PANEL_MIN_PX);
     expect(LEFT_WIDE_DEFAULT_PX).toBeLessThanOrEqual(LEFT_PANEL_MAX_PX);
-    expect(LEFT_DRAWER_DEFAULT_PX).toBeGreaterThanOrEqual(LEFT_FOLD_THRESHOLD_PX);
+    // The drawer's own band is [LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX] —
+    // 180 (shared with the wide sidebar's floor), not LEFT_FOLD_THRESHOLD_PX
+    // (140, a fold POINT, not a legal drawer width — see `clampDrawerWidthPx`).
+    expect(LEFT_DRAWER_DEFAULT_PX).toBeGreaterThanOrEqual(LEFT_PANEL_MIN_PX);
     expect(LEFT_DRAWER_DEFAULT_PX).toBeLessThanOrEqual(LEFT_WIDE_THRESHOLD_PX);
     expect(LEFT_NAV_STEP_PX).toBeLessThan(LEFT_NAV_LARGE_STEP_PX);
   });
@@ -153,20 +156,26 @@ describe('clampWideWidthPx', () => {
 });
 
 describe('clampDrawerWidthPx', () => {
-  it('clamps to the drawer band, not the wide sidebar range', () => {
+  it('clamps to the drawer band — [LEFT_PANEL_MIN_PX, LEFT_WIDE_THRESHOLD_PX] — not the wide sidebar range', () => {
     expect(clampDrawerWidthPx(200)).toBe(200);
-    expect(clampDrawerWidthPx(LEFT_FOLD_THRESHOLD_PX)).toBe(LEFT_FOLD_THRESHOLD_PX);
+    expect(clampDrawerWidthPx(LEFT_PANEL_MIN_PX)).toBe(LEFT_PANEL_MIN_PX);
     expect(clampDrawerWidthPx(LEFT_WIDE_THRESHOLD_PX)).toBe(LEFT_WIDE_THRESHOLD_PX);
-    expect(clampDrawerWidthPx(0)).toBe(LEFT_FOLD_THRESHOLD_PX);
-    // Explicitly NOT the wide sidebar's bounds: a 400px drawer is impossible,
+    expect(clampDrawerWidthPx(0)).toBe(LEFT_PANEL_MIN_PX);
+    // Explicitly NOT the wide sidebar's ceiling: a 400px drawer is impossible,
     // because a drag that far right converts to the wide sidebar instead.
     expect(clampDrawerWidthPx(400)).toBe(LEFT_WIDE_THRESHOLD_PX);
-    expect(clampDrawerWidthPx(LEFT_PANEL_MIN_PX)).toBe(LEFT_PANEL_MIN_PX);
+    // A proposal at or below the OLD floor (the fold threshold, 140 — phase
+    // 1's placeholder) now clamps UP to the real-browser-settled 180 floor,
+    // not down to 140: at 140px the Dashboards section's titles rendered
+    // unreadable ("Sa...", "O...", "A..."), so 140 is no longer a legal
+    // drawer width at all.
+    expect(clampDrawerWidthPx(150)).toBe(LEFT_PANEL_MIN_PX);
+    expect(clampDrawerWidthPx(LEFT_FOLD_THRESHOLD_PX)).toBe(LEFT_PANEL_MIN_PX);
   });
   it('sends only NaN to the default', () => {
     expect(clampDrawerWidthPx(NaN)).toBe(LEFT_DRAWER_DEFAULT_PX);
     expect(clampDrawerWidthPx(Infinity)).toBe(LEFT_WIDE_THRESHOLD_PX);
-    expect(clampDrawerWidthPx(-Infinity)).toBe(LEFT_FOLD_THRESHOLD_PX);
+    expect(clampDrawerWidthPx(-Infinity)).toBe(LEFT_PANEL_MIN_PX);
   });
 });
 
@@ -222,9 +231,12 @@ describe('resolveLeftNavigationDrag — a monotone drag never reverses (#487 reg
     expect(new Set(widths)).toEqual(new Set([LEFT_PANEL_MIN_PX, LEFT_RAIL_PX]));
   });
 
-  it('keeps the drawer under the pointer through its whole band', () => {
+  it('keeps the drawer under the pointer through its whole RESIZABLE band', () => {
+    // Starts at LEFT_PANEL_MIN_PX (180), not LEFT_FOLD_THRESHOLD_PX (140): the
+    // 140–179 range is now a dead zone (see the dead-zone test below), so the
+    // drawer only tracks the pointer 1:1 from its own floor upward.
     let layout: LeftNavigationLayout = rail({ focusedSection: 'history' });
-    for (const x of range(LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX, LEFT_RAIL_PX + LEFT_WIDE_THRESHOLD_PX)) {
+    for (const x of range(LEFT_RAIL_PX + LEFT_PANEL_MIN_PX, LEFT_RAIL_PX + LEFT_WIDE_THRESHOLD_PX)) {
       layout = resolveLeftNavigationDrag(layout, x);
       expect(leftNavigationWidthPx(layout)).toBe(x);
     }
@@ -294,17 +306,31 @@ describe('resolveLeftNavigationDrag — rail', () => {
     expect(next.focusedSection).toBe('dashboards');
     expect(next.drawerWidthPx).toBe(200);
   });
-  it('holds an open drawer at exactly the fold threshold, and folds one pixel below it', () => {
-    // The closed lower edge of the drawer band: `clampDrawerWidthPx` claims 140 is
-    // reachable, so the reducer's comparison must agree. A `<=` here would make
-    // 140 unreachable while the clamp still advertised it.
+  it('holds an open drawer AT ITS FLOOR at exactly the fold threshold, and folds one pixel below it', () => {
+    // The floor was raised to LEFT_PANEL_MIN_PX (180), so the fold threshold
+    // (140) is no longer itself a reachable drawer width — it is the dead
+    // zone's own lower edge. The reducer's fold check is a strict `<`, so a
+    // proposal exactly AT the threshold does not fold and clamps UP to the 180
+    // floor instead; only one pixel below actually folds.
     const open = resolveLeftNavigationDrag(
       rail({ focusedSection: 'history' }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX);
     expect(open.focusedSection).toBe('history');
-    expect(open.drawerWidthPx).toBe(LEFT_FOLD_THRESHOLD_PX);
+    expect(open.drawerWidthPx).toBe(LEFT_PANEL_MIN_PX);
     const closed = resolveLeftNavigationDrag(
       rail({ focusedSection: 'history' }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX - 1);
     expect(closed.focusedSection).toBeNull();
+  });
+  it("sits at the 180 floor through the drawer's dead zone rather than clipping or folding — mirrors the wide sidebar", () => {
+    // #487 phase 3's real-browser settling of the drawer's minimum width:
+    // between the fold threshold and the floor the drawer now holds at 180 and
+    // stays open, exactly like `clampWideWidthPx`'s own dead zone for the wide
+    // sidebar (see "sits at the 180 floor through the whole dead zone" above).
+    for (const panelProposal of [LEFT_FOLD_THRESHOLD_PX, 150, 160, LEFT_PANEL_MIN_PX - 1]) {
+      const next = resolveLeftNavigationDrag(
+        rail({ focusedSection: 'history' }), LEFT_RAIL_PX + panelProposal);
+      expect(next.focusedSection).toBe('history');
+      expect(next.drawerWidthPx).toBe(LEFT_PANEL_MIN_PX);
+    }
   });
   it('holds an open drawer at exactly the wide threshold, and converts one pixel above it', () => {
     const open = resolveLeftNavigationDrag(
@@ -390,10 +416,25 @@ describe('resolveLeftNavigationKey', () => {
     expect(next.drawerWidthPx).toBe(200 + LEFT_NAV_STEP_PX);
     expect(next.wideWidthPx).toBe(LEFT_WIDE_DEFAULT_PX);
   });
-  it('can fold an open drawer closed with an arrow at its floor', () => {
+  it('folds an open drawer closed on a leftward step AT ITS FLOOR — the new mirror of the wide-floor fix', () => {
+    // Before the drawer's floor was raised to LEFT_PANEL_MIN_PX (180), this
+    // needed no special case: the drawer's floor WAS the fold threshold (140),
+    // so an ordinary relative step below it was already below the threshold
+    // too. Now that the floor sits above the threshold, a plain ArrowLeft from
+    // 180 would otherwise land in the 140–179 dead zone and get stranded there
+    // forever — exactly the failure this function's own header comment names
+    // for the wide sidebar's floor. The explicit floor check added alongside
+    // it (`resolveLeftNavigationKey`'s drawer-floor branch) fixes the drawer
+    // identically.
     const next = resolveLeftNavigationKey(
-      rail({ focusedSection: 'history', drawerWidthPx: LEFT_FOLD_THRESHOLD_PX }), { key: 'ArrowLeft' })!;
+      rail({ focusedSection: 'history', drawerWidthPx: LEFT_PANEL_MIN_PX }), { key: 'ArrowLeft' })!;
     expect(next.focusedSection).toBeNull();
+  });
+  it('resizes rightward from the drawer floor instead of folding — the mirror check must not fire on ArrowRight', () => {
+    const next = resolveLeftNavigationKey(
+      rail({ focusedSection: 'history', drawerWidthPx: LEFT_PANEL_MIN_PX }), { key: 'ArrowRight' })!;
+    expect(next.focusedSection).toBe('history');
+    expect(next.drawerWidthPx).toBe(LEFT_PANEL_MIN_PX + LEFT_NAV_STEP_PX);
   });
   it('leaves a bare rail on ONE rightward step, at the REMEMBERED width', () => {
     // A relative +16 from the rail's own 48px would propose 64, land in the sticky
@@ -423,13 +464,16 @@ describe('resolveLeftNavigationKey', () => {
     //
     // Band EDGES are deliberately excluded and asserted separately: there the
     // keyboard performs a semantic transition the pointer reaches by simply
-    // travelling further, which no single shared proposal can express. A bare rail
-    // and a 180px sidebar are the two such states.
+    // travelling further, which no single shared proposal can express. A bare
+    // rail, a 180px wide sidebar, and — since the drawer's floor was raised to
+    // match — a 180px open drawer are the three such states.
     const cases: LeftNavigationLayout[] = [
       wide({ wideWidthPx: 300 }),
       wide({ wideWidthPx: LEFT_PANEL_MIN_PX + LEFT_NAV_LARGE_STEP_PX }),
       wide({ wideWidthPx: LEFT_PANEL_MAX_PX }),
-      rail({ focusedSection: 'databases', drawerWidthPx: LEFT_FOLD_THRESHOLD_PX }),
+      // NOT the drawer's floor (LEFT_PANEL_MIN_PX) — that is a band EDGE now,
+      // exactly like the wide sidebar's, and is asserted separately above.
+      rail({ focusedSection: 'databases', drawerWidthPx: LEFT_PANEL_MIN_PX + LEFT_NAV_LARGE_STEP_PX }),
       rail({ focusedSection: 'databases', drawerWidthPx: 200 }),
       rail({ focusedSection: 'databases', drawerWidthPx: LEFT_WIDE_THRESHOLD_PX }),
     ];
@@ -809,9 +853,11 @@ describe('leftNavigationSeparatorAria', () => {
       expect(valueNow).toBeLessThanOrEqual(valueMax);
     });
     it('holds for an open drawer at a budget below the drawer\'s own floor', () => {
-      // The drawer's floor is LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX (188); pick a
-      // budget well below that so valueNow (the drawer's occupied width) would
-      // exceed an unclamped valueMax.
+      // The drawer's floor is LEFT_RAIL_PX + LEFT_PANEL_MIN_PX (228) — raised
+      // from the fold threshold (140) to match the wide sidebar's own floor,
+      // per #487 phase 3's real-browser settling of the drawer's minimum
+      // width. Pick a budget well below that so valueNow (the drawer's
+      // occupied width) would exceed an unclamped valueMax.
       const layout = rail({ focusedSection: 'library', drawerWidthPx: LEFT_WIDE_THRESHOLD_PX });
       const { valueMin, valueMax, valueNow } = leftNavigationSeparatorAria(layout, 50);
       expect(valueMin).toBeLessThanOrEqual(valueNow);
@@ -854,16 +900,18 @@ describe('clampLeftNavigationToMaximumTotal (#487 phase 3)', () => {
       .toBe(LEFT_PANEL_MIN_PX);
   });
   it("returns the drawer's own floor for a budget below it", () => {
+    // The floor is LEFT_PANEL_MIN_PX (180) now, not LEFT_FOLD_THRESHOLD_PX
+    // (140) — raised to match the wide sidebar's own floor.
     const next = clampLeftNavigationToMaximumTotal(
-      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX - 1);
-    expect(next.drawerWidthPx).toBe(LEFT_FOLD_THRESHOLD_PX);
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_PANEL_MIN_PX - 1);
+    expect(next.drawerWidthPx).toBe(LEFT_PANEL_MIN_PX);
   });
   it('is exact at the floor boundary — the floor itself still fits', () => {
     expect(clampLeftNavigationToMaximumTotal(wide({ wideWidthPx: 350 }), LEFT_PANEL_MIN_PX).wideWidthPx)
       .toBe(LEFT_PANEL_MIN_PX);
     const next = clampLeftNavigationToMaximumTotal(
-      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_FOLD_THRESHOLD_PX);
-    expect(next.drawerWidthPx).toBe(LEFT_FOLD_THRESHOLD_PX);
+      rail({ focusedSection: 'library', drawerWidthPx: 220 }), LEFT_RAIL_PX + LEFT_PANEL_MIN_PX);
+    expect(next.drawerWidthPx).toBe(LEFT_PANEL_MIN_PX);
   });
   it('does not propagate NaN or Infinity for a non-finite or negative budget', () => {
     for (const bogus of [NaN, Infinity, -Infinity, -1, -9999]) {
