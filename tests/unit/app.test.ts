@@ -7093,6 +7093,21 @@ describe('unified /sql routing', () => {
       expect(toastEl.textContent).toBe('That query is no longer part of this workspace.');
     });
 
+    // #487 phase 3 — `app.openFocusedSection` is a thin controller-seam
+    // delegate to `application/left-nav.ts`'s own `openFocusedSection`
+    // (exhaustively covered in `left-nav.test.ts`); this just proves the
+    // wiring actually calls through into real `AppState`.
+    it('openFocusedSection delegates through to application/left-nav.ts', () => {
+      const { app } = readyApp(['a']);
+      app.state.leftNavMode.value = 'rail';
+      app.state.sidePanel.value = 'history';
+
+      app.openFocusedSection('library');
+
+      expect(app.state.sidePanel.value).toBe('saved');
+      expect(app.state.leftNavSection.value).toBe('library');
+    });
+
     // #535 — the tile's expand action. `openSavedQuery` opens a document;
     // `openPanelQuery` opens a PANEL: same tab, plus a run and a tree reveal, so
     // leaving the Dashboard neither loses the user's place in it nor drops them on

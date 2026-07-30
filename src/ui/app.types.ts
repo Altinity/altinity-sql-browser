@@ -17,6 +17,7 @@ import type {
   WorkspaceExternallyChangedInfo, WorkspaceMutationInput, WorkspaceMutationOutcome,
 } from '../state.js';
 import type { DocTarget } from '../core/doc-types.js';
+import type { LeftNavigationSection } from '../core/left-nav-layout.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { AuthenticatedExecutionScope } from '../application/authenticated-execution-scope.js';
@@ -542,6 +543,12 @@ export interface App {
    *  #443 — the id is resolved BEFORE anything moves: one that names no saved
    *  query reports a diagnostic and changes no surface, no route and no tab. */
   openSavedQuery(queryId: string): void;
+  /** #487 phase 3 — open (or re-assert open) the left navigation's focused
+   *  drawer on `section`, idempotently: repeated calls with the drawer already
+   *  showing this section are a no-op (`core/left-nav-layout.ts`'s
+   *  `resolveRailOpen`). In wide mode there is no drawer, so this only drives
+   *  the existing upper/lower pane switch for `section`. */
+  openFocusedSection(section: LeftNavigationSection): void;
   /**
    * #535 — a Dashboard TILE's own expand action: everything `openSavedQuery`
    * does, plus the two things that make it an act of "go work on this panel"

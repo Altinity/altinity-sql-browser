@@ -43,6 +43,7 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTa
 import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { dashboardVariables } from '../application/dashboard-tree-model.js';
+import { openFocusedSection } from '../application/left-nav.js';
 import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
@@ -2935,6 +2936,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     const query = savedQueryToOpen(queryId);
     if (query) openQueryDocument(query);
   };
+
+  // #487 phase 3 — the left navigation's controller seam. `app` (state +
+  // prefs) satisfies `left-nav.ts`'s narrow structural `LeftNavApp` directly.
+  app.openFocusedSection = (section) => { openFocusedSection(app, section); };
 
   // #535 — the tile's expand action. Order matters: the tree is revealed FIRST,
   // exactly as the Library-drop settlement does it (ui/dashboard-tree.ts), so the

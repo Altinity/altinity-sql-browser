@@ -597,6 +597,7 @@ const appDefaults: App = {
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
   openSavedQuery: () => {},
+  openFocusedSection: () => {},
   openPanelQuery: () => {},
   openVariableTab: () => {},
   actions: {} as ActionsRegistry,
