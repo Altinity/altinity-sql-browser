@@ -125,9 +125,13 @@ describe('mountAppShell wide navigation (#487 phase 2)', () => {
     expect(host.library.hidden).toBe(false);
     expect(host.history.hidden).toBe(true);
     // The same element objects throughout — never rebuilt, only exposed or hidden.
-    // That identity is what makes phase 3's mode change a MOVE of live DOM.
+    // That identity is what makes phase 3's mode change a MOVE of live DOM. Both
+    // stay MOUNTED too: identity alone would also hold for a host that had been
+    // detached from the shell and replaced by a look-alike.
     expect(app.dom.savedList).toBe(libraryList);
     expect(app.dom.historyList).toBe(historyList);
+    expect(app.root.contains(libraryList)).toBe(true);
+    expect(app.root.contains(historyList)).toBe(true);
     // Becoming active DOES repaint the section, exactly as it always has: the
     // switcher clears the shared search filter, so the list is rebuilt from
     // scratch. #487 phase 3 owns whether a drawer should preserve it instead.

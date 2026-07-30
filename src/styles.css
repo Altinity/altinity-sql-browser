@@ -1718,9 +1718,18 @@ body.detached-tab .graph-overlay-panel {
   display: flex; flex-direction: column;
 }
 /* A hidden host contributes no layout, so the exposed one owns the whole pane —
-   but it keeps its DOM, which is what preserves search text, expansion, lazily
-   loaded columns and scroll across a section switch, and (phase 3) across a move
-   between the wide sidebar and the focused drawer. */
+   but it keeps its DOM. What that preserves differs by pane, and the distinction
+   matters to #487 phase 3:
+
+   - UPPER (Databases | Dashboards): everything, across a role switch. Each role
+     owns its own search and expansion state, so switching only flips `hidden` and
+     the schema search text, lazily loaded columns and scroll all survive (#426).
+   - LOWER (Library | History): NOT across a section switch. The switcher clears
+     the shared `libraryFilter`, and activating the destination repaints its search
+     box and list. Per-section lower search state is phase 3's, not solved here.
+   - BOTH, across a MOVE between containers (phase 3's wide sidebar ↔ focused
+     drawer): everything, because moving an element repaints nothing. That is the
+     guarantee the persistent hosts exist for. */
 .nav-section-host[hidden] { display: none; }
 
 /* ------------ Dashboard hierarchy tree (#426) ------------ */

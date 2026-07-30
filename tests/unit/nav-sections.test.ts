@@ -9,6 +9,7 @@ import type { NavSectionsApp } from '../../src/ui/nav-sections.js';
 import { LEFT_NAV_SECTIONS } from '../../src/core/left-nav-layout.js';
 import type { SidebarUpperHandle } from '../../src/ui/sidebar-upper.js';
 import { h } from '../../src/ui/dom.js';
+import { Icon } from '../../src/ui/icons.js';
 
 /**
  * A stand-in for #426's upper pane. The registry ADOPTS those two hosts and
@@ -68,6 +69,17 @@ describe('NAV_SECTION_META', () => {
     for (const section of LEFT_NAV_SECTIONS) {
       expect(NAV_SECTION_META[section].accessibleLabel).not.toBe(NAV_SECTION_META[section].label);
     }
+  });
+
+  it('maps each section to the RIGHT icon primitive', () => {
+    // Identity, not shape. The freshness test below proves each entry is a factory
+    // and the two consumer-mutation tests prove both switchers read this table —
+    // but a WRONG icon in the table propagates consistently to every presentation,
+    // so all of those stay green if Library and History are swapped here.
+    expect(NAV_SECTION_META.databases.icon).toBe(Icon.database);
+    expect(NAV_SECTION_META.dashboards.icon).toBe(Icon.dashboard);
+    expect(NAV_SECTION_META.library.icon).toBe(Icon.layers);
+    expect(NAV_SECTION_META.history.icon).toBe(Icon.history);
   });
 
   it('mints a FRESH icon per call, for EVERY section', () => {
