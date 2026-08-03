@@ -353,12 +353,19 @@ export interface AppState {
   sidebarPx: number;
   editorPct: number;
   sideSplitPct: number;
-  cellDrawerPx: number;
-  /** The docs pane's own persisted resize width (#313) — a sibling of
-   *  `cellDrawerPx`, read/written only by the 'docPane' splitter axis
-   *  (splitters.ts) and `attachDrawerResize`'s `stateKey: 'docPanePx'` option
-   *  (drawer.ts); never shared with the cell-detail/rows-viewer drawer. */
-  docPanePx: number;
+  /**
+   * The docked right-inspector's persisted width (#586) — one browser
+   * preference shared by every surface the shell mounts into `inspectorHost`
+   * (cell detail, rows viewer, Reference), replacing the two independent
+   * `cellDrawerPx`/`docPanePx` prefs each surface's own overlay used to read.
+   * Read/written only by the `'rightInspector'` splitter axis (splitters.ts)
+   * and app-shell.ts's own resize handle — never a per-surface key again.
+   * `createState`'s load is compatibility-ordered: a real `rightInspectorPx`
+   * wins, else a real `docPanePx`, else a real `cellDrawerPx` (both still
+   * read-only, never written again), else the default — so upgrading a
+   * browser that already had either old preference keeps it.
+   */
+  rightInspectorPx: number;
   tabs: Signal<QueryTab[]>;
   activeTabId: Signal<string>;
   schema: Signal<unknown[] | null>;
@@ -478,6 +485,14 @@ export const KEYS = {
   sidebarPx: 'asb:sidebarPx',
   editorPct: 'asb:editorPct',
   sideSplitPct: 'asb:sideSplitPct',
+  /** #586 — the single canonical right-inspector width preference. Written
+   *  only from app-shell.ts's shared resize handle / the detached cell-detail
+   *  overlay's own drag handle (drawer.ts). */
+  rightInspectorPx: 'asb:rightInspectorPx',
+  /** #586 — retained ONLY as compat-read sources for `rightInspectorPx`
+   *  (`createState`'s load order below); never written again, and no longer
+   *  `AppState` fields of their own. Their literal strings are still a
+   *  persisted-data contract (#459) — do not rename them. */
   cellDrawerPx: 'asb:cellDrawerPx',
   docPanePx: 'asb:docPanePx',
   sidePanel: 'asb:sidePanel',
@@ -632,16 +647,21 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
-    // Cell-detail / rows-viewer drawer width (issue #101). The 92vw upper
-    // bound depends on the live viewport, not this load-time default, so only
-    // the floor is enforced here — clampDrawerWidth (splitters.js) applies the
-    // full [320, 92vw] clamp whenever the drawer is opened or resized.
-    cellDrawerPx: clamp(parseInt(read.loadStr(KEYS.cellDrawerPx, '560'), 10), 320, Infinity),
-    // The docs pane's own persisted width (#313) — same floor-only load-time
-    // clamp as cellDrawerPx above (clampDrawerWidth applies the full
-    // [320, 92vw] bound whenever the pane is opened/resized against the live
-    // viewport).
-    docPanePx: clamp(parseInt(read.loadStr(KEYS.docPanePx, '420'), 10), 320, Infinity),
+    // The docked right-inspector's width (#586). Compat read order: a real
+    // rightInspectorPx wins; else a real docPanePx (a pre-#586 Reference-pane
+    // width); else a real cellDrawerPx (a pre-#586 cell/rows drawer width);
+    // else the default (matches #488's RIGHT_INSPECTOR_DEFAULT_PX). The 92vw
+    // upper bound depends on the live viewport, not this load-time default,
+    // so only the floor is enforced here — clampDrawerWidth (splitters.ts)
+    // applies the full [320, 92vw] clamp whenever the inspector is opened or
+    // resized.
+    rightInspectorPx: clamp(parseInt(
+      read.loadStr(KEYS.rightInspectorPx, '') ||
+        read.loadStr(KEYS.docPanePx, '') ||
+        read.loadStr(KEYS.cellDrawerPx, '') ||
+        '480',
+      10,
+    ), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through
     // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;

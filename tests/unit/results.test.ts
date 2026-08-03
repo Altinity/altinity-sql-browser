@@ -190,7 +190,8 @@ describe('renderResults states', () => {
     const app = appWithResult(tableResult(), { resultView: 'table' });
     renderResults(app);
     click(qs(app.dom.resultsRegion, '.res-table tbody td.cell'));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    expect(qs(app.dom.inspectorHost, '.cd-panel')).not.toBeNull();
   });
   it('clicking a Logs panel message opens detail through the panel callback', () => {
     const r = tableResult();
@@ -203,7 +204,8 @@ describe('renderResults states', () => {
     app.activeTab().specParsed!.panel = { cfg: { type: 'logs' } };
     renderResults(app);
     click(qs(app.dom.resultsRegion, '.log-msg'));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    expect(qs(app.dom.inspectorHost, '.cd-panel')).not.toBeNull();
   });
   it('a cancelled result shows the "Cancelled · partial" badge with Copy/Export', () => {
     const r = tableResult();
@@ -361,8 +363,8 @@ describe('renderTable', () => {
     const cell = qs(el, 'tbody td.cell');
     expect(qs(cell, '.cell-val')).not.toBeNull();
     click(cell);
-    expect(qs(app.document, '.cd-backdrop')).not.toBeNull();
-    qs(app.document, '.cd-backdrop').remove(); // cleanup
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    expect(qs(app.dom.inspectorHost, '.cd-panel')).not.toBeNull();
   });
   it('truncates very large result sets', () => {
     const r = newResult('Table');
@@ -479,198 +481,158 @@ describe('column resize', () => {
 });
 
 describe('openCellDetail', () => {
-  it('text value → pretty <pre>, no toggle; closes via ✕', () => {
+  it('text value → pretty <pre>, no toggle; docks into app.dom.inspectorHost; closes via ✕', () => {
     const app = makeApp();
     openCellDetail(app, 'col', 'String', '{"a":1}');
-    const bd = qs(document, '.cd-backdrop');
-    expect(bd).not.toBeNull();
-    expect(qs(bd, '.cd-name').textContent).toBe('col');
-    expect(qs(bd, '.cd-type').textContent).toBe('String');
-    expect(qs(bd, '.cd-pre').textContent).toBe('{\n  "a": 1\n}');
-    expect(qs(bd, '.cd-toggle')).toBeNull();
-    click(qs(bd, '.cd-close'));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    const host = app.dom.inspectorHost;
+    expect(host.hidden).toBe(false);
+    expect(app.dom.inspectorResize.hidden).toBe(false);
+    const panel = qs(host, '.cd-panel');
+    expect(panel).not.toBeNull();
+    expect(qs(panel, '.cd-name').textContent).toBe('col');
+    expect(qs(panel, '.cd-type').textContent).toBe('String');
+    expect(qs(panel, '.cd-pre').textContent).toBe('{\n  "a": 1\n}');
+    expect(qs(panel, '.cd-toggle')).toBeNull();
+    click(qs(panel, '.cd-close'));
+    expect(host.hidden).toBe(true);
+    expect(host.children).toHaveLength(0);
   });
   it('null value + no type → empty pre, no type chip', () => {
-    openCellDetail(makeApp(), 'c', '', null);
-    const bd = qs(document, '.cd-backdrop');
-    expect(qs(bd, '.cd-type')).toBeNull();
-    expect(qs(bd, '.cd-pre').textContent).toBe('');
-    bd.remove();
+    const app = makeApp();
+    openCellDetail(app, 'c', '', null);
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.cd-type')).toBeNull();
+    expect(qs(panel, '.cd-pre').textContent).toBe('');
   });
   it('HTML value → Rendered (sandboxed iframe srcdoc) ↔ Source toggle', () => {
-    openCellDetail(makeApp(), 'html', 'String', '<b>hi</b>');
-    const bd = qs(document, '.cd-backdrop');
-    expect([...qsa(bd, '.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
-    const frame = qs(bd, 'iframe.cd-frame');
+    const app = makeApp();
+    openCellDetail(app, 'html', 'String', '<b>hi</b>');
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect([...qsa(panel, '.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
+    const frame = qs(panel, 'iframe.cd-frame');
     expect(frame.getAttribute('sandbox')).toBe('');
     expect(frame.getAttribute('srcdoc')).toBe('<b>hi</b>');
-    click(qsa(bd, '.cd-seg')[1]); // → Source
-    expect(qs(bd, 'iframe')).toBeNull();
-    expect(qs(bd, '.cd-pre').textContent).toBe('<b>hi</b>');
-    click(qsa(bd, '.cd-seg')[0]); // → Rendered again
-    expect(qs(bd, 'iframe.cd-frame')).not.toBeNull();
-    bd.remove();
+    click(qsa(panel, '.cd-seg')[1]); // → Source
+    expect(qs(panel, 'iframe')).toBeNull();
+    expect(qs(panel, '.cd-pre').textContent).toBe('<b>hi</b>');
+    click(qsa(panel, '.cd-seg')[0]); // → Rendered again
+    expect(qs(panel, 'iframe.cd-frame')).not.toBeNull();
   });
   it('Markdown value → Rendered (doc viewer) ↔ Source toggle (#332)', () => {
-    openCellDetail(makeApp(), 'notes', 'String', '# Title\n\n- one\n- two\n\n[link](https://example.com)');
-    const bd = qs(document, '.cd-backdrop');
-    expect([...qsa(bd, '.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
+    const app = makeApp();
+    openCellDetail(app, 'notes', 'String', '# Title\n\n- one\n- two\n\n[link](https://example.com)');
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect([...qsa(panel, '.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
     // Rendered by default, using the shared doc-markdown viewer (`.docs-md`).
-    const md = qs(bd, '.docs-md');
+    const md = qs(panel, '.docs-md');
     expect(md).not.toBeNull();
     expect(qs(md, 'h4')?.textContent).toBe('Title'); // doc viewer offsets headings (level1 → h4)
     expect(qsa(md, 'li').length).toBe(2);
     expect(qs(md, 'a')?.getAttribute('href')).toBe('https://example.com');
-    expect(qs(bd, 'iframe')).toBeNull(); // Markdown never uses the HTML iframe path
-    click(qsa(bd, '.cd-seg')[1]); // → Source
-    expect(qs(bd, '.docs-md')).toBeNull();
-    expect(qs(bd, '.cd-pre').textContent).toContain('# Title');
-    click(qsa(bd, '.cd-seg')[0]); // → Rendered again
-    expect(qs(bd, '.docs-md')).not.toBeNull();
-    bd.remove();
+    expect(qs(panel, 'iframe')).toBeNull(); // Markdown never uses the HTML iframe path
+    click(qsa(panel, '.cd-seg')[1]); // → Source
+    expect(qs(panel, '.docs-md')).toBeNull();
+    expect(qs(panel, '.cd-pre').textContent).toContain('# Title');
+    click(qsa(panel, '.cd-seg')[0]); // → Rendered again
+    expect(qs(panel, '.docs-md')).not.toBeNull();
   });
   it('plain (non-HTML, non-Markdown) text stays a source-only view — no toggle', () => {
-    openCellDetail(makeApp(), 'c', 'String', 'just a plain sentence with no markup.');
-    const bd = qs(document, '.cd-backdrop');
-    expect(qs(bd, '.cd-toggle')).toBeNull();
-    expect(qs(bd, '.docs-md')).toBeNull();
-    expect(qs(bd, '.cd-pre').textContent).toBe('just a plain sentence with no markup.');
-    bd.remove();
-  });
-  it('Escape closes; backdrop click closes; panel click does not', () => {
     const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'just a plain sentence with no markup.');
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.cd-toggle')).toBeNull();
+    expect(qs(panel, '.docs-md')).toBeNull();
+    expect(qs(panel, '.cd-pre').textContent).toBe('just a plain sentence with no markup.');
+  });
+  // #586: the docked model is non-modal and has no backdrop — Escape always
+  // closes it (escapePolicy 'always', no keyboard-owner acquisition, so the
+  // rest of the app stays reachable while it's open), and there is no
+  // outside-click-to-close behavior anymore (a docked panel is a normal
+  // layout sibling, not an overlay the user can click "outside" of).
+  it('Escape closes the docked panel; opening again after re-opens cleanly', () => {
+    const app = makeApp();
+    const host = app.dom.inspectorHost;
+    openCellDetail(app, 'c', 'String', 'x');
+    expect(host.hidden).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(host.hidden).toBe(true);
+    expect(host.children).toHaveLength(0);
+    openCellDetail(app, 'c', 'String', 'x');
+    expect(host.hidden).toBe(false);
+    expect(qs(host, '.cd-panel')).not.toBeNull();
+  });
+  it('closing restores focus to whatever was focused when it opened (new in #586 — neither the drawer nor the rows viewer restored focus before)', () => {
+    const app = makeApp();
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
     openCellDetail(app, 'c', 'String', 'x');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-    openCellDetail(app, 'c', 'String', 'x');
-    backdropClick(qs(document, '.cd-backdrop'));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-    openCellDetail(app, 'c', 'String', 'x');
-    backdropClick(qs(document, '.cd-panel')); // mousedown+click inside the panel → stays open
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
-    qs(document, '.cd-backdrop').remove();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
-  it('a gesture starting inside the panel and ending (mouseup/click) on the backdrop does not close it (#110)', () => {
+  it('opening Cell while it is already open replaces the panel in place (same shared dock)', () => {
     const app = makeApp();
-    openCellDetail(app, 'c', 'String', 'a selectable value');
-    const backdrop = qs(document, '.cd-backdrop');
-    const pre = qs(backdrop, '.cd-pre');
-    pre.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // drag starts inside the panel
-    // The click that follows targets the backdrop directly — the nearest
-    // common ancestor of the mousedown (inside .cd-pre) and mouseup targets.
-    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
-    backdropClick(backdrop); // a later, genuine backdrop click still closes it
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    openCellDetail(app, 'first', 'String', 'a');
+    openCellDetail(app, 'second', 'String', 'b');
+    const host = app.dom.inspectorHost;
+    expect(host.hidden).toBe(false);
+    expect(host.children).toHaveLength(1);
+    expect(qs(host, '.cd-name').textContent).toBe('second');
   });
-  it('builds in a given targetDoc instead of the main document (detached-tab safe)', () => {
+  it('builds in a given targetDoc that is a genuinely separate document — the pre-#586 self-contained overlay, not the dock', () => {
     const childDoc = document.implementation.createHTMLDocument('');
     openCellDetail(makeApp(), 'c', 'String', 'x', childDoc);
-    expect(qs(document, '.cd-backdrop')).toBeNull(); // not in the main document
-    const bd = qs(childDoc, '.cd-backdrop');
+    expect(qs(document, '.cell-detail-overlay')).toBeNull(); // not in the main document
+    const bd = qs(childDoc, '.cell-detail-overlay');
     expect(bd).not.toBeNull();
     expect(qs(bd, '.cd-name').textContent).toBe('c');
     // the Rendered/Source toggle (a later callback) also lands in the same doc
     openCellDetail(makeApp(), 'html', 'String', '<b>hi</b>', childDoc);
-    const bd2 = [...qsa(childDoc, '.cd-backdrop')].at(-1)!;
+    const bd2 = [...qsa(childDoc, '.cell-detail-overlay')].at(-1)!;
     click(qsa(bd2, '.cd-seg')[1]); // → Source
     expect(qs(bd2, '.cd-pre').ownerDocument).toBe(childDoc);
   });
+  it('a genuinely separate targetDoc still supports Escape / backdrop click / ✕ (the surviving non-docked overlay)', () => {
+    const childDoc = document.implementation.createHTMLDocument('');
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x', childDoc);
+    let bd = qs(childDoc, '.cell-detail-overlay');
+    childDoc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(qs(childDoc, '.cell-detail-overlay')).toBeNull();
+
+    openCellDetail(app, 'c', 'String', 'x', childDoc);
+    bd = qs(childDoc, '.cell-detail-overlay');
+    backdropClick(bd);
+    expect(qs(childDoc, '.cell-detail-overlay')).toBeNull();
+
+    openCellDetail(app, 'c', 'String', 'x', childDoc);
+    bd = qs(childDoc, '.cell-detail-overlay');
+    backdropClick(qs(bd, '.cd-panel')); // mousedown+click inside the panel → stays open
+    expect(qs(childDoc, '.cell-detail-overlay')).not.toBeNull();
+    click(qs(bd, '.cd-close'));
+    expect(qs(childDoc, '.cell-detail-overlay')).toBeNull();
+  });
+  it('the same-document overlay branch (opts.overlay, e.g. the detached Data Pane fallback) behaves identically to a real separate tab', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x', app.document, { overlay: true });
+    // Forced overlay even though targetDoc === app.document: never docks.
+    expect(app.dom.inspectorHost.hidden).toBe(true);
+    const bd = qs(document, '.cell-detail-overlay');
+    expect(bd).not.toBeNull();
+    backdropClick(bd);
+    expect(qs(document, '.cell-detail-overlay')).toBeNull();
+  });
 });
 
-describe('cell-detail drawer resize (#101)', () => {
-  it('sets the initial width from the persisted cellDrawerPx pref, and shows a handle', () => {
-    const app = makeApp();
-    app.state.cellDrawerPx = 640;
-    openCellDetail(app, 'c', 'String', 'x');
-    const panel = qs(document, '.cd-panel');
-    expect(panel.style.width).toBe('640px');
-    expect(qs(panel, '.cd-resize-h')).not.toBeNull();
-    panel.closest('.cd-backdrop')!.remove();
-  });
-  it('clamps the initial width to [320, 92vw] (window.innerWidth = 1024 under happy-dom)', () => {
-    const tooNarrow = makeApp();
-    tooNarrow.state.cellDrawerPx = 100;
-    openCellDetail(tooNarrow, 'c', 'String', 'x');
-    expect(qs(document, '.cd-panel').style.width).toBe('320px');
-    qs(document, '.cd-backdrop').remove();
-
-    const tooWide = makeApp();
-    tooWide.state.cellDrawerPx = 5000;
-    openCellDetail(tooWide, 'c', 'String', 'x');
-    expect(qs(document, '.cd-panel').style.width).toBe(1024 * 0.92 + 'px');
-    qs(document, '.cd-backdrop').remove();
-  });
-  it('dragging the handle resizes the panel and persists the width on mouseup', () => {
-    const app = makeApp();
-    openCellDetail(app, 'c', 'String', 'x');
-    const panel = qs(document, '.cd-panel');
-    const handle = qs(panel, '.cd-resize-h');
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
-    expect(panel.style.width).toBe('524px');
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.state.cellDrawerPx).toBe(524);
-    expect(app.prefs.save).toHaveBeenCalledWith('cellDrawerPx', 524);
-    qs(document, '.cd-backdrop').remove();
-  });
-  it('clamps mid-drag width to [320, 92vw]', () => {
-    const app = makeApp();
-    openCellDetail(app, 'c', 'String', 'x');
-    const panel = qs(document, '.cd-panel');
-    const handle = qs(panel, '.cd-resize-h');
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 2000 })); // 1024-2000 < 0 → floor
-    expect(panel.style.width).toBe('320px');
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: -2000 })); // way over → 92vw cap
-    expect(panel.style.width).toBe(1024 * 0.92 + 'px');
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    qs(document, '.cd-backdrop').remove();
-  });
-  it('finishing a resize drag with the mouse over the backdrop does not close the drawer; a later genuine click still does', () => {
-    const app = makeApp();
-    openCellDetail(app, 'c', 'String', 'x');
-    const backdrop = qs(document, '.cd-backdrop');
-    const handle = qs(backdrop, '.cd-resize-h');
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 }));
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    // The browser follows a drag's mouseup with a `click` targeting the nearest
-    // common ancestor of the mousedown/mouseup targets — here, since mouseup
-    // landed outside `.cd-panel`, that's the backdrop itself. attachBackdropClose
-    // (#110) gates close() on the mousedown target (the handle, inside the
-    // panel), so this click alone does not close it.
-    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull(); // stays open
-    backdropClick(backdrop); // a later, genuine backdrop click still closes it
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-  });
-  it('closing the drawer mid-drag (Escape, mouse still down) cancels the drag: reverts the width, and does not leak listeners that swallow a later click or persist a stale width on a later mouseup', () => {
-    const app = makeApp();
-    app.state.cellDrawerPx = 560;
-    openCellDetail(app, 'c', 'String', 'x');
-    const handle = qs(document, '.cd-resize-h');
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // mid-drag, no mouseup yet
-    expect(app.state.cellDrawerPx).toBe(524);
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // closes while still dragging
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-    expect(app.state.cellDrawerPx).toBe(560); // reverted — the abandoned drag never committed
-
-    // The drag's own mousemove/mouseup listeners must have been torn down by
-    // the cancel, not just left to resolve later.
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }));
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.state.cellDrawerPx).toBe(560); // a stray mouseup doesn't resurrect + persist the drag
-    expect(app.prefs.save).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
-
-    openCellDetail(app, 'c2', 'String', 'y'); // an unrelated, later click must work normally
-    const backdrop2 = qs(document, '.cd-backdrop');
-    backdropClick(backdrop2);
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-  });
-});
+// #586: the docked cell-detail/rows-viewer no longer have their own resize
+// handle or persisted-width read at open time — resize is shell-owned now
+// (app-shell.ts's own handle against `app.dom.inspectorHost`, exercised in
+// app-shell.test.ts), so the per-panel `.cd-resize-h`/`cellDrawerPx` behavior
+// this block used to cover no longer exists for the docked path. The ONE
+// surviving `attachDrawerResize` consumer (the detached-doc overlay) keeps
+// equivalent coverage in drawer.test.ts + the openCellDetail targetDoc tests
+// above.
 
 describe('expandDataPane', () => {
   // A window/fetch-tab stub only ever needs the few members real code reads
@@ -709,12 +671,13 @@ describe('expandDataPane', () => {
     expect(firstRowFirstCell.textContent).toBe('1'); // ascending on 'n' → '1' before '2'
   });
 
-  it('clicking a cell in the overlay snapshot opens the cell-detail drawer in the same document', () => {
+  it('clicking a cell in the overlay snapshot opens the cell-detail overlay in the same document (never the docked inspector — the Data Pane already covers it)', () => {
     const app = makeApp();
     expandDataPane(app, tableResult());
     const overlay = qs(document, '.graph-overlay');
     click(qsa(overlay, '.res-table tbody td.cell')[0]);
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+    expect(qs(document, '.cell-detail-overlay')).not.toBeNull();
+    expect(app.dom.inspectorHost.hidden).toBe(true);
   });
 
   it('real tab: builds the grid + toolbar in the child document, Copy targets that document', () => {
@@ -729,8 +692,8 @@ describe('expandDataPane', () => {
     expect(app.actions.copySnapshot).toHaveBeenCalledWith(r, win.document);
     // a cell click inside the tab opens the drawer in the TAB's document, not the main one
     click(qsa(win.document, '.res-table tbody td.cell')[0]);
-    expect(qs(win.document, '.cd-backdrop')).not.toBeNull();
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    expect(qs(win.document, '.cell-detail-overlay')).not.toBeNull();
+    expect(qs(document, '.cell-detail-overlay')).toBeNull();
   });
 
   it('does not repaint when the main app renders a new result: no signal/effect wiring ties the two together', () => {
@@ -755,7 +718,7 @@ describe('expandDataPane', () => {
     expect(barChildren.at(-1)!.className).toBe('graph-overlay-close');
     click(qsa(overlay, '.res-table tbody td.cell')[0]); // opens a cell drawer
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(qs(document, '.cd-backdrop')).toBeNull(); // Escape closed the drawer first
+    expect(qs(document, '.cell-detail-overlay')).toBeNull(); // Escape closed the drawer first
     expect(document.body.contains(overlay)).toBe(true); // pane itself still open
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // second Escape
     expect(document.body.contains(overlay)).toBe(false);
@@ -1722,7 +1685,7 @@ describe('multiquery script grid (#83)', () => {
     renderResults(app);
     const handle = qs(app.dom.resultsRegion, '.script-grid .col-resize-h');
     handle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).toBeNull(); // nothing opened
+    expect(app.dom.inspectorHost.hidden).toBe(true); // nothing opened
   });
 
   it('flags a truncated SELECT in its row meta', () => {
@@ -1733,95 +1696,88 @@ describe('multiquery script grid (#83)', () => {
     expect(qs(app.dom.resultsRegion, '.script-cell.rows').textContent).toContain('first 100');
   });
 
-  it('clicking a SELECT row opens the rows pane; Escape and backdrop close it', () => {
+  it('clicking a SELECT row opens the docked rows pane; Escape closes it', () => {
     const app = appWithResult(scriptResult());
     renderResults(app);
     click(qs(app.dom.resultsRegion, '.script-cell.rows'));
-    let backdrop = qs(document, '.cd-backdrop');
-    expect(backdrop).not.toBeNull();
-    expect(qsa(backdrop, 'tbody tr')).toHaveLength(2); // both rows
-    expect(qs(backdrop, '.cd-type').textContent).toContain('2 rows');
+    const host = app.dom.inspectorHost;
+    expect(host.hidden).toBe(false);
+    const panel = qs(host, '.cd-panel');
+    expect(qsa(panel, 'tbody tr')).toHaveLength(2); // both rows
+    expect(qs(panel, '.cd-type').textContent).toContain('2 rows');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
-    // reopen + close via backdrop click
+    expect(host.hidden).toBe(true);
+    // reopen + close via ✕
     click(qs(app.dom.resultsRegion, '.script-cell.rows'));
-    backdrop = qs(document, '.cd-backdrop');
-    backdropClick(backdrop);
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    expect(host.hidden).toBe(false);
+    click(qs(host, '.cd-close'));
+    expect(host.hidden).toBe(true);
   });
 
   it('openRowsViewer renders NULL cells empty and flags a truncated count', () => {
     const app = makeApp();
     openRowsViewer(app, { columns: [{ name: 'x', type: 'String' }, { name: 'y', type: 'String' }], rows: [['a', null]], truncated: true });
-    const backdrop = qs(document, '.cd-backdrop');
-    expect(qs(backdrop, '.cd-type').textContent).toContain('1+ row');
-    const cells = [...qsa(backdrop, 'tbody td')];
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.cd-type').textContent).toContain('1+ row');
+    const cells = [...qsa(panel, 'tbody td')];
     expect(cells[cells.length - 1].textContent).toBe(''); // null → empty
-    backdrop.remove();
-  });
-
-  it('openRowsViewer gets the same resizable drawer as openCellDetail (#101)', () => {
-    const app = makeApp();
-    app.state.cellDrawerPx = 700;
-    openRowsViewer(app, { columns: [{ name: 'x', type: 'String' }], rows: [['a']] });
-    const panel = qs(document, '.cd-panel');
-    expect(panel.style.width).toBe('700px');
-    const handle = qs(panel, '.cd-resize-h');
-    expect(handle).not.toBeNull();
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
-    expect(panel.style.width).toBe('524px');
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.state.cellDrawerPx).toBe(524);
-    qs(document, '.cd-backdrop').remove();
   });
 
   it('the rows pane is the shared grid: sortable headers + clickable cells', () => {
     const app = makeApp();
+    const host = app.dom.inspectorHost;
     openRowsViewer(app, { columns: [{ name: 'n', type: 'UInt64' }], rows: [['2'], ['1'], ['3']] });
-    let backdrop = qs(document, '.cd-backdrop');
+    let panel = qs(host, '.cd-panel');
     // a data column header sorts the pane in place (local sort state)
-    const colHeader = [...qsa(backdrop, 'thead th')].find((th) => th.textContent!.includes('n'));
+    const colHeader = [...qsa(panel, 'thead th')].find((th) => th.textContent!.includes('n'));
     click(colHeader);
-    backdrop = qs(document, '.cd-backdrop');
-    const firstCell = qs(backdrop, 'tbody tr td.cell .cell-val');
+    panel = qs(host, '.cd-panel');
+    const firstCell = qs(panel, 'tbody tr td.cell .cell-val');
     expect(firstCell.textContent).toBe('1'); // ascending now
-    // clicking a cell opens the (stacked) cell-detail drawer
-    click(qs(backdrop, 'tbody td.cell'));
-    expect(qsa(document, '.cd-backdrop').length).toBe(2);
-    qsa(document, '.cd-backdrop').forEach((b) => b.remove());
+    // #586: clicking a cell REPLACES the rows pane with cell detail in the
+    // same shared dock — the docked model has room for exactly one occupant
+    // (a real, deliberate behavior change from the pre-#586 stacked-backdrop
+    // drawer; see openRowsViewer's own doc comment).
+    click(qs(panel, 'tbody td.cell'));
+    expect(host.children).toHaveLength(1);
+    const replaced = qs(host, '.cd-panel');
+    expect(replaced).not.toBe(panel);
+    expect(qs(replaced, '.cd-name').textContent).toBe('n');
   });
 
-  it('Escape closes only the topmost stacked drawer (cell first, then the rows pane)', () => {
+  it('Escape closes whichever surface currently occupies the dock (Cell, having replaced Rows)', () => {
     const app = makeApp();
+    const host = app.dom.inspectorHost;
     openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
-    expect(app.keyboardOwner?.kind).toBe('modal');
-    click(qs(document, '.cd-backdrop tbody td.cell')); // opens a stacked cell drawer
-    expect(qsa(document, '.cd-backdrop')).toHaveLength(2);
+    click(qs(host, 'tbody td.cell')); // replaces Rows with Cell
+    expect(qs(host, '.cd-name').textContent).toBe('n');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(qsa(document, '.cd-backdrop')).toHaveLength(1); // only the cell drawer closed
-    expect(app.keyboardOwner?.kind).toBe('modal'); // rows viewer still owns the keyboard
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(qsa(document, '.cd-backdrop')).toHaveLength(0); // now the rows pane
-    expect(app.keyboardOwner).toBeNull();
+    expect(host.hidden).toBe(true); // folded — nothing left to show
   });
 
-  it('blocks application shortcuts and consumes Escape before a running-query cancel', () => {
+  it('does not acquire the modal keyboard owner — the docked rows pane is non-modal, so application shortcuts stay live while it is open', () => {
     const app = makeApp();
     app.state.running.value = true;
     openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
+    expect(app.keyboardOwner).toBeNull();
     expect(handleKeydown({
       key: 'Enter', metaKey: true, preventDefault: vi.fn(), target: document.body,
-    }, app)).toBeNull();
-    expect(app.actions.run).not.toHaveBeenCalled();
+    }, app)).not.toBeNull();
+    expect(app.actions.run).toHaveBeenCalled();
+  });
+
+  it('Escape still closes the docked rows pane and is consumed before it can also cancel a running query', () => {
+    const app = makeApp();
+    app.state.running.value = true;
+    openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
     const dispatchGlobal = (event: KeyboardEvent): void => {
       handleKeydown(event as unknown as ShortcutKeydownEvent, app);
     };
     document.addEventListener('keydown', dispatchGlobal);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     document.removeEventListener('keydown', dispatchGlobal);
-    expect(qsa(document, '.cd-backdrop')).toHaveLength(0);
-    expect(app.actions.cancel).not.toHaveBeenCalled();
+    expect(app.dom.inspectorHost.hidden).toBe(true); // the pane's own capture-phase Escape closed it
+    expect(app.actions.cancel).not.toHaveBeenCalled(); // …and consumed the event before the global handler's cancel
   });
 
   it('toolbar shows live elapsed + Cancel while running, with a running footer', () => {

@@ -40,7 +40,7 @@ import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
 import { applyConnectionStatus } from './app-header.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
-import { startDrag } from './splitters.js';
+import { startDrag, clampDrawerWidth } from './splitters.js';
 import type { App } from './app.types.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
@@ -143,17 +143,22 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  // Only 'col' (sidebar width) and 'sideRow' (schema/saved split) run through
-  // this ctx — the editor/results 'row' splitter is workbench-shell's own,
-  // over elements this shell has no business touching (a Dashboard-only
-  // surface may one day mount here with neither `editorRegion` nor
-  // `resultsRegion` present at all).
-  const rectFor = (axis: SplitterAxis): DragRect => (axis === 'sideRow' ? sidebar.getBoundingClientRect() : {});
+  // #586 — the docked right-inspector's own resize handle runs through this
+  // SAME ctx now (a third axis alongside 'col'/'sideRow'), sized against the
+  // live viewport width exactly like the former per-surface drawer handles
+  // (drawer.ts's attachDrawerResize) were — only shell-owned now, one handle
+  // for the one shared dock instead of one handle per surface.
+  const rectFor = (axis: SplitterAxis): DragRect => {
+    if (axis === 'sideRow') return sidebar.getBoundingClientRect();
+    if (axis === 'rightInspector') return { width: (doc.defaultView || window).innerWidth };
+    return {};
+  };
   const dragCtx: DragCtx = {
     state,
     rectFor,
     apply: (axis, value) => {
       if (axis === 'col') sidebar.style.width = value + 'px';
+      else if (axis === 'rightInspector') inspectorHost.style.width = value + 'px';
       else schemaPane.style.height = value + '%';
     },
     save: (name, value) => prefs.save(name as PreferenceKey, value),
@@ -185,7 +190,32 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // toggles which of the two is exposed without rebuilding the sidebar (or the
   // query surface's own state) around them.
   const dashboardHost = h('div', { class: 'dashboard-host', hidden: true });
-  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost);
+  // #586 — the docked right-inspector slot: a shell-owned layout SIBLING of
+  // queryHost/dashboardHost (never a `position: fixed` overlay), replacing
+  // three independent body-mounted overlays (the cell-detail drawer, the
+  // rows viewer, the Reference pane). Content mounts here via
+  // `inspector-host.ts`'s `showInInspector`/`releaseInspector` — this shell
+  // owns only the host, the resize handle, and the fold (`hidden`) state;
+  // which surface currently occupies it is that module's job, not this
+  // one's. Starts folded (`hidden`) — nothing occupies it until a surface
+  // opens. `inspectorResize` sits between the centre surface and the host,
+  // like `sideHandle` does for the sidebar, driving the `'rightInspector'`
+  // splitter axis against the SAME `rightInspectorPx` preference every
+  // docked surface shares now (state.ts).
+  // clampDrawerWidth (not the raw persisted value): a monitor-to-monitor move
+  // can leave `rightInspectorPx` wider than 92vw of THIS window — the old
+  // per-surface drawers always re-clamped against the live viewport at open
+  // time (attachDrawerResize), and the docked host must too, or a narrow
+  // window opens with the panel wider than the screen the very first time.
+  const inspectorHost = app.dom.inspectorHost = h('div', {
+    class: 'inspector-host', hidden: true,
+    style: { width: clampDrawerWidth(state.rightInspectorPx, (doc.defaultView || window).innerWidth) + 'px' },
+  });
+  const inspectorResize = app.dom.inspectorResize = h('div', {
+    class: 'inspector-resize', hidden: true,
+    onmousedown: (e: DragStartEvent) => doStartDrag(e, 'rightInspector', dragCtx),
+  });
+  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost, inspectorResize, inspectorHost);
 
   // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
   // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the

@@ -55,6 +55,7 @@ import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
+import { closeInspector } from './inspector-host.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState, applyFieldWidth } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
@@ -245,7 +246,7 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- persistence -------------------------------------------------------
   // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
-  // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit, constructible
+  // editorPct/sideSplitPct/rightInspectorPx/sidePanel/resultRowLimit, constructible
   // without App/AppState/DOM. Consumers (saved-history.ts/splitters.ts) call `app.prefs.save(name,
   // value)` directly (#276 Phase 5 deleted the flat `App.savePref` delegate);
   // `toggleTheme` below composes `prefs.toggleTheme()` (the state-flip +
@@ -711,7 +712,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     // completion inert; query-bearing owners register their current ids.
     scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
     scope.register({ name: 'schema graph', abort: () => graph.suspend() });
-    scope.register({ name: 'documentation pane', abort: () => closeDocPane(app) });
+    // #586: whatever currently occupies the shared docked inspector (Cell,
+    // Rows, or Reference) — not just Reference — must not survive a
+    // connection-scope abort; `closeInspector` closes the current occupant
+    // generically, calling its own SurfaceLifecycle teardown.
+    scope.register({ name: 'docked inspector', abort: () => closeInspector(app) });
     hideAuthenticationRequired();
   };
   app.requireAuthenticatedExecution = () => {
@@ -761,9 +766,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     exportService.cancelExport();
     exportService.cancelExportScript();
     catalog.invalidate();
-    // #313: pane content must never survive a connection change — closed
+    // #313/#586: docked inspector content (Cell, Rows, or Reference — not
+    // just Reference) must never survive a connection change — closed
     // alongside the catalog reset, before the login screen renders.
-    closeDocPane(app);
+    closeInspector(app);
     conn.signOut();
     // #425: explicit logout owns Dashboard teardown, the surface-generation
     // bump, and the main-surface reset through the full-screen login renderer.
@@ -2159,12 +2165,17 @@ export function createApp(env: CreateAppEnv = {}): App {
     advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
-    // The doc pane mounts on `document.body`, so it would otherwise float over
-    // the surface that replaced the one it was opened from. (The cell-detail
-    // drawer is modal and traps the keyboard, so no surface control is reachable
-    // while it is open — and it owns a keyboard-owner release that only its own
-    // close path runs, which is why this does not reach in and remove it.)
-    closeDocPane(app);
+    // #586 REWRITE: this used to close ONLY the doc pane, on the reasoning
+    // that the cell-detail drawer/rows viewer were modal and keyboard-trapped
+    // — no surface control was reachable while either was open, so a surface
+    // transition could never happen underneath them. #586 docked all three
+    // (Cell, Rows, Reference) into ONE shell-owned `inspectorHost`, and none
+    // of them holds the modal keyboard owner anymore (a docked, non-modal
+    // panel must leave the rest of the app usable) — so the surface-switch
+    // control IS now reachable while any of them is open, and whichever one
+    // currently occupies the shared dock must be closed here, not just
+    // Reference. `closeInspector` is generic over the current occupant.
+    closeInspector(app);
   };
   app.renderDashboard = () => {
     if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();

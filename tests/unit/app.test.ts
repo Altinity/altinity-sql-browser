@@ -2853,6 +2853,15 @@ describe('query run', () => {
   // not one-way for the workbench session: attachShell re-attaches).
   it('app.closeDocPane closes an open reference pane (true) and no-ops when nothing is open (false) — the global Escape wiring (#60)', async () => {
     const app = createApp(env());
+    // #586: the pane docks into the shell-owned inspectorHost (app-shell.ts),
+    // which only exists once the shell has actually rendered — this test
+    // exercises `openDocEntry`/`closeDocPane` headlessly, with no render
+    // step, so it supplies the two nodes directly (mirrors what
+    // mountAppShell would set).
+    app.dom.inspectorHost = document.body.appendChild(document.createElement('div'));
+    app.dom.inspectorHost.hidden = true;
+    app.dom.inspectorResize = document.body.appendChild(document.createElement('div'));
+    app.dom.inspectorResize.hidden = true;
     expect(app.closeDocPane()).toBe(false); // nothing open
     app.openDocEntry({ kind: 'function', name: 'sum' }); // pane opens (lookup resolves unavailable — irrelevant here)
     expect(document.querySelector('[role="complementary"]')).not.toBeNull();

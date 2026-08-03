@@ -73,3 +73,47 @@ describe('mountAppShell authentication host', () => {
     expect(host.firstElementChild).toBe(controls);
   });
 });
+
+// #586 — the docked right-inspector slot + its shared resize handle.
+describe('mountAppShell docked right-inspector (#586)', () => {
+  it('mounts inspectorHost + inspectorResize as mainRow siblings of queryHost/dashboardHost, folded by default', () => {
+    const { app, handle } = mount();
+    const mainRow = handle.queryHost.parentElement!;
+    expect(mainRow.className).toBe('main-row');
+    const kids = [...mainRow.children];
+    expect(kids.indexOf(handle.queryHost)).toBeGreaterThanOrEqual(0);
+    expect(kids.indexOf(handle.dashboardHost)).toBeGreaterThan(kids.indexOf(handle.queryHost));
+    expect(kids.at(-1)).toBe(app.dom.inspectorHost);
+    expect(kids.at(-2)).toBe(app.dom.inspectorResize);
+    expect(app.dom.inspectorHost!.hidden).toBe(true);
+    expect(app.dom.inspectorResize!.hidden).toBe(true);
+    handle.dispose();
+  });
+
+  it('sets the initial width from the persisted rightInspectorPx pref, clamped to [320, 92vw] (window.innerWidth = 1024 under happy-dom)', () => {
+    const { app, handle } = mount();
+    expect(app.dom.inspectorHost!.style.width).toBe(app.state.rightInspectorPx + 'px');
+    handle.dispose();
+
+    const wide = makeApp({ catalog: { loadSchema: vi.fn(async () => {}), loadReference: vi.fn(async () => {}) } });
+    wide.state.rightInspectorPx = 5000;
+    const wideHandle = mountAppShell({
+      app: wide, root: wide.root, document, state: wide.state, catalog: wide.catalog,
+      prefs: wide.prefs, matchMedia: null, updateBanner: vi.fn(), startDrag,
+    });
+    expect(wide.dom.inspectorHost!.style.width).toBe(1024 * 0.92 + 'px');
+    wideHandle.dispose();
+  });
+
+  it('dragging inspectorResize resizes inspectorHost live and persists rightInspectorPx on mouseup', () => {
+    const { app, handle } = mount();
+    const resize = app.dom.inspectorResize!;
+    resize.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
+    expect(app.dom.inspectorHost!.style.width).toBe('524px');
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(app.state.rightInspectorPx).toBe(524);
+    expect(app.prefs.save).toHaveBeenCalledWith('rightInspectorPx', 524);
+    handle.dispose();
+  });
+});

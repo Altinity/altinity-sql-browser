@@ -27,11 +27,12 @@ import { KEYS } from '../state.js';
  *  `save*` method on `App` (`saveJSON`/`saveVarValues`/`saveFilterActive`/…),
  *  untouched by this service. */
 export type PreferenceKey =
-  | 'theme' | 'sidebarPx' | 'editorPct' | 'sideSplitPct' | 'cellDrawerPx'
+  | 'theme' | 'sidebarPx' | 'editorPct' | 'sideSplitPct'
   | 'sidePanel' | 'resultRowLimit'
-  // #313 — the documentation pane's own persisted resize width, a sibling of
-  // cellDrawerPx (never shared with it — see splitters.ts's 'docPane' axis).
-  | 'docPanePx';
+  // #586 — the single canonical docked right-inspector width, replacing the
+  // former cellDrawerPx/docPanePx pair (see splitters.ts's 'rightInspector'
+  // axis and state.ts's compat-read `rightInspectorPx` comment).
+  | 'rightInspectorPx';
 
 /** The one state field this service reads/writes (`toggleTheme` only) — a
  *  plain settable property, not a signal (matches `AppState.theme`). */

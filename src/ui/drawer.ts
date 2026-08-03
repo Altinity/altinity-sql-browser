@@ -1,11 +1,27 @@
 // Shared right-side drawer chrome (#60, deferred from #101/#166's `.cd-*`
-// scaffold in results.ts). This module owns exactly the NON-modal part of
-// that scaffold: the panel/head/close-button DOM and the bounded horizontal
-// resize handle. Modality — the backdrop, its click-outside close, Escape/
-// stacking order — is composed by each caller (results.ts's openCellDetail /
-// openRowsViewer keep that themselves) so a persistent, non-modal consumer
-// (a docs pane, #313) can reuse the same chrome without inheriting a
-// backdrop or focus trap it doesn't want.
+// scaffold in results.ts).
+//
+// #586 REWRITE: this module used to describe (and enforce) a deliberate
+// three-independent-surface split — the cell-detail drawer, the rows viewer,
+// and the Reference/docs pane each owned their OWN modality (backdrop,
+// Escape, stacking order) and their OWN persisted resize width
+// (`cellDrawerPx` vs `docPanePx`), composing only this file's NON-modal
+// chrome (the panel/head/close-button DOM) in common. #586 replaced all three
+// independent overlays with one shell-owned docked `inspectorHost`
+// (app-shell.ts) — every surface's lifecycle (open/close/Escape/focus) now
+// runs through the shared `surface-lifecycle.ts` primitive, and "which one
+// occupies the shared dock" is `inspector-host.ts`'s job. This module keeps
+// owning only what's still genuinely shared: `buildDrawerChrome` (the
+// panel/head/close-button DOM, still built by every docked surface) and
+// `attachDrawerResize` — which now survives ONLY for the one surface that
+// still isn't docked: a cell-detail drawer opened inside a real detached
+// browser tab (results.ts's Data Pane), which has no shell/`inspectorHost` of
+// its own to be resized by app-shell.ts's shared handle. Every docked
+// surface's OWN resize handle and its former per-surface `stateKey`/`axis`
+// indirection (this module used to expose `{ stateKey: 'cellDrawerPx' |
+// 'docPanePx' }`) are gone — the shared dock has exactly one width
+// (`rightInspectorPx`, state.ts), owned by app-shell.ts's own resize handle,
+// and this file's surviving consumer resizes against that SAME preference.
 
 import { h, withDocument } from './dom.js';
 import { Icon } from './icons.js';
@@ -52,37 +68,29 @@ export function buildDrawerChrome(doc: Document, opts: DrawerChromeOptions): Dra
   });
 }
 
-/** The narrow app surface `attachDrawerResize` needs: the persisted drawer
- *  width (read on open, written mid-drag) and the preference-save seam —
- *  matches `ResultsApp`'s `state`/`prefs` members structurally, so results.ts
- *  passes its `ResultsApp` straight through. Both fields are optional so a
- *  caller only needs to carry whichever one its `stateKey` option (below)
- *  actually targets — the real `AppState` (state.ts) always has both
- *  (`cellDrawerPx`/`docPanePx`, #313), so no real caller ever hits the
- *  `undefined` branch; only a narrowly-typed test fixture (or a future
- *  third consumer) would omit the other key entirely. */
+/** The narrow app surface `attachDrawerResize` needs: the persisted
+ *  right-inspector width (read on open, written mid-drag) and the
+ *  preference-save seam — matches `ResultsApp`'s `state`/`prefs` members
+ *  structurally, so results.ts passes its `ResultsApp` straight through. */
 export interface DrawerResizeApp {
-  state: { cellDrawerPx?: number; docPanePx?: number };
+  state: { rightInspectorPx?: number };
   prefs: { save(name: PreferenceKey, value: unknown): void };
-}
-
-/** `attachDrawerResize`'s options (#313): which persisted-width field this
- *  drawer instance reads/writes, and which `splitters.ts` axis drives its
- *  geometry. Defaults to the original cell-detail/rows-viewer drawer
- *  (`'cellDrawerPx'` / `'drawer'`) — every existing caller (results.ts) omits
- *  this entirely and keeps byte-identical behavior. The docs pane (#313)
- *  passes `{ stateKey: 'docPanePx', axis: 'docPane' }` so its own resize drag
- *  never reads or persists the cell-detail drawer's width, and vice versa. */
-export interface DrawerResizeOptions {
-  stateKey?: 'cellDrawerPx' | 'docPanePx';
-  axis?: SplitterAxis;
 }
 
 /**
  * Wire the left-edge drag handle that resizes a drawer panel (#101), via
- * splitters.js's drag controller (the 'drawer' axis alongside 'col'/
- * 'sideRow'/'row'). Sets the initial width from the persisted `cellDrawerPx`
- * pref, clamped to the current viewport, and appends the handle to `panel`.
+ * splitters.ts's drag controller (the `'rightInspector'` axis alongside
+ * 'col'/'sideRow'/'row'). Sets the initial width from the persisted
+ * `rightInspectorPx` pref, clamped to the current viewport, and appends the
+ * handle to `panel`.
+ *
+ * #586: every DOCKED surface (cell detail, rows viewer, Reference) now
+ * resizes via app-shell.ts's own shared handle on `inspectorHost` instead —
+ * this function survives only for the one surface that isn't docked: a
+ * cell-detail drawer opened inside a real detached browser tab (results.ts's
+ * Data Pane), which has no shell of its own for a shared handle to belong to.
+ * It resizes against the SAME `rightInspectorPx` preference the dock uses
+ * (there is only one right-inspector width now, not a per-surface one).
  *
  * A resize drag that ends with the mouse over a modal caller's backdrop no
  * longer needs a dedicated swallow-listener here: a caller using
@@ -97,30 +105,23 @@ export interface DrawerResizeOptions {
  * gone, so a later unrelated mouseup would still persist a stale width. The
  * caller's close must call this before removing the panel. A no-op if no
  * drag is in progress.
- *
- * `opts.stateKey`/`opts.axis` (#313) pick which persisted-width field and
- * `splitters.ts` axis this instance uses — defaulting to the original
- * `'cellDrawerPx'`/`'drawer'` pair, so every pre-#313 caller is unaffected.
  */
-export function attachDrawerResize(
-  app: DrawerResizeApp, panel: HTMLElement, doc: Document, opts: DrawerResizeOptions = {},
-): () => void {
-  const key = opts.stateKey || 'cellDrawerPx';
-  const axis: SplitterAxis = opts.axis || 'drawer';
+export function attachDrawerResize(app: DrawerResizeApp, panel: HTMLElement, doc: Document): () => void {
   // doc.defaultView is null for a detached document not yet attached to a real
   // browsing context (e.g. tests' document.implementation.createHTMLDocument());
   // a real detached tab (window.open()) always has one. Fall back to the
   // ambient window rather than crash on the (harmless) synthetic-doc case.
   const win = doc.defaultView || window;
-  // `!`: the real AppState (state.ts) always has both cellDrawerPx and
-  // docPanePx — every production caller's `key` resolves to a real number.
-  panel.style.width = clampDrawerWidth(app.state[key]!, win.innerWidth) + 'px';
+  // `!`: the real AppState (state.ts) always has rightInspectorPx — every
+  // production caller resolves to a real number.
+  panel.style.width = clampDrawerWidth(app.state.rightInspectorPx!, win.innerWidth) + 'px';
   let cancelActive: (() => void) | null = null;
+  const axis: SplitterAxis = 'rightInspector';
   const handle = h('div', {
     class: 'cd-resize-h',
     title: 'Drag to resize',
     onmousedown: (ev: MouseEvent) => {
-      const startPx = app.state[key]!;
+      const startPx = app.state.rightInspectorPx!;
       const stopDrag = startDrag(
         // `as Element`: this handler is only ever reached via a real
         // `mousedown` dispatched on `handle` itself (the listener target),
@@ -136,7 +137,7 @@ export function attachDrawerResize(
           save: (name, value) => app.prefs.save(name as PreferenceKey, value),
         },
       );
-      cancelActive = () => { stopDrag(); app.state[key] = startPx; cancelActive = null; };
+      cancelActive = () => { stopDrag(); app.state.rightInspectorPx = startPx; cancelActive = null; };
     },
   });
   panel.appendChild(handle);

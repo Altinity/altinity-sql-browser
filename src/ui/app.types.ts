@@ -115,6 +115,12 @@ export interface AppDom {
   dashboardSearchInput?: HTMLInputElement;
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
+  /** #586 — the shell-owned docked right-inspector slot (a layout sibling of
+   *  `queryHost`/`dashboardHost` in app-shell.ts's `mainRow`) and its resize
+   *  handle. Content mounts here via `inspector-host.ts`'s `showInInspector`/
+   *  `releaseInspector` — never `document.body` directly. */
+  inspectorHost?: HTMLElement;
+  inspectorResize?: HTMLElement;
   runElapsedEl?: HTMLElement;
   savedList?: HTMLElement;
   savedSearch?: HTMLElement;

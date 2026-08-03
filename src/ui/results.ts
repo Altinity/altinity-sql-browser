@@ -31,6 +31,9 @@ import type { DetachedView, DetachedViewApp, DetachedWindowLike, MountCtx } from
 import { buildVariableBar } from './variable-bar.js';
 import type { VariableBarApp } from './variable-bar.js';
 import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
+import { openSurfaceLifecycle } from './surface-lifecycle.js';
+import type { SurfaceLifecycleHandle } from './surface-lifecycle.js';
+import { showInInspector, releaseInspector } from './inspector-host.js';
 import { panelExecution } from '../core/panel-execution.js';
 import type { AppDom, App, KeyboardOwner } from './app.types.js';
 import type { PanelResolution } from '../core/panel-cfg.js';
@@ -475,35 +478,48 @@ export interface RowsViewerEntry {
 }
 
 /**
- * Open a right-side pane with the full rows of one script SELECT, using the same
- * sortable + resizable grid as the main results table (renderGridView). Sort state and
- * column widths are local to this pane; clicking a cell opens its value (the same
- * cell-detail drawer, stacked). Reuses the .cd-* drawer scaffold (a shared Drawer
- * primitive is deferred to #60). Escape / backdrop / ✕ closes. Exported for tests.
+ * Open the docked right-inspector (`app.dom.inspectorHost`, #586) with the
+ * full rows of one script SELECT, using the same sortable + resizable grid as
+ * the main results table (renderGridView). Sort state and column widths are
+ * local to this pane; clicking a cell opens its value in the SAME shared
+ * dock (#586 — the docked model has room for exactly one occupant, so this
+ * REPLACES the rows viewer rather than stacking a second panel on top of it,
+ * unlike the pre-#586 stacked-backdrop behavior). Built on the shared
+ * `openSurfaceLifecycle` primitive (`escapePolicy: 'always'` — the docked
+ * model has no "topmost of several" case left to scope Escape against) and
+ * `inspector-host.ts`'s singleton dock. Exported for tests.
  */
 export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLElement {
   const doc = app.document;
-  const releaseKeyboard = app.acquireKeyboardOwner('modal');
-  let backdrop: HTMLElement;
-  let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
-  let detachBackdrop: () => void;
-  const onKey = (ev: KeyboardEvent): void => {
-    if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) { ev.preventDefault(); close(); }
-  };
-  function close(): void {
-    cancelDrawerDrag();
-    detachBackdrop();
-    if (backdrop) backdrop.remove();
-    doc.removeEventListener('keydown', onKey, true);
-    releaseKeyboard();
-  }
+  const initiator = doc.activeElement as HTMLElement | null;
+  let lifecycle: SurfaceLifecycleHandle; // assigned below, before close() can possibly fire
   const n = entry.rows.length;
   const { panel } = buildDrawerChrome(doc, {
     title: [
       h('span', { class: 'cd-name' }, 'Result rows'),
       h('span', { class: 'cd-type' }, n + (entry.truncated ? '+' : '') + ' row' + (n === 1 ? '' : 's')),
     ],
-    onClose: close,
+    onClose: () => lifecycle.close(),
+  });
+  lifecycle = openSurfaceLifecycle({
+    document: doc,
+    escapePolicy: 'always',
+    panel,
+    // Deliberately NO acquireKeyboardOwner — the docked model is non-modal
+    // (#488's target contract this issue preps for: "no inspector tool
+    // creates a backdrop, covers the centre surface, or traps focus"), and
+    // `shortcuts.ts`'s global dispatcher exits immediately whenever ANY
+    // keyboard owner is held, disabling Run/Save/format/navigation for the
+    // whole app. The pre-#586 modal drawer legitimately held it (a real
+    // backdrop trapped focus); a docked panel must not.
+    // A resolver (not the captured element itself, #586's SurfaceLifecycle
+    // contract) — a grid re-render between open and close can detach the
+    // original initiator; `isConnected` catches that rather than focusing a
+    // dead node. Pre-#586 neither the cell drawer nor the rows viewer
+    // restored focus at all — this is new, correct behavior the shared
+    // primitive gives every docked surface uniformly.
+    returnFocusTo: () => (initiator && initiator.isConnected ? initiator : null),
+    onClose: () => releaseInspector(app),
   });
   // Local sort + width state (persist for the lifetime of this open via the entry).
   entry.viewerSort = entry.viewerSort || { col: null, dir: 'asc' };
@@ -521,12 +537,8 @@ export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLEle
   }));
   paint();
   panel.appendChild(body);
-  cancelDrawerDrag = attachDrawerResize(app, panel, doc);
-  backdrop = h('div', { class: 'cd-backdrop' }, panel);
-  detachBackdrop = attachBackdropClose(backdrop, close);
-  doc.body.appendChild(backdrop);
-  doc.addEventListener('keydown', onKey, true);
-  return backdrop;
+  showInInspector(app, panel, () => lifecycle.close());
+  return panel;
 }
 
 /**
@@ -966,7 +978,15 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
           setSort: (next) => { sort = next; },
           widths,
           rerender: () => paint(res),
-          onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
+          // #586: this Data Pane is itself a self-contained detached/
+          // fullscreen view (a real tab, or detached-view.ts's own overlay
+          // fallback mounted inside app.document when window.open is
+          // blocked) — either way it already covers the viewport with its
+          // own overlay, so a nested cell click keeps the pre-#586
+          // self-contained overlay explicitly (`overlay: true`) rather than
+          // docking invisibly behind it (`doc === app.document` alone can't
+          // tell the two cases apart — see OpenCellDetailOptions).
+          onCell: (name, type, value) => openCellDetail(app, name, type, value, doc, { overlay: true }),
           cap: visCap(res),
           panel: {
             mode: 'readonly',
@@ -1146,11 +1166,14 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
       body.appendChild(pane);
       paint();
 
-      // Esc closes an open cell-detail drawer first (its own listener, keyed
-      // off isTopDrawer, handles that); a second Esc — no drawer left — closes
-      // the pane (overlay only; a real tab closes via the browser).
+      // Esc closes an open cell-detail overlay first (openCellDetail's own
+      // SurfaceLifecycle-backed listener handles that — #586: this Data Pane
+      // always forces `{ overlay: true }` on its nested cell clicks, below,
+      // so it stays `.cell-detail-overlay`, never the docked inspector); a
+      // second Esc — no overlay left — closes the pane (overlay only; a real
+      // tab closes via the browser).
       const onKey = (e: KeyboardEvent): void => {
-        if (e.key !== 'Escape' || doc.querySelector('.cd-backdrop')) return;
+        if (e.key !== 'Escape' || doc.querySelector('.cell-detail-overlay')) return;
         e.stopPropagation();
         close();
       };
@@ -1171,36 +1194,53 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
   });
 }
 
-/**
- * Open a right-side drawer with one cell's full value: pretty-printed (JSON is
- * reindented), and for HTML a Rendered (sandboxed iframe) ↔ Source toggle.
- * Escape or a backdrop/✕ click closes it. Exported for tests.
- */
-// Only the topmost drawer responds to Escape, so dismissing a stacked cell drawer
-// returns to the rows pane underneath instead of closing both at once. (The
-// current backdrop is always in the DOM when its handler fires.)
-function isTopDrawer(doc: Document, el: Element | undefined): boolean {
-  const all = doc.querySelectorAll('.cd-backdrop');
-  return all[all.length - 1] === el;
+/** `openCellDetail`'s options bag (#586). */
+export interface OpenCellDetailOptions {
+  /**
+   * Force the legacy, self-contained overlay even though `targetDoc` (or its
+   * default, `app.document`) IS the document the shell's `inspectorHost`
+   * lives in. Only `expandDataPane`'s own nested cell clicks pass this: the
+   * detached Data Pane is itself a self-contained detached/fullscreen view
+   * (a real popup tab, OR — when `window.open` is blocked —
+   * `detached-view.ts`'s own full-screen fallback overlay mounted INSIDE
+   * `app.document`) that #586 explicitly does not fold into the docked
+   * inspector (non-goal: "moving detached/fullscreen views into the docked
+   * inspector"). Either way, that Data Pane already covers the whole
+   * viewport with its own overlay, so docking a nested cell click would
+   * render it invisibly BEHIND that overlay — `doc === app.document` alone
+   * can't tell the two cases apart, so the caller states its context
+   * explicitly instead. Omitted (default) everywhere else: the ordinary
+   * in-place grid/Dashboard click docks.
+   */
+  overlay?: boolean;
 }
 
-export function openCellDetail(app: ResultsApp, name: string, type: string, value: unknown, targetDoc?: Document): HTMLElement {
+/**
+ * Open one cell's full value: pretty-printed (JSON is reindented), and for
+ * HTML a Rendered (sandboxed iframe) ↔ Source toggle. Docks into the shared
+ * `app.dom.inspectorHost` (#586) — replacing whatever else currently
+ * occupies it (#586's docked model has room for exactly one occupant; a cell
+ * clicked while the rows viewer is open REPLACES it rather than stacking, per
+ * this issue's own non-goals: no per-tool persistence/registry here, that's
+ * #488) — UNLESS `targetDoc` names a genuinely separate document (a real
+ * detached browser tab) or `opts.overlay` says so explicitly (see
+ * `OpenCellDetailOptions`), in which case it keeps the pre-#586
+ * self-contained overlay, rebuilt on the SAME shared `openSurfaceLifecycle`
+ * primitive. Escape (always — the docked model has no "topmost of several"
+ * left to scope against) or a ✕ click closes it. Exported for tests.
+ */
+export function openCellDetail(
+  app: ResultsApp, name: string, type: string, value: unknown, targetDoc?: Document, opts?: OpenCellDetailOptions,
+): HTMLElement {
   const doc = targetDoc || app.document;
-  const releaseKeyboard = doc === app.document ? app.acquireKeyboardOwner('modal') : () => {};
+  const dock = doc === app.document && !opts?.overlay;
   const text = value == null ? '' : String(value);
-  let backdrop: HTMLElement;
-  let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
-  let detachBackdrop: () => void;
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) { e.preventDefault(); close(); }
-  };
-  function close(): void {
-    cancelDrawerDrag();
-    detachBackdrop();
-    if (backdrop) backdrop.remove();
-    doc.removeEventListener('keydown', onKey, true);
-    releaseKeyboard();
-  }
+  const initiator = doc.activeElement as HTMLElement | null;
+  let lifecycle: SurfaceLifecycleHandle; // assigned below, before close() can possibly fire
+  // Only the non-docked (detached-doc) overlay branch uses any of these three.
+  let backdrop: HTMLElement | null = null;
+  let cancelDrawerDrag: (() => void) | null = null;
+  let detachBackdropClose: (() => void) | null = null;
 
   // withDocument(doc, ...) so every element (including the ones built later,
   // from the Rendered/Source toggle click) lands in the right realm — vital
@@ -1216,9 +1256,9 @@ export function openCellDetail(app: ResultsApp, name: string, type: string, valu
         h('span', { class: 'cd-name' }, name),
         type ? h('span', { class: 'cd-type' }, type) : null,
       ],
-      onClose: close,
+      onClose: () => lifecycle.close(),
     });
-    cancelDrawerDrag = attachDrawerResize(app, panel, doc);
+    if (!dock) cancelDrawerDrag = attachDrawerResize(app, panel, doc);
 
     // A Rendered ↔ Source toggle, defaulting to Rendered. `renderRendered`
     // builds the rendered node; Source is always the reindented `<pre>`. Shared
@@ -1253,10 +1293,45 @@ export function openCellDetail(app: ResultsApp, name: string, type: string, valu
       showSource();
     }
 
-    backdrop = h('div', { class: 'cd-backdrop' }, panel);
-    detachBackdrop = attachBackdropClose(backdrop, close);
+    lifecycle = openSurfaceLifecycle({
+      document: doc,
+      escapePolicy: 'always',
+      panel,
+      // Keyboard-owner acquisition applies ONLY to the surviving non-docked
+      // overlay branch (a genuine modal backdrop, same as pre-#586) — never
+      // the docked branch: the docked model is non-modal (#488's target
+      // contract this issue preps for), and `shortcuts.ts`'s global
+      // dispatcher exits immediately whenever ANY keyboard owner is held,
+      // which would silently disable Run/Save/format/navigation for the
+      // whole app while a docked Cell panel is open. A foreign detached-tab
+      // document also has no meaningful modal-owner slot of THIS app's to
+      // acquire, so the overlay branch only acquires it when it's actually
+      // running in `app.document` (the popup-blocked fallback case).
+      acquireKeyboardOwner: !dock && doc === app.document ? app.acquireKeyboardOwner : undefined,
+      // A resolver, not the captured element itself (#586's SurfaceLifecycle
+      // contract) — a grid re-render between open and close can detach the
+      // original initiator; `isConnected` catches that rather than focusing
+      // a dead node. Pre-#586 the cell drawer never restored focus at all —
+      // this is new, correct behavior the shared primitive gives uniformly.
+      returnFocusTo: () => (initiator && initiator.isConnected ? initiator : null),
+      onClose: () => {
+        cancelDrawerDrag?.();
+        if (dock) { releaseInspector(app); return; }
+        // `!`: the non-dock branch below always assigns both before
+        // returning, and `close()` can only run after that (Escape/✕/an
+        // outside click all fire post-mount).
+        detachBackdropClose!();
+        backdrop!.remove();
+      },
+    });
+
+    if (dock) {
+      showInInspector(app, panel, () => lifecycle.close());
+      return panel;
+    }
+    backdrop = h('div', { class: 'cell-detail-overlay' }, panel);
+    detachBackdropClose = attachBackdropClose(backdrop, () => lifecycle.close());
     doc.body.appendChild(backdrop);
-    doc.addEventListener('keydown', onKey, true);
     return backdrop;
   });
 }

@@ -230,10 +230,13 @@ export interface DashboardApp {
   genId(): string;
   /** #303: persists the isolated per-dashboard variable store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
-  /** #332: the shared cell-detail drawer's own resize persist (`openCellDetail`
-   *  → `attachDrawerResize` reads `state.cellDrawerPx` + `prefs.save`). Declared
-   *  here rather than relying purely on the `as ResultsApp` cast so a future
-   *  narrower caller gets a compile-time signal, not a runtime crash. */
+  /** #332: satisfies `ResultsApp`'s `prefs` member for the `as ResultsApp`
+   *  cast `openCellDetail` is called through below. #586: the docked
+   *  cell-detail path this surface always takes no longer calls
+   *  `attachDrawerResize` (resize is shell-owned now, app-shell.ts), so
+   *  `prefs.save` isn't actually exercised via that call anymore — kept here
+   *  so a future narrower caller still gets a compile-time signal, not a
+   *  runtime crash, rather than removing the field outright. */
   prefs: Pick<AppPreferences, 'save'>;
 }
 

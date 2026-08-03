@@ -59,8 +59,8 @@ const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog
 // actions bound the same way app.ts binds them — to the REAL ui/doc-pane.ts
 // `openDocEntry(app, target)`/`openDocDisambiguation(app, name)` — so "Open
 // reference" (hover button, F1) actually opens the persistent pane instead of
-// quietly no-opping. The pane's own required fields (document/prefs/
-// CodeViewer) live on the same object, mirroring the real App.
+// quietly no-opping. The pane's own required fields (document/CodeViewer)
+// live on the same object, mirroring the real App.
 // `catalog.docDisambiguate` stays undefined unless a caller's override
 // supplies it (mirrors `docSummary`/`docEntry` above) — a test that only
 // exercises `openDocEntry` never touches it.
@@ -68,7 +68,14 @@ const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEdi
   const app = makeApp(over);
   const paneApp = app as unknown as DocPaneApp;
   paneApp.document = document;
-  paneApp.prefs = { save: vi.fn() };
+  // #586 — the docked inspector's two shell-owned nodes, appended to the real
+  // `document` (not just held detached) so a caller asserting the pane
+  // actually mounted (`document.querySelector('[role="complementary"]')`,
+  // below) finds it, the same way app-shell.ts's real mainRow does.
+  paneApp.dom = {
+    inspectorHost: document.body.appendChild(document.createElement('div')),
+    inspectorResize: document.body.appendChild(document.createElement('div')),
+  };
   paneApp.CodeViewer = vi.fn(() => ({
     setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn(),
   }));
