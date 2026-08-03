@@ -25,6 +25,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (dashboard gesture/repaint extraction).
 
 ### Changed
+- **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
+  knowledge base is no longer a separate `altinity-sql-browser.wiki.git`
+  checkout; it is now `.wiki/` in this repository, versioned with the code and
+  updated in the same commits/PRs as the changes it documents (see
+  `.wiki/Maintaining-This-Wiki.md`; the old wiki remote is a frozen archive).
+  Reconciled its content against current reality: ADR-0004's Preact rejection,
+  the 2026-08-03 `main` reset of #487 phases 1–3 (salvage branches
+  `feat/left-nav-layout-core-487p1`/`feat/nav-section-registry-487p2`/
+  `feat/left-rail-focused-drawer-487p3`), the #593 refactor-umbrella sequencing
+  of #586–592/#585, and the V2 roadmap (#582). Also added a `CLAUDE.md`
+  Working-discipline rule — issue contracts specify final-state invariants,
+  not frame-by-frame gesture behavior, per ADR-0004's retrospective finding
+  that the frame-level focus contract, not the code, was the dominant cost
+  driver in #487/#488.
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
   persistence even though Dashboard's own caller uses them for an unpersisted

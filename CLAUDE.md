@@ -135,17 +135,16 @@ Touch these in one change:
 
 ## Knowledge base (project wiki)
 
-The distilled maintainer/agent knowledge base is the **GitHub project wiki**, not a
-directory in this repo. Clone it alongside the code and start at `Home.md`:
-
-```sh
-git clone https://github.com/Altinity/altinity-sql-browser.wiki.git .wiki   # branch: master
-```
-
-`.wiki/` is gitignored here (separate `repo.wiki.git`); push wiki edits to that
-remote, never into this repo. It maps architecture, workflow, decisions, deployment,
-and operational lessons back to their canonical sources (this file, `docs/*`, issues).
-`.wiki/Maintaining-This-Wiki.md` explains how to use and update it.
+The distilled maintainer/agent knowledge base lives **in this repo**, at `.wiki/`
+— start at `.wiki/Home.md`. It is versioned with the code: update the affected
+wiki page(s) in the same change that stales them, the same way this file,
+`docs/*`, and `CHANGELOG.md` get reconciled (see "Reconcile forward work after
+a substantive change" below). It maps architecture, workflow, decisions,
+deployment, and operational lessons back to their canonical sources (this
+file, `docs/*`, issues). `.wiki/Maintaining-This-Wiki.md` explains how to use
+and update it. The old GitHub project wiki remote
+(`altinity-sql-browser.wiki.git`) is a **frozen archive** — do not clone or
+push to it.
 
 ## Conventions
 
@@ -168,6 +167,11 @@ thresholds, and a single ClickHouse-served artifact built by esbuild.
 - **Convert friction into memory.** If a task needed retried commits or hit an
   unexpected failure (test/env/scope surprise), save a memory so the next
   session doesn't repeat it.
+- **Contracts specify final-state invariants.** Issue contracts state what
+  must be true after an interaction settles — not frame-by-frame behavior
+  during gestures/transitions — unless a user-visible bug forces otherwise.
+  ADR-0004's retrospective: the frame-level focus contract in #487/#488, not
+  the code, was the dominant cost driver.
 - **Subagent fan-out is read-only unless the prompt says otherwise.** A
   forked or spawned agent inherits the *entire* parent conversation —
   including this file and any skill script being run — so without an

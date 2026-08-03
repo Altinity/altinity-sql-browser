@@ -24,9 +24,6 @@
 # Reference material (the verbatim deployed SPA, kept locally for diffing)
 /reference/
 
-# Project wiki — a separate GitHub repo.wiki.git checkout, not part of this repo
-/.wiki/
-
 # impeccable design skill — vendored dev tool + its local state; kept local, not in the repo
 /skills/impeccable/
 /.impeccable/

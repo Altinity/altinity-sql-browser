@@ -1,0 +1,1 @@
+Rules source of truth: [`CLAUDE.md`](../CLAUDE.md). Shared durable memory: this wiki (see [[Operations-Memory]]). Claude native memory may hold supplementary historical detail only. Re-verify anything with a date, version, or cluster ID before acting. Distilled 2026-07-12.
