@@ -9,13 +9,13 @@ export const SELECTORS = Object.freeze({
   stop: ['[data-testid="stop-button"]', 'button[aria-label*="Stop"]'],
   continue: ['button:has-text("Continue generating")', 'button:has-text("Continue")'],
   responseActions: ['button[aria-label*="Good response"]', 'button[aria-label*="Bad response"]', 'button[aria-label*="Copy"]'],
+  streamError: ['text=/^Error in message stream$/i'],
+  streamRetry: ['button:has-text("Retry")'],
   login: ['a[href*="auth/login"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
   error: ['[data-testid="conversation-turn-error"]', '[data-testid="message-error"]', '[data-testid="error-message"]'],
   alert: ['[role="alert"]'],
   permission: ['[role="dialog"]', '[data-testid*="confirm"]'],
   permissionApprove: ['button:has-text("Allow")', 'button:has-text("Confirm")', 'button:has-text("Continue")'],
-  reasoningButton: ['button[aria-label*="reasoning" i]', 'button:has-text("High")', 'button:has-text("Auto")', 'button:has-text("Thinking")', 'button:has-text("Reasoning")'],
-  reasoningHigh: ['[role="menuitem"]:has-text("High")', '[role="option"]:has-text("High")', 'button:has-text("High")'],
   rateLimit: ['text=/rate limit|too many requests|try again later/i'],
 });
 
@@ -66,8 +66,7 @@ export class ChatGptBrowser {
     const { page } = await this.pageFor(null);
     await this.assertReady(page);
     const upload = Boolean(await firstExisting(page, SELECTORS.fileInput));
-    const reasoning = await this.selectHighReasoning(page);
-    return { page, checks: { cdp: true, login: true, composer: true, fileUpload: upload, highReasoning: reasoning } };
+    return { page, checks: { cdp: true, login: true, composer: true, fileUpload: upload, predefinedModelAndEffort: true } };
   }
 
   async review({ session, prompt, uploadPath, timeoutMs, target, publish, diagnosticsDir }) {
@@ -80,16 +79,15 @@ export class ChatGptBrowser {
       if (session && (generationActive || existingCount > recordedPasses)) {
         this.stderr.write(`Recovering an uncollected ChatGPT response (recorded passes: ${recordedPasses})...\n`);
         const responseText = await this.waitForCompletion(page, { before: recordedPasses, timeoutMs, target, publish });
-        return { responseText, conversationUrl: page.url(), reopened, highReasoning: null, recovered: true };
+        return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true };
       }
-      const highReasoning = await this.selectHighReasoning(page);
       if (uploadPath) await this.upload(page, uploadPath);
       const before = await this.assistantCount(page);
       await this.fillAndSend(page, prompt);
       await this.waitForPermanentConversationUrl(page);
       this.stderr.write(`Waiting for ChatGPT response (assistant messages before submit: ${before})...\n`);
       const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish });
-      return { responseText, conversationUrl: page.url(), reopened, highReasoning, recovered: false };
+      return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false };
     } catch (error) {
       error.conversationUrl = page.url();
       if (diagnosticsDir) await this.captureDiagnostics(page, diagnosticsDir, error).catch(() => {});
@@ -106,22 +104,6 @@ export class ChatGptBrowser {
       await this.sleep(250);
     }
     throw new ReviewError('ui_incompatible', 'Could not find the ChatGPT composer; the UI may have changed');
-  }
-
-  async selectHighReasoning(page) {
-    const deadline = this.now() + 5000;
-    let button = null;
-    while (!button && this.now() < deadline) {
-      button = await firstVisible(page, SELECTORS.reasoningButton);
-      if (!button) await this.sleep(100);
-    }
-    if (!button) return false;
-    if ((await button.innerText().catch(() => '')).trim().toLowerCase() === 'high') return true;
-    await button.click();
-    const high = await firstVisible(page, SELECTORS.reasoningHigh);
-    if (!high) { await page.keyboard?.press('Escape'); return false; }
-    await high.click();
-    return true;
   }
 
   async upload(page, uploadPath) {
@@ -167,7 +149,20 @@ export class ChatGptBrowser {
     const started = this.now();
     let lastText = '';
     let stableSince = null;
+    let streamRetries = 0;
     while (this.now() - started < timeoutMs) {
+      const streamError = await firstVisible(page, SELECTORS.streamError);
+      const retry = streamError ? await firstVisible(page, SELECTORS.streamRetry) : null;
+      if (retry) {
+        if (streamRetries >= 2) throw new ReviewError('ui_incompatible', 'ChatGPT message stream failed after two automatic retries', await this.latestAssistantText(page));
+        streamRetries += 1;
+        this.stderr.write(`ChatGPT message stream failed; using Retry (${streamRetries}/2)...\n`);
+        await retry.click();
+        lastText = '';
+        stableSince = null;
+        await this.sleep(this.pollMs);
+        continue;
+      }
       const rateLimited = await firstVisible(page, SELECTORS.rateLimit);
       if (rateLimited) throw new ReviewError('rate_limited', 'ChatGPT reported a rate limit', await this.latestAssistantText(page));
       const pageError = await firstVisible(page, SELECTORS.error);

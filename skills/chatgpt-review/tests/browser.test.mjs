@@ -55,18 +55,14 @@ test('fresh, same-tab, and reopened conversation selection work', async () => {
   assert.equal(reopened.reopened, true); assert.equal(reopenedPage.url(), 'https://chatgpt.com/c/missing');
 });
 
-test('hidden upload and High reasoning selection are supported', async () => {
+test('hidden upload is supported without touching model or effort controls', async () => {
   const input = new Element({ visible: false });
-  const high = new Element();
   const page = readyPage({
     [SELECTORS.fileInput[0]]: [input],
-    [SELECTORS.reasoningButton[0]]: [new Element()],
-    [SELECTORS.reasoningHigh[0]]: [high],
   });
   const driver = driverWith(page);
   await driver.upload(page, '/tmp/plan.md');
   assert.equal(input.files, '/tmp/plan.md');
-  assert.equal(await driver.selectHighReasoning(page), true);
 });
 
 test('streaming response must be new, non-empty, stopped, and stable', async () => {
@@ -133,6 +129,34 @@ test('continue generating is clicked harmlessly', async () => {
   assert.equal(button.visible, false);
 });
 
+test('message stream failures use Retry without completing or creating a new prompt', async () => {
+  let failed = true;
+  let retries = 0;
+  const retry = new Element({ onClick: () => { retries += 1; failed = false; } });
+  const page = readyPage({
+    [SELECTORS.streamError[0]]: () => failed ? [new Element({ text: 'Error in message stream' })] : [],
+    [SELECTORS.streamRetry[0]]: () => failed ? [retry] : [],
+    [SELECTORS.assistant[0]]: () => [new Element({ text: failed ? 'Error in message stream\nRetry' : 'complete answer' })],
+  });
+  assert.equal(await driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }), 'complete answer');
+  assert.equal(retries, 1);
+});
+
+test('persistent message stream failure is typed after two retries', async () => {
+  let retries = 0;
+  const retry = new Element({ onClick: () => { retries += 1; } });
+  const page = readyPage({
+    [SELECTORS.streamError[0]]: [new Element({ text: 'Error in message stream' })],
+    [SELECTORS.streamRetry[0]]: [retry],
+    [SELECTORS.assistant[0]]: [new Element({ text: 'Error in message stream\nRetry' })],
+  });
+  await assert.rejects(
+    () => driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }),
+    (error) => error.status === 'ui_incompatible' && /after two automatic retries/.test(error.message),
+  );
+  assert.equal(retries, 2);
+});
+
 test('login failure, UI drift, rate limit, and timeout are typed', async () => {
   const login = new Page('https://chatgpt.com/', { [SELECTORS.login[0]]: [new Element()] });
   await assert.rejects(() => driverWith(login).assertReady(login), (error) => error.status === 'login_required');
@@ -186,9 +210,9 @@ test('scoped confirmation is clicked and unexpected prompts require interaction'
 });
 
 test('doctor validates all non-sending browser capabilities', async () => {
-  const page = readyPage({ [SELECTORS.reasoningButton[0]]: [new Element()], [SELECTORS.reasoningHigh[0]]: [new Element()] });
+  const page = readyPage();
   const result = await driverWith(page).doctor();
-  assert.deepEqual(result.checks, { cdp: true, login: true, composer: true, fileUpload: true, highReasoning: true });
+  assert.deepEqual(result.checks, { cdp: true, login: true, composer: true, fileUpload: true, predefinedModelAndEffort: true });
 });
 
 test('CDP connection failures are typed as Chrome unavailable', async () => {

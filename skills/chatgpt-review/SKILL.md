@@ -6,6 +6,7 @@ description: Get a critical second opinion from ChatGPT on a GitHub pull request
 # ChatGPT review
 
 Use the blocking Node script for all browser interaction. Never drive ChatGPT manually, launch or terminate Chrome, inspect Chrome credentials, or relay unverified claims.
+Leave ChatGPT's predefined model and effort unchanged; the script must not open or modify those controls.
 
 1. Identify one target: canonical GitHub PR/issue URL, complete plan file, or local repository state.
 2. Put focused project and acceptance context in a temporary question file. For plan review, put the complete plan in its own file.
