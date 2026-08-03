@@ -537,7 +537,14 @@ export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLEle
   }));
   paint();
   panel.appendChild(body);
-  showInInspector(app, panel, () => lifecycle.close());
+  // #586 finding 3: `openSurfaceLifecycle` above already installed its
+  // capture-phase Escape listener unconditionally (before this call tells us
+  // whether a shell is even mounted) — a failed mount (no `app.dom
+  // .inspectorHost`/`inspectorResize` yet) must tear that lifecycle back
+  // down too, or the listener (and this closure) leaks forever with nothing
+  // left referencing it to close it later. Symmetric with doc-pane.ts's
+  // `ensurePane`.
+  if (!showInInspector(app, panel, () => lifecycle.close())) lifecycle.close();
   return panel;
 }
 
@@ -1326,7 +1333,11 @@ export function openCellDetail(
     });
 
     if (dock) {
-      showInInspector(app, panel, () => lifecycle.close());
+      // #586 finding 3: symmetric with `openRowsViewer`/doc-pane.ts's
+      // `ensurePane` — a failed mount must tear the just-opened
+      // `SurfaceLifecycle` down too, or its capture-phase Escape listener
+      // leaks with nothing left able to close it.
+      if (!showInInspector(app, panel, () => lifecycle.close())) lifecycle.close();
       return panel;
     }
     backdrop = h('div', { class: 'cell-detail-overlay' }, panel);

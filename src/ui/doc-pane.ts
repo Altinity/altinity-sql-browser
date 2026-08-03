@@ -219,7 +219,15 @@ function ensurePane(app: DocPaneApp, doc: Document): PaneState {
   // `PaneState` back rather than one `isDocPaneOpen`/`closeDocPane` believe
   // is live: recording an occupant that never actually showed would leave
   // that bookkeeping stuck reporting "open" for nothing anyone can see.
+  // #586 finding 3: a failed mount must ALSO tear the just-opened
+  // `SurfaceLifecycle` back down — `openSurfaceLifecycle` installs its
+  // capture-phase Escape listener unconditionally, before this return value
+  // is known, so skipping `panes.set` alone (the pre-fix behavior) left that
+  // listener (and the `st` closure it captures) permanently attached to
+  // `doc` with no way for `isDocPaneOpen`/`closeDocPane` — both keyed off
+  // `panes`, which never got an entry — to ever reach it again.
   if (showInInspector(app, panel, () => lifecycle.close())) panes.set(doc, st);
+  else lifecycle.close();
   return st;
 }
 

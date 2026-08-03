@@ -623,6 +623,27 @@ describe('openCellDetail', () => {
     backdropClick(bd);
     expect(qs(document, '.cell-detail-overlay')).toBeNull();
   });
+
+  // #586 finding 3: the docked branch's `openSurfaceLifecycle` call installs
+  // its capture-phase Escape listener on `doc` BEFORE `showInInspector`'s
+  // return value says whether anything actually mounted (no shell yet →
+  // `app.dom.inspectorHost`/`inspectorResize` absent). Symmetric with
+  // doc-pane.ts's own leak (and its unit-test coverage): prove the SAME
+  // listener reference that was added is also removed — not merely that
+  // nothing visibly opened, which would pass even with a dangling listener.
+  it('opening with no shell mounted (dock branch) tears the SurfaceLifecycle back down — the Escape listener does not leak', () => {
+    const app = makeApp({ dom: { inspectorHost: undefined, inspectorResize: undefined } });
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    openCellDetail(app, 'c', 'String', 'x');
+    const added = addSpy.mock.calls.filter((c) => c[0] === 'keydown');
+    expect(added).toHaveLength(1);
+    const handler = added[0][1];
+    const removed = removeSpy.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === handler);
+    expect(removed).toHaveLength(1); // same listener reference removed — the lifecycle actually closed
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
 });
 
 // #586: the docked cell-detail/rows-viewer no longer have their own resize
@@ -1778,6 +1799,27 @@ describe('multiquery script grid (#83)', () => {
     document.removeEventListener('keydown', dispatchGlobal);
     expect(app.dom.inspectorHost.hidden).toBe(true); // the pane's own capture-phase Escape closed it
     expect(app.actions.cancel).not.toHaveBeenCalled(); // …and consumed the event before the global handler's cancel
+  });
+
+  // #586 finding 3: `openRowsViewer` never checked `showInInspector`'s return
+  // value at all (unlike `openCellDetail`'s dock branch and doc-pane.ts's
+  // `ensurePane`, both of which at least had SOME guard) — a failed mount
+  // left `openSurfaceLifecycle`'s capture-phase Escape listener permanently
+  // attached with no reference anywhere able to close it. Prove the SAME
+  // listener reference is added and then removed, not merely that nothing
+  // visibly opened (which would pass even with a dangling listener).
+  it('opening with no shell mounted tears the SurfaceLifecycle back down — the Escape listener does not leak', () => {
+    const app = makeApp({ dom: { inspectorHost: undefined, inspectorResize: undefined } });
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    openRowsViewer(app, { columns: [{ name: 'n', type: 'String' }], rows: [['x']] });
+    const added = addSpy.mock.calls.filter((c) => c[0] === 'keydown');
+    expect(added).toHaveLength(1);
+    const handler = added[0][1];
+    const removed = removeSpy.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === handler);
+    expect(removed).toHaveLength(1); // same listener reference removed — the lifecycle actually closed
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 
   it('toolbar shows live elapsed + Cancel while running, with a running footer', () => {

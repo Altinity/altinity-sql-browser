@@ -70,7 +70,15 @@ describe('doc-pane lifecycle', () => {
     expect(panel).not.toBeNull();
     expect(panel.getAttribute('role')).toBe('complementary');
     expect(panel.getAttribute('aria-label')).toBeTruthy();
-    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    // #586 finding 1's same rot, found one file over: `.cd-backdrop` is
+    // deleted repo-wide (#586 AC3), so `querySelector('.cd-backdrop')` can
+    // never find anything — a reintroduced backdrop-style wrapper around
+    // this pane would NOT be `.cd-backdrop` (that class is gone), so the old
+    // assertion passed unconditionally. `showInInspector` mounts `panel`
+    // itself directly into `inspectorHost` (inspector-host.ts), so the real,
+    // falsifiable claim is that the host's child IS the panel — not some
+    // wrapper containing it.
+    expect(app.dom.inspectorHost!.firstElementChild).toBe(panel);
     await Promise.resolve(); await Promise.resolve();
     closeDocPane(app);
   });
@@ -1210,5 +1218,30 @@ describe('docked in the shared inspector (#586)', () => {
     expect(isDocPaneOpen(app)).toBe(false);
     expect(document.querySelector('[role="complementary"]')).toBeNull();
     expect(() => closeDocPane(app)).not.toThrow();
+  });
+
+  // #586 finding 3: `ensurePane` calls `openSurfaceLifecycle` (which installs
+  // its capture-phase `keydown` listener on `doc` UNCONDITIONALLY) before it
+  // learns whether `showInInspector` actually mounted anything. The test
+  // above only proves the `panes` bookkeeping stays honest; it says nothing
+  // about the listener itself — before the fix, a failed mount left it (and
+  // the `st` closure it captures) permanently attached with nothing left
+  // able to remove it. Proving that directly (rather than merely
+  // `isDocPaneOpen` staying false) needs to see the SAME listener reference
+  // added and then removed — a spy on add/removeEventListener, not a
+  // behavioral proxy that could pass by coincidence.
+  it('opening with no shell mounted still tears the SurfaceLifecycle back down — the capture-phase Escape listener does not leak', () => {
+    const app = makeApp({ dom: {} });
+    app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    openDocEntry(app, T_FN);
+    const added = addSpy.mock.calls.filter((c) => c[0] === 'keydown');
+    expect(added).toHaveLength(1);
+    const handler = added[0][1];
+    const removed = removeSpy.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === handler);
+    expect(removed).toHaveLength(1); // same listener reference removed — the lifecycle actually closed
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });

@@ -42,11 +42,27 @@ test.describe('docs reference (#313)', () => {
     await expect(page.locator('[role="complementary"]')).toHaveCount(0);
   });
 
-  test('the pane is non-modal: no backdrop, and the editor keeps accepting input while it is open', async ({ page }) => {
+  test('the pane is non-modal: nothing overlays the editor, and it keeps accepting input while the pane is open', async ({ page }) => {
     await page.keyboard.type('sum');
     await page.keyboard.press('F1');
     await expect(page.locator('[role="complementary"]')).toBeVisible();
-    expect(await page.locator('.cd-backdrop').count()).toBe(0);
+    // #586 finding 1: `.cd-backdrop` is deleted repo-wide (AC3), so
+    // `page.locator('.cd-backdrop').count()` can never find anything again —
+    // reintroduce a scrim over this pane under ANY other class name and the
+    // old assertion still reported green. Assert the real rendered claim
+    // instead: at the editor's own on-screen point, the topmost element is
+    // the editor itself, not some overlay sitting above it. A reintroduced
+    // full-viewport scrim (this pane's pre-#586 modal drawer ancestor) would
+    // sit above `.cm-content` at that point, so `elementFromPoint` would
+    // resolve to the scrim instead — this genuinely fails for a real
+    // overlay, unlike the deleted class-name probe.
+    const editorIsTopmostAtItsOwnCenter = await page.evaluate(() => {
+      const editor = document.querySelector('.cm-content');
+      const rect = editor.getBoundingClientRect();
+      const atCenter = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return editor === atCenter || editor.contains(atCenter);
+    });
+    expect(editorIsTopmostAtItsOwnCenter).toBe(true);
     // Focus stays workable in the editor: keep typing.
     await page.click('.cm-content');
     await page.keyboard.type('(x)');
