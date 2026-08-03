@@ -35,7 +35,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   probes/CSS, and the docs pane's own bespoke resize/keydown wiring — all
   deleted). `cellDrawerPx`/`docPanePx` collapse into one `rightInspectorPx`
   preference (compat read order: `rightInspectorPx` → `docPanePx` →
-  `cellDrawerPx` → 480px default; single canonical write). Docked surfaces
+  `cellDrawerPx` → 480px default; single canonical write, and each candidate
+  is validated independently so a corrupt canonical value falls through to a
+  real legacy one instead of yielding `NaN`). Because the inspector is now a
+  layout sibling rather than an overlay, its width is clamped **dock-aware** —
+  the old flat 92vw ceiling could starve the centre surface once the panel
+  took real layout space, so the ceiling now also reserves a 320px minimum for
+  the centre (plus the sidebar and handles) and is recomputed whenever the
+  panel unfolds or the window resizes, not once at construction. The clamp
+  only ever changes the *displayed* width; the user's persisted preference is
+  never narrowed by it. Docked surfaces
   are now non-modal (no keyboard-owner acquisition — the pre-#586 modal cell
   drawer blocked every app shortcut while open; this issue's docked model
   fixes that), so `app.ts`'s Query↔Dashboard surface transition and
