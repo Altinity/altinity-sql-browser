@@ -271,6 +271,57 @@ describe('createState', () => {
     it('falls back to the 480 default when nothing is persisted at all', () => {
       expect(createState(reader()).rightInspectorPx).toBe(480);
     });
+
+    // #586 finding 4: the old `||`-chained read short-circuited on ANY
+    // non-empty string, so a malformed canonical value both blocked a
+    // perfectly valid legacy fallback AND survived as `NaN` through `clamp`
+    // (rendering a literal "NaNpx" width). Each candidate must now be
+    // validated independently.
+    it('a malformed canonical rightInspectorPx is skipped in favor of a valid docPanePx fallback', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: '420',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+      expect(Number.isNaN(s.rightInspectorPx)).toBe(false);
+    });
+
+    it('a malformed canonical AND docPanePx both skipped in favor of a valid cellDrawerPx', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: 'also-bad',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(560);
+    });
+
+    it('every candidate malformed falls back to the 480 default, never NaN', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: 'also-bad',
+        [KEYS.cellDrawerPx]: 'still-bad',
+      }));
+      expect(s.rightInspectorPx).toBe(480);
+    });
+
+    it('a whitespace-only canonical value is treated as absent, not as a real (NaN) value', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '   ',
+        [KEYS.docPanePx]: '420',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+    });
+
+    it('an out-of-range but numeric value is still "valid" — parsed, then clamped by the outer bound, not rejected', () => {
+      const s = createState(reader({ [KEYS.rightInspectorPx]: '-50' }));
+      expect(s.rightInspectorPx).toBe(320); // clamp(-50, 320, Infinity)
+    });
+
+    it('a leading-whitespace numeric value still parses (parseInt tolerates it, matching every other numeric pref read in this file)', () => {
+      const s = createState(reader({ [KEYS.rightInspectorPx]: '  650' }));
+      expect(s.rightInspectorPx).toBe(650);
+    });
   });
   it('defaults the reader to storage helpers', () => {
     vi.stubGlobal('localStorage', memStore({ [KEYS.theme]: 'light' }));

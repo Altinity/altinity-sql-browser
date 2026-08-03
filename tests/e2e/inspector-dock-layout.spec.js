@@ -101,3 +101,101 @@ test.describe('docked right-inspector layout geometry (#586 AC2)', () => {
     );
   });
 });
+
+// #586 findings 2a/2b: happy-dom cannot evaluate real CSS layout at all (this
+// file's own header comment), so the dock-aware maximum, the legacy-width
+// regression, and the reclamp-on-viewport-resize behavior can only be proven
+// here, against genuine `.main-row` geometry.
+test.describe('docked right-inspector dock-aware width (#586 findings 2a/2b)', () => {
+  test('maximum: an oversized preferred width is clamped to protect the centre surface, not just 92vw', async ({ page }) => {
+    await open(page); // 1280x800
+    await page.evaluate(() => window.__setRightInspectorPx(5000));
+    const mounted = await page.evaluate(() => window.__openInspector());
+    expect(mounted).toBe(true);
+
+    const queryHost = page.locator('.query-host');
+    const inspectorHost = page.locator('.inspector-host');
+    const queryBox = await queryHost.boundingBox();
+    const inspectorBox = await inspectorHost.boundingBox();
+
+    // The OLD clampDrawerWidth alone would have let this claim ~92% of 1280
+    // (≈1178px), leaving the centre surface a sliver. The dock-aware ceiling
+    // instead reserves real room for `.query-host` beside the sidebar/handles.
+    expect(inspectorBox.width).toBeLessThan(1280 * 0.92);
+    expect(queryBox.width).toBeGreaterThan(200);
+
+    test.info().annotations.push(
+      { type: 'query-host width (oversized preference)', description: String(queryBox.width) },
+      { type: 'inspector-host width (oversized preference)', description: String(inspectorBox.width) },
+    );
+  });
+
+  test('legacy width: a modest persisted preference applies unclamped (no spurious shrink)', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => window.__setRightInspectorPx(420));
+    await page.evaluate(() => window.__openInspector());
+    const box = await page.locator('.inspector-host').boundingBox();
+    expect(Math.round(box.width)).toBe(420);
+  });
+
+  // 900px is deliberately ABOVE `MOBILE_BREAKPOINT_PX` (768, state.ts) — below
+  // it `.inspector-host` switches to the full-screen `position: fixed; inset:
+  // 0` mobile presentation (styles.css, explicitly out of scope for this fix,
+  // see this file's own note on #586's fourth, deferred finding), which would
+  // make any width assertion here about that CSS rule instead of the
+  // dock-aware JS clamp this test targets.
+  test('viewport resize while OPEN live re-clamps the displayed width, all the way down to the shared 320 floor', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => window.__setRightInspectorPx(500));
+    await page.evaluate(() => window.__openInspector());
+    const inspectorHost = page.locator('.inspector-host');
+    const before = await inspectorHost.boundingBox();
+    expect(Math.round(before.width)).toBe(500);
+
+    await page.setViewportSize({ width: 900, height: 800 });
+    const after = await inspectorHost.boundingBox();
+    // Default sidebarPx (248) + 2 handles (14) reserved, minus CENTRE_MIN_PX
+    // (320): ceiling = 900-262-320 = 318, below the shared 320 floor — clamp
+    // floors it at 320 exactly.
+    expect(Math.round(after.width)).toBe(320);
+    expect(after.width).toBeLessThan(before.width);
+
+    test.info().annotations.push(
+      { type: 'inspector-host width before resize', description: String(before.width) },
+      { type: 'inspector-host width after resize (900px viewport)', description: String(after.width) },
+    );
+  });
+
+  test('viewport resize while FOLDED re-clamps before the next unfold, not the stale wide-viewport width', async ({ page }) => {
+    await open(page); // 1280x800
+    await page.evaluate(() => window.__setRightInspectorPx(1000));
+    await page.setViewportSize({ width: 900, height: 800 });
+    const mounted = await page.evaluate(() => window.__openInspector());
+    expect(mounted).toBe(true);
+    const box = await page.locator('.inspector-host').boundingBox();
+    // 1000px would have exceeded even 92% of a 900px viewport (828px) under
+    // the OLD single-clamp-at-construction behavior; must never render that
+    // wide, whether the reclamp ran while folded or only at the unfold that
+    // follows it. Same derivation as the previous test: ceiling floors at 320.
+    expect(Math.round(box.width)).toBe(320);
+  });
+
+  test('a wider sidebar leaves proportionally less room for the inspector', async ({ page }) => {
+    await open(page); // 1280x800
+    await page.evaluate(() => window.__setRightInspectorPx(600));
+    await page.evaluate(() => window.__openInspector());
+    const narrowSidebarBox = await page.locator('.inspector-host').boundingBox();
+    await page.evaluate(() => window.__closeInspector());
+
+    await page.evaluate(() => window.__setSidebarPx(420)); // the sidebar's own max
+    await page.evaluate(() => window.__openInspector());
+    const wideSidebarBox = await page.locator('.inspector-host').boundingBox();
+
+    expect(wideSidebarBox.width).toBeLessThanOrEqual(narrowSidebarBox.width);
+
+    test.info().annotations.push(
+      { type: 'inspector-host width (sidebarPx 248)', description: String(narrowSidebarBox.width) },
+      { type: 'inspector-host width (sidebarPx 420)', description: String(wideSidebarBox.width) },
+    );
+  });
+});

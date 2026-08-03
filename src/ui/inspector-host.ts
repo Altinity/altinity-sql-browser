@@ -30,6 +30,26 @@ export interface InspectorHostApp {
   dom: {
     inspectorHost?: HTMLElement;
     inspectorResize?: HTMLElement;
+    /** Shell-owned hook (app-shell.ts, #586 finding 1): cancels any
+     *  in-progress 'rightInspector' resize drag and reverts the pre-drag
+     *  width. Called from `releaseInspector` below — the single teardown
+     *  every fold path (Escape, sign-out, a surface switch, a fresh occupant
+     *  replacing this one) funnels through via the outgoing occupant's own
+     *  `SurfaceLifecycle` `onClose` — so a drag that outlives the surface it
+     *  was resizing doesn't keep mutating a now-hidden host or persist an
+     *  abandoned width via a later `mouseup`. Absent when no shell has wired
+     *  a drag handle (this module's own unit tests; #586's e2e fixture,
+     *  which drives `showInInspector`/`releaseInspector` directly). */
+    cancelInspectorDrag?: () => void;
+    /** Shell-owned hook (app-shell.ts, #586 finding 2b): recomputes the
+     *  docked host's DISPLAYED width against the CURRENT viewport/sidebar
+     *  before `showInInspector` reveals it — the persisted `rightInspectorPx`
+     *  preference may have been saved on a wider viewport (or with a
+     *  different sidebar width) than the one unfolding now, and the only
+     *  other place a clamp is ever applied is once, at shell construction.
+     *  Never mutates the preference itself, only the DOM style. Absent when
+     *  no shell has wired a resize handle. */
+    reclampInspectorWidth?: () => void;
   };
 }
 
@@ -70,6 +90,12 @@ export function showInInspector(app: InspectorHostApp, content: Element, close: 
   const { inspectorHost, inspectorResize } = app.dom;
   if (!inspectorHost || !inspectorResize) return false;
   closeInspector(app);
+  // #586 finding 2b: re-clamp the DISPLAYED width against the current
+  // viewport/sidebar before revealing — the persisted preference may be
+  // stale (set on a wider viewport, or before the sidebar's own width
+  // changed) since the only other place a clamp applies is once, at shell
+  // construction.
+  app.dom.reclampInspectorWidth?.();
   inspectorHost.replaceChildren(content);
   inspectorHost.hidden = false;
   inspectorResize.hidden = false;
@@ -90,6 +116,11 @@ export function showInInspector(app: InspectorHostApp, content: Element, close: 
 export function releaseInspector(app: InspectorHostApp): void {
   const { inspectorHost, inspectorResize } = app.dom;
   if (!inspectorHost) return;
+  // #586 finding 1: stop a still-live 'rightInspector' drag BEFORE folding —
+  // otherwise its `window` mousemove/mouseup listeners outlive the host they
+  // were resizing, keep mutating a now-hidden element, and the eventual
+  // mouseup persists an abandoned width.
+  app.dom.cancelInspectorDrag?.();
   currentClose.delete(inspectorHost);
   inspectorHost.hidden = true;
   if (inspectorResize) inspectorResize.hidden = true;

@@ -120,6 +120,71 @@ describe('showInInspector / releaseInspector / closeInspector', () => {
   // module never assumes it. These never fire in production; they exist so a
   // caller whose shell hasn't mounted yet (or a narrow test fixture) degrades
   // to a harmless no-op instead of throwing.
+  // #586 findings 1/2b: the two shell-owned hooks this module calls at the
+  // exact points it folds/unfolds the host, without knowing anything about
+  // drag mechanics or layout math itself — just invoking an optional
+  // callback on the same `dom` bag it already reads `inspectorHost`/
+  // `inspectorResize` off of.
+  describe('shell-owned fold/unfold hooks (#586 findings 1/2b)', () => {
+    it('showInInspector calls reclampInspectorWidth, when present, before revealing the host', () => {
+      const order: string[] = [];
+      const app = {
+        dom: {
+          inspectorHost: document.createElement('div'),
+          inspectorResize: document.createElement('div'),
+          reclampInspectorWidth: vi.fn(() => { order.push('reclamp'); }),
+        },
+      };
+      app.dom.inspectorHost.hidden = true;
+      order.push(app.dom.inspectorHost.hidden ? 'was-hidden' : 'was-visible');
+      showInInspector(app, document.createElement('p'), vi.fn());
+      expect(app.dom.reclampInspectorWidth).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['was-hidden', 'reclamp']); // reclamp runs before hidden flips to false
+      expect(app.dom.inspectorHost.hidden).toBe(false);
+    });
+
+    it('showInInspector tolerates a missing reclampInspectorWidth hook', () => {
+      const app = makeApp();
+      expect(() => showInInspector(app, document.createElement('p'), vi.fn())).not.toThrow();
+      expect(app.dom.inspectorHost.hidden).toBe(false);
+    });
+
+    it('showInInspector does not call reclampInspectorWidth when the mount itself fails (no host/resize node)', () => {
+      const reclamp = vi.fn();
+      const noResize = { dom: { inspectorHost: document.createElement('div'), reclampInspectorWidth: reclamp } };
+      expect(showInInspector(noResize, document.createElement('p'), vi.fn())).toBe(false);
+      expect(reclamp).not.toHaveBeenCalled();
+    });
+
+    it('releaseInspector calls cancelInspectorDrag, when present', () => {
+      const cancel = vi.fn();
+      const app = {
+        dom: {
+          inspectorHost: document.createElement('div'),
+          inspectorResize: document.createElement('div'),
+          cancelInspectorDrag: cancel,
+        },
+      };
+      showInInspector(app, document.createElement('p'), vi.fn());
+      releaseInspector(app);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(app.dom.inspectorHost.hidden).toBe(true);
+    });
+
+    it('releaseInspector tolerates a missing cancelInspectorDrag hook', () => {
+      const app = makeApp();
+      showInInspector(app, document.createElement('p'), vi.fn());
+      expect(() => releaseInspector(app)).not.toThrow();
+    });
+
+    it('releaseInspector with no host mounted at all never calls cancelInspectorDrag', () => {
+      const cancel = vi.fn();
+      const bare: InspectorHostApp = { dom: { cancelInspectorDrag: cancel } };
+      releaseInspector(bare);
+      expect(cancel).not.toHaveBeenCalled();
+    });
+  });
+
   describe('no host mounted yet (AppDom fields absent)', () => {
     it('isInspectorOpen/closeInspector are inert', () => {
       const bare: InspectorHostApp = { dom: {} };

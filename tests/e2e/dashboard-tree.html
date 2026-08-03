@@ -155,6 +155,14 @@
       return showInInspector(app, content, () => releaseInspector(app));
     };
     window.__closeInspector = () => releaseInspector(app);
+    // #586 findings 2a/2b real-browser gate: let a spec set the persisted
+    // preference (and, for the sidebar case, the tracked width app-shell.ts's
+    // dock-aware clamp reads) directly, rather than driving a real drag.
+    window.__setRightInspectorPx = (px) => { app.state.rightInspectorPx = px; };
+    window.__setSidebarPx = (px) => {
+      app.state.sidebarPx = px;
+      document.querySelector('.sidebar').style.width = px + 'px';
+    };
 
     /** Drive the selected Dashboard/member the way the real controller would, so
      *  current-resource styling can be verified against real CSS. */

@@ -23,22 +23,76 @@ export interface DragPoint {
 
 /** The subset of a bounding-rect-like `dragValue` reads, by axis: 'sideRow'/
  *  'row' need `top`/`bottom`; 'rightInspector' needs `width` (the viewport
- *  width); 'col' reads neither. */
+ *  width) and, for a genuinely DOCKED caller (#586 finding 2a), `reservedPx`;
+ *  'col' reads neither. */
 export interface DragRect {
   top?: number;
   bottom?: number;
   width?: number;
+  /** 'rightInspector' only, and only for a docked caller (app-shell.ts) — the
+   *  total px every OTHER `.main-row` child (the sidebar + both resize
+   *  handles) currently claims, subtracted from `width` before reserving
+   *  `CENTRE_MIN_PX` for the centre work surface. Omitted by a non-docked
+   *  caller (drawer.ts's `attachDrawerResize`, resizing a cell-detail drawer
+   *  opened in a real detached browser tab — there is no centre surface
+   *  beside it to protect), which keeps `dragValue` on the plain
+   *  `clampDrawerWidth` bound instead. */
+  reservedPx?: number;
 }
 
 /**
- * Clamp a drawer width (px) to [320, 92% of the viewport width] — the docked
- * right-inspector's bounds (#101, unchanged by #586's single-axis collapse).
- * Exported so a caller can apply the same clamp when first opening a surface,
- * not just mid-drag (the viewport may have shrunk since the width was last
- * persisted).
+ * Clamp a drawer width (px) to [320, 92% of the viewport width] — the
+ * ORIGINAL, viewport-only bound (#101) predating the docked right-inspector.
+ * #586 kept it for the two callers with no `.main-row` dock siblings to
+ * protect: the shell's own construction-time default (app-shell.ts, corrected
+ * immediately after mount — and on every unfold/resize thereafter — by its
+ * `reclampInspectorWidth`) and `drawer.ts`'s `attachDrawerResize` (the one
+ * surface, a cell-detail drawer opened in a real detached browser tab, that
+ * IS the whole tab rather than a sibling of a centre work surface). A
+ * genuinely docked caller wants `clampDockedInspectorWidth` instead (#586
+ * finding 2a) — this plain viewport bound alone can claim nearly the whole
+ * viewport and starve `.query-host`/`.dashboard-host` to nothing. Exported so
+ * a caller can apply the same clamp when first opening a surface, not just
+ * mid-drag (the viewport may have shrunk since the width was last
+ * persisted) — app-shell.ts does exactly that on every unfold and viewport
+ * resize (#586 finding 2b), not only at construction.
  */
 export function clampDrawerWidth(px: number, viewportWidth: number): number {
   return clamp(px, 320, viewportWidth * 0.92);
+}
+
+/**
+ * The smallest usable width (px) the centre work surface (`.query-host`/
+ * `.dashboard-host`) is guaranteed to keep once the docked right-inspector is
+ * open (#586 finding 2a) — the SAME 320px floor `clampDrawerWidth` already
+ * gives the inspector itself, applied symmetrically to the other side of the
+ * split: neither panel the docked layout creates may shrink below the
+ * narrowest width this codebase already treats as "usable" for one.
+ */
+export const CENTRE_MIN_PX = 320;
+
+/**
+ * Clamp a drawer width (px) for the DOCKED right-inspector's real layout
+ * position: a `flex: 0 0 auto` sibling inside `.main-row`, beside a
+ * non-shrinking sidebar and two resize handles (#586) — NOT the
+ * `position: fixed` overlay `clampDrawerWidth` was originally sized for.
+ * `totalWidth` is the space `.main-row` has to divide between the sidebar,
+ * both handles, the inspector, and the centre surface (in practice the
+ * viewport width — nothing at the app-shell root narrows `.main-row` below
+ * it); `reservedPx` is everything `.main-row` gives every OTHER child before
+ * the inspector and the centre surface split what is left. The dock-aware
+ * ceiling — `totalWidth - reservedPx - CENTRE_MIN_PX` — replaces
+ * `clampDrawerWidth`'s flat `92vw` bound, which alone can claim nearly the
+ * whole viewport and starve the centre surface to nothing (#586 finding 2a);
+ * `Math.min` against that original 92vw bound keeps the inspector from
+ * claiming more than that even on an otherwise roomy row. `clamp`'s own floor
+ * (320) wins even when the computed ceiling falls below it (an extremely
+ * narrow window) — that width is `styles.css`'s full-screen mobile override's
+ * job (`.inspector-host` under `MOBILE_BREAKPOINT_PX`), not this function's.
+ */
+export function clampDockedInspectorWidth(px: number, totalWidth: number, reservedPx: number): number {
+  const ceiling = Math.min(totalWidth * 0.92, totalWidth - reservedPx - CENTRE_MIN_PX);
+  return clamp(px, 320, ceiling);
 }
 
 /**
@@ -56,7 +110,16 @@ export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): n
   // `width` for 'rightInspector' and `top`/`bottom` for 'sideRow'/'row' — the
   // axis dispatch above is exactly the contract that guarantees the field
   // this branch reads is present.
-  if (axis === 'rightInspector') return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
+  if (axis === 'rightInspector') {
+    const raw = rect!.width! - ev.clientX;
+    // A docked caller (app-shell.ts) always supplies `reservedPx` (even a
+    // computed 0); a non-docked caller (drawer.ts) never does — that
+    // presence/absence, not the axis itself, is what picks the dock-aware
+    // ceiling over the plain viewport one (#586 finding 2a).
+    return rect!.reservedPx !== undefined
+      ? clampDockedInspectorWidth(raw, rect!.width!, rect!.reservedPx)
+      : clampDrawerWidth(raw, rect!.width!);
+  }
   const pct = clamp(((ev.clientY - rect!.top!) / (rect!.bottom! - rect!.top!)) * 100,
     axis === 'sideRow' ? 25 : 15, 85);
   return pct;

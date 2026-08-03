@@ -633,6 +633,22 @@ export function setTabSpecDraft(
 export function createState(read: StateReader = { loadJSON, loadStr }): AppState {
   const num = (key: string, dflt: number, lo: number, hi: number) =>
     clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
+  // #586 finding 4: the compat-read precedence below needs each candidate
+  // parsed and validated INDEPENDENTLY, not chained with `||` — `||`
+  // short-circuits on any non-empty string, so a malformed canonical value
+  // (e.g. a corrupted `"bad"`) both blocks a perfectly valid legacy fallback
+  // AND survives as `NaN` through `clamp` (`Math.min(Math.max(NaN,320),
+  // Infinity)` is `NaN`), which the shell then applies as a literal
+  // `"NaNpx"` width. Returns the first candidate that parses to a finite
+  // number (whatever its magnitude — the caller's own `clamp` still bounds
+  // it), or `480` if none does.
+  const firstValidPx = (...raws: string[]): number => {
+    for (const raw of raws) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n)) return n;
+    }
+    return 480;
+  };
   const storedQueries = decodeStoredSavedQueries(read.loadJSON(KEYS.saved, []));
   const initialWorkspaceName = read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
   return {
@@ -650,17 +666,18 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // The docked right-inspector's width (#586). Compat read order: a real
     // rightInspectorPx wins; else a real docPanePx (a pre-#586 Reference-pane
     // width); else a real cellDrawerPx (a pre-#586 cell/rows drawer width);
-    // else the default (matches #488's RIGHT_INSPECTOR_DEFAULT_PX). The 92vw
-    // upper bound depends on the live viewport, not this load-time default,
-    // so only the floor is enforced here — clampDrawerWidth (splitters.ts)
-    // applies the full [320, 92vw] clamp whenever the inspector is opened or
-    // resized.
-    rightInspectorPx: clamp(parseInt(
-      read.loadStr(KEYS.rightInspectorPx, '') ||
-        read.loadStr(KEYS.docPanePx, '') ||
-        read.loadStr(KEYS.cellDrawerPx, '') ||
-        '480',
-      10,
+    // else the default (matches #488's RIGHT_INSPECTOR_DEFAULT_PX) — see
+    // `firstValidPx` above for why each candidate is validated independently
+    // rather than chained with `||`. The dock-aware upper bound depends on
+    // the live viewport AND the sidebar/handles beside the inspector, not
+    // this load-time default, so only the floor is enforced here —
+    // `clampDockedInspectorWidth` (splitters.ts) applies the real clamp,
+    // via app-shell.ts's `reclampInspectorWidth`, whenever the inspector is
+    // opened, resized, or the viewport changes (#586 findings 2a/2b).
+    rightInspectorPx: clamp(firstValidPx(
+      read.loadStr(KEYS.rightInspectorPx, ''),
+      read.loadStr(KEYS.docPanePx, ''),
+      read.loadStr(KEYS.cellDrawerPx, ''),
     ), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through

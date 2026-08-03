@@ -121,6 +121,17 @@ export interface AppDom {
    *  `releaseInspector` — never `document.body` directly. */
   inspectorHost?: HTMLElement;
   inspectorResize?: HTMLElement;
+  /** #586 findings 1/2b — shell-owned hooks `inspector-host.ts` calls at the
+   *  two points it folds/unfolds the host: `cancelInspectorDrag` stops a
+   *  still-live 'rightInspector' drag before folding (so it can't keep
+   *  mutating a now-hidden host or persist an abandoned width);
+   *  `reclampInspectorWidth` recomputes the DISPLAYED width against the
+   *  current viewport/sidebar before unfolding (the persisted preference may
+   *  be stale). See `inspector-host.ts`'s `InspectorHostApp` for the full
+   *  rationale — this is the same `dom` bag that module already reads
+   *  `inspectorHost`/`inspectorResize` off of. */
+  cancelInspectorDrag?: () => void;
+  reclampInspectorWidth?: () => void;
   runElapsedEl?: HTMLElement;
   savedList?: HTMLElement;
   savedSearch?: HTMLElement;
