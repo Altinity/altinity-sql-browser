@@ -21,6 +21,11 @@ quickly, then defer to `CLAUDE.md` for the complete guidance.
    `deploy/config.json.example` in version control.
 5. **The shipped app stays a single esbuild-built artifact.** Avoid adding
    runtime dependencies casually; follow the dependency guidance in `CLAUDE.md`.
+6. **Chrome remains externally managed.** Never launch or terminate Chrome. The
+   reviewed `skills/chatgpt-review/scripts/chatgpt-review.mjs` script may connect
+   over CDP to the already-running agent browser; it must not inspect credentials,
+   cookies, storage, or headers, and may approve only its exact requested GitHub
+   comment action.
 
 ## Working rule
 

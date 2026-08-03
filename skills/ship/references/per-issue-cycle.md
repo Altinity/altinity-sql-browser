@@ -34,18 +34,13 @@ judge under-determined despite its acceptance criteria:
 1. **second opinion** — spawn a `Plan` subagent (`subagent_type: "Plan"`, read-only boundary
    stated) to independently stress the approach: seams, migration order, coverage strategy,
    rollback. Fold its critique into the plan;
-2. **third-party opinion** — invoke the `chatgpt-review` skill (`Skill` tool,
-   `skill: "chatgpt-review"`) on the plan itself, before any code exists. There is no diff yet,
-   so hand it the plan text plus enough issue/phase context to review cold (the phase contract,
-   the acceptance subset it claims, the files it intends to touch) and ask the same kind of
-   pointed question the skill asks of a diff: does this approach actually close the gap the
-   phase claims to close, is the seam/migration-order choice sound, is there a simpler design?
-   Open a **fresh tab** for this — never continue an earlier chatgpt.com conversation thread
-   into a new review, even though running several tabs in parallel is fine. Verify every claim
-   against the real repo (skill step 6) before folding it in — a second opinion, not a source of
-   truth, exactly like the post-PR case. Use the skill's paste-inline path, not its
-   point-at-GitHub path — this step must not post anything to GitHub, so it stays safe for a
-   worker to run directly in unattended mode too;
+2. **third-party opinion** — write the complete plan under the approved temporary directory,
+   write the phase contract / acceptance subset / focused questions to a separate context file,
+   then run `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file>
+   --question-file <context-file>`. This uploads exactly the plan file, opens a fresh ChatGPT
+   conversation when no session is supplied, and cannot request a GitHub write. Preserve the
+   returned JSON while verifying every substantive claim against the real repo before folding
+   it in — a second opinion, not a source of truth, exactly like the post-PR case;
 3. 🛑 **post the resulting plan and wait for approval** (I review on mobile).
 
 Low-risk, well-specified work proceeds straight from the written plan with no approval gate.
@@ -103,7 +98,7 @@ Two review findings worth catching by name, both seen on this repo:
 - An out-of-scope bug or footgun you spotted → open a **separate** issue labelled **`inbox`**
   (file:line + why deferred) and mention it; don't fold it into this PR.
 
-### The phase log — write it BEFORE the merge gate
+### The phase log — write it BEFORE the approval/merge stage
 
 For a multi-phase issue this is not bookkeeping, it is the **handoff**. The next phase runs in
 a cleared session that knows nothing about this one: not the decisions taken under ambiguity,
