@@ -1,6 +1,6 @@
 ---
 name: ship-phase
-description: Deprecated alias — the multi-issue/multi-phase coordinator now lives in /ship. Invoke `/ship <issue> unattended` or `/ship <a>,<b>,<c> unattended` instead. Invoking this simply forwards to /ship.
+description: Deprecated alias — the multi-issue/multi-phase coordinator now lives in /ship. Invoke `/ship ISSUE unattended` or `/ship ISSUE1,ISSUE2 unattended` instead. Invoking this simply forwards to /ship.
 ---
 
 # /ship-phase — moved into /ship
@@ -19,5 +19,7 @@ Invoke the `ship` skill with the translated argument now, and follow it — in p
 `references/unattended.md`, which holds the coordinator and wave rules that used to live here.
 
 Note the behaviour change worth knowing: `/ship <issue>` **without** `unattended` no longer
-ships the whole issue in one go. It ships the next unshipped **phase**, opens one PR, and stops
-at a human merge gate — one session per phase. That is the default now.
+ships the whole issue in one go. It ships the next unshipped **phase**, opens one PR, and asks
+for merge approval; after approval, the same session may merge it — one session per phase.
+Unattended mode has no merge prompt and auto-merges only after a clean third ChatGPT pass at
+the current head plus green CI.

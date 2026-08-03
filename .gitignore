@@ -16,6 +16,7 @@
 # Dependencies (restore the committed lock with `npm ci`)
 # No trailing slash so a `node_modules` symlink is ignored too.
 /node_modules
+/skills/chatgpt-review/node_modules/
 
 # Rendered, secret-bearing config — only the *.tmpl is committed
 /deploy/config.json

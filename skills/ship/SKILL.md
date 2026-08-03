@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, implement code+tests, self-review, open a PR — and stop at the human merge gate. Multi-phase issues ship one PR per phase, one session per phase. Invoke as `/ship <issue>`, `/ship <issue>.<phase>`, or `/ship <issue> unattended`.
+description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, implement code and tests, review, open a PR, and merge after approval; unattended runs may auto-merge only after a clean third ChatGPT review and green CI. Multi-phase attended work uses one PR and session per phase. Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, or `/ship ISSUE unattended`.
 ---
 
 # /ship — drive a roadmap issue (or one of its phases) through the full cycle
@@ -13,8 +13,9 @@ for complicated work such as planning and review, a cheap model for simple opera
 searching/editing files or GitHub queries.
 
 Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section). Proceed
-autonomously on the routine path; **stop and ask only at the points marked 🛑** — except in
-unattended mode, which has no gates but the last (see step 0).
+autonomously on the routine path; **stop and ask only at the points marked 🛑**. Unattended
+mode has no approval gates, including at merge, but its automatic-merge proof is stricter
+(see step 0 and `references/unattended.md`).
 
 > Sandbox note: `grep` in Bash is intercepted here — use `rg PATTERN > "$TMPDIR/out"` then
 > Read, never pipe to `grep`. Capture long command output to a file and Read it (e.g.
@@ -38,7 +39,7 @@ unattended mode, which has no gates but the last (see step 0).
 > boundary explicitly in every subagent prompt (no Edit/Write, no git/gh mutating commands, no
 > TaskCreate/TaskUpdate, no memory writes — return only the requested output), and prefer a
 > fresh non-`fork` agent for this kind of fan-out. **Steps 5–8 — reconcile, PR, the post-PR
-> ChatGPT second opinion, and the merge gate — are performed by this session only, never
+> ChatGPT second opinion, and the approval/merge stage — are performed by this session only, never
 > delegated.** The high-risk *plan*-stage `chatgpt-review` call in step 2
 > (`references/per-issue-cycle.md`) is different: it never touches git/gh, so a worker may run
 > it directly even in unattended mode — only the post-PR call in step 7 is session-only.
@@ -51,8 +52,8 @@ unattended mode, which has no gates but the last (see step 0).
 |---|---|---|
 | `/ship 447` | attended | the **next unshipped phase** of #447 (or the whole issue if it has no phases) |
 | `/ship 447.2` | attended | phase 2 of #447, forced |
-| `/ship 447 unattended` | coordinator | all remaining phases of #447, no gates |
-| `/ship 424,425,426 unattended` | coordinator | several whole issues, no gates |
+| `/ship 447 unattended` | coordinator | all remaining phases of #447; auto-merge only after the third clean ChatGPT pass |
+| `/ship 424,425,426 unattended` | coordinator | several whole issues; same automatic-merge proof |
 
 Attended is always the default. **Unattended requires the literal word** — never infer it.
 
@@ -116,7 +117,7 @@ phase is blocked on what, and offer the highest unblocked phase instead.
 
 - **Yes → one branch per phase off fresh `main`.** This is the default.
   `git fetch && git checkout main && git pull && git checkout -b <type>/<slug>-<ISSUE>p<N>`.
-  Each phase gets its own PR and its own human merge gate.
+  Each phase gets its own PR and its own human approval gate before this session may merge it.
 - **No → one integration branch for the whole issue**, off `origin/main`, one PR at the end.
   Say so explicitly and record it in the phase log.
 
@@ -151,25 +152,31 @@ are held to — one source of truth, so the two paths cannot drift.
 
 ## 7 — Third-party review (ChatGPT)
 
-Invoke the `chatgpt-review` skill (`Skill` tool, `skill: "chatgpt-review"`) on the PR just
-opened in step 6, passing its number/URL as the argument. Read `chatgpt-review`'s own
-`SKILL.md` and follow it as written — it already covers gathering the diff, prompting
-ChatGPT, waiting for the full answer, and verifying every claim against the real repo before
+Read `skills/chatgpt-review/SKILL.md`, write a focused review question to the approved
+temporary directory, then run `node skills/chatgpt-review/scripts/chatgpt-review.mjs pr
+<PR-URL> --question-file <file>`. Retain the returned JSON, especially its opaque `session`
+handle, reviewed SHA, and public comment URL. Verify every claim against the real repo before
 trusting it.
 
 - This is a **second opinion, not a gate** — a negative or contested verdict does not block
   progress to step 8, but every claim you accept as real must be fixed here.
 - Apply real findings, commit (`fix(#<ISSUE>): address ChatGPT review feedback` or fold into
-  the PR's existing commits per the repo's amend policy), `npm test`, and `git push` before
-  moving on.
+  the PR's existing commits per the repo's amend policy), `npm test`, and `git push`. Then run
+  the same command with `--session <handle>` so ChatGPT fetches the new head and reassesses
+  every earlier finding in the original conversation. Each accepted-and-fixed pass gets its
+  own pushed commit and separately labelled public review comment. Stop early when a pass has
+  no accepted findings, and never exceed three total passes (initial plus two fix reviews).
 - If `chatgpt-review` reports it couldn't reach ChatGPT (agent Chrome down, network denied),
   don't block the ship on it — note the skip in the merge-gate summary (step 8) and continue.
 - Note what you verified vs. dismissed in the phase log / PR comment so the human at the merge
-  gate sees it, not just a silent pass.
+  gate sees it, not just a silent pass. Surface any findings still open after pass three and
+  include every returned public comment URL in the merge-gate summary.
 
-## 8 — 🛑 Merge gate — STOP
+## 8 — 🛑 Merge approval, then merge
 
-Do **not** merge. Merging to `main` is a human call.
+Pause here and ask for explicit approval to merge. Do not merge merely because implementation,
+CI, or review is green. Once the user approves, this same session is authorized to merge the
+PR to `main`; the user does not need to run the merge manually.
 
 1. Confirm the phase log comment from step 5 is already posted and names this PR.
 2. Summarise what shipped and give the PR link.
@@ -179,10 +186,15 @@ Do **not** merge. Merging to `main` is a human call.
    npm PID can leave `python3 build/local.py` orphaned on 8900; check `lsof` and kill the
    orphan too. A stale server already serving `dist/` picks up a fresh build per request, so
    usually no restart is needed at all.
-4. **If phases remain, end with the session-reset instruction**, verbatim in substance:
+4. If approval is withheld, leave the PR open and report the exact outstanding condition.
+5. After approval, re-read the PR head SHA and required checks so approval cannot race a new
+   push. Require all checks green, then run `gh pr merge <PR> --merge --delete-branch` (the
+   repository's established merge-commit convention). Verify the PR reports `MERGED` and that
+   `origin/main` contains the merged PR before marking the phase `shipped` in the phase log.
+6. **If phases remain, end with the session-reset instruction**, verbatim in substance:
 
-   > Phase `<N>` is up as PR `<url>`. Once you've merged it, start a **fresh session** —
-   > `/clear`, then `/ship <ISSUE>` — to pick up phase `<N+1>`. Don't resume this one with
+   > Phase `<N>` was merged as PR `<url>`. Start a **fresh session** — `/clear`, then
+   > `/ship <ISSUE>` — to pick up phase `<N+1>`. Don't resume this one with
    > `claude --continue` / `--resume`; that restores this context instead of clearing it.
 
    Context does not reset on its own. Running `/ship <ISSUE>` again in *this* session stacks

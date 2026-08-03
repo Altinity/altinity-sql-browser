@@ -15,8 +15,8 @@ everything git-remote-facing.
 
 ## Why this mode exists
 
-Attended mode resets context by ending the session at each merge gate. Unattended mode can't
-do that — there is no gate and no human to `/clear`. It buys the same bound a different way:
+Attended mode resets context after each approved merge. Unattended mode cannot do that — there
+is no approval gate and no human to `/clear`. It buys the same bound a different way:
 **every unit's implementation runs inside a fresh subagent with its own context window**, and
 only a summary returns. Your context grows by ~1–2k per unit, not by a full transcript. That
 is the entire reason workers are mandatory here, so never inline a unit's implementation into
@@ -27,7 +27,9 @@ your own turn to save a spawn.
 - **No approval gates.** Where the cycle says 🛑, do not stop: if a unit is ambiguous or needs
   an unrecorded decision, **skip it** (leave its commits out), continue the rest, and list it
   in the final report. Never invent architectural decisions.
-- Never merge to `main`, never force-push, never edit `main`'s working tree directly.
+- Never force-push or edit `main`'s working tree directly. The coordinator may merge the final
+  PR to `main` only after satisfying the automatic-merge proof in step 3; there is no approval
+  prompt once that proof is satisfied.
 - The coordinator alone touches: `git merge`/`push`, `gh pr *`, issue comments and the phase
   log, `CHANGELOG.md` conflicts, memory writes.
 - Sandbox notes from `SKILL.md` apply. Playwright does not run reliably here — the e2e signal
@@ -107,11 +109,22 @@ agents on this repo have edited files despite an explicit report-only boundary.
 4. **One PR** (`gh pr create --base main`), body per the PR template, with one `Closes #<n>`
    line per fully completed issue (partially completed or skipped: `Part of #<n>`), a per-unit
    summary table, and the repo PR footer.
-5. **Third-party review**: invoke the `chatgpt-review` skill on the PR just opened, per
-   `SKILL.md` step 7. A negative or contested verdict doesn't stop the line, but apply every
-   claim you verify as real, `npm test`, and push before continuing — this is coordinator work,
-   never delegated to a worker. If ChatGPT is unreachable, note the skip in the final report and
-   continue.
-6. 🛑 **Merge gate — the only stop.** Report: PR URL, per-unit status (shipped / skipped +
-   why), review findings applied (including the ChatGPT pass), CI status. Do not merge.
-7. Friction → memory. The coordinator writes it, not a subagent.
+5. **Three-pass third-party review**: invoke `chatgpt-review` on the PR exactly as `SKILL.md`
+   step 7 specifies and retain its session handle. Unattended mode does **not** stop early on a
+   clean first or second pass: run all three passes in that same conversation. After passes 1
+   and 2, apply every finding you verify as real, run `npm test`, push, wait for CI, and use
+   `--session <handle>` for the next pass. A clean early pass still gets an independent full-PR
+   recheck. Pass 3 is the certification pass: its JSON status must be `completed`, its reported
+   reviewed SHA must equal the current PR head, and local verification must leave no accepted
+   actionable finding unresolved. If pass 3 finds a real issue, fix and push it, but do not
+   auto-merge because no clean certification remains within the three-pass session.
+6. **Automatic merge — no gate**: after the clean third pass, re-check all required GitHub
+   checks at that exact head. If they are green, run `gh pr merge <PR> --merge --delete-branch`.
+   Do not ask for approval. Verify the PR reports `MERGED`, fetch `origin/main`, and verify the
+   merge is present before updating every included phase-log row from `in review` to `shipped`.
+   If ChatGPT is unavailable, any pass is incomplete, the SHA differs, a finding remains, CI is
+   red/pending, or branch protection refuses the merge, leave the PR open and report the failed
+   proof condition; this is a safety failure, not an approval gate.
+7. **Final report**: give the PR and merge URLs, per-unit shipped/skipped status and why, all
+   three ChatGPT comment links, findings applied or dismissed, final head SHA, and CI state.
+8. Friction → memory. The coordinator writes it, not a subagent.
