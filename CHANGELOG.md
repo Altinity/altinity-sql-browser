@@ -9,6 +9,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **ADR-0004: retain vanilla rendering, reject the Preact migration**
+  (`docs/ADR-0004-ui-shell.md`; #577). Three tagged, never-merged evaluation
+  states (S0 baseline, S1 vanilla right-inspector control, S2 Preact
+  treatment — `577/baseline`/`577/control`/`577/treatment`) measured over one
+  18-entry superset manifest showed the treatment costing **+330 shell
+  plumbing code lines (+26% over the control)** and **+7,755 B gzip**, while
+  domain/island line counts stayed identical across all three states — a
+  clean failure of the precommitted rule's code-dominance half, so the
+  recommendation is RETAIN. #578 (the phased migration umbrella) closes as
+  moot; the investment redirects to shared vanilla shell primitives tracked
+  as #586 (`SurfaceLifecycle` + docked right-inspector slot), #587
+  (side-panel registry), #588 (composition-root decomposition), and #589
+  (dashboard gesture/repaint extraction).
+
 ### Changed
 - **`VariableBarApp`'s shared activation port is now caller-neutral** (#478).
   `state.filterActive`/`params.saveFilterActive` — named after Workbench
