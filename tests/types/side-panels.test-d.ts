@@ -15,11 +15,11 @@
 // silently stop covering every id (e.g. a manifest row whose `pane` typos to
 // a value not covered by either) or stop being disjoint (e.g. a row present
 // in both `Extract` results). Two positive assertions below pin both
-// invariants directly against the LIVE manifest type, via a never-called
-// function (its body is still type-checked — TypeScript type-checks every
-// function body regardless of whether anything calls it — the same
-// "uncalled function body" idiom this repo's `check:arch`/ADR-0002 tooling
-// already relies on elsewhere).
+// invariants directly against the LIVE manifest type, via a never-CALLED
+// function each — TypeScript type-checks a function's body regardless of
+// whether anything calls it, so the `void` reference below (just to avoid an
+// "unused" complaint from a future linter; nothing in this repo's current
+// toolchain actually requires it) is enough to make each assertion live.
 
 import type { LowerPanelId, SidePanelId, UpperPanelId } from '../../src/core/side-panels.js';
 
