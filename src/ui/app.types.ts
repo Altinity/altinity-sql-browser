@@ -38,6 +38,7 @@ import type { ExportService } from '../application/export-service.js';
 import type { QueryDocumentSession } from '../application/query-document-session.js';
 import type { SavedQueryService } from '../application/saved-query-service.js';
 import type { OAuthDocumentRecoveryRestoreResult } from '../application/oauth-document-recovery-session.js';
+import type { WorkspaceSession, WorkspaceChangedMessage } from '../application/workspace-session.js';
 // Type-only, and circular with `app-shell.ts` (which imports `App` from this
 // file) — TypeScript erases `import type` entirely, so this introduces no
 // runtime cycle. `AppShellHandle` is the ONE seam `app.shell` exposes: the
@@ -76,14 +77,11 @@ export type OAuthDocumentRecoveryApplyResult =
     warning: 'spec-revalidation-failed' | 'checkpoint-remove-failed';
   };
 
-/** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
- *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
- *  broadcast; `workspaceId` scopes it to a specific aggregate. */
-export interface WorkspaceChangedMessage {
-  type: 'workspace-changed';
-  sourceTabId: string;
-  workspaceId: string;
-}
+// #588 phase 4 §3-T #1: `WorkspaceChangedMessage` is now DECLARED in
+// `src/application/workspace-session.ts` (the module that owns the
+// BroadcastChannel wire it describes) and re-exported here so every existing
+// importer (app.ts included) keeps compiling with zero call-site changes.
+export type { WorkspaceChangedMessage } from '../application/workspace-session.js';
 
 /** A schema entity reference — three real runtime shapes share this one loose
  * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
@@ -646,25 +644,11 @@ export interface App {
    *  shared generator: a minted id only needs to be unique, never to encode
    *  which op minted it. */
   genId(): string;
-  /** #287 review fix: serialize saved-query write operations per-app so two
-   *  overlapping async CRUD commits can't interleave. Each queued op runs only
-   *  after the previous fully resolved (compute → commit → project), so it
-   *  reads the freshest `state.savedQueries` — without this, a delete and a
-   *  star toggle fired in rapid succession could each build a candidate from the
-   *  same stale snapshot and the later commit would resurrect the deleted query
-   *  (or clobber a concurrent edit). Rejections propagate to the caller; the
-   *  queue itself never rejects. */
-  serializeWrite<T>(op: () => Promise<T>): Promise<T>;
-  /** #341: resolve once every write already queued through `serializeWrite`
-   *  has settled — the flush point exports use so a bundle is built from the
-   *  latest COMMITTED workspace, never mid-flight state. A write queued AFTER
-   *  this call is intentionally not awaited by it. */
-  flushWorkspaceWrites(): Promise<void>;
   /** #341/#344 review fix: the ONLY way a workspace mutation should build its
    *  candidate. A queue around independently pre-built full-workspace
    *  snapshots does not prevent lost updates — several `file-menu.ts`
    *  producers used to build a whole candidate from `state` BEFORE entering
-   *  `serializeWrite`, so a mutation that committed while they awaited a user
+   *  the write queue, so a mutation that committed while they awaited a user
    *  dialog (or just lost the race) got silently clobbered by the later,
    *  stale write. `mutateWorkspace` closes that window: the queued op reads
    *  the latest committed aggregate via `app.workspace.loadById()` at
@@ -673,45 +657,44 @@ export interface App {
    *  inside the queue slot is guaranteed fresh), hands it to `transform`, and
    *  commits whatever `transform` returns. `transform` returning `null`/
    *  `undefined` aborts the op — nothing is committed and this resolves
-   *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
-   *  the queue itself never wedges. */
+   *  `null`. Rejections propagate to the caller like the queue's own; the
+   *  queue itself never wedges. #588 phase 4 wave 3: the implementation
+   *  (queueing, tokens, broadcast, refresh, provisioning) now lives in
+   *  `app.workspaceSession` (`src/application/workspace-session.ts`) — this
+   *  flat delegate stays for `mutateWorkspace`'s wide production consumer set. */
   mutateWorkspace<T = unknown>(
     transform: (latest: StoredWorkspaceV5 | null) =>
       WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
   ): Promise<WorkspaceMutationOutcome<T>>;
-  /** #343 §5: this tab's random per-session id, minted through the crypto seam.
-   *  Stamped on every outgoing invalidation so a tab can ignore its own poke. */
-  sourceTabId: string;
-  /** #343 §6: whether this tab is currently visible (injected seam; see
-   *  `CreateAppEnv.documentVisible`). Read by the focus/visibility refresh. */
-  documentVisible(): boolean;
-  /** #343 §2: the snapshot-identity token of the workspace this tab last
-   *  committed/projected (`workspaceToken`), used only to detect whether a
-   *  later reload actually changed anything. `''` before the first commit. */
-  getLastCommittedToken(): string;
   /** #343 §5/§6: invoked when another tab reports a workspace change (channel
    *  receive, or a focus/visibility event). A no-op by default; the
    *  cross-tab-refresh work (#343 step 4) replaces it with the coalesced
-   *  `refreshWorkspaceFromStore` scheduler. Never receives this tab's own
-   *  broadcast. */
+   *  `app.workspaceSession.scheduleRefresh` call. Never receives this tab's own
+   *  broadcast. Kept as a flat delegate (#588 phase 4 wave 3) for its wide
+   *  production consumer set (dashboard.ts et al.). */
   onExternalWorkspaceChange(message: WorkspaceChangedMessage): void;
-  /** #343 step 4: reload the committed workspace and, when it changed under this
-   *  tab, project it + reconcile linked tabs — ordered through the same
-   *  `serializeWrite` queue as mutations (so it can't project an older read over
-   *  a newer local commit). A no-op when the store is unchanged since this tab's
-   *  last projection; a failed load keeps the projection, warns, and never
-   *  wedges the queue. The channel-receive + focus/visibility listeners drive a
-   *  coalesced version of this internally; this public entry is the direct,
-   *  un-coalesced one (tests + explicit callers). */
-  refreshWorkspaceFromStore(): Promise<void>;
   /** #343 step 4: the route/surface refresh hook invoked AFTER a refresh
    *  actually projected an external change — a mounted route (the standalone
    *  Dashboard, a later step) overrides it to rebuild from the latest committed
    *  workspace. `queriesChanged` reports whether the query collection moved
    *  (a query-only change still needs a Dashboard viewer rebuild even when the
    *  Dashboard document is byte-identical). Default no-op; the Workbench route's
-   *  own repaint is built into `refreshWorkspaceFromStore`. */
+   *  own repaint is built into `app.workspaceSession.refreshWorkspaceFromStore`.
+   *  Kept as a flat delegate (#588 phase 4 wave 3) for its wide production
+   *  consumer set. */
   onWorkspaceExternallyChanged(info: WorkspaceExternallyChangedInfo): void;
+  /** The workspace write/refresh/cross-tab session (#588 phase 4 wave 3,
+   *  `src/application/workspace-session.ts`) — owns serialized writes,
+   *  `mutateWorkspace`'s underlying queue, this tab's snapshot-identity token
+   *  (`sourceTabId`/`getLastCommittedToken`/`recordProjection`), the
+   *  BroadcastChannel wire + focus/visibility refresh fallback, the
+   *  `beforeunload` dirty guard (`syncBeforeUnload`/
+   *  `armOAuthRedirectUnloadBypass`), and initial-workspace provisioning
+   *  (`resolveImplicitOrProvision`/`recordOpened`). `applyCommittedWorkspace`
+   *  (above) deliberately stays OUTSIDE this session — it is real UI
+   *  orchestration (tab repaint, tree-click cancellation, route rewrite on a
+   *  lost selection), not the "zero DOM" the #588 issue text implies. */
+  workspaceSession: WorkspaceSession;
 
   actions: ActionsRegistry;
 }

@@ -676,7 +676,7 @@ function newWorkspaceAction(app: App): void {
 }
 
 async function doNewWorkspace(app: App): Promise<void> {
-  await app.serializeWrite(async () => {
+  await app.workspaceSession.serializeWrite(async () => {
     const listed = await app.workspace.list();
     const name = 'SQL Library';
     const key = deriveWorkspaceKey(name, [
@@ -941,7 +941,7 @@ function startOpenWorkspace(app: App, bundle: PortableBundleV2): void {
 async function importWorkspace(
   app: App, bundle: PortableBundleV2,
 ): Promise<void> {
-  await app.serializeWrite(async () => {
+  await app.workspaceSession.serializeWrite(async () => {
     const listed = await app.workspace.list();
     const name = bundle.metadata?.name?.trim() || 'Imported workspace';
     const key = deriveWorkspaceKey(name, [
@@ -1013,7 +1013,7 @@ interface DashboardExportRequest {
  *  export never becomes a silent no-op on an unhandled rejection. */
 async function flushAndLoadCommitted(app: App, workspaceId: string): Promise<StoredWorkspaceV5 | null> {
   try {
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     const result = await app.workspace.loadById(workspaceId);
     return result.status === 'ok' ? result.workspace : null;
   } catch {

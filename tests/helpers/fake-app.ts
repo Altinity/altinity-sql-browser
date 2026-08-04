@@ -32,6 +32,7 @@ import type {
   WorkspaceStore, WorkspaceStoreRecord,
 } from '../../src/workspace/workspace-store.types.js';
 import type { App, ActionsRegistry, AppDom, ChCtx } from '../../src/ui/app.types.js';
+import type { WorkspaceSession } from '../../src/application/workspace-session.js';
 import type { AppState } from '../../src/state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js';
 import type { StreamResult } from '../../src/core/stream.js';
@@ -393,6 +394,37 @@ const prefsDefaults: AppPreferences = {
   toggleTheme: vi.fn(() => 'light'),
 };
 
+// Inert `WorkspaceSession` defaults (#588 phase 4 wave 3 — `app.workspaceSession`
+// moved queueing/tokens/broadcast/refresh/beforeunload/provisioning off the flat
+// `App` contract and into this nested service). Self-contained (not sharing
+// `appDefaults.workspace`/`.applyCommittedWorkspace`) so this const and
+// `appDefaults` below can each be constructed independently of declaration
+// order. `makeApp()`'s own `base.workspaceSession` (below) overrides
+// `serializeWrite`/`flushWorkspaceWrites`/`mutateWorkspace` with a REAL
+// per-instance queue backed by the fixture's actual `workspace` repository —
+// mirrors the pre-#588 `base` IIFE this replaces. No fixture in this repo
+// currently exercises `scheduleRefresh`/`sourceTabId`/`getLastCommittedToken`/
+// `recordProjection`/`syncBeforeUnload`/`armOAuthRedirectUnloadBypass`/
+// `resolveImplicitOrProvision`/`recordOpened` through the fake app (only real
+// `createApp()`-driven tests do), so these stay inert placeholders here.
+const workspaceSessionDefaults: WorkspaceSession = {
+  serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
+  flushWorkspaceWrites: async () => {},
+  mutateWorkspace: async (transform) => {
+    const input = await transform(null);
+    return { ok: false, aborted: true, data: input ? input.data : undefined };
+  },
+  refreshWorkspaceFromStore: async () => {},
+  scheduleRefresh: () => {},
+  sourceTabId: 'tab-fake',
+  getLastCommittedToken: () => '',
+  recordProjection: () => {},
+  syncBeforeUnload: () => {},
+  armOAuthRedirectUnloadBypass: () => () => {},
+  resolveImplicitOrProvision: async () => ({ status: 'empty' }),
+  recordOpened: async () => {},
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -494,19 +526,16 @@ const appDefaults: App = {
   // post-commit projection.
   applyCommittedWorkspace: () => {},
   genId: () => 'gen-id',
-  // #343 §5/§6: inert cross-tab-consistency seams — a fixture exercising
-  // invalidation overrides these (or uses two real `createApp()` instances).
-  sourceTabId: 'tab-fake',
-  documentVisible: () => true,
-  getLastCommittedToken: () => '',
+  // #343 §5/§6: inert cross-tab-consistency seam — a fixture exercising
+  // invalidation overrides this (or uses two real `createApp()` instances).
   onExternalWorkspaceChange: () => {},
-  refreshWorkspaceFromStore: async () => {},
   onWorkspaceExternallyChanged: () => {},
-  // Inert passthrough — `base` overrides with a real per-instance queue.
-  serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
-  // #341: inert no-op — `base` overrides with the real per-instance flush that
-  // shares `serializeWrite`'s own queue.
-  flushWorkspaceWrites: async () => {},
+  // #588 phase 4 wave 3: queueing/tokens/broadcast/refresh/beforeunload/
+  // provisioning now live under `workspaceSession` — see
+  // `workspaceSessionDefaults` above. `base` below overrides
+  // `serializeWrite`/`flushWorkspaceWrites`/`mutateWorkspace` with a real
+  // per-instance queue backed by `workspaceRepo`.
+  workspaceSession: workspaceSessionDefaults,
   // #341/#344: inert placeholder — `transform` still runs (so a fixture that
   // never overrides this still exercises the caller's build-from-latest
   // logic), but `latest` is always `null` (no queue, no read-back) and the
@@ -622,7 +651,7 @@ const appDefaults: App = {
 // parameter as exactly what `makeApp` itself accepts, instead of
 // re-declaring a narrower `Partial<App>` that would reject it.
 export type MakeAppOverrides = AppOverrides;
-type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace' | 'workspaceSession'>> & {
   /** Partial like the rest (#286 Phase 4) — Dashboard mutations read a
    *  StoredWorkspaceV5 through `workspace.loadById`; a test overrides only
    *  the repository methods it drives. */
@@ -663,6 +692,12 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'cat
   exports?: Partial<ExportService>;
   graph?: Partial<SchemaGraphSession>;
   prefs?: Partial<AppPreferences>;
+  /** Partial like the rest (#588 phase 4 wave 3) — most fixtures never touch
+   *  the session directly; a test asserting e.g.
+   *  `workspaceSession.flushWorkspaceWrites`'s return (a held-open gate) can
+   *  override just that method, keeping `base`'s real per-instance
+   *  `serializeWrite`/`mutateWorkspace` queue for the rest. */
+  workspaceSession?: Partial<WorkspaceSession>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -786,8 +821,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
         return run;
       };
       // #341: shares the SAME `chain` `serializeWrite` advances, so a test
-      // awaiting `app.flushWorkspaceWrites()` sees every write queued before
-      // this call resolve — mirrors app.ts's own `writeChain`-backed pair.
+      // awaiting `app.workspaceSession.flushWorkspaceWrites()` sees every
+      // write queued before this call resolve — mirrors app.ts's own
+      // `writeChain`-backed pair.
       const flushWorkspaceWrites = (): Promise<void> => chain.then(() => undefined, () => undefined);
       // #341/#344: mirrors app.ts's own `mutateWorkspace` — reads `workspaceRepo
       // .loadById()` (the SAME repo `workspace.commit` below publishes
@@ -811,7 +847,14 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
           dashboardRevision: result.dashboardRevision, data: input.data,
         };
       });
-      return { serializeWrite, flushWorkspaceWrites, mutateWorkspace };
+      // `mutateWorkspace` stays flat too (`App.mutateWorkspace`, #588 phase 4
+      // wave 3's wide-consumer flat delegate) — the SAME function reference
+      // as `workspaceSession.mutateWorkspace` below, mirroring app.ts's own
+      // `app.mutateWorkspace = session.mutateWorkspace` wiring.
+      return {
+        mutateWorkspace,
+        workspaceSession: { serializeWrite, flushWorkspaceWrites, mutateWorkspace },
+      };
     })(),
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.
@@ -930,6 +973,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
     prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
     workspace: workspaceRepo,
+    workspaceSession: {
+      ...workspaceSessionDefaults, ...base.workspaceSession, ...(overrides.workspaceSession ?? {}),
+    },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

@@ -8,9 +8,9 @@ import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
-  tabSaveDirty, variableDoc,
+  variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
-  reconcileLinkedTabsToLatest, setTabSpecDraft, SAVED_VIEWS,
+  setTabSpecDraft, SAVED_VIEWS,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
@@ -64,11 +64,13 @@ import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
 import type {
   App, ActionsRegistry, KeyboardOwner, OAuthDocumentRecoveryApplyResult,
-  SchemaFocus, WorkspaceChangedMessage,
+  SchemaFocus,
 } from './app.types.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import { createWorkspaceSession } from '../application/workspace-session.js';
+import type { WorkspaceSession } from '../application/workspace-session.js';
 import {
   createOAuthDocumentRecoverySession,
   type OAuthDocumentRecoveryRestoreResult,
@@ -92,11 +94,8 @@ import {
 } from '../application/main-surface.js';
 import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
-import type { WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
-import { createNewWorkspace, DEFAULT_WORKSPACE_NAME } from '../workspace/workspace-operations.js';
-import { deriveWorkspaceKey } from '../core/workspace-key.js';
-import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
+import { queryToken } from '../workspace/workspace-sync.js';
 import {
   buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
 } from '../core/sql-route.js';
@@ -663,10 +662,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // constructible without App/AppState/DOM; this module wires it to the real
   // browser env and to `renderLoginApp` (the one piece that IS this shell's
   // job — the session only ever calls `onAuthLost`, never renders).
-  // Assigned below beside the single beforeunload listener. ConnectionSession
-  // invokes this only after createApp has completed, so this closure can keep
-  // its lifecycle wiring near the listener it controls.
-  let armOAuthRedirectUnloadBypass: () => () => void;
+  // #588 phase 4 wave 3: `session` (createWorkspaceSession) owns the
+  // beforeunload listener + its OAuth-redirect bypass generation tokens now,
+  // but it is constructed further below (it needs `applyCommittedWorkspace`,
+  // defined further down still). ConnectionSession invokes this thunk only
+  // after createApp has completed, so the forward reference (exactly the
+  // existing `mutateWorkspace`/`saved` thunk-forwarding pattern this function
+  // already uses below) resolves to the real implementation by then.
+  let session: WorkspaceSession;
   const conn = createConnectionSession({
     fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
@@ -678,7 +681,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
     prepareOAuthRedirect: (state) => oauthDocumentRecovery.prepareTransaction(state),
     clearOAuthDocumentRecovery: () => oauthDocumentRecovery.clear(),
-    armOAuthRedirectUnloadBypass: () => armOAuthRedirectUnloadBypass(),
+    armOAuthRedirectUnloadBypass: () => session.armOAuthRedirectUnloadBypass(),
   });
   app.conn = conn;
   app.executionScope = () => activeExecutionScope;
@@ -1521,7 +1524,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     captureSurfaceGeneration: () => app.captureSurfaceGeneration(),
     refreshCurrentSurfaceAfterStale: (generation, committed) => app.refreshCurrentSurfaceAfterStale(generation, committed),
     syncBeforeUnload: () => app.syncBeforeUnload(),
-    refreshWorkspaceFromStore: () => app.refreshWorkspaceFromStore(),
+    refreshWorkspaceFromStore: () => app.workspaceSession.refreshWorkspaceFromStore(),
     commitVariableConfig: (dashboardId, variableName, cfg) => commitVariableConfig(app, dashboardId, variableName, cfg),
     saveBtn: () => app.dom.saveBtn,
     savePopoverOpen: () => !!app.dom.savePopover,
@@ -1805,8 +1808,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #343 §2: this projection IS now the tab's committed baseline — record its
     // snapshot token so a later reload can cheaply tell whether anything changed.
     // Every projection funnels through here (boot, mutateWorkspace, reset), so
-    // the token stays consistent with what's on screen.
-    lastCommittedToken = workspaceToken(workspace);
+    // the token stays consistent with what's on screen. #588 phase 4 wave 3:
+    // the token itself now lives on `app.workspaceSession` — this calls
+    // `recordProjection` at the point this used to assign `lastCommittedToken`
+    // directly.
+    app.workspaceSession.recordProjection(workspace);
     // #426: EVERY projection funnels through here — boot, a committed mutation,
     // an external refresh, and a workspace switch — which makes this the one place
     // the Dashboard tree's invalidation has to fire. It is the whole reason the
@@ -1857,310 +1863,91 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Import / Replace operations use to mint fresh ids (`uid('ws-')`).
   app.genId = () => uid('ws-');
 
-  // #287 review fix: serialize saved-query writes so overlapping async CRUD
-  // commits can't interleave. Without this, a delete and a star toggle fired in
-  // rapid succession each build a candidate from the same stale
-  // `state.savedQueries` snapshot, and whichever commits LAST wins — resurrecting
-  // a just-deleted query (or clobbering a concurrent edit). Chaining each op
-  // after the previous one fully resolves means the next op reads the freshest
-  // projected state. The chain swallows rejections so one failed op never
-  // wedges the queue; the op's own result/rejection still reaches its caller.
-  let writeChain: Promise<unknown> = Promise.resolve();
-  app.serializeWrite = <T,>(op: () => Promise<T>): Promise<T> => {
-    const run = writeChain.then(op, op);
-    writeChain = run.then(() => undefined, () => undefined);
-    return run;
-  };
-  // #341: resolve once every write accepted BEFORE this call has settled (export
-  // waits on this so a bundle is built from the latest committed workspace, never
-  // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
-  // `writeChain` itself is always rejection-swallowed by `serializeWrite`, so
-  // awaiting it is sufficient; callers still observe their own operation's
-  // rejection through the separately returned `run` promise.
-  app.flushWorkspaceWrites = async () => { await writeChain; };
-  // #343 §5: this tab's random per-session id (crypto seam, like `uid`), stamped
-  // on every outgoing invalidation so a tab ignores its OWN broadcast.
-  const sourceTabId = uid('tab-');
-  app.sourceTabId = sourceTabId;
-  app.documentVisible = documentVisible;
-  // #343 §2: snapshot-identity of the workspace this tab last committed. Only
-  // used to detect whether a later reload actually changed anything (not CAS).
-  let lastCommittedToken = '';
-  app.getLastCommittedToken = () => lastCommittedToken;
-  // #343 step 4: the route/surface refresh hook a mounted route registers to
-  // react AFTER a refresh actually projected an external change — Dashboard
-  // overrides this to rebuild its viewer session
-  // from the latest committed workspace. Default no-op: the Workbench route's
-  // repaint is built into `refreshWorkspaceFromStore` itself.
-  app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-  // #343 §5: open the invalidation channel and route inbound pokes (that aren't
-  // our own) to the hook. Never carries the workspace body — only a signal.
-  const workspaceChannel = broadcastChannelFactory('asb:workspace');
-  if (workspaceChannel) {
-    workspaceChannel.onmessage = (event) => {
-      const msg = event.data as WorkspaceChangedMessage | null;
-      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId
-        || msg.workspaceId !== app.state.workspaceId) return;
-      app.onExternalWorkspaceChange(msg);
-    };
-  }
-
-  // Build every mutation from this tab's active workspace, reloaded by
-  // immutable id INSIDE the queue. Repository commits can never create, so an
-  // externally deleted active workspace aborts rather than resurrecting it.
-  // #343 §2: on a SUCCESSFUL commit the primitive itself owns the projection
-  // (`applyCommittedWorkspace`, exactly once), records the snapshot token, and
-  // broadcasts ONE invalidation — callers no longer project. An aborted
-  // transform (null / null candidate) commits nothing and notifies no one; a
-  // failed commit surfaces its diagnostics without projecting or notifying.
-  app.mutateWorkspace = (transform) => {
-    const requestedWorkspaceId = app.state.workspaceId;
-    const requestedWorkspaceKey = app.state.workspaceKey;
-    const requestedRouteGeneration = routeLoadGeneration;
-    const routeStillMatches = (): boolean => app.sqlRoute.workspaceKey === null
-      || app.sqlRoute.workspaceKey === requestedWorkspaceKey;
-    if (app.workspaceRouteStatus !== 'ready'
-      || !routeStillMatches()) {
-      return Promise.resolve({ ok: false as const, aborted: true as const });
-    }
-    return app.serializeWrite(async () => {
-      if (app.workspaceRouteStatus !== 'ready'
-        || routeLoadGeneration !== requestedRouteGeneration
-        || app.state.workspaceId !== requestedWorkspaceId
-        || !routeStillMatches()) {
-        return { ok: false as const, aborted: true as const };
-      }
-      const loaded = await app.workspace.loadById(requestedWorkspaceId);
-      if (loaded.status === 'corrupt') {
-        return { ok: false as const, diagnostics: loaded.diagnostics };
-      }
-      if (loaded.status !== 'ok') {
+  // #588 phase 4 wave 3: queueing, repository calls, tokens, broadcasts,
+  // refresh scheduling, listeners, and beforeunload now live in
+  // `src/application/workspace-session.ts` — this call sites the whole thing
+  // in ONE place, wired to app.ts's own closures/fields through
+  // `hooks`/`routeCurrency`, exactly the layering `applyCommittedWorkspace`
+  // above stays out of (it is real UI orchestration, not "zero DOM").
+  // `routeCurrency`'s three thunks read today's raw app.ts closures/fields
+  // directly — wave 4 (`src/application/surface-navigation.ts`) rewires their
+  // BODIES onto its own accessors; this session's own interface does not
+  // change then.
+  session = createWorkspaceSession({
+    repository: app.workspace,
+    state: app.state,
+    uid,
+    genId: () => app.genId(),
+    broadcastChannelFactory,
+    documentVisible,
+    windowSeam: win,
+    documentSeam: doc,
+    routeCurrency: {
+      routeWorkspaceKey: () => app.sqlRoute.workspaceKey,
+      routeStatus: () => app.workspaceRouteStatus,
+      loadGeneration: () => routeLoadGeneration,
+    },
+    hooks: {
+      applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
+      onWorkspaceMissing: () => {
         app.currentWorkspace = null;
         app.workspaceRouteStatus = 'not-found';
         app.renderCurrentSurface();
-        return { ok: false as const, aborted: true as const };
-      }
-      const latest = loaded.workspace;
-      const input = await transform(latest);
-      if (!input || !input.candidate) {
-        return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
-      }
-      if (app.workspaceRouteStatus !== 'ready'
-        || routeLoadGeneration !== requestedRouteGeneration
-        || app.state.workspaceId !== requestedWorkspaceId
-        || !routeStillMatches()) {
-        return { ok: false as const, aborted: true as const, data: input.data };
-      }
-      const result = await app.workspace.commit(input.candidate);
-      if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
-      const routeIsStillCurrent = app.workspaceRouteStatus === 'ready'
-        && routeLoadGeneration === requestedRouteGeneration
-        && app.state.workspaceId === requestedWorkspaceId
-        && routeStillMatches();
-      if (routeIsStillCurrent) {
-        app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
-      }
-      if (workspaceChannel) {
-        workspaceChannel.postMessage({
-          type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
-        });
-      }
-      // The persistence operation may already have crossed its commit boundary
-      // when navigation began. Keep that durable write, but do not let its
-      // route-local caller repaint/toast against the new URL.
-      if (!routeIsStillCurrent) {
-        return { ok: false as const, aborted: true as const, data: input.data };
-      }
-      return {
-        ok: true as const, workspace: result.workspace,
-        dashboardRevision: result.dashboardRevision, data: input.data,
-      };
-    });
-  };
-
-  // #343 step 4: a non-destructive warning when a reload can't reach the store.
-  // The current projection stays on screen; the next focus/visibility event
-  // schedules another attempt (activation always refreshes), so this never
-  // wedges the workspace queue or discards data.
-  const warnRefreshFailed = (): void => {
-    flashToast(
-      'Couldn’t reload the latest workspace — showing the last known version; will retry when you return to this tab.',
-      { document: doc },
-    );
-  };
-
-  // #343 steps 4/7/8: reload the committed workspace and, if it changed under
-  // us, project it + reconcile linked tabs. Runs INSIDE `serializeWrite` so it
-  // orders behind any pending local mutation and a token compare stops it
-  // projecting an older read over a newer local commit. A failed load keeps the
-  // projection and warns; it never rejects the queued op (no wedge).
-  const runWorkspaceRefresh = async (): Promise<void> => {
-    const requestedWorkspaceId = app.state.workspaceId;
-    const requestedRouteGeneration = routeLoadGeneration;
-    let loaded: StoredWorkspaceV5 | null;
-    try {
-      const result = await app.workspace.loadById(requestedWorkspaceId);
-      if (result.status === 'corrupt') { warnRefreshFailed(); return; }
-      loaded = result.status === 'ok' ? result.workspace : null;
-    } catch {
-      warnRefreshFailed();
-      return;
-    }
-    if (app.state.workspaceId !== requestedWorkspaceId
-      || routeLoadGeneration !== requestedRouteGeneration) return;
-    // Unchanged since this tab's last projection ⇒ cheap no-op (the common case
-    // for an activation refresh that raced no real external write).
-    if (workspaceToken(loaded) === lastCommittedToken) return;
-    if (!loaded) {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'not-found';
-      app.renderCurrentSurface();
-      return;
-    }
-    // Reconcile linked tabs from the CURRENT (pre-projection) snapshots so the
-    // orphan/detach distinction survives, THEN project committed truth (which
-    // reconciles tab links + fills tokens + records lastCommittedToken).
-    const queriesDidChange = queriesChanged(app.state.savedQueries, loaded.queries);
-    reconcileLinkedTabsToLatest(app.state, loaded);
-    applyCommittedWorkspace(loaded);
-    // Workbench surface repaint. Dashboard reacts through the
-    // `onWorkspaceExternallyChanged` hook instead.
-    if (app.sqlRoute.surface === 'workspace') {
+      },
+      isWorkbenchSurface: () => app.sqlRoute.surface === 'workspace',
       // Re-run the tab effect (editor doc re-sync for the active tab, parked
-      // reconcile for the rest, tab strip + Save button + var strip) by handing
-      // the tabs signal a fresh array reference.
-      batch(() => { app.state.tabs.value = [...app.state.tabs.value]; });
-      app.updateSaveBtn();
-      app.updateEditorModeUi?.();
-      renderSavedHistory(app);
-    }
-    app.onWorkspaceExternallyChanged({ workspace: loaded, queriesChanged: queriesDidChange });
-  };
-  // Public entry point (#343): a single refresh ordered through the write queue.
-  app.refreshWorkspaceFromStore = () => app.serializeWrite(runWorkspaceRefresh);
-
-  // #343 steps 4/6/7: coalesce every invalidation source (channel poke, window
-  // focus, tab becoming visible) into ONE queued refresh. `refreshPending` gates
-  // duplicates: pokes arriving while a refresh is already scheduled/in-flight
-  // collapse into that one; it clears the instant the queued op dequeues, so a
-  // poke landing during the actual store read schedules a fresh follow-up. The
-  // refresh is queued through `serializeWrite`, so a notification received mid
-  // local-write reloads only after that write settles (marks stale now, reloads
-  // in queue order).
-  let refreshPending = false;
-  const scheduleWorkspaceRefresh = (): void => {
-    if (refreshPending) return;
-    refreshPending = true;
-    void app.serializeWrite(async () => {
-      refreshPending = false;
-      await runWorkspaceRefresh();
-    });
-  };
-  app.onExternalWorkspaceChange = () => scheduleWorkspaceRefresh();
-  // #343 §6: focus/visibility fallback — required even with BroadcastChannel,
-  // because a poke can be missed while a tab is created/restored/suspended (or
-  // on a platform without the API). Activation ALWAYS schedules a refresh; the
-  // token compare inside makes an unchanged store a no-op. Works when
-  // `broadcastChannel` returned null (channel absent) too.
-  // Guarded so a stub `window`/`document` (some tests inject a minimal object
-  // without `addEventListener`) doesn't fault at construction — the seams stay
-  // optional, exactly like the BroadcastChannel "capability or null" default.
-  if (typeof win.addEventListener === 'function') {
-    win.addEventListener('focus', () => scheduleWorkspaceRefresh());
-  }
-  if (typeof doc.addEventListener === 'function') {
-    doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
-  }
-  // #466/#501-review: warn on a whole-page reload/close too, not just a
-  // tab-strip close — the same `tabSaveDirty` predicate the tab strip's dirty
-  // dot and its own close-confirm (tabs.ts's `requestCloseTab`) already read.
-  //
-  // The listener itself is installed/removed as the aggregate dirty state
-  // flips, rather than registered once and left checking inside — an earlier
-  // version of this comment argued a permanent listener "costs nothing" and
-  // that this app has no bfcache-restore path to give up. Both were wrong:
-  // Firefox (and older Chromium) disqualify a page from bfcache merely for
-  // HAVING a `beforeunload` listener attached, independent of what the
-  // callback does or whether it ever calls `preventDefault()`; bfcache
-  // restoration itself needs no `pageshow`/`event.persisted` handling on this
-  // app's part — the browser thaws the whole in-memory page, `bootstrap()`
-  // and all, without a reload ever happening. `returnValue` must be a TRUTHY
-  // value (lib.dom.d.ts's own doc comment: "when set to a truthy value,
-  // triggers a browser-generated confirmation dialog") — its own default is
-  // the empty string, so assigning that back would be a no-op for the legacy
-  // UAs that key off it rather than `preventDefault()`.
-  // A successful OAuth checkpoint authorizes precisely one intentional
-  // navigation. The listener remains attached (so all ordinary unloads retain
-  // their warning); ownership tokens ensure an older failed redirect cannot
-  // disarm a newer arm.
-  let nextUnloadBypassGeneration = 0;
-  let armedUnloadBypassGeneration: number | null = null;
-  const beforeUnload = (e: BeforeUnloadEvent): void => {
-    if (armedUnloadBypassGeneration !== null) {
-      armedUnloadBypassGeneration = null;
-      return;
-    }
-    e.preventDefault();
-    e.returnValue = true;
-  };
-  armOAuthRedirectUnloadBypass = (): (() => void) => {
-    const generation = ++nextUnloadBypassGeneration;
-    armedUnloadBypassGeneration = generation;
-    return () => {
-      if (armedUnloadBypassGeneration === generation) armedUnloadBypassGeneration = null;
-    };
-  };
-  let beforeUnloadInstalled = false;
-  const canToggleBeforeUnload = typeof win.addEventListener === 'function'
-    && typeof win.removeEventListener === 'function';
-  // Called from every place that can change the aggregate dirty state: the
-  // tab-list reactive effect (`workbench-shell.ts`, for a new/closed/switched
-  // tab — anything that touches the `tabs` SIGNAL's own identity) and
-  // `actions.rerenderTabs` (for an in-place `dirtySql`/`dirtySpec` mutation,
-  // which never touches that signal at all — the SQL editor's `onDocChange`
-  // already calls `rerenderTabs()` right after setting `dirtySql = true`, so
-  // this reuses that existing repaint path rather than a new aggregate
-  // signal). Idempotent: a redundant call when the aggregate hasn't actually
-  // flipped is a no-op, never a duplicate registration.
-  app.syncBeforeUnload = (): void => {
-    if (!canToggleBeforeUnload) return;
-    const needed = app.state.tabs.value.some(tabSaveDirty);
-    if (needed === beforeUnloadInstalled) return;
-    beforeUnloadInstalled = needed;
-    if (needed) win.addEventListener('beforeunload', beforeUnload);
-    else win.removeEventListener('beforeunload', beforeUnload);
-  };
-
-  const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
-    const listed = await app.workspace.list();
-    const key = deriveWorkspaceKey(DEFAULT_WORKSPACE_NAME, listed.summaries.map((item) => item.key));
-    const created = await app.workspace.create(createNewWorkspace(app.genId, key, DEFAULT_WORKSPACE_NAME));
-    if (created.ok) return { status: 'ok', workspace: created.workspace };
-    // A different tab may have provisioned the collection after our empty
-    // resolution. Re-resolve instead of creating a second fallback workspace.
-    return app.workspace.resolveImplicit();
-  };
-
-  const resolveImplicitOrProvision = async (): Promise<WorkspaceLoadResult> => {
-    const resolved = await app.workspace.resolveImplicit();
-    return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
-  };
-
-  const recordOpened = async (workspace: StoredWorkspaceV5): Promise<void> => {
-    const result = await app.workspace.markOpened(workspace.key);
-    if (!result.ok) {
-      flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
-    }
-  };
+      // reconcile for the rest, tab strip + Save button + var strip) by
+      // handing the tabs signal a fresh array reference.
+      refreshWorkbenchUi: () => {
+        batch(() => { app.state.tabs.value = [...app.state.tabs.value]; });
+        app.updateSaveBtn();
+        app.updateEditorModeUi?.();
+        renderSavedHistory(app);
+      },
+      notifyExternallyChanged: (info) => app.onWorkspaceExternallyChanged(info),
+      onExternalInvalidation: (msg) => app.onExternalWorkspaceChange(msg),
+      // #343 step 4: a non-destructive warning when a reload can't reach the
+      // store. The current projection stays on screen; the next focus/
+      // visibility event schedules another attempt (activation always
+      // refreshes), so this never wedges the workspace queue or discards data.
+      warnRefreshFailed: () => {
+        flashToast(
+          'Couldn’t reload the latest workspace — showing the last known version; will retry when you return to this tab.',
+          { document: doc },
+        );
+      },
+      warnMarkOpenedFailed: () => {
+        flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
+      },
+    },
+  });
+  app.workspaceSession = session;
+  // #343 step 4: the route/surface refresh hook a mounted route registers to
+  // react AFTER a refresh actually projected an external change — Dashboard
+  // overrides this to rebuild its viewer session from the latest committed
+  // workspace. Default no-op: the Workbench route's repaint is built into
+  // `app.workspaceSession.refreshWorkspaceFromStore` itself. Flat delegate
+  // (wide production consumer set — see app.types.ts).
+  app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+  // #343 §5/§6: invoked when another tab reports a workspace change (channel
+  // receive, or a focus/visibility event) — the session's own channel
+  // handler and focus/visibility listeners call `scheduleRefresh()` directly;
+  // this flat delegate is what a mounted route/test overrides to observe the
+  // signal itself (never receives this tab's own broadcast).
+  app.onExternalWorkspaceChange = () => session.scheduleRefresh();
+  // Flat delegates onto the session for its wide production consumer set
+  // (workbench-shell.ts, oauth callbacks, save-controller.ts's thunk).
+  app.mutateWorkspace = session.mutateWorkspace;
+  app.syncBeforeUnload = () => session.syncBeforeUnload();
 
   const resetCorruptWorkspace = async (id: string): Promise<void> => {
     const expectedGeneration = routeLoadGeneration;
     const deleted = await app.workspace.delete(id);
     if (!deleted.ok) return;
-    const result = await resolveImplicitOrProvision();
+    const result = await session.resolveImplicitOrProvision();
     if (result.status === 'ok' && routeLoadGeneration === expectedGeneration) {
       applyCommittedWorkspace(result.workspace);
-      await recordOpened(result.workspace);
+      await session.recordOpened(result.workspace);
       if (routeLoadGeneration !== expectedGeneration) return;
       app.sqlRoute = routeForWorkspace(app.sqlRoute, result.workspace.key);
       routeSearch = buildSqlRouteSearch(app.sqlRoute, routeSearch);
@@ -2183,7 +1970,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     const explicitKey = app.sqlRoute.workspaceKey;
     const result = explicitKey !== null
       ? await app.workspace.loadByKey(explicitKey)
-      : await resolveImplicitOrProvision();
+      : await session.resolveImplicitOrProvision();
     if (generation !== routeLoadGeneration) return null;
     if (result.status === 'corrupt') {
       app.currentWorkspace = null;
@@ -2209,7 +1996,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       return null;
     }
     const workspace = result.workspace;
-    await recordOpened(workspace);
+    await session.recordOpened(workspace);
     if (generation !== routeLoadGeneration) return null;
     applyCommittedWorkspace(workspace);
     const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);

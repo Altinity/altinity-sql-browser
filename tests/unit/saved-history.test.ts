@@ -440,7 +440,7 @@ describe('renderSavedHistory', () => {
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
     const refresh = vi.fn(async () => {});
-    app.refreshWorkspaceFromStore = refresh;
+    app.workspaceSession.refreshWorkspaceFromStore = refresh;
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
@@ -459,7 +459,7 @@ describe('renderSavedHistory', () => {
       return { ok: false as const, aborted: true as const, data: undefined };
     }) as App['mutateWorkspace'];
     const refresh = vi.fn(async () => {});
-    app.refreshWorkspaceFromStore = refresh;
+    app.workspaceSession.refreshWorkspaceFromStore = refresh;
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
     renderSavedHistory(app);

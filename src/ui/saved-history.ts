@@ -289,7 +289,7 @@ function renderSaved(app: App, list: HTMLElement): void {
           // now so this dead Library row (and any linked tab) reconciles instead
           // of lingering until the next activation.
           flashToast('This query was deleted in another tab', { document: app.document });
-          void app.refreshWorkspaceFromStore();
+          void app.workspaceSession.refreshWorkspaceFromStore();
         } else if (result && !result.ok && result.diagnostics?.length) {
           flashToast('Couldn’t update favorite: ' + result.diagnostics[0].message, { document: app.document });
         }
@@ -385,7 +385,7 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
       else if (result && !result.ok && result.deletedExternally) {
         // #343 review: target vanished — refresh so the dead row reconciles.
         flashToast('This query was deleted in another tab', { document: app.document });
-        void app.refreshWorkspaceFromStore();
+        void app.workspaceSession.refreshWorkspaceFromStore();
       } else if (result && !result.ok && result.diagnostics?.length) {
         flashToast('Couldn’t rename: ' + result.diagnostics[0].message, { document: app.document });
       } else {
