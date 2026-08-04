@@ -58,6 +58,47 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   detached browser tab (`results.ts`'s Data Pane) — keeps a self-contained
   modal overlay (renamed `.cell-detail-overlay`), still built on
   `SurfaceLifecycle`.
+- **A side-panel registry replaces hard-composed sidebar switching** (#587,
+  phase 2 of the #593 refactor umbrella). `core/side-panels.ts` is a single
+  `as const satisfies` manifest (`SIDE_PANELS`: id, pane, persisted key) every
+  id/pane/key union elsewhere derives from via `typeof`, plus the
+  `asb:sidePanel` load-boundary decoder; `ui/side-panel-registry.ts` is the
+  generic, DOM-owning half — persistent per-panel hosts built once and never
+  rebuilt, a mount-once/activate-per-transition lifecycle (`MountedSidePanel`:
+  `render`/`activate?`/`deactivate?`/`onRunComplete?`/`dispose`), pane-scoped
+  `showPanel` (the wide sidebar shows one Databases-or-Dashboards panel AND
+  one Library-or-History panel simultaneously — never a global "exactly one of
+  four"), and one tab-row renderer shared by both panes. `app-shell.ts`'s
+  sidebar composition, `sidebar-upper.ts` (which now only builds the two upper
+  bodies — schema search+list, Dashboard search+tree — registering them
+  through `databasesPanelDef`/`dashboardsPanelDef` rather than owning their
+  tab-row vocabulary), and `saved-history.ts` (which stops building the lower
+  tab row at all; `libraryPanelDef`/`historyPanelDef` each own one persistent
+  search+list host) all address panels only through this registry now.
+  `state.sidePanel: Signal<SidePanelKey>` decodes the raw stored value
+  fail-closed at load (`decodeSidePanelKey`) — **this is the `'library'` ↔
+  `'saved'` persisted-key bridge**: on `main` before this phase there was no
+  bridge at all (a raw, unvalidated `localStorage` read), so an unrecognized
+  stored value silently painted the History body with neither tab visually
+  active; it now resolves to the documented default (Library), and the
+  registry's own id `'library'` is never itself a persisted value (a
+  downgrade-safe invariant — #591 must not re-implement this bridge).
+  `app-preferences.ts`'s `save` is now generic over a `PreferenceValues` map,
+  so `prefs.save('sidePanel', 'library')` is a compile error, not a runtime
+  discipline. `workbench-session.ts` drops `sidePanel` from
+  `WorkbenchStateSlice` entirely and renames `WorkbenchHooks.renderSavedHistory`
+  to `onRunComplete` (fired unconditionally on a clean run now — dispatch to
+  whichever panel, if any, is scoped entirely to the hook's own wiring in
+  `app.ts`, via `app.shell.sidePanels.notifyRunComplete()`). The three
+  `AppDom` fields the per-panel pattern used (`savedList`/`savedSearch`/
+  `savedTabsRow`) are gone; adding a panel now touches only the registry's two
+  files plus the panel's own module. Two criteria are adapted from the
+  issue's literal wording (recorded as deliberate, not missed): mount-once-
+  per-shell lifecycle wins over the issue's Tests-section "per activation"
+  phrasing, which contradicts the persistent-host decision the same issue's
+  Deliverable/AC6 makes binding; and the registry is two files
+  (`core/side-panels.ts` + `ui/side-panel-registry.ts`), not the "(one file)"
+  AC5 names, forced by this repo's core/no-DOM purity rule.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent

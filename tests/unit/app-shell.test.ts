@@ -263,3 +263,78 @@ describe('mountAppShell docked right-inspector (#586)', () => {
     });
   });
 });
+
+// #587 — the side-panel registry's lower-pane tab row: `app-shell.ts`'s own
+// `selectLowerPanel` (persist + set the signal on a real click), distinct
+// from `saved-history.test.ts`'s fixture-local stand-in for the same shape.
+describe('mountAppShell — side panel registry (#587)', () => {
+  it('clicking a lower-pane tab persists the choice and switches the active panel', () => {
+    const { app, handle } = mount();
+    const lowerRow = app.root!.querySelector('.saved-pane > .side-tabs')!;
+    // `renderSidePanelTabs` REPLACES the row's children on every repaint, so
+    // each click needs a fresh query — a captured button reference goes stale
+    // the moment the tab row re-renders.
+    const tabs = (): HTMLButtonElement[] => [...lowerRow.querySelectorAll<HTMLButtonElement>('.side-tab')];
+    expect(tabs()).toHaveLength(2);
+    expect(app.state.sidePanel.value).toBe('saved');
+
+    tabs()[1].click(); // History
+    expect(app.state.sidePanel.value).toBe('history');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'history');
+    expect(tabs()[1].classList.contains('active')).toBe(true);
+
+    tabs()[0].click(); // Library
+    expect(app.state.sidePanel.value).toBe('saved');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'saved');
+    handle.dispose();
+  });
+
+  it('clicking an upper-pane tab switches the role without persisting anything (#426, session-only)', () => {
+    const { app, handle } = mount();
+    const upperRow = app.dom.upperRoleTabs!;
+    const tabs = (): HTMLButtonElement[] => [...upperRow.querySelectorAll<HTMLButtonElement>('.side-tab')];
+    expect(tabs()).toHaveLength(2);
+    expect(app.state.upperRole.value).toBe('databases');
+
+    tabs()[1].click(); // Dashboards
+    expect(app.state.upperRole.value).toBe('dashboards');
+    expect(app.prefs.save).not.toHaveBeenCalledWith('upperRole', expect.anything());
+
+    tabs()[0].click(); // Databases
+    expect(app.state.upperRole.value).toBe('databases');
+    handle.dispose();
+  });
+
+  it('handle.dispose() tears every registered panel down exactly once', () => {
+    const { handle } = mount();
+    const disposers = handle.sidePanels.entries.map((entry) => vi.spyOn(entry.mounted, 'dispose'));
+    handle.dispose();
+    for (const spy of disposers) expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  // #600 review finding 1 (round 2): the upper pane used to compose
+  // `schemaPane` from `upper.databasesHost`/`upper.dashboardsHost` by name —
+  // in sync with today's manifest, but a future upper panel added only to
+  // the registry would get a tab AND a registry host that this shell never
+  // appended anywhere. This is the runtime guard: EVERY registered entry's
+  // host, in EITHER pane, must be connected to the document once the shell
+  // is mounted — not just the ones the shell happens to name. It holds for
+  // any future panel automatically, unlike a check that only knows today's
+  // two upper ids.
+  it('every registered panel host, in both panes, is connected to the document after mount', () => {
+    const { app, handle } = mount();
+    // `app.root` (fake-app.ts) is a detached `<div>` by default — `isConnected`
+    // only means something once it is actually in the document, exactly like
+    // the real app's own root element is.
+    document.body.appendChild(app.root);
+    try {
+      expect(handle.sidePanels.entries.length).toBeGreaterThan(0);
+      for (const entry of handle.sidePanels.entries) {
+        expect(entry.host.isConnected).toBe(true);
+      }
+    } finally {
+      handle.dispose();
+      app.root.remove();
+    }
+  });
+});

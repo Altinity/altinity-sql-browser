@@ -402,6 +402,11 @@ const prefsDefaults: AppPreferences = {
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
+  // #587 — null until a real `mountAppShell` runs (this fixture never mounts
+  // one; `makeApp()`'s own `dom.*` stubs below stand in for it, and the
+  // Library/History panel tests build the registry directly — see
+  // `saved-history.test.ts`).
+  shell: null,
   matchMedia: null,
   build: 'v0.0.0-test',
   root: null,
@@ -702,6 +707,28 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       projectedApp.workspaceRouteStatus = 'ready';
     }
   };
+  // #587 R2.10: a STANDALONE literal, `satisfies AppDom` — unlike `merged`'s
+  // own end-of-function `const asApp: App = merged` check (a variable
+  // reference, never an excess-property error site — see that assignment's
+  // own comment), a literal assigned via `satisfies` DOES trip one. So a
+  // field this fixture still built after `AppDom` dropped it (the #587
+  // failure mode: `savedList`/`savedSearch`/`savedTabsRow` would otherwise
+  // stay compile-green here forever) is now a compile error, not a silent
+  // rot only an `rg` sweep would catch.
+  const defaultDom = {
+    qtabsInner: document.createElement('div'),
+    schemaList: document.createElement('div'),
+    resultsRegion: document.createElement('div'),
+    saveBtn: document.createElement('button'),
+    // #586 — the docked right-inspector slot + its resize handle
+    // (app-shell.ts). Real elements by default (matching this block's own
+    // "most consumers read these unconditionally" convention above) so
+    // `openCellDetail`/`openRowsViewer`/`openDocEntry` dock correctly
+    // without every caller overriding `dom` — starting `hidden`, matching
+    // app-shell.ts's real initial (folded) state.
+    inspectorHost: Object.assign(document.createElement('div'), { hidden: true }),
+    inspectorResize: Object.assign(document.createElement('div'), { hidden: true }),
+  } satisfies AppDom;
   const base = {
     state,
     sqlRoute: { surface: 'workspace', workspaceKey: state.workspaceKey } as App['sqlRoute'],
@@ -843,23 +870,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     // unconditionally; a test that clears one back to `undefined` (a "no
     // mount point" guard) widens its own local read, same convention as
     // results.test.ts's `(app.dom as {...}).resultsRegion = null` cast.
-    dom: {
-      qtabsInner: document.createElement('div'),
-      schemaList: document.createElement('div'),
-      resultsRegion: document.createElement('div'),
-      savedTabsRow: document.createElement('div'),
-      savedSearch: document.createElement('div'),
-      savedList: document.createElement('div'),
-      saveBtn: document.createElement('button'),
-      // #586 — the docked right-inspector slot + its resize handle
-      // (app-shell.ts). Real elements by default (matching this block's own
-      // "most consumers read these unconditionally" convention above) so
-      // `openCellDetail`/`openRowsViewer`/`openDocEntry` dock correctly
-      // without every caller overriding `dom` — starting `hidden`, matching
-      // app-shell.ts's real initial (folded) state.
-      inspectorHost: Object.assign(document.createElement('div'), { hidden: true }),
-      inspectorResize: Object.assign(document.createElement('div'), { hidden: true }),
-    },
+    dom: defaultDom,
     actions: {
       run: vi.fn(),
       cancel: vi.fn(),

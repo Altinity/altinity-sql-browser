@@ -1737,6 +1737,19 @@ body.detached-tab .graph-overlay-panel {
    loaded columns and scroll across a role switch. */
 .upper-role-host[hidden] { display: none; }
 
+/* ------------ side-panel registry hosts (#587) ------------
+   The LOWER pane's persistent hosts (Library | History) — the same layout
+   contract as `.upper-role-host` above (a generic wrapper `side-panel-
+   registry.ts` builds for any panel that supplies no host of its own), kept
+   as its own class rather than reusing `.upper-role-host` verbatim: e2e specs
+   (`tests/e2e/dashboard-tree.spec.js`) address `.upper-role-host[data-role=…]`
+   directly, and this avoids any risk of an unrelated selector collision. */
+.side-panel-host {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.side-panel-host[hidden] { display: none; }
+
 /* ------------ Dashboard hierarchy tree (#426) ------------ */
 .dash-tree-row { position: relative; }
 /* The group rows (Variables / Panels) are structure, not content. */

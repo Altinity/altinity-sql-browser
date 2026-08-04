@@ -34,9 +34,12 @@ import { MOBILE_BREAKPOINT_PX } from '../state.js';
 import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
-import { buildSidebarUpper, renderUpperRoleTabs } from './sidebar-upper.js';
+import { buildSidebarUpper } from './sidebar-upper.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
-import { renderSavedHistory } from './saved-history.js';
+import { buildProductionSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES } from './side-panel-registry.js';
+import type { SidePanelRegistry } from './side-panel-registry.js';
+import { sidePanelKeyFor, lowerIdForKey } from '../core/side-panels.js';
+import type { SidePanelId, UpperPanelId, LowerPanelId } from '../core/side-panels.js';
 import { renderLibraryTitle } from './file-menu.js';
 import { applyConnectionStatus } from './app-header.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
@@ -95,6 +98,11 @@ export interface AppShellHandle {
    * one.
    */
   showHost(kind: SurfaceHostKind): void;
+  /** #587 — the side-panel registry (Databases/Dashboards/Library/History).
+   *  Reachable via `app.shell?.sidePanels` from anywhere `app` is held —
+   *  `saved-history.ts`'s `renderSavedHistory` compatibility export and the
+   *  workbench's clean-run hook both address panels only through this. */
+  sidePanels: SidePanelRegistry;
   dispose(): void;
 }
 
@@ -145,13 +153,39 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
     app.dom.schemaList,
   ]);
+  // #587 — the ONE registry: all four panels (Databases/Dashboards over the
+  // upper pane's existing hosts; Library/History over fresh persistent hosts
+  // `side-panel-registry.ts`'s own factory builds for them). This shell names
+  // no concrete panel-def or panel id — it hands the factory only what it
+  // genuinely owns (the two upper hosts `buildSidebarUpper` just built, and
+  // `app`). Adding a fifth panel means adding one def to
+  // `buildProductionSidePanelRegistry`'s array plus that panel's own module —
+  // never touching this file, `app-preferences.ts`, `state.ts`, or
+  // `workbench-session.ts` (#587 AC5; PR #600 fixed this file's own prior
+  // violation, where the four concrete defs were listed right here).
+  const registry = buildProductionSidePanelRegistry(app, upper);
+  // #600 review finding 1 (round 2): `schemaPane` is composed from the
+  // registry's OWN upper-pane entries — never by naming
+  // `upper.databasesHost`/`upper.dashboardsHost` here — exactly like
+  // `savedPane` below already does for the lower pane (`lowerHosts`). A host
+  // named literally by this shell would still get a tab-row entry (the
+  // generic renderer reads `registry.entries` for that) but, for any FUTURE
+  // upper panel that isn't one of today's two, no route into the document:
+  // selecting it would hide the visible panel and reveal a host that was
+  // never appended anywhere. `upperEntries` is also read by the tab-row
+  // effect further down, so there is exactly one filtered view of the upper
+  // pane, not two that could disagree.
+  const upperEntries = registry.entries.filter((entry) => entry.pane === 'upper');
+  app.dom.upperRoleTabs = h('div', { class: 'side-tabs upper-role-tabs' });
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
-    app.dom.upperRoleTabs!, upper.databasesHost, upper.dashboardsHost);
+    app.dom.upperRoleTabs, ...upperEntries.map((entry) => entry.host));
 
-  app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
-  app.dom.savedSearch = h('div', { class: 'saved-search' });
-  app.dom.savedList = h('div', { class: 'saved-list' });
-  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
+  // The lower pane's tab row is a plain local element now (#587 — no AppDom
+  // field: nothing outside this closure needs to address it by name; the
+  // registry's own hosts are what `app.shell.sidePanels` exposes instead).
+  const lowerTabsRow = h('div', { class: 'side-tabs' });
+  const lowerHosts = registry.entries.filter((entry) => entry.pane === 'lower').map((entry) => entry.host);
+  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, lowerTabsRow, ...lowerHosts);
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
   // #586 — the docked right-inspector's own resize handle runs through this
@@ -207,9 +241,19 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // shows. The internal `data-seg`/`data-mobile-tab` values and the `.schema-pane`
   // selectors they key are deliberately unchanged — this is a label change, not a
   // restructuring of the mobile CSS (touch behaviour stays out of scope per #426).
+  //
+  // #587: driven from `MOBILE_PANES` (side-panel-registry.ts) — a SEPARATE
+  // small table from the panel manifest, because this control picks a PANE
+  // (which of the two persists to `mobileTab`, session-only), never a
+  // specific panel; each segment's icon is the registry's OWN icon for that
+  // pane's first panel, so it can never disagree with the desktop tab row.
+  // Exact same labels/icons/`data-seg` values as before this phase — no
+  // behaviour or visual change intended.
   app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
-    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Explore')),
-    h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Library')));
+    ...MOBILE_PANES.map((seg) => h('button', {
+      class: 'mseg-btn', 'data-seg': seg.seg,
+      onclick: () => { state.mobileTab.value = seg.seg; },
+    }, registry.entries.find((entry) => entry.pane === seg.pane)!.icon(), h('span', null, seg.label))));
   sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
   const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'col', dragCtx) });
 
@@ -340,21 +384,26 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.isMobile.value;
     renderSchema(app);
   }));
-  // #426: the upper role tabs. Both counts are reactive — the Databases count
-  // tracks the schema load (and is omitted while it is pending or failed), and the
-  // Dashboards count tracks the committed collection through the tree's explicit
-  // invalidation signal, since `currentWorkspace` is not itself a signal.
+  // #426/#587: the upper pane's tab row — now the SAME generic renderer the
+  // lower pane uses, reading label/icon/count straight from the registry
+  // entries rather than a second hard-coded table. Both counts are reactive —
+  // the Databases count tracks the schema load (and is omitted while it is
+  // pending or failed), and the Dashboards count tracks the committed
+  // collection through the tree's explicit invalidation signal, since
+  // `currentWorkspace` is not itself a signal — both live inside each entry's
+  // own `tabAdornment()` (sidebar-upper.ts), read here only through the
+  // generic renderer. Also exposes exactly one role host via the registry's
+  // pane-scoped `showPanel` (replacing #426's own `upper.showRole`).
+  // `upperEntries` itself is declared once, above, alongside `schemaPane`'s
+  // own composition from the same filtered view.
+  const selectUpperPanel = (id: SidePanelId): void => { state.upperRole.value = id as UpperPanelId; };
   disposers.push(effect(() => {
     state.upperRole.value;
     state.schema.value;
     state.schemaError.value;
     state.dashboardTreeRevision.value;
-    renderUpperRoleTabs(app);
-  }));
-  // #426: expose exactly one role host, and repaint the Dashboard tree. Kept
-  // separate from the tab effect so a schema load does not rebuild the tree.
-  disposers.push(effect(() => {
-    upper.showRole(state.upperRole.value);
+    renderSidePanelTabs(app.dom.upperRoleTabs!, upperEntries, state.upperRole.value, selectUpperPanel);
+    registry.showPanel(state.upperRole.value);
   }));
   disposers.push(effect(() => {
     // The ONE reactive input the tree has: every trigger #426 lists (workspace
@@ -370,19 +419,36 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.schemaError.value;
     updateBanner();
   }));
-  // Reactive repaint of the side panel: re-runs when the active panel changes
-  // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
-  // still call renderSavedHistory directly until those slices are signals too.
+  // Reactive repaint of the lower pane's tab row + active panel — re-runs when
+  // the active panel changes (Library ↔ History) or the Library count might
+  // have (see below). Data-driven repaints (savedQueries/history mutations)
+  // still call the `renderSavedHistory` compatibility export directly until
+  // those slices are signals too — it delegates to `refreshLowerPane` below
+  // too (not the registry's own bare `refreshActiveSidePanels`), because the
+  // Library tab's live count must repaint alongside the list on exactly the
+  // same events (a star/delete/rename doesn't bump any signal this effect
+  // depends on).
   //
   // #427 added the projection revision. Library membership is now a function of
   // `dashboards[]` — a query is in the Library exactly while no Dashboard member
   // references it — so a committed Dashboard change can move a query in or out of
   // this list without `savedQueries` changing at all. It is the same one signal
   // the Dashboard tree subscribes to, bumped from the single projection funnel.
+  const lowerEntries = registry.entries.filter((entry) => entry.pane === 'lower');
+  const selectLowerPanel = (id: SidePanelId): void => {
+    const key = sidePanelKeyFor(id as LowerPanelId);
+    prefs.save('sidePanel', key);
+    state.sidePanel.value = key;
+  };
+  const refreshLowerPane = (): void => {
+    const activeId = lowerIdForKey(state.sidePanel.value);
+    renderSidePanelTabs(lowerTabsRow, lowerEntries, activeId, selectLowerPanel);
+    registry.showPanel(activeId);
+  };
   disposers.push(effect(() => {
     state.sidePanel.value;
     state.dashboardTreeRevision.value;
-    renderSavedHistory(app);
+    refreshLowerPane();
   }));
   // Reactive repaint of the header library title (name + unsaved-changes dot):
   // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
@@ -432,6 +498,12 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       dashboardHost.hidden = kind !== 'dashboard';
       mainRow.dataset.surface = kind;
     },
+    // `refreshActiveSidePanels` is NOT the registry's own bare method here —
+    // it wraps `refreshLowerPane` (declared above, alongside this file's own
+    // lower-pane effect) so the compatibility `renderSavedHistory(app)` seam
+    // (10 call sites, none of which bump a signal this shell's effects watch)
+    // also repaints the Library tab's live count, not just the active body.
+    sidePanels: { ...registry, refreshActiveSidePanels: refreshLowerPane },
     dispose: () => {
       // #426: a deferred single-click must not fire against a tree that is being
       // torn down (sign-out, a surface teardown) — the arbiter's timer outlives
@@ -446,6 +518,10 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       win.removeEventListener('resize', onWindowResize);
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);
+      // #587 — tear every panel down once (each panel's own `dispose`; none of
+      // the four today does more than close over nothing, but a future panel
+      // might own a real resource).
+      registry.dispose();
     },
   };
 }

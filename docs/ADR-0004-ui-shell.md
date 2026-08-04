@@ -227,3 +227,39 @@ re-deriving them from scratch.
   large-list need, or measurably rising invalidation-bug rate despite
   signals) — this evaluation adds no new trigger, it confirms the existing
   ones haven't fired.
+
+## Addendum — #587 (phase 2 of the #593 shell-primitive investment)
+
+The forward investment named above now includes a delivered second primitive:
+`core/side-panels.ts` + `ui/side-panel-registry.ts` (#587), a generic
+persistent-host/mount-once registry over the sidebar's four panels
+(Databases/Dashboards/Library/History), replacing the hard-composed switching
+`app-shell.ts`/`sidebar-upper.ts`/`saved-history.ts` used to own
+independently. It reuses #487 phase 2's salvaged `nav-sections.ts` design
+decisions verbatim in spirit (icon-as-factory, a separate `accessibleLabel`,
+pane-scoped exposure, a load-boundary persisted-key bridge) — this ADR's own
+salvage guidance above is what pointed at that branch.
+
+Two items from #587's plan landed in an ADAPTED form — AC5 below, and the
+mount-once-per-shell lifecycle decision further down — both forced by
+constraints this ADR's own vanilla-shell stance already commits to, not by
+any new tradeoff. AC4 itself landed literally, not adapted:
+
+- **AC4** ("the persisted-value union is derived from the registry, not
+  hand-maintained") landed literally — `app-preferences.ts`'s
+  `save` became generic over a `PreferenceValues` map keyed by
+  `core/side-panels.ts`'s derived `SidePanelKey`, so a mismatched
+  `prefs.save('sidePanel', 'library')` is a compile error.
+- **AC5** ("one file" to add a panel) is delivered as *two* files
+  (`core/side-panels.ts` + `ui/side-panel-registry.ts`), not one — this repo's
+  pure-core/no-DOM rule (CLAUDE.md hard rule 2) puts the vocabulary in `core/`
+  and the DOM-owning mount/lifecycle machinery in `ui/`; inverting that split
+  to satisfy the letter of "one file" would violate the same layering
+  discipline this ADR's own vanilla-imperative-adapter stance depends on.
+
+Also adapted: the issue's Tests-section wording ("mount/teardown runs exactly
+once per activation") directly contradicts its own Deliverable/AC6
+("persistent hosts, built once, never rebuilt") — the persistent-host decision
+wins, since it is the one #487 phase 2 already proved and #587 explicitly
+retains. `MountedSidePanel` is therefore mount-once-per-shell,
+activate/deactivate/render-per-transition, dispose-once-at-teardown.

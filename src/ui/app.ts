@@ -235,6 +235,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
   };
   const app = appBase as App;
+  // #587: null until `ensureShell()`'s first call, and null again after
+  // `disposeShell()` — see both for the mirroring. Reachable as `app.shell`
+  // from controller-construction time (this line) onward, including every
+  // wiring point below that runs before any shell exists.
+  app.shell = null;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
   // time and renders aria-disabled + a tooltip rather than hiding outright.
@@ -991,7 +996,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
-      renderSavedHistory: () => renderSavedHistory(app),
+      // #587 AC3: renamed from `renderSavedHistory` — called UNCONDITIONALLY
+      // on every clean run now (`workbench-session.ts` no longer knows
+      // `sidePanel` exists at all); which panel (if any) actually repaints is
+      // this hook's own decision, delegated to the registry exactly like
+      // `app.recordHistory`'s single-statement path above.
+      onRunComplete: () => app.shell?.sidePanels.notifyRunComplete(),
       cancelSchemaGraph,
       loadSchema: () => { void catalog.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
@@ -1563,12 +1573,17 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- saved / history bridges ------------------------------------------
   // The history-recording POLICY itself now lives in `saved.recordHistory`
-  // (#276 Phase 4C) — this wrapper's own conditional History-panel repaint is
-  // a rendering concern the service must never own (see its header comment),
-  // so it stays here, unchanged.
+  // (#276 Phase 4C) — this wrapper's own History-panel repaint is a rendering
+  // concern the service must never own (see its header comment), so it stays
+  // here. #587: the "only repaint when History is the active panel" decision
+  // moved INTO the registry's `notifyRunComplete` (it dispatches to the
+  // active lower panel only, and only if that panel defines the hook — today
+  // only History does) — this wrapper no longer string-compares a panel id.
+  // `app.shell` is null before the first shell mount, so this is always a
+  // safe no-op that early.
   app.recordHistory = (tab, sqlText) => {
     saved.recordHistory(tab, sqlText);
-    if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
+    app.shell?.sidePanels.notifyRunComplete();
   };
 
   // --- share + star ------------------------------------------------------
@@ -2110,6 +2125,10 @@ export function createApp(env: CreateAppEnv = {}): App {
       updateBanner: app.updateBanner,
       startDrag,
     });
+    // #587: mirrored onto `app` so any module holding `app` (not just this
+    // closure) can reach the side-panel registry through `app.shell` — e.g.
+    // `saved-history.ts`'s `renderSavedHistory` compatibility export.
+    app.shell = shell;
     if (!inlineLogin) {
       inlineLogin = mountInlineLogin(
         app as App & { root: Element },
@@ -2127,6 +2146,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     inlineLogin = null;
     shell?.dispose();
     shell = null;
+    app.shell = null;
   };
   // What the Dashboard surface renders THIS pass. `dashboardId` is `null` only
   // for the legacy empty-collection entry point, which lands on the Dashboard's
