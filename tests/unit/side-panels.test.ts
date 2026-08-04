@@ -87,3 +87,39 @@ describe('decodeSidePanelKey — fail-closed load-boundary decode', () => {
     expect(decodeSidePanelKey('library')).toBe('saved');
   });
 });
+
+describe('SIDE_PANELS — the uniqueness invariant every lookup below silently assumes', () => {
+  // PR #600 review, round 4. Nothing else in the tree enforces this:
+  // `Record<SidePanelId, …>` cannot, because a TypeScript union collapses
+  // duplicates, so a second row reusing an existing id needs no extra key; and
+  // the registry's manifest-parity test cannot, because a duplicate appears on
+  // both sides of its comparison. Yet every lookup in this module is a
+  // FIRST-MATCH `PANELS.find(...)` — `sidePanelKeyFor`, `decodeSidePanelKey`
+  // and `lowerIdForKey` would each resolve a duplicate to one row and leave the
+  // other permanently unreachable.
+  it('declares every panel id exactly once', () => {
+    const ids = SIDE_PANELS.map((spec) => spec.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('declares every persisted key exactly once, across the rows that define one', () => {
+    // `'persistedKey' in spec` rather than `spec.persistedKey !== undefined`:
+    // `SIDE_PANELS` is `as const`, so its element type is a UNION in which the
+    // two upper-pane members have no such property at all, and reading it
+    // directly off the union is a `tsc` error (TS2339) — the same reason
+    // `side-panels.ts` keeps a `SidePanelModel[]`-typed view for its own
+    // lookups. The `in` operator narrows the union instead.
+    const keys = SIDE_PANELS.flatMap((spec) => ('persistedKey' in spec ? [spec.persistedKey] : []));
+    expect(keys.length).toBeGreaterThan(0);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('defines a persistedKey for exactly the lower-pane rows', () => {
+    // The other half of the same assumption: `sidePanelKeyFor`'s non-null
+    // assertion is only sound while every `LowerPanelId` row has a key, and
+    // `decodeSidePanelKey` only searches `pane === 'lower'` rows.
+    for (const spec of SIDE_PANELS) {
+      expect('persistedKey' in spec).toBe(spec.pane === 'lower');
+    }
+  });
+});

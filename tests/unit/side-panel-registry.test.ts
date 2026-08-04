@@ -404,9 +404,15 @@ describe('buildProductionSidePanelRegistry — the production wiring app-shell.t
   // `pane` (defs are independent objects, not derived from the row they were
   // built from). This is the check that would catch that: the registry's
   // full `{id, pane}` sequence, in order, must equal the manifest's own
-  // sequence exactly — same order, no duplicates, nothing extra (`toEqual`
-  // on arrays fails on any length or ordering difference, not just missing
-  // ids).
+  // sequence exactly (`toEqual` on arrays fails on any length or ordering
+  // difference, not just missing ids).
+  //
+  // What this does NOT prove (PR #600 review, round 4 — the earlier wording
+  // here claimed "no duplicates", which was wrong): a DUPLICATE manifest id
+  // appears on both sides of this comparison, so the sequences still match and
+  // this test stays green. Manifest id/persistedKey uniqueness is asserted
+  // directly in `side-panels.test.ts`, and `buildSidePanelRegistry` now throws
+  // on a duplicate def id — see the test immediately below.
   it('the built registry\'s {id, pane} sequence matches SIDE_PANELS exactly, in manifest order', () => {
     const app = makeApp();
     const reg = buildProductionSidePanelRegistry(app, {
@@ -415,6 +421,26 @@ describe('buildProductionSidePanelRegistry — the production wiring app-shell.t
     });
     expect(reg.entries.map((entry) => ({ id: entry.id, pane: entry.pane })))
       .toEqual(SIDE_PANELS.map((spec) => ({ id: spec.id, pane: spec.pane })));
+  });
+
+  // The uniqueness invariant no type or parity check can express (PR #600
+  // review, round 4). Constructing rather than tolerating is deliberate: a
+  // duplicate id silently double-renders a pane forever (`byId` keeps the last
+  // entry, both hosts start visible, and `showPanel` skips every candidate
+  // whose id equals its target, so it can never hide the shadowed one).
+  it('throws on a duplicate panel id rather than silently shadowing one entry', () => {
+    expect(() => buildSidePanelRegistry([
+      fakeDef({ id: 'library', pane: 'lower' }),
+      fakeDef({ id: 'library', pane: 'lower' }),
+    ])).toThrow(/duplicate panel id "library"/);
+  });
+
+  it('accepts two panels that differ only by pane — uniqueness is per id, not per pane', () => {
+    const reg = buildSidePanelRegistry([
+      fakeDef({ id: 'databases', pane: 'upper' }),
+      fakeDef({ id: 'library', pane: 'lower' }),
+    ]);
+    expect(reg.entries.map((entry) => entry.id)).toEqual(['databases', 'library']);
   });
 });
 

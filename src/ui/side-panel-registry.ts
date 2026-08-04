@@ -58,6 +58,25 @@ export function buildSidePanelRegistry(defs: readonly SidePanelDef[]): SidePanel
       host, mounted,
     };
   });
+  // Reject a duplicate id at CONSTRUCTION (PR #600 review, round 4). Nothing
+  // upstream enforces uniqueness: `Record<SidePanelId, …>` cannot, because a
+  // TypeScript union collapses duplicates, so a second manifest row reusing an
+  // existing id needs no additional key; and the manifest-parity test cannot,
+  // because it compares the registry against the same duplicated manifest and
+  // both sides mirror the duplicate. This seam also accepts arbitrary INJECTED
+  // defs (the AC5 fake-panel proof, the e2e fixture), which are not
+  // manifest-backed at all, so the check has to live here.
+  //
+  // Failing loudly beats the silent breakage a duplicate causes: `byId` below
+  // would keep only the LAST entry; the normalize loop would leave BOTH hosts
+  // visible (each one's id equals its pane's default active id); and
+  // `showPanel` skips every candidate whose id equals its target, so it could
+  // never hide the shadowed sibling — a permanently double-rendered pane.
+  const seen = new Set<SidePanelId>();
+  for (const entry of entries) {
+    if (seen.has(entry.id)) throw new Error(`side-panel-registry: duplicate panel id "${entry.id}"`);
+    seen.add(entry.id);
+  }
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   // One "currently active" id per pane, defaulting to the FIRST entry
   // declared for that pane (matches every pane's existing default: Databases
