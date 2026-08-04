@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { openAnchoredDialog } from '../../src/ui/popover.js';
-import type { AnchoredDialogOptions } from '../../src/ui/popover.js';
+import { openAnchoredDialog, createAnchoredPopovers } from '../../src/ui/popover.js';
+import type { AnchoredDialogOptions, AnchoredPopoverDeps, AnchoredPopoverRefKey } from '../../src/ui/popover.js';
 import { h } from '../../src/ui/dom.js';
 
 afterEach(() => document.body.replaceChildren());
@@ -440,5 +440,185 @@ describe('openAnchoredDialog — initialFocus', () => {
     trigger.focus();
     open();
     expect(document.activeElement).toBe(trigger);
+  });
+});
+
+// ── `createAnchoredPopovers` (#588 W2) ──────────────────────────────────────
+// A different primitive from `openAnchoredDialog` above: a light, non-modal
+// anchored popover (no overlay, no Tab trap) used for the Save popover and
+// the user menu. Extracted verbatim out of app.ts's `anchoredPopover` +
+// module-scoped closers Set — see popover.ts's own header comment on this
+// section for what's deliberately preserved (the I-21 stale-close clobber).
+
+/** A tiny keyboard-owner stack modeling the REAL `app.acquireKeyboardOwner`
+ *  contract (app.ts): each acquisition's own `release` is idempotent (a
+ *  `released` flag guards a second call from popping the stack twice). This
+ *  is the "real half" of I-21 ("each close releases the keyboard owner
+ *  exactly once") — `createAnchoredPopovers` itself calls `releaseKeyboard()`
+ *  unconditionally on every `close()`, so the exactly-once guarantee lives
+ *  in the caller-supplied release closure, exactly as it does in app.ts. */
+function makeKeyboardOwnerStack(): {
+  acquireKeyboardOwner: AnchoredPopoverDeps['acquireKeyboardOwner'];
+  owners: { kind: string }[];
+} {
+  const owners: { kind: string }[] = [];
+  const acquireKeyboardOwner: AnchoredPopoverDeps['acquireKeyboardOwner'] = (kind) => {
+    const owner = { kind };
+    owners.push(owner);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const index = owners.indexOf(owner);
+      if (index >= 0) owners.splice(index, 1);
+    };
+  };
+  return { acquireKeyboardOwner, owners };
+}
+
+function setupPopovers(over: Partial<AnchoredPopoverDeps> = {}): {
+  popovers: ReturnType<typeof createAnchoredPopovers>;
+  refs: Partial<Record<AnchoredPopoverRefKey, HTMLElement>>;
+  owners: { kind: string }[];
+} {
+  const refs: Partial<Record<AnchoredPopoverRefKey, HTMLElement>> = {};
+  const { acquireKeyboardOwner, owners } = makeKeyboardOwnerStack();
+  const popovers = createAnchoredPopovers({
+    document,
+    acquireKeyboardOwner,
+    isMobile: () => false,
+    viewportWidth: () => 1024,
+    getRef: (key) => refs[key],
+    setRef: (key, node) => { refs[key] = node; },
+    ...over,
+  });
+  return { popovers, refs, owners };
+}
+
+const anchorEl = (): HTMLElement => document.body.appendChild(h('button', {}));
+
+describe('createAnchoredPopovers — open/close', () => {
+  it('mounts the node, records it at the refKey, and acquires the keyboard owner', () => {
+    const { popovers, refs, owners } = setupPopovers();
+    const node = h('div', { class: 'my-pop' });
+    const anchor = anchorEl();
+    popovers.open(node, anchor, 'savePopover');
+    expect(document.body.contains(node)).toBe(true);
+    expect(refs.savePopover).toBe(node);
+    expect(owners).toEqual([{ kind: 'popover' }]);
+    expect(node.style.position).toBe('fixed');
+  });
+
+  it('close() unmounts the node, clears the ref, and releases the keyboard owner', () => {
+    const { popovers, refs, owners } = setupPopovers();
+    const node = h('div', {});
+    const { close } = popovers.open(node, anchorEl(), 'savePopover');
+    close();
+    expect(document.body.contains(node)).toBe(false);
+    expect(refs.savePopover).toBeUndefined();
+    expect(owners).toEqual([]);
+  });
+
+  it('right-aligns under the anchor on desktop; centers horizontally on mobile', () => {
+    const desktop = setupPopovers({ isMobile: () => false });
+    const nodeDesktop = h('div', {});
+    desktop.popovers.open(nodeDesktop, anchorEl(), 'savePopover');
+    expect(nodeDesktop.style.right).not.toBe('');
+    expect(nodeDesktop.style.left).toBe('');
+
+    const mobile = setupPopovers({ isMobile: () => true });
+    const nodeMobile = h('div', {});
+    mobile.popovers.open(nodeMobile, anchorEl(), 'savePopover');
+    expect(nodeMobile.style.left).toBe('50%');
+    expect(nodeMobile.style.transform).toBe('translateX(-50%)');
+  });
+
+  it('Escape closes the popover', () => {
+    const { popovers, refs } = setupPopovers();
+    const node = h('div', {});
+    popovers.open(node, anchorEl(), 'savePopover');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(document.body.contains(node)).toBe(false);
+    expect(refs.savePopover).toBeUndefined();
+  });
+
+  it('a mousedown outside both the popover and its anchor closes it', () => {
+    const { popovers } = setupPopovers();
+    const node = h('div', {});
+    const anchor = anchorEl();
+    popovers.open(node, anchor, 'savePopover');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(document.body.contains(node)).toBe(false);
+  });
+
+  it('a mousedown inside the popover node, or on its anchor, does not close it', () => {
+    const { popovers } = setupPopovers();
+    const node = h('div', {}, h('span', { class: 'inner' }, 'x'));
+    const anchor = anchorEl();
+    popovers.open(node, anchor, 'savePopover');
+    node.querySelector('.inner')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(document.body.contains(node)).toBe(true);
+    anchor.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(document.body.contains(node)).toBe(true);
+  });
+
+  it('closeAll() closes every currently-open popover, across different refKeys', () => {
+    const { popovers, refs } = setupPopovers();
+    const nodeA = h('div', {});
+    const nodeB = h('div', {});
+    popovers.open(nodeA, anchorEl(), 'savePopover');
+    popovers.open(nodeB, anchorEl(), 'userMenu');
+    popovers.closeAll();
+    expect(document.body.contains(nodeA)).toBe(false);
+    expect(document.body.contains(nodeB)).toBe(false);
+    expect(refs.savePopover).toBeUndefined();
+    expect(refs.userMenu).toBeUndefined();
+    expect(() => popovers.closeAll()).not.toThrow(); // nothing left to close
+  });
+
+  // I-21's "real" half: `createAnchoredPopovers` itself calls
+  // `releaseKeyboard()` unconditionally on every `close()` — the
+  // exactly-once guarantee depends on the CALLER's release closure being
+  // idempotent (as the real `app.acquireKeyboardOwner` is). Sabotage: if
+  // that release closure were NOT idempotent, a stale double `close()` would
+  // pop the keyboard-owner stack twice, catching this test.
+  it('a stale double close() cannot double-release the keyboard owner when the caller\'s release is idempotent', () => {
+    const { popovers, owners } = setupPopovers();
+    const node = h('div', {});
+    const { close } = popovers.open(node, anchorEl(), 'savePopover');
+    expect(owners).toHaveLength(1);
+    close();
+    expect(owners).toHaveLength(0);
+    close(); // stale second call
+    expect(owners).toHaveLength(0); // still 0 — release() itself no-oped
+  });
+
+  // I-21 (documented defect — phase 4 plan §9-2, NOT fixed here): `close()`
+  // removes WHATEVER node currently occupies `refKey`, without checking that
+  // it is the node THIS `close()` itself opened. A caller retaining a stale
+  // `close()` handle across a second `open()` on the same `refKey` clobbers
+  // the newer popover instead of being a safe no-op.
+  it('I-21: a stale close() from an earlier popover clobbers a newer popover sharing the same refKey (current, unfixed behavior)', () => {
+    const { popovers, refs } = setupPopovers();
+    const anchor = anchorEl();
+    const nodeA = h('div', { class: 'pop-a' });
+    const nodeB = h('div', { class: 'pop-b' });
+    const { close: closeA } = popovers.open(nodeA, anchor, 'savePopover');
+    // B opens on the SAME refKey without A ever closing — the real Save
+    // popover/user-menu callers guard this with their own `if (app.dom[refKey])
+    // return;` check before opening, but `createAnchoredPopovers` itself does
+    // not enforce it.
+    popovers.open(nodeB, anchor, 'savePopover');
+    expect(document.body.contains(nodeA)).toBe(true);
+    expect(document.body.contains(nodeB)).toBe(true);
+    expect(refs.savePopover).toBe(nodeB);
+
+    closeA(); // A's stale handle
+
+    // Documented defect: closeA() clobbers B (whatever currently occupies the
+    // ref), NOT A's own node — A's node is left mounted and orphaned.
+    expect(document.body.contains(nodeB)).toBe(false);
+    expect(document.body.contains(nodeA)).toBe(true);
+    expect(refs.savePopover).toBeUndefined();
   });
 });

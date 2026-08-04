@@ -8,9 +8,9 @@ import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
-  savedForTab, tabPanel, tabSaveDirty, variableDoc,
+  tabSaveDirty, variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
-  adoptSavedIntoTab, reconcileLinkedTabsToLatest, setTabSpecDraft, SAVED_VIEWS,
+  reconcileLinkedTabsToLatest, setTabSpecDraft, SAVED_VIEWS,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
@@ -20,7 +20,7 @@ import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.t
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
+import { sqlString, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
 import {
@@ -42,7 +42,6 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTa
 import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { dashboardVariables } from '../application/dashboard-tree-model.js';
-import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
@@ -55,6 +54,7 @@ import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
 import { closeInspector } from './inspector-host.js';
+import { createAnchoredPopovers } from './popover.js';
 import { renderSavedHistory } from './saved-history.js';
 import type { SchemaDb } from '../core/from-scope.js';
 import { mountInlineLogin, renderLogin } from './login.js';
@@ -97,7 +97,6 @@ import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-
 import { createNewWorkspace, DEFAULT_WORKSPACE_NAME } from '../workspace/workspace-operations.js';
 import { deriveWorkspaceKey } from '../core/workspace-key.js';
 import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
-import { buildConflictChooser } from './conflict-resolution.js';
 import {
   buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
 } from '../core/sql-route.js';
@@ -105,6 +104,7 @@ import type { SqlRoute } from '../core/sql-route.js';
 import { disposeFileMenuOverlays } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createVariableStrip } from './workbench/variable-strip.js';
+import { createSaveController } from './workbench/save-controller.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
@@ -1477,335 +1477,63 @@ export function createApp(env: CreateAppEnv = {}): App {
   const specBlocked = (tab: QueryTab): boolean => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
   app.specBlocked = specBlocked;
 
-  app.updateSaveBtn = () => {
-    if (!app.dom.saveBtn) return;
-    const tab = app.activeTab();
-    // #457: the DOCUMENT KIND is checked first, exactly as `saveActiveQuery`
-    // checks it — a variable tab has no saved query behind it, so "saved" is
-    // simply "not dirty", no Spec can block it, and the conflict state below
-    // (a linked-saved-query concept) cannot apply to it. Ordering the two the
-    // same way in both places is what stops the button ever describing an
-    // action the Save action would not take.
-    if (variableDoc(tab) !== null) {
-      const stored = !tabSaveDirty(tab);
-      app.dom.saveBtn.classList.remove('conflict');
-      app.dom.saveBtn.classList.toggle('saved', stored);
-      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, stored ? 'Saved' : 'Save'));
-      app.dom.saveBtn.disabled = false;
-      app.dom.saveBtn.title = stored
-        ? 'Saved — edit to re-save (⌘S)'
-        : 'Save this variable’s option SQL (⌘S)';
-      return;
-    }
-    // #343: a tab whose linked saved query changed in another tab must not be
-    // silently re-saved. The Save button becomes "Resolve conflict" and opens
-    // the two-action chooser instead of committing.
-    if (tab.externalState === 'conflict') {
-      app.dom.saveBtn.classList.remove('saved');
-      app.dom.saveBtn.classList.add('conflict');
-      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, 'Resolve conflict'));
-      app.dom.saveBtn.disabled = false;
-      app.dom.saveBtn.title = 'This query changed in another tab — choose how to resolve it';
-      return;
-    }
-    app.dom.saveBtn.classList.remove('conflict');
-    const entry = savedForTab(app.state, tab);
-    const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
-    const blocked = !!entry && specBlocked(tab);
-    app.dom.saveBtn.classList.toggle('saved', clean);
-    app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
-    app.dom.saveBtn.disabled = blocked;
-    app.dom.saveBtn.title = blocked
-      ? 'Fix blocking Spec errors before saving'
-      : clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
-  };
-  // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
-  // button, Esc + click-outside close (capture listeners), stored at
-  // app.dom[refKey] and cleared on close. Returns { close }.
-  const anchoredPopoverClosers = new Set<() => void>();
-  const closeAnchoredPopovers = (): void => {
-    for (const close of [...anchoredPopoverClosers]) close();
-  };
-  function anchoredPopover(
-    node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
-  ): { close: () => void } {
-    const releaseKeyboard = app.acquireKeyboardOwner('popover');
-    const close = (): void => {
-      anchoredPopoverClosers.delete(close);
-      doc.removeEventListener('keydown', onKey, true);
-      doc.removeEventListener('mousedown', onOutside, true);
-      if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
-      releaseKeyboard();
-    };
-    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    const onOutside = (e: MouseEvent): void => {
-      if (app.dom[refKey] && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
-    };
-    app.dom[refKey] = node;
-    const r = anchorEl.getBoundingClientRect();
-    // Right-align under the button.
-    const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 }) as { top: number; right: number };
-    node.style.position = 'fixed';
-    node.style.top = a.top + 'px';
-    if (app.state.isMobile.value) {
-      // Mobile (#126): the trigger can sit mid-toolbar (the toolbar scrolls), so
-      // right-aligning to it pushes a fixed-width popover off the narrow
-      // viewport's left edge. Center it horizontally instead (still dropped below
-      // the trigger via `top`); the mobile max-width clamps keep it in-bounds.
-      node.style.left = '50%';
-      node.style.transform = 'translateX(-50%)';
-    } else {
-      node.style.right = a.right + 'px';
-    }
-    doc.body.appendChild(node);
-    doc.addEventListener('keydown', onKey, true);
-    doc.addEventListener('mousedown', onOutside, true);
-    anchoredPopoverClosers.add(close);
-    return { close };
-  }
+  // The Save-popover/user-menu light anchored popover (non-modal — distinct
+  // from `openAnchoredDialog`'s modal dialog chrome) now lives in
+  // `ui/popover.ts`'s `createAnchoredPopovers` (#588 W2), a pure extraction:
+  // every line of `anchoredPopover` + its closers registry moved verbatim,
+  // only `app.*`/`doc`/`win` reads rewritten onto the `deps` thunks below.
+  // `beginSurfaceTransition`/`disposeCurrentSurface` keep calling
+  // `popovers.closeAll()` exactly as they called `closeAnchoredPopovers()`
+  // before. The instance-scoped closers Set lives inside `popovers` now, not
+  // as a module-global here.
+  const popovers = createAnchoredPopovers({
+    document: doc,
+    acquireKeyboardOwner: (kind) => app.acquireKeyboardOwner(kind),
+    isMobile: () => app.state.isMobile.value,
+    viewportWidth: () => win.innerWidth,
+    getRef: (key) => app.dom[key],
+    setRef: (key, node) => { app.dom[key] = node; },
+  });
+  const anchoredPopover = popovers.open;
+  const closeAnchoredPopovers = popovers.closeAll;
 
-  /** A warning-bearing save still succeeded. Preserve that confirmation and
-   * keep the actionable inference guidance visible long enough to read. */
-  function flashSaved(diagnostics?: ReadonlyArray<{ message: string }>): void {
-    const warning = diagnostics?.[0]?.message;
-    flashToast(warning ? `Saved — ${warning}` : 'Saved', {
-      document: doc,
-      ...(warning ? { duration: 6000 } : {}),
-    });
-  }
-
-  async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
-    const surfaceGeneration = app.captureSurfaceGeneration();
-    const tab = app.activeTab();
-    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    // #343: `saved.commit` now runs its candidate-building transform through
-    // `app.mutateWorkspace`, which already enters the tab-local write queue and
-    // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
-    // wrapper needed (it would only double-queue).
-    const result = await saved.commit(tab, evaluated);
-    // #466/#501-review: `saved.commit` already cleared `dirtySql`/`dirtySpec`
-    // on a real commit (`commitSavedQuery`, state.ts) — BEFORE the staleness
-    // bracket below, which can return early on a navigation that began
-    // mid-write. `rerenderTabs()` (which re-syncs this too) only runs past
-    // that bracket, so without this the guard stays installed for a tab that
-    // is, by now, genuinely clean and durably written.
-    if (result.ok) app.syncBeforeUnload();
-    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
-      return result.ok ? result.entry : null;
-    }
-    if (!result.ok) {
-      // 'rejected' (commit's own defensive re-check inside the service, OR the
-      // aggregate strictly rejecting the whole-workspace commit — #287 W4)
-      // stays a silent no-op for the tab/editor state (nothing was mutated),
-      // but a real commit rejection still surfaces its first diagnostic.
-      if (result.reason === 'invalid-spec') {
-        queryDoc.revealFirstSpecError(tab);
-        flashToast('Fix Spec errors before saving', { document: doc });
-      } else if (result.reason === 'empty') {
-        flashToast('Nothing to save', { document: doc });
-      } else if (result.reason === 'deleted') {
-        // #343: the linked query vanished from the latest workspace (deleted in
-        // another tab) and the save aborted without recreating it. Refresh the
-        // tab association now — the reconcile turns this tab into an unsaved
-        // draft (dirty) or detaches it (clean) — instead of leaving a ghost
-        // link waiting for the next focus/visibility event.
-        flashToast('This query was deleted in another tab — your draft is kept as an unsaved query', { document: doc });
-        void app.refreshWorkspaceFromStore();
-      } else if (result.diagnostics?.length) {
-        flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
-      }
-      return null;
-    }
-    queryDoc.revalidateSpecDrafts();
-    app.specEditor.syncFromState();
-    app.updateSaveBtn();
-    app.actions.rerenderTabs();
-    renderSavedHistory(app);
-    renderResults(app);
-    app.updateEditorModeUi!();
-    flashSaved(result.diagnostics);
-    return result.entry;
-  }
-
-  /**
-   * #457 — Save on a `dashboard-variable` tab. The ONE write it performs is
-   * `dashboard.variableConfigs[variableName]`: no `SavedQueryV2` is created or
-   * touched, and the document is never added to the Library, History, favourites
-   * or Panels.
-   *
-   * The trim rule is the pure service's, never re-implemented here: blank (or
-   * whitespace-only) SQL REMOVES the configuration and returns the variable to
-   * direct input, rather than storing an empty string that would later read as
-   * configured-but-broken.
-   */
-  async function saveVariableTab(
-    tab: QueryTab, binding: { dashboardId: string; variableName: string },
-  ): Promise<null> {
-    const surfaceGeneration = app.captureSurfaceGeneration();
-    const sql = normalizeVariableSql(tab.sqlDraft);
-    // `lastKnownType` is what lets a configuration still display a type once its
-    // last declaring panel disappears. Recorded from whatever type is agreed NOW
-    // (a live declaration always wins over it), and read from the same projection
-    // the tab was opened through, at save time rather than at open time.
-    const type = dashboardVariables(app.currentWorkspace, binding.dashboardId)
-      .find((candidate) => candidate.name === binding.variableName)?.type ?? null;
-    const outcome = await commitVariableConfig(app, binding.dashboardId, binding.variableName, sql === null
-      ? null
-      : { sql, ...(type === null ? {} : { lastKnownType: type }) });
-    // TAB-side state is applied on a real commit REGARDLESS of staleness, and
-    // before the bracket — the write is durable, so the tab must stop claiming
-    // unsaved work whether or not this caller still owns the renderer. The linked
-    // saved-query path has the same shape: `commitSavedQuery` clears `dirtySql`
-    // inside the service (state.ts), and only the DOM cascade after it sits behind
-    // `commitLinkedQuery`'s bracket. Gating the flag too left a committed tab
-    // permanently dirty whenever the user navigated mid-write — a dirty dot and a
-    // "Save" button for content already on disk, with nothing able to clear them.
-    if (outcome.ok) {
-      tab.dirtySql = false;
-      // `dirtySpec` is not part of a variable document (see `tabSaveDirty`), but
-      // the result toolbar's panel-type picker can still set it. Clearing it here
-      // keeps a saved variable tab from carrying a flag nothing else ever resets.
-      tab.dirtySpec = false;
-      // #466/#501-review: re-sync the `beforeunload` guard for THIS tab-side
-      // clear too — `rerenderTabs()` below the staleness bracket also does it,
-      // but that bracket can return early on a navigation that began mid-write.
-      app.syncBeforeUnload();
-    }
-    // Same staleness bracket every other async save uses: a navigation that began
-    // mid-write must not be REPAINTED or TOASTED over.
-    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return null;
-    if (outcome.ok) {
-      app.actions.rerenderTabs();
-      app.updateSaveBtn();
-      flashToast(sql === null ? 'Option SQL removed' : 'Saved', { document: doc });
-      return null;
-    }
-    // `aborted` covers more than one thing, and only ONE of them is this
-    // transform's own refusal (`data === 'declined'` — the Dashboard is gone or
-    // its id is ambiguous, and nothing was written). The others are the primitive
-    // deciding the route moved on, and at least one of those keeps a durable
-    // write — so they say nothing rather than claim a failure that may not be one.
-    // Either way the draft stays dirty: it is the only copy of the user's edit.
-    if (outcome.aborted) {
-      if (outcome.data === 'declined') {
-        flashToast('This dashboard is no longer available — nothing was saved', { document: doc });
-      }
-      return null;
-    }
-    flashToast('Save failed: ' + outcome.diagnostics[0].message, { document: doc });
-    return null;
-  }
-
-  async function saveActiveQuery(): Promise<SavedQueryV2 | null | undefined> {
-    const tab = app.activeTab();
-    // #457: Save dispatches on the DOCUMENT KIND first. A variable tab is not a
-    // saved query and must never reach the linked-save or Save-as-new paths.
-    const variable = variableDoc(tab);
-    if (variable !== null) return saveVariableTab(tab, variable);
-    // #343: while a linked tab is in conflict, Save opens the resolution chooser
-    // rather than silently overwriting the externally changed query. A
-    // 'deleted'-flagged orphan has `savedId === null` already, so it falls
-    // through to the normal Save-as-new popover (never an implicit recreate).
-    if (tab.externalState === 'conflict') { openConflictChooser(); return undefined; }
-    if (savedForTab(app.state, tab)) return commitLinkedQuery();
-    openSavePopover();
-    return undefined;
-  }
-
-  // #343 §8: discard the active tab's local draft and adopt the latest committed
-  // version of its linked query — the "Reload saved version" conflict
-  // resolution. The committed query is already projected on `state.savedQueries`
-  // (a refresh ran to detect the conflict), so this reads it from there.
-  function reloadSavedVersion(): void {
-    const tab = app.activeTab();
-    const entry = savedForTab(app.state, tab);
-    if (!entry) {
-      // Deleted between opening the chooser and resolving — nothing to reload;
-      // refresh so the reconcile gives this tab its deleted-elsewhere treatment
-      // instead of leaving the stale conflict state in place (#343 review).
-      void app.refreshWorkspaceFromStore();
-      return;
-    }
-    adoptSavedIntoTab(tab, entry);
-    batch(() => { app.state.tabs.value = [...app.state.tabs.value]; }); // re-run the tab effect → editor + strip resync
-    app.updateSaveBtn();
-    app.actions.rerenderTabs();
-    renderSavedHistory(app);
-    flashToast('Reloaded the version saved in the other tab', { document: doc });
-  }
-
-  // #343 §8: the two-action conflict chooser, anchored under the Save button.
-  // "Reload saved version" fires immediately; "Keep my draft" confirms, then
-  // commits the full draft over the latest query via the normal linked-save path
-  // (`commitLinkedQuery` → `mutateWorkspace`), preserving unrelated workspace
-  // changes and clearing the conflict on success.
-  function openConflictChooser(): void {
-    if (app.dom.savePopover) return;
-    const tab = app.activeTab();
-    let close: () => void;
-    const chooser = buildConflictChooser({
-      queryName: tab.name,
-      onReloadSaved: () => { close(); reloadSavedVersion(); },
-      onKeepDraft: () => { close(); void commitLinkedQuery(); },
-    });
-    ({ close } = anchoredPopover(chooser, app.dom.saveBtn!, 'savePopover'));
-  }
-
-  // Creation-only Name/Description popover. Once linked, the textual Spec is
-  // authoritative and Save bypasses this UI entirely.
-  function openSavePopover(): void {
-    const tab = app.activeTab();
-    // A queryless panel (text, #166) is authored entirely in its cfg, so it
-    // saves with empty SQL — the same per-type relaxation saveQuery applies.
-    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(tabPanel(tab))) {
-      flashToast('Nothing to save', { document: doc });
-      return;
-    }
-    if (app.dom.savePopover) return;
-    const prefill = tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sqlDraft);
-    const input = h('input', { class: 'sp-input', value: prefill });
-    const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
-    let close: () => void;
-    const commit = async (): Promise<void> => {
-      if (!input.value.trim()) return;
-      const surfaceGeneration = app.captureSurfaceGeneration();
-      // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
-      // which already serializes + reads the latest committed aggregate — no
-      // outer `serializeWrite` wrapper needed.
-      const result = await saved.create(tab, input.value, descInput.value);
-      // #466/#501-review: `saved.create` already cleared `dirtySql`/`dirtySpec`
-      // on success (`createSavedQuery`, state.ts) — before the staleness
-      // bracket, which can return early on a navigation that began mid-write.
-      if (result.ok) app.syncBeforeUnload();
-      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
-      if (!result.ok) {
-        if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
-        return;
-      }
-      close();
-      queryDoc.revalidateSpecDrafts();
-      app.specEditor.syncFromState();
-      app.updateSaveBtn();
-      app.updateEditorModeUi!();
-      app.actions.rerenderTabs();
-      renderSavedHistory(app);
-      flashSaved(result.diagnostics);
-    };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
-    // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.
-    descInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); } });
-    const pop = h('div', { class: 'save-popover' },
-      h('div', { class: 'sp-label' }, 'Save query as'),
-      input,
-      h('div', { class: 'sp-label' }, 'Description', h('span', { class: 'sp-opt' }, ' — optional')),
-      descInput,
-      h('div', { class: 'sp-actions' },
-        h('button', { class: 'sp-cancel', onclick: () => close() }, 'Cancel'),
-        h('button', { class: 'sp-save', onclick: commit }, 'Save')));
-    ({ close } = anchoredPopover(pop, app.dom.saveBtn!, 'savePopover'));
-    setTimeout(() => { input.focus(); input.select(); });
-  }
-  app.openSavePopover = openSavePopover;
+  // The Save cluster — `updateSaveBtn`, `saveActiveQuery`, and the linked
+  // commit/create/conflict-chooser paths it dispatches to — now lives in
+  // `ui/workbench/save-controller.ts`'s `createSaveController` (#588 W2), a
+  // pure extraction: every line moved verbatim, only `app.*`/`doc`/`saved`/
+  // `queryDoc` reads rewritten onto the `deps` thunks below. The #457
+  // kind-dispatch-first ordering (I-15) travels with the code UNCHANGED in
+  // both `updateSaveBtn` and `saveActiveQuery` — see that module's own header
+  // comment. `App.openSavePopover` is DROPPED (zero production consumers —
+  // #588 phase 4 plan §3-W2b); `app.updateSaveBtn` and `actions.save` stay
+  // flat delegates onto the controller for their wide existing consumers.
+  const saveController = createSaveController({
+    document: doc,
+    state: app.state,
+    activeTab: () => app.activeTab(),
+    saved: { commit: (tab, evaluated) => saved.commit(tab, evaluated), create: (tab, name, description) => saved.create(tab, name, description) },
+    queryDoc: {
+      evaluateSpecDraft: (tab, text, opts) => queryDoc.evaluateSpecDraft(tab, text, opts),
+      revalidateSpecDrafts: (opts) => queryDoc.revalidateSpecDrafts(opts),
+      revealFirstSpecError: (tab) => queryDoc.revealFirstSpecError(tab),
+    },
+    currentWorkspace: () => app.currentWorkspace,
+    captureSurfaceGeneration: () => app.captureSurfaceGeneration(),
+    refreshCurrentSurfaceAfterStale: (generation, committed) => app.refreshCurrentSurfaceAfterStale(generation, committed),
+    syncBeforeUnload: () => app.syncBeforeUnload(),
+    refreshWorkspaceFromStore: () => app.refreshWorkspaceFromStore(),
+    commitVariableConfig: (dashboardId, variableName, cfg) => commitVariableConfig(app, dashboardId, variableName, cfg),
+    saveBtn: () => app.dom.saveBtn,
+    savePopoverOpen: () => !!app.dom.savePopover,
+    anchoredPopover: popovers.open,
+    rerenderTabs: () => app.actions.rerenderTabs(),
+    updateEditorModeUi: () => app.updateEditorModeUi!(),
+    renderSavedHistory: () => renderSavedHistory(app),
+    renderResults: () => renderResults(app),
+    syncSpecEditorFromState: () => app.specEditor.syncFromState(),
+    specBlocked,
+  });
+  app.updateSaveBtn = saveController.updateSaveBtn;
 
   function formatSpec(): void {
     const tab = app.activeTab();
@@ -2920,7 +2648,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
     cancelExport,
     cancelExportScript,
-    save: saveActiveQuery,
+    save: saveController.saveActiveQuery,
     openUserMenu,
     formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
     formatSpec,

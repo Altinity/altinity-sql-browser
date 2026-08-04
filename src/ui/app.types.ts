@@ -494,12 +494,15 @@ export interface App {
   activateInvalidSpecDraft(tab: Tab | null): void;
   /** The saved-query create/commit policy, history recording, and share-URL
    *  building (#276 Phase 4C — `src/application/saved-query-service.ts`),
-   *  constructible without App/AppState/DOM. app.ts's `commitLinkedQuery`/
-   *  `openSavePopover`'s commit closure/`share` call this directly and keep
-   *  owning the post-commit DOM cascade + clipboard/location writes
-   *  themselves (see that module's header comment). */
+   *  constructible without App/AppState/DOM. `ui/workbench/save-controller.ts`'s
+   *  `commitLinkedQuery`/`openSavePopover`'s commit closure and app.ts's own
+   *  `share` call this directly and keep owning the post-commit DOM cascade +
+   *  clipboard/location writes themselves (see that module's header comment).
+   *  #588 W2 dropped the flat `App.openSavePopover` delegate (zero production
+   *  consumers) — the controller still exposes it (see
+   *  `save-controller.ts`'s `SaveController`) for its own internal
+   *  `saveActiveQuery` dispatch and direct test coverage. */
   saved: SavedQueryService;
-  openSavePopover(): void;
   openUserMenu(): void;
 
   // Rendering / lifecycle.

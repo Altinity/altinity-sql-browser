@@ -588,7 +588,6 @@ const appDefaults: App = {
   // `registerSpecValidator` have no flat `App` member (#276 Phase 5 deleted
   // them) — a fixture reads `queryDocDefaults`/`app.queryDoc.*` for those now.
   activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
   openUserMenu: () => {},
   renderApp: () => {},
   renderDashboard: () => {},

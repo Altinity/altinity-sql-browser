@@ -116,6 +116,7 @@ import type { AuthenticatedExecutionScope } from '../application/authenticated-e
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import type { WorkspaceCommitResult, WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { AppPreferences } from '../application/app-preferences.js';
+import { keyboardOwnerChannel } from './keyboard-owner.js';
 
 // icons.js is unconverted — the icons this module appends, pinned to the
 // one honest shape (same wrapper the pre-#286 module used).
@@ -285,14 +286,6 @@ let installedNavHighlightClear: (() => void) | null = null;
 const NAV_HIGHLIGHT_MS = 2000;
 
 /** Tear down every resource owned by the currently mounted Dashboard surface. */
-function keyboardOwnerChannel(app: Pick<DashboardApp, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
-  let release: (() => void) | null = null;
-  return (owner) => {
-    release?.();
-    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
-  };
-}
-
 export function disposeDashboardSurface(): void {
   if (installedGridResizeListener) {
     installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);

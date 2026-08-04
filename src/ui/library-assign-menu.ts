@@ -18,16 +18,7 @@ import { UNTITLED_DASHBOARD } from '../application/dashboard-tree-model.js';
 import { revealAssignedPanel } from './dashboard-tree.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { App } from './app.types.js';
-
-const keyboardOwnerChannel = (
-  app: Pick<App, 'acquireKeyboardOwner'>,
-): ((owner: App['keyboardOwner']) => void) => {
-  let release: (() => void) | null = null;
-  return (owner) => {
-    release?.();
-    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
-  };
-};
+import { keyboardOwnerChannel } from './keyboard-owner.js';
 
 const dashboardCounts = (app: App): Map<string, number> => {
   const counts = new Map<string, number>();

@@ -77,19 +77,13 @@ import type {
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { EXAMPLE_DASHBOARDS } from '../generated/example-dashboards.js';
 import type { ExampleDashboardEntry } from '../generated/example-dashboards.js';
+import { keyboardOwnerChannel } from './keyboard-owner.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
  *  collapses spaces). */
 const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'queries';
 const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): string => diagnostics[0]?.message || fallback;
-function keyboardOwnerChannel(app: Pick<App, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
-  let release: (() => void) | null = null;
-  return (owner) => {
-    release?.();
-    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
-  };
-}
 
 /**
  * What the surface currently on screen rendered — the ONLY thing a surface
