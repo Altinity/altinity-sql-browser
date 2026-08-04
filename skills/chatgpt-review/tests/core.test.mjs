@@ -71,6 +71,26 @@ test('reported SHA and comment URL are extracted', () => {
   });
 });
 
+test('follow-up metadata selects the newly reviewed head instead of the earlier SHA', () => {
+  const previous = 'a'.repeat(40);
+  const current = 'b'.repeat(40);
+  const unrelated = 'c'.repeat(40);
+  const response = `Previously reviewed SHA: ${previous}
+Pass-2 reviewed SHA: ${current}
+Later discussion mentions commit ${unrelated}.
+https://github.com/o/r/pull/1#pullrequestreview-42`;
+  assert.deepEqual(extractReportedMetadata(response), {
+    reportedReviewedSha: current,
+    reportedGithubCommentUrl: 'https://github.com/o/r/pull/1#pullrequestreview-42',
+  });
+});
+
+test('plain reviewed-head labels exclude previous-head lines', () => {
+  const previous = 'd'.repeat(40);
+  const current = 'e'.repeat(40);
+  assert.equal(extractReportedMetadata(`Previously reviewed head: ${previous}\nReviewed head: ${current}`).reportedReviewedSha, current);
+});
+
 test('sensitive paths and binary patches are rejected or stripped', () => {
   assert.equal(isSensitivePath('.env.local'), true);
   assert.equal(isSensitivePath('keys/id_ed25519'), true);

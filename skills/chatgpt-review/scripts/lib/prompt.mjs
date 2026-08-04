@@ -24,7 +24,15 @@ export function buildPrompt({ mode, target, context = '', publish = false, pass 
 }
 
 export function extractReportedMetadata(text) {
-  const sha = text.match(/\b[0-9a-f]{40}\b/i)?.[0]?.toLowerCase() ?? null;
-  const commentUrl = text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#issuecomment-\d+/i)?.[0] ?? null;
+  const shaPatterns = [
+    /\bpass[-\s]?\d+\s+reviewed\s+(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/i,
+    /\b(?:current|new|updated|latest)\s+(?:reviewed\s+)?(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/i,
+    /^(?!\s*(?:previous(?:ly)?|prior|old|earlier)\b).*?\breviewed\s+(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/im,
+  ];
+  const labelledSha = shaPatterns
+    .map((pattern) => text.match(pattern)?.[1])
+    .find(Boolean);
+  const sha = (labelledSha ?? text.match(/\b[0-9a-f]{40}\b/i)?.[0])?.toLowerCase() ?? null;
+  const commentUrl = text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#(?:issuecomment|pullrequestreview)-\d+/i)?.[0] ?? null;
   return { reportedReviewedSha: sha, reportedGithubCommentUrl: commentUrl };
 }
