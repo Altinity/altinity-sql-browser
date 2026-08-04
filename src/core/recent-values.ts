@@ -58,7 +58,15 @@ function asMap(map: RecentMap | null | undefined): RecentMap {
  *  `map` unchanged, same reference) when already within the cap — every
  *  `recordRecent` call grows the total by at most one entry, so this is
  *  almost always a single eviction in practice, but the general form handles
- *  a map that arrived over-cap from anywhere (e.g. a lowered cap). Pure. */
+ *  a map that arrived over-cap from anywhere (e.g. a lowered cap). Built via
+ *  `Object.fromEntries` rather than an imperative `byName[name] = ...` loop:
+ *  `name` here is a live SQL variable name a user can type directly, and a
+ *  name of `"__proto__"` would otherwise hit `Object.prototype`'s setter
+ *  (`[[Set]]`) instead of creating an own property, silently vanishing from
+ *  `Object.keys`/normal enumeration while corrupting the returned object's
+ *  prototype chain. `Object.fromEntries` uses `[[DefineOwnProperty]]`, so a
+ *  `"__proto__"`-named entry survives as a normal own property instead.
+ *  Pure. */
 function enforceTotalCap(map: RecentMap): RecentMap {
   let total = 0;
   for (const name in map.byName) total += map.byName[name].length;
@@ -74,12 +82,13 @@ function enforceTotalCap(map: RecentMap): RecentMap {
     if (!removeSeqs.has(e.name)) removeSeqs.set(e.name, new Set());
     removeSeqs.get(e.name)!.add(e.seq);
   }
-  const byName: Record<string, RecentValueEntry[]> = {};
+  const entries: [string, RecentValueEntry[]][] = [];
   for (const name in map.byName) {
     const drop = removeSeqs.get(name);
     const list = drop ? map.byName[name].filter((e) => !drop.has(e.seq)) : map.byName[name];
-    if (list.length) byName[name] = list;
+    if (list.length) entries.push([name, list]);
   }
+  const byName: Record<string, RecentValueEntry[]> = Object.fromEntries(entries);
   return { version: map.version, nextSeq: map.nextSeq, byName };
 }
 
@@ -97,9 +106,21 @@ export function recordRecent(map: RecentMap | null | undefined, name: string, va
   if (value == null || value === '') return map || emptyRecentMap();
   const m = asMap(map);
   const seq = m.nextSeq;
-  const existing = m.byName[name] || [];
+  // Object.hasOwn guard, not a bare `m.byName[name] || []`: a plain object
+  // with no own `"__proto__"` property still answers a bracket *read* of
+  // `"__proto__"` via the inherited `Object.prototype.__proto__` accessor
+  // getter, returning the object's own [[Prototype]] (a truthy object, not
+  // `undefined`) instead of "no history yet" — `|| []` never fires, and the
+  // caller crashes on `.filter` of a non-array. `name` is a live SQL
+  // variable name a user can type directly (e.g. `{__proto__:String}`).
+  const existing = Object.hasOwn(m.byName, name) ? m.byName[name] : [];
   const deduped = existing.filter((e) => e.value !== value);
   const list = [{ value, seq }, ...deduped].slice(0, VAR_RECENT_PER_NAME_CAP);
+  // Object-literal computed property (`{ [name]: list }`), not a bracket
+  // assignment onto an existing object — spec-safe even when `name` is
+  // `"__proto__"` (uses `[[DefineOwnProperty]]`/`CreateDataPropertyOrThrow`,
+  // never the inherited `Object.prototype.__proto__` accessor's `[[Set]]`),
+  // so this does not share `enforceTotalCap`'s prior hazard.
   const byName = { ...m.byName, [name]: list };
   return enforceTotalCap({ version: 1, nextSeq: seq + 1, byName });
 }
@@ -109,7 +130,12 @@ export function recordRecent(map: RecentMap | null | undefined, name: string, va
  *  deciding whether to re-persist. Pure. */
 export function clearRecent(map: RecentMap | null | undefined, name: string): RecentMap {
   const m = asMap(map);
-  if (!(name in m.byName)) return m;
+  // `Object.hasOwn`, not `name in m.byName`: the `in` operator walks the
+  // prototype chain too, and every plain object inherits an own-named
+  // `"__proto__"` accessor from `Object.prototype` — so `"__proto__" in {}`
+  // is `true` even with no recorded history, which would break the
+  // documented same-reference no-op below for that one name.
+  if (!Object.hasOwn(m.byName, name)) return m;
   const byName = { ...m.byName };
   delete byName[name];
   return { version: m.version, nextSeq: m.nextSeq, byName };
@@ -131,7 +157,12 @@ export function clearAllRecent(): RecentMap {
  * validator merely doesn't have an opinion on). Pure.
  */
 export function visibleRecents(map: RecentMap | null | undefined, name: string, type: string): string[] {
-  const list = (map && map.byName && map.byName[name]) || [];
+  // Same Object.hasOwn guard as recordRecent: a bare bracket read of
+  // `"__proto__"` on a plain object with no own property by that name
+  // returns the inherited accessor's value (the object's own prototype),
+  // not `undefined` — `|| []` would never fire and `.filter` below would
+  // throw on a non-array.
+  const list = (map && map.byName && Object.hasOwn(map.byName, name) ? map.byName[name] : []);
   return list
     .filter((e) => validateParamValue(type, e.value).status !== 'invalid')
     .map((e) => e.value);
