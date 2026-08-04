@@ -123,6 +123,25 @@ export function buildSidePanelRegistry(defs: readonly SidePanelDef[]): SidePanel
   };
 }
 
+type ProductionUpperHosts = Pick<SidebarUpperHandle, 'databasesHost' | 'dashboardsHost'>;
+
+/**
+ * One production factory per `SidePanelId`, keyed by a `Record` over the
+ * FULL manifest-derived union — adding a `SIDE_PANELS` row without adding its
+ * key here is a **compile error** ("Property … is missing"), not a silent
+ * gap a test would need to catch (PR #600 review round 3, finding 1: the old
+ * hand-written four-call array could drift from the manifest with nothing
+ * red). Every factory takes the same `(app, upperHosts)` shape so this stays
+ * a plain exhaustive map rather than special-casing at the call site: the two
+ * upper factories read `upperHosts`, the two lower ones ignore it.
+ */
+const SIDE_PANEL_FACTORIES: Record<SidePanelId, (app: App, upperHosts: ProductionUpperHosts) => SidePanelDef> = {
+  databases: (app, upperHosts) => databasesPanelDef(app, upperHosts.databasesHost),
+  dashboards: (app, upperHosts) => dashboardsPanelDef(app, upperHosts.dashboardsHost),
+  library: (app) => libraryPanelDef(app),
+  history: (app) => historyPanelDef(app),
+};
+
 /**
  * The ONE production wiring: all four real panels (Databases/Dashboards over
  * the upper pane's existing hosts; Library/History over fresh persistent
@@ -130,20 +149,22 @@ export function buildSidePanelRegistry(defs: readonly SidePanelDef[]): SidePanel
  * generic core every other caller (tests, the `dashboard-membership.html` e2e
  * fixture) goes through. `app-shell.ts` calls only this — it hands over the
  * two upper hosts it already built and `app`, and never imports a concrete
- * panel-def factory or names a panel id/label itself (#587 AC5). Adding a
- * fifth panel means adding one def to the array below plus that panel's own
- * module — never touching `app-shell.ts`.
+ * panel-def factory or names a panel id/label itself (#587 AC5). The def list
+ * is built by mapping over `SIDE_PANELS` itself (not a separately hand-written
+ * order), so panel ORDER is decided by the manifest alone; the `SIDE_PANELS.map`
+ * below reads each row's own `id` to look up its factory, so a mismatched
+ * `pane` on a def is still possible in principle (defs are independent
+ * objects) and is what `tests/unit/side-panel-registry.test.ts`'s parity
+ * check exists to catch. Adding a fifth panel means adding one row to
+ * `SIDE_PANELS`, one key to `SIDE_PANEL_FACTORIES` above (TypeScript refuses
+ * to compile without it), and that panel's own module — never touching
+ * `app-shell.ts`.
  */
 export function buildProductionSidePanelRegistry(
   app: App,
-  upperHosts: Pick<SidebarUpperHandle, 'databasesHost' | 'dashboardsHost'>,
+  upperHosts: ProductionUpperHosts,
 ): SidePanelRegistry {
-  return buildSidePanelRegistry([
-    databasesPanelDef(app, upperHosts.databasesHost),
-    dashboardsPanelDef(app, upperHosts.dashboardsHost),
-    libraryPanelDef(app),
-    historyPanelDef(app),
-  ]);
+  return buildSidePanelRegistry(SIDE_PANELS.map((spec) => SIDE_PANEL_FACTORIES[spec.id](app, upperHosts)));
 }
 
 /** Generic tab-row renderer, used identically for the upper and lower rows

@@ -3,6 +3,7 @@ import {
   buildSidePanelRegistry, buildProductionSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES,
 } from '../../src/ui/side-panel-registry.js';
 import type { SidePanelDef, MountedSidePanel } from '../../src/ui/side-panel-registry.js';
+import { SIDE_PANELS } from '../../src/core/side-panels.js';
 import type { SidePanelId, SidePanelPane } from '../../src/core/side-panels.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -394,6 +395,26 @@ describe('buildProductionSidePanelRegistry — the production wiring app-shell.t
     expect(reg.entry('dashboards' as SidePanelId).accessibleLabel).toBe('Open Dashboards navigation');
     expect(reg.entry('library' as SidePanelId).accessibleLabel).toBe('Open Library navigation');
     expect(reg.entry('history' as SidePanelId).accessibleLabel).toBe('Open query History');
+  });
+
+  // PR #600 review (round 3), finding 1: the exhaustive `Record<SidePanelId, …>`
+  // in `side-panel-registry.ts` proves every manifest id HAS a production
+  // factory (a compile error otherwise), but not that each factory's def
+  // AGREES with its own manifest row — a def could still report the wrong
+  // `pane` (defs are independent objects, not derived from the row they were
+  // built from). This is the check that would catch that: the registry's
+  // full `{id, pane}` sequence, in order, must equal the manifest's own
+  // sequence exactly — same order, no duplicates, nothing extra (`toEqual`
+  // on arrays fails on any length or ordering difference, not just missing
+  // ids).
+  it('the built registry\'s {id, pane} sequence matches SIDE_PANELS exactly, in manifest order', () => {
+    const app = makeApp();
+    const reg = buildProductionSidePanelRegistry(app, {
+      databasesHost: document.createElement('div'),
+      dashboardsHost: document.createElement('div'),
+    });
+    expect(reg.entries.map((entry) => ({ id: entry.id, pane: entry.pane })))
+      .toEqual(SIDE_PANELS.map((spec) => ({ id: spec.id, pane: spec.pane })));
   });
 });
 
