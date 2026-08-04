@@ -13,6 +13,8 @@ Back to [[Home]]. Related: [[Architecture]], [[Product-and-Features]].
 | `src/ui/workbench/variable-strip.js` | Workbench variable strip render + run-button sync (#588) |
 | `src/ui/workbench/save-controller.js` | saved-query save/conflict/reload cluster (#588) |
 | `src/ui/keyboard-owner.js` | shared keyboard-owner acquire/release channel (#588) |
+| `src/dashboard/application/dashboard-repaint-plan.js` | pure repaint-decision arbitration extracted from `ui/dashboard.js`'s `renderDashboard` effect (#589) |
+| `src/ui/dashboard-tile-gestures.js` | Dashboard corner-drag resize, Command/Ctrl-drag reorder, and modifier-cue controller, extracted from `ui/dashboard.js` behind an injected `TileGestureDeps` seam (#589) |
 | `src/state.js` | signals-backed state model and persistence operations |
 | `src/net/ch-client.js` | ClickHouse HTTP execution and schema calls |
 | `src/net/oauth.js` | OAuth flow/token exchange |
