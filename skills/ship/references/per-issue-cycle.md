@@ -72,20 +72,25 @@ a defect, one relocation at a time.
 Do not stack overlapping plan reviews.
 
 - **Low:** none.
-- **Medium:** none by default; one only when the architecture remains genuinely
-  uncertain after writing the plan.
+- **Medium:** exactly one `chatgpt-review` plan-mode pass (procedure below), run by
+  default — cheap enough that a worker can invoke it directly even in unattended mode,
+  and it catches architecture gaps a solo planning pass misses. Skip only if ChatGPT is
+  unreachable (agent Chrome down, network denied); disclose the skip in the plan and
+  continue — same escape hatch High already has.
 - **High:** exactly one independent plan review. Choose **one**:
   1. a read-only internal `Plan` agent (boundary stated), or
-  2. `chatgpt-review` in plan mode: write the complete plan to a file under the
-     approved temporary directory, the contract/acceptance subset/focused questions to
-     a context file, then
-     `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file> --question-file <context-file>`.
-     It uploads exactly the plan file and cannot request a GitHub write, so a worker
-     may run it directly even in unattended mode.
+  2. `chatgpt-review` in plan mode (procedure below).
 
   Prefer ChatGPT plan review for especially uncertain, externally constrained, or
   unattended work; prefer the internal Plan agent when repository context suffices.
-  Verify every substantive claim against the real repo before folding it in.
+
+**`chatgpt-review` plan-mode procedure:** write the complete plan to a file under the
+approved temporary directory, the contract/acceptance subset/focused questions to a
+context file, then
+`node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file> --question-file <context-file>`.
+It uploads exactly the plan file and cannot request a GitHub write, so a worker may run
+it directly even in unattended mode. Verify every substantive claim against the real
+repo before folding it in.
 
 For attended high-risk work, `STOP`: post the revised plan and wait for approval
 (reviewed on mobile — keep it self-contained).
