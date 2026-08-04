@@ -51,8 +51,22 @@ export const SIDE_PANELS = [
 const PANELS: readonly SidePanelModel[] = SIDE_PANELS;
 
 export type SidePanelId = (typeof SIDE_PANELS)[number]['id'];
-export type UpperPanelId = Extract<SidePanelId, 'databases' | 'dashboards'>;
-export type LowerPanelId = Extract<SidePanelId, 'library' | 'history'>;
+// `UpperPanelId`/`LowerPanelId` used to be hand-written literal unions
+// (`Extract<SidePanelId, 'databases' | 'dashboards'>` etc.) — a SECOND
+// authority listing the same ids by hand, so adding a manifest row above
+// silently failed to extend either (PR #600 review, #587 finding 2: no test
+// caught it, because the "extended manifest" tests only exercise runtime
+// helpers over copied arrays, never these two TYPES). Both are now derived
+// from the manifest's own `pane` column: `PanelSpec` is the precise
+// element-union type `SIDE_PANELS` carries, and `PanelIdInPane<P>` extracts
+// the `id` of every element whose `pane` is `P` — so a new row's pane
+// assignment is the only thing that decides which union it joins, with no
+// second list to fall out of sync. `tests/types/side-panels.test-d.ts` pins
+// this against regressing back to hand-written literals.
+type PanelSpec = (typeof SIDE_PANELS)[number];
+type PanelIdInPane<P extends SidePanelPane> = Extract<PanelSpec, { pane: P }>['id'];
+export type UpperPanelId = PanelIdInPane<'upper'>;
+export type LowerPanelId = PanelIdInPane<'lower'>;
 /** The `asb:sidePanel` persisted-value vocabulary — DERIVED from the manifest's
  *  `persistedKey` column, not a second hand-written `'saved' | 'history'`
  *  union declared beside it. `Extract` (rather than indexing the whole
