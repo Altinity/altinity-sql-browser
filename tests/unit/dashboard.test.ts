@@ -2520,6 +2520,211 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
   });
 });
 
+// #589 wave 2: characterization tests for the tile-gesture concurrency model
+// `createTileGestureController` (dashboard-tile-gestures.ts) had to preserve
+// EXACTLY, not "fix", when the code was extracted out of `renderDashboard`'s
+// closure. Every `it` here is titled "CURRENT BEHAVIOR (not a guarantee, see
+// inbox)" on purpose: these pin down what the code actually does today, not
+// what a naive reading of "one gesture at a time" would suggest. A change
+// that flips any of these assertions is a real interaction regression to
+// investigate — not a test to casually update to match.
+describe('renderDashboard — tile gesture concurrency characterization (#589 wave 2, CURRENT BEHAVIOR — not a guarantee, see inbox)', () => {
+  const twoTilesGrid = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 'compact' } } },
+  });
+  const twoTilesFlow = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): drag→drag — a second pointerdown while a drag is armed is ignored; the first drag continues unaffected', async () => {
+    // The guard is a plain boolean flag (`dragActive`, ex-`gestureActive`) set
+    // ONLY inside the drag pointerdown handler — it says nothing about resize.
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grip = qs(cards[0], '.dash-gg-grip');
+    const from = tileCenter(0);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    const down2 = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, metaKey: true });
+    cards[1].dispatchEvent(down2);
+    expect(down2.defaultPrevented).toBe(false); // ignored — not armed
+    expect(cards[1].classList.contains('dash-floating')).toBe(false);
+    // The first drag still completes normally afterward.
+    const land = cards[1].getBoundingClientRect();
+    cards[0].getBoundingClientRect = () => ({ ...land, toJSON: () => ({}) }) as DOMRect;
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): drag→resize — a resize started mid-drag runs concurrently; the drag flag has no effect on it', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+    // Arm a drag on tile 0 (armed, mid-gesture — dragActive === true internally).
+    const grip = qs(cards[0], '.dash-gg-grip');
+    const from = tileCenter(0);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    // Start a resize on the OTHER tile's handle while the drag is still active.
+    // Resize's own gate reads only `activeEngine`/style — never the drag flag.
+    const handle = qs<HTMLElement>(cards[1], '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(true);
+    // Both gestures are live at once: neither cancelled the other.
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(true);
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): resize→drag — the symmetric case also runs concurrently', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+    const handle = qs<HTMLElement>(cards[0], '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(true);
+    const grip = qs(cards[1], '.dash-gg-grip');
+    const from = tileCenter(1);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(cards[1].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(true); // unaffected by the drag
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): the shared cancel slot is last-writer-wins and self-clearing — a rerender cancels only whichever gesture installed it LAST', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    let cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+    // Drag installs the slot first…
+    const grip = qs(cards[0], '.dash-gg-grip');
+    const from = tileCenter(0);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    // …then resize OVERWRITES it (installed later, on the SAME shared slot).
+    const handle = qs<HTMLElement>(cards[1], '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(true);
+    // A rerender's `disposeDashboardSurface` cancels ONLY whatever currently
+    // holds the slot (the resize, installed last) — the drag's own gesture is
+    // simply orphaned against the about-to-be-replaced DOM, not cancelled.
+    await render(app);
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(false); // resize WAS cancelled (in the slot)
+    expect(cards[0].classList.contains('dash-floating')).toBe(true); // drag's cleanup never ran — not in the slot
+    await flush();
+    expect(commit).not.toHaveBeenCalled(); // the cancelled resize never committed
+    cards = qsa<HTMLElement>(app.root, '.dash-gg-tile'); // the fresh render's real cards, unaffected by either stale gesture
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): resize→resize — nothing blocks a second concurrent resize; a single pointerup terminates and commits BOTH (no pointerId filtering compounds this)', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+    const handleA = qs<HTMLElement>(cards[0], '.dash-gg-resize');
+    const handleB = qs<HTMLElement>(cards[1], '.dash-gg-resize');
+    handleA.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(true);
+    // Nothing gates a SECOND resize while the first is still active — there is
+    // no dedicated resize-concurrency guard at all.
+    handleB.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(true);
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(true); // still active — unaffected
+    // Both installed their own window pointerup listener independently (never
+    // filtered by which gesture "owns" the event) — ONE pointerup ends both.
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(false);
+    expect(cards[1].classList.contains('dash-gg-resizing')).toBe(false);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(2); // both committed from the one shared event
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): a foreign pointerId still terminates the active drag — window listeners are never filtered by pointerId', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesFlow() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, pointerId: 5, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    // A pointermove carrying a DIFFERENT pointerId still updates the gesture.
+    window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 42, clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].style.transform).not.toBe('');
+    // A pointerup carrying yet ANOTHER pointerId still terminates and commits it.
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999, clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('CURRENT BEHAVIOR (not a guarantee, see inbox): a resize gesture also ignores pointerId — a foreign pointerup still commits it', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    Object.defineProperty(qs(app.root, '.dash-gg-grid'), 'clientWidth', { value: 1200, configurable: true });
+    const handle = qs<HTMLElement>(cards[0], '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 3, clientX: 0, clientY: 0 }));
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(true);
+    // The move ALSO carries a different pointerId than the one that started
+    // the gesture — it still snaps the live preview (span 4 → 6).
+    window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 77, clientX: 600, clientY: 280 }));
+    expect(cards[0].style.gridColumn).toBe('1 / span 6');
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 77 }));
+    expect(cards[0].classList.contains('dash-gg-resizing')).toBe(false);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  // The plan's hypothesis: `wireTileDrag` snapshots `activeEngine` ONCE at
+  // pointerdown into `liveReflow` (governing which reflow/hit-test PATH the
+  // whole gesture uses), but the `renderedSurface` closure it also uses reads
+  // `activeEngine` LIVE on every call. An engine flip mid-drag (a `change-layout`
+  // dispatched from elsewhere while a move is active — plausible since
+  // `runCommand` never cancels an in-flight gesture) can make the two disagree:
+  // the gesture keeps following the GRID reflow path (never calling the
+  // flow-only `setDrop`, so `.dash-drop-target` is never applied) even after
+  // the live engine has switched to flow.
+  it('CONFIRMS the plan hypothesis — CURRENT BEHAVIOR (not a guarantee, see inbox): an engine flip mid-drag leaves the gesture on its GESTURE-START reflow path, not the live engine\'s', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grip = qs(cards[0], '.dash-gg-grip');
+    const from = tileCenter(0);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(1); // grid (liveReflow) path armed
+    // Flip the engine mid-drag — `runCommand`/`change-layout` never cancels an
+    // in-flight gesture.
+    pickLayout(app.root, 'report');
+    // Move over tile 1. `liveReflow` is still frozen true from gesture start,
+    // so the gesture keeps calling the GRID reflow path (`reflowTo`) — which
+    // never sets `.dash-drop-target` (that class is only ever touched by the
+    // flow-only `setDrop`) — even though the LIVE engine is now flow.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    expect(qsa(app.root, '.dash-drop-target').length).toBe(0);
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+  });
+});
+
 // #338: edge auto-scroll while a tile move is active. `wireTileDrag`
 // (ui/dashboard.ts) resolves `.dash-page` at pointerdown runtime, so these
 // tests stub its geometry (happy-dom returns an all-zero rect and readonly-0

@@ -183,6 +183,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   signature reset is replaced by an explicit `gridStructureInvalidationRev`
   counter the planner alone consumes, rather than any code outside it
   reasoning about a raw signature value.
+- **Extracted `createTileGestureController` — the Dashboard's corner-drag
+  resize, Command/Ctrl-drag reorder, and ⌘/Ctrl modifier cue** (#589 wave 2
+  of the #593 refactor umbrella; zero functional change). `wireTileDrag`/
+  `wireGridResize`/the modifier-cue install now live in
+  `src/ui/dashboard-tile-gestures.ts` behind an injected `TileGestureDeps`
+  seam (document/grid/runCommand/activeEngine/currentStyle/gridColumns/
+  gridPlacement/measuredGridWidth/tileOrder/renderedSurface/scrollHost/
+  invalidateGridStructure); `dashboard.ts` constructs one fresh controller
+  per render and calls `gestures.wireTileDrag`/`gestures.wireGridResize`/
+  `gestures.installModifierCue` from the same call sites the pre-extraction
+  functions were. Deliberately preserves — not "fixes" — the pre-existing
+  gesture-concurrency model a naive reading of "one gesture at a time" would
+  not expect: a resize has no cross-gesture guard against an active drag (or
+  vice versa) and no dedicated resize-vs-resize guard either; the shared
+  "currently cancellable gesture" slot is last-writer-wins and self-clearing;
+  neither gesture filters its window `pointermove`/`pointerup` listeners by
+  `pointerId`; and a drag snapshots the active engine ONCE at pointerdown
+  into its reflow-path choice while its rendered-surface lookups keep reading
+  the engine live for the rest of that same gesture, so the two can disagree
+  after a mid-drag engine flip. `tests/unit/dashboard.test.ts` gained a
+  dedicated "tile gesture concurrency characterization" suite pinning all of
+  this down; `tests/unit/dashboard-tile-gestures.test.ts` covers the
+  extracted module directly (100/100/94.35/100).
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
