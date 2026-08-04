@@ -158,70 +158,34 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Epoch clock shared by persistence metadata and parameter execution.
   const wallNow = (): number => (env.wallNow || (() => Date.now()))();
 
-  // Built up as a `Partial<App>` first (every field below has a real,
-  // App-typed value already — `Partial` just lets this literal typecheck
-  // without every OTHER `App` member also being present yet), then widened to
-  // `App` in one step: every member this function doesn't assign inline below
-  // is attached via a later `app.foo = …` statement (the closures those
-  // values need aren't defined until further down this function), exactly
-  // like tests/unit/dashboard.test.ts's own `asApp` helper reinterprets a real
-  // `createApp(env)` object as `App` without copying it.
-  const appBase: Partial<App> = {
-    state: createState(),
-    dom: {},
-    root: env.root || doc.getElementById('root'),
-    document: doc,
-    // Charting seam: the Chart.js constructor (injected so tests stub it) and a
-    // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
-    Chart: env.Chart || win.Chart,
-    cssVar: env.cssVar || ((name: string) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
-    // Pipeline-graph layout seam: dagre (injected like Chart). The DOT parser and
-    // SVG drawer are ours; dagre only computes node positions + edge bend points.
-    Dagre: env.Dagre || win.dagre,
-    // The schema graph opens in a real browser tab driven by this window. All
-    // three are injected seams: openWindow so tests can stub window.open,
-    // stylesText/faviconHref so the child tab can inline the page's CSS and
-    // favicon (about:blank ships neither).
-    openWindow: env.openWindow || ((...a: Parameters<Window['open']>) => win.open(...a)),
-    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style')!.textContent || '' : ''),
-    faviconHref: env.faviconHref
-      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]')!.getAttribute('href') || '' : ''),
-    // Streaming Export (issue #87) needs the File System Access API and a
-    // secure context; both are injected seams (like openWindow) so tests can
-    // stub them without a real browser. Fixed for the session (browser +
-    // origin don't change), so this is computed once rather than as a signal.
-    showSaveFilePicker: env.showSaveFilePicker
-      || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
-    // Script export (issue #99) needs a whole directory, not one file — same
-    // File System Access family as showSaveFilePicker (every browser that has
-    // one has the other), so this is the same seam pattern.
-    showDirectoryPicker: env.showDirectoryPicker
-      || (typeof win.showDirectoryPicker === 'function' ? win.showDirectoryPicker.bind(win) : null),
-    isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
-    // Build stamp ("v0.1.4 (abc1234)") injected at build time via main.js; shown
-    // in the user menu so a bug report can be tied to a build. 'dev' in tests /
-    // an un-built run where the placeholder was never replaced.
-    build: env.build || 'dev',
-    // Mobile-breakpoint seam (#126): matchMedia, injected so tests can drive the
-    // breakpoint. renderApp uses it to seed + track `state.isMobile` against
-    // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
-    // always-desktop — the mobile CSS still applies, just no JS branching).
-    matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
-  };
-  const app = appBase as App;
+  // #588 phase 4 wave 5: `app` is a LATE-BOUND `App` -- declared here with no
+  // value yet, assigned exactly once near the end of this function as a
+  // single object literal (no `as App` cast anywhere in this file -- a
+  // member missing from that literal is a compile-time `TS2739`, an extra
+  // one is `TS2353`). Every closure defined below that reads `app.*` (or is
+  // itself stored as a property VALUE assigned later, like the `hooks`
+  // objects passed to the various `create*Session` calls) captures this
+  // BINDING, not a value: nothing invokes one of those closures until this
+  // function has returned a fully-built `app`, so a premature (non-deferred)
+  // dereference would throw a loud TDZ ReferenceError rather than silently
+  // reading through a `Partial<App>` cast. The few places below that need a
+  // real value SYNCHRONOUSLY, before the literal exists (not through a
+  // closure -- e.g. a plain `state: app.state` config property a
+  // `create*Session` call evaluates immediately), read the `state`/
+  // `workspaceRepo` locals declared alongside them instead of `app.state`/
+  // `app.workspace` -- see those two locals below.
+  let app: App;
+  const state = createState();
   // #587: null until `ensureShell()`'s first call, and null again after
   // `disposeShell()` — see both for the mirroring. Reachable as `app.shell`
   // from controller-construction time (this line) onward, including every
   // wiring point below that runs before any shell exists.
-  app.shell = null;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
   // time and renders aria-disabled + a tooltip rather than hiding outright.
-  app.canExport = () => !!app.showSaveFilePicker && app.isSecureContext;
   // The script-export path additionally needs a directory picker (defensive —
   // the button's own enabled/tooltip state stays gated on canExport, since every
   // browser with showSaveFilePicker also has showDirectoryPicker).
-  app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
 
   // --- persistence -------------------------------------------------------
   // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
@@ -230,10 +194,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // value)` directly (#276 Phase 5 deleted the flat `App.savePref` delegate);
   // `toggleTheme` below composes `prefs.toggleTheme()` (the state-flip +
   // persist) with its own DOM half.
-  const prefs = createAppPreferences({ saveStr, state: app.state });
-  app.prefs = prefs;
-  app.saveJSON = saveJSON;
-  app.saveStr = saveStr;
+  const prefs = createAppPreferences({ saveStr, state });
   // Atomic StoredWorkspaceV5 persistence: the injected IndexedDB factory seam
   // (mirrors crypto/sessionStorage) backs the workspace collection, behind
   // which the pure WorkspaceRepository validates create/replace commits.
@@ -242,7 +203,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // bootstrap. The favorites-driven Dashboard render still reads legacy keys in
   // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
   const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
-  app.workspace = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
+  const workspaceRepo = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
   // #407 — both application surfaces live on `/sql`; URL query parameters are
   // parsed once here and reparsed on Back/Forward. The resolved live workspace
   // is shared by Workbench and Dashboard. (#588 phase 4 wave 4: the
@@ -250,37 +211,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // now live in `app.nav`, constructed further below — this initial parse is a
   // one-time DATA-PROPERTY seed, same as `currentWorkspace`/`workspaceRouteStatus`
   // right below it, and does not need the cache that comes later.)
-  app.sqlRoute = parseSqlRoute(loc.search);
-  app.currentWorkspace = null;
-  app.workspaceRouteStatus = 'ready';
-  app.keyboardOwner = null;
-  app.resetShortcutChord = () => resetShortcutChord(app);
   const keyboardOwners: KeyboardOwner[] = [];
-  app.acquireKeyboardOwner = (kind) => {
-    const owner = { kind };
-    keyboardOwners.push(owner);
-    app.keyboardOwner = owner;
-    resetShortcutChord(app);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const index = keyboardOwners.indexOf(owner);
-      if (index >= 0) keyboardOwners.splice(index, 1);
-      app.keyboardOwner = keyboardOwners.at(-1) ?? null;
-      resetShortcutChord(app);
-    };
-  };
-  app.shortcutDialog = null;
-  app.closeShortcutDialog = () => {
-    const dialog = app.shortcutDialog;
-    app.shortcutDialog = null;
-    dialog?.close();
-  };
-  app.surfaceCommands = null;
   // #425: the main work surface's SESSION state — Query, or one Dashboard
   // selected by stable id. Never persisted (see application/main-surface.ts).
-  app.mainSurface = QUERY_SURFACE;
   // #588 phase 4 wave 4: the surface-generation guard cluster
   // (`advanceSurfaceGeneration`/`captureSurfaceGeneration`/
   // `isSurfaceGenerationCurrent`/`refreshCurrentSurfaceAfterStale` — every
@@ -297,16 +230,13 @@ export function createApp(env: CreateAppEnv = {}): App {
   // block below. No flat `App` delegates for these (#276 Phase 5 deleted
   // them) except `app.saveVarRecent`, the one deliberate survivor (see its
   // own doc comment below).
-  app.FileReader = (env.FileReader || win.FileReader) as typeof FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
   // libraryName/libraryDirty effect, so callers just mutate those signals.
-  app.downloadFile = downloadFile;
 
   // --- identity ------------------------------------------------------------
   // Identity/auth reads (host/email/isSignedIn/…) live on `app.conn` itself
   // (assigned below, once `conn` is constructed) — no flat `App` delegate.
-  app.activeTab = () => activeTab(app.state);
 
   // --- independent SQL + Spec editor seams (#143/#212) ---------------------
   const Editor = env.Editor || createNoopPort;
@@ -323,34 +253,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   const specValidators: AppSpecValidators = hasValidate(env.specValidators)
     ? env.specValidators
     : createSpecValidatorRegistry((env.specValidators as readonly SpecValidatorEntry[] | undefined) || CORE_SPEC_VALIDATORS);
-  app.specValidators = specValidators;
-  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources();
-  app.CodeViewer = env.CodeViewer || (() => ({
-    setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
-  }));
   // #313: the editor adapter opens the reference pane through this injected
   // action (never by importing ui/doc-pane itself — the editor stays a leaf
   // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
   // only for tidiness; the adapter reads it lazily at click/F1 time.
-  app.openDocEntry = (target) => {
-    if (!app.requireAuthenticatedExecution()) return;
-    openDocEntry(app, target);
-  };
   // #60 — the global Escape shortcut closes the pane from anywhere (layered
   // before cancel-query in shortcuts.ts's handleKeydown).
-  app.closeDocPane = () => {
-    if (!isDocPaneOpen(app)) return false;
-    closeDocPane(app);
-    return true;
-  };
   // #315 — the F1 name-only disambiguation fallback's injected action, bound
   // the same way and for the same "editor never imports UI" reason.
-  app.openDocDisambiguation = (name) => {
-    if (!app.requireAuthenticatedExecution()) return;
-    openDocDisambiguation(app, name);
-  };
-  app.sqlEditor = Editor(app);
-  app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
   // applySpecEvaluation/evaluateSpecDraft/revalidateSpecDrafts/
   // revealFirstSpecError/registerSpecValidator, plus the editor-mode POLICY
@@ -365,7 +275,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // inline code guarded itself), the session itself never imports `src/ui/**`
   // or `src/editor/**`.
   const queryDoc = createQueryDocumentSession({
-    state: app.state,
+    state,
     activeTab: () => app.activeTab(),
     specValidators,
     hooks: {
@@ -376,7 +286,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       updateEditorModeUi: () => { if (app.updateEditorModeUi) app.updateEditorModeUi(); },
     },
   });
-  app.queryDoc = queryDoc;
   // The persisted OAuth checkpoint is deliberately below this shell: it can
   // replace authored tab state, but does not know how the mounted document
   // service rebuilds parsed Spec/diagnostic transients or owns the dirty-page
@@ -385,7 +294,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const oauthDocumentRecovery = createOAuthDocumentRecoverySession({
     storage: ss,
     now: wallNow,
-    state: app.state,
+    state,
     specValidators,
   });
   const finalizeOAuthDocumentRecovery = (
@@ -440,117 +349,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
     return { kind: 'retry-deferred-retained' };
   };
-  app.restoreOAuthDocumentRecovery = (callbackState: string): OAuthDocumentRecoveryApplyResult => {
-    // A fresh validated callback starts a new authority decision; a later
-    // deferred retry deserves its own single safe notice.
-    deferredRecoveryWarningShown = false;
-    try {
-      const restored = oauthDocumentRecovery.restore(callbackState, app.currentWorkspace);
-      if (restored.kind === 'retry-deferred-retained') {
-        return deferOAuthDocumentRecovery();
-      }
-      return finalizeOAuthDocumentRecovery(restored);
-    } catch {
-      // The session normally converts storage failures into explicit retained
-      // outcomes. Keep this boundary defensive: an unexpected pre-publication
-      // failure must not abort the signed-in shell or expose backend details.
-      return deferOAuthDocumentRecovery();
-    }
-  };
-  app.retryPendingOAuthDocumentRecovery = (): OAuthDocumentRecoveryApplyResult => {
-    let pending: OAuthDocumentRecoveryRestoreResult;
-    try {
-      pending = oauthDocumentRecovery.retryPending(app.currentWorkspace);
-    } catch {
-      return deferOAuthDocumentRecovery();
-    }
-    if (pending.kind === 'retry-deferred-retained') {
-      // Nothing was published: do not arm the dirty guard, revalidate, consume,
-      // or replace the current workspace. The retained recovery nevertheless
-      // owns callback precedence, so callers discard the legacy share handoff.
-      return deferOAuthDocumentRecovery();
-    }
-    if (pending.kind === 'document-session-changed-retained') {
-      flashToast(
-        'Recovered drafts were kept because this document session changed.',
-        {
-          document: doc,
-          action: {
-            label: 'Restore drafts',
-            onClick: () => {
-              const forced = oauthDocumentRecovery.retryPending(
-                app.currentWorkspace,
-                { allowChangedDocumentSession: true },
-              );
-              finalizeOAuthDocumentRecovery(forced);
-              app.renderCurrentSurface();
-            },
-          },
-        },
-      );
-      return pending;
-    }
-    deferredRecoveryWarningShown = false;
-    return finalizeOAuthDocumentRecovery(pending);
-  };
-  app.consumeLegacyShared = (allowRestore: boolean, consumedHandoff?: string | null): boolean => {
-    let encoded: string | null;
-    try {
-      encoded = consumedHandoff === undefined
-        ? ss.getItem('oauth_shared')
-        : consumedHandoff;
-    } catch {
-      return false;
-    }
-    if (encoded === null) return false;
-    // In-page Basic login owns the storage handoff here. Bootstrap passes its
-    // already-consumed value so the same parser/application path is reused.
-    if (consumedHandoff === undefined) {
-      try {
-        ss.removeItem('oauth_shared');
-      } catch {
-        // Handoff cleanup is best-effort. Recovery precedence still suppresses
-        // the payload, and a storage backend failure must not abort rendering.
-      }
-    }
-    // The handoff is one-shot regardless of whether recovery suppresses it,
-    // its payload is malformed, or the current route has no Query surface.
-    if (!allowRestore || app.sqlRoute.surface !== 'workspace') return false;
-
-    let shared;
-    try {
-      const raw = JSON.parse(encoded) as Record<string, unknown>;
-      // Pre-#166 OAuth handoffs stored `{sql, chart}` directly; the normal
-      // upgrader preserves that compatibility while current v2 payloads pass
-      // through with their authored Spec intact.
-      shared = upgradeSavedQuery(raw.specVersion == null
-        ? { name: 'Shared query', ...raw }
-        : raw);
-    } catch {
-      return false;
-    }
-    const panel = queryPanel(shared);
-    if (!shared.sql && !panel) return false;
-
-    const tab = app.state.tabs.value[0];
-    tab.sqlDraft = shared.sql;
-    tab.name = queryName(shared);
-    tab.specVersion = shared.specVersion;
-    setTabSpecDraft(tab, cloneJson(shared.spec));
-    const launchView = queryView(shared);
-    const normalized = launchView === 'chart' ? 'panel' : launchView;
-    if (SAVED_VIEWS.has(normalized ?? '')) {
-      app.state.resultView.value = normalized as App['state']['resultView']['value'];
-    } else if (!shared.sql && isQuerylessPanel(panel)) {
-      app.state.resultView.value = 'panel';
-    }
-    // #588 phase 4 wave 4: the cached route-search string moved into `app.nav`
-    // — this reads the LIVE value through its `currentRouteSearch()` escape
-    // hatch (see surface-navigation.ts's header comment) rather than a
-    // module-local `routeSearch` this file no longer keeps.
-    win.history.replaceState(null, '', loc.pathname + app.nav.currentRouteSearch());
-    return true;
-  };
   // The saved-query create/commit policy, history recording, and share-URL
   // building (#276 Phase 4C) now live in `application/saved-query-service.ts`,
   // constructible without App/AppState/DOM — this shell sequences Spec
@@ -560,7 +358,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // unrelated clocks), matching `createSavedQuery`'s own pre-extraction
   // inline `Date.now()` call exactly.
   const saved = createSavedQueryService({
-    state: app.state,
+    state,
     saveJSON,
     now: () => Date.now(),
     specValidators,
@@ -568,27 +366,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // in `createApp` (it depends on `serializeWrite`/`applyCommittedWorkspace`
     // defined below), so defer resolution to call time when it's defined.
     mutateWorkspace: (transform) => app.mutateWorkspace(transform),
-  });
-  app.saved = saved;
-  app.sqlEditor.onDocChange((value) => {
-    const tab = app.activeTab();
-    tab.sqlDraft = value;
-    tab.dirtySql = true;
-    // #447: no re-evaluation of the Spec on a SQL keystroke any more. The ONLY
-    // validator whose diagnostics depended on the SQL text was the Filter role's
-    // (its source SQL had to be a single row-returning statement), and that role
-    // no longer exists — every surviving rule reads the Spec alone, so
-    // re-running the whole validator graph per keystroke is pure waste.
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.renderVarStrip) app.renderVarStrip();
-  });
-  // No flat `App` delegates for `evaluateSpecDraft`/`revalidateSpecDrafts`/
-  // `revealFirstSpecError`/`registerSpecValidator` (#276 Phase 5 deleted
-  // them) — every consumer (including this file's own call sites further
-  // down) reads `queryDoc.*` directly.
-  app.specEditor.onDocChange((value) => {
-    queryDoc.evaluateSpecDraft(app.activeTab(), value);
   });
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
@@ -662,46 +439,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     clearOAuthDocumentRecovery: () => oauthDocumentRecovery.clear(),
     armOAuthRedirectUnloadBypass: () => session.armOAuthRedirectUnloadBypass(),
   });
-  app.conn = conn;
-  app.executionScope = () => activeExecutionScope;
-  app.resumeAuthenticatedExecution = () => {
-    const epoch = conn.connection.value.epoch;
-    if (activeExecutionScope?.epoch === epoch && activeExecutionScope.isOpen()) {
-      hideAuthenticationRequired();
-      return;
-    }
-    activeExecutionScope?.close();
-    const scope = createAuthenticatedExecutionScope({
-      epoch,
-      cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
-    });
-    activeExecutionScope = scope;
-    // Connection-scoped caches/panes are owners even when they have no live
-    // server query id. Their own invalidation/generation guards make late
-    // completion inert; query-bearing owners register their current ids.
-    scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
-    scope.register({ name: 'schema graph', abort: () => graph.suspend() });
-    // #586: whatever currently occupies the shared docked inspector (Cell,
-    // Rows, or Reference) — not just Reference — must not survive a
-    // connection-scope abort; `closeInspector` closes the current occupant
-    // generically, calling its own SurfaceLifecycle teardown.
-    scope.register({ name: 'docked inspector', abort: () => closeInspector(app) });
-    hideAuthenticationRequired();
-  };
-  app.requireAuthenticatedExecution = () => {
-    let scope = activeExecutionScope;
-    // Production bootstrap establishes the first scope explicitly, but
-    // controller entry points are also valid before a surface is mounted
-    // (and tests exercise that contract). An already-authenticated session can
-    // therefore materialize its scope lazily; an auth-required session cannot.
-    if (!scope && conn.isSignedIn()) {
-      app.resumeAuthenticatedExecution();
-      scope = activeExecutionScope;
-    }
-    if (scope?.isOpen()) return scope;
-    revealAuthenticationRequired(conn.connection.value.detail);
-    return null;
-  };
   // THE single live ClickHouse context — owned by the session, aliased locally
   // so every existing ch.* call site below keeps referencing the same mutated
   // object (chCtx.origin/authConfirmed are mutated in place, never replaced).
@@ -722,29 +459,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // different server) never sees stale schema/reference caches. The
   // workbench session stays reusable after destroy(): the next renderApp
   // re-attaches its shell effects.
-  app.signOut = () => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const closing = activeExecutionScope;
-    activeExecutionScope = null;
-    closing?.close(conn.captureCancellationLease());
-    workbench.destroy();
-    // Plain abort (no clearResult settle) — the login render replaces the
-    // whole DOM next, so settling the visible result would be a wasted paint.
-    graph.cancel();
-    exportService.cancelExport();
-    exportService.cancelExportScript();
-    catalog.invalidate();
-    // #313/#586: docked inspector content (Cell, Rows, or Reference — not
-    // just Reference) must never survive a connection change — closed
-    // alongside the catalog reset, before the login screen renders.
-    closeInspector(app);
-    conn.signOut();
-    // #425: explicit logout owns Dashboard teardown, the surface-generation
-    // bump, and the main-surface reset through the full-screen login renderer.
-    renderLoginApp();
-  };
-  app.showLogin = (msg) => renderLoginApp(msg);
 
   // --- data loaders --------------------------------------------------------
   // The server-metadata/reference lifecycle (#276 Phase 4A) — server-version
@@ -774,14 +488,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     ctx: () => chCtx,
     ensureConfig,
     sqlString,
-    state: app.state,
+    state,
     hooks: {
       onServerVersionLoaded: updateOpenServerVersion,
       renderVarStrip: () => app.renderVarStrip(),
       refreshEditorReference: () => app.sqlEditor.refreshReference(),
     },
   });
-  app.catalog = catalog;
   // `loadVersion`/`loadSchema`/`loadReference`/`rebuildCompletions`/
   // `docSummary`/`docEntry`/`refData`/`completions` all live on `catalog`
   // itself now (#276 Phase 5 deleted the flat `App` delegates) —
@@ -808,7 +521,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       }, '×'),
     );
   }
-  app.updateBanner = updateBanner;
   // Lazily load a table's columns (#26/#172 v2) — actions.loadColumns' target
   // below delegates to the service; kept as a local function (rather than
   // inlining `catalog.loadColumns` at the actions-registry call site) so that
@@ -824,7 +536,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // wrong for epoch-relative values (#169's `now-1h`). Callers resolve one
   // wallNow() per execution wave and thread it through every prepare of that
   // wave; debounce/coalescing also live in the callers, never in the pipeline.
-  app.wallNow = wallNow;
   // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
   // fallback (non-secure context, where randomUUID is undefined) must still be
   // unique across tabs sharing one time origin — so mix in Math.random, not just
@@ -843,20 +554,17 @@ export function createApp(env: CreateAppEnv = {}): App {
   const exec = createQueryExecutionService({
     runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
   });
-  app.exec = exec;
   // #457 removed `app.runOptionQuery` (#447 phase 2's per-variable option-query
   // transport): it existed only for the variable DRAWER's Test action. A variable
   // tab runs through the ordinary Run action and paints into the ordinary result
   // area, so there is no second transport to wire.
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
-  app.now = now;
   // Update only the live elapsed-ms readout (no table re-render). Driven by an
   // interval while running so it ticks even for queries that emit no rows (sleep).
   function tickElapsed(): void {
     if (app.dom.runElapsedEl) app.dom.runElapsedEl.textContent = app.elapsedMs().toFixed(0) + ' ms';
   }
-  app.tickElapsed = tickElapsed;
 
   // The ClickHouse HTTP `session_id` policy (#276 Phase 5 final home) —
   // `sessionParams`/`needsSession`/`sessionParamsFor` now live in
@@ -901,14 +609,12 @@ export function createApp(env: CreateAppEnv = {}): App {
       saveVarRecent: () => app.saveVarRecent(),
     },
   });
-  app.params = params;
   // The single deliberate delegate survivor (#276 Phase 5 — see its own doc
   // comment on app.types.ts's `App.saveVarRecent`): every other params-group
   // member (`saveVarValues`/`saveFilterActive`/`saveVarRecentDisabled`/
   // `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent`/`hardenedVars`)
   // has no flat `App` delegate — every consumer reads `app.params.*` /
   // `params.*` directly.
-  app.saveVarRecent = () => params.saveVarRecent();
 
   // The streaming single-file export (issue #87) + multi-statement script
   // export (issue #99) POLICY (#276 Phase 4B2) now lives in
@@ -932,7 +638,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     executionScope: () => app.executionScope(),
     canExport: () => app.canExport(), canExportScript: () => app.canExportScript(),
     sink: exportSink,
-    state: app.state, // AppState structurally satisfies ExportStateSlice
+    state, // AppState structurally satisfies ExportStateSlice
     activeTab: () => app.activeTab(),
     params: { prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked, execStatementSql: params.execStatementSql },
     sessionParamsFor,
@@ -943,7 +649,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       loadSchema: () => { void catalog.loadSchema(); },
     },
   });
-  app.exports = exportService;
 
   // The run/runScript/runEntry/cancel orchestration (#276 Phase 3a) now lives
   // in ui/workbench/workbench-session.ts — a route-scoped session that owns
@@ -957,7 +662,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const workbench = createWorkbenchSession({
     exec, ensureConfig, getToken, now, wallNow, uid,
     executionScope: () => app.executionScope(),
-    state: app.state, // AppState structurally satisfies WorkbenchStateSlice
+    state, // AppState structurally satisfies WorkbenchStateSlice
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
@@ -979,10 +684,8 @@ export function createApp(env: CreateAppEnv = {}): App {
       onAuthFailed: chCtx.onSignedOut,
     },
   });
-  app.workbench = workbench;
   // Milliseconds since the running query started (0 when idle) — delegates to
   // the session's own private runT0 bookkeeping.
-  app.elapsedMs = () => workbench.elapsedMs();
   // The Workbench `{name:Type}` query-variable STRIP — `setRunBtn` (the Run
   // button's disabled/tooltip/label sync) and `renderVarStrip` (the strip's
   // DOM view) — now lives in `ui/workbench/variable-strip.ts` (#588 W1), a
@@ -993,15 +696,13 @@ export function createApp(env: CreateAppEnv = {}): App {
   // `onDocChange` above) keeps calling them exactly as before.
   const variableStrip = createVariableStrip({
     document: doc,
-    state: app.state,
+    state,
     activeTab: () => app.activeTab(),
     params,
     wallNow,
     varStrip: () => app.dom.varStrip,
     runBtn: () => app.dom.runBtn,
   });
-  app.setRunBtn = (running, gate) => variableStrip.setRunBtn(running, gate);
-  app.renderVarStrip = () => variableStrip.renderVarStrip();
   // The Export button reflects both browser support (canExport) and whether an
   // export is already running — the button stays aria-disabled (not natively
   // disabled) in either case so its tooltip still shows on hover.
@@ -1017,7 +718,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       : can ? 'Export full result to a file (streams to disk, uncapped)'
         : 'Large export requires Chrome/Edge over HTTPS';
   }
-  app.setExportBtn = setExportBtn;
   // Busy state for the Format button — formatting a multi-statement script is one
   // request per statement, so it can take a moment; show a spinner + disable.
   function setFmtBtn(busy: boolean): void {
@@ -1027,7 +727,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       busy ? h('span', { class: 'spin' }, Icon.spinner()) : Icon.braces(),
       busy ? 'Formatting…' : 'Format');
   }
-  app.setFmtBtn = setFmtBtn;
 
   // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place. The
   // raw (untrimmed) SQL is sent so a syntax error's reported position maps 1:1
@@ -1164,7 +863,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       onAuthFailed: chCtx.onSignedOut,
     },
   });
-  app.graph = graph;
 
   function cancelSchemaGraph(opts?: { clearResult?: boolean }): void {
     graph.cancel(opts);
@@ -1348,10 +1046,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // only History does) — this wrapper no longer string-compares a panel id.
   // `app.shell` is null before the first shell mount, so this is always a
   // safe no-op that early.
-  app.recordHistory = (tab, sqlText) => {
-    saved.recordHistory(tab, sqlText);
-    app.shell?.sidePanels.notifyRunComplete();
-  };
 
   // --- share + star ------------------------------------------------------
   function share() {
@@ -1457,7 +1151,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   const specBlocked = (tab: QueryTab): boolean => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
-  app.specBlocked = specBlocked;
 
   // The Save-popover/user-menu light anchored popover (non-modal — distinct
   // from `openAnchoredDialog`'s modal dialog chrome) now lives in
@@ -1491,7 +1184,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // flat delegates onto the controller for their wide existing consumers.
   const saveController = createSaveController({
     document: doc,
-    state: app.state,
+    state,
     activeTab: () => app.activeTab(),
     saved: { commit: (tab, evaluated) => saved.commit(tab, evaluated), create: (tab, name, description) => saved.create(tab, name, description) },
     queryDoc: {
@@ -1515,7 +1208,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     syncSpecEditorFromState: () => app.specEditor.syncFromState(),
     specBlocked,
   });
-  app.updateSaveBtn = saveController.updateSaveBtn;
 
   function formatSpec(): void {
     const tab = app.activeTab();
@@ -1548,14 +1240,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     return true;
   }
 
-  app.activateInvalidSpecDraft = (tab) => {
-    if (!tab) return;
-    batch(() => { app.state.activeTabId.value = tab.id; });
-    tab.editorMode = 'spec';
-    app.updateEditorModeUi!();
-    app.specEditor.focus();
-    flashToast('Fix Spec JSON first', { document: doc });
-  };
 
   // User menu: dropdown under the header user button, holding the identity and
   // a Log out item. Same close model as the save popover (Esc + outside click).
@@ -1573,7 +1257,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     ({ close } = anchoredPopover(menu, app.dom.userBtn!, 'userMenu'));
     setTimeout(() => logoutBtn.focus());
   }
-  app.openUserMenu = openUserMenu;
 
   function toggleTheme(): void {
     // The shared DOM composition (state-flip + persist + `data-theme` +
@@ -1587,7 +1270,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
   // Exposed so the schema-view overlay can drive the same toggle (keeps state +
   // saved pref + header icon in sync rather than flipping data-theme behind them).
-  app.toggleTheme = toggleTheme;
 
   // On mobile (#126), jump the bottom-nav to the Editor panel after an action
   // that changes the editor content; a no-op on desktop.
@@ -1692,17 +1374,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Reference. `closeInspector` is generic over the current occupant.
     closeInspector(app);
   };
-  app.renderDashboard = () => {
-    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
-    beginSurfaceTransition();
-    const mounted = ensureShell();
-    // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
-    // width immediately after mount, and a hidden host measures 0 — which
-    // silently pins every Dashboard to the widest 12-column breakpoint. happy-dom
-    // always reports 0, so only a real browser can catch a regression here.
-    mounted.showHost('dashboard');
-    return renderDashboard(app, dashboardRenderTarget(mounted));
-  };
   const disposeCurrentSurface = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
@@ -1730,7 +1401,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Declared here, above its first caller, so no path can reach it before
   // `createApp` has finished wiring the controller.
   const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
-  app.invalidateDashboardTree = invalidateDashboardTree;
 
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => {
     app.currentWorkspace = workspace;
@@ -1843,10 +1513,8 @@ export function createApp(env: CreateAppEnv = {}): App {
       app.renderCurrentSurface();
     }
   };
-  app.applyCommittedWorkspace = applyCommittedWorkspace;
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
   // Import / Replace operations use to mint fresh ids (`uid('ws-')`).
-  app.genId = () => uid('ws-');
 
   // #588 phase 4 wave 3: queueing, repository calls, tokens, broadcasts,
   // refresh scheduling, listeners, and beforeunload now live in
@@ -1859,8 +1527,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   // BODIES onto its own accessors; this session's own interface does not
   // change then.
   session = createWorkspaceSession({
-    repository: app.workspace,
-    state: app.state,
+    repository: workspaceRepo,
+    state,
     uid,
     genId: () => app.genId(),
     broadcastChannelFactory,
@@ -1913,24 +1581,19 @@ export function createApp(env: CreateAppEnv = {}): App {
       },
     },
   });
-  app.workspaceSession = session;
   // #343 step 4: the route/surface refresh hook a mounted route registers to
   // react AFTER a refresh actually projected an external change — Dashboard
   // overrides this to rebuild its viewer session from the latest committed
   // workspace. Default no-op: the Workbench route's repaint is built into
   // `app.workspaceSession.refreshWorkspaceFromStore` itself. Flat delegate
   // (wide production consumer set — see app.types.ts).
-  app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
   // #343 §5/§6: invoked when another tab reports a workspace change (channel
   // receive, or a focus/visibility event) — the session's own channel
   // handler and focus/visibility listeners call `scheduleRefresh()` directly;
   // this flat delegate is what a mounted route/test overrides to observe the
   // signal itself (never receives this tab's own broadcast).
-  app.onExternalWorkspaceChange = () => session.scheduleRefresh();
   // Flat delegates onto the session for its wide production consumer set
   // (workbench-shell.ts, oauth callbacks, save-controller.ts's thunk).
-  app.mutateWorkspace = session.mutateWorkspace;
-  app.syncBeforeUnload = () => session.syncBeforeUnload();
 
   // #588 phase 4 wave 4: `resetCorruptWorkspace` stays here (real UI
   // orchestration — drives `app.workspace.delete` alongside
@@ -1987,9 +1650,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // `SurfaceStatePort` — mutations through it land on the real `app`, so
   // nothing outside this file needs to change.
   const nav = createSurfaceNavigation({
-    state: app.state,
+    state,
     surface: () => app,
-    repository: app.workspace,
+    repository: workspaceRepo,
     session,
     history: win.history,
     basePath: () => conn.basePath,
@@ -2027,145 +1690,490 @@ export function createApp(env: CreateAppEnv = {}): App {
       dispatchOpenDashboard: (request) => app.openDashboard(request),
     },
   });
-  app.nav = nav;
   // Flat delegates for every wide-consumer member (dashboard.ts,
   // dashboard-tree.ts, file-menu.ts, app-shell.ts, shortcuts.ts,
   // saved-history.ts, tests) — `handleSqlPopState`/`focusDashboardMember`
   // (router-private) and `syncSqlRoute`/`rewriteWorkspaceRoute` (repointed to
   // main.ts/file-menu.ts) have NO flat delegate; reach them via `app.nav.*`.
-  app.navigateSqlRoute = nav.navigateSqlRoute;
-  app.renderCurrentSurface = nav.renderCurrentSurface;
-  app.loadWorkspaceOnBoot = nav.loadWorkspaceOnBoot;
-  app.reloadDashboardRoute = nav.reloadDashboardRoute;
-  app.openDashboard = nav.openDashboard;
-  app.showQuerySurface = nav.showQuerySurface;
-  app.showDashboardSurface = nav.showDashboardSurface;
-  app.openSavedQuery = nav.openSavedQuery;
-  app.openPanelQuery = nav.openPanelQuery;
-  app.openVariableTab = nav.openVariableTab;
-  app.captureSurfaceGeneration = nav.captureSurfaceGeneration;
-  app.isSurfaceGenerationCurrent = nav.isSurfaceGenerationCurrent;
-  app.refreshCurrentSurfaceAfterStale = nav.refreshCurrentSurfaceAfterStale;
 
   // --- actions registry --------------------------------------------------
   const withAuthenticatedExecution = <T>(operation: () => T): T | undefined =>
     (app.requireAuthenticatedExecution() ? operation() : undefined);
-  app.actions = {
-    run: (opts) => withAuthenticatedExecution(() => workbench.runEntry(opts)),
-    cancel: () => workbench.cancel(),
-    newTab: () => newTab(app),
-    selectTab: (id) => selectTab(app, id),
-    closeTab: (id) => closeTab(app, id),
-    // #425: opening a query is a Query-mode act, so every EXISTING opening path
-    // (the Library list, History, the schema tree's double-click) switches the
-    // main surface back before loading — otherwise the new tab would land behind
-    // a visible Dashboard. A no-op when the Query surface is already active.
-    loadIntoNewTab: (queryOrName, sql) => {
-      app.showQuerySurface();
-      loadIntoNewTab(app, queryOrName, sql);
-      toEditorOnMobile();
+
+  app = {
+    state,
+    dom: {},
+    root: env.root || doc.getElementById('root'),
+    document: doc,
+    Chart: env.Chart || win.Chart,
+    cssVar: env.cssVar || ((name: string) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
+    Dagre: env.Dagre || win.dagre,
+    openWindow: env.openWindow || ((...a: Parameters<Window['open']>) => win.open(...a)),
+    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style')!.textContent || '' : ''),
+    faviconHref: env.faviconHref
+      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]')!.getAttribute('href') || '' : ''),
+    showSaveFilePicker: env.showSaveFilePicker
+      || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
+    showDirectoryPicker: env.showDirectoryPicker
+      || (typeof win.showDirectoryPicker === 'function' ? win.showDirectoryPicker.bind(win) : null),
+    isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
+    build: env.build || 'dev',
+    matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
+    shell: null,
+    canExport: () => !!app.showSaveFilePicker && app.isSecureContext,
+    canExportScript: () => !!app.showDirectoryPicker && app.isSecureContext,
+    prefs: prefs,
+    saveJSON: saveJSON,
+    saveStr: saveStr,
+    workspace: workspaceRepo,
+    sqlRoute: parseSqlRoute(loc.search),
+    currentWorkspace: null,
+    workspaceRouteStatus: 'ready',
+    keyboardOwner: null,
+    resetShortcutChord: () => resetShortcutChord(app),
+    acquireKeyboardOwner: (kind) => {
+      const owner = { kind };
+      keyboardOwners.push(owner);
+      app.keyboardOwner = owner;
+      resetShortcutChord(app);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const index = keyboardOwners.indexOf(owner);
+        if (index >= 0) keyboardOwners.splice(index, 1);
+        app.keyboardOwner = keyboardOwners.at(-1) ?? null;
+        resetShortcutChord(app);
+      };
     },
-    login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
-    // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
-    // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
-    // workspace resolution runs for a username/password session. Without it,
-    // basic auth would keep rendering the placeholder workspace instead of the
-    // requested or last-used persisted workspace.
-    connect: async (input) => {
-      const resumeMountedDocument = shell !== null && activeExecutionScope === null;
-      await conn.connectBasic(input);
-      app.resumeAuthenticatedExecution();
-      if (resumeMountedDocument) {
-        // Preserve the exact mounted document/editor/result objects. Only
-        // connection-scoped metadata and execution owners are refreshed.
-        await Promise.allSettled([catalog.loadSchema(), catalog.loadReference()]);
-        void catalog.loadVersion();
+    shortcutDialog: null,
+    closeShortcutDialog: () => {
+      const dialog = app.shortcutDialog;
+      app.shortcutDialog = null;
+      dialog?.close();
+    },
+    surfaceCommands: null,
+    mainSurface: QUERY_SURFACE,
+    FileReader: (env.FileReader || win.FileReader) as typeof FileReader,
+    downloadFile: downloadFile,
+    // #588 phase 4 wave 5: genuinely missing before this wave -- masked by
+    // the old `Partial<App>` + `as App` cast (file-menu.js reads/writes
+    // `app.editingLibrary` directly, and a `boolean` field that's never
+    // initialized here read as `undefined`, which is falsy and so behaved
+    // like `false` at every existing read site -- but the field is NOT
+    // optional on `App`, so the one-literal construction below made this an
+    // explicit compile-time gap (`TS2739`) rather than a silent runtime one).
+    editingLibrary: false,
+    activeTab: () => activeTab(app.state),
+    specValidators: specValidators,
+    specCompletionSources: env.specCompletionSources || createSpecCompletionSources(),
+    CodeViewer: env.CodeViewer || (() => ({
+      setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
+    })),
+    openDocEntry: (target) => {
+      if (!app.requireAuthenticatedExecution()) return;
+      openDocEntry(app, target);
+    },
+    closeDocPane: () => {
+      if (!isDocPaneOpen(app)) return false;
+      closeDocPane(app);
+      return true;
+    },
+    openDocDisambiguation: (name) => {
+      if (!app.requireAuthenticatedExecution()) return;
+      openDocDisambiguation(app, name);
+    },
+    // Stage 5 (after the literal, below) overwrites both editor ports with
+    // the real construction -- these are intentional placeholders so every
+    // OTHER member of this literal can reference a fully-typed `EditorPort`/
+    // `SpecEditorPort` shape immediately.
+    sqlEditor: createNoopPort(),
+    specEditor: createNoopSpecEditor(),
+    queryDoc: queryDoc,
+    restoreOAuthDocumentRecovery: (callbackState: string): OAuthDocumentRecoveryApplyResult => {
+      // A fresh validated callback starts a new authority decision; a later
+      // deferred retry deserves its own single safe notice.
+      deferredRecoveryWarningShown = false;
+      try {
+        const restored = oauthDocumentRecovery.restore(callbackState, app.currentWorkspace);
+        if (restored.kind === 'retry-deferred-retained') {
+          return deferOAuthDocumentRecovery();
+        }
+        return finalizeOAuthDocumentRecovery(restored);
+      } catch {
+        // The session normally converts storage failures into explicit retained
+        // outcomes. Keep this boundary defensive: an unexpected pre-publication
+        // failure must not abort the signed-in shell or expose backend details.
+        return deferOAuthDocumentRecovery();
+      }
+    },
+    retryPendingOAuthDocumentRecovery: (): OAuthDocumentRecoveryApplyResult => {
+      let pending: OAuthDocumentRecoveryRestoreResult;
+      try {
+        pending = oauthDocumentRecovery.retryPending(app.currentWorkspace);
+      } catch {
+        return deferOAuthDocumentRecovery();
+      }
+      if (pending.kind === 'retry-deferred-retained') {
+        // Nothing was published: do not arm the dirty guard, revalidate, consume,
+        // or replace the current workspace. The retained recovery nevertheless
+        // owns callback precedence, so callers discard the legacy share handoff.
+        return deferOAuthDocumentRecovery();
+      }
+      if (pending.kind === 'document-session-changed-retained') {
+        flashToast(
+          'Recovered drafts were kept because this document session changed.',
+          {
+            document: doc,
+            action: {
+              label: 'Restore drafts',
+              onClick: () => {
+                const forced = oauthDocumentRecovery.retryPending(
+                  app.currentWorkspace,
+                  { allowChangedDocumentSession: true },
+                );
+                finalizeOAuthDocumentRecovery(forced);
+                app.renderCurrentSurface();
+              },
+            },
+          },
+        );
+        return pending;
+      }
+      deferredRecoveryWarningShown = false;
+      return finalizeOAuthDocumentRecovery(pending);
+    },
+    consumeLegacyShared: (allowRestore: boolean, consumedHandoff?: string | null): boolean => {
+      let encoded: string | null;
+      try {
+        encoded = consumedHandoff === undefined
+          ? ss.getItem('oauth_shared')
+          : consumedHandoff;
+      } catch {
+        return false;
+      }
+      if (encoded === null) return false;
+      // In-page Basic login owns the storage handoff here. Bootstrap passes its
+      // already-consumed value so the same parser/application path is reused.
+      if (consumedHandoff === undefined) {
+        try {
+          ss.removeItem('oauth_shared');
+        } catch {
+          // Handoff cleanup is best-effort. Recovery precedence still suppresses
+          // the payload, and a storage backend failure must not abort rendering.
+        }
+      }
+      // The handoff is one-shot regardless of whether recovery suppresses it,
+      // its payload is malformed, or the current route has no Query surface.
+      if (!allowRestore || app.sqlRoute.surface !== 'workspace') return false;
+
+      let shared;
+      try {
+        const raw = JSON.parse(encoded) as Record<string, unknown>;
+        // Pre-#166 OAuth handoffs stored `{sql, chart}` directly; the normal
+        // upgrader preserves that compatibility while current v2 payloads pass
+        // through with their authored Spec intact.
+        shared = upgradeSavedQuery(raw.specVersion == null
+          ? { name: 'Shared query', ...raw }
+          : raw);
+      } catch {
+        return false;
+      }
+      const panel = queryPanel(shared);
+      if (!shared.sql && !panel) return false;
+
+      const tab = app.state.tabs.value[0];
+      tab.sqlDraft = shared.sql;
+      tab.name = queryName(shared);
+      tab.specVersion = shared.specVersion;
+      setTabSpecDraft(tab, cloneJson(shared.spec));
+      const launchView = queryView(shared);
+      const normalized = launchView === 'chart' ? 'panel' : launchView;
+      if (SAVED_VIEWS.has(normalized ?? '')) {
+        app.state.resultView.value = normalized as App['state']['resultView']['value'];
+      } else if (!shared.sql && isQuerylessPanel(panel)) {
+        app.state.resultView.value = 'panel';
+      }
+      // #588 phase 4 wave 4: the cached route-search string moved into `app.nav`
+      // — this reads the LIVE value through its `currentRouteSearch()` escape
+      // hatch (see surface-navigation.ts's header comment) rather than a
+      // module-local `routeSearch` this file no longer keeps.
+      win.history.replaceState(null, '', loc.pathname + app.nav.currentRouteSearch());
+      return true;
+    },
+    saved: saved,
+    conn: conn,
+    executionScope: () => activeExecutionScope,
+    resumeAuthenticatedExecution: () => {
+      const epoch = conn.connection.value.epoch;
+      if (activeExecutionScope?.epoch === epoch && activeExecutionScope.isOpen()) {
+        hideAuthenticationRequired();
         return;
       }
-      const workspace = await app.loadWorkspaceOnBoot();
-      const pendingRecovery = workspace
-        ? app.retryPendingOAuthDocumentRecovery()
-        : null;
-      app.consumeLegacyShared(
-        !recoveryOwnsLegacyShare(pendingRecovery),
-      );
-      app.renderCurrentSurface();
-      void app.catalog.loadVersion();
+      activeExecutionScope?.close();
+      const scope = createAuthenticatedExecutionScope({
+        epoch,
+        cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
+      });
+      activeExecutionScope = scope;
+      // Connection-scoped caches/panes are owners even when they have no live
+      // server query id. Their own invalidation/generation guards make late
+      // completion inert; query-bearing owners register their current ids.
+      scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
+      scope.register({ name: 'schema graph', abort: () => graph.suspend() });
+      // #586: whatever currently occupies the shared docked inspector (Cell,
+      // Rows, or Reference) — not just Reference — must not survive a
+      // connection-scope abort; `closeInspector` closes the current occupant
+      // generically, calling its own SurfaceLifecycle teardown.
+      scope.register({ name: 'docked inspector', abort: () => closeInspector(app) });
+      hideAuthenticationRequired();
     },
-    share,
-    copyResult,
-    // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
-    // than the real always-`QueryResult`-shaped value every caller (results.ts's
-    // Copy button, the detached Data view) actually passes — `Json`'s index
-    // signature can't guarantee `QueryResult`'s required fields, so a wrapper
-    // (not the function reference directly) bridges the two: `| null` on both
-    // sides of the cast keeps it a single legal step (same pattern as
-    // `recordHistory`'s above).
-    copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
-    exportEntry: () => withAuthenticatedExecution(exportEntry),
-    exportDirect: (sqlInput, waveMs) =>
-      withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
-    cancelExport,
-    cancelExportScript,
-    save: saveController.saveActiveQuery,
-    openUserMenu,
-    formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
-    formatSpec,
-    setEditorMode,
-    explainQuery: () => withAuthenticatedExecution(explainQuery),
-    setExplainView: (id) => withAuthenticatedExecution(() => setExplainView(id)),
-    setResultRowLimit,
-    showSchemaGraph: (focus) =>
-      withAuthenticatedExecution(() => showSchemaGraph(focus)) ?? Promise.resolve(),
-    cancelSchemaGraph,
-    expandSchemaGraph: (focus) =>
-      withAuthenticatedExecution(() => expandSchemaGraph(focus)) ?? Promise.resolve(),
-    openNodeDetail: (node, targetDoc) =>
-      withAuthenticatedExecution(() => openNodeDetail(node, targetDoc)) ?? Promise.resolve(),
-    insertCreate: async (target) => {
-      if (!app.requireAuthenticatedExecution()) return;
-      await insertCreate(target);
-      toEditorOnMobile();
+    requireAuthenticatedExecution: () => {
+      let scope = activeExecutionScope;
+      // Production bootstrap establishes the first scope explicitly, but
+      // controller entry points are also valid before a surface is mounted
+      // (and tests exercise that contract). An already-authenticated session can
+      // therefore materialize its scope lazily; an auth-required session cannot.
+      if (!scope && conn.isSignedIn()) {
+        app.resumeAuthenticatedExecution();
+        scope = activeExecutionScope;
+      }
+      if (scope?.isOpen()) return scope;
+      revealAuthenticationRequired(conn.connection.value.detail);
+      return null;
     },
-    openCreateInNewTab: (target, name) =>
-      withAuthenticatedExecution(() => openCreateInNewTab(target, name)) ?? Promise.resolve(),
-    openShortcuts: () => {
-      const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
-      if (dialog) app.shortcutDialog = dialog;
+    signOut: () => {
+      app.closeShortcutDialog();
+      resetShortcutChord(app);
+      const closing = activeExecutionScope;
+      activeExecutionScope = null;
+      closing?.close(conn.captureCancellationLease());
+      workbench.destroy();
+      // Plain abort (no clearResult settle) — the login render replaces the
+      // whole DOM next, so settling the visible result would be a wasted paint.
+      graph.cancel();
+      exportService.cancelExport();
+      exportService.cancelExportScript();
+      catalog.invalidate();
+      // #313/#586: docked inspector content (Cell, Rows, or Reference — not
+      // just Reference) must never survive a connection change — closed
+      // alongside the catalog reset, before the login screen renders.
+      closeInspector(app);
+      conn.signOut();
+      // #425: explicit logout owns Dashboard teardown, the surface-generation
+      // bump, and the main-surface reset through the full-screen login renderer.
+      renderLoginApp();
     },
-    // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
-    // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
-    insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
-    replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
-    loadColumns: (db, table) =>
-      withAuthenticatedExecution(() => loadColumns(db, table)) ?? Promise.resolve(),
-    // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
-    // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
-    // (no new array), so this is also the one place that re-syncs the
-    // `beforeunload` guard for that case — the tab-list reactive effect
-    // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
-    // tabs) on its own.
-    rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
-    rerenderResults: () => renderResults(app),
-    updateSaveBtn: () => app.updateSaveBtn(),
+    showLogin: (msg) => renderLoginApp(msg),
+    catalog: catalog,
+    updateBanner: updateBanner,
+    wallNow: wallNow,
+    exec: exec,
+    now: now,
+    tickElapsed: tickElapsed,
+    params: params,
+    saveVarRecent: () => params.saveVarRecent(),
+    exports: exportService,
+    workbench: workbench,
+    elapsedMs: () => workbench.elapsedMs(),
+    setRunBtn: (running, gate) => variableStrip.setRunBtn(running, gate),
+    renderVarStrip: () => variableStrip.renderVarStrip(),
+    setExportBtn: setExportBtn,
+    setFmtBtn: setFmtBtn,
+    graph: graph,
+    recordHistory: (tab, sqlText) => {
+      saved.recordHistory(tab, sqlText);
+      app.shell?.sidePanels.notifyRunComplete();
+    },
+    specBlocked: specBlocked,
+    updateSaveBtn: saveController.updateSaveBtn,
+    activateInvalidSpecDraft: (tab) => {
+      if (!tab) return;
+      batch(() => { app.state.activeTabId.value = tab.id; });
+      tab.editorMode = 'spec';
+      app.updateEditorModeUi!();
+      app.specEditor.focus();
+      flashToast('Fix Spec JSON first', { document: doc });
+    },
+    openUserMenu: openUserMenu,
+    toggleTheme: toggleTheme,
+    renderDashboard: () => {
+      if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
+      beginSurfaceTransition();
+      const mounted = ensureShell();
+      // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
+      // width immediately after mount, and a hidden host measures 0 — which
+      // silently pins every Dashboard to the widest 12-column breakpoint. happy-dom
+      // always reports 0, so only a real browser can catch a regression here.
+      mounted.showHost('dashboard');
+      return renderDashboard(app, dashboardRenderTarget(mounted));
+    },
+    invalidateDashboardTree: invalidateDashboardTree,
+    applyCommittedWorkspace: applyCommittedWorkspace,
+    genId: () => uid('ws-'),
+    workspaceSession: session,
+    onWorkspaceExternallyChanged: ignoreExternalWorkspaceChange,
+    onExternalWorkspaceChange: () => session.scheduleRefresh(),
+    mutateWorkspace: session.mutateWorkspace,
+    syncBeforeUnload: () => session.syncBeforeUnload(),
+    nav: nav,
+    navigateSqlRoute: nav.navigateSqlRoute,
+    renderCurrentSurface: nav.renderCurrentSurface,
+    loadWorkspaceOnBoot: nav.loadWorkspaceOnBoot,
+    reloadDashboardRoute: nav.reloadDashboardRoute,
+    openDashboard: nav.openDashboard,
+    showQuerySurface: nav.showQuerySurface,
+    showDashboardSurface: nav.showDashboardSurface,
+    openSavedQuery: nav.openSavedQuery,
+    openPanelQuery: nav.openPanelQuery,
+    openVariableTab: nav.openVariableTab,
+    captureSurfaceGeneration: nav.captureSurfaceGeneration,
+    isSurfaceGenerationCurrent: nav.isSurfaceGenerationCurrent,
+    refreshCurrentSurfaceAfterStale: nav.refreshCurrentSurfaceAfterStale,
+    actions: {
+      run: (opts) => withAuthenticatedExecution(() => workbench.runEntry(opts)),
+      cancel: () => workbench.cancel(),
+      newTab: () => newTab(app),
+      selectTab: (id) => selectTab(app, id),
+      closeTab: (id) => closeTab(app, id),
+      // #425: opening a query is a Query-mode act, so every EXISTING opening path
+      // (the Library list, History, the schema tree's double-click) switches the
+      // main surface back before loading — otherwise the new tab would land behind
+      // a visible Dashboard. A no-op when the Query surface is already active.
+      loadIntoNewTab: (queryOrName, sql) => {
+        app.showQuerySurface();
+        loadIntoNewTab(app, queryOrName, sql);
+        toEditorOnMobile();
+      },
+      login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
+      // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
+      // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
+      // workspace resolution runs for a username/password session. Without it,
+      // basic auth would keep rendering the placeholder workspace instead of the
+      // requested or last-used persisted workspace.
+      connect: async (input) => {
+        const resumeMountedDocument = shell !== null && activeExecutionScope === null;
+        await conn.connectBasic(input);
+        app.resumeAuthenticatedExecution();
+        if (resumeMountedDocument) {
+          // Preserve the exact mounted document/editor/result objects. Only
+          // connection-scoped metadata and execution owners are refreshed.
+          await Promise.allSettled([catalog.loadSchema(), catalog.loadReference()]);
+          void catalog.loadVersion();
+          return;
+        }
+        const workspace = await app.loadWorkspaceOnBoot();
+        const pendingRecovery = workspace
+          ? app.retryPendingOAuthDocumentRecovery()
+          : null;
+        app.consumeLegacyShared(
+          !recoveryOwnsLegacyShare(pendingRecovery),
+        );
+        app.renderCurrentSurface();
+        void app.catalog.loadVersion();
+      },
+      share,
+      copyResult,
+      // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
+      // than the real always-`QueryResult`-shaped value every caller (results.ts's
+      // Copy button, the detached Data view) actually passes — `Json`'s index
+      // signature can't guarantee `QueryResult`'s required fields, so a wrapper
+      // (not the function reference directly) bridges the two: `| null` on both
+      // sides of the cast keeps it a single legal step (same pattern as
+      // `recordHistory`'s above).
+      copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
+      exportEntry: () => withAuthenticatedExecution(exportEntry),
+      exportDirect: (sqlInput, waveMs) =>
+        withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
+      cancelExport,
+      cancelExportScript,
+      save: saveController.saveActiveQuery,
+      openUserMenu,
+      formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
+      formatSpec,
+      setEditorMode,
+      explainQuery: () => withAuthenticatedExecution(explainQuery),
+      setExplainView: (id) => withAuthenticatedExecution(() => setExplainView(id)),
+      setResultRowLimit,
+      showSchemaGraph: (focus) =>
+        withAuthenticatedExecution(() => showSchemaGraph(focus)) ?? Promise.resolve(),
+      cancelSchemaGraph,
+      expandSchemaGraph: (focus) =>
+        withAuthenticatedExecution(() => expandSchemaGraph(focus)) ?? Promise.resolve(),
+      openNodeDetail: (node, targetDoc) =>
+        withAuthenticatedExecution(() => openNodeDetail(node, targetDoc)) ?? Promise.resolve(),
+      insertCreate: async (target) => {
+        if (!app.requireAuthenticatedExecution()) return;
+        await insertCreate(target);
+        toEditorOnMobile();
+      },
+      openCreateInNewTab: (target, name) =>
+        withAuthenticatedExecution(() => openCreateInNewTab(target, name)) ?? Promise.resolve(),
+      openShortcuts: () => {
+        const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
+        if (dialog) app.shortcutDialog = dialog;
+      },
+      // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
+      // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
+      insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
+      replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
+      loadColumns: (db, table) =>
+        withAuthenticatedExecution(() => loadColumns(db, table)) ?? Promise.resolve(),
+      // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
+      // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
+      // (no new array), so this is also the one place that re-syncs the
+      // `beforeunload` guard for that case — the tab-list reactive effect
+      // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
+      // tabs) on its own.
+      rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
+      rerenderResults: () => renderResults(app),
+      updateSaveBtn: () => app.updateSaveBtn(),
+    },
+    renderApp: () => {
+      if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
+      beginSurfaceTransition();
+      // The Dashboard's own route-scoped resources go; the query column does NOT
+      // (it is mounted once and preserved — see `ensureShell`).
+      disposeDashboardSurface();
+      app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+      const mounted = ensureShell();
+      mounted.setHeader(buildAppHeader(app));
+      mounted.showHost('query');
+      // Repaint the results pane on every return to this surface. A query that
+      // finished while the Dashboard was visible built its Chart.js canvas in a
+      // zero-size host, and chart-render only auto-resizes a laid-out one — so
+      // without this the chart comes back blank. Cheap and idempotent otherwise.
+      renderResults(app);
+    },
   };
-
-  app.renderApp = () => {
-    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
-    beginSurfaceTransition();
-    // The Dashboard's own route-scoped resources go; the query column does NOT
-    // (it is mounted once and preserved — see `ensureShell`).
-    disposeDashboardSurface();
-    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-    const mounted = ensureShell();
-    mounted.setHeader(buildAppHeader(app));
-    mounted.showHost('query');
-    // Repaint the results pane on every return to this surface. A query that
-    // finished while the Dashboard was visible built its Chart.js canvas in a
-    // zero-size host, and chart-render only auto-resizes a laid-out one — so
-    // without this the chart comes back blank. Cheap and idempotent otherwise.
-    renderResults(app);
-  };
+  // Stage 5 -- late wiring: every statement below OVERWRITES a member the
+  // literal above already declared (or registers a listener); none of them
+  // is a first assignment. `app` is fully built by this point, so `Editor`/
+  // `SpecEditor` (real CodeMirror adapters in production) receive a
+  // completely-wired controller instead of the partially-built object they
+  // used to see mid-construction.
+  app.sqlEditor = Editor(app);
+  app.specEditor = SpecEditor(app);
+  app.sqlEditor.onDocChange((value) => {
+    const tab = app.activeTab();
+    tab.sqlDraft = value;
+    tab.dirtySql = true;
+    // #447: no re-evaluation of the Spec on a SQL keystroke any more. The ONLY
+    // validator whose diagnostics depended on the SQL text was the Filter role's
+    // (its source SQL had to be a single row-returning statement), and that role
+    // no longer exists — every surviving rule reads the Spec alone, so
+    // re-running the whole validator graph per keystroke is pure waste.
+    if (app.actions) app.actions.rerenderTabs();
+    if (app.updateSaveBtn) app.updateSaveBtn();
+    if (app.renderVarStrip) app.renderVarStrip();
+  });
+  // No flat `App` delegates for `evaluateSpecDraft`/`revalidateSpecDrafts`/
+  // `revealFirstSpecError`/`registerSpecValidator` (#276 Phase 5 deleted
+  // them) — every consumer (including this file's own call sites further
+  // down) reads `queryDoc.*` directly.
+  app.specEditor.onDocChange((value) => {
+    queryDoc.evaluateSpecDraft(app.activeTab(), value);
+  });
   if (typeof win.addEventListener === 'function') {
     win.addEventListener('popstate', () => { void app.nav.handleSqlPopState(); });
   }

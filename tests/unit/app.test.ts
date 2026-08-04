@@ -1141,6 +1141,67 @@ describe('createApp basics', () => {
     app.updateEditorModeUi!();
     expect(app.activeTab().editorMode).toBe('sql');
   });
+
+  // #588 phase 4 wave 5: `createApp` now assembles `app` as ONE object literal
+  // (no `as App` cast) — see app.ts's own header comment on `let app: App;`.
+  // The one way this could still observe a partially-wired controller is an
+  // injected editor port whose `onDocChange` fires the subscriber SYNCHRONOUSLY
+  // at registration time (real CodeMirror never does this — it only calls back
+  // on a later keystroke — but the seam contract doesn't forbid it, and Stage 5
+  // registers `onDocChange` right after `Editor(app)`/`SpecEditor(app)` are
+  // constructed, well after the literal has already assigned every OTHER
+  // member). This proves the eager-callback case lands on a fully-built `app`:
+  // the guarded reads inside the subscriber (`if (app.actions)` etc., #588
+  // phase 4 wave 5 kept these verbatim) see real values rather than tripping a
+  // TDZ ReferenceError or silently no-oping against a still-partial object.
+  it('a sync-firing injected Editor/SpecEditor onDocChange observes a fully-constructed app, not a partial-construction hole (#588 wave 5)', () => {
+    const sqlValue = 'SELECT 1 -- fired synchronously at Editor registration';
+    const specValue = '{"name":"fired-at-registration"}';
+    const syncEditor = (): EditorPort => ({
+      mount() {},
+      destroy() {},
+      focus() {},
+      hasFocus: () => false,
+      getValue: () => sqlValue,
+      getSelection: () => ({ start: 0, end: 0, text: '' }),
+      insertAtCursor() {},
+      replaceDocument() {},
+      revealOffset() {},
+      syncFromState() {},
+      refreshReference() {},
+      onDocChange: (cb) => { cb(sqlValue); return () => {}; },
+    });
+    const syncSpecEditor = () => ({
+      ...syncEditor(),
+      requestMeasure() {},
+      setDiagnostics() {},
+      revealDiagnostic() {},
+      getValue: () => specValue,
+      onDocChange: (cb: (value: string) => void) => { cb(specValue); return () => {}; },
+    });
+
+    let app: App | undefined;
+    expect(() => {
+      app = createApp(env({ Editor: syncEditor, SpecEditor: syncSpecEditor }));
+    }).not.toThrow();
+
+    const tab = app!.activeTab();
+    // The SQL `onDocChange` subscriber ran during construction (Stage 5) and
+    // still wrote through to the real, fully-wired `app.state` — not a
+    // detached or partially-built stand-in.
+    expect(tab.sqlDraft).toBe(sqlValue);
+    expect(tab.dirtySql).toBe(true);
+    // The guarded calls inside that same subscriber (`app.actions`/
+    // `app.updateSaveBtn`/`app.renderVarStrip`) are all real by construction
+    // time now — assert the registry itself is the real one, not a hole.
+    expect(app!.actions).toBeDefined();
+    expect(typeof app!.updateSaveBtn).toBe('function');
+    expect(typeof app!.renderVarStrip).toBe('function');
+    // The Spec `onDocChange` subscriber (`queryDoc.evaluateSpecDraft`) also
+    // ran during construction without throwing, against the same fully-built
+    // `app` (it reads `app.activeTab()` internally).
+    expect(app!.queryDoc).toBeDefined();
+  });
 });
 
 // #341/#344 review fix: `app.mutateWorkspace` is the only correct way to
