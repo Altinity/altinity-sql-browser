@@ -23,6 +23,41 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   as #586 (`SurfaceLifecycle` + docked right-inspector slot), #587
   (side-panel registry), #588 (composition-root decomposition), and #589
   (dashboard gesture/repaint extraction).
+- **`SurfaceLifecycle` (`src/ui/surface-lifecycle.ts`) + a docked
+  `inspectorHost` slot** (#586, phase 1 of the #593 refactor umbrella).
+  `.main-row` (`app-shell.ts`) gains a real, shell-owned `inspectorHost` +
+  `inspectorResize` handle as layout siblings of `queryHost`/`dashboardHost`
+  — never a `position: fixed` overlay. The cell-detail drawer, rows viewer,
+  and Reference pane (`results.ts`/`doc-pane.ts`) all now dock into it
+  through the shared `SurfaceLifecycle` open/close/Escape/focus-restore
+  primitive and `inspector-host.ts`'s singleton-slot manager, replacing three
+  independent hand-rolled lifecycles (`isTopDrawer`, the `.cd-backdrop` DOM
+  probes/CSS, and the docs pane's own bespoke resize/keydown wiring — all
+  deleted). `cellDrawerPx`/`docPanePx` collapse into one `rightInspectorPx`
+  preference (compat read order: `rightInspectorPx` → `docPanePx` →
+  `cellDrawerPx` → 480px default; single canonical write, and each candidate
+  is validated independently so a corrupt canonical value falls through to a
+  real legacy one instead of yielding `NaN`). Because the inspector is now a
+  layout sibling rather than an overlay, its width is clamped **dock-aware** —
+  the old flat 92vw ceiling could starve the centre surface once the panel
+  took real layout space, so the ceiling now also reserves a 320px minimum for
+  the centre (plus the sidebar and handles) and is recomputed whenever the
+  panel unfolds or the window resizes, not once at construction. The clamp
+  only ever changes the *displayed* width; the user's persisted preference is
+  never narrowed by it. Docked surfaces
+  are now non-modal (no keyboard-owner acquisition — the pre-#586 modal cell
+  drawer blocked every app shortcut while open; this issue's docked model
+  fixes that), so `app.ts`'s Query↔Dashboard surface transition and
+  sign-out/connection-scope teardown now close whichever surface currently
+  occupies the shared dock (`closeInspector`), not just Reference. One
+  deliberate behavior change: since the dock holds only one occupant at a
+  time, opening Cell while Rows is showing now REPLACES Rows instead of
+  stacking a second panel on top of it (#488, the next phase, owns
+  tool-registry/tab persistence semantics; not in scope here). The one
+  surviving non-docked case — a cell-detail drawer opened inside a real
+  detached browser tab (`results.ts`'s Data Pane) — keeps a self-contained
+  modal overlay (renamed `.cell-detail-overlay`), still built on
+  `SurfaceLifecycle`.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent

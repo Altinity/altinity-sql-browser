@@ -851,6 +851,14 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       savedSearch: document.createElement('div'),
       savedList: document.createElement('div'),
       saveBtn: document.createElement('button'),
+      // #586 — the docked right-inspector slot + its resize handle
+      // (app-shell.ts). Real elements by default (matching this block's own
+      // "most consumers read these unconditionally" convention above) so
+      // `openCellDetail`/`openRowsViewer`/`openDocEntry` dock correctly
+      // without every caller overriding `dom` — starting `hidden`, matching
+      // app-shell.ts's real initial (folded) state.
+      inspectorHost: Object.assign(document.createElement('div'), { hidden: true }),
+      inspectorResize: Object.assign(document.createElement('div'), { hidden: true }),
     },
     actions: {
       run: vi.fn(),

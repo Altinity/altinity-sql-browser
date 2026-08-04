@@ -5,17 +5,13 @@
 //
 // Geometry/behavior (verbatim from #313's "Documentation pane" section):
 //  - persistent, non-modal — no backdrop, no focus trap, the editor stays
-//    usable underneath it (unlike results.ts's cell-detail drawer, which
-//    composes buildDrawerChrome's SAME non-modal chrome with its own modal
-//    backdrop — see drawer.ts's header comment);
+//    usable underneath it;
 //  - ONE pane instance per document — a new target replaces the current
 //    content rather than opening a second pane;
-//  - bounded horizontal resize, via its OWN persisted width (`docPanePx`,
-//    state.ts) — never `cellDrawerPx` (the cell-detail drawer's width);
 //  - `role="complementary"` with an accessible name;
 //  - a close button, and Escape while focus is inside the pane — guarded so
 //    it never ALSO fires shortcuts.ts's global Escape handling (see
-//    `ensurePane`'s keyHandler comment);
+//    `ensurePane`'s `openSurfaceLifecycle` call);
 //  - closing restores focus to whatever triggered the open;
 //  - distinct loading / found / missing / unavailable states, the last with
 //    a Retry button — the catalog (schema-catalog-service.ts's `docEntry`)
@@ -25,31 +21,41 @@
 //    `docEntry` again": a durable case re-resolves instantly from the
 //    still-`unavailable` cache, a transient one gets a fresh attempt.
 //
-// Deliberately NOT schema-detail.ts's bottom-docked fullscreen-graph pane
-// geometry (#313: "Do not require the schema graph's bottom detail pane to
-// share this geometry") — this is a right-side drawer built from
-// buildDrawerChrome's non-modal chrome (drawer.ts) with a distinct 'docs'
-// class prefix, so results.ts's `.cd-backdrop`-keyed `isTopDrawer` stays
-// blind to it (there is no backdrop here at all).
+// #586 REWRITE: this pane was ALREADY the best-behaved of the three (no
+// backdrop, no modal keyboard trap, its own bounded resize) — the other two
+// (results.ts's cell drawer/rows viewer) were the ones with the modal
+// backdrop this header used to contrast itself against. #586 gave every
+// surface ONE shared docked host (`app.dom.inspectorHost`, app-shell.ts) and
+// ONE shared open/close/Escape/focus-restore primitive
+// (`surface-lifecycle.ts`) instead of each hand-rolling its own — so this
+// pane's own bespoke resize width (`docPanePx`) and bespoke keydown listener
+// are gone: `ensurePane` now mounts through `inspector-host.ts`'s
+// `showInInspector`, and Escape/focus-restore run through
+// `openSurfaceLifecycle` (`escapePolicy: 'focus-inside'`, matching this
+// pane's own pre-#586 behavior exactly — never a keyboard-owner acquisition,
+// preserving its non-modal contract). Deliberately NOT schema-detail.ts's
+// bottom-docked fullscreen-graph pane geometry (#313: "Do not require the
+// schema graph's bottom detail pane to share this geometry").
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
+import { buildDrawerChrome } from './drawer.js';
+import { openSurfaceLifecycle } from './surface-lifecycle.js';
+import type { SurfaceLifecycleHandle } from './surface-lifecycle.js';
+import { showInInspector, releaseInspector } from './inspector-host.js';
+import type { InspectorHostApp } from './inspector-host.js';
 import { chLanguageExtension } from '../editor/ch-lang.js';
 import type { CodeViewerFactory, CodeViewerHandle } from '../editor/code-viewer.types.js';
 import type { AssembledReference } from '../core/completions.js';
 import type { DocTarget, DocLookup, DocEntry, DocKind, DocSummary } from '../core/doc-types.js';
 import { parseDocMarkdown, defaultDocLinkPolicy, latestDocUrlFromSource } from '../core/doc-markdown.js';
 import { renderDocMarkdown } from './doc-markdown-view.js';
-import type { PreferenceKey } from '../application/app-preferences.js';
 
 /** The narrow app surface this module reads — not the full ~50-member `App`
  *  contract (app.types.ts). A real `App` satisfies this directly (its
- *  `state`/`prefs`/`catalog`/`CodeViewer` fields are strict supersets). */
-export interface DocPaneApp {
+ *  `catalog`/`CodeViewer`/`dom` fields are strict supersets). */
+export interface DocPaneApp extends InspectorHostApp {
   document: Document;
-  state: { docPanePx: number };
-  prefs: { save(name: PreferenceKey, value: unknown): void };
   catalog: {
     docEntry(target: DocTarget): Promise<DocLookup<DocEntry>>;
     /** #315 — name-only disambiguation across every kind sharing a name;
@@ -113,17 +119,23 @@ type BackEntry = { kind: 'target'; target: DocTarget } | { kind: 'disambiguation
 interface PaneState {
   panel: HTMLElement;
   body: HTMLElement;
-  cancelResize: () => void;
+  /** This pane's `SurfaceLifecycle`-backed close() — `closeDocPane` funnels
+   *  through it rather than tearing anything down itself now. */
+  close: () => void;
   /** Bumped on every fresh lookup (open/retarget/retry) and on close — an
    *  in-flight `docEntry` promise whose captured token no longer matches
    *  this is stale and is dropped silently (never painted). */
   token: number;
+  /** Read by the lifecycle's `returnFocusTo` resolver at CLOSE time (never
+   *  captured once at open time) — every subsequent `openDocEntry`/
+   *  `openDocDisambiguation` call against the SAME still-open pane updates
+   *  this, so focus always returns to whichever lookup most recently
+   *  targeted it. */
   initiator: Element | null;
   /** Every CodeViewer instance mounted into the current body content —
    *  destroyed before the next render (retarget/state change) and on close,
    *  so a stale CM6 view is never left listening/painted underneath. */
   viewers: CodeViewerHandle[];
-  keyHandler: (e: KeyboardEvent) => void;
   /** #314/#315 — the session-local back stack: each entry describes what was
    *  ON SCREEN right before a related/alias/disambiguation navigation
    *  replaced it (see `BackEntry`). Torn down wholesale with the rest of
@@ -143,13 +155,6 @@ function destroyViewers(st: PaneState): void {
   st.viewers = [];
 }
 
-/**
- * Close (and fully tear down) the pane in `app.document`, if one is open —
- * a no-op otherwise. Restores focus to whatever most recently triggered
- * `openDocEntry`, when it's still connected and focusable. This is also the
- * connection-change teardown hook: app.ts's `signOut` calls it alongside
- * `catalog.invalidate()` so pane content never survives a reconnect/sign-out.
- */
 /** True when a documentation pane is currently open in `app.document` —
  *  the global Escape shortcut (ui/shortcuts.ts) closes the pane FIRST,
  *  before its cancel-running-query action, so Esc works from anywhere
@@ -158,18 +163,17 @@ export function isDocPaneOpen(app: DocPaneApp): boolean {
   return panes.has(app.document);
 }
 
+/**
+ * Close (and fully tear down) the pane in `app.document`, if one is open —
+ * a no-op otherwise. Restores focus to whatever most recently triggered
+ * `openDocEntry` (the `SurfaceLifecycle`'s `returnFocusTo` resolver), when
+ * it's still connected and focusable. This is also the connection-change
+ * teardown hook: app.ts's `signOut` calls it alongside `catalog.invalidate()`
+ * so pane content never survives a reconnect/sign-out.
+ */
 export function closeDocPane(app: DocPaneApp): void {
-  const doc = app.document;
-  const st = panes.get(doc);
-  if (!st) return;
-  panes.delete(doc);
-  st.token++; // any lookup already in flight for this pane is now stale
-  st.cancelResize();
-  destroyViewers(st);
-  doc.removeEventListener('keydown', st.keyHandler, true);
-  st.panel.remove();
-  const initiator = st.initiator as (Element & { focus?: () => void }) | null;
-  if (initiator && initiator.isConnected && typeof initiator.focus === 'function') initiator.focus();
+  const st = panes.get(app.document);
+  st?.close();
 }
 
 function ensurePane(app: DocPaneApp, doc: Document): PaneState {
@@ -177,42 +181,53 @@ function ensurePane(app: DocPaneApp, doc: Document): PaneState {
   if (existing) return existing;
 
   const body = h('div', { class: 'docs-body' });
-  const close = (): void => closeDocPane(app);
+  let lifecycle: SurfaceLifecycleHandle; // assigned below, before close() can possibly fire
   const { panel } = buildDrawerChrome(doc, {
     classPrefix: 'docs',
     title: [h('span', { class: 'docs-title-text' }, 'Reference')],
-    onClose: close,
+    onClose: () => lifecycle.close(),
   });
   panel.setAttribute('role', 'complementary');
   panel.setAttribute('aria-label', 'Documentation');
   panel.appendChild(body);
 
-  const cancelResize = attachDrawerResize(app, panel, doc, {
-    stateKey: 'docPanePx', axis: 'docPane',
+  const st: PaneState = {
+    panel, body, token: 0, initiator: null, viewers: [], backStack: [],
+    close: () => lifecycle.close(),
+  };
+
+  lifecycle = openSurfaceLifecycle({
+    document: doc,
+    // Escape closes the pane ONLY while focus is inside it — the pane is
+    // non-modal (no keyboard-owner acquisition, below), so it must never
+    // swallow an Escape meant for the editor/results elsewhere on the page.
+    escapePolicy: 'focus-inside',
+    panel,
+    // Deliberately NO acquireKeyboardOwner — Reference has never been modal
+    // (pre-#586 unchanged): the editor and results stay usable underneath it.
+    returnFocusTo: () => (st.initiator && (st.initiator as HTMLElement).isConnected ? (st.initiator as HTMLElement) : null),
+    onClose: () => {
+      st.token++; // any lookup already in flight for this pane is now stale
+      destroyViewers(st);
+      panes.delete(doc);
+      releaseInspector(app);
+    },
   });
 
-  const st: PaneState = {
-    panel, body, cancelResize, token: 0, initiator: null, viewers: [],
-    keyHandler: () => {}, backStack: [],
-  };
-  // Escape closes the pane ONLY while focus is inside it, and must never
-  // ALSO trigger shortcuts.ts's global `handleKeydown` (which cancels a
-  // running query on a plain Escape): preventDefault + stopPropagation, in
-  // the CAPTURE phase — matching results.ts's openCellDetail — so this
-  // fires before main.ts's bubble-phase global listener regardless of
-  // attachment order; `handleKeydown`'s own `if (e.defaultPrevented) return
-  // null` guard then skips it entirely.
-  st.keyHandler = (e: KeyboardEvent): void => {
-    if (e.key !== 'Escape') return;
-    if (!panel.contains(doc.activeElement)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    close();
-  };
-  doc.addEventListener('keydown', st.keyHandler, true);
-
-  doc.body.appendChild(panel);
-  panes.set(doc, st);
+  // Only register this pane as "open" if it actually mounted — a caller with
+  // no shell (yet) mounted (`app.dom.inspectorHost` absent) gets an inert
+  // `PaneState` back rather than one `isDocPaneOpen`/`closeDocPane` believe
+  // is live: recording an occupant that never actually showed would leave
+  // that bookkeeping stuck reporting "open" for nothing anyone can see.
+  // #586 finding 3: a failed mount must ALSO tear the just-opened
+  // `SurfaceLifecycle` back down — `openSurfaceLifecycle` installs its
+  // capture-phase Escape listener unconditionally, before this return value
+  // is known, so skipping `panes.set` alone (the pre-fix behavior) left that
+  // listener (and the `st` closure it captures) permanently attached to
+  // `doc` with no way for `isDocPaneOpen`/`closeDocPane` — both keyed off
+  // `panes`, which never got an entry — to ever reach it again.
+  if (showInInspector(app, panel, () => lifecycle.close())) panes.set(doc, st);
+  else lifecycle.close();
   return st;
 }
 

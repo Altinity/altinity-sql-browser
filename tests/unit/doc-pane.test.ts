@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
+import { showInInspector } from '../../src/ui/inspector-host.js';
 import type { DocEntry, DocLookup, DocSummary, DocTarget } from '../../src/core/doc-types.js';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
@@ -13,13 +14,23 @@ function fakeViewer() {
   return { setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn() };
 }
 
+// Matches app-shell.ts's real `inspectorHost`/`inspectorResize` construction:
+// appended to the live document (so this file's pervasive
+// `document.querySelector('.docs-panel')` assertions keep finding the
+// mounted pane) and starting `hidden` (folded — nothing occupies the dock
+// until a surface opens).
+function inspectorNode(): HTMLElement {
+  const el = document.body.appendChild(document.createElement('div'));
+  el.hidden = true;
+  return el;
+}
+
 function makeApp(over: Partial<DocPaneApp> = {}): DocPaneApp & { catalog: { docEntry: ReturnType<typeof vi.fn>; docDisambiguate: ReturnType<typeof vi.fn> } } {
   const docEntry = vi.fn();
   const docDisambiguate = vi.fn();
   return {
     document,
-    state: { docPanePx: 420 },
-    prefs: { save: vi.fn() },
+    dom: { inspectorHost: inspectorNode(), inspectorResize: inspectorNode() },
     catalog: { docEntry, docDisambiguate, refData: { keywords: [], functions: {} } as never },
     CodeViewer: vi.fn(() => fakeViewer()),
     ...over,
@@ -59,7 +70,15 @@ describe('doc-pane lifecycle', () => {
     expect(panel).not.toBeNull();
     expect(panel.getAttribute('role')).toBe('complementary');
     expect(panel.getAttribute('aria-label')).toBeTruthy();
-    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    // #586 finding 1's same rot, found one file over: `.cd-backdrop` is
+    // deleted repo-wide (#586 AC3), so `querySelector('.cd-backdrop')` can
+    // never find anything — a reintroduced backdrop-style wrapper around
+    // this pane would NOT be `.cd-backdrop` (that class is gone), so the old
+    // assertion passed unconditionally. `showInInspector` mounts `panel`
+    // itself directly into `inspectorHost` (inspector-host.ts), so the real,
+    // falsifiable claim is that the host's child IS the panel — not some
+    // wrapper containing it.
+    expect(app.dom.inspectorHost!.firstElementChild).toBe(panel);
     await Promise.resolve(); await Promise.resolve();
     closeDocPane(app);
   });
@@ -92,6 +111,33 @@ describe('doc-pane lifecycle', () => {
     openDocEntry(app, T_FN);
     const closeBtn = document.querySelector<HTMLButtonElement>('.docs-close')!;
     closeBtn.click();
+    expect(document.querySelector('.docs-panel')).toBeNull();
+  });
+
+  it('closing does not throw when the initiator was removed from the DOM before close (a resolver, not a captured element — #586)', () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    openDocEntry(app, T_FN);
+    trigger.remove(); // detached before close — the resolver must not restore focus to it
+    expect(() => closeDocPane(app)).not.toThrow();
+    expect(document.querySelector('.docs-panel')).toBeNull();
+  });
+
+  it('a different surface (Cell/Rows) replacing Reference in the shared dock force-closes Reference through its own registered closer (#586)', () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
+    openDocEntry(app, T_FN);
+    expect(isDocPaneOpen(app)).toBe(true);
+    // Simulate a different occupant (e.g. results.ts's cell detail) taking
+    // over the same shared inspectorHost — showInInspector force-closes
+    // whatever is currently there first, via ITS OWN registered closer
+    // (the `() => lifecycle.close()` passed to showInInspector, not the ✕
+    // button's), which must tear Reference down just as completely.
+    showInInspector(app, document.createElement('div'), vi.fn());
+    expect(isDocPaneOpen(app)).toBe(false);
     expect(document.querySelector('.docs-panel')).toBeNull();
   });
 });
@@ -796,6 +842,22 @@ describe('#315 openDocDisambiguation', () => {
     closeDocPane(app);
   });
 
+  it('a candidate with no title falls back to its target name', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found',
+      value: [
+        summaryOf({ target: { kind: 'setting', name: 'connect' }, title: '', summary: 'A connection setting.' }),
+        summaryOf({ target: { kind: 'function', name: 'connect' }, title: 'connect', summary: 'A connection function.' }),
+      ],
+    });
+    openDocDisambiguation(app, 'connect');
+    await Promise.resolve(); await Promise.resolve();
+    const items = document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link');
+    expect(items[0].textContent).toContain('connect'); // falls back to target.name
+    closeDocPane(app);
+  });
+
   it('selecting a candidate loads it in the pane and pushes the list onto the back stack; Back returns to the list', async () => {
     const app = makeApp();
     app.catalog.docDisambiguate.mockResolvedValue({
@@ -1130,25 +1192,56 @@ describe('#315 markdown-subset entries', () => {
   });
 });
 
-describe('resize uses docPanePx, not cellDrawerPx', () => {
-  it('the initial width comes from state.docPanePx', () => {
-    const app = makeApp({ state: { docPanePx: 480 } });
+// #586: the Reference pane no longer has its own persisted width or resize
+// handle — it docks into the shell-owned `inspectorHost`, sized by
+// app-shell.ts's own shared resize handle (covered in app-shell.test.ts)
+// against the single `rightInspectorPx` preference (state.test.ts). The
+// `docPanePx`-specific initial-width and drag-persist behavior this block
+// used to cover no longer exists for this pane.
+describe('docked in the shared inspector (#586)', () => {
+  it('mounts into app.dom.inspectorHost, not document.body directly, and unfolds it', () => {
+    const app = makeApp();
     app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
+    expect(app.dom.inspectorHost!.hidden).toBe(true);
     openDocEntry(app, T_FN);
-    const panel = document.querySelector<HTMLElement>('.docs-panel')!;
-    expect(panel.style.width).toBe('480px');
+    expect(app.dom.inspectorHost!.hidden).toBe(false);
+    expect(app.dom.inspectorResize!.hidden).toBe(false);
+    expect(app.dom.inspectorHost!.querySelector('.docs-panel')).not.toBeNull();
     closeDocPane(app);
+    expect(app.dom.inspectorHost!.hidden).toBe(true);
   });
 
-  it('dragging the handle persists docPanePx via prefs.save', () => {
-    const app = makeApp({ state: { docPanePx: 400 } });
+  it('opening with no shell mounted (no inspectorHost/inspectorResize) never mounts, and isDocPaneOpen stays false — it must not get stuck reporting "open" for a pane nothing ever showed', () => {
+    const app = makeApp({ dom: {} });
     app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
     openDocEntry(app, T_FN);
-    const handle = document.querySelector<HTMLElement>('.docs-panel .cd-resize-h')!;
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 }));
-    window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.prefs.save).toHaveBeenCalledWith('docPanePx', expect.any(Number));
-    closeDocPane(app);
+    expect(isDocPaneOpen(app)).toBe(false);
+    expect(document.querySelector('[role="complementary"]')).toBeNull();
+    expect(() => closeDocPane(app)).not.toThrow();
+  });
+
+  // #586 finding 3: `ensurePane` calls `openSurfaceLifecycle` (which installs
+  // its capture-phase `keydown` listener on `doc` UNCONDITIONALLY) before it
+  // learns whether `showInInspector` actually mounted anything. The test
+  // above only proves the `panes` bookkeeping stays honest; it says nothing
+  // about the listener itself — before the fix, a failed mount left it (and
+  // the `st` closure it captures) permanently attached with nothing left
+  // able to remove it. Proving that directly (rather than merely
+  // `isDocPaneOpen` staying false) needs to see the SAME listener reference
+  // added and then removed — a spy on add/removeEventListener, not a
+  // behavioral proxy that could pass by coincidence.
+  it('opening with no shell mounted still tears the SurfaceLifecycle back down — the capture-phase Escape listener does not leak', () => {
+    const app = makeApp({ dom: {} });
+    app.catalog.docEntry.mockResolvedValue({ status: 'missing' });
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    openDocEntry(app, T_FN);
+    const added = addSpy.mock.calls.filter((c) => c[0] === 'keydown');
+    expect(added).toHaveLength(1);
+    const handler = added[0][1];
+    const removed = removeSpy.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === handler);
+    expect(removed).toHaveLength(1); // same listener reference removed — the lifecycle actually closed
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });

@@ -42,6 +42,7 @@
     import { mountAppShell } from '/src/ui/app-shell.js';
     import { startDrag } from '/src/ui/splitters.js';
     import { createAuthenticatedExecutionScope } from '/src/application/authenticated-execution-scope.js';
+    import { showInInspector, releaseInspector } from '/src/ui/inspector-host.js';
 
     const query = (id, name, sql = 'SELECT 1', over = {}) => ({
       id, sql, specVersion: 1,
@@ -135,6 +136,33 @@
       startDrag,
     });
     app.applyCommittedWorkspace(workspace);
+
+    // #586 AC2 real-browser layout gate (sidebar-tabs-narrow.spec.js's own
+    // header comment explains why this fixture, not a happy-dom unit test,
+    // is the only place that can prove CSS layout claims): this fixture
+    // mounts the real shell — `.main-row`/`.query-host`/`.inspector-host`/
+    // `.inspector-resize` are ALL genuine, styled DOM here — but never wires
+    // a real docked surface (no workbench/editor/results mounted; see this
+    // file's own header comment on why). Driving `inspector-host.ts`'s own
+    // dock primitive directly is the same shared mechanism EVERY docked
+    // surface (Cell, Rows, Reference) is built on (#586) — the geometry
+    // this gate checks is exactly and only that primitive's, not any one
+    // surface's content.
+    window.__openInspector = () => {
+      const content = document.createElement('div');
+      content.className = 'test-inspector-content';
+      content.textContent = 'inspector content';
+      return showInInspector(app, content, () => releaseInspector(app));
+    };
+    window.__closeInspector = () => releaseInspector(app);
+    // #586 findings 2a/2b real-browser gate: let a spec set the persisted
+    // preference (and, for the sidebar case, the tracked width app-shell.ts's
+    // dock-aware clamp reads) directly, rather than driving a real drag.
+    window.__setRightInspectorPx = (px) => { app.state.rightInspectorPx = px; };
+    window.__setSidebarPx = (px) => {
+      app.state.sidebarPx = px;
+      document.querySelector('.sidebar').style.width = px + 'px';
+    };
 
     /** Drive the selected Dashboard/member the way the real controller would, so
      *  current-resource styling can be verified against real CSS. */

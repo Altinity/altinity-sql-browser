@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { dragValue, startDrag, clampDrawerWidth } from '../../src/ui/splitters.js';
+import { dragValue, startDrag, clampDrawerWidth, clampDockedInspectorWidth, CENTRE_MIN_PX } from '../../src/ui/splitters.js';
 import type { DragPoint } from '../../src/ui/splitters.js';
 
 describe('clampDrawerWidth', () => {
@@ -7,6 +7,36 @@ describe('clampDrawerWidth', () => {
     expect(clampDrawerWidth(100, 1000)).toBe(320); // below floor
     expect(clampDrawerWidth(500, 1000)).toBe(500); // within bounds
     expect(clampDrawerWidth(999, 1000)).toBe(920); // above 92vw cap
+  });
+});
+
+// #586 finding 2a: the dock-aware ceiling protects the centre work surface
+// (`.query-host`/`.dashboard-host`) — `clampDrawerWidth`'s flat 92vw bound
+// alone can starve it to nothing once the inspector is a real `.main-row`
+// sibling instead of a `position: fixed` overlay.
+describe('clampDockedInspectorWidth', () => {
+  it('CENTRE_MIN_PX matches clampDrawerWidth\'s own 320 floor — both sides of the split share one "usable panel" minimum', () => {
+    expect(CENTRE_MIN_PX).toBe(320);
+  });
+  it('the dock-aware ceiling (totalWidth - reservedPx - CENTRE_MIN_PX) binds when it is tighter than 92vw', () => {
+    // 1000 total, 200 reserved (sidebar + handles): ceiling = 1000-200-320 = 480,
+    // well under 92vw (920) — the dock-aware bound is the one that bites.
+    expect(clampDockedInspectorWidth(999, 1000, 200)).toBe(480);
+    expect(clampDockedInspectorWidth(480, 1000, 200)).toBe(480); // exactly at the ceiling
+    expect(clampDockedInspectorWidth(300, 1000, 200)).toBe(320); // below the shared floor
+  });
+  it('falls back to the 92vw ceiling when reservedPx is small enough not to bind', () => {
+    // 1000 total, 0 reserved: dock-aware ceiling = 1000-0-320 = 680, tighter
+    // than 92vw (920) — still the dock-aware bound wins here too, proving
+    // Math.min picks whichever is tighter, not "dock-aware always wins".
+    expect(clampDockedInspectorWidth(999, 1000, 0)).toBe(680);
+  });
+  it('a wide row with heavy reservation still floors at 320 even when the computed ceiling is below it', () => {
+    // 500 total, 300 reserved: ceiling = 500-300-320 = -120 — clamp's own
+    // floor (320) wins regardless (Math.max(lo, Math.min(hi, v)) with hi<lo
+    // collapses to lo), matching `clampDrawerWidth`'s existing guarantee that
+    // the inspector itself never renders narrower than 320.
+    expect(clampDockedInspectorWidth(1000, 500, 300)).toBe(320);
   });
 });
 
@@ -29,17 +59,20 @@ describe('dragValue', () => {
     expect(dragValue('row', { clientX: 0, clientY: 100 }, rect)).toBe(15);
     expect(dragValue('row', { clientX: 0, clientY: 200 }, rect)).toBe(50);
   });
-  it('drawer maps viewportWidth-clientX to px clamped [320, 92vw]', () => {
+  it('rightInspector maps viewportWidth-clientX to px clamped [320, 92vw] when reservedPx is absent (a non-docked caller, e.g. drawer.ts)', () => {
     const vw = { width: 1000 };
-    expect(dragValue('drawer', { clientX: 500, clientY: 0 }, vw)).toBe(500); // 1000-500
-    expect(dragValue('drawer', { clientX: 900, clientY: 0 }, vw)).toBe(320); // 1000-900=100 → floor
-    expect(dragValue('drawer', { clientX: -100, clientY: 0 }, vw)).toBe(920); // 1000-(-100)=1100 → 92vw cap
+    expect(dragValue('rightInspector', { clientX: 500, clientY: 0 }, vw)).toBe(500); // 1000-500
+    expect(dragValue('rightInspector', { clientX: 900, clientY: 0 }, vw)).toBe(320); // 1000-900=100 → floor
+    expect(dragValue('rightInspector', { clientX: -100, clientY: 0 }, vw)).toBe(920); // 1000-(-100)=1100 → 92vw cap
   });
-  it('docPane maps viewportWidth-clientX to px clamped [320, 92vw] — same geometry as drawer (#313)', () => {
-    const vw = { width: 1000 };
-    expect(dragValue('docPane', { clientX: 500, clientY: 0 }, vw)).toBe(500);
-    expect(dragValue('docPane', { clientX: 900, clientY: 0 }, vw)).toBe(320);
-    expect(dragValue('docPane', { clientX: -100, clientY: 0 }, vw)).toBe(920);
+  // #586 finding 2a: a docked caller (app-shell.ts) always supplies
+  // `reservedPx` — its presence (even 0), not the axis itself, switches
+  // `dragValue` onto the dock-aware ceiling instead of the plain 92vw one.
+  it('rightInspector uses the dock-aware ceiling instead of 92vw when reservedPx is present', () => {
+    const vw = { width: 1000, reservedPx: 200 }; // ceiling = 1000-200-320 = 480
+    expect(dragValue('rightInspector', { clientX: 500, clientY: 0 }, vw)).toBe(480); // 1000-500=500 → clamped to 480
+    expect(dragValue('rightInspector', { clientX: 900, clientY: 0 }, vw)).toBe(320); // 1000-900=100 → floor
+    expect(dragValue('rightInspector', { clientX: 600, clientY: 0 }, vw)).toBe(400); // 1000-600=400, within [320,480] — unclamped
   });
 });
 
@@ -102,35 +135,19 @@ describe('startDrag', () => {
     win._fire('mouseup');
     expect(save).toHaveBeenCalledWith('editorPct', 50);
   });
-  it('drawer: updates cellDrawerPx + persists', () => {
+  it('rightInspector: updates rightInspectorPx + persists', () => {
     const win = fakeWin();
     const handle = document.createElement('div');
-    const state = { cellDrawerPx: 0 };
+    const state = { rightInspectorPx: 0 };
     const apply = vi.fn();
     const save = vi.fn();
     const ctx = { win, state, apply, save, rectFor: () => ({ width: 1000 }) };
-    startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'drawer', ctx);
+    startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'rightInspector', ctx);
     win._fire('mousemove', { clientX: 500, clientY: 0 });
-    expect(state.cellDrawerPx).toBe(500); // 1000-500
-    expect(apply).toHaveBeenCalledWith('drawer', 500);
+    expect(state.rightInspectorPx).toBe(500); // 1000-500
+    expect(apply).toHaveBeenCalledWith('rightInspector', 500);
     win._fire('mouseup');
-    expect(save).toHaveBeenCalledWith('cellDrawerPx', 500);
-  });
-  it('docPane: updates docPanePx + persists, independent of cellDrawerPx (#313)', () => {
-    const win = fakeWin();
-    const handle = document.createElement('div');
-    const state = { cellDrawerPx: 777, docPanePx: 0 };
-    const apply = vi.fn();
-    const save = vi.fn();
-    const ctx = { win, state, apply, save, rectFor: () => ({ width: 1000 }) };
-    startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'docPane', ctx);
-    win._fire('mousemove', { clientX: 500, clientY: 0 });
-    expect(state.docPanePx).toBe(500); // 1000-500
-    expect(state.cellDrawerPx).toBe(777); // untouched
-    expect(apply).toHaveBeenCalledWith('docPane', 500);
-    win._fire('mouseup');
-    expect(save).toHaveBeenCalledWith('docPanePx', 500);
-    expect(save).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
+    expect(save).toHaveBeenCalledWith('rightInspectorPx', 500);
   });
   it('defaults win to global window when ctx.win is absent', () => {
     const handle = document.createElement('div');

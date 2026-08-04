@@ -1054,13 +1054,13 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     await render(app);
     const cards = qsa(app.root, '.dash-tile');
     stubTileRects(cards);
-    // openCellDetail appends the drawer to the tile's document.body, NOT inside
-    // app.root — assert against `document` (an app.root query is always empty).
+    // #586: openCellDetail docks into the shared app.dom.inspectorHost, not
+    // app.root — assert against that host directly.
     const cell = (): Element | null => qs(cards[0], '.res-table tbody td.cell');
     // Positive control: a plain cell click (no drag) DOES open the shared drawer.
     cell()?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(1);
-    qs(document, '.cd-backdrop').remove();
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    qs(app.dom.inspectorHost, '.cd-close').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     // A ⌘-drag that leaves and returns to the origin tile is a completed move
     // that releases on its OWN card — the browser synthesizes a real click on
     // that card, which the capture-phase guard must swallow.
@@ -1071,7 +1071,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x, clientY: start.y }));
     cell()?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(0);
+    expect(app.dom.inspectorHost.hidden).toBe(true);
   });
 
   it('a second pointerdown while a drag is already armed is ignored (#332)', async () => {
@@ -1310,7 +1310,7 @@ describe('renderDashboard — modkey cursor cue (#332)', () => {
 });
 
 describe('renderDashboard — shared cell-detail drawer (#332)', () => {
-  it('clicking a table cell opens the shared drawer with exact name/type/value (edit mode)', async () => {
+  it('clicking a table cell opens the shared drawer with exact name/type/value (edit mode), docked in app.dom.inspectorHost', async () => {
     const { app } = dashApp({
       responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['hello', 42]] }),
       workspace: wsWith({
@@ -1320,14 +1320,12 @@ describe('renderDashboard — shared cell-detail drawer (#332)', () => {
     });
     await render(app);
     qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    const backdrop = qs(document, '.cd-backdrop');
-    expect(backdrop).not.toBeNull();
-    const panel = qs(backdrop, '.cd-panel');
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
     expect(panel).not.toBeNull();
     expect(qs(panel, '.cd-name')?.textContent).toBe('k');
     expect(qs(panel, '.cd-type')?.textContent).toBe('String');
     expect(panel.textContent).toContain('hello');
-    backdrop.remove();
   });
 
   it('clicking a table cell opens the shared drawer in read-only dashboard mode too', async () => {
@@ -1342,14 +1340,13 @@ describe('renderDashboard — shared cell-detail drawer (#332)', () => {
     });
     await render(app);
     qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    const backdrop = qs(document, '.cd-backdrop');
-    expect(backdrop).not.toBeNull();
-    expect(qs(backdrop, '.cd-name')?.textContent).toBe('k');
-    expect(qs(backdrop, '.cd-type')?.textContent).toBe('String');
-    backdrop.remove();
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.cd-name')?.textContent).toBe('k');
+    expect(qs(panel, '.cd-type')?.textContent).toBe('String');
   });
 
-  it('Escape closes the drawer; a backdrop click closes it; close-then-open leaves exactly one .cd-backdrop', async () => {
+  it('Escape closes the drawer; the ✕ closes it too; close-then-open leaves exactly one panel in the dock', async () => {
     const { app } = dashApp({
       responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1], ['b', 2]] }),
       workspace: wsWith({
@@ -1358,24 +1355,23 @@ describe('renderDashboard — shared cell-detail drawer (#332)', () => {
       }),
     });
     await render(app);
+    const host = app.dom.inspectorHost;
     const cells = qsa(app.root, '.res-table tbody td.cell');
     cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    expect(host.hidden).toBe(false);
+    expect(host.children).toHaveLength(1);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(0);
-    // Re-open, then dismiss via a backdrop click.
+    expect(host.hidden).toBe(true);
+    // Re-open, then dismiss via the ✕ button (#586: no more backdrop to click
+    // outside of — the docked panel is a normal layout sibling).
     cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    let backdrop = qs(document, '.cd-backdrop');
-    expect(backdrop).not.toBeNull();
-    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(0);
-    // Open a second time — the shared backdrop-dismiss lifecycle leaves
-    // exactly one, not a stacked pair.
+    expect(host.hidden).toBe(false);
+    qs(host, '.cd-close').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(host.hidden).toBe(true);
+    // Open a second time — the shared dock lifecycle leaves exactly one panel,
+    // never a stacked pair.
     cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    backdrop = qs(document, '.cd-backdrop');
-    expect(qsa(document, '.cd-backdrop').length).toBe(1);
-    backdrop.remove();
+    expect(host.children).toHaveLength(1);
   });
 });
 
@@ -1400,42 +1396,41 @@ describe('renderDashboard — logs tile cell-detail + drag interplay (#332)', ()
     const { app } = dashApp({ responder: logsResponder, workspace: logsWs() });
     await render(app);
     expect(qs(app.root, '.dash-logs')).not.toBeNull();
+    const host = app.dom.inspectorHost;
 
     const timeCell = qs<HTMLElement>(app.root, '.log-time.log-cell');
     timeCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    let backdrop = qs(document, '.cd-backdrop');
-    expect(qs(backdrop, '.cd-name')?.textContent).toBe('event_time');
-    expect(qs(backdrop, '.cd-type')?.textContent).toBe('DateTime');
-    backdrop.remove();
+    let panel = qs(host, '.cd-panel');
+    expect(qs(panel, '.cd-name')?.textContent).toBe('event_time');
+    expect(qs(panel, '.cd-type')?.textContent).toBe('DateTime');
 
     const msgCell = qs<HTMLElement>(app.root, '.log-msg.log-cell');
     msgCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    backdrop = qs(document, '.cd-backdrop');
-    expect(qs(backdrop, '.cd-name')?.textContent).toBe('message');
-    expect(backdrop.textContent).toContain('boom');
-    backdrop.remove();
+    panel = qs(host, '.cd-panel');
+    expect(qs(panel, '.cd-name')?.textContent).toBe('message');
+    expect(panel.textContent).toContain('boom');
 
     const extraCell = qs<HTMLElement>(app.root, '.log-extra.log-cell');
     extraCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    backdrop = qs(document, '.cd-backdrop');
-    expect(qs(backdrop, '.cd-name')?.textContent).toBe('extra_field');
+    panel = qs(host, '.cd-panel');
+    expect(qs(panel, '.cd-name')?.textContent).toBe('extra_field');
     // The RAW (untruncated) value is shown — the field's own display is
     // truncated to 80 chars (core/logs.ts), so raw !== display for a >80-char value.
     expect(extraCell.textContent).not.toBe(longExtra); // display was truncated
-    expect(backdrop.textContent).toContain(longExtra); // drawer shows the raw value
-    backdrop.remove();
+    expect(panel.textContent).toContain(longExtra); // drawer shows the raw value
   });
 
   it('Enter and Space on a .log-cell also open the drawer', async () => {
     const { app } = dashApp({ responder: logsResponder, workspace: logsWs() });
     await render(app);
+    const host = app.dom.inspectorHost;
     const msgCell = qs<HTMLElement>(app.root, '.log-msg.log-cell');
     msgCell.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(1);
-    qs(document, '.cd-backdrop').remove();
+    expect(host.hidden).toBe(false);
+    expect(host.children).toHaveLength(1);
     msgCell.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
-    expect(qsa(document, '.cd-backdrop').length).toBe(1);
-    qs(document, '.cd-backdrop').remove();
+    expect(host.hidden).toBe(false);
+    expect(host.children).toHaveLength(1);
   });
 
   it('a ⌘-drag starting on a logs tile moves the tile and does not open a drawer', async () => {
@@ -1447,7 +1442,7 @@ describe('renderDashboard — logs tile cell-detail + drag interplay (#332)', ()
     expect(qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent)).toEqual(['q2', 'q1']);
     await flush();
     expect(commit).toHaveBeenCalled();
-    expect(qsa(document, '.cd-backdrop').length).toBe(0);
+    expect(app.dom.inspectorHost.hidden).toBe(true);
   });
 });
 
@@ -2297,49 +2292,47 @@ describe('renderDashboard — Text (Markdown) tile preview (#332)', () => {
     expect(qsa(view, 'li').length).toBe(2);
   });
 
-  it('clicking the Text tile opens the shared cell-detail drawer with the rendered Markdown', async () => {
-    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
+  it('clicking the Text tile opens the shared cell-detail drawer (docked) with the rendered Markdown', async () => {
     const { app } = dashApp({ responder: () => ({}), workspace: textWs('# Hi\n\n- a\n- b') });
     await render(app);
     const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
     expect(mdView.getAttribute('role')).toBe('button');
     expect(mdView.getAttribute('tabindex')).toBe('0');
     mdView.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    const bd = qs(document, '.cd-backdrop');
-    expect(bd).not.toBeNull();
-    expect(qs(bd, '.docs-md h4')?.textContent).toBe('Hi');
-    bd.remove();
+    expect(app.dom.inspectorHost.hidden).toBe(false);
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.docs-md h4')?.textContent).toBe('Hi');
   });
 
   it('Enter/Space open the drawer; other keys do not', async () => {
-    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
     const { app } = dashApp({ responder: () => ({}), workspace: textWs('# K') });
     await render(app);
+    const host = app.dom.inspectorHost;
     const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
     mdView.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    expect(host.hidden).toBe(true);
     mdView.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
-    qs(document, '.cd-backdrop').remove();
+    expect(host.hidden).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(host.hidden).toBe(true);
     mdView.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
-    expect(qs(document, '.cd-backdrop')).not.toBeNull();
-    qs(document, '.cd-backdrop').remove();
+    expect(host.hidden).toBe(false);
   });
 
   it('a click on an inner link, and a click while text is selected, do NOT open the drawer', async () => {
-    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
     const { app } = dashApp({ responder: () => ({}), workspace: textWs('see [docs](https://example.com/x)') });
     await render(app);
+    const host = app.dom.inspectorHost;
     const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
     // Inner link click → defers to the link, no drawer.
     qs(mdView, 'a').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(qs(document, '.cd-backdrop')).toBeNull();
+    expect(host.hidden).toBe(true);
     // A click that ends a text selection → no drawer (selection guard).
     const realGetSel = document.getSelection.bind(document);
     document.getSelection = () => ({ isCollapsed: false, toString: () => 'selected' }) as unknown as Selection;
     try {
       mdView.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      expect(qs(document, '.cd-backdrop')).toBeNull();
+      expect(host.hidden).toBe(true);
     } finally {
       document.getSelection = realGetSel;
     }

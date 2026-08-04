@@ -40,7 +40,7 @@ import { renderSavedHistory } from './saved-history.js';
 import { renderLibraryTitle } from './file-menu.js';
 import { applyConnectionStatus } from './app-header.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
-import { startDrag } from './splitters.js';
+import { startDrag, clampDockedInspectorWidth } from './splitters.js';
 import type { App } from './app.types.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
@@ -98,6 +98,16 @@ export interface AppShellHandle {
   dispose(): void;
 }
 
+/** The two fixed-width `.main-row` resize handles (`.col-resize` and
+ *  `.inspector-resize`, styles.css) — reserved alongside the sidebar's own
+ *  tracked width when dock-aware-clamping the right-inspector (#586 finding
+ *  2a). A literal, not a measured rect: `getBoundingClientRect` returns all
+ *  zeros under happy-dom (no real layout engine), so this mirrors the
+ *  existing convention of tracking `sidebarPx` as a plain JS number rather
+ *  than reading it back off the DOM — exact under both happy-dom and a real
+ *  browser, unlike a rect measurement would be. */
+const HANDLE_PX = 7;
+
 /** Build the persistent frame (header slot, sidebar, mobile nav) and mount
  *  it. Ported byte-identically from `mountWorkbenchShell`'s former body
  *  (#276 Phase 5 → this split) — every ordering comment below is original. */
@@ -106,6 +116,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     app, root, document: doc, state, catalog, prefs, matchMedia, updateBanner,
     startDrag: doStartDrag,
   } = deps;
+  const win = doc.defaultView || window;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
 
@@ -143,20 +154,47 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  // Only 'col' (sidebar width) and 'sideRow' (schema/saved split) run through
-  // this ctx — the editor/results 'row' splitter is workbench-shell's own,
-  // over elements this shell has no business touching (a Dashboard-only
-  // surface may one day mount here with neither `editorRegion` nor
-  // `resultsRegion` present at all).
-  const rectFor = (axis: SplitterAxis): DragRect => (axis === 'sideRow' ? sidebar.getBoundingClientRect() : {});
+  // #586 — the docked right-inspector's own resize handle runs through this
+  // SAME ctx now (a third axis alongside 'col'/'sideRow'), sized against the
+  // live viewport width exactly like the former per-surface drawer handles
+  // (drawer.ts's attachDrawerResize) were — only shell-owned now, one handle
+  // for the one shared dock instead of one handle per surface.
+  const rectFor = (axis: SplitterAxis): DragRect => {
+    if (axis === 'sideRow') return sidebar.getBoundingClientRect();
+    if (axis === 'rightInspector') {
+      return {
+        width: win.innerWidth,
+        // #586 finding 2a: the dock-aware ceiling needs everything ELSE
+        // `.main-row` gives space to before the inspector/centre split what
+        // is left — `state.sidebarPx` (not a `getBoundingClientRect`
+        // measurement: the sidebar's own width is already tracked exactly as
+        // this same number, and a rect read returns all zeros under
+        // happy-dom, see `HANDLE_PX`'s own comment) plus both fixed-width
+        // resize handles.
+        reservedPx: state.sidebarPx + HANDLE_PX * 2,
+      };
+    }
+    return {};
+  };
   const dragCtx: DragCtx = {
     state,
     rectFor,
     apply: (axis, value) => {
       if (axis === 'col') sidebar.style.width = value + 'px';
+      else if (axis === 'rightInspector') inspectorHost.style.width = value + 'px';
       else schemaPane.style.height = value + '%';
     },
-    save: (name, value) => prefs.save(name as PreferenceKey, value),
+    save: (name, value) => {
+      // #586 finding 1: a drag that ends NORMALLY (mouseup → splitters.ts's
+      // own `onUp` → here) must retire the shell's cancel handle too — not
+      // just an explicit mid-drag cancel — or a later `releaseInspector`
+      // call on the next ordinary close (there is no drag in progress at
+      // that point) would wrongly revert the width this same mouseup just
+      // persisted. `cancelInspectorDrag` is declared further down (read here
+      // only once this callback actually runs, well after that point).
+      if (name === 'rightInspectorPx') cancelInspectorDrag = null;
+      prefs.save(name as PreferenceKey, value);
+    },
   };
   app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => doStartDrag(e, 'sideRow', dragCtx) });
   // Mobile Tables view (#126): a segmented control at the top of the sidebar. CSS
@@ -185,7 +223,67 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // toggles which of the two is exposed without rebuilding the sidebar (or the
   // query surface's own state) around them.
   const dashboardHost = h('div', { class: 'dashboard-host', hidden: true });
-  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost);
+  // #586 — the docked right-inspector slot: a shell-owned layout SIBLING of
+  // queryHost/dashboardHost (never a `position: fixed` overlay), replacing
+  // three independent body-mounted overlays (the cell-detail drawer, the
+  // rows viewer, the Reference pane). Content mounts here via
+  // `inspector-host.ts`'s `showInInspector`/`releaseInspector` — this shell
+  // owns only the host, the resize handle, and the fold (`hidden`) state;
+  // which surface currently occupies it is that module's job, not this
+  // one's. Starts folded (`hidden`) — nothing occupies it until a surface
+  // opens. `inspectorResize` sits between the centre surface and the host,
+  // like `sideHandle` does for the sidebar, driving the `'rightInspector'`
+  // splitter axis against the SAME `rightInspectorPx` preference every
+  // docked surface shares now (state.ts).
+  // clampDockedInspectorWidth (not the raw persisted value, and not just
+  // `clampDrawerWidth`'s flat 92vw): a monitor-to-monitor move, a resized
+  // sidebar, or the DEFAULT preference itself can all leave `rightInspectorPx`
+  // wider than this window can safely dock without starving `.query-host`/
+  // `.dashboard-host` (#586 finding 2a) — the old per-surface drawers only
+  // ever re-clamped against the live viewport at open time (attachDrawerResize),
+  // never against dock siblings, because they had none. `inspectorDisplayWidth`
+  // below is recomputed here at construction, again on every unfold
+  // (`reclampInspectorWidth`, exposed via `app.dom` for `inspector-host.ts`'s
+  // `showInInspector` to call — #586 finding 2b), and on a live window resize
+  // (below) — it only ever writes the DOM style, never `state.rightInspectorPx`
+  // itself, so the user's PERSISTED preference survives a trip through a
+  // narrow viewport and back unchanged.
+  const inspectorDisplayWidth = (): number => clampDockedInspectorWidth(
+    state.rightInspectorPx, win.innerWidth, state.sidebarPx + HANDLE_PX * 2,
+  );
+  const inspectorHost = app.dom.inspectorHost = h('div', {
+    class: 'inspector-host', hidden: true,
+    style: { width: inspectorDisplayWidth() + 'px' },
+  });
+  // #586 finding 1: keep the drag's own cancel handle — `startDrag`
+  // (splitters.ts) returns one for exactly this — so a surface that closes
+  // mid-drag (Escape, sign-out, a surface switch, or a fresh occupant
+  // replacing this one; every path funnels through `inspector-host.ts`'s
+  // `releaseInspector`) can stop the live `window` mousemove/mouseup
+  // listeners before they keep mutating a now-hidden host and a `mouseup`
+  // persists an abandoned width. Mirrors `drawer.ts`'s `attachDrawerResize`/
+  // `cancelActive` for the one surface that isn't docked, including
+  // reverting the pre-drag width on cancel.
+  let cancelInspectorDrag: (() => void) | null = null;
+  const inspectorResize = app.dom.inspectorResize = h('div', {
+    class: 'inspector-resize', hidden: true,
+    onmousedown: (e: DragStartEvent) => {
+      const startPx = state.rightInspectorPx;
+      const stopDrag = doStartDrag(e, 'rightInspector', dragCtx);
+      cancelInspectorDrag = () => {
+        stopDrag();
+        state.rightInspectorPx = startPx;
+        cancelInspectorDrag = null;
+      };
+    },
+  });
+  // Stable wrapper (the `let` above is reassigned to `null` once a drag ends
+  // normally) — this is the reference `app.dom.cancelInspectorDrag` keeps.
+  const cancelActiveInspectorDrag = (): void => { cancelInspectorDrag?.(); };
+  app.dom.cancelInspectorDrag = cancelActiveInspectorDrag;
+  const reclampInspectorWidth = (): void => { inspectorHost.style.width = inspectorDisplayWidth() + 'px'; };
+  app.dom.reclampInspectorWidth = reclampInspectorWidth;
+  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, queryHost, dashboardHost, inspectorResize, inspectorHost);
 
   // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
   // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the
@@ -217,6 +315,15 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
 
   root!.replaceChildren(headerSlot, authHost, app.dom.banner, mainRow, app.dom.mobileNav);
+
+  // #586 finding 2b: a live viewport resize re-clamps the docked host's
+  // DISPLAYED width too, not only a fold→unfold trip — otherwise an open
+  // inspector on a shrinking window keeps whatever width it had, which can
+  // starve the centre surface exactly like the unclamped case this whole
+  // fix addresses. Harmless (and cheap: it's a single style write) to run
+  // while folded as well, since the next unfold would recompute it anyway.
+  const onWindowResize = (): void => { reclampInspectorWidth(); };
+  win.addEventListener('resize', onWindowResize);
 
   const disposers: (() => void)[] = [];
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()
@@ -330,6 +437,13 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
       // torn down (sign-out, a surface teardown) — the arbiter's timer outlives
       // this DOM otherwise.
       cancelDashboardTreeClicks(app);
+      // #586 finding 1: a shell teardown mid-drag must stop the live
+      // 'rightInspector' listeners too, same as `releaseInspector` does —
+      // this handle can outlive `releaseInspector` ever running (e.g. the
+      // whole shell tearing down around an open, still-being-dragged
+      // inspector).
+      cancelActiveInspectorDrag();
+      win.removeEventListener('resize', onWindowResize);
       for (const dispose of disposers) dispose();
       mq?.removeEventListener('change', onMobileChange);
     },

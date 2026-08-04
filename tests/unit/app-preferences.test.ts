@@ -28,8 +28,7 @@ describe('save()', () => {
       ['sidebarPx', 260, '260'],
       ['editorPct', 45, '45'],
       ['sideSplitPct', 58, '58'],
-      ['cellDrawerPx', 560, '560'],
-      ['docPanePx', 420, '420'],
+      ['rightInspectorPx', 560, '560'],
       ['sidePanel', 'history', 'history'],
       ['resultRowLimit', 1000, '1000'],
     ];

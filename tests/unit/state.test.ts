@@ -144,6 +144,7 @@ describe('KEYS — persisted localStorage key names (#459)', () => {
       sidebarPx: 'asb:sidebarPx',
       editorPct: 'asb:editorPct',
       sideSplitPct: 'asb:sideSplitPct',
+      rightInspectorPx: 'asb:rightInspectorPx',
       cellDrawerPx: 'asb:cellDrawerPx',
       docPanePx: 'asb:docPanePx',
       sidePanel: 'asb:sidePanel',
@@ -189,8 +190,7 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(248);
     expect(s.editorPct).toBe(45);
     expect(s.sideSplitPct).toBe(58);
-    expect(s.cellDrawerPx).toBe(560);
-    expect(s.docPanePx).toBe(420); // #313 — a sibling default, independent of cellDrawerPx
+    expect(s.rightInspectorPx).toBe(480); // #586 — no legacy pref present, so the hardcoded default wins
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.savedQueryLoadDiagnostics).toEqual([]);
@@ -221,8 +221,7 @@ describe('createState', () => {
       [KEYS.sidebarPx]: '9999', // clamps to 420
       [KEYS.editorPct]: '5', // clamps to 15
       [KEYS.sideSplitPct]: '99', // clamps to 85
-      [KEYS.cellDrawerPx]: '100', // clamps up to the 320 floor
-      [KEYS.docPanePx]: '50', // clamps up to the 320 floor, independent of cellDrawerPx
+      [KEYS.rightInspectorPx]: '100', // clamps up to the 320 floor
       [KEYS.sidePanel]: 'history',
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
@@ -237,8 +236,7 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);
-    expect(s.cellDrawerPx).toBe(320);
-    expect(s.docPanePx).toBe(320); // #313
+    expect(s.rightInspectorPx).toBe(320);
     expect(s.sidePanel.value).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);
@@ -246,6 +244,84 @@ describe('createState', () => {
     expect(s.filterActive).toEqual({ d: false }); // restored alongside varValues (#165)
     expect(s.varRecent).toEqual({ version: 1, nextSeq: 3, byName: { d: [{ value: 'x', seq: 2 }] } });
     expect(s.varRecentDisabled).toBe(true);
+  });
+  // #586 — rightInspectorPx collapses cellDrawerPx/docPanePx into one
+  // preference; a browser that already had either legacy value must keep it
+  // across the upgrade rather than silently reset to the default.
+  describe('rightInspectorPx compat read order (#586)', () => {
+    it('a real rightInspectorPx wins outright, even alongside stale legacy keys', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '500',
+        [KEYS.docPanePx]: '420',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(500);
+    });
+    it('falls back to docPanePx when rightInspectorPx is absent, ignoring cellDrawerPx', () => {
+      const s = createState(reader({
+        [KEYS.docPanePx]: '420',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+    });
+    it('falls back to cellDrawerPx when neither rightInspectorPx nor docPanePx is present', () => {
+      const s = createState(reader({ [KEYS.cellDrawerPx]: '560' }));
+      expect(s.rightInspectorPx).toBe(560);
+    });
+    it('falls back to the 480 default when nothing is persisted at all', () => {
+      expect(createState(reader()).rightInspectorPx).toBe(480);
+    });
+
+    // #586 finding 4: the old `||`-chained read short-circuited on ANY
+    // non-empty string, so a malformed canonical value both blocked a
+    // perfectly valid legacy fallback AND survived as `NaN` through `clamp`
+    // (rendering a literal "NaNpx" width). Each candidate must now be
+    // validated independently.
+    it('a malformed canonical rightInspectorPx is skipped in favor of a valid docPanePx fallback', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: '420',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+      expect(Number.isNaN(s.rightInspectorPx)).toBe(false);
+    });
+
+    it('a malformed canonical AND docPanePx both skipped in favor of a valid cellDrawerPx', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: 'also-bad',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(560);
+    });
+
+    it('every candidate malformed falls back to the 480 default, never NaN', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: 'bad',
+        [KEYS.docPanePx]: 'also-bad',
+        [KEYS.cellDrawerPx]: 'still-bad',
+      }));
+      expect(s.rightInspectorPx).toBe(480);
+    });
+
+    it('a whitespace-only canonical value is treated as absent, not as a real (NaN) value', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '   ',
+        [KEYS.docPanePx]: '420',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+    });
+
+    it('an out-of-range but numeric value is still "valid" — parsed, then clamped by the outer bound, not rejected', () => {
+      const s = createState(reader({ [KEYS.rightInspectorPx]: '-50' }));
+      expect(s.rightInspectorPx).toBe(320); // clamp(-50, 320, Infinity)
+    });
+
+    it('a leading-whitespace numeric value still parses (parseInt tolerates it, matching every other numeric pref read in this file)', () => {
+      const s = createState(reader({ [KEYS.rightInspectorPx]: '  650' }));
+      expect(s.rightInspectorPx).toBe(650);
+    });
   });
   it('defaults the reader to storage helpers', () => {
     vi.stubGlobal('localStorage', memStore({ [KEYS.theme]: 'light' }));

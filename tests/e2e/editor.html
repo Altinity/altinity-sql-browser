@@ -121,8 +121,17 @@
         || (target.kind === 'aggregate-function' && window.__docFixtures[key('function')])
         || null;
     };
+    // #586 — the docked right-inspector's two shell-owned nodes
+    // (app-shell.ts's real construction). editor-docs.spec.js's Reference
+    // pane docks into inspectorHost now instead of mounting on
+    // document.body directly, so the harness needs real, connected elements
+    // for it to land in — starting `hidden` (folded), same as production.
+    const inspectorHost = document.body.appendChild(document.createElement('div'));
+    inspectorHost.hidden = true;
+    const inspectorResize = document.body.appendChild(document.createElement('div'));
+    inspectorResize.hidden = true;
     const app = {
-      state, dom: {}, document,
+      state, dom: { inspectorHost, inspectorResize }, document,
       // #276 Phase 5: the CM6 adapter reads the reference data through
       // `app.catalog.*` (the SchemaCatalogService member) — this harness
       // mirrors that shape with a writable plain object (editor-cm6.spec.js

@@ -353,12 +353,19 @@ export interface AppState {
   sidebarPx: number;
   editorPct: number;
   sideSplitPct: number;
-  cellDrawerPx: number;
-  /** The docs pane's own persisted resize width (#313) — a sibling of
-   *  `cellDrawerPx`, read/written only by the 'docPane' splitter axis
-   *  (splitters.ts) and `attachDrawerResize`'s `stateKey: 'docPanePx'` option
-   *  (drawer.ts); never shared with the cell-detail/rows-viewer drawer. */
-  docPanePx: number;
+  /**
+   * The docked right-inspector's persisted width (#586) — one browser
+   * preference shared by every surface the shell mounts into `inspectorHost`
+   * (cell detail, rows viewer, Reference), replacing the two independent
+   * `cellDrawerPx`/`docPanePx` prefs each surface's own overlay used to read.
+   * Read/written only by the `'rightInspector'` splitter axis (splitters.ts)
+   * and app-shell.ts's own resize handle — never a per-surface key again.
+   * `createState`'s load is compatibility-ordered: a real `rightInspectorPx`
+   * wins, else a real `docPanePx`, else a real `cellDrawerPx` (both still
+   * read-only, never written again), else the default — so upgrading a
+   * browser that already had either old preference keeps it.
+   */
+  rightInspectorPx: number;
   tabs: Signal<QueryTab[]>;
   activeTabId: Signal<string>;
   schema: Signal<unknown[] | null>;
@@ -478,6 +485,14 @@ export const KEYS = {
   sidebarPx: 'asb:sidebarPx',
   editorPct: 'asb:editorPct',
   sideSplitPct: 'asb:sideSplitPct',
+  /** #586 — the single canonical right-inspector width preference. Written
+   *  only from app-shell.ts's shared resize handle / the detached cell-detail
+   *  overlay's own drag handle (drawer.ts). */
+  rightInspectorPx: 'asb:rightInspectorPx',
+  /** #586 — retained ONLY as compat-read sources for `rightInspectorPx`
+   *  (`createState`'s load order below); never written again, and no longer
+   *  `AppState` fields of their own. Their literal strings are still a
+   *  persisted-data contract (#459) — do not rename them. */
   cellDrawerPx: 'asb:cellDrawerPx',
   docPanePx: 'asb:docPanePx',
   sidePanel: 'asb:sidePanel',
@@ -618,6 +633,22 @@ export function setTabSpecDraft(
 export function createState(read: StateReader = { loadJSON, loadStr }): AppState {
   const num = (key: string, dflt: number, lo: number, hi: number) =>
     clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
+  // #586 finding 4: the compat-read precedence below needs each candidate
+  // parsed and validated INDEPENDENTLY, not chained with `||` — `||`
+  // short-circuits on any non-empty string, so a malformed canonical value
+  // (e.g. a corrupted `"bad"`) both blocks a perfectly valid legacy fallback
+  // AND survives as `NaN` through `clamp` (`Math.min(Math.max(NaN,320),
+  // Infinity)` is `NaN`), which the shell then applies as a literal
+  // `"NaNpx"` width. Returns the first candidate that parses to a finite
+  // number (whatever its magnitude — the caller's own `clamp` still bounds
+  // it), or `480` if none does.
+  const firstValidPx = (...raws: string[]): number => {
+    for (const raw of raws) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n)) return n;
+    }
+    return 480;
+  };
   const storedQueries = decodeStoredSavedQueries(read.loadJSON(KEYS.saved, []));
   const initialWorkspaceName = read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
   return {
@@ -632,16 +663,22 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
-    // Cell-detail / rows-viewer drawer width (issue #101). The 92vw upper
-    // bound depends on the live viewport, not this load-time default, so only
-    // the floor is enforced here — clampDrawerWidth (splitters.js) applies the
-    // full [320, 92vw] clamp whenever the drawer is opened or resized.
-    cellDrawerPx: clamp(parseInt(read.loadStr(KEYS.cellDrawerPx, '560'), 10), 320, Infinity),
-    // The docs pane's own persisted width (#313) — same floor-only load-time
-    // clamp as cellDrawerPx above (clampDrawerWidth applies the full
-    // [320, 92vw] bound whenever the pane is opened/resized against the live
-    // viewport).
-    docPanePx: clamp(parseInt(read.loadStr(KEYS.docPanePx, '420'), 10), 320, Infinity),
+    // The docked right-inspector's width (#586). Compat read order: a real
+    // rightInspectorPx wins; else a real docPanePx (a pre-#586 Reference-pane
+    // width); else a real cellDrawerPx (a pre-#586 cell/rows drawer width);
+    // else the default (matches #488's RIGHT_INSPECTOR_DEFAULT_PX) — see
+    // `firstValidPx` above for why each candidate is validated independently
+    // rather than chained with `||`. The dock-aware upper bound depends on
+    // the live viewport AND the sidebar/handles beside the inspector, not
+    // this load-time default, so only the floor is enforced here —
+    // `clampDockedInspectorWidth` (splitters.ts) applies the real clamp,
+    // via app-shell.ts's `reclampInspectorWidth`, whenever the inspector is
+    // opened, resized, or the viewport changes (#586 findings 2a/2b).
+    rightInspectorPx: clamp(firstValidPx(
+      read.loadStr(KEYS.rightInspectorPx, ''),
+      read.loadStr(KEYS.docPanePx, ''),
+      read.loadStr(KEYS.cellDrawerPx, ''),
+    ), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through
     // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;

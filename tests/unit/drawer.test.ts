@@ -6,8 +6,8 @@ const qs = <T extends Element = HTMLElement>(root: ParentNode, selector: string)
 
 // A minimal fixture satisfying DrawerResizeApp — only the two members
 // attachDrawerResize actually reads/writes.
-function makeResizeApp(cellDrawerPx = 560): DrawerResizeApp {
-  return { state: { cellDrawerPx }, prefs: { save: vi.fn() } };
+function makeResizeApp(rightInspectorPx = 560): DrawerResizeApp {
+  return { state: { rightInspectorPx }, prefs: { save: vi.fn() } };
 }
 
 describe('buildDrawerChrome', () => {
@@ -68,7 +68,7 @@ describe('buildDrawerChrome', () => {
 });
 
 describe('attachDrawerResize', () => {
-  it('sets the initial panel width from the persisted cellDrawerPx pref and appends a resize handle', () => {
+  it('sets the initial panel width from the persisted rightInspectorPx pref and appends a resize handle', () => {
     const app = makeResizeApp(640);
     const panel = document.createElement('div');
     document.body.appendChild(panel);
@@ -98,8 +98,8 @@ describe('attachDrawerResize', () => {
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
     expect(panel.style.width).toBe('524px');
     window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.state.cellDrawerPx).toBe(524);
-    expect(app.prefs.save).toHaveBeenCalledWith('cellDrawerPx', 524);
+    expect(app.state.rightInspectorPx).toBe(524);
+    expect(app.prefs.save).toHaveBeenCalledWith('rightInspectorPx', 524);
     panel.remove();
   });
 
@@ -126,17 +126,17 @@ describe('attachDrawerResize', () => {
     const handle = qs(panel, '.cd-resize-h');
     handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // mid-drag, no mouseup yet
-    expect(app.state.cellDrawerPx).toBe(524);
+    expect(app.state.rightInspectorPx).toBe(524);
 
     cancelDrag(); // e.g. a caller's close() firing while the mouse button is still down
-    expect(app.state.cellDrawerPx).toBe(560); // reverted — the abandoned drag never committed
+    expect(app.state.rightInspectorPx).toBe(560); // reverted — the abandoned drag never committed
     expect(app.prefs.save).not.toHaveBeenCalled();
 
     // Torn down, not just left to resolve later: a stray mousemove/mouseup
     // must not resurrect or persist the cancelled drag.
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }));
     window.dispatchEvent(new MouseEvent('mouseup', {}));
-    expect(app.state.cellDrawerPx).toBe(560);
+    expect(app.state.rightInspectorPx).toBe(560);
     expect(app.prefs.save).not.toHaveBeenCalled();
     panel.remove();
   });
@@ -147,7 +147,7 @@ describe('attachDrawerResize', () => {
     const cancelDrag = attachDrawerResize(app, panel, document);
     expect(() => cancelDrag()).not.toThrow();
     expect(() => cancelDrag()).not.toThrow(); // idempotent
-    expect(app.state.cellDrawerPx).toBe(560);
+    expect(app.state.rightInspectorPx).toBe(560);
     expect(app.prefs.save).not.toHaveBeenCalled();
   });
 
@@ -158,55 +158,5 @@ describe('attachDrawerResize', () => {
     const panel = detachedDoc.createElement('div');
     attachDrawerResize(app, panel, detachedDoc);
     expect(panel.style.width).toBe(1024 * 0.92 + 'px');
-  });
-
-  // #313: the docs pane reuses this same resize wiring against its OWN
-  // persisted width, via `{ stateKey: 'docPanePx', axis: 'docPane' }` — it
-  // must never read or persist `cellDrawerPx`.
-  describe('stateKey/axis option (#313 docPanePx)', () => {
-    function makeDocPaneApp(docPanePx = 400, cellDrawerPx = 560): DrawerResizeApp {
-      return { state: { cellDrawerPx, docPanePx }, prefs: { save: vi.fn() } };
-    }
-
-    it('sets the initial width from docPanePx (not cellDrawerPx)', () => {
-      const app = makeDocPaneApp(480, 999);
-      const panel = document.createElement('div');
-      document.body.appendChild(panel);
-      attachDrawerResize(app, panel, document, { stateKey: 'docPanePx', axis: 'docPane' });
-      expect(panel.style.width).toBe('480px');
-      panel.remove();
-    });
-
-    it('drag resizes+persists docPanePx and never touches cellDrawerPx', () => {
-      const app = makeDocPaneApp(400, 777);
-      const panel = document.createElement('div');
-      document.body.appendChild(panel);
-      attachDrawerResize(app, panel, document, { stateKey: 'docPanePx', axis: 'docPane' });
-      const handle = qs(panel, '.cd-resize-h');
-      handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
-      expect(panel.style.width).toBe('524px');
-      expect(app.state.docPanePx).toBe(524);
-      expect(app.state.cellDrawerPx).toBe(777); // untouched
-      window.dispatchEvent(new MouseEvent('mouseup', {}));
-      expect(app.prefs.save).toHaveBeenCalledWith('docPanePx', 524);
-      expect(app.prefs.save).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
-      panel.remove();
-    });
-
-    it("cancel() reverts docPanePx (not cellDrawerPx) and doesn't persist", () => {
-      const app = makeDocPaneApp(400, 777);
-      const panel = document.createElement('div');
-      document.body.appendChild(panel);
-      const cancelDrag = attachDrawerResize(app, panel, document, { stateKey: 'docPanePx', axis: 'docPane' });
-      const handle = qs(panel, '.cd-resize-h');
-      handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
-      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 }));
-      expect(app.state.docPanePx).toBe(524);
-      cancelDrag();
-      expect(app.state.docPanePx).toBe(400);
-      expect(app.prefs.save).not.toHaveBeenCalled();
-      panel.remove();
-    });
   });
 });

@@ -862,6 +862,20 @@ h1, h2, h3, h4, h5, h6 {
   flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
 }
 .query-host[hidden], .dashboard-host[hidden] { display: none !important; }
+/* #586: the docked right-inspector slot — a shell-owned layout SIBLING of
+   `.query-host`/`.dashboard-host` (never a `position: fixed` overlay),
+   replacing three independent body-mounted overlays (the cell-detail
+   drawer, the rows viewer, the Reference pane). Width is set inline
+   (app-shell.ts, from the persisted `rightInspectorPx` preference); folded
+   (`[hidden]`) consumes no layout width, same `[hidden]` override reasoning
+   as `.query-host`/`.dashboard-host` above. `.inspector-resize` is the
+   shared handle between the centre surface and the host (mirrors
+   `.col-resize` for the sidebar). */
+.inspector-host {
+  flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-editor); border-left: 1px solid var(--border);
+}
+.inspector-host[hidden], .inspector-resize[hidden] { display: none !important; }
 .sidebar {
   display: flex; flex-direction: column;
   background: var(--bg-side);
@@ -874,15 +888,21 @@ h1, h2, h3, h4, h5, h6 {
      the first consumer. */
   container-type: inline-size; container-name: sidebar;
 }
-.col-resize, .row-resize {
+/* #586: `.inspector-resize` gets the SAME vertical-bar handle styling as
+   `.col-resize` (sidebar) via these grouped selectors — a DISTINCT class,
+   not a second class on the same element, so e2e specs' `page.locator
+   ('.col-resize')` (the sidebar's own handle) stays unambiguous rather than
+   resolving to two elements (a real regression only e2e caught — happy-dom
+   runs no real layout/selector-strictness check). */
+.col-resize, .row-resize, .inspector-resize {
   position: relative; flex-shrink: 0; z-index: 1;
   background: transparent;
 }
-.col-resize { width: 7px; cursor: col-resize; }
+.col-resize, .inspector-resize { width: 7px; cursor: col-resize; }
 .row-resize {
   height: 7px; cursor: row-resize;
 }
-.col-resize::before, .row-resize::before,
+.col-resize::before, .row-resize::before, .inspector-resize::before,
 .schema-detail-handle::before, .cd-resize-h::before {
   content: ''; position: absolute; pointer-events: none;
   background: var(--border);
@@ -897,7 +917,7 @@ h1, h2, h3, h4, h5, h6 {
      states share one centre line. */
   transition: transform 100ms ease, background-color 100ms ease;
 }
-.col-resize::before, .cd-resize-h::before {
+.col-resize::before, .inspector-resize::before, .cd-resize-h::before {
   top: 0; bottom: 0; left: 50%;
   width: 1px; transform: translateX(-50%) scaleX(1);
 }
@@ -906,6 +926,7 @@ h1, h2, h3, h4, h5, h6 {
   height: 1px; transform: translateY(-50%) scaleY(1);
 }
 .col-resize:hover::before, .col-resize.dragging::before,
+.inspector-resize:hover::before, .inspector-resize.dragging::before,
 .cd-resize-h:hover::before, .cd-resize-h.dragging::before {
   transform: translateX(-50%) scaleX(3); background: var(--accent);
 }
@@ -2805,18 +2826,37 @@ table.res-table.fixed td .cell-val { max-width: 100%; }
 table.res-table tbody tr:hover td { background: var(--bg-hover); }
 table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 
-/* Cell-detail drawer (click a result cell) */
-.cd-backdrop { position: fixed; inset: 0; z-index: 60; background: var(--scrim); display: flex; justify-content: flex-end; }
-.cd-panel {
-  /* width is set inline (results.js attachDrawerResize) from the persisted
-     cellDrawerPx pref, clamped to [320, 92vw] — see clampDrawerWidth (#101) */
-  height: 100%; position: relative;
+/* Cell-detail / rows-viewer / Reference chrome (click a result cell; #101,
+   #313). #586 REWRITE: `.cd-panel`/`.docs-panel` used to each be their OWN
+   fixed-position overlay (`.cd-backdrop`'s flex-end wrapper for `.cd-panel`;
+   `.docs-panel` fixed to the viewport itself) — every docked surface now
+   fills the shared `.inspector-host` (app-shell.ts) as a normal flow child
+   instead, so both base rules below are DOCKED geometry (fill parent, no
+   shadow, no fixed position). `.cell-detail-overlay` (further down) restores
+   the OLD `.cd-backdrop` geometry for the one surviving non-docked case: a
+   cell-detail drawer opened inside a genuinely separate detached-tab
+   document (results.ts's `openCellDetail`, `opts.overlay`/`targetDoc`),
+   which has no shell/`inspectorHost` of its own to dock into. */
+.cd-panel, .docs-panel {
+  width: 100%; height: 100%; min-width: 0; min-height: 0;
   background: var(--bg-editor);
-  box-shadow: var(--shadow-drawer);
   display: flex; flex-direction: column;
 }
-/* Left-edge drag handle that resizes the drawer (#101), straddling the panel's
-   border like table.res-table's .col-resize-h straddles a column's edge. */
+/* The one surviving non-docked case (see the block comment above): a real
+   modal backdrop, restoring `.cd-panel`'s pre-#586 floating geometry —
+   `attachDrawerResize` (drawer.ts) still sets its width inline from the
+   shared `rightInspectorPx` preference, clamped to [320, 92vw]
+   (clampDrawerWidth, #101). */
+.cell-detail-overlay { position: fixed; inset: 0; z-index: 60; background: var(--scrim); display: flex; justify-content: flex-end; }
+.cell-detail-overlay .cd-panel {
+  width: auto; height: 100%; position: relative;
+  box-shadow: var(--shadow-drawer);
+}
+/* Left-edge drag handle that resizes the drawer (#101) — only ever appended
+   inside `.cell-detail-overlay .cd-panel` now (#586: every docked surface is
+   sized by app-shell.ts's own shared `.inspector-resize` handle instead),
+   straddling the panel's border like table.res-table's .col-resize-h
+   straddles a column's edge. */
 .cd-resize-h {
   position: absolute; top: 0; left: 0; margin-left: -3px; z-index: 2;
   width: 6px; height: 100%;
@@ -2838,19 +2878,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 [data-density='compact'] table.res-table td { padding: 4px 10px; }
 
 /* Documentation pane (#313): buildDrawerChrome's NON-modal chrome under its
-   own 'docs' prefix — persistent, no backdrop (unlike .cd-backdrop's cell
-   detail drawer), so it's positioned fixed to the viewport's right edge
-   itself rather than centered by a flex backdrop wrapper. Width is set
-   inline (attachDrawerResize's docPanePx stateKey) from the persisted
-   docPanePx pref, clamped to [320, 92vw] — see clampDrawerWidth (#101/#313). */
-.docs-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;
-  height: 100%;
-  background: var(--bg-editor);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-drawer);
-  display: flex; flex-direction: column;
-}
+   own 'docs' prefix — geometry comes entirely from the shared `.cd-panel,
+   .docs-panel` docked rule above now (#586: this pane was already
+   persistent/non-modal, so unifying it with the (formerly modal) cell
+   drawer's docked geometry was a pure simplification, no behavior change). */
 .docs-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .docs-title { flex: 1; min-width: 0; }
 .docs-title-text { font-weight: var(--fw-semibold); font-size: var(--text-body); color: var(--fg); }
@@ -3165,8 +3196,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .app-header .lib-name { max-width: 100%; padding: 0 3px; font-size: var(--text-label); }
   .app-header .hd-btn.user-btn { width: 26px; padding: 0 5px; }
   .app-header .hd-btn.user-btn .user-short { display: none; }
-  /* The desktop drawer handle owns this boundary. Restore a structural line
-     when mobile hides that non-touch resize affordance. */
+  /* The desktop drawer handle owns this boundary (`.cd-resize-h`, hidden on
+     touch below). Restore a structural line on `.cd-panel` itself so the
+     surviving non-docked case (a cell-detail drawer opened inside a real
+     detached-tab document) still shows one — harmless/orthogonal on the
+     docked case too (`.inspector-host` already draws its own border-left,
+     so this never doubles a visible line there). */
   .cd-panel { border-left: 1px solid var(--border); }
 
   /* ---- Bottom tab nav: one full-screen panel at a time ---- */
@@ -3277,7 +3312,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 
   /* No draggable splitters on touch — a hidden handle can't receive mousedown,
      so the splitter JS never wires up (nothing to disable in JS). */
-  .col-resize, .row-resize, .side-split,
+  .col-resize, .row-resize, .side-split, .inspector-resize,
   .col-resize-h, .schema-detail-handle, .cd-resize-h { display: none !important; }
 
   /* Drag cue off (the schema rows drop `draggable` in mobile mode — schema.js). */
@@ -3295,10 +3330,15 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .file-menu { width: auto; max-width: calc(100vw - 24px); }
   .cm-tooltip { max-width: calc(100vw - 16px); }
   .save-popover { max-width: calc(100vw - 16px); }
-  /* Cell-detail drawer → full-width, non-resizable (its handle is hidden above). */
-  .cd-panel { width: 100vw !important; min-width: 0; }
-  /* Documentation pane (#313) → same full-width, non-resizable treatment. */
-  .docs-panel { width: 100vw !important; min-width: 0; }
+  /* #586: the docked right-inspector becomes a full-screen, non-resizable
+     overlay when open on mobile (its handle is hidden above) — a mechanical
+     port of the pre-#586 per-surface `.cd-panel`/`.docs-panel` 100vw-fixed
+     mobile treatment onto the one shared host, not a redesign (mobile
+     presentation stays out of #586's scope). `[hidden]` still wins when
+     folded (the base rule above), so this only ever applies while open. */
+  .inspector-host {
+    position: fixed; inset: 0; z-index: 60; width: 100vw !important; min-width: 0;
+  }
 }
 
 /* ── Dashboard (#149 D1 / #407 / #425) ──────────────────────────────────────
