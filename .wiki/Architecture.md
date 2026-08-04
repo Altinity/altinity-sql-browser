@@ -15,9 +15,19 @@ main.js (bootstrap + concrete adapters)
 ui/ → net/state/core     net/ → core     core/ → nothing
 ```
 
-`src/main.js` is the composition root. `createApp(env)` receives browser and
-service dependencies. Render modules receive the returned `app` controller and
-must not import `app.js`, which prevents cycles.
+`src/main.js` bootstraps the app; `createApp(env)` in `src/ui/app.js` is the
+composition root, receiving browser and service dependencies and returning the
+`app` controller every render module addresses. Render modules must not import
+`app.js`, which prevents cycles. `createApp` builds `app` via one typed object
+literal with no `as App` cast — a member missing from construction is a `tsc`
+error, not a runtime hole (#588). Four responsibilities that used to live
+entirely inside `createApp` are now their own modules the composition root
+wires up: workspace persistence/cross-tab sync
+(`src/application/workspace-session.js`), `/sql` routing and main-surface
+navigation (`src/application/surface-navigation.js`), the Workbench variable
+strip (`src/ui/workbench/variable-strip.js`), and the save/conflict cluster
+(`src/ui/workbench/save-controller.js`) — `src/application/*` may never import
+`src/ui/`, mechanically enforced by `build/check-boundaries.mjs`.
 
 ## Side-effect seams
 

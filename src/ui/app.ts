@@ -4,7 +4,7 @@
 // window, location, fetch, crypto, sessionStorage) is injected so the whole
 // controller is testable under happy-dom with stubs.
 
-import { h, fixedAnchor } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
@@ -16,7 +16,7 @@ import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
   findDashboard, resolveCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
@@ -39,11 +39,10 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab } from './tabs.js';
-import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
-import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
+import type { QueryResult } from './results.js';
 import { dashboardScrollTop, disposeDashboardSurface, renderDashboard } from './dashboard.js';
 import type { DashboardRenderTarget } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';

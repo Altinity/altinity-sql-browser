@@ -333,7 +333,7 @@ const render = (app: TestApp, over: Partial<DashboardRenderTarget> = {}): Promis
     mode: app.sqlRoute.surface === 'dashboard' ? app.sqlRoute.mode : 'edit',
     ...over,
   });
-// #341: `runCommand` now commits through `app.serializeWrite` (a real
+// #341: `runCommand` now commits through `app.workspaceSession.serializeWrite` (a real
 // microtask-chained queue, same as saved-history.test.ts's own convention) —
 // a synchronous assertion right after triggering a command can no longer
 // observe `commit` having been called; a macrotask flush lets every pending
@@ -4684,7 +4684,7 @@ describe('renderDashboard — the shared header File control (#452)', () => {
 });
 
 // ── runCommand — the #341 serialized write pipeline ─────────────────────────
-// Every editable Dashboard command now commits through `app.serializeWrite`
+// Every editable Dashboard command now commits through `app.workspaceSession.serializeWrite`
 // (the SAME queue saved-query mutations and file-menu commits use), projects
 // the returned committed workspace onto `app.state` via
 // `app.applyCommittedWorkspace`, and rolls back deterministically on failure.

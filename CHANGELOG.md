@@ -127,6 +127,44 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   of a wrong number. No behavior change for well-formed persisted data; no
   change to `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` numeric
   clamping, `clamp` itself, or `decodeStoredSavedQueries`.
+- **Decomposed the `createApp` composition root along four extraction seams,
+  plus typed staged construction** (#588, phase 4 of the #593 refactor
+  umbrella). `src/ui/app.ts` (`createApp`) shrank from ~3,246 to ~2,226 lines
+  and the flat `App` interface from 112 to 105 required members, via five
+  sequential, gate-green extractions: (1) `renderVarStrip`/`setRunBtn` →
+  `src/ui/workbench/variable-strip.ts` (a new sibling controller, not
+  `variable-bar.ts` — that module's `VariableBarApp` port is deliberately
+  adapter-facing with neutral names, and the Workbench's own state doesn't
+  fit it); (2) `anchoredPopover` promoted into `src/ui/popover.ts` beside the
+  existing modal `openAnchoredDialog`, the save cluster
+  (`updateSaveBtn`/`saveActiveQuery`/`openConflictChooser`/…) into
+  `src/ui/workbench/save-controller.ts`, and the three copy-pasted
+  `keyboardOwnerChannel` implementations (`file-menu.ts`/
+  `library-assign-menu.ts`/`dashboard.ts`) hoisted into one
+  `src/ui/keyboard-owner.ts`; (3) workspace persistence, cross-tab
+  BroadcastChannel sync, refresh scheduling, and the `beforeunload` guard
+  into `src/application/workspace-session.ts` (queueing/tokens/broadcast/
+  listeners only — `applyCommittedWorkspace` stays in `app.ts` since it does
+  real UI orchestration, not "zero DOM" as originally scoped); (4) routing
+  and main-surface navigation into `src/application/surface-navigation.ts`,
+  with `SurfaceCommandPort`/`DashboardFocusOutcome`/`WorkspaceRouteStatus`
+  relocated to `src/application/main-surface.ts` so the new
+  `src/application/*` modules never import `src/ui/` (mechanically checked
+  by `check:arch`, including type-only imports); (5) the `appBase:
+  Partial<App>` + `as App` cast replaced by one late-bound object literal —
+  a forgotten member assignment is now a `tsc` compile error instead of a
+  runtime hole (caught one for real: `App.editingLibrary` had never been
+  initialized and was silently reading `undefined`). All four extractions
+  are pure refactors — one pre-existing defect is deliberately **not**
+  fixed: `anchoredPopover`'s stale `close()` can clobber a newer popover
+  sharing the same `dom` ref slot (documented in `popover.ts` and pinned by
+  a characterization test; tracked separately, not part of this phase).
+  `openSavePopover`, `handleSqlPopState`, `focusDashboardMember`,
+  `syncSqlRoute`, `rewriteWorkspaceRoute`, `sourceTabId`, `documentVisible`,
+  `getLastCommittedToken`, `serializeWrite`, `flushWorkspaceWrites`, and
+  `refreshWorkspaceFromStore` are gone from the flat `App` bag (repointed to
+  `app.nav.*`/`app.workspaceSession.*` at every production consumer); `App`
+  gains `nav`/`workspaceSession`.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
