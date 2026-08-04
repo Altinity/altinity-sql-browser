@@ -34,7 +34,10 @@ import { libraryQueries } from '../dashboard/model/query-ownership.js';
 import { openLibraryAssignMenu } from './library-assign-menu.js';
 import type { App } from './app.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
-import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.js';
+// From the type-only seam file, not `./side-panel-registry.js` itself — see
+// `sidebar-upper.ts`'s identical import for why (`side-panel-registry.ts`
+// imports THIS module's `libraryPanelDef`/`historyPanelDef` at runtime now).
+import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.types.js';
 
 /** The `resultView` signal's value union (state.ts) — `launchView`/`'panel'`
  *  below are proven members of it (SAVED_VIEWS membership, or the queryless

@@ -5,8 +5,12 @@
 // generic tab-row renderer (`renderSidePanelTabs`) and the generic activation
 // dispatcher (`buildSidePanelRegistry`'s `showPanel`) are the reason adding a
 // panel never touches `app-shell.ts`, `app-preferences.ts`, `state.ts`, or
-// `workbench-session.ts` (#587 AC5) — those files address panels only through
-// this module's exports.
+// `workbench-session.ts` (#587 AC5) — this module's own
+// `buildProductionSidePanelRegistry` (below) is now the ONE place the four
+// real panel defs are listed, so `app-shell.ts` names no concrete panel at
+// all: it hands this factory the two upper hosts it built and `app`, nothing
+// more (PR #600 review, #587 finding 1 — the composition literally used to
+// live in `app-shell.ts`, which is exactly what AC5 forbids).
 //
 // Persistent hosts, built ONCE and never rebuilt (#587 AC6, carried over from
 // #487 phase 2's `nav-sections.ts`): switching panels only flips `hidden`.
@@ -23,109 +27,22 @@
 import { h } from './dom.js';
 import { SIDE_PANELS } from '../core/side-panels.js';
 import type { SidePanelId, SidePanelPane } from '../core/side-panels.js';
+import { databasesPanelDef, dashboardsPanelDef } from './sidebar-upper.js';
+import type { SidebarUpperHandle } from './sidebar-upper.js';
+import { libraryPanelDef, historyPanelDef } from './saved-history.js';
+import type { App } from './app.types.js';
+import type {
+  MountedSidePanel, SidePanelDef, SidePanelEntry, SidePanelRegistry,
+} from './side-panel-registry.types.js';
 
-/** What a mounted panel exposes to the registry after `mount(host)` runs once.
- *  Switching panels never calls `mount` again — only these. */
-export interface MountedSidePanel {
-  /** Refresh this panel's content from current state. Called once right after
-   *  `mount`, and again on every activation (#587 R2.6: a persistent HIDDEN
-   *  host must never show stale DOM once it becomes visible again). */
-  render(): void;
-  /** Runs when this panel transitions from hidden to visible, BEFORE `render`. */
-  activate?(): void;
-  /** Runs when this panel transitions from visible to hidden. */
-  deactivate?(): void;
-  /** Fires after a clean query/script run, but ONLY when this panel is the
-   *  active one in its pane (dispatch is scoped by the caller, not by this
-   *  hook checking its own visibility) — issue Deliverable 1 names this
-   *  `onRunComplete`; only the History panel defines it today. */
-  onRunComplete?(): void;
-  /** Runs once, at shell disposal. */
-  dispose(): void;
-}
-
-/** A panel's complete presentation + behaviour, independent of any DOM until
- *  `mount` runs. */
-export interface SidePanelDef {
-  readonly id: SidePanelId;
-  readonly pane: SidePanelPane;
-  /** The visible label, exactly as today's switchers show it. */
-  readonly label: string;
-  /** A FACTORY, not a prebuilt element — a tab row and (in principle) any
-   *  other presentation each mint their own node from the same source. */
-  readonly icon: () => SVGElement;
-  /** For a control whose visible label is absent or insufficient. Kept
-   *  separate from `label` (a proven #487 phase-2 decision, #587 AC6). */
-  readonly accessibleLabel: string;
-  /**
-   * An optional live badge next to the label — e.g. Databases'/Dashboards'
-   * row/Dashboard count, Library's live query count (#587 R2.7: three
-   * `.side-count` adornments exist today; dropping them on a generic tab row
-   * would be a visual regression against this issue's own non-goal). Called
-   * on every tab-row repaint; `null` renders nothing. History defines no
-   * adornment today, matching current behaviour.
-   */
-  tabAdornment?(): Node | null;
-  /**
-   * Supply an existing host instead of letting the registry build a bare
-   * generic wrapper. ONLY the upper pane's two panels use this — their hosts
-   * (`upper-role-host[data-role=…]`) are read directly by e2e specs
-   * (`tests/e2e/dashboard-tree.spec.js`) and predate this registry (#426);
-   * preserving them verbatim avoids an unrelated selector churn. Library and
-   * History get a fresh generic host.
-   */
-  host?: HTMLElement;
-  /** Called exactly once, at registry construction, with this entry's
-   *  persistent host (either the one supplied above, or a fresh generic
-   *  wrapper the registry built). Appends whatever content this panel owns
-   *  and returns the lifecycle controller. */
-  mount(host: HTMLElement): MountedSidePanel;
-}
-
-/** A def, fully resolved: `host` is always present (built if not supplied),
- *  and `mount` has already run. */
-export interface SidePanelEntry {
-  readonly id: SidePanelId;
-  readonly pane: SidePanelPane;
-  readonly label: string;
-  readonly icon: () => SVGElement;
-  readonly accessibleLabel: string;
-  tabAdornment?(): Node | null;
-  readonly host: HTMLElement;
-  readonly mounted: MountedSidePanel;
-}
-
-export interface SidePanelRegistry {
-  /** All entries, in manifest order. */
-  readonly entries: readonly SidePanelEntry[];
-  entry(id: SidePanelId): SidePanelEntry;
-  /**
-   * Expose exactly one panel WITHIN ITS OWN PANE, hiding its pane siblings —
-   * never a global "exactly one of N", which would blank the other pane.
-   * EVERY pane sibling's `deactivate` runs BEFORE the target's `activate`/
-   * `render` — a strict ordering, not an artifact of manifest/registration
-   * order (review finding 1: a single pass over `entries` let an outgoing
-   * panel's teardown, e.g. clearing a shared filter, run AFTER the incoming
-   * panel had already rendered against the stale value, whenever the target
-   * happened to be visited first). A no-op call (the panel is already
-   * active) still re-renders it, so an explicit re-activation always
-   * reflects current state.
-   */
-  showPanel(id: SidePanelId): void;
-  /** The currently active panel id within `pane`. */
-  activeId(pane: SidePanelPane): SidePanelId;
-  /** Repaint the active LOWER-pane panel's body — the compatibility seam
-   *  `renderSavedHistory(app)` (10 call sites, counted with `rg`: 5 in
-   *  `saved-history.ts`, 4 in `app.ts`, 1 in `file-menu.ts` — excluding the
-   *  function's own definition and import lines) delegates to this. */
-  refreshActiveSidePanels(): void;
-  /** Dispatch `onRunComplete` to the active LOWER-pane panel ONLY, and only if
-   *  it defines the hook (#587 AC3: a clean run always calls this — today only
-   *  History repaints). */
-  notifyRunComplete(): void;
-  /** Tear every panel down once, at shell disposal. */
-  dispose(): void;
-}
+// Re-exported verbatim so every existing importer of these names from THIS
+// module keeps working unchanged (`app-shell.ts`, the unit/e2e fixtures).
+// The interfaces themselves now live in `side-panel-registry.types.ts` — see
+// that file's own header comment for why: `sidebar-upper.ts`/
+// `saved-history.ts` need these TYPES, and this module needs THEIR concrete
+// `*PanelDef` factories at runtime (the import two lines above), and having
+// both edges point through this module would be a real module-graph cycle.
+export type { MountedSidePanel, SidePanelDef, SidePanelEntry, SidePanelRegistry };
 
 /** Build a registry from an explicit list of defs — the generic core every
  *  production/test caller goes through. Exported so a test can inject a fake
@@ -206,6 +123,29 @@ export function buildSidePanelRegistry(defs: readonly SidePanelDef[]): SidePanel
   };
 }
 
+/**
+ * The ONE production wiring: all four real panels (Databases/Dashboards over
+ * the upper pane's existing hosts; Library/History over fresh persistent
+ * hosts `buildSidePanelRegistry` builds for them), through the exact same
+ * generic core every other caller (tests, the `dashboard-membership.html` e2e
+ * fixture) goes through. `app-shell.ts` calls only this — it hands over the
+ * two upper hosts it already built and `app`, and never imports a concrete
+ * panel-def factory or names a panel id/label itself (#587 AC5). Adding a
+ * fifth panel means adding one def to the array below plus that panel's own
+ * module — never touching `app-shell.ts`.
+ */
+export function buildProductionSidePanelRegistry(
+  app: App,
+  upperHosts: Pick<SidebarUpperHandle, 'databasesHost' | 'dashboardsHost'>,
+): SidePanelRegistry {
+  return buildSidePanelRegistry([
+    databasesPanelDef(app, upperHosts.databasesHost),
+    dashboardsPanelDef(app, upperHosts.dashboardsHost),
+    libraryPanelDef(app),
+    historyPanelDef(app),
+  ]);
+}
+
 /** Generic tab-row renderer, used identically for the upper and lower rows
  *  (#587 R2.1: one renderer, not a per-pane copy that could disagree about
  *  labels, icons, or the active state). Rebuilds the row's buttons — the
@@ -222,6 +162,7 @@ export function renderSidePanelTabs(
     class: 'side-tab' + (entry.id === activeId ? ' active' : ''),
     type: 'button',
     'aria-pressed': entry.id === activeId ? 'true' : 'false',
+    'aria-label': entry.accessibleLabel,
     onclick: () => onSelect(entry.id),
   }, entry.icon(), h('span', null, entry.label), entry.tabAdornment ? entry.tabAdornment() : null)));
 }

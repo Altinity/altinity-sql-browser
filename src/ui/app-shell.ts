@@ -34,10 +34,9 @@ import { MOBILE_BREAKPOINT_PX } from '../state.js';
 import type { AppState as State } from '../state.js';
 import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
-import { buildSidebarUpper, databasesPanelDef, dashboardsPanelDef } from './sidebar-upper.js';
+import { buildSidebarUpper } from './sidebar-upper.js';
 import { renderDashboardTree, cancelDashboardTreeClicks } from './dashboard-tree.js';
-import { libraryPanelDef, historyPanelDef } from './saved-history.js';
-import { buildSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES } from './side-panel-registry.js';
+import { buildProductionSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES } from './side-panel-registry.js';
 import type { SidePanelRegistry } from './side-panel-registry.js';
 import { sidePanelKeyFor, lowerIdForKey } from '../core/side-panels.js';
 import type { SidePanelId, UpperPanelId, LowerPanelId } from '../core/side-panels.js';
@@ -156,15 +155,15 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   ]);
   // #587 — the ONE registry: all four panels (Databases/Dashboards over the
   // upper pane's existing hosts; Library/History over fresh persistent hosts
-  // this call builds). Adding a fifth panel means adding one more def here
-  // plus that panel's own module — never touching this file's composition
-  // below, `app-preferences.ts`, `state.ts`, or `workbench-session.ts`.
-  const registry = buildSidePanelRegistry([
-    databasesPanelDef(app, upper.databasesHost),
-    dashboardsPanelDef(app, upper.dashboardsHost),
-    libraryPanelDef(app),
-    historyPanelDef(app),
-  ]);
+  // `side-panel-registry.ts`'s own factory builds for them). This shell names
+  // no concrete panel-def or panel id — it hands the factory only what it
+  // genuinely owns (the two upper hosts `buildSidebarUpper` just built, and
+  // `app`). Adding a fifth panel means adding one def to
+  // `buildProductionSidePanelRegistry`'s array plus that panel's own module —
+  // never touching this file, `app-preferences.ts`, `state.ts`, or
+  // `workbench-session.ts` (#587 AC5; PR #600 fixed this file's own prior
+  // violation, where the four concrete defs were listed right here).
+  const registry = buildProductionSidePanelRegistry(app, upper);
   app.dom.upperRoleTabs = h('div', { class: 'side-tabs upper-role-tabs' });
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
     app.dom.upperRoleTabs, upper.databasesHost, upper.dashboardsHost);

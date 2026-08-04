@@ -61,4 +61,22 @@ describe('#587 AC5 source contract: no panel id/label selection outside the regi
     const code = codeOf('src/ui/app.ts');
     expect(code).not.toMatch(/sidePanel\.value\s*===\s*'(saved|history|library)'/);
   });
+
+  // #600 review finding 1: `app-shell.ts` is the FOURTH file AC5 names
+  // outright ("adding a panel must not touch app-shell.ts") — and the three
+  // checks above never covered it, so the four concrete panel-def imports
+  // that used to sit right in this file's composition stayed green forever.
+  // `buildProductionSidePanelRegistry` (side-panel-registry.ts) is now the
+  // ONE place the four defs are listed; this must go red the moment a
+  // concrete panel-def import or a bare panel-id literal creeps back into
+  // `app-shell.ts`.
+  it('app-shell.ts names no concrete panel-def symbol or panel id — panel composition lives in the registry, not the shell', () => {
+    const code = codeOf('src/ui/app-shell.ts');
+    for (const symbol of ['databasesPanelDef', 'dashboardsPanelDef', 'libraryPanelDef', 'historyPanelDef']) {
+      expect(code).not.toContain(symbol);
+    }
+    for (const id of ['databases', 'dashboards', 'library', 'history']) {
+      expect(code).not.toMatch(new RegExp(`['"]${id}['"]`));
+    }
+  });
 });

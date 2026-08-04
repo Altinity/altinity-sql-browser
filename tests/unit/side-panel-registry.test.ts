@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  buildSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES,
+  buildSidePanelRegistry, buildProductionSidePanelRegistry, renderSidePanelTabs, MOBILE_PANES,
 } from '../../src/ui/side-panel-registry.js';
 import type { SidePanelDef, MountedSidePanel } from '../../src/ui/side-panel-registry.js';
 import type { SidePanelId, SidePanelPane } from '../../src/core/side-panels.js';
+import { makeApp } from '../helpers/fake-app.js';
 
 /** A minimal fake panel: records every lifecycle call, and lets a test push
  *  arbitrary "current data" into its render(). Mirrors the shape a real
@@ -278,9 +279,9 @@ describe('dispose', () => {
 });
 
 describe('renderSidePanelTabs — generic tab row', () => {
-  it('renders one button per entry, in order, with label/icon/accessibleLabel-independent structure', () => {
-    const a = lowerDef('library' as SidePanelId, { label: 'Library' });
-    const b = lowerDef('history' as SidePanelId, { label: 'History' });
+  it('renders one button per entry, in order, with label/icon/aria-label structure', () => {
+    const a = lowerDef('library' as SidePanelId, { label: 'Library', accessibleLabel: 'Open Library navigation' });
+    const b = lowerDef('history' as SidePanelId, { label: 'History', accessibleLabel: 'Open query History' });
     const reg = buildSidePanelRegistry([a, b]);
     const row = document.createElement('div');
     renderSidePanelTabs(row, reg.entries, reg.activeId('lower'), () => {});
@@ -291,6 +292,12 @@ describe('renderSidePanelTabs — generic tab row', () => {
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
     expect(buttons[1].classList.contains('active')).toBe(false);
     expect(buttons[1].getAttribute('aria-pressed')).toBe('false');
+    // #600 review finding 3: `accessibleLabel` used to be dead contract
+    // surface — required and documented, but never applied to the DOM. Exact
+    // strings, not `toBeTruthy` (which would pass even if the wrong label, or
+    // no label at all with a truthy placeholder, were emitted).
+    expect(buttons[0].getAttribute('aria-label')).toBe('Open Library navigation');
+    expect(buttons[1].getAttribute('aria-label')).toBe('Open query History');
   });
 
   it('mints a fresh icon node per render — the icon is a factory, never a shared element', () => {
@@ -326,6 +333,26 @@ describe('renderSidePanelTabs — generic tab row', () => {
     renderSidePanelTabs(row, reg.entries, reg.activeId('lower'), onSelect);
     (row.querySelectorAll('button')[1] as HTMLButtonElement).click();
     expect(onSelect).toHaveBeenCalledExactlyOnceWith('history');
+  });
+});
+
+// #600 review finding 1: this is now the ONE place the four real panel defs
+// are wired — `app-shell.ts` calls it directly and names no concrete panel
+// itself. Proves the factory produces exactly the real four, over the
+// caller-supplied upper hosts, through the same generic core every other
+// caller (including the fake-panel AC5 proof above) goes through.
+describe('buildProductionSidePanelRegistry — the production wiring app-shell.ts calls', () => {
+  it('wires the four real panels (Databases/Dashboards/Library/History), in manifest order, over the given upper hosts', () => {
+    const app = makeApp();
+    const databasesHost = document.createElement('div');
+    const dashboardsHost = document.createElement('div');
+    const reg = buildProductionSidePanelRegistry(app, { databasesHost, dashboardsHost });
+    expect(reg.entries.map((entry) => entry.id)).toEqual(['databases', 'dashboards', 'library', 'history']);
+    expect(reg.entry('databases' as SidePanelId).host).toBe(databasesHost);
+    expect(reg.entry('dashboards' as SidePanelId).host).toBe(dashboardsHost);
+    // Library/History get fresh generic hosts, not the caller-supplied upper ones.
+    expect(reg.entry('library' as SidePanelId).host).not.toBe(databasesHost);
+    expect(reg.entry('history' as SidePanelId).host).not.toBe(dashboardsHost);
   });
 });
 

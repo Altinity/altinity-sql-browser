@@ -26,7 +26,13 @@ import { renderDashboardTree, cancelDashboardTreeClicks, type DashboardTreeApp }
 import { readTreeUi, setTreeSearch } from '../core/dashboard-tree-ui-state.js';
 import type { AppState } from '../state.js';
 import type { AppDom } from './app.types.js';
-import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.js';
+// From the type-only seam file, not `./side-panel-registry.js` itself:
+// `side-panel-registry.ts`'s `buildProductionSidePanelRegistry` imports THIS
+// module's `databasesPanelDef`/`dashboardsPanelDef` at runtime now, so this
+// module importing back from `side-panel-registry.ts` (even type-only) would
+// point the module-graph edge both ways — see that file's `.types.ts`
+// sibling for the full rationale.
+import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.types.js';
 
 /** The slice of `app` this module reads. A real `App` satisfies it directly. */
 export interface SidebarUpperApp extends DashboardTreeApp {
