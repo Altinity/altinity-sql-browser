@@ -45,6 +45,27 @@ describe('save()', () => {
   });
 });
 
+// #587 AC5's second falsifiability leg (per R2.10): a compile-time proof.
+// `tsc --noEmit` (one of this repo's gates) gives the assertion below teeth —
+// `@ts-expect-error` itself becomes a compile ERROR if the following line is
+// NOT actually a type error, so removing the `PreferenceValues['sidePanel']`
+// constraint (reverting `save` to `unknown`) would fail `check:types`, not
+// just silently stop catching this at compile time.
+describe('save() — compile-time contract (#587 AC4)', () => {
+  it('accepts the two real SidePanelKey values, and rejects the registry id "library" at compile time', () => {
+    const deps = makeDeps();
+    const prefs = createAppPreferences(deps);
+    prefs.save('sidePanel', 'saved');
+    prefs.save('sidePanel', 'history');
+    // @ts-expect-error — 'library' is the registry's OWN id, never a
+    // persisted `SidePanelKey` value (see `decodeSidePanelKey`'s downgrade-
+    // safety comment) — `prefs.save('sidePanel', 'library')` must not
+    // type-check.
+    prefs.save('sidePanel', 'library');
+    expect(deps.saveStr).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('toggleTheme()', () => {
   it('flips light to dark, persists, and returns the new value', () => {
     const deps = makeDeps();
