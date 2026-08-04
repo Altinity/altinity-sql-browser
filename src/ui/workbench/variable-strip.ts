@@ -195,11 +195,19 @@ export function createVariableStrip(deps: VariableStripDeps): VariableStripContr
     // priority; a type-conflicted field degrades to text — fieldControlKind).
     const controls = vars.map((v) => fieldControlKind(v, deps.params.inferredEnumOptions(v, scanSql, comparisonColumns)));
     // The signature folds in each var's control kind and resolved enum
-    // options — not just name/type/optional — so a column landing on the
+    // OPTION COUNT — not just name/type/optional — so a column landing on the
     // idle-tick loader (loadColumns calls renderVarStrip on completion)
     // upgrades a v2 field from plain input to the dropdown, and a type
     // conflict appearing or resolving restyles the field, even though the
     // {name:Type} set itself never changed.
+    // KNOWN PRE-EXISTING GAP (moved verbatim from app.ts, not introduced or
+    // fixed by #588's phase-4 extraction — tracked as #605): the signature
+    // only folds in enumOptions.LENGTH,
+    // not the option identities, so a same-cardinality option-set change
+    // (e.g. background reload swaps ['a','b'] for ['c','d']) does not bump
+    // the signature and the stale dropdown survives until something else
+    // changes the {name:Type} set. Deliberately not fixed here — a pure
+    // structural extraction is not the place to change this behavior.
     const sigNew = vars.map((v, i) => {
       const c = controls[i];
       return v.name + ':' + v.type + (v.optional ? '?' : '') + (v.conflict ? '!' : '')

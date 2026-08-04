@@ -3,7 +3,8 @@
 // internal ~290-property implementation — verified against real usage across
 // src/ui/*.ts, src/editor/*.ts and src/main.js (ADR-0002 phase 0 / #262, #267).
 // app.ts's own `createApp` return value is declared against this contract
-// directly (`const app = {} as App;` + property assignment — see app.ts).
+// directly (one `app: App = {...}` object literal, no cast — a member missing
+// from the literal is a compile error; see app.ts's Stage 4/5 comments).
 //
 // `State`/`Tab` are the real src/state.ts types (ADR-0002 phase 2), re-exported
 // under the names this contract has always used.
