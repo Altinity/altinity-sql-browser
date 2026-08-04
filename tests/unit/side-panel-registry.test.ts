@@ -279,7 +279,7 @@ describe('dispose', () => {
 });
 
 describe('renderSidePanelTabs — generic tab row', () => {
-  it('renders one button per entry, in order, with label/icon/aria-label structure', () => {
+  it('renders one button per entry, in order, with label/icon structure, and no aria-label', () => {
     const a = lowerDef('library' as SidePanelId, { label: 'Library', accessibleLabel: 'Open Library navigation' });
     const b = lowerDef('history' as SidePanelId, { label: 'History', accessibleLabel: 'Open query History' });
     const reg = buildSidePanelRegistry([a, b]);
@@ -292,12 +292,35 @@ describe('renderSidePanelTabs — generic tab row', () => {
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
     expect(buttons[1].classList.contains('active')).toBe(false);
     expect(buttons[1].getAttribute('aria-pressed')).toBe('false');
-    // #600 review finding 3: `accessibleLabel` used to be dead contract
-    // surface — required and documented, but never applied to the DOM. Exact
-    // strings, not `toBeTruthy` (which would pass even if the wrong label, or
-    // no label at all with a truthy placeholder, were emitted).
-    expect(buttons[0].getAttribute('aria-label')).toBe('Open Library navigation');
-    expect(buttons[1].getAttribute('aria-label')).toBe('Open query History');
+    // #600 review finding 2 (round 2): a tab button's accessible name must
+    // stay content-derived (visible label + any live count) — an explicit
+    // `aria-label` here would REPLACE that with `accessibleLabel` alone,
+    // silently deleting the count from what a screen reader announces (see
+    // the regression test below). `accessibleLabel` is still asserted at
+    // the registry-meta level further down — it is a real part of the
+    // contract, just never emitted on this DOM.
+    expect(buttons[0].hasAttribute('aria-label')).toBe(false);
+    expect(buttons[1].hasAttribute('aria-label')).toBe(false);
+  });
+
+  // #600 review finding 2 (round 2): this is the guard against a future
+  // `renderSidePanelTabs` change re-adding `'aria-label': entry.accessibleLabel`
+  // (or any other override that would replace the content-derived accessible
+  // name) — it directly asserts the two conditions that together prove the
+  // count is still announced: no `aria-label` override, and the button's own
+  // text content includes the adornment.
+  it('a counted tab exposes no aria-label, and its text content includes the live count', () => {
+    const withCount = lowerDef('library' as SidePanelId, {
+      label: 'Library',
+      accessibleLabel: 'Open Library navigation',
+      tabAdornment: () => { const s = document.createElement('span'); s.className = 'side-count'; s.textContent = '· 3'; return s; },
+    });
+    const reg = buildSidePanelRegistry([withCount]);
+    const row = document.createElement('div');
+    renderSidePanelTabs(row, reg.entries, reg.activeId('lower'), () => {});
+    const button = row.querySelector('button')!;
+    expect(button.hasAttribute('aria-label')).toBe(false);
+    expect(button.textContent).toBe('Library· 3');
   });
 
   it('mints a fresh icon node per render — the icon is a factory, never a shared element', () => {
@@ -353,6 +376,24 @@ describe('buildProductionSidePanelRegistry — the production wiring app-shell.t
     // Library/History get fresh generic hosts, not the caller-supplied upper ones.
     expect(reg.entry('library' as SidePanelId).host).not.toBe(databasesHost);
     expect(reg.entry('history' as SidePanelId).host).not.toBe(dashboardsHost);
+  });
+
+  // #600 review finding 2 (round 2): `accessibleLabel` is real contract
+  // surface (#587 AC6) even though `renderSidePanelTabs` never emits it on
+  // the DOM (it would delete the live count from the accessible name — see
+  // that renderer's own comment) — its real consumer is a future icon-only
+  // presentation. Pinned here, at the REGISTRY level, against the exact four
+  // strings the production panels declare.
+  it('exposes the exact accessibleLabel contract string for each of the four real panels', () => {
+    const app = makeApp();
+    const reg = buildProductionSidePanelRegistry(app, {
+      databasesHost: document.createElement('div'),
+      dashboardsHost: document.createElement('div'),
+    });
+    expect(reg.entry('databases' as SidePanelId).accessibleLabel).toBe('Open Databases navigation');
+    expect(reg.entry('dashboards' as SidePanelId).accessibleLabel).toBe('Open Dashboards navigation');
+    expect(reg.entry('library' as SidePanelId).accessibleLabel).toBe('Open Library navigation');
+    expect(reg.entry('history' as SidePanelId).accessibleLabel).toBe('Open query History');
   });
 });
 

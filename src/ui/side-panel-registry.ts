@@ -158,11 +158,21 @@ export function renderSidePanelTabs(
   activeId: SidePanelId,
   onSelect: (id: SidePanelId) => void,
 ): void {
+  // #600 review finding 2 (round 2): no `aria-label` here. An explicit
+  // `aria-label` on a button REPLACES the accessible name that would
+  // otherwise be computed from its descendant content — and this button's
+  // descendants are exactly the visible label plus `tabAdornment()` (the
+  // live `.side-count` badge, e.g. "· 3"). Emitting `entry.accessibleLabel`
+  // here silently deleted the count from every counted tab's accessible
+  // name ("Databases · 3" became "Open Databases navigation") — a
+  // regression against the pre-#587 DOM, not a fix for the "dead contract
+  // surface" finding that motivated adding it. `accessibleLabel` still
+  // exists on `SidePanelDef`/`SidePanelEntry` for its real consumer (see
+  // that field's own doc comment) — it is simply never read here.
   row.replaceChildren(...entries.map((entry) => h('button', {
     class: 'side-tab' + (entry.id === activeId ? ' active' : ''),
     type: 'button',
     'aria-pressed': entry.id === activeId ? 'true' : 'false',
-    'aria-label': entry.accessibleLabel,
     onclick: () => onSelect(entry.id),
   }, entry.icon(), h('span', null, entry.label), entry.tabAdornment ? entry.tabAdornment() : null)));
 }

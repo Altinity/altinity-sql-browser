@@ -54,8 +54,23 @@ export interface SidePanelDef {
   /** A FACTORY, not a prebuilt element — a tab row and (in principle) any
    *  other presentation each mint their own node from the same source. */
   readonly icon: () => SVGElement;
-  /** For a control whose visible label is absent or insufficient. Kept
-   *  separate from `label` (a proven #487 phase-2 decision, #587 AC6). */
+  /**
+   * The accessible name for an ICON-ONLY presentation of this panel — e.g.
+   * the rail launchers a later issue adds, which show `icon()` with no
+   * visible text at all, so there is nothing for a browser to compute an
+   * accessible name from. Kept separate from `label` (a proven #487 phase-2
+   * decision, #587 AC6).
+   *
+   * Must NOT be applied as an `aria-label` on the tab-row buttons
+   * (`renderSidePanelTabs`, `side-panel-registry.ts`): those buttons already
+   * render a visible label plus `tabAdornment()` (a live count, e.g.
+   * "· 3"), and an explicit `aria-label` on a button REPLACES the
+   * accessible name it would otherwise compute from its descendant
+   * content — so setting it there deletes the count from what assistive
+   * tech announces. (#600 review finding 2, round 2: exactly this was
+   * added and then reverted for that reason — see `renderSidePanelTabs`'s
+   * own comment.)
+   */
   readonly accessibleLabel: string;
   /**
    * An optional live badge next to the label — e.g. Databases'/Dashboards'
