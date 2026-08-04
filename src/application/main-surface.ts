@@ -31,6 +31,52 @@ export type DashboardFocusTarget =
  *  authorization boundary (ADR-0003). */
 export type DashboardSurfaceMode = 'view' | 'edit';
 
+/** `App['workspaceRouteStatus']`'s canonical declaration (#588 phase 4 §3-T #3
+ *  — moved here from `src/ui/shortcuts.ts`'s inline union so wave 3's
+ *  `workspace-session.ts` and wave 4's `surface-navigation.ts` both have one
+ *  real import instead of independently-copied inline unions). `app.types.ts`
+ *  and `shortcuts.ts` both import this now; `workspace-session.ts` (wave 3)
+ *  rewires its local placeholder copy onto this import in the same change. */
+export type WorkspaceRouteStatus = 'loading' | 'ready' | 'not-found' | 'error';
+
+/** Local copy (#588 phase 4 §3-T #2 — moved here from `src/ui/shortcuts.ts`),
+ *  not an import of the canonical `dashboard-viewer-session.ts` one: this
+ *  module may not import `src/dashboard/**` (the reverse would be the wrong
+ *  dependency direction), and `shortcuts.ts`'s own pre-move copy made the same
+ *  trade — filed as a later unification candidate (#588 phase 4 plan §9-5). */
+type DashboardStyle = 'grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
+
+/**
+ * What an IN-PLACE member navigation could do (#426). Three outcomes, because
+ * two of them are not failures:
+ *   - `ok`      — delivered against the live surface; no rebuild happened.
+ *   - `pending` — not deliverable in place *right now* (the opening wave has not
+ *                 settled, so a curated filter's control is about to be replaced;
+ *                 or this port has been superseded). The caller falls back to the
+ *                 normal render transition, which delivers focus at the
+ *                 deterministic point the node exists. NOT a diagnostic.
+ *   - `missing` — the member is genuinely not on this Dashboard any more. The
+ *                 caller reports it non-destructively and changes nothing.
+ *
+ * (#588 phase 4 §3-T #2 — moved here from `src/ui/shortcuts.ts`, which now
+ * re-exports it so existing importers keep compiling unchanged.)
+ */
+export type DashboardFocusOutcome = 'ok' | 'pending' | 'missing';
+
+/** (#588 phase 4 §3-T #2 — moved here from `src/ui/shortcuts.ts`, alongside
+ *  `DashboardFocusOutcome`; see that type's own doc comment.) */
+export interface SurfaceCommandPort {
+  surface: 'dashboard';
+  generation: number;
+  refresh(): void;
+  setDashboardStyle(style: DashboardStyle): void;
+  /** #426 — scroll/focus/highlight one already-rendered tile or curated filter
+   *  WITHOUT rebuilding or re-running the Dashboard. Repeated same-Dashboard
+   *  member navigation is a normal tree operation, so it must not cost a render
+   *  or a history entry. */
+  focusMember(member: DashboardFocusTarget): DashboardFocusOutcome;
+}
+
 /**
  * #426 splits what #425 carried as one `focus` field into two independent facts,
  * because the Dashboard tree needs to distinguish them:

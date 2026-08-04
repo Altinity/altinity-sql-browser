@@ -32,6 +32,8 @@ import type {
   WorkspaceStore, WorkspaceStoreRecord,
 } from '../../src/workspace/workspace-store.types.js';
 import type { App, ActionsRegistry, AppDom, ChCtx } from '../../src/ui/app.types.js';
+import type { WorkspaceSession } from '../../src/application/workspace-session.js';
+import type { SurfaceNavigation } from '../../src/application/surface-navigation.js';
 import type { AppState } from '../../src/state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js';
 import type { StreamResult } from '../../src/core/stream.js';
@@ -393,6 +395,71 @@ const prefsDefaults: AppPreferences = {
   toggleTheme: vi.fn(() => 'light'),
 };
 
+// Inert `WorkspaceSession` defaults (#588 phase 4 wave 3 — `app.workspaceSession`
+// moved queueing/tokens/broadcast/refresh/beforeunload/provisioning off the flat
+// `App` contract and into this nested service). Self-contained (not sharing
+// `appDefaults.workspace`/`.applyCommittedWorkspace`) so this const and
+// `appDefaults` below can each be constructed independently of declaration
+// order. `makeApp()`'s own `base.workspaceSession` (below) overrides
+// `serializeWrite`/`flushWorkspaceWrites`/`mutateWorkspace` with a REAL
+// per-instance queue backed by the fixture's actual `workspace` repository —
+// mirrors the pre-#588 `base` IIFE this replaces. No fixture in this repo
+// currently exercises `scheduleRefresh`/`sourceTabId`/`getLastCommittedToken`/
+// `recordProjection`/`syncBeforeUnload`/`armOAuthRedirectUnloadBypass`/
+// `resolveImplicitOrProvision`/`recordOpened` through the fake app (only real
+// `createApp()`-driven tests do), so these stay inert placeholders here.
+const workspaceSessionDefaults: WorkspaceSession = {
+  serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
+  flushWorkspaceWrites: async () => {},
+  mutateWorkspace: async (transform) => {
+    const input = await transform(null);
+    return { ok: false, aborted: true, data: input ? input.data : undefined };
+  },
+  refreshWorkspaceFromStore: async () => {},
+  scheduleRefresh: () => {},
+  sourceTabId: 'tab-fake',
+  getLastCommittedToken: () => '',
+  recordProjection: () => {},
+  syncBeforeUnload: () => {},
+  armOAuthRedirectUnloadBypass: () => () => {},
+  resolveImplicitOrProvision: async () => ({ status: 'empty' }),
+  recordOpened: async () => {},
+};
+
+// Inert `SurfaceNavigation` defaults (#588 phase 4 wave 4 — `app.nav`). Self-
+// contained, same convention as `workspaceSessionDefaults` above: independent
+// of `appDefaults`'s own flat stubs for the wide-consumer members
+// (`navigateSqlRoute`/`openDashboard`/`showQuerySurface`/…), which a fixture
+// exercising THOSE still reads directly off `app.*` (unaffected by this wave).
+const navDefaults: SurfaceNavigation = {
+  navigateSqlRoute: async () => {},
+  handleSqlPopState: async () => {},
+  syncSqlRoute: () => {},
+  rewriteWorkspaceRoute: () => {},
+  writeRoute: () => {},
+  currentRouteSearch: () => '',
+  renderCurrentSurface: () => {},
+  loadWorkspaceOnBoot: async () => null,
+  reloadDashboardRoute: () => {},
+  openDashboard: () => {},
+  showQuerySurface: () => {},
+  showDashboardSurface: () => {},
+  openSavedQuery: () => {},
+  openPanelQuery: () => {},
+  openVariableTab: () => {},
+  // #426: the default fixture has no rendered Dashboard surface, so an
+  // in-place focus request is never deliverable — `pending` is the honest
+  // stub, and also what makes a spec that cares about in-place delivery
+  // override it explicitly rather than accidentally passing against a fake
+  // `ok`.
+  focusDashboardMember: () => 'pending',
+  captureSurfaceGeneration: () => 0,
+  isSurfaceGenerationCurrent: (generation) => generation === 0,
+  refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
+  advanceSurfaceGeneration: () => {},
+  loadGeneration: () => 0,
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -476,9 +543,6 @@ const appDefaults: App = {
   isSurfaceGenerationCurrent: (generation) => generation === 0,
   refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
   navigateSqlRoute: async () => {},
-  handleSqlPopState: async () => {},
-  syncSqlRoute: () => {},
-  rewriteWorkspaceRoute: () => {},
   renderCurrentSurface: () => {},
   syncBeforeUnload: () => {},
   // Recovery itself is covered by its application/session tests. UI fixtures
@@ -494,19 +558,20 @@ const appDefaults: App = {
   // post-commit projection.
   applyCommittedWorkspace: () => {},
   genId: () => 'gen-id',
-  // #343 §5/§6: inert cross-tab-consistency seams — a fixture exercising
-  // invalidation overrides these (or uses two real `createApp()` instances).
-  sourceTabId: 'tab-fake',
-  documentVisible: () => true,
-  getLastCommittedToken: () => '',
+  // #343 §5/§6: inert cross-tab-consistency seam — a fixture exercising
+  // invalidation overrides this (or uses two real `createApp()` instances).
   onExternalWorkspaceChange: () => {},
-  refreshWorkspaceFromStore: async () => {},
   onWorkspaceExternallyChanged: () => {},
-  // Inert passthrough — `base` overrides with a real per-instance queue.
-  serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
-  // #341: inert no-op — `base` overrides with the real per-instance flush that
-  // shares `serializeWrite`'s own queue.
-  flushWorkspaceWrites: async () => {},
+  // #588 phase 4 wave 3: queueing/tokens/broadcast/refresh/beforeunload/
+  // provisioning now live under `workspaceSession` — see
+  // `workspaceSessionDefaults` above. `base` below overrides
+  // `serializeWrite`/`flushWorkspaceWrites`/`mutateWorkspace` with a real
+  // per-instance queue backed by `workspaceRepo`.
+  workspaceSession: workspaceSessionDefaults,
+  // #588 phase 4 wave 4: `handleSqlPopState`/`focusDashboardMember` (router-
+  // private) and `syncSqlRoute`/`rewriteWorkspaceRoute` (no flat `App`
+  // delegate — see `navDefaults` above) are reachable only through `nav.*`.
+  nav: navDefaults,
   // #341/#344: inert placeholder — `transform` still runs (so a fixture that
   // never overrides this still exercises the caller's build-from-latest
   // logic), but `latest` is always `null` (no queue, no read-back) and the
@@ -588,16 +653,10 @@ const appDefaults: App = {
   // `registerSpecValidator` have no flat `App` member (#276 Phase 5 deleted
   // them) — a fixture reads `queryDocDefaults`/`app.queryDoc.*` for those now.
   activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
   openUserMenu: () => {},
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
-  // #426: the default fixture has no rendered Dashboard surface, so an in-place
-  // focus request is never deliverable — `pending` is the honest stub, and it is
-  // also what makes a spec that cares about in-place delivery override it
-  // explicitly rather than accidentally passing against a fake `ok`.
-  focusDashboardMember: () => 'pending',
   invalidateDashboardTree: () => {},
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
@@ -623,7 +682,7 @@ const appDefaults: App = {
 // parameter as exactly what `makeApp` itself accepts, instead of
 // re-declaring a narrower `Partial<App>` that would reject it.
 export type MakeAppOverrides = AppOverrides;
-type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace' | 'workspaceSession' | 'nav'>> & {
   /** Partial like the rest (#286 Phase 4) — Dashboard mutations read a
    *  StoredWorkspaceV5 through `workspace.loadById`; a test overrides only
    *  the repository methods it drives. */
@@ -664,6 +723,21 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'cat
   exports?: Partial<ExportService>;
   graph?: Partial<SchemaGraphSession>;
   prefs?: Partial<AppPreferences>;
+  /** Partial like the rest (#588 phase 4 wave 3) — most fixtures never touch
+   *  the session directly; a test asserting e.g.
+   *  `workspaceSession.flushWorkspaceWrites`'s return (a held-open gate) can
+   *  override just that method, keeping `base`'s real per-instance
+   *  `serializeWrite`/`mutateWorkspace` queue for the rest. */
+  workspaceSession?: Partial<WorkspaceSession>;
+  /** Partial like `workspaceSession` above (#588 phase 4 wave 4) — most
+   *  fixtures never touch the session directly; a test asserting e.g.
+   *  `nav.focusDashboardMember`'s return can override just that method. The
+   *  wide-consumer members (`navigateSqlRoute`/`openDashboard`/…) also keep
+   *  their OWN independent flat-`App` stub (same convention as
+   *  `workspaceSession.mutateWorkspace` vs. the flat `App.mutateWorkspace`
+   *  stub above — this fixture is a hand-maintained test double, not a
+   *  byte-accurate mirror of app.ts's real `app.foo = nav.foo` wiring). */
+  nav?: Partial<SurfaceNavigation>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -787,8 +861,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
         return run;
       };
       // #341: shares the SAME `chain` `serializeWrite` advances, so a test
-      // awaiting `app.flushWorkspaceWrites()` sees every write queued before
-      // this call resolve — mirrors app.ts's own `writeChain`-backed pair.
+      // awaiting `app.workspaceSession.flushWorkspaceWrites()` sees every
+      // write queued before this call resolve — mirrors app.ts's own
+      // `writeChain`-backed pair.
       const flushWorkspaceWrites = (): Promise<void> => chain.then(() => undefined, () => undefined);
       // #341/#344: mirrors app.ts's own `mutateWorkspace` — reads `workspaceRepo
       // .loadById()` (the SAME repo `workspace.commit` below publishes
@@ -812,7 +887,14 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
           dashboardRevision: result.dashboardRevision, data: input.data,
         };
       });
-      return { serializeWrite, flushWorkspaceWrites, mutateWorkspace };
+      // `mutateWorkspace` stays flat too (`App.mutateWorkspace`, #588 phase 4
+      // wave 3's wide-consumer flat delegate) — the SAME function reference
+      // as `workspaceSession.mutateWorkspace` below, mirroring app.ts's own
+      // `app.mutateWorkspace = session.mutateWorkspace` wiring.
+      return {
+        mutateWorkspace,
+        workspaceSession: { serializeWrite, flushWorkspaceWrites, mutateWorkspace },
+      };
     })(),
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.
@@ -931,6 +1013,10 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
     prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
     workspace: workspaceRepo,
+    workspaceSession: {
+      ...workspaceSessionDefaults, ...base.workspaceSession, ...(overrides.workspaceSession ?? {}),
+    },
+    nav: { ...navDefaults, ...(overrides.nav ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

@@ -930,7 +930,7 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     const app = mount({
       currentWorkspace: mine,
       // The flush is the await the switch happens across.
-      flushWorkspaceWrites: () => gate,
+      workspaceSession: { flushWorkspaceWrites: () => gate },
       workspace: {
         loadById: async (id: string) => (
           id === 'workspace-b'
@@ -954,7 +954,7 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     let released: () => void = () => {};
     const gate = new Promise<void>((resolve) => { released = resolve; });
     const app = mount({
-      flushWorkspaceWrites: () => gate,
+      workspaceSession: { flushWorkspaceWrites: () => gate },
       workspace: { loadById: async () => ({ status: 'empty' as const }) },
     });
     app.state.workspaceId = 'workspace-a';
@@ -1063,7 +1063,7 @@ describe('Dashboard rows dispatch against the exact target (#452)', () => {
     let released: () => void = () => {};
     const gate = new Promise<void>((resolve) => { released = resolve; });
     const app = mount({
-      flushWorkspaceWrites: () => gate,
+      workspaceSession: { flushWorkspaceWrites: () => gate },
       workspace: { loadById: async () => ({ status: 'ok' as const, workspace: committed }) },
     });
     app.state.workspaceId = 'workspace-a';
@@ -1574,7 +1574,7 @@ describe('Import workspace (#406 additive collection)', () => {
         }),
       },
     });
-    app.rewriteWorkspaceRoute = vi.fn();
+    app.nav.rewriteWorkspaceRoute = vi.fn();
     app.state.savedQueries = [panelQuery('old', 'Old')];
     const oldId = app.state.workspaceId;
     openFileMenu(app);
@@ -1597,7 +1597,7 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(app.state.savedQueries).toHaveLength(2);
     expect(app.state.dashboard!.id).toBe('d1');
     expect(app.state.dashboard!.tiles[0].queryId).not.toBe('p1');
-    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
+    expect(app.nav.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
     expect(toast()).toBe('Imported workspace');
   });
 
@@ -1647,7 +1647,7 @@ describe('Import workspace (#406 additive collection)', () => {
     });
     openFileMenu(app);
     pickFile(picker('Import workspace…'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(app.state.savedQueries.map((query) => query.id)).toEqual(['q1']);
     expect(toast()).toBe('Imported workspace, but its last-used timestamp could not be saved.');
@@ -1678,7 +1678,7 @@ describe('New workspace', () => {
         }),
       },
     });
-    app.rewriteWorkspaceRoute = vi.fn();
+    app.nav.rewriteWorkspaceRoute = vi.fn();
     const oldId = app.state.workspaceId;
     openFileMenu(app);
     click(item(/New workspace/)!);
@@ -1688,7 +1688,7 @@ describe('New workspace', () => {
     expect(app.state.libraryName.value).toBe('SQL Library');
     expect(app.state.workspaceKey).toBe('sql_library_3');
     expect(app.state.workspaceId).not.toBe(oldId);
-    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('sql_library_3');
+    expect(app.nav.rewriteWorkspaceRoute).toHaveBeenCalledWith('sql_library_3');
     expect(toast()).toBe('Started a new workspace');
   });
 
@@ -1723,7 +1723,7 @@ describe('New workspace', () => {
     });
     openFileMenu(app);
     click(item(/New workspace/)!);
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(app.state.libraryName.value).toBe('SQL Library');
     expect(toast()).toBe('Started a new workspace, but its last-used timestamp could not be saved.');
@@ -2123,7 +2123,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
-    const pendingMutation = app.serializeWrite(async () => {
+    const pendingMutation = app.workspaceSession.serializeWrite(async () => {
       await gate; // stays pending in the queue until released below
       return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
     });
@@ -2138,7 +2138,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     release();
     await pendingMutation;
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
 
     const finalWs = await loadActiveWorkspace(app);
     // A `renameWorkspaceAction` that built its candidate from a pre-queue
@@ -2162,7 +2162,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
-    const pendingMutation = app.serializeWrite(async () => {
+    const pendingMutation = app.workspaceSession.serializeWrite(async () => {
       await gate;
       return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
     });
@@ -2175,7 +2175,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     release();
     await pendingMutation;
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
 
     const finalWs = await loadActiveWorkspace(app);
     // A stale-snapshot import would have planned against [q1] only, dropping
@@ -2202,7 +2202,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
-    const pendingMutation = app.serializeWrite(async () => {
+    const pendingMutation = app.workspaceSession.serializeWrite(async () => {
       await gate;
       // Mints the SAME id as the bundle's incoming query, with DIFFERENT content.
       return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'Mine')] });
@@ -2215,7 +2215,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     release();
     await pendingMutation;
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
 
     const finalWs = await loadActiveWorkspace(app);
     // The import aborted whole: the queued mutation's new1 ('Mine') stands,
@@ -2239,7 +2239,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
-    const pendingMutation = app.serializeWrite(async () => {
+    const pendingMutation = app.workspaceSession.serializeWrite(async () => {
       await gate;
       // Mints the same id with IDENTICAL content (the rapid double-import case).
       return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'New1')] });
@@ -2250,7 +2250,7 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
 
     release();
     await pendingMutation;
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
 
     const finalWs = await loadActiveWorkspace(app);
     // Auto-resolved to 'use-existing': exactly ONE new1, and the toast counts
@@ -2273,7 +2273,7 @@ describe('commit failure', () => {
     const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     input.value = 'Renamed';
     key(input, 'Enter');
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(toast()).toBe('✕ rename failed');
     expect(app.state.libraryName.value).toBe('Original');
@@ -2303,7 +2303,7 @@ describe('commit failure', () => {
     });
     openFileMenu(app);
     pickFile(picker('Import workspace…'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(toast()).toBe('✕ import blocked');
   });
@@ -2317,7 +2317,7 @@ describe('commit failure', () => {
     });
     openFileMenu(app);
     pickFile(picker('Import workspace…'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(create).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);

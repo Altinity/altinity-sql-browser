@@ -196,7 +196,7 @@
         // reload onto the matching route must use the persisted marker.
         const missingSearch = '?scenario=pending&ws=missing-workspace';
         window.history.replaceState(null, '', window.location.pathname + missingSearch);
-        app.syncSqlRoute(missingSearch);
+        app.nav.syncSqlRoute(missingSearch);
       }
       window.__oauthRecoveryTrigger401 = async () => {
         // Go through the real protected workbench command, rather than calling

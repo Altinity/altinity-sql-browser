@@ -4,24 +4,23 @@
 // window, location, fetch, crypto, sessionStorage) is injected so the whole
 // controller is testable under happy-dom with stubs.
 
-import { h, fixedAnchor } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab,
-  savedForTab, tabPanel, tabSaveDirty, variableDoc,
+  variableDoc,
   normalizeRowLimit, detachWorkspaceBoundTabs, reconcileTabsWithSavedQueries,
-  adoptSavedIntoTab, reconcileLinkedTabsToLatest, setTabSpecDraft, SAVED_VIEWS,
+  setTabSpecDraft, SAVED_VIEWS,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
-  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, resolveCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
-import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
+import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
-import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
+import { sqlString, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
 import {
@@ -40,13 +39,10 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab } from './tabs.js';
-import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
-import { dashboardVariables } from '../application/dashboard-tree-model.js';
-import { normalizeVariableSql } from '../core/dashboard-variables.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
-import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
+import type { QueryResult } from './results.js';
 import { dashboardScrollTop, disposeDashboardSurface, renderDashboard } from './dashboard.js';
 import type { DashboardRenderTarget } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';
@@ -56,18 +52,8 @@ import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
 import { closeInspector } from './inspector-host.js';
+import { createAnchoredPopovers } from './popover.js';
 import { renderSavedHistory } from './saved-history.js';
-import { applyFieldState, applyFieldWidth } from './var-field.js';
-import { buildRelativeTimeField } from './relative-time-field.js';
-import type { RelativeTimeField } from './relative-time-field.js';
-import { buildRecentField } from './recent-field.js';
-import type { RecentField } from './recent-field.js';
-import { buildEnumField } from './enum-field.js';
-import type { EnumField } from './enum-field.js';
-import { wireComboInput } from './combobox.js';
-import type { ComboField } from './combobox.js';
-import { recentOptions } from '../core/recent-values.js';
-import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
 import { mountInlineLogin, renderLogin } from './login.js';
 import type { InlineLoginHandle } from './login.js';
@@ -76,11 +62,14 @@ import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
 import type {
   App, ActionsRegistry, KeyboardOwner, OAuthDocumentRecoveryApplyResult,
-  SchemaFocus, WorkspaceChangedMessage,
+  SchemaFocus,
 } from './app.types.js';
 import type { CreateAppEnv, BroadcastChannelPort } from '../env.types.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import { createWorkspaceSession } from '../application/workspace-session.js';
+import type { WorkspaceSession } from '../application/workspace-session.js';
+import { createSurfaceNavigation } from '../application/surface-navigation.js';
 import {
   createOAuthDocumentRecoverySession,
   type OAuthDocumentRecoveryRestoreResult,
@@ -97,25 +86,16 @@ import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../applica
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
-  QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
-  withoutPendingFocus, dashboardHistorySnapshot, readDashboardHistorySnapshot,
-  restoreDashboardSurface,
+  QUERY_SURFACE, mainSurfaceRoute, reconcileMainSurface, selectedDashboardId, withoutPendingFocus,
 } from '../application/main-surface.js';
-import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
-import type { WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
-import { createNewWorkspace, DEFAULT_WORKSPACE_NAME } from '../workspace/workspace-operations.js';
-import { deriveWorkspaceKey } from '../core/workspace-key.js';
-import { workspaceToken, queryToken, queriesChanged } from '../workspace/workspace-sync.js';
-import { buildConflictChooser } from './conflict-resolution.js';
-import {
-  buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
-} from '../core/sql-route.js';
-import type { SqlRoute } from '../core/sql-route.js';
+import { queryToken } from '../workspace/workspace-sync.js';
+import { parseSqlRoute } from '../core/sql-route.js';
 import { disposeFileMenuOverlays } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
+import { createVariableStrip } from './workbench/variable-strip.js';
+import { createSaveController } from './workbench/save-controller.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
@@ -131,13 +111,6 @@ import { buildAppHeader } from './app-header.js';
  *  supplies `Chart`/`Dagre` (imported packages) via `env` directly. These are
  *  only the env-absent fallback reads below (`win.Chart`, `win.dagre`, …), kept
  *  narrow and all-optional so a plain `Window` still satisfies this widened type. */
-/** The var-strip's combobox-based field controller — whichever of
- *  `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` `ctl.kind`
- *  picks. Only `RelativeTimeField` actually declares `previewEl` (the #169
- *  live date preview `applyFieldState` points `aria-describedby` at); the
- *  intersection makes reading it a safe optional no-op for the other two
- *  control kinds, which never populate it. */
-type VarStripCombo = (EnumField | RecentField | RelativeTimeField) & { previewEl?: HTMLElement };
 
 interface WindowExtras {
   Chart?: unknown;
@@ -184,70 +157,34 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Epoch clock shared by persistence metadata and parameter execution.
   const wallNow = (): number => (env.wallNow || (() => Date.now()))();
 
-  // Built up as a `Partial<App>` first (every field below has a real,
-  // App-typed value already — `Partial` just lets this literal typecheck
-  // without every OTHER `App` member also being present yet), then widened to
-  // `App` in one step: every member this function doesn't assign inline below
-  // is attached via a later `app.foo = …` statement (the closures those
-  // values need aren't defined until further down this function), exactly
-  // like tests/unit/dashboard.test.ts's own `asApp` helper reinterprets a real
-  // `createApp(env)` object as `App` without copying it.
-  const appBase: Partial<App> = {
-    state: createState(),
-    dom: {},
-    root: env.root || doc.getElementById('root'),
-    document: doc,
-    // Charting seam: the Chart.js constructor (injected so tests stub it) and a
-    // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
-    Chart: env.Chart || win.Chart,
-    cssVar: env.cssVar || ((name: string) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
-    // Pipeline-graph layout seam: dagre (injected like Chart). The DOT parser and
-    // SVG drawer are ours; dagre only computes node positions + edge bend points.
-    Dagre: env.Dagre || win.dagre,
-    // The schema graph opens in a real browser tab driven by this window. All
-    // three are injected seams: openWindow so tests can stub window.open,
-    // stylesText/faviconHref so the child tab can inline the page's CSS and
-    // favicon (about:blank ships neither).
-    openWindow: env.openWindow || ((...a: Parameters<Window['open']>) => win.open(...a)),
-    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style')!.textContent || '' : ''),
-    faviconHref: env.faviconHref
-      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]')!.getAttribute('href') || '' : ''),
-    // Streaming Export (issue #87) needs the File System Access API and a
-    // secure context; both are injected seams (like openWindow) so tests can
-    // stub them without a real browser. Fixed for the session (browser +
-    // origin don't change), so this is computed once rather than as a signal.
-    showSaveFilePicker: env.showSaveFilePicker
-      || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
-    // Script export (issue #99) needs a whole directory, not one file — same
-    // File System Access family as showSaveFilePicker (every browser that has
-    // one has the other), so this is the same seam pattern.
-    showDirectoryPicker: env.showDirectoryPicker
-      || (typeof win.showDirectoryPicker === 'function' ? win.showDirectoryPicker.bind(win) : null),
-    isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
-    // Build stamp ("v0.1.4 (abc1234)") injected at build time via main.js; shown
-    // in the user menu so a bug report can be tied to a build. 'dev' in tests /
-    // an un-built run where the placeholder was never replaced.
-    build: env.build || 'dev',
-    // Mobile-breakpoint seam (#126): matchMedia, injected so tests can drive the
-    // breakpoint. renderApp uses it to seed + track `state.isMobile` against
-    // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
-    // always-desktop — the mobile CSS still applies, just no JS branching).
-    matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
-  };
-  const app = appBase as App;
+  // #588 phase 4 wave 5: `app` is a LATE-BOUND `App` -- declared here with no
+  // value yet, assigned exactly once near the end of this function as a
+  // single object literal (no `as App` cast anywhere in this file -- a
+  // member missing from that literal is a compile-time `TS2739`, an extra
+  // one is `TS2353`). Every closure defined below that reads `app.*` (or is
+  // itself stored as a property VALUE assigned later, like the `hooks`
+  // objects passed to the various `create*Session` calls) captures this
+  // BINDING, not a value: nothing invokes one of those closures until this
+  // function has returned a fully-built `app`, so a premature (non-deferred)
+  // dereference would throw a loud TDZ ReferenceError rather than silently
+  // reading through a `Partial<App>` cast. The few places below that need a
+  // real value SYNCHRONOUSLY, before the literal exists (not through a
+  // closure -- e.g. a plain `state: app.state` config property a
+  // `create*Session` call evaluates immediately), read the `state`/
+  // `workspaceRepo` locals declared alongside them instead of `app.state`/
+  // `app.workspace` -- see those two locals below.
+  let app: App;
+  const state = createState();
   // #587: null until `ensureShell()`'s first call, and null again after
   // `disposeShell()` — see both for the mirroring. Reachable as `app.shell`
   // from controller-construction time (this line) onward, including every
   // wiring point below that runs before any shell exists.
-  app.shell = null;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
   // time and renders aria-disabled + a tooltip rather than hiding outright.
-  app.canExport = () => !!app.showSaveFilePicker && app.isSecureContext;
   // The script-export path additionally needs a directory picker (defensive —
   // the button's own enabled/tooltip state stays gated on canExport, since every
   // browser with showSaveFilePicker also has showDirectoryPicker).
-  app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
 
   // --- persistence -------------------------------------------------------
   // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
@@ -256,10 +193,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // value)` directly (#276 Phase 5 deleted the flat `App.savePref` delegate);
   // `toggleTheme` below composes `prefs.toggleTheme()` (the state-flip +
   // persist) with its own DOM half.
-  const prefs = createAppPreferences({ saveStr, state: app.state });
-  app.prefs = prefs;
-  app.saveJSON = saveJSON;
-  app.saveStr = saveStr;
+  const prefs = createAppPreferences({ saveStr, state });
   // Atomic StoredWorkspaceV5 persistence: the injected IndexedDB factory seam
   // (mirrors crypto/sessionStorage) backs the workspace collection, behind
   // which the pure WorkspaceRepository validates create/replace commits.
@@ -268,71 +202,25 @@ export function createApp(env: CreateAppEnv = {}): App {
   // bootstrap. The favorites-driven Dashboard render still reads legacy keys in
   // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
   const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
-  app.workspace = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
+  const workspaceRepo = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
   // #407 — both application surfaces live on `/sql`; URL query parameters are
   // parsed once here and reparsed on Back/Forward. The resolved live workspace
-  // is shared by Workbench and Dashboard.
-  let routeSearch = loc.search;
-  let routeLoadGeneration = 0;
-  let surfaceGeneration = 0;
-  app.sqlRoute = parseSqlRoute(routeSearch);
-  app.currentWorkspace = null;
-  app.workspaceRouteStatus = 'ready';
-  app.keyboardOwner = null;
-  app.resetShortcutChord = () => resetShortcutChord(app);
+  // is shared by Workbench and Dashboard. (#588 phase 4 wave 4: the
+  // route-search cache and the surface-generation counter this used to seed
+  // now live in `app.nav`, constructed further below — this initial parse is a
+  // one-time DATA-PROPERTY seed, same as `currentWorkspace`/`workspaceRouteStatus`
+  // right below it, and does not need the cache that comes later.)
   const keyboardOwners: KeyboardOwner[] = [];
-  app.acquireKeyboardOwner = (kind) => {
-    const owner = { kind };
-    keyboardOwners.push(owner);
-    app.keyboardOwner = owner;
-    resetShortcutChord(app);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const index = keyboardOwners.indexOf(owner);
-      if (index >= 0) keyboardOwners.splice(index, 1);
-      app.keyboardOwner = keyboardOwners.at(-1) ?? null;
-      resetShortcutChord(app);
-    };
-  };
-  app.shortcutDialog = null;
-  app.closeShortcutDialog = () => {
-    const dialog = app.shortcutDialog;
-    app.shortcutDialog = null;
-    dialog?.close();
-  };
-  app.surfaceCommands = null;
   // #425: the main work surface's SESSION state — Query, or one Dashboard
   // selected by stable id. Never persisted (see application/main-surface.ts).
-  app.mainSurface = QUERY_SURFACE;
-  // Every surface transition — mount, teardown, or sign-out — advances the
-  // renderer generation so an obsolete async callback (a late Dashboard wave,
-  // a pending focus target) can finish its durable work without settling
-  // against a replacement renderer. Bumped on the TRANSITION, not as a side
-  // effect of a mount, because a mount can be skipped when the host is already
-  // live (#425's preserved Query surface).
-  const advanceSurfaceGeneration = (): void => {
-    surfaceGeneration += 1;
-    app.surfaceCommands = null;
-  };
-  app.captureSurfaceGeneration = () => surfaceGeneration;
-  app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
-  app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
-    if (generation === surfaceGeneration) return true;
-    const routeKey = app.sqlRoute.workspaceKey;
-    // #425: `conn.isSignedIn()` is load-bearing, not defensive. Sign-out now
-    // advances the surface generation (so a late Dashboard callback can't settle
-    // against a replacement renderer) but deliberately leaves the projected
-    // workspace in place for the next sign-in — which would otherwise let a write
-    // that resolves just after sign-out re-mount the whole signed-in shell OVER
-    // the login screen, with no credentials.
-    if (committed && app.conn.isSignedIn() && app.workspaceRouteStatus === 'ready'
-      && app.currentWorkspace && (routeKey === null || routeKey === app.currentWorkspace.key)) {
-      app.renderCurrentSurface();
-    }
-    return false;
-  };
+  // #588 phase 4 wave 4: the surface-generation guard cluster
+  // (`advanceSurfaceGeneration`/`captureSurfaceGeneration`/
+  // `isSurfaceGenerationCurrent`/`refreshCurrentSurfaceAfterStale` — every
+  // surface transition advances the renderer generation so an obsolete async
+  // callback can finish its durable work without settling against a
+  // replacement renderer) now lives in `app.nav`, constructed further below;
+  // `app.captureSurfaceGeneration`/`isSurfaceGenerationCurrent`/
+  // `refreshCurrentSurfaceAfterStale` are assigned as flat delegates there.
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -341,16 +229,13 @@ export function createApp(env: CreateAppEnv = {}): App {
   // block below. No flat `App` delegates for these (#276 Phase 5 deleted
   // them) except `app.saveVarRecent`, the one deliberate survivor (see its
   // own doc comment below).
-  app.FileReader = (env.FileReader || win.FileReader) as typeof FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
   // libraryName/libraryDirty effect, so callers just mutate those signals.
-  app.downloadFile = downloadFile;
 
   // --- identity ------------------------------------------------------------
   // Identity/auth reads (host/email/isSignedIn/…) live on `app.conn` itself
   // (assigned below, once `conn` is constructed) — no flat `App` delegate.
-  app.activeTab = () => activeTab(app.state);
 
   // --- independent SQL + Spec editor seams (#143/#212) ---------------------
   const Editor = env.Editor || createNoopPort;
@@ -367,34 +252,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   const specValidators: AppSpecValidators = hasValidate(env.specValidators)
     ? env.specValidators
     : createSpecValidatorRegistry((env.specValidators as readonly SpecValidatorEntry[] | undefined) || CORE_SPEC_VALIDATORS);
-  app.specValidators = specValidators;
-  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources();
-  app.CodeViewer = env.CodeViewer || (() => ({
-    setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
-  }));
   // #313: the editor adapter opens the reference pane through this injected
   // action (never by importing ui/doc-pane itself — the editor stays a leaf
   // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
   // only for tidiness; the adapter reads it lazily at click/F1 time.
-  app.openDocEntry = (target) => {
-    if (!app.requireAuthenticatedExecution()) return;
-    openDocEntry(app, target);
-  };
   // #60 — the global Escape shortcut closes the pane from anywhere (layered
   // before cancel-query in shortcuts.ts's handleKeydown).
-  app.closeDocPane = () => {
-    if (!isDocPaneOpen(app)) return false;
-    closeDocPane(app);
-    return true;
-  };
   // #315 — the F1 name-only disambiguation fallback's injected action, bound
   // the same way and for the same "editor never imports UI" reason.
-  app.openDocDisambiguation = (name) => {
-    if (!app.requireAuthenticatedExecution()) return;
-    openDocDisambiguation(app, name);
-  };
-  app.sqlEditor = Editor(app);
-  app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
   // applySpecEvaluation/evaluateSpecDraft/revalidateSpecDrafts/
   // revealFirstSpecError/registerSpecValidator, plus the editor-mode POLICY
@@ -409,7 +274,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // inline code guarded itself), the session itself never imports `src/ui/**`
   // or `src/editor/**`.
   const queryDoc = createQueryDocumentSession({
-    state: app.state,
+    state,
     activeTab: () => app.activeTab(),
     specValidators,
     hooks: {
@@ -420,7 +285,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       updateEditorModeUi: () => { if (app.updateEditorModeUi) app.updateEditorModeUi(); },
     },
   });
-  app.queryDoc = queryDoc;
   // The persisted OAuth checkpoint is deliberately below this shell: it can
   // replace authored tab state, but does not know how the mounted document
   // service rebuilds parsed Spec/diagnostic transients or owns the dirty-page
@@ -429,7 +293,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const oauthDocumentRecovery = createOAuthDocumentRecoverySession({
     storage: ss,
     now: wallNow,
-    state: app.state,
+    state,
     specValidators,
   });
   const finalizeOAuthDocumentRecovery = (
@@ -484,113 +348,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
     return { kind: 'retry-deferred-retained' };
   };
-  app.restoreOAuthDocumentRecovery = (callbackState: string): OAuthDocumentRecoveryApplyResult => {
-    // A fresh validated callback starts a new authority decision; a later
-    // deferred retry deserves its own single safe notice.
-    deferredRecoveryWarningShown = false;
-    try {
-      const restored = oauthDocumentRecovery.restore(callbackState, app.currentWorkspace);
-      if (restored.kind === 'retry-deferred-retained') {
-        return deferOAuthDocumentRecovery();
-      }
-      return finalizeOAuthDocumentRecovery(restored);
-    } catch {
-      // The session normally converts storage failures into explicit retained
-      // outcomes. Keep this boundary defensive: an unexpected pre-publication
-      // failure must not abort the signed-in shell or expose backend details.
-      return deferOAuthDocumentRecovery();
-    }
-  };
-  app.retryPendingOAuthDocumentRecovery = (): OAuthDocumentRecoveryApplyResult => {
-    let pending: OAuthDocumentRecoveryRestoreResult;
-    try {
-      pending = oauthDocumentRecovery.retryPending(app.currentWorkspace);
-    } catch {
-      return deferOAuthDocumentRecovery();
-    }
-    if (pending.kind === 'retry-deferred-retained') {
-      // Nothing was published: do not arm the dirty guard, revalidate, consume,
-      // or replace the current workspace. The retained recovery nevertheless
-      // owns callback precedence, so callers discard the legacy share handoff.
-      return deferOAuthDocumentRecovery();
-    }
-    if (pending.kind === 'document-session-changed-retained') {
-      flashToast(
-        'Recovered drafts were kept because this document session changed.',
-        {
-          document: doc,
-          action: {
-            label: 'Restore drafts',
-            onClick: () => {
-              const forced = oauthDocumentRecovery.retryPending(
-                app.currentWorkspace,
-                { allowChangedDocumentSession: true },
-              );
-              finalizeOAuthDocumentRecovery(forced);
-              app.renderCurrentSurface();
-            },
-          },
-        },
-      );
-      return pending;
-    }
-    deferredRecoveryWarningShown = false;
-    return finalizeOAuthDocumentRecovery(pending);
-  };
-  app.consumeLegacyShared = (allowRestore: boolean, consumedHandoff?: string | null): boolean => {
-    let encoded: string | null;
-    try {
-      encoded = consumedHandoff === undefined
-        ? ss.getItem('oauth_shared')
-        : consumedHandoff;
-    } catch {
-      return false;
-    }
-    if (encoded === null) return false;
-    // In-page Basic login owns the storage handoff here. Bootstrap passes its
-    // already-consumed value so the same parser/application path is reused.
-    if (consumedHandoff === undefined) {
-      try {
-        ss.removeItem('oauth_shared');
-      } catch {
-        // Handoff cleanup is best-effort. Recovery precedence still suppresses
-        // the payload, and a storage backend failure must not abort rendering.
-      }
-    }
-    // The handoff is one-shot regardless of whether recovery suppresses it,
-    // its payload is malformed, or the current route has no Query surface.
-    if (!allowRestore || app.sqlRoute.surface !== 'workspace') return false;
-
-    let shared;
-    try {
-      const raw = JSON.parse(encoded) as Record<string, unknown>;
-      // Pre-#166 OAuth handoffs stored `{sql, chart}` directly; the normal
-      // upgrader preserves that compatibility while current v2 payloads pass
-      // through with their authored Spec intact.
-      shared = upgradeSavedQuery(raw.specVersion == null
-        ? { name: 'Shared query', ...raw }
-        : raw);
-    } catch {
-      return false;
-    }
-    const panel = queryPanel(shared);
-    if (!shared.sql && !panel) return false;
-
-    const tab = app.state.tabs.value[0];
-    tab.sqlDraft = shared.sql;
-    tab.name = queryName(shared);
-    tab.specVersion = shared.specVersion;
-    setTabSpecDraft(tab, cloneJson(shared.spec));
-    const launchView = queryView(shared);
-    const normalized = launchView === 'chart' ? 'panel' : launchView;
-    if (SAVED_VIEWS.has(normalized ?? '')) {
-      app.state.resultView.value = normalized as App['state']['resultView']['value'];
-    } else if (!shared.sql && isQuerylessPanel(panel)) {
-      app.state.resultView.value = 'panel';
-    }
-    win.history.replaceState(null, '', loc.pathname + routeSearch);
-    return true;
-  };
   // The saved-query create/commit policy, history recording, and share-URL
   // building (#276 Phase 4C) now live in `application/saved-query-service.ts`,
   // constructible without App/AppState/DOM — this shell sequences Spec
@@ -600,7 +357,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // unrelated clocks), matching `createSavedQuery`'s own pre-extraction
   // inline `Date.now()` call exactly.
   const saved = createSavedQueryService({
-    state: app.state,
+    state,
     saveJSON,
     now: () => Date.now(),
     specValidators,
@@ -608,27 +365,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // in `createApp` (it depends on `serializeWrite`/`applyCommittedWorkspace`
     // defined below), so defer resolution to call time when it's defined.
     mutateWorkspace: (transform) => app.mutateWorkspace(transform),
-  });
-  app.saved = saved;
-  app.sqlEditor.onDocChange((value) => {
-    const tab = app.activeTab();
-    tab.sqlDraft = value;
-    tab.dirtySql = true;
-    // #447: no re-evaluation of the Spec on a SQL keystroke any more. The ONLY
-    // validator whose diagnostics depended on the SQL text was the Filter role's
-    // (its source SQL had to be a single row-returning statement), and that role
-    // no longer exists — every surviving rule reads the Spec alone, so
-    // re-running the whole validator graph per keystroke is pure waste.
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.renderVarStrip) app.renderVarStrip();
-  });
-  // No flat `App` delegates for `evaluateSpecDraft`/`revalidateSpecDrafts`/
-  // `revealFirstSpecError`/`registerSpecValidator` (#276 Phase 5 deleted
-  // them) — every consumer (including this file's own call sites further
-  // down) reads `queryDoc.*` directly.
-  app.specEditor.onDocChange((value) => {
-    queryDoc.evaluateSpecDraft(app.activeTab(), value);
   });
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
@@ -656,7 +392,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // loss does not call this path; it retains the Dashboard/document shell and
     // exposes the inline authentication host instead.
     disposeDashboardSurface();
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     app.mainSurface = QUERY_SURFACE;
     disposeShell();
     renderLogin(app as App & { root: Element }, msg);
@@ -681,10 +417,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // constructible without App/AppState/DOM; this module wires it to the real
   // browser env and to `renderLoginApp` (the one piece that IS this shell's
   // job — the session only ever calls `onAuthLost`, never renders).
-  // Assigned below beside the single beforeunload listener. ConnectionSession
-  // invokes this only after createApp has completed, so this closure can keep
-  // its lifecycle wiring near the listener it controls.
-  let armOAuthRedirectUnloadBypass: () => () => void;
+  // #588 phase 4 wave 3: `session` (createWorkspaceSession) owns the
+  // beforeunload listener + its OAuth-redirect bypass generation tokens now,
+  // but it is constructed further below (it needs `applyCommittedWorkspace`,
+  // defined further down still). ConnectionSession invokes this thunk only
+  // after createApp has completed, so the forward reference (exactly the
+  // existing `mutateWorkspace`/`saved` thunk-forwarding pattern this function
+  // already uses below) resolves to the real implementation by then.
+  let session: WorkspaceSession;
   const conn = createConnectionSession({
     fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj,
     queryJson: ch.queryJson,
@@ -696,48 +436,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
     prepareOAuthRedirect: (state) => oauthDocumentRecovery.prepareTransaction(state),
     clearOAuthDocumentRecovery: () => oauthDocumentRecovery.clear(),
-    armOAuthRedirectUnloadBypass: () => armOAuthRedirectUnloadBypass(),
+    armOAuthRedirectUnloadBypass: () => session.armOAuthRedirectUnloadBypass(),
   });
-  app.conn = conn;
-  app.executionScope = () => activeExecutionScope;
-  app.resumeAuthenticatedExecution = () => {
-    const epoch = conn.connection.value.epoch;
-    if (activeExecutionScope?.epoch === epoch && activeExecutionScope.isOpen()) {
-      hideAuthenticationRequired();
-      return;
-    }
-    activeExecutionScope?.close();
-    const scope = createAuthenticatedExecutionScope({
-      epoch,
-      cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
-    });
-    activeExecutionScope = scope;
-    // Connection-scoped caches/panes are owners even when they have no live
-    // server query id. Their own invalidation/generation guards make late
-    // completion inert; query-bearing owners register their current ids.
-    scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
-    scope.register({ name: 'schema graph', abort: () => graph.suspend() });
-    // #586: whatever currently occupies the shared docked inspector (Cell,
-    // Rows, or Reference) — not just Reference — must not survive a
-    // connection-scope abort; `closeInspector` closes the current occupant
-    // generically, calling its own SurfaceLifecycle teardown.
-    scope.register({ name: 'docked inspector', abort: () => closeInspector(app) });
-    hideAuthenticationRequired();
-  };
-  app.requireAuthenticatedExecution = () => {
-    let scope = activeExecutionScope;
-    // Production bootstrap establishes the first scope explicitly, but
-    // controller entry points are also valid before a surface is mounted
-    // (and tests exercise that contract). An already-authenticated session can
-    // therefore materialize its scope lazily; an auth-required session cannot.
-    if (!scope && conn.isSignedIn()) {
-      app.resumeAuthenticatedExecution();
-      scope = activeExecutionScope;
-    }
-    if (scope?.isOpen()) return scope;
-    revealAuthenticationRequired(conn.connection.value.detail);
-    return null;
-  };
   // THE single live ClickHouse context — owned by the session, aliased locally
   // so every existing ch.* call site below keeps referencing the same mutated
   // object (chCtx.origin/authConfirmed are mutated in place, never replaced).
@@ -758,29 +458,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // different server) never sees stale schema/reference caches. The
   // workbench session stays reusable after destroy(): the next renderApp
   // re-attaches its shell effects.
-  app.signOut = () => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const closing = activeExecutionScope;
-    activeExecutionScope = null;
-    closing?.close(conn.captureCancellationLease());
-    workbench.destroy();
-    // Plain abort (no clearResult settle) — the login render replaces the
-    // whole DOM next, so settling the visible result would be a wasted paint.
-    graph.cancel();
-    exportService.cancelExport();
-    exportService.cancelExportScript();
-    catalog.invalidate();
-    // #313/#586: docked inspector content (Cell, Rows, or Reference — not
-    // just Reference) must never survive a connection change — closed
-    // alongside the catalog reset, before the login screen renders.
-    closeInspector(app);
-    conn.signOut();
-    // #425: explicit logout owns Dashboard teardown, the surface-generation
-    // bump, and the main-surface reset through the full-screen login renderer.
-    renderLoginApp();
-  };
-  app.showLogin = (msg) => renderLoginApp(msg);
 
   // --- data loaders --------------------------------------------------------
   // The server-metadata/reference lifecycle (#276 Phase 4A) — server-version
@@ -810,14 +487,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     ctx: () => chCtx,
     ensureConfig,
     sqlString,
-    state: app.state,
+    state,
     hooks: {
       onServerVersionLoaded: updateOpenServerVersion,
       renderVarStrip: () => app.renderVarStrip(),
       refreshEditorReference: () => app.sqlEditor.refreshReference(),
     },
   });
-  app.catalog = catalog;
   // `loadVersion`/`loadSchema`/`loadReference`/`rebuildCompletions`/
   // `docSummary`/`docEntry`/`refData`/`completions` all live on `catalog`
   // itself now (#276 Phase 5 deleted the flat `App` delegates) —
@@ -844,7 +520,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       }, '×'),
     );
   }
-  app.updateBanner = updateBanner;
   // Lazily load a table's columns (#26/#172 v2) — actions.loadColumns' target
   // below delegates to the service; kept as a local function (rather than
   // inlining `catalog.loadColumns` at the actions-registry call site) so that
@@ -860,7 +535,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // wrong for epoch-relative values (#169's `now-1h`). Callers resolve one
   // wallNow() per execution wave and thread it through every prepare of that
   // wave; debounce/coalescing also live in the callers, never in the pipeline.
-  app.wallNow = wallNow;
   // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
   // fallback (non-secure context, where randomUUID is undefined) must still be
   // unique across tabs sharing one time origin — so mix in Math.random, not just
@@ -879,20 +553,17 @@ export function createApp(env: CreateAppEnv = {}): App {
   const exec = createQueryExecutionService({
     runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
   });
-  app.exec = exec;
   // #457 removed `app.runOptionQuery` (#447 phase 2's per-variable option-query
   // transport): it existed only for the variable DRAWER's Test action. A variable
   // tab runs through the ordinary Run action and paints into the ordinary result
   // area, so there is no second transport to wire.
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
-  app.now = now;
   // Update only the live elapsed-ms readout (no table re-render). Driven by an
   // interval while running so it ticks even for queries that emit no rows (sleep).
   function tickElapsed(): void {
     if (app.dom.runElapsedEl) app.dom.runElapsedEl.textContent = app.elapsedMs().toFixed(0) + ' ms';
   }
-  app.tickElapsed = tickElapsed;
 
   // The ClickHouse HTTP `session_id` policy (#276 Phase 5 final home) —
   // `sessionParams`/`needsSession`/`sessionParamsFor` now live in
@@ -906,8 +577,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // suggestion inference, and the #171 recent-value + persistence policy —
   // now lives in `application/workbench-parameter-session.ts` (#276 Phase
   // 4B1), constructible without App/AppState/DOM. `renderVarStrip` (the DOM
-  // view, below) and the workbench-session hooks + export block (further
-  // down) call its methods directly; `app.params.hardenedVars` reads this
+  // view — #588 W1 extracted it into `ui/workbench/variable-strip.ts`) and
+  // the workbench-session hooks + export block (further down) call its
+  // methods directly; `app.params.hardenedVars` reads this
   // session's own `Set` directly (#276 Phase 5 deleted the flat
   // `App.hardenedVars` alias). `sessionParamsFor` above is `ch-session-params.ts`'s
   // `tab.chSession`/transport material, not parameter policy — Phase 4C's
@@ -936,14 +608,12 @@ export function createApp(env: CreateAppEnv = {}): App {
       saveVarRecent: () => app.saveVarRecent(),
     },
   });
-  app.params = params;
   // The single deliberate delegate survivor (#276 Phase 5 — see its own doc
   // comment on app.types.ts's `App.saveVarRecent`): every other params-group
   // member (`saveVarValues`/`saveFilterActive`/`saveVarRecentDisabled`/
   // `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent`/`hardenedVars`)
   // has no flat `App` delegate — every consumer reads `app.params.*` /
   // `params.*` directly.
-  app.saveVarRecent = () => params.saveVarRecent();
 
   // The streaming single-file export (issue #87) + multi-statement script
   // export (issue #99) POLICY (#276 Phase 4B2) now lives in
@@ -967,7 +637,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     executionScope: () => app.executionScope(),
     canExport: () => app.canExport(), canExportScript: () => app.canExportScript(),
     sink: exportSink,
-    state: app.state, // AppState structurally satisfies ExportStateSlice
+    state, // AppState structurally satisfies ExportStateSlice
     activeTab: () => app.activeTab(),
     params: { prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked, execStatementSql: params.execStatementSql },
     sessionParamsFor,
@@ -978,7 +648,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       loadSchema: () => { void catalog.loadSchema(); },
     },
   });
-  app.exports = exportService;
 
   // The run/runScript/runEntry/cancel orchestration (#276 Phase 3a) now lives
   // in ui/workbench/workbench-session.ts — a route-scoped session that owns
@@ -992,7 +661,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const workbench = createWorkbenchSession({
     exec, ensureConfig, getToken, now, wallNow, uid,
     executionScope: () => app.executionScope(),
-    state: app.state, // AppState structurally satisfies WorkbenchStateSlice
+    state, // AppState structurally satisfies WorkbenchStateSlice
     activeTab: () => app.activeTab(),
     hooks: {
       renderResults: () => renderResults(app),
@@ -1014,227 +683,25 @@ export function createApp(env: CreateAppEnv = {}): App {
       onAuthFailed: chCtx.onSignedOut,
     },
   });
-  app.workbench = workbench;
   // Milliseconds since the running query started (0 when idle) — delegates to
   // the session's own private runT0 bookkeeping.
-  app.elapsedMs = () => workbench.elapsedMs();
-  // hardenVar/inputGate (#170 review bookkeeping) now live on `params` (see
-  // its construction above) — setRunBtn's fallback and renderVarStrip's tail
-  // call `params.inputGate`/`params.hardenVar` directly.
-  function setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void {
-    if (!app.dom.runBtn) return;
-    // Disabled while running, or while any detected {name:Type} query variable
-    // is missing, invalid (#170), or fails to serialize (#170 review finding:
-    // the button's visible disabled state must match varGateBlocked's actual
-    // gate, which already blocks on missing+invalid+errors) — with a tooltip
-    // so the greyed-out button explains itself. Execution paths (run/
-    // runScript) enforce the same gate via varGateBlocked. A caller that
-    // already has the prepared source (renderVarStrip) passes its
-    // {missing, invalid, errors} to avoid re-preparing; otherwise we compute
-    // it here via inputGate — a merely 'incomplete' value (#170) stays
-    // display-only and doesn't grey out the button while still focused.
-    const tab = app.activeTab();
-    if (gate == null) {
-      // #465 review: a dashboard-variable tab's text is option SQL, not an
-      // ordinary parameterised query — the {name:Type} gate never applies to
-      // it (optionSqlDiagnostics, surfaced on Run, is its complete policy).
-      gate = running || !tab || variableDoc(tab) !== null
-        ? { missing: [], invalid: [], errors: [] }
-        : params.inputGate(params.tabAnalysis(tab.sqlDraft));
-    }
-    const blockers = gate.missing.concat(gate.invalid);
-    app.dom.runBtn!.disabled = running || blockers.length > 0 || gate.errors.length > 0;
-    app.dom.runBtn!.title = blockers.length
-      ? 'Enter a value for: ' + blockers.join(', ')
-      : gate.errors.length ? gate.errors[0] : '';
-    // "Run selection" while the editor has a non-empty selection (so the mode is
-    // discoverable); plain "Run" otherwise. Build the children and drop the null
-    // (replaceChildren would coerce a null arg into a "null" text node).
-    const label = running ? 'Running…' : (app.state.hasSelection.value ? 'Run selection' : 'Run');
-    app.dom.runBtn!.replaceChildren(
-      ...[Icon.play(), h('span', null, label),
-        running ? null : h('kbd', null, '⌘↵')].filter((c): c is SVGElement | HTMLElement => c != null));
-  }
-  app.setRunBtn = setRunBtn;
-  // Repaint the query-variable strip (#134) for the active tab. Values live in
-  // the shared, persisted `state.varValues` (keyed by variable name), so a value
-  // typed once is reused by every query that references the same variable and is
-  // restored on reload. The listed set comes from the all-active analysis view
-  // (#165): a param confined to /*[ ]*/ optional blocks stays listed — marked
-  // optional (blank allowed; blank keeps its blocks inactive) — while a param
-  // outside blocks stays required. Typing keeps `state.filterActive` in sync
-  // (blank ⇒ inactive, typed ⇒ active). Inputs rebuild only when the detected
-  // {name:Type} set changes (signature guard) — so typing in the SQL editor
-  // doesn't thrash the row or steal focus, and switching between tabs with the
-  // same variables keeps the (already-correct, shared) values in place. Always
-  // re-syncs the Run button's disabled/tooltip state.
-  //
-  // #172 v2 (schema-cache inference — the SUGGESTION tier) now lives on
-  // `params.inferredEnumOptions` (see its construction above) — pure over
-  // schema + analysis, no DOM.
-  function renderVarStrip(): void {
-    const strip = app.dom.varStrip;
-    if (!strip) return;
-    const tab = app.activeTab();
-    // #465 review: a dashboard-variable tab's own text is option SQL, not an
-    // ordinary parameterised query — the {name:Type} strip/gate never applies
-    // to it. A `{name:Type}` inside it is optionSqlDiagnostics' story to tell
-    // (surfaced in the results pane on Run), not an input field to fill in.
-    if (tab && variableDoc(tab) !== null) {
-      app.dom.varStripSig = '';
-      strip.replaceChildren();
-      strip.style.display = 'none';
-      setRunBtn(app.state.running.value);
-      return;
-    }
-    // One analysis per repaint (review F9): fieldControls, the #172 v2
-    // comparison scan, a rebuild's initial field paint, and the tail's Run-
-    // button gate all feed off this single pass instead of re-analyzing the
-    // same SQL a second time per editor keystroke.
-    const analysis = tab ? params.tabAnalysis(tab.sqlDraft) : null;
-    const vars = analysis ? fieldControls(analysis) : [];
-    // #172 v2 scans the tab SQL's ANALYSIS materialization (review F2): in
-    // the raw text a comparison inside a /*[ ]*/ optional block is one opaque
-    // comment span and could never match. `resolveComparisonColumnType`
-    // resolves each match's position against this same text. (Workbench-only
-    // — the Dashboard has no schema cache and gets v1 straight from the type.)
-    const scanSql = tab ? analysisView(tab.sqlDraft) : '';
-    const comparisonColumns = tab ? paramComparisonColumns(scanSql) : {};
-    // Each field's control kind + member list (shared enum > date-like > text
-    // priority; a type-conflicted field degrades to text — fieldControlKind).
-    const controls = vars.map((v) => fieldControlKind(v, params.inferredEnumOptions(v, scanSql, comparisonColumns)));
-    // The signature folds in each var's control kind and resolved enum
-    // options — not just name/type/optional — so a column landing on the
-    // idle-tick loader (loadColumns calls renderVarStrip on completion)
-    // upgrades a v2 field from plain input to the dropdown, and a type
-    // conflict appearing or resolving restyles the field, even though the
-    // {name:Type} set itself never changed.
-    const sig = vars.map((v, i) => {
-      const c = controls[i];
-      return v.name + ':' + v.type + (v.optional ? '?' : '') + (v.conflict ? '!' : '')
-        + ':' + c.kind + (c.enumOptions ? c.enumOptions.length : '');
-    }).join(',');
-    // The Run button's gate from this SAME analysis (review F9: setRunBtn's
-    // gate-less fallback would re-analyze the identical SQL). Lazy so the
-    // running / tab-less states (whose gate setRunBtn hard-empties anyway)
-    // skip the prepare entirely.
-    const runGate = () => (analysis && !app.state.running.value ? params.inputGate(analysis) : undefined);
-    if (sig !== app.dom.varStripSig) {
-      // A signature change while the user is focused INSIDE the strip would
-      // replaceChildren() every field out from under them — a background
-      // column load (loadColumns → renderVarStrip, the #172 v2 upgrade path)
-      // completing mid-typing would steal focus, wipe the in-progress text
-      // repaint, and destroy any open dropdown. Defer the rebuild until focus
-      // leaves the strip: the upgrade only matters on the NEXT interaction
-      // anyway. (Typing in the SQL editor also lands here on every keystroke,
-      // but then focus is in the editor, not the strip — no deferral.)
-      const active = doc.activeElement;
-      if (active && strip.contains(active)) {
-        app.dom.varStripRerenderPending = true;
-        if (!app.dom.varStripDeferHooked) {
-          app.dom.varStripDeferHooked = true;
-          // One listener for the strip's lifetime (the strip node itself is
-          // never replaced, only its children). `focusout` bubbles; when
-          // focus merely moves BETWEEN fields of the strip, relatedTarget is
-          // still inside it and the deferral holds.
-          strip.addEventListener('focusout', (e: FocusEvent) => {
-            if (!app.dom.varStripRerenderPending) return;
-            if (e.relatedTarget && strip.contains(e.relatedTarget as Node)) return;
-            app.dom.varStripRerenderPending = false;
-            renderVarStrip();
-          });
-        }
-        setRunBtn(app.state.running.value, runGate());
-        return;
-      }
-      app.dom.varStripRerenderPending = false;
-      app.dom.varStripSig = sig;
-      if (!vars.length) {
-        strip.replaceChildren();
-        strip.style.display = 'none';
-      } else {
-        strip.style.display = '';
-        // The freshly-(re)built strip paints each field's already-committed
-        // state ('execute' mode — no field is mid-typing right after a
-        // rebuild, e.g. a tab switch restoring a previously-invalid value).
-        const initialFields = params.prepareAnalyzedBatch(analysis!, wallNow(), 'execute').fields;
-        strip.replaceChildren(...vars.map((v, i) => {
-          // controls[i] (fieldControlKind above) picks the field's control:
-          // #172 enum members (v1 declared or v2 inferred) > #169 date-like
-          // preset combobox + live preview > plain text with recents (#171).
-          // The field stays free-text in every case (absolute values / non-
-          // members keep working); persistence/#170 validation stays exactly
-          // the shared logic below — the combobox only adds its own focus/
-          // keydown-nav/composition hooks, called first from the same
-          // handlers (wireComboInput; see relative-time-field.js's header
-          // comment on why this beats two independent listeners).
-          const ctl = controls[i];
-          // #173 acceptance (review F1): a type-conflicted field degrades to
-          // the plain text control (ctl.kind above) and says so visibly — a
-          // warning style distinct from is-invalid (the VALUE isn't wrong;
-          // the declarations disagree) plus a tooltip listing them.
-          const conflictNote = v.conflict
-            ? 'Conflicting type declarations: ' + v.conflict.join(' vs ') : null;
-          const baseTitle = v.name + ': ' + v.type
-            + (v.optional ? ' — optional: blank leaves its filter block out' : '')
-            + (conflictNote ? ' — ' + conflictNote : '');
-          let combo: VarStripCombo;
-          let input: HTMLInputElement;
-          const onValueInput = (): void => {
-            app.state.varValues[v.name] = input.value;
-            // Text controls sync activation with the value (#165).
-            app.state.filterActive[v.name] = input.value !== '';
-            params.saveVarValues();
-            params.saveFilterActive();
-            // Editing the value un-hardens it (#170 review): back to
-            // neutral, lenient behavior until it's committed again.
-            params.hardenedVars.delete(v.name);
-            // 'input' mode (#170): a plausible prefix stays neutral while
-            // the field is focused — only a value that's already certainly
-            // wrong shows the inline error here.
-            const inputBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
-            applyFieldState(input, inputBatch.fields[v.name], baseTitle, combo?.previewEl);
-            setRunBtn(app.state.running.value, inputBatch.sources[0]);
-          };
-          const onCommitHard = (): void => {
-            // Hardens 'incomplete' → 'invalid' on commit (#170).
-            const commitBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
-            params.hardenVar(v.name, commitBatch.fields[v.name]);
-            applyFieldState(input, commitBatch.fields[v.name], baseTitle, combo?.previewEl);
-            setRunBtn(app.state.running.value, commitBatch.sources[0]);
-          };
-          // #171: live-filtered recents for this field (type + typed text),
-          // called fresh on every dropdown open/keystroke — never a snapshot
-          // — so a value recorded by a run that completes without changing
-          // the strip's {name:Type} signature is never stale. (#160's
-          // curated-param opt-out hook: nothing to check yet — no curated
-          // param exists before #160 lands.)
-          const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, v.name, v.type, text);
-          const onClearRecent = (): void => params.clearVarRecent(v.name);
-          const fieldOpts = {
-            document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-            baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
-          };
-          if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions! });
-          else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow });
-          else combo = buildRecentField(fieldOpts);
-          input = combo.input;
-          // #345: a stable, type-appropriate width — set once per field
-          // build (never on keystroke), same rule the Dashboard/detached-view
-          // variable bar uses (variable-bar.js).
-          applyFieldWidth(input, v.type, ctl.kind === 'enum');
-          wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
-          if (conflictNote) input.classList.add('is-conflict');
-          params.hardenVar(v.name, initialFields[v.name]);
-          applyFieldState(input, initialFields[v.name], baseTitle, combo?.previewEl);
-          return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
-            h('span', { class: 'var-name' }, v.name), combo.el);
-        }));
-      }
-    }
-    setRunBtn(app.state.running.value, runGate());
-  }
-  app.renderVarStrip = renderVarStrip;
+  // The Workbench `{name:Type}` query-variable STRIP — `setRunBtn` (the Run
+  // button's disabled/tooltip/label sync) and `renderVarStrip` (the strip's
+  // DOM view) — now lives in `ui/workbench/variable-strip.ts` (#588 W1), a
+  // pure extraction: every line of the two functions moved verbatim, only
+  // `app.*`/`doc`/`params.*` reads rewritten onto the `deps` thunks below.
+  // `app.renderVarStrip`/`app.setRunBtn` stay flat one-line delegates — every
+  // existing consumer (`WorkbenchShellDeps`, the catalog's idle-tick hook,
+  // `onDocChange` above) keeps calling them exactly as before.
+  const variableStrip = createVariableStrip({
+    document: doc,
+    state,
+    activeTab: () => app.activeTab(),
+    params,
+    wallNow,
+    varStrip: () => app.dom.varStrip,
+    runBtn: () => app.dom.runBtn,
+  });
   // The Export button reflects both browser support (canExport) and whether an
   // export is already running — the button stays aria-disabled (not natively
   // disabled) in either case so its tooltip still shows on hover.
@@ -1250,7 +717,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       : can ? 'Export full result to a file (streams to disk, uncapped)'
         : 'Large export requires Chrome/Edge over HTTPS';
   }
-  app.setExportBtn = setExportBtn;
   // Busy state for the Format button — formatting a multi-statement script is one
   // request per statement, so it can take a moment; show a spinner + disable.
   function setFmtBtn(busy: boolean): void {
@@ -1260,7 +726,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       busy ? h('span', { class: 'spin' }, Icon.spinner()) : Icon.braces(),
       busy ? 'Formatting…' : 'Format');
   }
-  app.setFmtBtn = setFmtBtn;
 
   // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place. The
   // raw (untrimmed) SQL is sent so a syntax error's reported position maps 1:1
@@ -1397,7 +862,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       onAuthFailed: chCtx.onSignedOut,
     },
   });
-  app.graph = graph;
 
   function cancelSchemaGraph(opts?: { clearResult?: boolean }): void {
     graph.cancel(opts);
@@ -1581,10 +1045,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // only History does) — this wrapper no longer string-compares a panel id.
   // `app.shell` is null before the first shell mount, so this is always a
   // safe no-op that early.
-  app.recordHistory = (tab, sqlText) => {
-    saved.recordHistory(tab, sqlText);
-    app.shell?.sidePanels.notifyRunComplete();
-  };
 
   // --- share + star ------------------------------------------------------
   function share() {
@@ -1690,337 +1150,63 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   const specBlocked = (tab: QueryTab): boolean => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
-  app.specBlocked = specBlocked;
 
-  app.updateSaveBtn = () => {
-    if (!app.dom.saveBtn) return;
-    const tab = app.activeTab();
-    // #457: the DOCUMENT KIND is checked first, exactly as `saveActiveQuery`
-    // checks it — a variable tab has no saved query behind it, so "saved" is
-    // simply "not dirty", no Spec can block it, and the conflict state below
-    // (a linked-saved-query concept) cannot apply to it. Ordering the two the
-    // same way in both places is what stops the button ever describing an
-    // action the Save action would not take.
-    if (variableDoc(tab) !== null) {
-      const stored = !tabSaveDirty(tab);
-      app.dom.saveBtn.classList.remove('conflict');
-      app.dom.saveBtn.classList.toggle('saved', stored);
-      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, stored ? 'Saved' : 'Save'));
-      app.dom.saveBtn.disabled = false;
-      app.dom.saveBtn.title = stored
-        ? 'Saved — edit to re-save (⌘S)'
-        : 'Save this variable’s option SQL (⌘S)';
-      return;
-    }
-    // #343: a tab whose linked saved query changed in another tab must not be
-    // silently re-saved. The Save button becomes "Resolve conflict" and opens
-    // the two-action chooser instead of committing.
-    if (tab.externalState === 'conflict') {
-      app.dom.saveBtn.classList.remove('saved');
-      app.dom.saveBtn.classList.add('conflict');
-      app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, 'Resolve conflict'));
-      app.dom.saveBtn.disabled = false;
-      app.dom.saveBtn.title = 'This query changed in another tab — choose how to resolve it';
-      return;
-    }
-    app.dom.saveBtn.classList.remove('conflict');
-    const entry = savedForTab(app.state, tab);
-    const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
-    const blocked = !!entry && specBlocked(tab);
-    app.dom.saveBtn.classList.toggle('saved', clean);
-    app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
-    app.dom.saveBtn.disabled = blocked;
-    app.dom.saveBtn.title = blocked
-      ? 'Fix blocking Spec errors before saving'
-      : clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
-  };
-  // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
-  // button, Esc + click-outside close (capture listeners), stored at
-  // app.dom[refKey] and cleared on close. Returns { close }.
-  const anchoredPopoverClosers = new Set<() => void>();
-  const closeAnchoredPopovers = (): void => {
-    for (const close of [...anchoredPopoverClosers]) close();
-  };
-  function anchoredPopover(
-    node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
-  ): { close: () => void } {
-    const releaseKeyboard = app.acquireKeyboardOwner('popover');
-    const close = (): void => {
-      anchoredPopoverClosers.delete(close);
-      doc.removeEventListener('keydown', onKey, true);
-      doc.removeEventListener('mousedown', onOutside, true);
-      if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
-      releaseKeyboard();
-    };
-    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    const onOutside = (e: MouseEvent): void => {
-      if (app.dom[refKey] && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
-    };
-    app.dom[refKey] = node;
-    const r = anchorEl.getBoundingClientRect();
-    // Right-align under the button.
-    const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 }) as { top: number; right: number };
-    node.style.position = 'fixed';
-    node.style.top = a.top + 'px';
-    if (app.state.isMobile.value) {
-      // Mobile (#126): the trigger can sit mid-toolbar (the toolbar scrolls), so
-      // right-aligning to it pushes a fixed-width popover off the narrow
-      // viewport's left edge. Center it horizontally instead (still dropped below
-      // the trigger via `top`); the mobile max-width clamps keep it in-bounds.
-      node.style.left = '50%';
-      node.style.transform = 'translateX(-50%)';
-    } else {
-      node.style.right = a.right + 'px';
-    }
-    doc.body.appendChild(node);
-    doc.addEventListener('keydown', onKey, true);
-    doc.addEventListener('mousedown', onOutside, true);
-    anchoredPopoverClosers.add(close);
-    return { close };
-  }
+  // The Save-popover/user-menu light anchored popover (non-modal — distinct
+  // from `openAnchoredDialog`'s modal dialog chrome) now lives in
+  // `ui/popover.ts`'s `createAnchoredPopovers` (#588 W2), a pure extraction:
+  // every line of `anchoredPopover` + its closers registry moved verbatim,
+  // only `app.*`/`doc`/`win` reads rewritten onto the `deps` thunks below.
+  // `beginSurfaceTransition`/`disposeCurrentSurface` keep calling
+  // `popovers.closeAll()` exactly as they called `closeAnchoredPopovers()`
+  // before. The instance-scoped closers Set lives inside `popovers` now, not
+  // as a module-global here.
+  const popovers = createAnchoredPopovers({
+    document: doc,
+    acquireKeyboardOwner: (kind) => app.acquireKeyboardOwner(kind),
+    isMobile: () => app.state.isMobile.value,
+    viewportWidth: () => win.innerWidth,
+    getRef: (key) => app.dom[key],
+    setRef: (key, node) => { app.dom[key] = node; },
+  });
+  const anchoredPopover = popovers.open;
+  const closeAnchoredPopovers = popovers.closeAll;
 
-  /** A warning-bearing save still succeeded. Preserve that confirmation and
-   * keep the actionable inference guidance visible long enough to read. */
-  function flashSaved(diagnostics?: ReadonlyArray<{ message: string }>): void {
-    const warning = diagnostics?.[0]?.message;
-    flashToast(warning ? `Saved — ${warning}` : 'Saved', {
-      document: doc,
-      ...(warning ? { duration: 6000 } : {}),
-    });
-  }
-
-  async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
-    const surfaceGeneration = app.captureSurfaceGeneration();
-    const tab = app.activeTab();
-    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    // #343: `saved.commit` now runs its candidate-building transform through
-    // `app.mutateWorkspace`, which already enters the tab-local write queue and
-    // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
-    // wrapper needed (it would only double-queue).
-    const result = await saved.commit(tab, evaluated);
-    // #466/#501-review: `saved.commit` already cleared `dirtySql`/`dirtySpec`
-    // on a real commit (`commitSavedQuery`, state.ts) — BEFORE the staleness
-    // bracket below, which can return early on a navigation that began
-    // mid-write. `rerenderTabs()` (which re-syncs this too) only runs past
-    // that bracket, so without this the guard stays installed for a tab that
-    // is, by now, genuinely clean and durably written.
-    if (result.ok) app.syncBeforeUnload();
-    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) {
-      return result.ok ? result.entry : null;
-    }
-    if (!result.ok) {
-      // 'rejected' (commit's own defensive re-check inside the service, OR the
-      // aggregate strictly rejecting the whole-workspace commit — #287 W4)
-      // stays a silent no-op for the tab/editor state (nothing was mutated),
-      // but a real commit rejection still surfaces its first diagnostic.
-      if (result.reason === 'invalid-spec') {
-        queryDoc.revealFirstSpecError(tab);
-        flashToast('Fix Spec errors before saving', { document: doc });
-      } else if (result.reason === 'empty') {
-        flashToast('Nothing to save', { document: doc });
-      } else if (result.reason === 'deleted') {
-        // #343: the linked query vanished from the latest workspace (deleted in
-        // another tab) and the save aborted without recreating it. Refresh the
-        // tab association now — the reconcile turns this tab into an unsaved
-        // draft (dirty) or detaches it (clean) — instead of leaving a ghost
-        // link waiting for the next focus/visibility event.
-        flashToast('This query was deleted in another tab — your draft is kept as an unsaved query', { document: doc });
-        void app.refreshWorkspaceFromStore();
-      } else if (result.diagnostics?.length) {
-        flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
-      }
-      return null;
-    }
-    queryDoc.revalidateSpecDrafts();
-    app.specEditor.syncFromState();
-    app.updateSaveBtn();
-    app.actions.rerenderTabs();
-    renderSavedHistory(app);
-    renderResults(app);
-    app.updateEditorModeUi!();
-    flashSaved(result.diagnostics);
-    return result.entry;
-  }
-
-  /**
-   * #457 — Save on a `dashboard-variable` tab. The ONE write it performs is
-   * `dashboard.variableConfigs[variableName]`: no `SavedQueryV2` is created or
-   * touched, and the document is never added to the Library, History, favourites
-   * or Panels.
-   *
-   * The trim rule is the pure service's, never re-implemented here: blank (or
-   * whitespace-only) SQL REMOVES the configuration and returns the variable to
-   * direct input, rather than storing an empty string that would later read as
-   * configured-but-broken.
-   */
-  async function saveVariableTab(
-    tab: QueryTab, binding: { dashboardId: string; variableName: string },
-  ): Promise<null> {
-    const surfaceGeneration = app.captureSurfaceGeneration();
-    const sql = normalizeVariableSql(tab.sqlDraft);
-    // `lastKnownType` is what lets a configuration still display a type once its
-    // last declaring panel disappears. Recorded from whatever type is agreed NOW
-    // (a live declaration always wins over it), and read from the same projection
-    // the tab was opened through, at save time rather than at open time.
-    const type = dashboardVariables(app.currentWorkspace, binding.dashboardId)
-      .find((candidate) => candidate.name === binding.variableName)?.type ?? null;
-    const outcome = await commitVariableConfig(app, binding.dashboardId, binding.variableName, sql === null
-      ? null
-      : { sql, ...(type === null ? {} : { lastKnownType: type }) });
-    // TAB-side state is applied on a real commit REGARDLESS of staleness, and
-    // before the bracket — the write is durable, so the tab must stop claiming
-    // unsaved work whether or not this caller still owns the renderer. The linked
-    // saved-query path has the same shape: `commitSavedQuery` clears `dirtySql`
-    // inside the service (state.ts), and only the DOM cascade after it sits behind
-    // `commitLinkedQuery`'s bracket. Gating the flag too left a committed tab
-    // permanently dirty whenever the user navigated mid-write — a dirty dot and a
-    // "Save" button for content already on disk, with nothing able to clear them.
-    if (outcome.ok) {
-      tab.dirtySql = false;
-      // `dirtySpec` is not part of a variable document (see `tabSaveDirty`), but
-      // the result toolbar's panel-type picker can still set it. Clearing it here
-      // keeps a saved variable tab from carrying a flag nothing else ever resets.
-      tab.dirtySpec = false;
-      // #466/#501-review: re-sync the `beforeunload` guard for THIS tab-side
-      // clear too — `rerenderTabs()` below the staleness bracket also does it,
-      // but that bracket can return early on a navigation that began mid-write.
-      app.syncBeforeUnload();
-    }
-    // Same staleness bracket every other async save uses: a navigation that began
-    // mid-write must not be REPAINTED or TOASTED over.
-    if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, outcome.ok)) return null;
-    if (outcome.ok) {
-      app.actions.rerenderTabs();
-      app.updateSaveBtn();
-      flashToast(sql === null ? 'Option SQL removed' : 'Saved', { document: doc });
-      return null;
-    }
-    // `aborted` covers more than one thing, and only ONE of them is this
-    // transform's own refusal (`data === 'declined'` — the Dashboard is gone or
-    // its id is ambiguous, and nothing was written). The others are the primitive
-    // deciding the route moved on, and at least one of those keeps a durable
-    // write — so they say nothing rather than claim a failure that may not be one.
-    // Either way the draft stays dirty: it is the only copy of the user's edit.
-    if (outcome.aborted) {
-      if (outcome.data === 'declined') {
-        flashToast('This dashboard is no longer available — nothing was saved', { document: doc });
-      }
-      return null;
-    }
-    flashToast('Save failed: ' + outcome.diagnostics[0].message, { document: doc });
-    return null;
-  }
-
-  async function saveActiveQuery(): Promise<SavedQueryV2 | null | undefined> {
-    const tab = app.activeTab();
-    // #457: Save dispatches on the DOCUMENT KIND first. A variable tab is not a
-    // saved query and must never reach the linked-save or Save-as-new paths.
-    const variable = variableDoc(tab);
-    if (variable !== null) return saveVariableTab(tab, variable);
-    // #343: while a linked tab is in conflict, Save opens the resolution chooser
-    // rather than silently overwriting the externally changed query. A
-    // 'deleted'-flagged orphan has `savedId === null` already, so it falls
-    // through to the normal Save-as-new popover (never an implicit recreate).
-    if (tab.externalState === 'conflict') { openConflictChooser(); return undefined; }
-    if (savedForTab(app.state, tab)) return commitLinkedQuery();
-    openSavePopover();
-    return undefined;
-  }
-
-  // #343 §8: discard the active tab's local draft and adopt the latest committed
-  // version of its linked query — the "Reload saved version" conflict
-  // resolution. The committed query is already projected on `state.savedQueries`
-  // (a refresh ran to detect the conflict), so this reads it from there.
-  function reloadSavedVersion(): void {
-    const tab = app.activeTab();
-    const entry = savedForTab(app.state, tab);
-    if (!entry) {
-      // Deleted between opening the chooser and resolving — nothing to reload;
-      // refresh so the reconcile gives this tab its deleted-elsewhere treatment
-      // instead of leaving the stale conflict state in place (#343 review).
-      void app.refreshWorkspaceFromStore();
-      return;
-    }
-    adoptSavedIntoTab(tab, entry);
-    batch(() => { app.state.tabs.value = [...app.state.tabs.value]; }); // re-run the tab effect → editor + strip resync
-    app.updateSaveBtn();
-    app.actions.rerenderTabs();
-    renderSavedHistory(app);
-    flashToast('Reloaded the version saved in the other tab', { document: doc });
-  }
-
-  // #343 §8: the two-action conflict chooser, anchored under the Save button.
-  // "Reload saved version" fires immediately; "Keep my draft" confirms, then
-  // commits the full draft over the latest query via the normal linked-save path
-  // (`commitLinkedQuery` → `mutateWorkspace`), preserving unrelated workspace
-  // changes and clearing the conflict on success.
-  function openConflictChooser(): void {
-    if (app.dom.savePopover) return;
-    const tab = app.activeTab();
-    let close: () => void;
-    const chooser = buildConflictChooser({
-      queryName: tab.name,
-      onReloadSaved: () => { close(); reloadSavedVersion(); },
-      onKeepDraft: () => { close(); void commitLinkedQuery(); },
-    });
-    ({ close } = anchoredPopover(chooser, app.dom.saveBtn!, 'savePopover'));
-  }
-
-  // Creation-only Name/Description popover. Once linked, the textual Spec is
-  // authoritative and Save bypasses this UI entirely.
-  function openSavePopover(): void {
-    const tab = app.activeTab();
-    // A queryless panel (text, #166) is authored entirely in its cfg, so it
-    // saves with empty SQL — the same per-type relaxation saveQuery applies.
-    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(tabPanel(tab))) {
-      flashToast('Nothing to save', { document: doc });
-      return;
-    }
-    if (app.dom.savePopover) return;
-    const prefill = tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sqlDraft);
-    const input = h('input', { class: 'sp-input', value: prefill });
-    const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
-    let close: () => void;
-    const commit = async (): Promise<void> => {
-      if (!input.value.trim()) return;
-      const surfaceGeneration = app.captureSurfaceGeneration();
-      // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
-      // which already serializes + reads the latest committed aggregate — no
-      // outer `serializeWrite` wrapper needed.
-      const result = await saved.create(tab, input.value, descInput.value);
-      // #466/#501-review: `saved.create` already cleared `dirtySql`/`dirtySpec`
-      // on success (`createSavedQuery`, state.ts) — before the staleness
-      // bracket, which can return early on a navigation that began mid-write.
-      if (result.ok) app.syncBeforeUnload();
-      if (!app.refreshCurrentSurfaceAfterStale(surfaceGeneration, result.ok)) return;
-      if (!result.ok) {
-        if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
-        return;
-      }
-      close();
-      queryDoc.revalidateSpecDrafts();
-      app.specEditor.syncFromState();
-      app.updateSaveBtn();
-      app.updateEditorModeUi!();
-      app.actions.rerenderTabs();
-      renderSavedHistory(app);
-      flashSaved(result.diagnostics);
-    };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
-    // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.
-    descInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); } });
-    const pop = h('div', { class: 'save-popover' },
-      h('div', { class: 'sp-label' }, 'Save query as'),
-      input,
-      h('div', { class: 'sp-label' }, 'Description', h('span', { class: 'sp-opt' }, ' — optional')),
-      descInput,
-      h('div', { class: 'sp-actions' },
-        h('button', { class: 'sp-cancel', onclick: () => close() }, 'Cancel'),
-        h('button', { class: 'sp-save', onclick: commit }, 'Save')));
-    ({ close } = anchoredPopover(pop, app.dom.saveBtn!, 'savePopover'));
-    setTimeout(() => { input.focus(); input.select(); });
-  }
-  app.openSavePopover = openSavePopover;
+  // The Save cluster — `updateSaveBtn`, `saveActiveQuery`, and the linked
+  // commit/create/conflict-chooser paths it dispatches to — now lives in
+  // `ui/workbench/save-controller.ts`'s `createSaveController` (#588 W2), a
+  // pure extraction: every line moved verbatim, only `app.*`/`doc`/`saved`/
+  // `queryDoc` reads rewritten onto the `deps` thunks below. The #457
+  // kind-dispatch-first ordering (I-15) travels with the code UNCHANGED in
+  // both `updateSaveBtn` and `saveActiveQuery` — see that module's own header
+  // comment. `App.openSavePopover` is DROPPED (zero production consumers —
+  // #588 phase 4 plan §3-W2b); `app.updateSaveBtn` and `actions.save` stay
+  // flat delegates onto the controller for their wide existing consumers.
+  const saveController = createSaveController({
+    document: doc,
+    state,
+    activeTab: () => app.activeTab(),
+    saved: { commit: (tab, evaluated) => saved.commit(tab, evaluated), create: (tab, name, description) => saved.create(tab, name, description) },
+    queryDoc: {
+      evaluateSpecDraft: (tab, text, opts) => queryDoc.evaluateSpecDraft(tab, text, opts),
+      revalidateSpecDrafts: (opts) => queryDoc.revalidateSpecDrafts(opts),
+      revealFirstSpecError: (tab) => queryDoc.revealFirstSpecError(tab),
+    },
+    currentWorkspace: () => app.currentWorkspace,
+    captureSurfaceGeneration: () => app.captureSurfaceGeneration(),
+    refreshCurrentSurfaceAfterStale: (generation, committed) => app.refreshCurrentSurfaceAfterStale(generation, committed),
+    syncBeforeUnload: () => app.syncBeforeUnload(),
+    refreshWorkspaceFromStore: () => app.workspaceSession.refreshWorkspaceFromStore(),
+    commitVariableConfig: (dashboardId, variableName, cfg) => commitVariableConfig(app, dashboardId, variableName, cfg),
+    saveBtn: () => app.dom.saveBtn,
+    savePopoverOpen: () => !!app.dom.savePopover,
+    anchoredPopover: popovers.open,
+    rerenderTabs: () => app.actions.rerenderTabs(),
+    updateEditorModeUi: () => app.updateEditorModeUi!(),
+    renderSavedHistory: () => renderSavedHistory(app),
+    renderResults: () => renderResults(app),
+    syncSpecEditorFromState: () => app.specEditor.syncFromState(),
+    specBlocked,
+  });
 
   function formatSpec(): void {
     const tab = app.activeTab();
@@ -2053,14 +1239,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     return true;
   }
 
-  app.activateInvalidSpecDraft = (tab) => {
-    if (!tab) return;
-    batch(() => { app.state.activeTabId.value = tab.id; });
-    tab.editorMode = 'spec';
-    app.updateEditorModeUi!();
-    app.specEditor.focus();
-    flashToast('Fix Spec JSON first', { document: doc });
-  };
 
   // User menu: dropdown under the header user button, holding the identity and
   // a Log out item. Same close model as the save popover (Esc + outside click).
@@ -2078,7 +1256,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     ({ close } = anchoredPopover(menu, app.dom.userBtn!, 'userMenu'));
     setTimeout(() => logoutBtn.focus());
   }
-  app.openUserMenu = openUserMenu;
 
   function toggleTheme(): void {
     // The shared DOM composition (state-flip + persist + `data-theme` +
@@ -2092,7 +1269,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
   // Exposed so the schema-view overlay can drive the same toggle (keeps state +
   // saved pref + header icon in sync rather than flipping data-theme behind them).
-  app.toggleTheme = toggleTheme;
 
   // On mobile (#126), jump the bottom-nav to the Editor panel after an action
   // that changes the editor content; a no-op on desktop.
@@ -2182,7 +1358,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const beginSurfaceTransition = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     // #586 REWRITE: this used to close ONLY the doc pane, on the reasoning
@@ -2197,21 +1373,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Reference. `closeInspector` is generic over the current occupant.
     closeInspector(app);
   };
-  app.renderDashboard = () => {
-    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
-    beginSurfaceTransition();
-    const mounted = ensureShell();
-    // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
-    // width immediately after mount, and a hidden host measures 0 — which
-    // silently pins every Dashboard to the widest 12-column breakpoint. happy-dom
-    // always reports 0, so only a real browser can catch a regression here.
-    mounted.showHost('dashboard');
-    return renderDashboard(app, dashboardRenderTarget(mounted));
-  };
   const disposeCurrentSurface = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
       'button, input, select, textarea',
     ) ?? []) control.disabled = true;
@@ -2235,7 +1400,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Declared here, above its first caller, so no path can reach it before
   // `createApp` has finished wiring the controller.
   const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
-  app.invalidateDashboardTree = invalidateDashboardTree;
 
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => {
     app.currentWorkspace = workspace;
@@ -2292,8 +1456,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     // #343 §2: this projection IS now the tab's committed baseline — record its
     // snapshot token so a later reload can cheaply tell whether anything changed.
     // Every projection funnels through here (boot, mutateWorkspace, reset), so
-    // the token stays consistent with what's on screen.
-    lastCommittedToken = workspaceToken(workspace);
+    // the token stays consistent with what's on screen. #588 phase 4 wave 3:
+    // the token itself now lives on `app.workspaceSession` — this calls
+    // `recordProjection` at the point this used to assign `lastCommittedToken`
+    // directly.
+    app.workspaceSession.recordProjection(workspace);
     // #426: EVERY projection funnels through here — boot, a committed mutation,
     // an external refresh, and a workspace switch — which makes this the one place
     // the Dashboard tree's invalidation has to fire. It is the whole reason the
@@ -2334,383 +1501,119 @@ export function createApp(env: CreateAppEnv = {}): App {
     // render has to happen here.
     if (lostSelection) {
       if (app.sqlRoute.surface === 'dashboard') {
-        writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
+        // #588 phase 4 wave 4: `writeRoute` moved into `app.nav` (nav-private
+        // otherwise) — exposed as an escape hatch for exactly this call, which
+        // forces the QUERY surface's route with 'replace' regardless of the
+        // CURRENT route surface; see surface-navigation.ts's header comment
+        // for why neither `rewriteWorkspaceRoute` nor `showQuerySurface` is
+        // behavior-identical here.
+        app.nav.writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
       }
       app.renderCurrentSurface();
     }
   };
-  app.applyCommittedWorkspace = applyCommittedWorkspace;
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
   // Import / Replace operations use to mint fresh ids (`uid('ws-')`).
-  app.genId = () => uid('ws-');
 
-  // #287 review fix: serialize saved-query writes so overlapping async CRUD
-  // commits can't interleave. Without this, a delete and a star toggle fired in
-  // rapid succession each build a candidate from the same stale
-  // `state.savedQueries` snapshot, and whichever commits LAST wins — resurrecting
-  // a just-deleted query (or clobbering a concurrent edit). Chaining each op
-  // after the previous one fully resolves means the next op reads the freshest
-  // projected state. The chain swallows rejections so one failed op never
-  // wedges the queue; the op's own result/rejection still reaches its caller.
-  let writeChain: Promise<unknown> = Promise.resolve();
-  app.serializeWrite = <T,>(op: () => Promise<T>): Promise<T> => {
-    const run = writeChain.then(op, op);
-    writeChain = run.then(() => undefined, () => undefined);
-    return run;
-  };
-  // #341: resolve once every write accepted BEFORE this call has settled (export
-  // waits on this so a bundle is built from the latest committed workspace, never
-  // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
-  // `writeChain` itself is always rejection-swallowed by `serializeWrite`, so
-  // awaiting it is sufficient; callers still observe their own operation's
-  // rejection through the separately returned `run` promise.
-  app.flushWorkspaceWrites = async () => { await writeChain; };
-  // #343 §5: this tab's random per-session id (crypto seam, like `uid`), stamped
-  // on every outgoing invalidation so a tab ignores its OWN broadcast.
-  const sourceTabId = uid('tab-');
-  app.sourceTabId = sourceTabId;
-  app.documentVisible = documentVisible;
-  // #343 §2: snapshot-identity of the workspace this tab last committed. Only
-  // used to detect whether a later reload actually changed anything (not CAS).
-  let lastCommittedToken = '';
-  app.getLastCommittedToken = () => lastCommittedToken;
-  // #343 step 4: the route/surface refresh hook a mounted route registers to
-  // react AFTER a refresh actually projected an external change — Dashboard
-  // overrides this to rebuild its viewer session
-  // from the latest committed workspace. Default no-op: the Workbench route's
-  // repaint is built into `refreshWorkspaceFromStore` itself.
-  app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-  // #343 §5: open the invalidation channel and route inbound pokes (that aren't
-  // our own) to the hook. Never carries the workspace body — only a signal.
-  const workspaceChannel = broadcastChannelFactory('asb:workspace');
-  if (workspaceChannel) {
-    workspaceChannel.onmessage = (event) => {
-      const msg = event.data as WorkspaceChangedMessage | null;
-      if (!msg || msg.type !== 'workspace-changed' || msg.sourceTabId === sourceTabId
-        || msg.workspaceId !== app.state.workspaceId) return;
-      app.onExternalWorkspaceChange(msg);
-    };
-  }
-
-  // Build every mutation from this tab's active workspace, reloaded by
-  // immutable id INSIDE the queue. Repository commits can never create, so an
-  // externally deleted active workspace aborts rather than resurrecting it.
-  // #343 §2: on a SUCCESSFUL commit the primitive itself owns the projection
-  // (`applyCommittedWorkspace`, exactly once), records the snapshot token, and
-  // broadcasts ONE invalidation — callers no longer project. An aborted
-  // transform (null / null candidate) commits nothing and notifies no one; a
-  // failed commit surfaces its diagnostics without projecting or notifying.
-  app.mutateWorkspace = (transform) => {
-    const requestedWorkspaceId = app.state.workspaceId;
-    const requestedWorkspaceKey = app.state.workspaceKey;
-    const requestedRouteGeneration = routeLoadGeneration;
-    const routeStillMatches = (): boolean => app.sqlRoute.workspaceKey === null
-      || app.sqlRoute.workspaceKey === requestedWorkspaceKey;
-    if (app.workspaceRouteStatus !== 'ready'
-      || !routeStillMatches()) {
-      return Promise.resolve({ ok: false as const, aborted: true as const });
-    }
-    return app.serializeWrite(async () => {
-      if (app.workspaceRouteStatus !== 'ready'
-        || routeLoadGeneration !== requestedRouteGeneration
-        || app.state.workspaceId !== requestedWorkspaceId
-        || !routeStillMatches()) {
-        return { ok: false as const, aborted: true as const };
-      }
-      const loaded = await app.workspace.loadById(requestedWorkspaceId);
-      if (loaded.status === 'corrupt') {
-        return { ok: false as const, diagnostics: loaded.diagnostics };
-      }
-      if (loaded.status !== 'ok') {
+  // #588 phase 4 wave 3: queueing, repository calls, tokens, broadcasts,
+  // refresh scheduling, listeners, and beforeunload now live in
+  // `src/application/workspace-session.ts` — this call sites the whole thing
+  // in ONE place, wired to app.ts's own closures/fields through
+  // `hooks`/`routeCurrency`, exactly the layering `applyCommittedWorkspace`
+  // above stays out of (it is real UI orchestration, not "zero DOM").
+  // `routeCurrency`'s three thunks read today's raw app.ts closures/fields
+  // directly — wave 4 (`src/application/surface-navigation.ts`) rewires their
+  // BODIES onto its own accessors; this session's own interface does not
+  // change then.
+  session = createWorkspaceSession({
+    repository: workspaceRepo,
+    state,
+    uid,
+    genId: () => app.genId(),
+    broadcastChannelFactory,
+    documentVisible,
+    windowSeam: win,
+    documentSeam: doc,
+    // #588 phase 4 wave 4: `routeWorkspaceKey`/`routeStatus` keep reading
+    // app.ts's own `sqlRoute`/`workspaceRouteStatus` data properties directly
+    // (unaffected by this wave — they never lived in a moved closure);
+    // `loadGeneration` is rewired from wave 3's raw `routeLoadGeneration`
+    // closure read onto `app.nav`'s own accessor, now that the counter itself
+    // lives there. Only these THREE thunk BODIES change — `WorkspaceSession`'s
+    // own `routeCurrency` interface (workspace-session.ts) is untouched.
+    routeCurrency: {
+      routeWorkspaceKey: () => app.sqlRoute.workspaceKey,
+      routeStatus: () => app.workspaceRouteStatus,
+      loadGeneration: () => app.nav.loadGeneration(),
+    },
+    hooks: {
+      applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
+      onWorkspaceMissing: () => {
         app.currentWorkspace = null;
         app.workspaceRouteStatus = 'not-found';
         app.renderCurrentSurface();
-        return { ok: false as const, aborted: true as const };
-      }
-      const latest = loaded.workspace;
-      const input = await transform(latest);
-      if (!input || !input.candidate) {
-        return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
-      }
-      if (app.workspaceRouteStatus !== 'ready'
-        || routeLoadGeneration !== requestedRouteGeneration
-        || app.state.workspaceId !== requestedWorkspaceId
-        || !routeStillMatches()) {
-        return { ok: false as const, aborted: true as const, data: input.data };
-      }
-      const result = await app.workspace.commit(input.candidate);
-      if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
-      const routeIsStillCurrent = app.workspaceRouteStatus === 'ready'
-        && routeLoadGeneration === requestedRouteGeneration
-        && app.state.workspaceId === requestedWorkspaceId
-        && routeStillMatches();
-      if (routeIsStillCurrent) {
-        app.applyCommittedWorkspace(result.workspace); // #343: also records lastCommittedToken
-      }
-      if (workspaceChannel) {
-        workspaceChannel.postMessage({
-          type: 'workspace-changed', sourceTabId, workspaceId: result.workspace.id,
-        });
-      }
-      // The persistence operation may already have crossed its commit boundary
-      // when navigation began. Keep that durable write, but do not let its
-      // route-local caller repaint/toast against the new URL.
-      if (!routeIsStillCurrent) {
-        return { ok: false as const, aborted: true as const, data: input.data };
-      }
-      return {
-        ok: true as const, workspace: result.workspace,
-        dashboardRevision: result.dashboardRevision, data: input.data,
-      };
-    });
-  };
-
-  // #343 step 4: a non-destructive warning when a reload can't reach the store.
-  // The current projection stays on screen; the next focus/visibility event
-  // schedules another attempt (activation always refreshes), so this never
-  // wedges the workspace queue or discards data.
-  const warnRefreshFailed = (): void => {
-    flashToast(
-      'Couldn’t reload the latest workspace — showing the last known version; will retry when you return to this tab.',
-      { document: doc },
-    );
-  };
-
-  // #343 steps 4/7/8: reload the committed workspace and, if it changed under
-  // us, project it + reconcile linked tabs. Runs INSIDE `serializeWrite` so it
-  // orders behind any pending local mutation and a token compare stops it
-  // projecting an older read over a newer local commit. A failed load keeps the
-  // projection and warns; it never rejects the queued op (no wedge).
-  const runWorkspaceRefresh = async (): Promise<void> => {
-    const requestedWorkspaceId = app.state.workspaceId;
-    const requestedRouteGeneration = routeLoadGeneration;
-    let loaded: StoredWorkspaceV5 | null;
-    try {
-      const result = await app.workspace.loadById(requestedWorkspaceId);
-      if (result.status === 'corrupt') { warnRefreshFailed(); return; }
-      loaded = result.status === 'ok' ? result.workspace : null;
-    } catch {
-      warnRefreshFailed();
-      return;
-    }
-    if (app.state.workspaceId !== requestedWorkspaceId
-      || routeLoadGeneration !== requestedRouteGeneration) return;
-    // Unchanged since this tab's last projection ⇒ cheap no-op (the common case
-    // for an activation refresh that raced no real external write).
-    if (workspaceToken(loaded) === lastCommittedToken) return;
-    if (!loaded) {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'not-found';
-      app.renderCurrentSurface();
-      return;
-    }
-    // Reconcile linked tabs from the CURRENT (pre-projection) snapshots so the
-    // orphan/detach distinction survives, THEN project committed truth (which
-    // reconciles tab links + fills tokens + records lastCommittedToken).
-    const queriesDidChange = queriesChanged(app.state.savedQueries, loaded.queries);
-    reconcileLinkedTabsToLatest(app.state, loaded);
-    applyCommittedWorkspace(loaded);
-    // Workbench surface repaint. Dashboard reacts through the
-    // `onWorkspaceExternallyChanged` hook instead.
-    if (app.sqlRoute.surface === 'workspace') {
+      },
+      isWorkbenchSurface: () => app.sqlRoute.surface === 'workspace',
       // Re-run the tab effect (editor doc re-sync for the active tab, parked
-      // reconcile for the rest, tab strip + Save button + var strip) by handing
-      // the tabs signal a fresh array reference.
-      batch(() => { app.state.tabs.value = [...app.state.tabs.value]; });
-      app.updateSaveBtn();
-      app.updateEditorModeUi?.();
-      renderSavedHistory(app);
-    }
-    app.onWorkspaceExternallyChanged({ workspace: loaded, queriesChanged: queriesDidChange });
-  };
-  // Public entry point (#343): a single refresh ordered through the write queue.
-  app.refreshWorkspaceFromStore = () => app.serializeWrite(runWorkspaceRefresh);
+      // reconcile for the rest, tab strip + Save button + var strip) by
+      // handing the tabs signal a fresh array reference.
+      refreshWorkbenchUi: () => {
+        batch(() => { app.state.tabs.value = [...app.state.tabs.value]; });
+        app.updateSaveBtn();
+        app.updateEditorModeUi?.();
+        renderSavedHistory(app);
+      },
+      notifyExternallyChanged: (info) => app.onWorkspaceExternallyChanged(info),
+      onExternalInvalidation: (msg) => app.onExternalWorkspaceChange(msg),
+      // #343 step 4: a non-destructive warning when a reload can't reach the
+      // store. The current projection stays on screen; the next focus/
+      // visibility event schedules another attempt (activation always
+      // refreshes), so this never wedges the workspace queue or discards data.
+      warnRefreshFailed: () => {
+        flashToast(
+          'Couldn’t reload the latest workspace — showing the last known version; will retry when you return to this tab.',
+          { document: doc },
+        );
+      },
+      warnMarkOpenedFailed: () => {
+        flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
+      },
+    },
+  });
+  // #343 step 4: the route/surface refresh hook a mounted route registers to
+  // react AFTER a refresh actually projected an external change — Dashboard
+  // overrides this to rebuild its viewer session from the latest committed
+  // workspace. Default no-op: the Workbench route's repaint is built into
+  // `app.workspaceSession.refreshWorkspaceFromStore` itself. Flat delegate
+  // (wide production consumer set — see app.types.ts).
+  // #343 §5/§6: invoked when another tab reports a workspace change (channel
+  // receive, or a focus/visibility event) — the session's own channel
+  // handler and focus/visibility listeners call `scheduleRefresh()` directly;
+  // this flat delegate is what a mounted route/test overrides to observe the
+  // signal itself (never receives this tab's own broadcast).
+  // Flat delegates onto the session for its wide production consumer set
+  // (workbench-shell.ts, oauth callbacks, save-controller.ts's thunk).
 
-  // #343 steps 4/6/7: coalesce every invalidation source (channel poke, window
-  // focus, tab becoming visible) into ONE queued refresh. `refreshPending` gates
-  // duplicates: pokes arriving while a refresh is already scheduled/in-flight
-  // collapse into that one; it clears the instant the queued op dequeues, so a
-  // poke landing during the actual store read schedules a fresh follow-up. The
-  // refresh is queued through `serializeWrite`, so a notification received mid
-  // local-write reloads only after that write settles (marks stale now, reloads
-  // in queue order).
-  let refreshPending = false;
-  const scheduleWorkspaceRefresh = (): void => {
-    if (refreshPending) return;
-    refreshPending = true;
-    void app.serializeWrite(async () => {
-      refreshPending = false;
-      await runWorkspaceRefresh();
-    });
-  };
-  app.onExternalWorkspaceChange = () => scheduleWorkspaceRefresh();
-  // #343 §6: focus/visibility fallback — required even with BroadcastChannel,
-  // because a poke can be missed while a tab is created/restored/suspended (or
-  // on a platform without the API). Activation ALWAYS schedules a refresh; the
-  // token compare inside makes an unchanged store a no-op. Works when
-  // `broadcastChannel` returned null (channel absent) too.
-  // Guarded so a stub `window`/`document` (some tests inject a minimal object
-  // without `addEventListener`) doesn't fault at construction — the seams stay
-  // optional, exactly like the BroadcastChannel "capability or null" default.
-  if (typeof win.addEventListener === 'function') {
-    win.addEventListener('focus', () => scheduleWorkspaceRefresh());
-  }
-  if (typeof doc.addEventListener === 'function') {
-    doc.addEventListener('visibilitychange', () => { if (documentVisible()) scheduleWorkspaceRefresh(); });
-  }
-  // #466/#501-review: warn on a whole-page reload/close too, not just a
-  // tab-strip close — the same `tabSaveDirty` predicate the tab strip's dirty
-  // dot and its own close-confirm (tabs.ts's `requestCloseTab`) already read.
-  //
-  // The listener itself is installed/removed as the aggregate dirty state
-  // flips, rather than registered once and left checking inside — an earlier
-  // version of this comment argued a permanent listener "costs nothing" and
-  // that this app has no bfcache-restore path to give up. Both were wrong:
-  // Firefox (and older Chromium) disqualify a page from bfcache merely for
-  // HAVING a `beforeunload` listener attached, independent of what the
-  // callback does or whether it ever calls `preventDefault()`; bfcache
-  // restoration itself needs no `pageshow`/`event.persisted` handling on this
-  // app's part — the browser thaws the whole in-memory page, `bootstrap()`
-  // and all, without a reload ever happening. `returnValue` must be a TRUTHY
-  // value (lib.dom.d.ts's own doc comment: "when set to a truthy value,
-  // triggers a browser-generated confirmation dialog") — its own default is
-  // the empty string, so assigning that back would be a no-op for the legacy
-  // UAs that key off it rather than `preventDefault()`.
-  // A successful OAuth checkpoint authorizes precisely one intentional
-  // navigation. The listener remains attached (so all ordinary unloads retain
-  // their warning); ownership tokens ensure an older failed redirect cannot
-  // disarm a newer arm.
-  let nextUnloadBypassGeneration = 0;
-  let armedUnloadBypassGeneration: number | null = null;
-  const beforeUnload = (e: BeforeUnloadEvent): void => {
-    if (armedUnloadBypassGeneration !== null) {
-      armedUnloadBypassGeneration = null;
-      return;
-    }
-    e.preventDefault();
-    e.returnValue = true;
-  };
-  armOAuthRedirectUnloadBypass = (): (() => void) => {
-    const generation = ++nextUnloadBypassGeneration;
-    armedUnloadBypassGeneration = generation;
-    return () => {
-      if (armedUnloadBypassGeneration === generation) armedUnloadBypassGeneration = null;
-    };
-  };
-  let beforeUnloadInstalled = false;
-  const canToggleBeforeUnload = typeof win.addEventListener === 'function'
-    && typeof win.removeEventListener === 'function';
-  // Called from every place that can change the aggregate dirty state: the
-  // tab-list reactive effect (`workbench-shell.ts`, for a new/closed/switched
-  // tab — anything that touches the `tabs` SIGNAL's own identity) and
-  // `actions.rerenderTabs` (for an in-place `dirtySql`/`dirtySpec` mutation,
-  // which never touches that signal at all — the SQL editor's `onDocChange`
-  // already calls `rerenderTabs()` right after setting `dirtySql = true`, so
-  // this reuses that existing repaint path rather than a new aggregate
-  // signal). Idempotent: a redundant call when the aggregate hasn't actually
-  // flipped is a no-op, never a duplicate registration.
-  app.syncBeforeUnload = (): void => {
-    if (!canToggleBeforeUnload) return;
-    const needed = app.state.tabs.value.some(tabSaveDirty);
-    if (needed === beforeUnloadInstalled) return;
-    beforeUnloadInstalled = needed;
-    if (needed) win.addEventListener('beforeunload', beforeUnload);
-    else win.removeEventListener('beforeunload', beforeUnload);
-  };
-
-  const provisionInitialWorkspace = async (): Promise<WorkspaceLoadResult> => {
-    const listed = await app.workspace.list();
-    const key = deriveWorkspaceKey(DEFAULT_WORKSPACE_NAME, listed.summaries.map((item) => item.key));
-    const created = await app.workspace.create(createNewWorkspace(app.genId, key, DEFAULT_WORKSPACE_NAME));
-    if (created.ok) return { status: 'ok', workspace: created.workspace };
-    // A different tab may have provisioned the collection after our empty
-    // resolution. Re-resolve instead of creating a second fallback workspace.
-    return app.workspace.resolveImplicit();
-  };
-
-  const resolveImplicitOrProvision = async (): Promise<WorkspaceLoadResult> => {
-    const resolved = await app.workspace.resolveImplicit();
-    return resolved.status === 'empty' ? provisionInitialWorkspace() : resolved;
-  };
-
-  const recordOpened = async (workspace: StoredWorkspaceV5): Promise<void> => {
-    const result = await app.workspace.markOpened(workspace.key);
-    if (!result.ok) {
-      flashToast('Workspace opened, but its last-used timestamp could not be saved.', { document: doc });
-    }
-  };
-
+  // #588 phase 4 wave 4: `resetCorruptWorkspace` stays here (real UI
+  // orchestration — drives `app.workspace.delete` alongside
+  // `session.resolveImplicitOrProvision`, exactly like `applyCommittedWorkspace`
+  // above stays outside `workspaceSession`), but the route-currency reads/
+  // writes it used to do directly (`routeLoadGeneration`/`routeSearch`) now go
+  // through `app.nav` — `nav.loadGeneration()` and `nav.rewriteWorkspaceRoute()`
+  // do byte-identical work (see `surface-navigation.ts`'s own `writeRoute`).
   const resetCorruptWorkspace = async (id: string): Promise<void> => {
-    const expectedGeneration = routeLoadGeneration;
+    const expectedGeneration = app.nav.loadGeneration();
     const deleted = await app.workspace.delete(id);
     if (!deleted.ok) return;
-    const result = await resolveImplicitOrProvision();
-    if (result.status === 'ok' && routeLoadGeneration === expectedGeneration) {
+    const result = await session.resolveImplicitOrProvision();
+    if (result.status === 'ok' && app.nav.loadGeneration() === expectedGeneration) {
       applyCommittedWorkspace(result.workspace);
-      await recordOpened(result.workspace);
-      if (routeLoadGeneration !== expectedGeneration) return;
-      app.sqlRoute = routeForWorkspace(app.sqlRoute, result.workspace.key);
-      routeSearch = buildSqlRouteSearch(app.sqlRoute, routeSearch);
-      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
+      await session.recordOpened(result.workspace);
+      if (app.nav.loadGeneration() !== expectedGeneration) return;
+      app.nav.rewriteWorkspaceRoute(result.workspace.key);
       app.retryPendingOAuthDocumentRecovery();
       app.renderCurrentSurface();
     }
-  };
-
-  const writeRoute = (route: SqlRoute, method: 'push' | 'replace'): void => {
-    app.sqlRoute = route;
-    routeSearch = buildSqlRouteSearch(route, routeSearch);
-    win.history[method === 'push' ? 'pushState' : 'replaceState'](
-      null, '', conn.basePath + routeSearch + (loc.hash || ''),
-    );
-  };
-
-  app.loadWorkspaceOnBoot = async () => {
-    const generation = ++routeLoadGeneration;
-    const explicitKey = app.sqlRoute.workspaceKey;
-    const result = explicitKey !== null
-      ? await app.workspace.loadByKey(explicitKey)
-      : await resolveImplicitOrProvision();
-    if (generation !== routeLoadGeneration) return null;
-    if (result.status === 'corrupt') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'error';
-      flashToast(
-        'Saved workspace could not be read. Other local workspaces remain unaffected.',
-        {
-          document: app.document,
-          action: { label: 'Reset workspace', onClick: () => { void resetCorruptWorkspace(result.id); } },
-        },
-      );
-      return null;
-    }
-    if (result.status !== 'ok') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = explicitKey !== null ? 'not-found' : 'error';
-      const normalized = normalizeSqlRouteSearch(routeSearch);
-      app.sqlRoute = normalized.route;
-      if (normalized.search !== routeSearch) {
-        routeSearch = normalized.search;
-        win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
-      }
-      return null;
-    }
-    const workspace = result.workspace;
-    await recordOpened(workspace);
-    if (generation !== routeLoadGeneration) return null;
-    applyCommittedWorkspace(workspace);
-    const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);
-    const canonicalSearch = buildSqlRouteSearch(canonicalRoute, routeSearch);
-    app.sqlRoute = canonicalRoute;
-    if (canonicalSearch !== routeSearch) {
-      routeSearch = canonicalSearch;
-      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
-    }
-    // #425: this is a URL-driven open (boot, a deep link, or a workspace
-    // switch), so the ROUTE decides the surface — including which Dashboard,
-    // resolved through the compatibility selector because the URL carries no id.
-    adoptRouteMainSurface();
-    return workspace;
   };
 
   const renderWorkspaceNotFound = (): void => {
@@ -2728,474 +1631,550 @@ export function createApp(env: CreateAppEnv = {}): App {
     }, h('p', null, 'Loading workspace…')));
   };
 
-  app.renderCurrentSurface = () => {
-    if (app.workspaceRouteStatus === 'loading') {
-      renderWorkspaceLoading();
-      return;
-    }
-    if (app.workspaceRouteStatus !== 'ready' || !app.currentWorkspace) {
-      renderWorkspaceNotFound();
-      return;
-    }
-    if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
-    else app.renderApp();
-  };
-
-  app.navigateSqlRoute = async (route, method) => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
-    const needsWorkspaceLoad = workspaceChanged || app.currentWorkspace === null;
-    writeRoute(route, method);
-    if (needsWorkspaceLoad) {
-      app.workspaceRouteStatus = 'loading';
-      app.currentWorkspace = null;
-      renderWorkspaceLoading();
-      const expectedGeneration = routeLoadGeneration + 1;
-      const workspace = await app.loadWorkspaceOnBoot();
-      if (routeLoadGeneration !== expectedGeneration) return;
-      if (workspace) app.retryPendingOAuthDocumentRecovery();
-    } else {
-      adoptRouteMainSurface();
-      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
-    }
-    app.renderCurrentSurface();
-  };
-
-  app.handleSqlPopState = async () => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const previousKey = app.sqlRoute.workspaceKey;
-    routeSearch = loc.search;
-    app.sqlRoute = parseSqlRoute(routeSearch);
-    if (app.sqlRoute.workspaceKey === previousKey && app.currentWorkspace !== null) {
-      // #425: Back/Forward between surfaces of the SAME workspace is a surface
-      // transition, not a teardown — the shell and the query column stay mounted
-      // so the editor state survives it. (It used to run `disposeCurrentSurface`,
-      // whose blanket control-disable would now inert the still-mounted editor
-      // toolbar, tabs, and sidebar inputs permanently.)
-      adoptRouteMainSurface();
-      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
-      app.renderCurrentSurface();
-      return;
-    }
-    app.workspaceRouteStatus = 'loading';
-    app.currentWorkspace = null;
-    renderWorkspaceLoading();
-    const expectedGeneration = routeLoadGeneration + 1;
-    const workspace = await app.loadWorkspaceOnBoot();
-    if (routeLoadGeneration !== expectedGeneration) return;
-    if (workspace) app.retryPendingOAuthDocumentRecovery();
-    app.renderCurrentSurface();
-  };
-  app.syncSqlRoute = (search) => {
-    routeSearch = search;
-    app.sqlRoute = parseSqlRoute(search);
-  };
-  app.rewriteWorkspaceRoute = (workspaceKey) => {
-    writeRoute(routeForWorkspace(app.sqlRoute, workspaceKey), 'replace');
-  };
-
-  // #425 — the main-surface navigation API. Every surface transition goes
-  // through these three functions, so `app.mainSurface` is the ONE writer of the
-  // route: the URL is always derived from the session surface, never the other
-  // way round, and the two can never disagree.
-  const surfaceRouteKey = (): string | null =>
-    app.currentWorkspace?.key ?? app.state.workspaceKey;
-  // Surface changes stay in this tab and create one useful history entry;
-  // a View/Edit mode change replaces so presentation toggles do not pollute
-  // Back (ADR-0003).
-  // #471 — write the Dashboard the CURRENT history entry is showing onto that entry,
-  // with the scroll offset the DOM has right now.
-  //
-  // The URL deliberately carries neither (#425 keeps the selected id and the offset as
-  // session state), so an entry that records nothing cannot be returned to: Back out
-  // of a tile's Open-in-Workbench used to land on the collection's first Dashboard, at
-  // the top. It has to run BEFORE the transition, because `pushState` leaves the
-  // outgoing entry's state exactly as it was last written — and again after writing a
-  // Dashboard route, so a freshly created entry carries its id immediately (Forward
-  // into it, or a second Back, restores the same way).
-  const stampDashboardHistoryEntry = (): void => {
-    const snapshot = dashboardHistorySnapshot(
-      app.mainSurface, app.sqlRoute.workspaceKey, dashboardScrollTop() ?? 0,
-    );
-    // `null` (Query mode) is written too: it clears a snapshot this entry may carry
-    // from an earlier surface, so a Query entry never restores a Dashboard.
-    // Unguarded, exactly like `writeRoute` immediately below — a platform with no
-    // history API fails there on the same transition either way.
-    win.history.replaceState({ dash: snapshot }, '', conn.basePath + routeSearch + (loc.hash || ''));
-  };
-
-  const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
-    stampDashboardHistoryEntry();
-    app.mainSurface = surface;
-    writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
-    if (surface.kind === 'dashboard') stampDashboardHistoryEntry();
-    // #426: the tree lives in the PERSISTENT shell, so a surface transition does
-    // not repaint it as a side effect of re-rendering the work area — it needs
-    // telling. Current Dashboard/member styling is derived from this state.
-    app.invalidateDashboardTree();
-    app.renderCurrentSurface();
-  };
-
-  // #426 — deliver focus to one member of the ALREADY-RENDERED Dashboard through
-  // the route-local surface command port. `null`/wrong-surface/superseded ports
-  // all report `pending`, which means "not deliverable in place" rather than
-  // "gone" — the caller then takes the normal render transition.
-  app.focusDashboardMember = (member) => {
-    const port = app.surfaceCommands;
-    if (!port || port.surface !== 'dashboard') return 'pending';
-    return port.focusMember(member);
-  };
-
-  app.openDashboard = (request) => {
-    const resolution = resolveOpenDashboard(app.currentWorkspace, request);
-    if (resolution.status !== 'ok') {
-      // Reported, never repaired: an ambiguous id must not be resolved by a
-      // guess, and a deleted one must not silently retarget another Dashboard.
-      flashToast(resolution.status === 'duplicate'
-        ? 'This workspace has more than one dashboard with that id — resolve the duplicate before opening it.'
-        : 'That dashboard is no longer part of this workspace.', { document: doc });
-      return;
-    }
-    const sameSelection = isSameDashboardSelection(app.mainSurface, request)
-      && app.sqlRoute.surface === 'dashboard';
-    if (sameSelection && resolution.surface.kind === 'dashboard') {
-      // A repeated open of the SAME id in the SAME mode with NO member is a no-op
-      // on the surface itself — but it still CLEARS the current member (opening a
-      // Dashboard row deselects whatever member was marked), so the tree repaints.
-      if (resolution.surface.pendingFocus === null) {
-        app.mainSurface = resolution.surface;
-        app.invalidateDashboardTree();
-        return;
-      }
-      // #426 — IN-PLACE member navigation. The tree makes repeated
-      // same-Dashboard focusing a normal operation, so it must not rebuild the
-      // viewer, re-run the Dashboard, or push another history entry (#425
-      // re-rendered here, which did all three).
-      const member = resolution.surface.pendingFocus;
-      const outcome = app.focusDashboardMember(member);
-      if (outcome === 'ok') {
-        app.mainSurface = withCurrentMember(app.mainSurface, member);
-        app.invalidateDashboardTree();
-        return;
-      }
-      if (outcome === 'missing') {
-        // Non-destructive: the Dashboard stays open and unchanged, and the member
-        // is deliberately NOT marked current — nothing there to mark.
-        flashToast(member.kind === 'tile'
-          ? 'That panel is no longer on this dashboard.'
-          : 'That variable is no longer on this dashboard.', { document: doc });
-        return;
-      }
-      // `pending` — a curated filter whose control the opening wave is about to
-      // replace, or a superseded port. Fall through to the normal transition,
-      // which delivers focus at the deterministic point the node is stable.
-    }
-    // #426: reaching here with the SAME Dashboard id means the MODE changed (the
-    // same-id/same-mode cases all returned above), and a View/Edit switch must
-    // preserve the member the user navigated to — `resolveOpenDashboard` builds
-    // the surface from the request alone and cannot know one was current.
-    applyMainSurface(
-      carryCurrentMember(app.mainSurface, resolution.surface),
-      app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push',
-    );
-  };
-
-  app.showQuerySurface = () => {
-    if (app.mainSurface.kind === 'query' && app.sqlRoute.surface === 'workspace') return;
-    applyMainSurface(QUERY_SURFACE, app.sqlRoute.surface === 'dashboard' ? 'push' : 'replace');
-  };
-
-  // The Dashboard entry points that name no Dashboard themselves: the header
-  // surface switch, the Workbench "Dashboard →" nav, the `g d`/`g v`/`g e`
-  // shortcuts, and the View/Edit switch. An ALREADY-selected Dashboard wins — so
-  // a mode change retains the same document rather than retargeting the
-  // collection's first entry — and only an unselected surface falls back to the
-  // ONE compatibility Dashboard (there is no chooser until #426's tree). Either
-  // way the open is addressed BY ID. An empty collection still reaches the
-  // Dashboard surface so its "Create dashboard" state remains available.
-  app.showDashboardSurface = (mode) => {
-    const selectedId = app.mainSurface.kind === 'dashboard'
-      ? app.mainSurface.dashboardId
-      : app.currentWorkspace ? resolveCompatibilityDashboard(app.currentWorkspace).selectedId : null;
-    if (selectedId !== null) {
-      app.openDashboard({ dashboardId: selectedId, mode });
-      return;
-    }
-    const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
-    app.mainSurface = QUERY_SURFACE;
-    writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
-    // The one surface transition that does not go through `applyMainSurface`, so it
-    // has to tell the tree itself — otherwise "every transition invalidates" has a
-    // hole in it.
-    invalidateDashboardTree();
-    app.renderCurrentSurface();
-  };
-
-  // Opening a saved query is a Query-mode act: it returns to the preserved
-  // Query surface first, so the tab it opens is the one the user then sees.
-  //
-  // #443 — RESOLVE BEFORE NAVIGATING. Switching first meant an id that resolves
-  // to nothing yanked the user off whatever surface they were on and pushed a
-  // history entry, then opened no tab and said nothing — a dead click that also
-  // lost their place. Report it the way `openDashboard` reports a missing
-  // Dashboard, and leave surface and route exactly as they were. Every current
-  // caller (`dashboard-tree.ts`'s open-query command and its post-assignment
-  // reveal, `dashboard.ts`'s Open in Workbench) addresses a query it just
-  // resolved or just created, so none depended on the unconditional switch.
-  /** Resolve a saved query for opening, or report that it is gone. The shared
-   *  #443 pre-flight: nothing moves until the id resolves. */
-  const savedQueryToOpen = (queryId: string): SavedQueryV2 | null => {
-    const query = app.state.savedQueries.find((saved) => saved.id === queryId);
-    if (query) return query;
-    flashToast('That query is no longer part of this workspace.', { document: doc });
-    return null;
-  };
-  /** Switch to Query mode and put `query` in a tab (re-selecting the tab already
-   *  open on it). Spread, like saved-history.ts's own two call sites:
-   *  `loadIntoNewTab` accepts the looser `string | Json` shape a `SavedQueryV2`
-   *  satisfies structurally but not nominally (no index signature). */
-  const openQueryDocument = (query: SavedQueryV2): void => {
-    app.showQuerySurface();
-    loadIntoNewTab(app, { ...query });
-    toEditorOnMobile();
-  };
-
-  app.openSavedQuery = (queryId) => {
-    const query = savedQueryToOpen(queryId);
-    if (query) openQueryDocument(query);
-  };
-
-  // #535 — the tile's expand action. Order matters: the tree is revealed FIRST,
-  // exactly as the Library-drop settlement does it (ui/dashboard-tree.ts), so the
-  // row is expanded and armed as the tree's position and then `loadIntoNewTab`
-  // moves focus on to the editor. Revealing afterwards would steal focus back out
-  // of the editor the user was just sent to.
-  app.openPanelQuery = ({ dashboardId, tileId, queryId }) => {
-    const query = savedQueryToOpen(queryId);
-    if (!query) return;
-    revealAssignedPanel(app, dashboardId, tileId);
-    openQueryDocument(query);
-    // The tile was showing a rendered result, so the editor should too — and on
-    // the query's OWN saved view, or a chart panel would arrive as a raw table.
-    // A queryless (text) panel never exposes this action, so there is no run-less
-    // view-restore branch to mirror from saved-history.ts here.
-    //
-    // Gated on the tab that ACTUALLY opened, not on `query.sql`: `loadIntoNewTab`
-    // re-selects an existing tab for the same `savedId`, and that tab may hold an
-    // unsaved draft the saved document knows nothing about — including a DDL
-    // statement, which must never auto-run. A Spec-mode tab is skipped too, since
-    // `run` silently does nothing there.
-    const tab = app.activeTab();
-    if (tab.editorMode !== 'spec' && isAutoRunnable(tab.sqlDraft)) {
-      app.actions.run({ view: queryView(query) });
-    }
-  };
-
-  // #457 — opening a variable's option SQL is a Query-mode act for exactly the
-  // same reason opening a saved query is, and routes the same way.
-  //
-  // The variable is resolved through `dashboardVariables`, the SAME projection the
-  // Dashboards tree paints its rows from, so what opens always matches what was
-  // clicked — active, conflicted and orphaned rows alike. A name that no longer
-  // resolves (a click racing a repaint that has already dropped it) opens nothing
-  // at all, rather than a tab for a variable that does not exist.
-  app.openVariableTab = (dashboardId, variableName) => {
-    const variable = dashboardVariables(app.currentWorkspace, dashboardId)
-      .find((candidate) => candidate.name === variableName);
-    if (variable === undefined) return;
-    app.showQuerySurface();
-    // A newly inferred variable opens EMPTY; a configured one opens on its stored
-    // SQL. An orphan is configured by definition, so it opens on its SQL.
-    openVariableTab(app, { dashboardId, variableName }, variable.sql ?? '');
-    toEditorOnMobile();
-  };
-
-  // Adopt the surface the ROUTE describes. Used at boot, on Back/Forward, and
-  // after a workspace switch — the three moments the URL, not a click, decides
-  // the surface. Back/Forward INSIDE the Dashboard surface keeps whatever is
-  // explicitly selected: the URL carries no Dashboard id (#425 leaves URLs
-  // unchanged), so re-deriving one here would silently retarget the surface to
-  // the collection's first entry.
-  const adoptRouteMainSurface = (): void => {
-    const workspace = app.currentWorkspace;
-    if (app.sqlRoute.surface !== 'dashboard') { app.mainSurface = QUERY_SURFACE; return; }
-    const mode: DashboardSurfaceMode = app.sqlRoute.mode;
-    if (app.mainSurface.kind === 'dashboard') {
-      // #426: the mode change owes no new delivery, but the member the user
-      // navigated to survives a View/Edit switch — "switching View/Edit through
-      // Dashboard chrome preserves the current member where possible". The
-      // spread carries `currentMember`; `reconcileMainSurface` then drops it if
-      // committed truth no longer contains it.
-      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, pendingFocus: null }, workspace);
-      return;
-    }
-    // #471: the route says "a Dashboard" but carries no id, and the session no longer
-    // holds one (we are arriving from Query — typically Back out of a tile's
-    // Open-in-Workbench). The history ENTRY is the only thing that knows WHICH
-    // Dashboard this was, so it is consulted before the compatibility fallback:
-    // without it, Back reliably opened the collection's first Dashboard instead of
-    // the one the user left, at the top of the page.
-    const snapshot = readDashboardHistorySnapshot(win.history?.state, app.sqlRoute.workspaceKey);
-    if (snapshot) {
-      const restored = restoreDashboardSurface(snapshot, mode, workspace);
-      // A snapshot whose Dashboard is gone reconciles to Query; fall through to the
-      // compatibility entry only then, exactly as a boot with no snapshot does.
-      if (restored.kind === 'dashboard') { app.mainSurface = restored; return; }
-    }
-    const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
-    app.mainSurface = selectedId === null
-      ? QUERY_SURFACE
-      : {
-        kind: 'dashboard', dashboardId: selectedId, mode,
-        currentMember: null, pendingFocus: null, pendingScrollTop: null,
-      };
-  };
-
-  app.reloadDashboardRoute = () => {
-    // #424: fold the projected Dashboard back into the COLLECTION, preserving
-    // every other entry. A null projection means "this workspace has no
-    // Dashboard", which can only happen when the collection is already empty —
-    // never a reason to drop a stored Dashboard, so the array is left alone.
-    // #425: fold it back into the SELECTED entry, addressed by id. Writing the
-    // compatibility slot here would overwrite the collection's FIRST Dashboard
-    // while a different one is on screen. `replaceDashboard` returns null for a
-    // missing or ambiguous id, which leaves the collection untouched rather than
-    // guessing — the surface reconciles to Query mode on its next projection.
-    const selectedId = selectedDashboardId(app.mainSurface);
-    const foldProjection = (workspace: StoredWorkspaceV5): StoredWorkspaceV5 => {
-      if (!app.state.dashboard) return workspace;
-      if (selectedId === null) return withCompatibilityDashboard(workspace, app.state.dashboard);
-      return replaceDashboard(workspace, selectedId, app.state.dashboard) ?? workspace;
-    };
-    app.currentWorkspace = app.currentWorkspace
-      ? { ...foldProjection(app.currentWorkspace), queries: app.state.savedQueries }
-      : null;
-    app.renderDashboard();
-  };
+  // #588 phase 4 wave 4: the route locals + surface-generation guards,
+  // `writeRoute`, `loadWorkspaceOnBoot`, the `renderCurrentSurface` dispatch,
+  // `navigateSqlRoute`/`handleSqlPopState`, `syncSqlRoute`/
+  // `rewriteWorkspaceRoute`, `surfaceRouteKey`/`stampDashboardHistoryEntry`/
+  // `applyMainSurface`, `focusDashboardMember`, `openDashboard`/
+  // `showQuerySurface`/`showDashboardSurface`, the saved-query/panel/variable
+  // tab openers, `adoptRouteMainSurface`, and `reloadDashboardRoute` all now
+  // live in `application/surface-navigation.ts`'s `createSurfaceNavigation`
+  // (a pure extraction — every line moved verbatim, only `app.*`/`win`/`loc`/
+  // `doc` reads rewritten onto the `deps` thunks below). This shell supplies
+  // every `src/ui/**` touch point the moved code made (toast, tab loading,
+  // dashboard-tree reveal, dashboard scroll, render dispatch) as an INJECTED
+  // HOOK — `src/application/**` may not import `src/ui/**` at all, type-only
+  // imports included (build/check-boundaries.mjs). `surface: () => app` hands
+  // the module the live controller, narrowed structurally to
+  // `SurfaceStatePort` — mutations through it land on the real `app`, so
+  // nothing outside this file needs to change.
+  const nav = createSurfaceNavigation({
+    state,
+    surface: () => app,
+    repository: workspaceRepo,
+    session,
+    history: win.history,
+    basePath: () => conn.basePath,
+    locationHash: () => loc.hash || '',
+    locationSearch: () => loc.search,
+    hooks: {
+      applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
+      renderApp: () => app.renderApp(),
+      renderDashboard: () => app.renderDashboard(),
+      renderWorkspaceLoading: () => renderWorkspaceLoading(),
+      renderWorkspaceNotFound: () => renderWorkspaceNotFound(),
+      onCorruptWorkspace: (id) => { void resetCorruptWorkspace(id); },
+      retryPendingOAuthDocumentRecovery: () => { app.retryPendingOAuthDocumentRecovery(); },
+      closeShortcutDialog: () => app.closeShortcutDialog(),
+      resetShortcutChord: () => app.resetShortcutChord(),
+      isSignedIn: () => conn.isSignedIn(),
+      invalidateDashboardTree: () => app.invalidateDashboardTree(),
+      toast: (message, opts) => flashToast(message, { document: doc, action: opts?.action }),
+      revealAssignedPanel: (dashboardId, tileId) => revealAssignedPanel(app, dashboardId, tileId),
+      loadIntoNewTab: (query) => { loadIntoNewTab(app, { ...query }); },
+      openVariableTabUi: (binding, sql) => { openVariableTab(app, binding, sql); },
+      toEditorOnMobile: () => toEditorOnMobile(),
+      runAction: (opts) => { app.actions.run(opts); },
+      dashboardScrollTop: () => dashboardScrollTop(),
+      isAutoRunnableSql: (sql) => isAutoRunnable(sql),
+      // Four "self-dispatch" hooks (see surface-navigation.ts's own doc
+      // comment on them): read the LIVE `app.*` property at call time, so a
+      // test overriding e.g. `app.renderCurrentSurface = vi.fn()` is observed
+      // by every nav-internal cross-call exactly as the pre-extraction inline
+      // code was (every one of these four members was called via `app.foo()`
+      // property access from ANOTHER moved function, never a private local).
+      dispatchCurrentSurface: () => app.renderCurrentSurface(),
+      dispatchLoadWorkspaceOnBoot: () => app.loadWorkspaceOnBoot(),
+      dispatchShowQuerySurface: () => app.showQuerySurface(),
+      dispatchOpenDashboard: (request) => app.openDashboard(request),
+    },
+  });
+  // Flat delegates for every wide-consumer member (dashboard.ts,
+  // dashboard-tree.ts, file-menu.ts, app-shell.ts, shortcuts.ts,
+  // saved-history.ts, tests) — `handleSqlPopState`/`focusDashboardMember`
+  // (router-private) and `syncSqlRoute`/`rewriteWorkspaceRoute` (repointed to
+  // main.ts/file-menu.ts) have NO flat delegate; reach them via `app.nav.*`.
 
   // --- actions registry --------------------------------------------------
   const withAuthenticatedExecution = <T>(operation: () => T): T | undefined =>
     (app.requireAuthenticatedExecution() ? operation() : undefined);
-  app.actions = {
-    run: (opts) => withAuthenticatedExecution(() => workbench.runEntry(opts)),
-    cancel: () => workbench.cancel(),
-    newTab: () => newTab(app),
-    selectTab: (id) => selectTab(app, id),
-    closeTab: (id) => closeTab(app, id),
-    // #425: opening a query is a Query-mode act, so every EXISTING opening path
-    // (the Library list, History, the schema tree's double-click) switches the
-    // main surface back before loading — otherwise the new tab would land behind
-    // a visible Dashboard. A no-op when the Query surface is already active.
-    loadIntoNewTab: (queryOrName, sql) => {
-      app.showQuerySurface();
-      loadIntoNewTab(app, queryOrName, sql);
-      toEditorOnMobile();
+
+  app = {
+    state,
+    dom: {},
+    root: env.root || doc.getElementById('root'),
+    document: doc,
+    Chart: env.Chart || win.Chart,
+    cssVar: env.cssVar || ((name: string) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
+    Dagre: env.Dagre || win.dagre,
+    openWindow: env.openWindow || ((...a: Parameters<Window['open']>) => win.open(...a)),
+    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style')!.textContent || '' : ''),
+    faviconHref: env.faviconHref
+      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]')!.getAttribute('href') || '' : ''),
+    showSaveFilePicker: env.showSaveFilePicker
+      || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
+    showDirectoryPicker: env.showDirectoryPicker
+      || (typeof win.showDirectoryPicker === 'function' ? win.showDirectoryPicker.bind(win) : null),
+    isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
+    build: env.build || 'dev',
+    matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
+    shell: null,
+    canExport: () => !!app.showSaveFilePicker && app.isSecureContext,
+    canExportScript: () => !!app.showDirectoryPicker && app.isSecureContext,
+    prefs: prefs,
+    saveJSON: saveJSON,
+    saveStr: saveStr,
+    workspace: workspaceRepo,
+    sqlRoute: parseSqlRoute(loc.search),
+    currentWorkspace: null,
+    workspaceRouteStatus: 'ready',
+    keyboardOwner: null,
+    resetShortcutChord: () => resetShortcutChord(app),
+    acquireKeyboardOwner: (kind) => {
+      const owner = { kind };
+      keyboardOwners.push(owner);
+      app.keyboardOwner = owner;
+      resetShortcutChord(app);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const index = keyboardOwners.indexOf(owner);
+        if (index >= 0) keyboardOwners.splice(index, 1);
+        app.keyboardOwner = keyboardOwners.at(-1) ?? null;
+        resetShortcutChord(app);
+      };
     },
-    login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
-    // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
-    // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
-    // workspace resolution runs for a username/password session. Without it,
-    // basic auth would keep rendering the placeholder workspace instead of the
-    // requested or last-used persisted workspace.
-    connect: async (input) => {
-      const resumeMountedDocument = shell !== null && activeExecutionScope === null;
-      await conn.connectBasic(input);
-      app.resumeAuthenticatedExecution();
-      if (resumeMountedDocument) {
-        // Preserve the exact mounted document/editor/result objects. Only
-        // connection-scoped metadata and execution owners are refreshed.
-        await Promise.allSettled([catalog.loadSchema(), catalog.loadReference()]);
-        void catalog.loadVersion();
+    shortcutDialog: null,
+    closeShortcutDialog: () => {
+      const dialog = app.shortcutDialog;
+      app.shortcutDialog = null;
+      dialog?.close();
+    },
+    surfaceCommands: null,
+    mainSurface: QUERY_SURFACE,
+    FileReader: (env.FileReader || win.FileReader) as typeof FileReader,
+    downloadFile: downloadFile,
+    // #588 phase 4 wave 5: genuinely missing before this wave -- masked by
+    // the old `Partial<App>` + `as App` cast (file-menu.js reads/writes
+    // `app.editingLibrary` directly, and a `boolean` field that's never
+    // initialized here read as `undefined`, which is falsy and so behaved
+    // like `false` at every existing read site -- but the field is NOT
+    // optional on `App`, so the one-literal construction below made this an
+    // explicit compile-time gap (`TS2739`) rather than a silent runtime one).
+    editingLibrary: false,
+    activeTab: () => activeTab(app.state),
+    specValidators: specValidators,
+    specCompletionSources: env.specCompletionSources || createSpecCompletionSources(),
+    CodeViewer: env.CodeViewer || (() => ({
+      setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
+    })),
+    openDocEntry: (target) => {
+      if (!app.requireAuthenticatedExecution()) return;
+      openDocEntry(app, target);
+    },
+    closeDocPane: () => {
+      if (!isDocPaneOpen(app)) return false;
+      closeDocPane(app);
+      return true;
+    },
+    openDocDisambiguation: (name) => {
+      if (!app.requireAuthenticatedExecution()) return;
+      openDocDisambiguation(app, name);
+    },
+    // Stage 5 (after the literal, below) overwrites both editor ports with
+    // the real construction -- these are intentional placeholders so every
+    // OTHER member of this literal can reference a fully-typed `EditorPort`/
+    // `SpecEditorPort` shape immediately.
+    sqlEditor: createNoopPort(),
+    specEditor: createNoopSpecEditor(),
+    queryDoc: queryDoc,
+    restoreOAuthDocumentRecovery: (callbackState: string): OAuthDocumentRecoveryApplyResult => {
+      // A fresh validated callback starts a new authority decision; a later
+      // deferred retry deserves its own single safe notice.
+      deferredRecoveryWarningShown = false;
+      try {
+        const restored = oauthDocumentRecovery.restore(callbackState, app.currentWorkspace);
+        if (restored.kind === 'retry-deferred-retained') {
+          return deferOAuthDocumentRecovery();
+        }
+        return finalizeOAuthDocumentRecovery(restored);
+      } catch {
+        // The session normally converts storage failures into explicit retained
+        // outcomes. Keep this boundary defensive: an unexpected pre-publication
+        // failure must not abort the signed-in shell or expose backend details.
+        return deferOAuthDocumentRecovery();
+      }
+    },
+    retryPendingOAuthDocumentRecovery: (): OAuthDocumentRecoveryApplyResult => {
+      let pending: OAuthDocumentRecoveryRestoreResult;
+      try {
+        pending = oauthDocumentRecovery.retryPending(app.currentWorkspace);
+      } catch {
+        return deferOAuthDocumentRecovery();
+      }
+      if (pending.kind === 'retry-deferred-retained') {
+        // Nothing was published: do not arm the dirty guard, revalidate, consume,
+        // or replace the current workspace. The retained recovery nevertheless
+        // owns callback precedence, so callers discard the legacy share handoff.
+        return deferOAuthDocumentRecovery();
+      }
+      if (pending.kind === 'document-session-changed-retained') {
+        flashToast(
+          'Recovered drafts were kept because this document session changed.',
+          {
+            document: doc,
+            action: {
+              label: 'Restore drafts',
+              onClick: () => {
+                const forced = oauthDocumentRecovery.retryPending(
+                  app.currentWorkspace,
+                  { allowChangedDocumentSession: true },
+                );
+                finalizeOAuthDocumentRecovery(forced);
+                app.renderCurrentSurface();
+              },
+            },
+          },
+        );
+        return pending;
+      }
+      deferredRecoveryWarningShown = false;
+      return finalizeOAuthDocumentRecovery(pending);
+    },
+    consumeLegacyShared: (allowRestore: boolean, consumedHandoff?: string | null): boolean => {
+      let encoded: string | null;
+      try {
+        encoded = consumedHandoff === undefined
+          ? ss.getItem('oauth_shared')
+          : consumedHandoff;
+      } catch {
+        return false;
+      }
+      if (encoded === null) return false;
+      // In-page Basic login owns the storage handoff here. Bootstrap passes its
+      // already-consumed value so the same parser/application path is reused.
+      if (consumedHandoff === undefined) {
+        try {
+          ss.removeItem('oauth_shared');
+        } catch {
+          // Handoff cleanup is best-effort. Recovery precedence still suppresses
+          // the payload, and a storage backend failure must not abort rendering.
+        }
+      }
+      // The handoff is one-shot regardless of whether recovery suppresses it,
+      // its payload is malformed, or the current route has no Query surface.
+      if (!allowRestore || app.sqlRoute.surface !== 'workspace') return false;
+
+      let shared;
+      try {
+        const raw = JSON.parse(encoded) as Record<string, unknown>;
+        // Pre-#166 OAuth handoffs stored `{sql, chart}` directly; the normal
+        // upgrader preserves that compatibility while current v2 payloads pass
+        // through with their authored Spec intact.
+        shared = upgradeSavedQuery(raw.specVersion == null
+          ? { name: 'Shared query', ...raw }
+          : raw);
+      } catch {
+        return false;
+      }
+      const panel = queryPanel(shared);
+      if (!shared.sql && !panel) return false;
+
+      const tab = app.state.tabs.value[0];
+      tab.sqlDraft = shared.sql;
+      tab.name = queryName(shared);
+      tab.specVersion = shared.specVersion;
+      setTabSpecDraft(tab, cloneJson(shared.spec));
+      const launchView = queryView(shared);
+      const normalized = launchView === 'chart' ? 'panel' : launchView;
+      if (SAVED_VIEWS.has(normalized ?? '')) {
+        app.state.resultView.value = normalized as App['state']['resultView']['value'];
+      } else if (!shared.sql && isQuerylessPanel(panel)) {
+        app.state.resultView.value = 'panel';
+      }
+      // #588 phase 4 wave 4: the cached route-search string moved into `app.nav`
+      // — this reads the LIVE value through its `currentRouteSearch()` escape
+      // hatch (see surface-navigation.ts's header comment) rather than a
+      // module-local `routeSearch` this file no longer keeps.
+      win.history.replaceState(null, '', loc.pathname + app.nav.currentRouteSearch());
+      return true;
+    },
+    saved: saved,
+    conn: conn,
+    executionScope: () => activeExecutionScope,
+    resumeAuthenticatedExecution: () => {
+      const epoch = conn.connection.value.epoch;
+      if (activeExecutionScope?.epoch === epoch && activeExecutionScope.isOpen()) {
+        hideAuthenticationRequired();
         return;
       }
-      const workspace = await app.loadWorkspaceOnBoot();
-      const pendingRecovery = workspace
-        ? app.retryPendingOAuthDocumentRecovery()
-        : null;
-      app.consumeLegacyShared(
-        !recoveryOwnsLegacyShare(pendingRecovery),
-      );
-      app.renderCurrentSurface();
-      void app.catalog.loadVersion();
+      activeExecutionScope?.close();
+      const scope = createAuthenticatedExecutionScope({
+        epoch,
+        cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
+      });
+      activeExecutionScope = scope;
+      // Connection-scoped caches/panes are owners even when they have no live
+      // server query id. Their own invalidation/generation guards make late
+      // completion inert; query-bearing owners register their current ids.
+      scope.register({ name: 'schema catalog', abort: () => catalog.invalidate() });
+      scope.register({ name: 'schema graph', abort: () => graph.suspend() });
+      // #586: whatever currently occupies the shared docked inspector (Cell,
+      // Rows, or Reference) — not just Reference — must not survive a
+      // connection-scope abort; `closeInspector` closes the current occupant
+      // generically, calling its own SurfaceLifecycle teardown.
+      scope.register({ name: 'docked inspector', abort: () => closeInspector(app) });
+      hideAuthenticationRequired();
     },
-    share,
-    copyResult,
-    // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
-    // than the real always-`QueryResult`-shaped value every caller (results.ts's
-    // Copy button, the detached Data view) actually passes — `Json`'s index
-    // signature can't guarantee `QueryResult`'s required fields, so a wrapper
-    // (not the function reference directly) bridges the two: `| null` on both
-    // sides of the cast keeps it a single legal step (same pattern as
-    // `recordHistory`'s above).
-    copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
-    exportEntry: () => withAuthenticatedExecution(exportEntry),
-    exportDirect: (sqlInput, waveMs) =>
-      withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
-    cancelExport,
-    cancelExportScript,
-    save: saveActiveQuery,
-    openUserMenu,
-    formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
-    formatSpec,
-    setEditorMode,
-    explainQuery: () => withAuthenticatedExecution(explainQuery),
-    setExplainView: (id) => withAuthenticatedExecution(() => setExplainView(id)),
-    setResultRowLimit,
-    showSchemaGraph: (focus) =>
-      withAuthenticatedExecution(() => showSchemaGraph(focus)) ?? Promise.resolve(),
-    cancelSchemaGraph,
-    expandSchemaGraph: (focus) =>
-      withAuthenticatedExecution(() => expandSchemaGraph(focus)) ?? Promise.resolve(),
-    openNodeDetail: (node, targetDoc) =>
-      withAuthenticatedExecution(() => openNodeDetail(node, targetDoc)) ?? Promise.resolve(),
-    insertCreate: async (target) => {
-      if (!app.requireAuthenticatedExecution()) return;
-      await insertCreate(target);
-      toEditorOnMobile();
+    requireAuthenticatedExecution: () => {
+      let scope = activeExecutionScope;
+      // Production bootstrap establishes the first scope explicitly, but
+      // controller entry points are also valid before a surface is mounted
+      // (and tests exercise that contract). An already-authenticated session can
+      // therefore materialize its scope lazily; an auth-required session cannot.
+      if (!scope && conn.isSignedIn()) {
+        app.resumeAuthenticatedExecution();
+        scope = activeExecutionScope;
+      }
+      if (scope?.isOpen()) return scope;
+      revealAuthenticationRequired(conn.connection.value.detail);
+      return null;
     },
-    openCreateInNewTab: (target, name) =>
-      withAuthenticatedExecution(() => openCreateInNewTab(target, name)) ?? Promise.resolve(),
-    openShortcuts: () => {
-      const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
-      if (dialog) app.shortcutDialog = dialog;
+    signOut: () => {
+      app.closeShortcutDialog();
+      resetShortcutChord(app);
+      const closing = activeExecutionScope;
+      activeExecutionScope = null;
+      closing?.close(conn.captureCancellationLease());
+      workbench.destroy();
+      // Plain abort (no clearResult settle) — the login render replaces the
+      // whole DOM next, so settling the visible result would be a wasted paint.
+      graph.cancel();
+      exportService.cancelExport();
+      exportService.cancelExportScript();
+      catalog.invalidate();
+      // #313/#586: docked inspector content (Cell, Rows, or Reference — not
+      // just Reference) must never survive a connection change — closed
+      // alongside the catalog reset, before the login screen renders.
+      closeInspector(app);
+      conn.signOut();
+      // #425: explicit logout owns Dashboard teardown, the surface-generation
+      // bump, and the main-surface reset through the full-screen login renderer.
+      renderLoginApp();
     },
-    // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
-    // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
-    insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
-    replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
-    loadColumns: (db, table) =>
-      withAuthenticatedExecution(() => loadColumns(db, table)) ?? Promise.resolve(),
-    // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
-    // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
-    // (no new array), so this is also the one place that re-syncs the
-    // `beforeunload` guard for that case — the tab-list reactive effect
-    // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
-    // tabs) on its own.
-    rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
-    rerenderResults: () => renderResults(app),
-    updateSaveBtn: () => app.updateSaveBtn(),
+    showLogin: (msg) => renderLoginApp(msg),
+    catalog: catalog,
+    updateBanner: updateBanner,
+    wallNow: wallNow,
+    exec: exec,
+    now: now,
+    tickElapsed: tickElapsed,
+    params: params,
+    saveVarRecent: () => params.saveVarRecent(),
+    exports: exportService,
+    workbench: workbench,
+    elapsedMs: () => workbench.elapsedMs(),
+    setRunBtn: (running, gate) => variableStrip.setRunBtn(running, gate),
+    renderVarStrip: () => variableStrip.renderVarStrip(),
+    setExportBtn: setExportBtn,
+    setFmtBtn: setFmtBtn,
+    graph: graph,
+    recordHistory: (tab, sqlText) => {
+      saved.recordHistory(tab, sqlText);
+      app.shell?.sidePanels.notifyRunComplete();
+    },
+    specBlocked: specBlocked,
+    updateSaveBtn: saveController.updateSaveBtn,
+    activateInvalidSpecDraft: (tab) => {
+      if (!tab) return;
+      batch(() => { app.state.activeTabId.value = tab.id; });
+      tab.editorMode = 'spec';
+      app.updateEditorModeUi!();
+      app.specEditor.focus();
+      flashToast('Fix Spec JSON first', { document: doc });
+    },
+    openUserMenu: openUserMenu,
+    toggleTheme: toggleTheme,
+    renderDashboard: () => {
+      if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
+      beginSurfaceTransition();
+      const mounted = ensureShell();
+      // Exposed BEFORE rendering: the grafana-grid engine measures its host's real
+      // width immediately after mount, and a hidden host measures 0 — which
+      // silently pins every Dashboard to the widest 12-column breakpoint. happy-dom
+      // always reports 0, so only a real browser can catch a regression here.
+      mounted.showHost('dashboard');
+      return renderDashboard(app, dashboardRenderTarget(mounted));
+    },
+    invalidateDashboardTree: invalidateDashboardTree,
+    applyCommittedWorkspace: applyCommittedWorkspace,
+    genId: () => uid('ws-'),
+    workspaceSession: session,
+    onWorkspaceExternallyChanged: ignoreExternalWorkspaceChange,
+    onExternalWorkspaceChange: () => session.scheduleRefresh(),
+    mutateWorkspace: session.mutateWorkspace,
+    syncBeforeUnload: () => session.syncBeforeUnload(),
+    nav: nav,
+    navigateSqlRoute: nav.navigateSqlRoute,
+    renderCurrentSurface: nav.renderCurrentSurface,
+    loadWorkspaceOnBoot: nav.loadWorkspaceOnBoot,
+    reloadDashboardRoute: nav.reloadDashboardRoute,
+    openDashboard: nav.openDashboard,
+    showQuerySurface: nav.showQuerySurface,
+    showDashboardSurface: nav.showDashboardSurface,
+    openSavedQuery: nav.openSavedQuery,
+    openPanelQuery: nav.openPanelQuery,
+    openVariableTab: nav.openVariableTab,
+    captureSurfaceGeneration: nav.captureSurfaceGeneration,
+    isSurfaceGenerationCurrent: nav.isSurfaceGenerationCurrent,
+    refreshCurrentSurfaceAfterStale: nav.refreshCurrentSurfaceAfterStale,
+    actions: {
+      run: (opts) => withAuthenticatedExecution(() => workbench.runEntry(opts)),
+      cancel: () => workbench.cancel(),
+      newTab: () => newTab(app),
+      selectTab: (id) => selectTab(app, id),
+      closeTab: (id) => closeTab(app, id),
+      // #425: opening a query is a Query-mode act, so every EXISTING opening path
+      // (the Library list, History, the schema tree's double-click) switches the
+      // main surface back before loading — otherwise the new tab would land behind
+      // a visible Dashboard. A no-op when the Query surface is already active.
+      loadIntoNewTab: (queryOrName, sql) => {
+        app.showQuerySurface();
+        loadIntoNewTab(app, queryOrName, sql);
+        toEditorOnMobile();
+      },
+      login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
+      // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
+      // path, where `main.ts`'s `bootstrap` awaits it — this is the only place
+      // workspace resolution runs for a username/password session. Without it,
+      // basic auth would keep rendering the placeholder workspace instead of the
+      // requested or last-used persisted workspace.
+      connect: async (input) => {
+        const resumeMountedDocument = shell !== null && activeExecutionScope === null;
+        await conn.connectBasic(input);
+        app.resumeAuthenticatedExecution();
+        if (resumeMountedDocument) {
+          // Preserve the exact mounted document/editor/result objects. Only
+          // connection-scoped metadata and execution owners are refreshed.
+          await Promise.allSettled([catalog.loadSchema(), catalog.loadReference()]);
+          void catalog.loadVersion();
+          return;
+        }
+        const workspace = await app.loadWorkspaceOnBoot();
+        const pendingRecovery = workspace
+          ? app.retryPendingOAuthDocumentRecovery()
+          : null;
+        app.consumeLegacyShared(
+          !recoveryOwnsLegacyShare(pendingRecovery),
+        );
+        app.renderCurrentSurface();
+        void app.catalog.loadVersion();
+      },
+      share,
+      copyResult,
+      // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
+      // than the real always-`QueryResult`-shaped value every caller (results.ts's
+      // Copy button, the detached Data view) actually passes — `Json`'s index
+      // signature can't guarantee `QueryResult`'s required fields, so a wrapper
+      // (not the function reference directly) bridges the two: `| null` on both
+      // sides of the cast keeps it a single legal step (same pattern as
+      // `recordHistory`'s above).
+      copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
+      exportEntry: () => withAuthenticatedExecution(exportEntry),
+      exportDirect: (sqlInput, waveMs) =>
+        withAuthenticatedExecution(() => exportDirect(sqlInput, waveMs)) ?? Promise.resolve(),
+      cancelExport,
+      cancelExportScript,
+      save: saveController.saveActiveQuery,
+      openUserMenu,
+      formatQuery: () => withAuthenticatedExecution(formatQuery) ?? Promise.resolve(),
+      formatSpec,
+      setEditorMode,
+      explainQuery: () => withAuthenticatedExecution(explainQuery),
+      setExplainView: (id) => withAuthenticatedExecution(() => setExplainView(id)),
+      setResultRowLimit,
+      showSchemaGraph: (focus) =>
+        withAuthenticatedExecution(() => showSchemaGraph(focus)) ?? Promise.resolve(),
+      cancelSchemaGraph,
+      expandSchemaGraph: (focus) =>
+        withAuthenticatedExecution(() => expandSchemaGraph(focus)) ?? Promise.resolve(),
+      openNodeDetail: (node, targetDoc) =>
+        withAuthenticatedExecution(() => openNodeDetail(node, targetDoc)) ?? Promise.resolve(),
+      insertCreate: async (target) => {
+        if (!app.requireAuthenticatedExecution()) return;
+        await insertCreate(target);
+        toEditorOnMobile();
+      },
+      openCreateInNewTab: (target, name) =>
+        withAuthenticatedExecution(() => openCreateInNewTab(target, name)) ?? Promise.resolve(),
+      openShortcuts: () => {
+        const dialog = openShortcuts(app, () => { app.shortcutDialog = null; });
+        if (dialog) app.shortcutDialog = dialog;
+      },
+      // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
+      // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
+      insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
+      replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
+      loadColumns: (db, table) =>
+        withAuthenticatedExecution(() => loadColumns(db, table)) ?? Promise.resolve(),
+      // #466/#501-review: `renderTabs` alone repaints the strip; an in-place
+      // `dirtySql`/`dirtySpec` mutation never touches the `tabs` SIGNAL itself
+      // (no new array), so this is also the one place that re-syncs the
+      // `beforeunload` guard for that case — the tab-list reactive effect
+      // (workbench-shell.ts) covers the signal-driven case (new/closed/switched
+      // tabs) on its own.
+      rerenderTabs: () => { renderTabs(app); app.syncBeforeUnload(); },
+      rerenderResults: () => renderResults(app),
+      updateSaveBtn: () => app.updateSaveBtn(),
+    },
+    renderApp: () => {
+      if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
+      beginSurfaceTransition();
+      // The Dashboard's own route-scoped resources go; the query column does NOT
+      // (it is mounted once and preserved — see `ensureShell`).
+      disposeDashboardSurface();
+      app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+      const mounted = ensureShell();
+      mounted.setHeader(buildAppHeader(app));
+      mounted.showHost('query');
+      // Repaint the results pane on every return to this surface. A query that
+      // finished while the Dashboard was visible built its Chart.js canvas in a
+      // zero-size host, and chart-render only auto-resizes a laid-out one — so
+      // without this the chart comes back blank. Cheap and idempotent otherwise.
+      renderResults(app);
+    },
   };
-
-  app.renderApp = () => {
-    if (conn.isSignedIn() && !activeExecutionScope) app.resumeAuthenticatedExecution();
-    beginSurfaceTransition();
-    // The Dashboard's own route-scoped resources go; the query column does NOT
-    // (it is mounted once and preserved — see `ensureShell`).
-    disposeDashboardSurface();
-    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-    const mounted = ensureShell();
-    mounted.setHeader(buildAppHeader(app));
-    mounted.showHost('query');
-    // Repaint the results pane on every return to this surface. A query that
-    // finished while the Dashboard was visible built its Chart.js canvas in a
-    // zero-size host, and chart-render only auto-resizes a laid-out one — so
-    // without this the chart comes back blank. Cheap and idempotent otherwise.
-    renderResults(app);
-  };
+  // Stage 5 -- late wiring: every statement below OVERWRITES a member the
+  // literal above already declared (or registers a listener); none of them
+  // is a first assignment. `app` is fully built by this point, so `Editor`/
+  // `SpecEditor` (real CodeMirror adapters in production) receive a
+  // completely-wired controller instead of the partially-built object they
+  // used to see mid-construction.
+  app.sqlEditor = Editor(app);
+  app.specEditor = SpecEditor(app);
+  app.sqlEditor.onDocChange((value) => {
+    const tab = app.activeTab();
+    tab.sqlDraft = value;
+    tab.dirtySql = true;
+    // #447: no re-evaluation of the Spec on a SQL keystroke any more. The ONLY
+    // validator whose diagnostics depended on the SQL text was the Filter role's
+    // (its source SQL had to be a single row-returning statement), and that role
+    // no longer exists — every surviving rule reads the Spec alone, so
+    // re-running the whole validator graph per keystroke is pure waste.
+    if (app.actions) app.actions.rerenderTabs();
+    if (app.updateSaveBtn) app.updateSaveBtn();
+    if (app.renderVarStrip) app.renderVarStrip();
+  });
+  // No flat `App` delegates for `evaluateSpecDraft`/`revalidateSpecDrafts`/
+  // `revealFirstSpecError`/`registerSpecValidator` (#276 Phase 5 deleted
+  // them) — every consumer (including this file's own call sites further
+  // down) reads `queryDoc.*` directly.
+  app.specEditor.onDocChange((value) => {
+    queryDoc.evaluateSpecDraft(app.activeTab(), value);
+  });
   if (typeof win.addEventListener === 'function') {
-    win.addEventListener('popstate', () => { void app.handleSqlPopState(); });
+    win.addEventListener('popstate', () => { void app.nav.handleSqlPopState(); });
   }
   return app;
 }

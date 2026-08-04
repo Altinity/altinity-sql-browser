@@ -7,12 +7,13 @@
 // `workbench-session.ts`/`schema-catalog-service.ts` before it.
 //
 // Deliberately NOT included (plan-review rulings): `renderVarStrip` (the DOM
-// view) stays in app.ts wholesale, calling this session's methods directly —
-// the full `analyze() -> ParameterViewModel[]` view-model API the issue
-// sketches is deferred, not built here. `setRunBtn` (DOM) also stays in
-// app.ts. `sessionParams`/`needsSession`/`sessionParamsFor` stay app.ts-local
-// (they're `tab.chSession`/transport material — Phase 4C's concern, not this
-// session's).
+// view — #588 W1 moved it, verbatim, into `ui/workbench/variable-strip.ts`)
+// calls this session's methods directly — the full
+// `analyze() -> ParameterViewModel[]` view-model API the issue sketches is
+// deferred, not built here. `setRunBtn` (DOM, same module) likewise just
+// calls in. `sessionParams`/`needsSession`/`sessionParamsFor` stay
+// app.ts-local (they're `tab.chSession`/transport material — Phase 4C's
+// concern, not this session's).
 //
 // Every state field this session reads/writes (`varValues`/`filterActive`/
 // `varRecent`/`varRecentDisabled`) stays a LIVE `AppState` field, never a

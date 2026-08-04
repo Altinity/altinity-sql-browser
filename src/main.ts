@@ -38,7 +38,10 @@ export interface BootstrapApp {
   conn: Pick<ConnectionSession,
     'basePath' | 'isSignedIn' | 'resolveConfig' | 'setTokens' | 'ensureConfig'>;
   renderCurrentSurface(): void;
-  syncSqlRoute(search: string): void;
+  /** #588 phase 4 wave 4: `syncSqlRoute` moved off the flat `App` contract
+   *  onto `app.nav` (`src/application/surface-navigation.ts`) — it has no
+   *  production consumer besides this call, repointed in the same change. */
+  nav: { syncSqlRoute(search: string): void };
   /** The real `App.showLogin` is `(msg?: string) => void` — every other real
    *  caller (ui/login.ts) always passes a string. `callbackError` below is
    *  main.ts's own `string | null` sentinel (`null` means "no callback
@@ -86,7 +89,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     : { route: parseSqlRoute(loc.search), search: loc.search };
   if (normalizedRoute.search !== loc.search) {
     hist.replaceState(null, '', loc.origin + loc.pathname + normalizedRoute.search + loc.hash);
-    app.syncSqlRoute(normalizedRoute.search);
+    app.nav.syncSqlRoute(normalizedRoute.search);
   }
   let dash = normalizedRoute.route.surface === 'dashboard';
   const u = new URL(loc.href);
@@ -158,7 +161,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       ? normalizeSqlRouteSearch(callbackSearch).search
       : callbackSearch;
     hist.replaceState(null, '', loc.origin + loc.pathname + cleanedSearch + loc.hash);
-    app.syncSqlRoute(cleanedSearch);
+    app.nav.syncSqlRoute(cleanedSearch);
     dash = parseSqlRoute(cleanedSearch).surface === 'dashboard';
   }
 

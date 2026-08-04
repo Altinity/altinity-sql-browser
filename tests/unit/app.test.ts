@@ -836,7 +836,7 @@ describe('createApp basics', () => {
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
 
     location.search = '?ws=recovery';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.activeTab().sqlDraft).toBe('SELECT newer in-memory edit');
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
@@ -1121,17 +1121,17 @@ describe('createApp basics', () => {
     expect(app.openDocDisambiguation('missing')).toBeUndefined();
     expect(app.showLogin('Sign in again')).toBeUndefined();
     expect(app.root!.textContent).toContain('Sign in again');
-    await expect(app.serializeWrite(async () => { throw new Error('expected'); })).rejects.toThrow('expected');
-    await expect(app.flushWorkspaceWrites()).resolves.toBeUndefined();
+    await expect(app.workspaceSession.serializeWrite(async () => { throw new Error('expected'); })).rejects.toThrow('expected');
+    await expect(app.workspaceSession.flushWorkspaceWrites()).resolves.toBeUndefined();
 
     const dashboardApp = createApp(env());
     await dashboardApp.loadWorkspaceOnBoot();
     expect(dashboardApp.renderCurrentSurface()).toBeUndefined();
-    await expect(dashboardApp.refreshWorkspaceFromStore()).resolves.toBeUndefined();
+    await expect(dashboardApp.workspaceSession.refreshWorkspaceFromStore()).resolves.toBeUndefined();
     const change = { type: 'workspace-changed' as const, sourceTabId: 'other', workspaceId: 'w1' };
     dashboardApp.onExternalWorkspaceChange(change);
     dashboardApp.onExternalWorkspaceChange(change); // coalesced while the first refresh is queued
-    await dashboardApp.flushWorkspaceWrites();
+    await dashboardApp.workspaceSession.flushWorkspaceWrites();
   });
 
   it('returns an unlinked tab forced into Spec mode to SQL mode', () => {
@@ -1140,6 +1140,67 @@ describe('createApp basics', () => {
     app.activeTab().editorMode = 'spec';
     app.updateEditorModeUi!();
     expect(app.activeTab().editorMode).toBe('sql');
+  });
+
+  // #588 phase 4 wave 5: `createApp` now assembles `app` as ONE object literal
+  // (no `as App` cast) — see app.ts's own header comment on `let app: App;`.
+  // The one way this could still observe a partially-wired controller is an
+  // injected editor port whose `onDocChange` fires the subscriber SYNCHRONOUSLY
+  // at registration time (real CodeMirror never does this — it only calls back
+  // on a later keystroke — but the seam contract doesn't forbid it, and Stage 5
+  // registers `onDocChange` right after `Editor(app)`/`SpecEditor(app)` are
+  // constructed, well after the literal has already assigned every OTHER
+  // member). This proves the eager-callback case lands on a fully-built `app`:
+  // the guarded reads inside the subscriber (`if (app.actions)` etc., #588
+  // phase 4 wave 5 kept these verbatim) see real values rather than tripping a
+  // TDZ ReferenceError or silently no-oping against a still-partial object.
+  it('a sync-firing injected Editor/SpecEditor onDocChange observes a fully-constructed app, not a partial-construction hole (#588 wave 5)', () => {
+    const sqlValue = 'SELECT 1 -- fired synchronously at Editor registration';
+    const specValue = '{"name":"fired-at-registration"}';
+    const syncEditor = (): EditorPort => ({
+      mount() {},
+      destroy() {},
+      focus() {},
+      hasFocus: () => false,
+      getValue: () => sqlValue,
+      getSelection: () => ({ start: 0, end: 0, text: '' }),
+      insertAtCursor() {},
+      replaceDocument() {},
+      revealOffset() {},
+      syncFromState() {},
+      refreshReference() {},
+      onDocChange: (cb) => { cb(sqlValue); return () => {}; },
+    });
+    const syncSpecEditor = () => ({
+      ...syncEditor(),
+      requestMeasure() {},
+      setDiagnostics() {},
+      revealDiagnostic() {},
+      getValue: () => specValue,
+      onDocChange: (cb: (value: string) => void) => { cb(specValue); return () => {}; },
+    });
+
+    let app: App | undefined;
+    expect(() => {
+      app = createApp(env({ Editor: syncEditor, SpecEditor: syncSpecEditor }));
+    }).not.toThrow();
+
+    const tab = app!.activeTab();
+    // The SQL `onDocChange` subscriber ran during construction (Stage 5) and
+    // still wrote through to the real, fully-wired `app.state` — not a
+    // detached or partially-built stand-in.
+    expect(tab.sqlDraft).toBe(sqlValue);
+    expect(tab.dirtySql).toBe(true);
+    // The guarded calls inside that same subscriber (`app.actions`/
+    // `app.updateSaveBtn`/`app.renderVarStrip`) are all real by construction
+    // time now — assert the registry itself is the real one, not a hole.
+    expect(app!.actions).toBeDefined();
+    expect(typeof app!.updateSaveBtn).toBe('function');
+    expect(typeof app!.renderVarStrip).toBe('function');
+    // The Spec `onDocChange` subscriber (`queryDoc.evaluateSpecDraft`) also
+    // ran during construction without throwing, against the same fully-built
+    // `app` (it reads `app.activeTab()` internally).
+    expect(app!.queryDoc).toBeDefined();
   });
 });
 
@@ -1163,7 +1224,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     // `mutateWorkspace` call fires while it's still pending.
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
-    const first = app.serializeWrite(async () => {
+    const first = app.workspaceSession.serializeWrite(async () => {
       await gate;
       return app.workspace.commit(seedWorkspace({ queries: [savedQuery({ id: 'q1', name: 'Q1' })] }));
     });
@@ -1218,13 +1279,13 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     expect(result.ok && result.data).toBe(42);
     expect(projected).toEqual(['Proj']); // exactly once
     expect(app.state.libraryName.value).toBe('Proj'); // projection took effect
-    expect(app.getLastCommittedToken().length).toBeGreaterThan(0);
+    expect(app.workspaceSession.getLastCommittedToken().length).toBeGreaterThan(0);
   });
 
   it('does not project on an aborted or failed commit', async () => {
     const app = createApp(env());
     await seedActiveWorkspace(app, seedWorkspace());
-    const tokenBefore = app.getLastCommittedToken();
+    const tokenBefore = app.workspaceSession.getLastCommittedToken();
     let projections = 0;
     const orig = app.applyCommittedWorkspace;
     app.applyCommittedWorkspace = (ws) => { projections++; orig(ws); };
@@ -1236,7 +1297,7 @@ describe('app.mutateWorkspace (#341/#344)', () => {
     expect(failed.ok).toBe(false);
     expect(failed.ok === false && failed.aborted).toBeFalsy(); // a real failure, not an abort
     expect(projections).toBe(0);
-    expect(app.getLastCommittedToken()).toBe(tokenBefore); // never advanced
+    expect(app.workspaceSession.getLastCommittedToken()).toBe(tokenBefore); // never advanced
   });
 
   it('fails closed when the active record is corrupt and never invokes the transform or commit', async () => {
@@ -1282,7 +1343,7 @@ describe('app cross-tab invalidation (#343)', () => {
       candidate: { ...latest!, name: 'One' },
     }));
     expect(posted).toHaveLength(1);
-    expect(posted[0]).toEqual({ type: 'workspace-changed', sourceTabId: app.sourceTabId, workspaceId: 'w1' });
+    expect(posted[0]).toEqual({ type: 'workspace-changed', sourceTabId: app.workspaceSession.sourceTabId, workspaceId: 'w1' });
     await app.mutateWorkspace(() => null); // abort
     await app.mutateWorkspace(() => ({ candidate: { storageVersion: 5, id: 'x', key: 'x', name: 'n', queries: [{ bad: true } as never], dashboards: [] } })); // fail
     expect(posted).toHaveLength(1); // still just the one success
@@ -1303,7 +1364,7 @@ describe('app cross-tab invalidation (#343)', () => {
     await b.loadWorkspaceOnBoot();
     await a.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Changed' } }));
     expect(aSeen).toHaveLength(0); // guard drops A's own poke
-    expect(bSeen).toEqual([{ type: 'workspace-changed', sourceTabId: a.sourceTabId, workspaceId: 'w1' }]);
+    expect(bSeen).toEqual([{ type: 'workspace-changed', sourceTabId: a.workspaceSession.sourceTabId, workspaceId: 'w1' }]);
   });
 
   it('the construction-time invalidation hook safely absorbs a synchronous channel delivery', () => {
@@ -1333,11 +1394,6 @@ describe('app cross-tab invalidation (#343)', () => {
     raw.postMessage({ type: 'something-else', sourceTabId: 'z', workspaceId: 'w' });
     expect(seen).toHaveLength(0);
     void a;
-  });
-
-  it('defaults documentVisible to the document visibility, and honors an injected reader', () => {
-    expect(createApp(env()).documentVisible()).toBe(true); // happy-dom is "visible"
-    expect(createApp(env({ documentVisible: () => false })).documentVisible()).toBe(false);
   });
 
   it('opens a real BroadcastChannel when the platform provides one', async () => {
@@ -1396,7 +1452,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     await app.workspace.commit({ ...q1ws(), queries: [] });
     const saved = await app.actions.save();
     expect(saved).toBeNull(); // aborted — never recreated
-    await app.flushWorkspaceWrites(); // the triggered refresh settles
+    await app.workspaceSession.flushWorkspaceWrites(); // the triggered refresh settles
     // The reconcile turned the ghost link into the orphan treatment: unsaved
     // draft, deleted-elsewhere flag, draft preserved exactly.
     expect(t.savedId).toBeNull();
@@ -1411,11 +1467,11 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     await seedActiveWorkspace(app, q1ws());
     const spy = vi.spyOn(app.workspace, 'loadById');
     window.dispatchEvent(new Event('focus'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     expect(spy).toHaveBeenCalled();
     const afterFocus = spy.mock.calls.length;
     document.dispatchEvent(new Event('visibilitychange'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     expect(spy.mock.calls.length).toBeGreaterThan(afterFocus);
   });
 
@@ -1424,7 +1480,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     await seedActiveWorkspace(app, q1ws());
     const spy = vi.spyOn(app.workspace, 'loadById');
     document.dispatchEvent(new Event('visibilitychange'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -1434,7 +1490,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     app.renderCurrentSurface = vi.fn();
     app.workspace.loadById = vi.fn(async () => ({ status: 'empty' as const }));
 
-    await app.refreshWorkspaceFromStore();
+    await app.workspaceSession.refreshWorkspaceFromStore();
 
     expect(app.currentWorkspace).toBeNull();
     expect(app.workspaceRouteStatus).toBe('not-found');
@@ -1575,7 +1631,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     vi.spyOn(app.workspace, 'loadById').mockResolvedValueOnce({
       status: 'corrupt', id: 'w1', key: 'workspace_one', diagnostics: [],
     });
-    await app.refreshWorkspaceFromStore(); // warns internally, returns
+    await app.workspaceSession.refreshWorkspaceFromStore(); // warns internally, returns
     expect(app.state.savedQueries[0].id).toBe('q1'); // projection intact
     const after = await app.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Still works' } }));
     expect(after.ok).toBe(true); // queue not wedged
@@ -1633,7 +1689,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     // Another tab changes q1, then this tab's refresh detects the conflict.
     await other.loadWorkspaceOnBoot();
     await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
-    await app.refreshWorkspaceFromStore();
+    await app.workspaceSession.refreshWorkspaceFromStore();
     expect(t.externalState).toBe('conflict');
     await app.actions.save(); // opens the chooser
     (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
@@ -1653,12 +1709,12 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     t.sqlDraft = 'SELECT my kept draft'; t.dirtySql = true;
     await other.loadWorkspaceOnBoot();
     await renameSaved(other.state, 'q1', 'External name', undefined, other.mutateWorkspace);
-    await app.refreshWorkspaceFromStore();
+    await app.workspaceSession.refreshWorkspaceFromStore();
     expect(t.externalState).toBe('conflict');
     await app.actions.save();
     (document.querySelector('.conflict-chooser .cf-keep') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
     (document.querySelector('.conflict-chooser .cf-overwrite') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     expect(t.externalState ?? null).toBeNull(); // conflict resolved
     const persisted = await loadActiveWorkspace(app);
     expect(persisted!.queries.find((q) => q.id === 'q1')!.sql).toBe('SELECT my kept draft');
@@ -1679,7 +1735,7 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     app.state.savedQueries = [];
     (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement)
       .dispatchEvent(new Event('click', { bubbles: true }));
-    await app.flushWorkspaceWrites(); // the queued refreshWorkspaceFromStore settles
+    await app.workspaceSession.flushWorkspaceWrites(); // the queued refreshWorkspaceFromStore settles
     // The refresh projected the external delete and the reconcile gave this
     // clean ghost-linked tab its detach treatment: no link, no stale badge.
     expect(t.savedId).toBeNull();
@@ -2425,7 +2481,13 @@ describe('query run', () => {
     // incomplete→invalid hardening already relies on, now also reached via
     // the relative-time near-miss path (review finding #2's whole point: it
     // routes through the exact same states, not a bespoke gate).
-    app.dom.varStripSig = undefined; // force renderVarStrip to rebuild the strip
+    // #588 W1: the strip's rebuild-signature bookkeeping moved out of
+    // `app.dom` into `ui/workbench/variable-strip.ts`'s own controller-
+    // private state, so a test can no longer poke it directly to force a
+    // rebuild — add a second (harmless) variable instead, which changes the
+    // detected {name:Type} set and so legitimately triggers one. `from`
+    // stays the first declared variable, so `rebuiltInput` below is still it.
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}, {unused:UInt8}';
     app.renderVarStrip();
     expect(app.dom.runBtn!.disabled).toBe(true);
     const rebuiltInput = qs<HTMLInputElement>(app.dom.varStrip!, '.var-input');
@@ -4638,7 +4700,7 @@ describe('share + star + columns', () => {
     expect(qs<HTMLInputElement>(pop, '.sp-input').value).toBe('SELECT 42'); // inferred name
     qs<HTMLInputElement>(pop, '.sp-input').value = 'My fave';
     qs(pop, '.sp-save').dispatchEvent(new Event('click'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush(); // let the popover handler finish its post-commit repaint
     expect(app.state.savedQueries).toHaveLength(1);
     expect(app.state.savedQueries[0]).toMatchObject({ sql: 'SELECT 42', spec: { name: 'My fave', favorite: false } });
@@ -4655,7 +4717,7 @@ describe('share + star + columns', () => {
     app.actions.save();
     qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Ambiguous range';
     qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(app.state.savedQueries).toHaveLength(1);
     expect(app.state.savedQueries[0].spec.timeRanges).toBeUndefined();
@@ -4678,7 +4740,7 @@ describe('share + star + columns', () => {
     expect(app.state.savedQueries).toEqual([]);
     input.value = 'Keyboard save';
     description.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(app.state.savedQueries[0].spec.name).toBe('Keyboard save');
   });
@@ -4692,7 +4754,7 @@ describe('share + star + columns', () => {
     expect(qsa(document, '.save-popover')).toHaveLength(1);
     qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Q';
     qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click'));
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush();
     expect(app.dom.saveBtn!.textContent).toContain('Saved');
     // edit → button reverts to "Save"
@@ -5414,7 +5476,7 @@ describe('exhaustive controller coverage', () => {
     app.dom.saveBtn!.dispatchEvent(new Event('click')); // open save popover
     qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Q';
     qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click')); // commit
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await flush(); // let the popover handler finish its post-commit repaint
     app.dom.shareBtn!.dispatchEvent(new Event('click')); // share
     expect(app.state.tabs.value.length).toBeGreaterThan(1);
@@ -6595,7 +6657,7 @@ describe('unified /sql routing', () => {
 
   it('resynchronizes route state after bootstrap cleans an OAuth callback URL', () => {
     const app = createApp(env());
-    app.syncSqlRoute('?ws=ops&surface=dashboard&mode=view');
+    app.nav.syncSqlRoute('?ws=ops&surface=dashboard&mode=view');
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'ops', mode: 'view',
     });
@@ -6957,7 +7019,7 @@ describe('unified /sql routing', () => {
     it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.surfaceCommands = null;
-      expect(app.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
+      expect(app.nav.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
     });
 
     it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
@@ -7279,7 +7341,7 @@ describe('unified /sql routing', () => {
       app.renderCurrentSurface();
       expectSurface(app, 'dashboard');
       location.search = '?ws=ops';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // The still-mounted Query controls must stay live: the pre-#425 teardown on
       // this path disabled every control under the root, permanently.
       expectSurface(app, 'query');
@@ -7351,14 +7413,14 @@ describe('unified /sql routing', () => {
       const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
       location.search = '?ws=ops&surface=dashboard&mode=view';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // The URL carries no Dashboard id, so re-deriving one here would silently
       // retarget the surface to the collection's first entry.
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       location.search = '?ws=ops';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toEqual({ kind: 'query' });
     });
 
@@ -7391,7 +7453,7 @@ describe('unified /sql routing', () => {
       // "a Dashboard, in view mode".
       window.history.replaceState(leaving, '', '/sql?ws=ops&surface=dashboard&mode=view');
       location.search = '?ws=ops&surface=dashboard&mode=view';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toMatchObject({
         kind: 'dashboard', dashboardId: 'second', mode: 'view',
         // A restored entry owes no focus DELIVERY: the ring is not re-flashed. (The
@@ -7415,7 +7477,7 @@ describe('unified /sql routing', () => {
       );
       app.mainSurface = { kind: 'query' };
       location.search = '?ws=ops&surface=dashboard';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // Falls back to the compatibility entry, exactly as a boot with no snapshot
       // does — never to the other workspace's remembered id.
       expect(app.mainSurface).toMatchObject({ dashboardId: 'first', pendingScrollTop: null });
@@ -7429,7 +7491,7 @@ describe('unified /sql routing', () => {
       );
       app.mainSurface = { kind: 'query' };
       location.search = '?ws=ops&surface=dashboard';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toMatchObject({ dashboardId: 'first' });
     });
   });
@@ -7440,7 +7502,7 @@ describe('unified /sql routing', () => {
       origin: 'https://ch.example', pathname: '/sql',
       search: '?ws=old&surface=dashboard&mode=view', hash: '', host: 'ch.example',
     } as Location }));
-    app.rewriteWorkspaceRoute('new_workspace');
+    app.nav.rewriteWorkspaceRoute('new_workspace');
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'new_workspace', mode: 'view',
     });
@@ -7482,7 +7544,7 @@ describe('unified /sql routing', () => {
     );
     app.renderCurrentSurface = vi.fn();
     location.search = '?ws=second&surface=dashboard&mode=view';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'second', mode: 'view',
     });
@@ -7748,7 +7810,7 @@ describe('unified /sql routing', () => {
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
     release();
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await vi.waitFor(() => expect(app.currentWorkspace!.dashboards[0] ?? null).not.toBeNull());
 
     expectSurface(app, 'query');
@@ -7837,7 +7899,7 @@ describe('unified /sql routing', () => {
     app.workspace.markOpened = vi.fn(async () => ({ ok: true as const }));
     app.renderCurrentSurface = vi.fn();
 
-    const refreshA = app.refreshWorkspaceFromStore();
+    const refreshA = app.workspaceSession.refreshWorkspaceFromStore();
     await Promise.resolve();
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'b' }, 'push');
     resolveRefresh({ status: 'ok', workspace: workspace('a') });
@@ -7867,9 +7929,9 @@ describe('unified /sql routing', () => {
     }));
     app.renderCurrentSurface = vi.fn();
     location.search = '?ws=b';
-    const backToB = app.handleSqlPopState();
+    const backToB = app.nav.handleSqlPopState();
     location.search = '?ws=c';
-    const forwardToC = app.handleSqlPopState();
+    const forwardToC = app.nav.handleSqlPopState();
     const c: StoredWorkspaceV5 = {
       storageVersion: 5, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
     };
@@ -7901,7 +7963,7 @@ describe('unified /sql routing', () => {
     );
     location.search = '?ws=a&surface=dashboard&mode=view';
 
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
 
     expect(loadByKey).not.toHaveBeenCalled();
     expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
@@ -7927,7 +7989,7 @@ describe('unified /sql routing', () => {
     app.retryPendingOAuthDocumentRecovery = vi.fn(() => ({ kind: 'absent' } as const));
     app.renderCurrentSurface = vi.fn();
 
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
 
     expect(app.workspace.loadByKey).toHaveBeenCalledWith('a');
     expect(app.currentWorkspace).toBe(workspace);
@@ -7952,7 +8014,7 @@ describe('unified /sql routing', () => {
     expect(app.state.shortcutsOpen.value).toBe(true);
     expect(document.querySelector('.modal-backdrop')).not.toBeNull();
     location.search = '?ws=a';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.state.shortcutsOpen.value).toBe(false);
     expect(document.querySelector('.modal-backdrop')).toBeNull();
     expect(qs(app.root, '.workbench')).not.toBeNull();
@@ -8074,7 +8136,7 @@ describe('unified /sql routing', () => {
     expect(qsa<HTMLButtonElement>(app.root, '.dashboard-mode-switch .editor-mode-btn')
       .find((button) => button.textContent === 'View')!.disabled).toBe(true);
     release();
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await vi.waitFor(() => {
       expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('full');
     });
@@ -8099,7 +8161,7 @@ describe('unified /sql routing', () => {
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
     expect(qs(app.root, '.workbench')).not.toBeNull();
     release();
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await vi.waitFor(() => {
       expect((app.currentWorkspace!.dashboards[0]!.layout as { preset?: string }).preset).toBe('grid');
     });
@@ -8124,7 +8186,7 @@ describe('unified /sql routing', () => {
 
     await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'w' }, 'push');
     rejectCommit();
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await Promise.resolve();
 
     expectSurface(app, 'query');
@@ -8150,7 +8212,7 @@ describe('unified /sql routing', () => {
     }, 'push');
     release();
     await save;
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await vi.waitFor(() => {
       expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 2');
     });
@@ -8185,7 +8247,7 @@ describe('unified /sql routing', () => {
       surface: 'dashboard', workspaceKey: 'w', mode: 'edit',
     }, 'push');
     release();
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     await vi.waitFor(() => expect(app.currentWorkspace!.queries).toHaveLength(1));
 
     expect(app.currentWorkspace!.queries[0].sql).toBe('SELECT 42');
@@ -8249,7 +8311,7 @@ describe('unified /sql routing', () => {
     app.sqlRoute = { surface: 'workspace', workspaceKey: 'a' };
     app.applyCommittedWorkspace(a);
     let releaseQueue!: () => void;
-    const queuedAhead = app.serializeWrite(() =>
+    const queuedAhead = app.workspaceSession.serializeWrite(() =>
       new Promise<void>((resolve) => { releaseQueue = resolve; }));
     await Promise.resolve();
     const transform = vi.fn();
@@ -8297,11 +8359,11 @@ describe('unified /sql routing', () => {
       }) as typeof window.addEventListener,
     );
     const app = createApp(env());
-    app.handleSqlPopState = vi.fn(async () => {});
+    app.nav.handleSqlPopState = vi.fn(async () => {});
     expect(listener).not.toBeNull();
     listener!(new PopStateEvent('popstate'));
     await Promise.resolve();
-    expect(app.handleSqlPopState).toHaveBeenCalledOnce();
+    expect(app.nav.handleSqlPopState).toHaveBeenCalledOnce();
     addEventListener.mockRestore();
   });
 

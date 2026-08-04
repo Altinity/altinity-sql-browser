@@ -77,19 +77,13 @@ import type {
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { EXAMPLE_DASHBOARDS } from '../generated/example-dashboards.js';
 import type { ExampleDashboardEntry } from '../generated/example-dashboards.js';
+import { keyboardOwnerChannel } from './keyboard-owner.js';
 
 /** Workspace/library name → safe file base (strips path/illegal chars,
  *  collapses spaces). */
 const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'queries';
 const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): string => diagnostics[0]?.message || fallback;
-function keyboardOwnerChannel(app: Pick<App, 'acquireKeyboardOwner'>): (owner: App['keyboardOwner']) => void {
-  let release: (() => void) | null = null;
-  return (owner) => {
-    release?.();
-    release = owner ? app.acquireKeyboardOwner(owner.kind) : null;
-  };
-}
 
 /**
  * What the surface currently on screen rendered — the ONLY thing a surface
@@ -682,7 +676,7 @@ function newWorkspaceAction(app: App): void {
 }
 
 async function doNewWorkspace(app: App): Promise<void> {
-  await app.serializeWrite(async () => {
+  await app.workspaceSession.serializeWrite(async () => {
     const listed = await app.workspace.list();
     const name = 'SQL Library';
     const key = deriveWorkspaceKey(name, [
@@ -695,7 +689,7 @@ async function doNewWorkspace(app: App): Promise<void> {
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
-    app.rewriteWorkspaceRoute(result.workspace.key);
+    app.nav.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(
@@ -947,7 +941,7 @@ function startOpenWorkspace(app: App, bundle: PortableBundleV2): void {
 async function importWorkspace(
   app: App, bundle: PortableBundleV2,
 ): Promise<void> {
-  await app.serializeWrite(async () => {
+  await app.workspaceSession.serializeWrite(async () => {
     const listed = await app.workspace.list();
     const name = bundle.metadata?.name?.trim() || 'Imported workspace';
     const key = deriveWorkspaceKey(name, [
@@ -966,7 +960,7 @@ async function importWorkspace(
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
-    app.rewriteWorkspaceRoute(result.workspace.key);
+    app.nav.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(
@@ -1019,7 +1013,7 @@ interface DashboardExportRequest {
  *  export never becomes a silent no-op on an unhandled rejection. */
 async function flushAndLoadCommitted(app: App, workspaceId: string): Promise<StoredWorkspaceV5 | null> {
   try {
-    await app.flushWorkspaceWrites();
+    await app.workspaceSession.flushWorkspaceWrites();
     const result = await app.workspace.loadById(workspaceId);
     return result.status === 'ok' ? result.workspace : null;
   } catch {

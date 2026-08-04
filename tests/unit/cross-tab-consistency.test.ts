@@ -240,7 +240,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     await renameSaved(a.state, 'q1', 'Renamed in A', undefined, a.mutateWorkspace);
     // B still shows the old projection until it refreshes.
     expect(b.state.savedQueries.find((q) => q.id === 'q1')!.spec.name).toBe('q1');
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(b.state.savedQueries.find((q) => q.id === 'q1')!.spec.name).toBe('Renamed in A');
   });
 
@@ -256,7 +256,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     aTab.savedId = 'q1';
     aTab.sqlDraft = 'SELECT 42';
     await commitSavedQuery(a.state, aTab, a.state.savedQueries[0].spec, a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(bTab.sqlDraft).toBe('SELECT 42'); // adopted
     expect(bTab.savedId).toBe('q1'); // still linked
     expect(bTab.dirtySql).toBe(false); // not dirty
@@ -282,7 +282,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     bTab.dirtySql = true;
     // A changes q1; B refreshes → conflict (correctly flagged).
     await renameSaved(a.state, 'q1', 'Changed in A', undefined, a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(bTab.externalState).toBe('conflict');
     // B renames q1 from its own Library (metadata patch over LATEST — the same
     // path the star button uses). This must not resolve the conflict.
@@ -291,7 +291,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     expect(bTab.externalState).toBe('conflict');
     // A then changes something UNRELATED (q2); B refreshes again.
     await renameSaved(a.state, 'q2', 'Unrelated change in A', undefined, a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     // The stale dirty draft is still behind the resolver — never silently
     // saveable without Reload-saved-version / Keep-my-draft.
     expect(bTab.externalState).toBe('conflict');
@@ -321,7 +321,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     expect(bTab.dirtySql).toBe(false);
     expect(bTab.externalState ?? null).toBeNull();
     // …and a refresh afterwards changes nothing (already consistent).
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(bTab.sqlDraft).toBe('SELECT 42 /* from A */');
     expect(bTab.externalState ?? null).toBeNull();
     // The persisted workspace holds BOTH changes.
@@ -344,7 +344,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     // B renames q1 immediately (folds into LATEST, including A's change) — the
     // stale tab's baseline token must NOT advance past A's unseen change.
     await renameSaved(b.state, 'q1', 'Renamed in B', undefined, b.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(bTab.externalState).toBe('conflict'); // flagged, not silently in sync
     expect(bTab.sqlDraft).toBe('SELECT my stale draft');
   });
@@ -358,7 +358,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     bTab.sqlDraft = 'SELECT my local draft';
     bTab.dirtySql = true;
     await renameSaved(a.state, 'q1', 'Changed in A', undefined, a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(bTab.sqlDraft).toBe('SELECT my local draft'); // draft preserved
     expect(bTab.dirtySql).toBe(true);
     expect(bTab.savedId).toBe('q1');
@@ -381,7 +381,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     dirty.dirtySql = true;
     dirty.lastCommittedQueryToken = cleanTab.lastCommittedQueryToken;
     await deleteSaved(a.state, 'q1', a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(cleanTab.savedId).toBeNull(); // clean detaches
     expect(cleanTab.externalState ?? null).toBeNull();
     expect(dirty.savedId).toBeNull(); // dirty orphan — unlinked, not recreated
@@ -394,10 +394,10 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     const a = tab(store); const b = tab(store);
     await seed(a, b, oneQuery());
     const before = b.state.savedQueries;
-    await b.refreshWorkspaceFromStore(); // token unchanged → no reproject
+    await b.workspaceSession.refreshWorkspaceFromStore(); // token unchanged → no reproject
     expect(b.state.savedQueries).toBe(before); // same reference, not reprojected
     await b.workspace.delete(b.state.workspaceId); // externally emptied
-    await b.refreshWorkspaceFromStore(); // loaded === null → keeps projection
+    await b.workspaceSession.refreshWorkspaceFromStore(); // loaded === null → keeps projection
     expect(b.state.savedQueries).toBe(before);
   });
 
@@ -410,7 +410,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     b.onExternalWorkspaceChange(poke);
     b.onExternalWorkspaceChange(poke);
     b.onExternalWorkspaceChange(poke);
-    await b.flushWorkspaceWrites();
+    await b.workspaceSession.flushWorkspaceWrites();
     expect(spy).toHaveBeenCalledTimes(1);
     void a;
   });
@@ -421,7 +421,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     await seed(a, b, oneQuery());
     // #407 view mode is a read-only projection of the same live workspace.
     await renameSaved(b.state, 'q1', 'Changed by B', undefined, b.mutateWorkspace);
-    await a.refreshWorkspaceFromStore();
+    await a.workspaceSession.refreshWorkspaceFromStore();
     expect(a.state.savedQueries[0].spec.name).toBe('Changed by B');
   });
 
@@ -435,7 +435,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     const a = mk(); const b = mk();
     await seed(a, b, oneQuery());
     await renameSaved(a.state, 'q1', 'No-channel rename', undefined, a.mutateWorkspace);
-    await b.refreshWorkspaceFromStore();
+    await b.workspaceSession.refreshWorkspaceFromStore();
     expect(b.state.savedQueries[0].spec.name).toBe('No-channel rename');
   });
 
@@ -450,7 +450,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     bTab.sqlDraft = 'SELECT b-created';
     const created = await createSavedQuery(b.state, bTab, 'B-new', '', b.mutateWorkspace);
     expect(created.ok).toBe(true);
-    await b.flushWorkspaceWrites();
+    await b.workspaceSession.flushWorkspaceWrites();
     const final = await committed(a);
     expect(final.queries.find((q) => q.id === 'q1')!.spec.name).toBe('A-rename'); // A's change survived
     expect(final.queries.some((q) => q.spec.name === 'B-new')).toBe(true); // B's write landed on refreshed latest
@@ -458,7 +458,7 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     // A rejected reload warns internally but never wedges: a later write succeeds.
     const orig = b.workspace.loadById.bind(b.workspace);
     b.workspace.loadById = vi.fn(async () => { throw new Error('idb down'); });
-    await b.refreshWorkspaceFromStore(); // swallowed
+    await b.workspaceSession.refreshWorkspaceFromStore(); // swallowed
     b.workspace.loadById = orig;
     const after = await b.mutateWorkspace((latest) => ({ candidate: { ...latest!, name: 'Recovered' } }));
     expect(after.ok).toBe(true);

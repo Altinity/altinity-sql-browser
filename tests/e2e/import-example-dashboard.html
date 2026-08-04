@@ -91,7 +91,7 @@
     // comment).
     mounted.setHeader(buildAppHeader(app));
     app.applyCommittedWorkspace(workspace);
-    app.rewriteWorkspaceRoute(workspace.key);
+    app.nav.rewriteWorkspaceRoute(workspace.key);
 
     // Read COMMITTED truth back out of the store, so an import test asserts
     // what was actually persisted rather than what the projection shows.

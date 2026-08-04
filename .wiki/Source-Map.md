@@ -7,7 +7,12 @@ Back to [[Home]]. Related: [[Architecture]], [[Product-and-Features]].
 | Path | Role |
 |---|---|
 | `src/main.js` | browser bootstrap and concrete adapter injection |
-| `src/ui/app.js` | controller, actions, orchestration, render entry |
+| `src/ui/app.js` | controller, actions, orchestration, render entry (composition root; shrunk by #588 — see below) |
+| `src/application/workspace-session.js` | workspace write queue, cross-tab BroadcastChannel sync, refresh scheduling, `beforeunload` guard (#588) |
+| `src/application/surface-navigation.js` | `/sql` routing, main-surface (Query↔Dashboard) navigation (#588) |
+| `src/ui/workbench/variable-strip.js` | Workbench variable strip render + run-button sync (#588) |
+| `src/ui/workbench/save-controller.js` | saved-query save/conflict/reload cluster (#588) |
+| `src/ui/keyboard-owner.js` | shared keyboard-owner acquire/release channel (#588) |
 | `src/state.js` | signals-backed state model and persistence operations |
 | `src/net/ch-client.js` | ClickHouse HTTP execution and schema calls |
 | `src/net/oauth.js` | OAuth flow/token exchange |

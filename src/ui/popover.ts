@@ -194,3 +194,101 @@ export function openAnchoredDialog(opts: AnchoredDialogOptions): AnchoredDialogH
 
   return { dialog, isOpen: () => open, close, reclaimFocus };
 }
+
+// ── `createAnchoredPopovers` ────────────────────────────────────────────────
+// #588 W2 (phase 4, decompose the `createApp` composition root): the Save
+// popover / user-menu's own light, NON-modal anchored popover — extracted
+// verbatim out of app.ts's `anchoredPopover` + its module-scoped closers
+// registry. Deliberately kept BESIDE `openAnchoredDialog` above, not merged
+// into it: that primitive is a modal dialog (overlay, `aria-modal`, Tab trap,
+// focus-return); this one is a light, non-modal anchored popover with no
+// overlay/backdrop and no Tab trap — a distinct primitive serving a distinct
+// interaction (a small transient popover anchored under a toolbar button,
+// dismissed by Escape or an outside click, never by a hidden backdrop).
+//
+// KNOWN, DELIBERATELY PRESERVED DEFECT (I-21, filed as inbox — see the phase
+// 4 plan's §9-2): `close()` below removes whatever node currently occupies
+// `deps.getRef(refKey)` WITHOUT checking that it is the node THIS `close()`
+// opened. A caller that retains a stale `close()` handle past a second
+// `open()` on the same `refKey` can clobber the newer popover. This is
+// verbatim pre-extraction behavior, not fixed here — do not add an ownership
+// guard as part of this move.
+
+/** The two anchored-popover slots app.ts's `AppDom` reserves for this
+ *  primitive — each tracked independently on `app.dom`, cleared on close. */
+export type AnchoredPopoverRefKey = 'savePopover' | 'userMenu';
+
+/** The narrow `app`-shaped seam `createAnchoredPopovers` reads — thunks
+ *  rather than direct values/elements, since `app.dom[refKey]` is mutated by
+ *  `open`/`close` themselves (see `getRef`/`setRef`) and the viewport/mobile
+ *  reads must stay live across calls, not snapshotted at construction. */
+export interface AnchoredPopoverDeps {
+  document: Document;
+  acquireKeyboardOwner(kind: KeyboardOwner['kind']): () => void;
+  isMobile(): boolean;
+  viewportWidth(): number;
+  getRef(key: AnchoredPopoverRefKey): HTMLElement | undefined;
+  setRef(key: AnchoredPopoverRefKey, node: HTMLElement | undefined): void;
+}
+
+/** Build the popover controller bound to `deps`. The closers registry
+ *  (`closeAll`'s backing `Set`) is INSTANCE-scoped — a fresh `Set` per
+ *  `createAnchoredPopovers` call, never a module-global — so multiple
+ *  independent instances (e.g. a test harness building more than one) never
+ *  share open/close bookkeeping. */
+export function createAnchoredPopovers(deps: AnchoredPopoverDeps): {
+  open(node: HTMLElement, anchorEl: HTMLElement, refKey: AnchoredPopoverRefKey): { close(): void };
+  closeAll(): void;
+} {
+  const closers = new Set<() => void>();
+
+  function closeAll(): void {
+    for (const close of [...closers]) close();
+  }
+
+  // Open `node` as a popover anchored under `anchorEl`: fixed-position below
+  // the button, Esc + click-outside close (capture listeners), stored at
+  // `deps.getRef(refKey)`/cleared via `deps.setRef` on close. Returns
+  // `{ close }`.
+  function open(
+    node: HTMLElement, anchorEl: HTMLElement, refKey: AnchoredPopoverRefKey,
+  ): { close: () => void } {
+    const releaseKeyboard = deps.acquireKeyboardOwner('popover');
+    const close = (): void => {
+      closers.delete(close);
+      deps.document.removeEventListener('keydown', onKey, true);
+      deps.document.removeEventListener('mousedown', onOutside, true);
+      // I-21 (preserved verbatim — see this section's header comment): no
+      // check that `deps.getRef(refKey)` is still THIS popover's own node.
+      if (deps.getRef(refKey)) { deps.getRef(refKey)!.remove(); deps.setRef(refKey, undefined); }
+      releaseKeyboard();
+    };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    const onOutside = (e: MouseEvent): void => {
+      if (deps.getRef(refKey) && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
+    };
+    deps.setRef(refKey, node);
+    const r = anchorEl.getBoundingClientRect();
+    // Right-align under the button.
+    const a = fixedAnchor(r, { viewportW: deps.viewportWidth() || 0 }) as { top: number; right: number };
+    node.style.position = 'fixed';
+    node.style.top = a.top + 'px';
+    if (deps.isMobile()) {
+      // Mobile (#126): the trigger can sit mid-toolbar (the toolbar scrolls), so
+      // right-aligning to it pushes a fixed-width popover off the narrow
+      // viewport's left edge. Center it horizontally instead (still dropped below
+      // the trigger via `top`); the mobile max-width clamps keep it in-bounds.
+      node.style.left = '50%';
+      node.style.transform = 'translateX(-50%)';
+    } else {
+      node.style.right = a.right + 'px';
+    }
+    deps.document.body.appendChild(node);
+    deps.document.addEventListener('keydown', onKey, true);
+    deps.document.addEventListener('mousedown', onOutside, true);
+    closers.add(close);
+    return { close };
+  }
+
+  return { open, closeAll };
+}

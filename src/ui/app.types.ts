@@ -3,7 +3,8 @@
 // internal ~290-property implementation — verified against real usage across
 // src/ui/*.ts, src/editor/*.ts and src/main.js (ADR-0002 phase 0 / #262, #267).
 // app.ts's own `createApp` return value is declared against this contract
-// directly (`const app = {} as App;` + property assignment — see app.ts).
+// directly (one `app: App = {...}` object literal, no cast — a member missing
+// from the literal is a compile error; see app.ts's Stage 4/5 comments).
 //
 // `State`/`Tab` are the real src/state.ts types (ADR-0002 phase 2), re-exported
 // under the names this contract has always used.
@@ -24,13 +25,14 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type {
-  DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
+  DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest, WorkspaceRouteStatus,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { DashboardFocusOutcome, SurfaceCommandPort } from './shortcuts.js';
+import type { SurfaceCommandPort } from './shortcuts.js';
+import type { SurfaceNavigation } from '../application/surface-navigation.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -38,6 +40,7 @@ import type { ExportService } from '../application/export-service.js';
 import type { QueryDocumentSession } from '../application/query-document-session.js';
 import type { SavedQueryService } from '../application/saved-query-service.js';
 import type { OAuthDocumentRecoveryRestoreResult } from '../application/oauth-document-recovery-session.js';
+import type { WorkspaceSession, WorkspaceChangedMessage } from '../application/workspace-session.js';
 // Type-only, and circular with `app-shell.ts` (which imports `App` from this
 // file) — TypeScript erases `import type` entirely, so this introduces no
 // runtime cycle. `AppShellHandle` is the ONE seam `app.shell` exposes: the
@@ -76,14 +79,11 @@ export type OAuthDocumentRecoveryApplyResult =
     warning: 'spec-revalidation-failed' | 'checkpoint-remove-failed';
   };
 
-/** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
- *  poke, never the workspace body. `sourceTabId` lets a tab ignore its OWN
- *  broadcast; `workspaceId` scopes it to a specific aggregate. */
-export interface WorkspaceChangedMessage {
-  type: 'workspace-changed';
-  sourceTabId: string;
-  workspaceId: string;
-}
+// #588 phase 4 §3-T #1: `WorkspaceChangedMessage` is now DECLARED in
+// `src/application/workspace-session.ts` (the module that owns the
+// BroadcastChannel wire it describes) and re-exported here so every existing
+// importer (app.ts included) keeps compiling with zero call-site changes.
+export type { WorkspaceChangedMessage } from '../application/workspace-session.js';
 
 /** A schema entity reference — three real runtime shapes share this one loose
  * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
@@ -108,9 +108,14 @@ export interface SchemaFocus {
 /** `app.dom` is reset wholesale (`{}`) at the top of every renderApp() call —
  * a stable dictionary of known-consumed keys, not a closed interface. Beyond
  * the keys other modules read (documented individually below), it also carries
- * every DOM ref + var-strip rebuild bookkeeping field app.ts's own renderApp()/
- * renderVarStrip() attach to `app.dom` (never read outside app.ts, but typed
- * here since AppDom is the one place `app.dom`'s shape is described). */
+ * every DOM ref app.ts's own renderApp() attaches to `app.dom` (never read
+ * outside app.ts, but typed here since AppDom is the one place `app.dom`'s
+ * shape is described). The var-strip's own rebuild bookkeeping
+ * (`sig`/`rerenderPending`/`hookedStrip`) is no longer here — #588 W1 moved
+ * `renderVarStrip`/`setRunBtn` into `ui/workbench/variable-strip.ts`, whose
+ * `createVariableStrip` controller now owns that bookkeeping as private
+ * closure state, keyed to strip-ELEMENT identity rather than riding along
+ * with `app.dom`'s wholesale reset (see that module's header comment). */
 export interface AppDom {
   fileBtn?: HTMLElement;
   libraryTitle?: HTMLElement;
@@ -151,8 +156,8 @@ export interface AppDom {
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;
 
-  // app.ts-internal only (renderApp()'s own mounted chrome + renderVarStrip()'s
-  // rebuild bookkeeping) — not read by any other module.
+  // app.ts-internal only (renderApp()'s own mounted chrome) — not read by
+  // any other module.
   banner?: HTMLElement;
   /** Stable in-shell mount for temporary authentication recovery controls. */
   authHost?: HTMLElement;
@@ -182,9 +187,6 @@ export interface AppDom {
   userBtn?: HTMLButtonElement;
   userMenu?: HTMLElement;
   varStrip?: HTMLElement;
-  varStripSig?: string;
-  varStripRerenderPending?: boolean;
-  varStripDeferHooked?: boolean;
 }
 
 /** The currently open UI primitive that has exclusive keyboard handling. */
@@ -435,8 +437,8 @@ export interface App {
    *  without App/AppState/DOM: analyze/prepare/gate/execution-view, the #170
    *  hardening bookkeeping, the #172 v2 schema-cache enum-suggestion
    *  inference, and the #171 recent-value + persistence policy.
-   *  `renderVarStrip`/`setRunBtn` (DOM) stay in app.ts, calling this
-   *  session's methods directly; the workbench-session hooks + the export
+   *  `renderVarStrip`/`setRunBtn` (DOM — #588 W1: `ui/workbench/variable-strip.ts`)
+   *  call this session's methods directly; the workbench-session hooks + the export
    *  block's direct calls are re-pointed here too. `saveVarValues`/
    *  `saveFilterActive`/`saveVarRecentDisabled`/`recordBoundParams`/
    *  `clearVarRecent`/`clearAllVarRecent`/`hardenedVars` have no flat `App`
@@ -492,12 +494,15 @@ export interface App {
   activateInvalidSpecDraft(tab: Tab | null): void;
   /** The saved-query create/commit policy, history recording, and share-URL
    *  building (#276 Phase 4C — `src/application/saved-query-service.ts`),
-   *  constructible without App/AppState/DOM. app.ts's `commitLinkedQuery`/
-   *  `openSavePopover`'s commit closure/`share` call this directly and keep
-   *  owning the post-commit DOM cascade + clipboard/location writes
-   *  themselves (see that module's header comment). */
+   *  constructible without App/AppState/DOM. `ui/workbench/save-controller.ts`'s
+   *  `commitLinkedQuery`/`openSavePopover`'s commit closure and app.ts's own
+   *  `share` call this directly and keep owning the post-commit DOM cascade +
+   *  clipboard/location writes themselves (see that module's header comment).
+   *  #588 W2 dropped the flat `App.openSavePopover` delegate (zero production
+   *  consumers) — the controller still exposes it (see
+   *  `save-controller.ts`'s `SaveController`) for its own internal
+   *  `saveActiveQuery` dispatch and direct test coverage. */
   saved: SavedQueryService;
-  openSavePopover(): void;
   openUserMenu(): void;
 
   // Rendering / lifecycle.
@@ -548,12 +553,6 @@ export interface App {
    *  surface command port — no rebuild, no rerun, no extra history entry — rather
    *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
-  /** #426 — deliver focus to ONE member of the already-rendered Dashboard through
-   *  the route-local surface command port, without rebuilding or re-running it.
-   *  `pending` means "not deliverable in place right now" (mid-wave curated
-   *  filter, or a superseded/absent port) and is the caller's cue to take the
-   *  normal render transition — never a diagnostic. */
-  focusDashboardMember(member: DashboardFocusTarget): DashboardFocusOutcome;
   /** #426 — bump the Dashboard tree's explicit repaint invalidation. The tree
    *  projects the committed workspace aggregate plus main-surface navigation
    *  state, neither of which is a signal. */
@@ -592,7 +591,7 @@ export interface App {
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV5 | null;
-  workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  workspaceRouteStatus: WorkspaceRouteStatus;
   /** Route-local commands registered by the mounted surface. They are cleared
    * before every transition, so a disposed Dashboard viewer cannot be called. */
   surfaceCommands: SurfaceCommandPort | null;
@@ -606,15 +605,11 @@ export interface App {
    * currently selected ready surface is refreshed from shared projection. */
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
   /** Navigate within the single artifact. Surface changes use push; mode and
-   * canonicalization use replace. */
+   * canonicalization use replace. Flat delegate onto `app.nav` (#588 phase 4
+   * wave 4) for its wide production consumer set. */
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
-  /** Reparse the browser URL after Back/Forward and mount the selected surface. */
-  handleSqlPopState(): Promise<void>;
-  /** Synchronize route state after bootstrap rewrites an OAuth callback URL. */
-  syncSqlRoute(search: string): void;
-  /** Point the current surface/mode at an already-projected workspace. */
-  rewriteWorkspaceRoute(workspaceKey: string): void;
-  /** Repaint Dashboard after an in-tab import, retaining its route mode. */
+  /** Repaint Dashboard after an in-tab import, retaining its route mode. Flat
+   * delegate onto `app.nav` (#588 phase 4 wave 4). */
   reloadDashboardRoute(): void;
   /** Resolve the explicit or implicit route workspace and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
@@ -641,25 +636,11 @@ export interface App {
    *  shared generator: a minted id only needs to be unique, never to encode
    *  which op minted it. */
   genId(): string;
-  /** #287 review fix: serialize saved-query write operations per-app so two
-   *  overlapping async CRUD commits can't interleave. Each queued op runs only
-   *  after the previous fully resolved (compute → commit → project), so it
-   *  reads the freshest `state.savedQueries` — without this, a delete and a
-   *  star toggle fired in rapid succession could each build a candidate from the
-   *  same stale snapshot and the later commit would resurrect the deleted query
-   *  (or clobber a concurrent edit). Rejections propagate to the caller; the
-   *  queue itself never rejects. */
-  serializeWrite<T>(op: () => Promise<T>): Promise<T>;
-  /** #341: resolve once every write already queued through `serializeWrite`
-   *  has settled — the flush point exports use so a bundle is built from the
-   *  latest COMMITTED workspace, never mid-flight state. A write queued AFTER
-   *  this call is intentionally not awaited by it. */
-  flushWorkspaceWrites(): Promise<void>;
   /** #341/#344 review fix: the ONLY way a workspace mutation should build its
    *  candidate. A queue around independently pre-built full-workspace
    *  snapshots does not prevent lost updates — several `file-menu.ts`
    *  producers used to build a whole candidate from `state` BEFORE entering
-   *  `serializeWrite`, so a mutation that committed while they awaited a user
+   *  the write queue, so a mutation that committed while they awaited a user
    *  dialog (or just lost the race) got silently clobbered by the later,
    *  stale write. `mutateWorkspace` closes that window: the queued op reads
    *  the latest committed aggregate via `app.workspace.loadById()` at
@@ -668,45 +649,58 @@ export interface App {
    *  inside the queue slot is guaranteed fresh), hands it to `transform`, and
    *  commits whatever `transform` returns. `transform` returning `null`/
    *  `undefined` aborts the op — nothing is committed and this resolves
-   *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
-   *  the queue itself never wedges. */
+   *  `null`. Rejections propagate to the caller like the queue's own; the
+   *  queue itself never wedges. #588 phase 4 wave 3: the implementation
+   *  (queueing, tokens, broadcast, refresh, provisioning) now lives in
+   *  `app.workspaceSession` (`src/application/workspace-session.ts`) — this
+   *  flat delegate stays for `mutateWorkspace`'s wide production consumer set. */
   mutateWorkspace<T = unknown>(
     transform: (latest: StoredWorkspaceV5 | null) =>
       WorkspaceMutationInput<T> | null | Promise<WorkspaceMutationInput<T> | null>,
   ): Promise<WorkspaceMutationOutcome<T>>;
-  /** #343 §5: this tab's random per-session id, minted through the crypto seam.
-   *  Stamped on every outgoing invalidation so a tab can ignore its own poke. */
-  sourceTabId: string;
-  /** #343 §6: whether this tab is currently visible (injected seam; see
-   *  `CreateAppEnv.documentVisible`). Read by the focus/visibility refresh. */
-  documentVisible(): boolean;
-  /** #343 §2: the snapshot-identity token of the workspace this tab last
-   *  committed/projected (`workspaceToken`), used only to detect whether a
-   *  later reload actually changed anything. `''` before the first commit. */
-  getLastCommittedToken(): string;
   /** #343 §5/§6: invoked when another tab reports a workspace change (channel
    *  receive, or a focus/visibility event). A no-op by default; the
    *  cross-tab-refresh work (#343 step 4) replaces it with the coalesced
-   *  `refreshWorkspaceFromStore` scheduler. Never receives this tab's own
-   *  broadcast. */
+   *  `app.workspaceSession.scheduleRefresh` call. Never receives this tab's own
+   *  broadcast. Kept as a flat delegate (#588 phase 4 wave 3) for its wide
+   *  production consumer set (dashboard.ts et al.). */
   onExternalWorkspaceChange(message: WorkspaceChangedMessage): void;
-  /** #343 step 4: reload the committed workspace and, when it changed under this
-   *  tab, project it + reconcile linked tabs — ordered through the same
-   *  `serializeWrite` queue as mutations (so it can't project an older read over
-   *  a newer local commit). A no-op when the store is unchanged since this tab's
-   *  last projection; a failed load keeps the projection, warns, and never
-   *  wedges the queue. The channel-receive + focus/visibility listeners drive a
-   *  coalesced version of this internally; this public entry is the direct,
-   *  un-coalesced one (tests + explicit callers). */
-  refreshWorkspaceFromStore(): Promise<void>;
   /** #343 step 4: the route/surface refresh hook invoked AFTER a refresh
    *  actually projected an external change — a mounted route (the standalone
    *  Dashboard, a later step) overrides it to rebuild from the latest committed
    *  workspace. `queriesChanged` reports whether the query collection moved
    *  (a query-only change still needs a Dashboard viewer rebuild even when the
    *  Dashboard document is byte-identical). Default no-op; the Workbench route's
-   *  own repaint is built into `refreshWorkspaceFromStore`. */
+   *  own repaint is built into `app.workspaceSession.refreshWorkspaceFromStore`.
+   *  Kept as a flat delegate (#588 phase 4 wave 3) for its wide production
+   *  consumer set. */
   onWorkspaceExternallyChanged(info: WorkspaceExternallyChangedInfo): void;
+  /** The workspace write/refresh/cross-tab session (#588 phase 4 wave 3,
+   *  `src/application/workspace-session.ts`) — owns serialized writes,
+   *  `mutateWorkspace`'s underlying queue, this tab's snapshot-identity token
+   *  (`sourceTabId`/`getLastCommittedToken`/`recordProjection`), the
+   *  BroadcastChannel wire + focus/visibility refresh fallback, the
+   *  `beforeunload` dirty guard (`syncBeforeUnload`/
+   *  `armOAuthRedirectUnloadBypass`), and initial-workspace provisioning
+   *  (`resolveImplicitOrProvision`/`recordOpened`). `applyCommittedWorkspace`
+   *  (above) deliberately stays OUTSIDE this session — it is real UI
+   *  orchestration (tab repaint, tree-click cancellation, route rewrite on a
+   *  lost selection), not the "zero DOM" the #588 issue text implies. */
+  workspaceSession: WorkspaceSession;
+  /** The main-surface / `/sql` route navigation session (#588 phase 4 wave 4,
+   *  `src/application/surface-navigation.ts`) — owns the surface-generation
+   *  guard cluster, route writes, boot/popstate/programmatic-navigation
+   *  loading, and every main-surface transition. `handleSqlPopState`/
+   *  `focusDashboardMember` (router-private, no production consumer outside
+   *  app.ts's own popstate listener / `openDashboard`) and `syncSqlRoute`/
+   *  `rewriteWorkspaceRoute` (repointed to `main.ts`/`file-menu.ts`) have NO
+   *  flat `App` delegate — reach them via `app.nav.*`. Every wide-consumer
+   *  member (`navigateSqlRoute`/`openDashboard`/`showQuerySurface`/
+   *  `showDashboardSurface`/`openSavedQuery`/`openPanelQuery`/
+   *  `openVariableTab`/`renderCurrentSurface`/`loadWorkspaceOnBoot`/
+   *  `reloadDashboardRoute`/the generation-guard trio) keeps its flat
+   *  delegate onto this session. */
+  nav: SurfaceNavigation;
 
   actions: ActionsRegistry;
 }
