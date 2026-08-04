@@ -82,6 +82,32 @@ describe('recordRecent', () => {
     expect(m.byName.a0.some((e) => e.value === 'v0')).toBe(false);
     expect(m.byName.zzz.map((e) => e.value)).toEqual(['new']);
   });
+  it('a variable literally named "__proto__" survives total-cap eviction as a normal own property, never corrupting byName\'s prototype (#591)', () => {
+    let m = emptyRecentMap();
+    // 10 names x 10 values = 100 entries — already at VAR_RECENT_TOTAL_CAP,
+    // none of them evicted yet.
+    for (let n = 0; n < 10; n++) {
+      for (let v = 0; v < 10; v++) m = recordRecent(m, 'name' + n, 'v' + v);
+    }
+    // Recording under the name "__proto__" (a user can type this directly as
+    // a `{__proto__:String}` query parameter) pushes the total to 101,
+    // triggering enforceTotalCap's rebuild. "__proto__" has the highest seq
+    // of anything in the map, so it must survive — name0's oldest entry
+    // (lowest seq) is what gets evicted instead.
+    m = recordRecent(m, '__proto__', 'evil');
+    let total = 0;
+    for (const name in m.byName) total += m.byName[name].length;
+    expect(total).toBe(VAR_RECENT_TOTAL_CAP);
+    // The map itself must stay a plain object — not have its prototype
+    // swapped to the recorded array.
+    expect(Object.getPrototypeOf(m.byName)).toBe(Object.prototype);
+    expect(Object.keys(m.byName)).toContain('__proto__');
+    expect(Object.prototype.hasOwnProperty.call(m.byName, '__proto__')).toBe(true);
+    expect(m.byName['__proto__'].map((e) => e.value)).toEqual(['evil']);
+    // The globally-oldest entry (name0's v0) is the one actually evicted.
+    expect(m.byName.name0).toHaveLength(VAR_RECENT_PER_NAME_CAP - 1);
+    expect(m.byName.name0.some((e) => e.value === 'v0')).toBe(false);
+  });
 });
 
 describe('clearRecent', () => {
