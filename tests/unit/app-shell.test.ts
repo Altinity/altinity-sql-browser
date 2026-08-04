@@ -304,4 +304,11 @@ describe('mountAppShell — side panel registry (#587)', () => {
     expect(app.state.upperRole.value).toBe('databases');
     handle.dispose();
   });
+
+  it('handle.dispose() tears every registered panel down exactly once', () => {
+    const { handle } = mount();
+    const disposers = handle.sidePanels.entries.map((entry) => vi.spyOn(entry.mounted, 'dispose'));
+    handle.dispose();
+    for (const spy of disposers) expect(spy).toHaveBeenCalledTimes(1);
+  });
 });
