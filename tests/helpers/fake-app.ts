@@ -33,6 +33,7 @@ import type {
 } from '../../src/workspace/workspace-store.types.js';
 import type { App, ActionsRegistry, AppDom, ChCtx } from '../../src/ui/app.types.js';
 import type { WorkspaceSession } from '../../src/application/workspace-session.js';
+import type { SurfaceNavigation } from '../../src/application/surface-navigation.js';
 import type { AppState } from '../../src/state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js';
 import type { StreamResult } from '../../src/core/stream.js';
@@ -425,6 +426,40 @@ const workspaceSessionDefaults: WorkspaceSession = {
   recordOpened: async () => {},
 };
 
+// Inert `SurfaceNavigation` defaults (#588 phase 4 wave 4 — `app.nav`). Self-
+// contained, same convention as `workspaceSessionDefaults` above: independent
+// of `appDefaults`'s own flat stubs for the wide-consumer members
+// (`navigateSqlRoute`/`openDashboard`/`showQuerySurface`/…), which a fixture
+// exercising THOSE still reads directly off `app.*` (unaffected by this wave).
+const navDefaults: SurfaceNavigation = {
+  navigateSqlRoute: async () => {},
+  handleSqlPopState: async () => {},
+  syncSqlRoute: () => {},
+  rewriteWorkspaceRoute: () => {},
+  writeRoute: () => {},
+  currentRouteSearch: () => '',
+  renderCurrentSurface: () => {},
+  loadWorkspaceOnBoot: async () => null,
+  reloadDashboardRoute: () => {},
+  openDashboard: () => {},
+  showQuerySurface: () => {},
+  showDashboardSurface: () => {},
+  openSavedQuery: () => {},
+  openPanelQuery: () => {},
+  openVariableTab: () => {},
+  // #426: the default fixture has no rendered Dashboard surface, so an
+  // in-place focus request is never deliverable — `pending` is the honest
+  // stub, and also what makes a spec that cares about in-place delivery
+  // override it explicitly rather than accidentally passing against a fake
+  // `ok`.
+  focusDashboardMember: () => 'pending',
+  captureSurfaceGeneration: () => 0,
+  isSurfaceGenerationCurrent: (generation) => generation === 0,
+  refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
+  advanceSurfaceGeneration: () => {},
+  loadGeneration: () => 0,
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -508,9 +543,6 @@ const appDefaults: App = {
   isSurfaceGenerationCurrent: (generation) => generation === 0,
   refreshCurrentSurfaceAfterStale: (generation) => generation === 0,
   navigateSqlRoute: async () => {},
-  handleSqlPopState: async () => {},
-  syncSqlRoute: () => {},
-  rewriteWorkspaceRoute: () => {},
   renderCurrentSurface: () => {},
   syncBeforeUnload: () => {},
   // Recovery itself is covered by its application/session tests. UI fixtures
@@ -536,6 +568,10 @@ const appDefaults: App = {
   // `serializeWrite`/`flushWorkspaceWrites`/`mutateWorkspace` with a real
   // per-instance queue backed by `workspaceRepo`.
   workspaceSession: workspaceSessionDefaults,
+  // #588 phase 4 wave 4: `handleSqlPopState`/`focusDashboardMember` (router-
+  // private) and `syncSqlRoute`/`rewriteWorkspaceRoute` (no flat `App`
+  // delegate — see `navDefaults` above) are reachable only through `nav.*`.
+  nav: navDefaults,
   // #341/#344: inert placeholder — `transform` still runs (so a fixture that
   // never overrides this still exercises the caller's build-from-latest
   // logic), but `latest` is always `null` (no queue, no read-back) and the
@@ -621,11 +657,6 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
-  // #426: the default fixture has no rendered Dashboard surface, so an in-place
-  // focus request is never deliverable — `pending` is the honest stub, and it is
-  // also what makes a spec that cares about in-place delivery override it
-  // explicitly rather than accidentally passing against a fake `ok`.
-  focusDashboardMember: () => 'pending',
   invalidateDashboardTree: () => {},
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
@@ -651,7 +682,7 @@ const appDefaults: App = {
 // parameter as exactly what `makeApp` itself accepts, instead of
 // re-declaring a narrower `Partial<App>` that would reject it.
 export type MakeAppOverrides = AppOverrides;
-type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace' | 'workspaceSession'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace' | 'workspaceSession' | 'nav'>> & {
   /** Partial like the rest (#286 Phase 4) — Dashboard mutations read a
    *  StoredWorkspaceV5 through `workspace.loadById`; a test overrides only
    *  the repository methods it drives. */
@@ -698,6 +729,15 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'cat
    *  override just that method, keeping `base`'s real per-instance
    *  `serializeWrite`/`mutateWorkspace` queue for the rest. */
   workspaceSession?: Partial<WorkspaceSession>;
+  /** Partial like `workspaceSession` above (#588 phase 4 wave 4) — most
+   *  fixtures never touch the session directly; a test asserting e.g.
+   *  `nav.focusDashboardMember`'s return can override just that method. The
+   *  wide-consumer members (`navigateSqlRoute`/`openDashboard`/…) also keep
+   *  their OWN independent flat-`App` stub (same convention as
+   *  `workspaceSession.mutateWorkspace` vs. the flat `App.mutateWorkspace`
+   *  stub above — this fixture is a hand-maintained test double, not a
+   *  byte-accurate mirror of app.ts's real `app.foo = nav.foo` wiring). */
+  nav?: Partial<SurfaceNavigation>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -976,6 +1016,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     workspaceSession: {
       ...workspaceSessionDefaults, ...base.workspaceSession, ...(overrides.workspaceSession ?? {}),
     },
+    nav: { ...navDefaults, ...(overrides.nav ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

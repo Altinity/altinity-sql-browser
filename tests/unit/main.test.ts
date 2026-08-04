@@ -65,7 +65,9 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
     catalog: { loadVersion: vi.fn(async () => {}) },
     renderCurrentSurface: vi.fn(),
     resumeAuthenticatedExecution: vi.fn(),
-    syncSqlRoute: vi.fn(),
+    // #588 phase 4 wave 4: `syncSqlRoute` moved off the flat `App` contract
+    // onto `app.nav`.
+    nav: { syncSqlRoute: vi.fn() },
     showLogin: vi.fn(),
     // #287 W4: bootstrap awaits this before the first renderApp() on the
     // non-dashboard route — a no-op stub here (the aggregate-projection
@@ -538,7 +540,7 @@ describe('bootstrap', () => {
     expect(env.history.replaceState).toHaveBeenCalledWith(
       null, '', 'https://ch/sql?ws=missing&surface=dashboard&mode=view&keep=1',
     );
-    expect(app.syncSqlRoute).toHaveBeenCalledWith(
+    expect(app.nav.syncSqlRoute).toHaveBeenCalledWith(
       '?ws=missing&surface=dashboard&mode=view&keep=1',
     );
     expect(env.sessionStorage.getItem('oauth_return_route')).toBeNull();
@@ -558,7 +560,7 @@ describe('bootstrap', () => {
       state: 'expected', search: '?ws=private',
     }));
     await bootstrap(app, env);
-    expect(app.syncSqlRoute).toHaveBeenCalledWith('');
+    expect(app.nav.syncSqlRoute).toHaveBeenCalledWith('');
     expect(env.sessionStorage.getItem('oauth_return_route')).not.toBeNull();
   });
 
@@ -837,7 +839,7 @@ describe('bootstrap', () => {
     });
     await bootstrap(app, env);
     expect(env.history.replaceState).toHaveBeenCalledWith(null, '', 'https://ch/sql?ws=ops');
-    expect(app.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
+    expect(app.nav.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
     expect(app.showLogin).toHaveBeenCalled();
   });
 
@@ -855,7 +857,7 @@ describe('bootstrap', () => {
     }));
     await bootstrap(app, env);
     expect(env.history.replaceState).toHaveBeenCalledWith(null, '', 'https://ch/sql?ws=ops');
-    expect(app.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
+    expect(app.nav.syncSqlRoute).toHaveBeenCalledWith('?ws=ops');
     expect(env.sessionStorage.getItem('oauth_return_route')).toBeNull();
     expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: access_denied');
   });

@@ -24,13 +24,14 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type {
-  DashboardFocusTarget, DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest,
+  DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest, WorkspaceRouteStatus,
 } from '../application/main-surface.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { DashboardFocusOutcome, SurfaceCommandPort } from './shortcuts.js';
+import type { SurfaceCommandPort } from './shortcuts.js';
+import type { SurfaceNavigation } from '../application/surface-navigation.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
@@ -551,12 +552,6 @@ export interface App {
    *  surface command port — no rebuild, no rerun, no extra history entry — rather
    *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
-  /** #426 — deliver focus to ONE member of the already-rendered Dashboard through
-   *  the route-local surface command port, without rebuilding or re-running it.
-   *  `pending` means "not deliverable in place right now" (mid-wave curated
-   *  filter, or a superseded/absent port) and is the caller's cue to take the
-   *  normal render transition — never a diagnostic. */
-  focusDashboardMember(member: DashboardFocusTarget): DashboardFocusOutcome;
   /** #426 — bump the Dashboard tree's explicit repaint invalidation. The tree
    *  projects the committed workspace aggregate plus main-surface navigation
    *  state, neither of which is a signal. */
@@ -595,7 +590,7 @@ export interface App {
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
   currentWorkspace: StoredWorkspaceV5 | null;
-  workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  workspaceRouteStatus: WorkspaceRouteStatus;
   /** Route-local commands registered by the mounted surface. They are cleared
    * before every transition, so a disposed Dashboard viewer cannot be called. */
   surfaceCommands: SurfaceCommandPort | null;
@@ -609,15 +604,11 @@ export interface App {
    * currently selected ready surface is refreshed from shared projection. */
   refreshCurrentSurfaceAfterStale(generation: number, committed?: boolean): boolean;
   /** Navigate within the single artifact. Surface changes use push; mode and
-   * canonicalization use replace. */
+   * canonicalization use replace. Flat delegate onto `app.nav` (#588 phase 4
+   * wave 4) for its wide production consumer set. */
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
-  /** Reparse the browser URL after Back/Forward and mount the selected surface. */
-  handleSqlPopState(): Promise<void>;
-  /** Synchronize route state after bootstrap rewrites an OAuth callback URL. */
-  syncSqlRoute(search: string): void;
-  /** Point the current surface/mode at an already-projected workspace. */
-  rewriteWorkspaceRoute(workspaceKey: string): void;
-  /** Repaint Dashboard after an in-tab import, retaining its route mode. */
+  /** Repaint Dashboard after an in-tab import, retaining its route mode. Flat
+   * delegate onto `app.nav` (#588 phase 4 wave 4). */
   reloadDashboardRoute(): void;
   /** Resolve the explicit or implicit route workspace and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
@@ -695,6 +686,20 @@ export interface App {
    *  orchestration (tab repaint, tree-click cancellation, route rewrite on a
    *  lost selection), not the "zero DOM" the #588 issue text implies. */
   workspaceSession: WorkspaceSession;
+  /** The main-surface / `/sql` route navigation session (#588 phase 4 wave 4,
+   *  `src/application/surface-navigation.ts`) — owns the surface-generation
+   *  guard cluster, route writes, boot/popstate/programmatic-navigation
+   *  loading, and every main-surface transition. `handleSqlPopState`/
+   *  `focusDashboardMember` (router-private, no production consumer outside
+   *  app.ts's own popstate listener / `openDashboard`) and `syncSqlRoute`/
+   *  `rewriteWorkspaceRoute` (repointed to `main.ts`/`file-menu.ts`) have NO
+   *  flat `App` delegate — reach them via `app.nav.*`. Every wide-consumer
+   *  member (`navigateSqlRoute`/`openDashboard`/`showQuerySurface`/
+   *  `showDashboardSurface`/`openSavedQuery`/`openPanelQuery`/
+   *  `openVariableTab`/`renderCurrentSurface`/`loadWorkspaceOnBoot`/
+   *  `reloadDashboardRoute`/the generation-guard trio) keeps its flat
+   *  delegate onto this session. */
+  nav: SurfaceNavigation;
 
   actions: ActionsRegistry;
 }

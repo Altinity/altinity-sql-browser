@@ -4,13 +4,21 @@ import { h, attachBackdropClose } from './dom.js';
 import type { ActionsRegistry, KeyboardOwner, State, Tab } from './app.types.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { SqlRoute } from '../core/sql-route.js';
-import type { DashboardFocusTarget } from '../application/main-surface.js';
+import type {
+  DashboardFocusTarget, DashboardFocusOutcome, SurfaceCommandPort, WorkspaceRouteStatus,
+} from '../application/main-surface.js';
+
+// #588 phase 4 §3-T #2: `SurfaceCommandPort`/`DashboardFocusOutcome` moved to
+// `src/application/main-surface.ts` (which already owns `DashboardFocusTarget`
+// — the type this port's `focusMember` takes) — re-exported here so every
+// existing importer (app.types.ts, dashboard.ts, this file's own tests) keeps
+// compiling with zero call-site changes.
+export type { SurfaceCommandPort, DashboardFocusOutcome } from '../application/main-surface.js';
 
 type ShortcutSurface = 'workspace' | 'dashboard' | 'all';
 type Section = 'application' | 'workspace' | 'dashboard' | 'general' | 'gestures';
 type ShortcutDispatch = 'application' | 'editor';
 type KeyName = 'mod-enter' | 'mod-shift-enter' | 'mod-s' | 'mod-shift-s' | 'mod-alt-1' | 'mod-alt-2' | 'mod-z' | 'mod-shift-z' | 'f1' | 'g-d' | 'g-w' | 'g-v' | 'g-e' | 'g-g' | 'g-f' | 'g-r' | 'g-2' | 'g-3' | 'g-style' | 'question' | 'escape';
-type DashboardStyle = 'grid' | 'full' | 'report' | 'columns-2' | 'columns-3';
 
 export interface ShortcutDefinition {
   id: string;
@@ -57,39 +65,13 @@ const GESTURES = [
   ['Expand / collapse', 'Click'], ['Insert into editor', 'Double-click'], ['Insert DDL / col::type', 'Shift-click'],
 ] as const;
 
-/**
- * What an IN-PLACE member navigation could do (#426). Three outcomes, because
- * two of them are not failures:
- *   - `ok`      — delivered against the live surface; no rebuild happened.
- *   - `pending` — not deliverable in place *right now* (the opening wave has not
- *                 settled, so a curated filter's control is about to be replaced;
- *                 or this port has been superseded). The caller falls back to the
- *                 normal render transition, which delivers focus at the
- *                 deterministic point the node exists. NOT a diagnostic.
- *   - `missing` — the member is genuinely not on this Dashboard any more. The
- *                 caller reports it non-destructively and changes nothing.
- */
-export type DashboardFocusOutcome = 'ok' | 'pending' | 'missing';
-
-export interface SurfaceCommandPort {
-  surface: 'dashboard';
-  generation: number;
-  refresh(): void;
-  setDashboardStyle(style: DashboardStyle): void;
-  /** #426 — scroll/focus/highlight one already-rendered tile or curated filter
-   *  WITHOUT rebuilding or re-running the Dashboard. Repeated same-Dashboard
-   *  member navigation is a normal tree operation, so it must not cost a render
-   *  or a history entry. */
-  focusMember(member: DashboardFocusTarget): DashboardFocusOutcome;
-}
-
 /** Narrow controller contract; it deliberately avoids importing the full App. */
 export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running' | 'workspaceKey'>;
   conn: Pick<ConnectionSession, 'isSignedIn' | 'connection'>;
   sqlRoute: Pick<SqlRoute, 'surface' | 'workspaceKey'> & { mode?: 'view' | 'edit' };
-  workspaceRouteStatus: 'loading' | 'ready' | 'not-found' | 'error';
+  workspaceRouteStatus: WorkspaceRouteStatus;
   surfaceCommands?: SurfaceCommandPort | null;
   keyboardOwner?: KeyboardOwner | null;
   acquireKeyboardOwner(kind: KeyboardOwner['kind']): () => void;

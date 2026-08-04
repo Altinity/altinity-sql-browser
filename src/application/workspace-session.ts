@@ -37,6 +37,7 @@ import type {
   AppState, MutateWorkspace, WorkspaceExternallyChangedInfo,
 } from '../state.js';
 import type { BroadcastChannelPort } from '../env.types.js';
+import type { WorkspaceRouteStatus } from './main-surface.js';
 
 /** The cross-tab invalidation signal (#343 §5) — a small "reload the record"
  *  poke, never the workspace body. `sourceTabId` lets a tab ignore its own
@@ -49,11 +50,6 @@ export interface WorkspaceChangedMessage {
   sourceTabId: string;
   workspaceId: string;
 }
-
-/** Structurally `App['workspaceRouteStatus']` (src/ui/app.types.ts) — inlined
- *  rather than imported so this module never names a UI type; the union is
- *  copied, not aliased, so TS matches the two structurally. */
-type WorkspaceRouteStatus = 'loading' | 'ready' | 'not-found' | 'error';
 
 export interface WorkspaceSessionDeps {
   repository: WorkspaceRepository;

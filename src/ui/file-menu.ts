@@ -689,7 +689,7 @@ async function doNewWorkspace(app: App): Promise<void> {
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
-    app.rewriteWorkspaceRoute(result.workspace.key);
+    app.nav.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(
@@ -960,7 +960,7 @@ async function importWorkspace(
       return;
     }
     app.applyCommittedWorkspace(result.workspace);
-    app.rewriteWorkspaceRoute(result.workspace.key);
+    app.nav.rewriteWorkspaceRoute(result.workspace.key);
     const opened = await app.workspace.markOpened(result.workspace.key);
     afterLibraryChange(app);
     flashToast(

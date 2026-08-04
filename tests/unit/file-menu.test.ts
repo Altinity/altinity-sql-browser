@@ -1574,7 +1574,7 @@ describe('Import workspace (#406 additive collection)', () => {
         }),
       },
     });
-    app.rewriteWorkspaceRoute = vi.fn();
+    app.nav.rewriteWorkspaceRoute = vi.fn();
     app.state.savedQueries = [panelQuery('old', 'Old')];
     const oldId = app.state.workspaceId;
     openFileMenu(app);
@@ -1597,7 +1597,7 @@ describe('Import workspace (#406 additive collection)', () => {
     expect(app.state.savedQueries).toHaveLength(2);
     expect(app.state.dashboard!.id).toBe('d1');
     expect(app.state.dashboard!.tiles[0].queryId).not.toBe('p1');
-    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
+    expect(app.nav.rewriteWorkspaceRoute).toHaveBeenCalledWith('imported_ops_3');
     expect(toast()).toBe('Imported workspace');
   });
 
@@ -1678,7 +1678,7 @@ describe('New workspace', () => {
         }),
       },
     });
-    app.rewriteWorkspaceRoute = vi.fn();
+    app.nav.rewriteWorkspaceRoute = vi.fn();
     const oldId = app.state.workspaceId;
     openFileMenu(app);
     click(item(/New workspace/)!);
@@ -1688,7 +1688,7 @@ describe('New workspace', () => {
     expect(app.state.libraryName.value).toBe('SQL Library');
     expect(app.state.workspaceKey).toBe('sql_library_3');
     expect(app.state.workspaceId).not.toBe(oldId);
-    expect(app.rewriteWorkspaceRoute).toHaveBeenCalledWith('sql_library_3');
+    expect(app.nav.rewriteWorkspaceRoute).toHaveBeenCalledWith('sql_library_3');
     expect(toast()).toBe('Started a new workspace');
   });
 

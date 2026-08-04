@@ -14,7 +14,7 @@ import {
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import {
-  findDashboard, replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
+  findDashboard, resolveCompatibilityDashboard,
 } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
@@ -41,7 +41,6 @@ import { createSpecCompletionSources } from '../editor/spec-completion-adapter.j
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab } from './tabs.js';
 import type { QueryOrName } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
-import { dashboardVariables } from '../application/dashboard-tree-model.js';
 import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
@@ -71,6 +70,7 @@ import { createQueryExecutionService } from '../application/query-execution-serv
 import { createConnectionSession } from '../application/connection-session.js';
 import { createWorkspaceSession } from '../application/workspace-session.js';
 import type { WorkspaceSession } from '../application/workspace-session.js';
+import { createSurfaceNavigation } from '../application/surface-navigation.js';
 import {
   createOAuthDocumentRecoverySession,
   type OAuthDocumentRecoveryRestoreResult,
@@ -87,19 +87,12 @@ import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../applica
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
 import {
-  QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
-  withoutPendingFocus, dashboardHistorySnapshot, readDashboardHistorySnapshot,
-  restoreDashboardSurface,
+  QUERY_SURFACE, mainSurfaceRoute, reconcileMainSurface, selectedDashboardId, withoutPendingFocus,
 } from '../application/main-surface.js';
-import type { DashboardSurfaceMode, MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
 import { queryToken } from '../workspace/workspace-sync.js';
-import {
-  buildSqlRouteSearch, normalizeSqlRouteSearch, parseSqlRoute, routeForWorkspace,
-} from '../core/sql-route.js';
-import type { SqlRoute } from '../core/sql-route.js';
+import { parseSqlRoute } from '../core/sql-route.js';
 import { disposeFileMenuOverlays } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createVariableStrip } from './workbench/variable-strip.js';
@@ -252,11 +245,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.workspace = createWorkspaceRepository({ store: workspaceStore, now: wallNow });
   // #407 — both application surfaces live on `/sql`; URL query parameters are
   // parsed once here and reparsed on Back/Forward. The resolved live workspace
-  // is shared by Workbench and Dashboard.
-  let routeSearch = loc.search;
-  let routeLoadGeneration = 0;
-  let surfaceGeneration = 0;
-  app.sqlRoute = parseSqlRoute(routeSearch);
+  // is shared by Workbench and Dashboard. (#588 phase 4 wave 4: the
+  // route-search cache and the surface-generation counter this used to seed
+  // now live in `app.nav`, constructed further below — this initial parse is a
+  // one-time DATA-PROPERTY seed, same as `currentWorkspace`/`workspaceRouteStatus`
+  // right below it, and does not need the cache that comes later.)
+  app.sqlRoute = parseSqlRoute(loc.search);
   app.currentWorkspace = null;
   app.workspaceRouteStatus = 'ready';
   app.keyboardOwner = null;
@@ -287,33 +281,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // #425: the main work surface's SESSION state — Query, or one Dashboard
   // selected by stable id. Never persisted (see application/main-surface.ts).
   app.mainSurface = QUERY_SURFACE;
-  // Every surface transition — mount, teardown, or sign-out — advances the
-  // renderer generation so an obsolete async callback (a late Dashboard wave,
-  // a pending focus target) can finish its durable work without settling
-  // against a replacement renderer. Bumped on the TRANSITION, not as a side
-  // effect of a mount, because a mount can be skipped when the host is already
-  // live (#425's preserved Query surface).
-  const advanceSurfaceGeneration = (): void => {
-    surfaceGeneration += 1;
-    app.surfaceCommands = null;
-  };
-  app.captureSurfaceGeneration = () => surfaceGeneration;
-  app.isSurfaceGenerationCurrent = (generation) => generation === surfaceGeneration;
-  app.refreshCurrentSurfaceAfterStale = (generation, committed = false) => {
-    if (generation === surfaceGeneration) return true;
-    const routeKey = app.sqlRoute.workspaceKey;
-    // #425: `conn.isSignedIn()` is load-bearing, not defensive. Sign-out now
-    // advances the surface generation (so a late Dashboard callback can't settle
-    // against a replacement renderer) but deliberately leaves the projected
-    // workspace in place for the next sign-in — which would otherwise let a write
-    // that resolves just after sign-out re-mount the whole signed-in shell OVER
-    // the login screen, with no credentials.
-    if (committed && app.conn.isSignedIn() && app.workspaceRouteStatus === 'ready'
-      && app.currentWorkspace && (routeKey === null || routeKey === app.currentWorkspace.key)) {
-      app.renderCurrentSurface();
-    }
-    return false;
-  };
+  // #588 phase 4 wave 4: the surface-generation guard cluster
+  // (`advanceSurfaceGeneration`/`captureSurfaceGeneration`/
+  // `isSurfaceGenerationCurrent`/`refreshCurrentSurfaceAfterStale` — every
+  // surface transition advances the renderer generation so an obsolete async
+  // callback can finish its durable work without settling against a
+  // replacement renderer) now lives in `app.nav`, constructed further below;
+  // `app.captureSurfaceGeneration`/`isSurfaceGenerationCurrent`/
+  // `refreshCurrentSurfaceAfterStale` are assigned as flat delegates there.
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -569,7 +544,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     } else if (!shared.sql && isQuerylessPanel(panel)) {
       app.state.resultView.value = 'panel';
     }
-    win.history.replaceState(null, '', loc.pathname + routeSearch);
+    // #588 phase 4 wave 4: the cached route-search string moved into `app.nav`
+    // — this reads the LIVE value through its `currentRouteSearch()` escape
+    // hatch (see surface-navigation.ts's header comment) rather than a
+    // module-local `routeSearch` this file no longer keeps.
+    win.history.replaceState(null, '', loc.pathname + app.nav.currentRouteSearch());
     return true;
   };
   // The saved-query create/commit policy, history recording, and share-URL
@@ -637,7 +616,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // loss does not call this path; it retains the Dashboard/document shell and
     // exposes the inline authentication host instead.
     disposeDashboardSurface();
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     app.mainSurface = QUERY_SURFACE;
     disposeShell();
     renderLogin(app as App & { root: Element }, msg);
@@ -1698,7 +1677,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const beginSurfaceTransition = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     closeAnchoredPopovers();
     disposeFileMenuOverlays(app);
     // #586 REWRITE: this used to close ONLY the doc pane, on the reasoning
@@ -1727,7 +1706,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   const disposeCurrentSurface = (): void => {
     app.closeShortcutDialog();
     resetShortcutChord(app);
-    advanceSurfaceGeneration();
+    app.nav.advanceSurfaceGeneration();
     for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
       'button, input, select, textarea',
     ) ?? []) control.disabled = true;
@@ -1853,7 +1832,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     // render has to happen here.
     if (lostSelection) {
       if (app.sqlRoute.surface === 'dashboard') {
-        writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
+        // #588 phase 4 wave 4: `writeRoute` moved into `app.nav` (nav-private
+        // otherwise) — exposed as an escape hatch for exactly this call, which
+        // forces the QUERY surface's route with 'replace' regardless of the
+        // CURRENT route surface; see surface-navigation.ts's header comment
+        // for why neither `rewriteWorkspaceRoute` nor `showQuerySurface` is
+        // behavior-identical here.
+        app.nav.writeRoute(mainSurfaceRoute(QUERY_SURFACE, workspace.key), 'replace');
       }
       app.renderCurrentSurface();
     }
@@ -1882,10 +1867,17 @@ export function createApp(env: CreateAppEnv = {}): App {
     documentVisible,
     windowSeam: win,
     documentSeam: doc,
+    // #588 phase 4 wave 4: `routeWorkspaceKey`/`routeStatus` keep reading
+    // app.ts's own `sqlRoute`/`workspaceRouteStatus` data properties directly
+    // (unaffected by this wave — they never lived in a moved closure);
+    // `loadGeneration` is rewired from wave 3's raw `routeLoadGeneration`
+    // closure read onto `app.nav`'s own accessor, now that the counter itself
+    // lives there. Only these THREE thunk BODIES change — `WorkspaceSession`'s
+    // own `routeCurrency` interface (workspace-session.ts) is untouched.
     routeCurrency: {
       routeWorkspaceKey: () => app.sqlRoute.workspaceKey,
       routeStatus: () => app.workspaceRouteStatus,
-      loadGeneration: () => routeLoadGeneration,
+      loadGeneration: () => app.nav.loadGeneration(),
     },
     hooks: {
       applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
@@ -1940,77 +1932,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.mutateWorkspace = session.mutateWorkspace;
   app.syncBeforeUnload = () => session.syncBeforeUnload();
 
+  // #588 phase 4 wave 4: `resetCorruptWorkspace` stays here (real UI
+  // orchestration — drives `app.workspace.delete` alongside
+  // `session.resolveImplicitOrProvision`, exactly like `applyCommittedWorkspace`
+  // above stays outside `workspaceSession`), but the route-currency reads/
+  // writes it used to do directly (`routeLoadGeneration`/`routeSearch`) now go
+  // through `app.nav` — `nav.loadGeneration()` and `nav.rewriteWorkspaceRoute()`
+  // do byte-identical work (see `surface-navigation.ts`'s own `writeRoute`).
   const resetCorruptWorkspace = async (id: string): Promise<void> => {
-    const expectedGeneration = routeLoadGeneration;
+    const expectedGeneration = app.nav.loadGeneration();
     const deleted = await app.workspace.delete(id);
     if (!deleted.ok) return;
     const result = await session.resolveImplicitOrProvision();
-    if (result.status === 'ok' && routeLoadGeneration === expectedGeneration) {
+    if (result.status === 'ok' && app.nav.loadGeneration() === expectedGeneration) {
       applyCommittedWorkspace(result.workspace);
       await session.recordOpened(result.workspace);
-      if (routeLoadGeneration !== expectedGeneration) return;
-      app.sqlRoute = routeForWorkspace(app.sqlRoute, result.workspace.key);
-      routeSearch = buildSqlRouteSearch(app.sqlRoute, routeSearch);
-      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
+      if (app.nav.loadGeneration() !== expectedGeneration) return;
+      app.nav.rewriteWorkspaceRoute(result.workspace.key);
       app.retryPendingOAuthDocumentRecovery();
       app.renderCurrentSurface();
     }
-  };
-
-  const writeRoute = (route: SqlRoute, method: 'push' | 'replace'): void => {
-    app.sqlRoute = route;
-    routeSearch = buildSqlRouteSearch(route, routeSearch);
-    win.history[method === 'push' ? 'pushState' : 'replaceState'](
-      null, '', conn.basePath + routeSearch + (loc.hash || ''),
-    );
-  };
-
-  app.loadWorkspaceOnBoot = async () => {
-    const generation = ++routeLoadGeneration;
-    const explicitKey = app.sqlRoute.workspaceKey;
-    const result = explicitKey !== null
-      ? await app.workspace.loadByKey(explicitKey)
-      : await session.resolveImplicitOrProvision();
-    if (generation !== routeLoadGeneration) return null;
-    if (result.status === 'corrupt') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'error';
-      flashToast(
-        'Saved workspace could not be read. Other local workspaces remain unaffected.',
-        {
-          document: app.document,
-          action: { label: 'Reset workspace', onClick: () => { void resetCorruptWorkspace(result.id); } },
-        },
-      );
-      return null;
-    }
-    if (result.status !== 'ok') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = explicitKey !== null ? 'not-found' : 'error';
-      const normalized = normalizeSqlRouteSearch(routeSearch);
-      app.sqlRoute = normalized.route;
-      if (normalized.search !== routeSearch) {
-        routeSearch = normalized.search;
-        win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
-      }
-      return null;
-    }
-    const workspace = result.workspace;
-    await session.recordOpened(workspace);
-    if (generation !== routeLoadGeneration) return null;
-    applyCommittedWorkspace(workspace);
-    const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);
-    const canonicalSearch = buildSqlRouteSearch(canonicalRoute, routeSearch);
-    app.sqlRoute = canonicalRoute;
-    if (canonicalSearch !== routeSearch) {
-      routeSearch = canonicalSearch;
-      win.history.replaceState(null, '', conn.basePath + routeSearch + (loc.hash || ''));
-    }
-    // #425: this is a URL-driven open (boot, a deep link, or a workspace
-    // switch), so the ROUTE decides the surface — including which Dashboard,
-    // resolved through the compatibility selector because the URL carries no id.
-    adoptRouteMainSurface();
-    return workspace;
   };
 
   const renderWorkspaceNotFound = (): void => {
@@ -2028,352 +1969,83 @@ export function createApp(env: CreateAppEnv = {}): App {
     }, h('p', null, 'Loading workspace…')));
   };
 
-  app.renderCurrentSurface = () => {
-    if (app.workspaceRouteStatus === 'loading') {
-      renderWorkspaceLoading();
-      return;
-    }
-    if (app.workspaceRouteStatus !== 'ready' || !app.currentWorkspace) {
-      renderWorkspaceNotFound();
-      return;
-    }
-    if (app.sqlRoute.surface === 'dashboard') app.renderDashboard();
-    else app.renderApp();
-  };
-
-  app.navigateSqlRoute = async (route, method) => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const workspaceChanged = route.workspaceKey !== app.sqlRoute.workspaceKey;
-    const needsWorkspaceLoad = workspaceChanged || app.currentWorkspace === null;
-    writeRoute(route, method);
-    if (needsWorkspaceLoad) {
-      app.workspaceRouteStatus = 'loading';
-      app.currentWorkspace = null;
-      renderWorkspaceLoading();
-      const expectedGeneration = routeLoadGeneration + 1;
-      const workspace = await app.loadWorkspaceOnBoot();
-      if (routeLoadGeneration !== expectedGeneration) return;
-      if (workspace) app.retryPendingOAuthDocumentRecovery();
-    } else {
-      adoptRouteMainSurface();
-      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
-    }
-    app.renderCurrentSurface();
-  };
-
-  app.handleSqlPopState = async () => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    const previousKey = app.sqlRoute.workspaceKey;
-    routeSearch = loc.search;
-    app.sqlRoute = parseSqlRoute(routeSearch);
-    if (app.sqlRoute.workspaceKey === previousKey && app.currentWorkspace !== null) {
-      // #425: Back/Forward between surfaces of the SAME workspace is a surface
-      // transition, not a teardown — the shell and the query column stay mounted
-      // so the editor state survives it. (It used to run `disposeCurrentSurface`,
-      // whose blanket control-disable would now inert the still-mounted editor
-      // toolbar, tabs, and sidebar inputs permanently.)
-      adoptRouteMainSurface();
-      if (app.currentWorkspace) app.retryPendingOAuthDocumentRecovery();
-      app.renderCurrentSurface();
-      return;
-    }
-    app.workspaceRouteStatus = 'loading';
-    app.currentWorkspace = null;
-    renderWorkspaceLoading();
-    const expectedGeneration = routeLoadGeneration + 1;
-    const workspace = await app.loadWorkspaceOnBoot();
-    if (routeLoadGeneration !== expectedGeneration) return;
-    if (workspace) app.retryPendingOAuthDocumentRecovery();
-    app.renderCurrentSurface();
-  };
-  app.syncSqlRoute = (search) => {
-    routeSearch = search;
-    app.sqlRoute = parseSqlRoute(search);
-  };
-  app.rewriteWorkspaceRoute = (workspaceKey) => {
-    writeRoute(routeForWorkspace(app.sqlRoute, workspaceKey), 'replace');
-  };
-
-  // #425 — the main-surface navigation API. Every surface transition goes
-  // through these three functions, so `app.mainSurface` is the ONE writer of the
-  // route: the URL is always derived from the session surface, never the other
-  // way round, and the two can never disagree.
-  const surfaceRouteKey = (): string | null =>
-    app.currentWorkspace?.key ?? app.state.workspaceKey;
-  // Surface changes stay in this tab and create one useful history entry;
-  // a View/Edit mode change replaces so presentation toggles do not pollute
-  // Back (ADR-0003).
-  // #471 — write the Dashboard the CURRENT history entry is showing onto that entry,
-  // with the scroll offset the DOM has right now.
-  //
-  // The URL deliberately carries neither (#425 keeps the selected id and the offset as
-  // session state), so an entry that records nothing cannot be returned to: Back out
-  // of a tile's Open-in-Workbench used to land on the collection's first Dashboard, at
-  // the top. It has to run BEFORE the transition, because `pushState` leaves the
-  // outgoing entry's state exactly as it was last written — and again after writing a
-  // Dashboard route, so a freshly created entry carries its id immediately (Forward
-  // into it, or a second Back, restores the same way).
-  const stampDashboardHistoryEntry = (): void => {
-    const snapshot = dashboardHistorySnapshot(
-      app.mainSurface, app.sqlRoute.workspaceKey, dashboardScrollTop() ?? 0,
-    );
-    // `null` (Query mode) is written too: it clears a snapshot this entry may carry
-    // from an earlier surface, so a Query entry never restores a Dashboard.
-    // Unguarded, exactly like `writeRoute` immediately below — a platform with no
-    // history API fails there on the same transition either way.
-    win.history.replaceState({ dash: snapshot }, '', conn.basePath + routeSearch + (loc.hash || ''));
-  };
-
-  const applyMainSurface = (surface: MainSurfaceState, method: 'push' | 'replace'): void => {
-    stampDashboardHistoryEntry();
-    app.mainSurface = surface;
-    writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
-    if (surface.kind === 'dashboard') stampDashboardHistoryEntry();
-    // #426: the tree lives in the PERSISTENT shell, so a surface transition does
-    // not repaint it as a side effect of re-rendering the work area — it needs
-    // telling. Current Dashboard/member styling is derived from this state.
-    app.invalidateDashboardTree();
-    app.renderCurrentSurface();
-  };
-
-  // #426 — deliver focus to one member of the ALREADY-RENDERED Dashboard through
-  // the route-local surface command port. `null`/wrong-surface/superseded ports
-  // all report `pending`, which means "not deliverable in place" rather than
-  // "gone" — the caller then takes the normal render transition.
-  app.focusDashboardMember = (member) => {
-    const port = app.surfaceCommands;
-    if (!port || port.surface !== 'dashboard') return 'pending';
-    return port.focusMember(member);
-  };
-
-  app.openDashboard = (request) => {
-    const resolution = resolveOpenDashboard(app.currentWorkspace, request);
-    if (resolution.status !== 'ok') {
-      // Reported, never repaired: an ambiguous id must not be resolved by a
-      // guess, and a deleted one must not silently retarget another Dashboard.
-      flashToast(resolution.status === 'duplicate'
-        ? 'This workspace has more than one dashboard with that id — resolve the duplicate before opening it.'
-        : 'That dashboard is no longer part of this workspace.', { document: doc });
-      return;
-    }
-    const sameSelection = isSameDashboardSelection(app.mainSurface, request)
-      && app.sqlRoute.surface === 'dashboard';
-    if (sameSelection && resolution.surface.kind === 'dashboard') {
-      // A repeated open of the SAME id in the SAME mode with NO member is a no-op
-      // on the surface itself — but it still CLEARS the current member (opening a
-      // Dashboard row deselects whatever member was marked), so the tree repaints.
-      if (resolution.surface.pendingFocus === null) {
-        app.mainSurface = resolution.surface;
-        app.invalidateDashboardTree();
-        return;
-      }
-      // #426 — IN-PLACE member navigation. The tree makes repeated
-      // same-Dashboard focusing a normal operation, so it must not rebuild the
-      // viewer, re-run the Dashboard, or push another history entry (#425
-      // re-rendered here, which did all three).
-      const member = resolution.surface.pendingFocus;
-      const outcome = app.focusDashboardMember(member);
-      if (outcome === 'ok') {
-        app.mainSurface = withCurrentMember(app.mainSurface, member);
-        app.invalidateDashboardTree();
-        return;
-      }
-      if (outcome === 'missing') {
-        // Non-destructive: the Dashboard stays open and unchanged, and the member
-        // is deliberately NOT marked current — nothing there to mark.
-        flashToast(member.kind === 'tile'
-          ? 'That panel is no longer on this dashboard.'
-          : 'That variable is no longer on this dashboard.', { document: doc });
-        return;
-      }
-      // `pending` — a curated filter whose control the opening wave is about to
-      // replace, or a superseded port. Fall through to the normal transition,
-      // which delivers focus at the deterministic point the node is stable.
-    }
-    // #426: reaching here with the SAME Dashboard id means the MODE changed (the
-    // same-id/same-mode cases all returned above), and a View/Edit switch must
-    // preserve the member the user navigated to — `resolveOpenDashboard` builds
-    // the surface from the request alone and cannot know one was current.
-    applyMainSurface(
-      carryCurrentMember(app.mainSurface, resolution.surface),
-      app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push',
-    );
-  };
-
-  app.showQuerySurface = () => {
-    if (app.mainSurface.kind === 'query' && app.sqlRoute.surface === 'workspace') return;
-    applyMainSurface(QUERY_SURFACE, app.sqlRoute.surface === 'dashboard' ? 'push' : 'replace');
-  };
-
-  // The Dashboard entry points that name no Dashboard themselves: the header
-  // surface switch, the Workbench "Dashboard →" nav, the `g d`/`g v`/`g e`
-  // shortcuts, and the View/Edit switch. An ALREADY-selected Dashboard wins — so
-  // a mode change retains the same document rather than retargeting the
-  // collection's first entry — and only an unselected surface falls back to the
-  // ONE compatibility Dashboard (there is no chooser until #426's tree). Either
-  // way the open is addressed BY ID. An empty collection still reaches the
-  // Dashboard surface so its "Create dashboard" state remains available.
-  app.showDashboardSurface = (mode) => {
-    const selectedId = app.mainSurface.kind === 'dashboard'
-      ? app.mainSurface.dashboardId
-      : app.currentWorkspace ? resolveCompatibilityDashboard(app.currentWorkspace).selectedId : null;
-    if (selectedId !== null) {
-      app.openDashboard({ dashboardId: selectedId, mode });
-      return;
-    }
-    const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
-    app.mainSurface = QUERY_SURFACE;
-    writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
-    // The one surface transition that does not go through `applyMainSurface`, so it
-    // has to tell the tree itself — otherwise "every transition invalidates" has a
-    // hole in it.
-    invalidateDashboardTree();
-    app.renderCurrentSurface();
-  };
-
-  // Opening a saved query is a Query-mode act: it returns to the preserved
-  // Query surface first, so the tab it opens is the one the user then sees.
-  //
-  // #443 — RESOLVE BEFORE NAVIGATING. Switching first meant an id that resolves
-  // to nothing yanked the user off whatever surface they were on and pushed a
-  // history entry, then opened no tab and said nothing — a dead click that also
-  // lost their place. Report it the way `openDashboard` reports a missing
-  // Dashboard, and leave surface and route exactly as they were. Every current
-  // caller (`dashboard-tree.ts`'s open-query command and its post-assignment
-  // reveal, `dashboard.ts`'s Open in Workbench) addresses a query it just
-  // resolved or just created, so none depended on the unconditional switch.
-  /** Resolve a saved query for opening, or report that it is gone. The shared
-   *  #443 pre-flight: nothing moves until the id resolves. */
-  const savedQueryToOpen = (queryId: string): SavedQueryV2 | null => {
-    const query = app.state.savedQueries.find((saved) => saved.id === queryId);
-    if (query) return query;
-    flashToast('That query is no longer part of this workspace.', { document: doc });
-    return null;
-  };
-  /** Switch to Query mode and put `query` in a tab (re-selecting the tab already
-   *  open on it). Spread, like saved-history.ts's own two call sites:
-   *  `loadIntoNewTab` accepts the looser `string | Json` shape a `SavedQueryV2`
-   *  satisfies structurally but not nominally (no index signature). */
-  const openQueryDocument = (query: SavedQueryV2): void => {
-    app.showQuerySurface();
-    loadIntoNewTab(app, { ...query });
-    toEditorOnMobile();
-  };
-
-  app.openSavedQuery = (queryId) => {
-    const query = savedQueryToOpen(queryId);
-    if (query) openQueryDocument(query);
-  };
-
-  // #535 — the tile's expand action. Order matters: the tree is revealed FIRST,
-  // exactly as the Library-drop settlement does it (ui/dashboard-tree.ts), so the
-  // row is expanded and armed as the tree's position and then `loadIntoNewTab`
-  // moves focus on to the editor. Revealing afterwards would steal focus back out
-  // of the editor the user was just sent to.
-  app.openPanelQuery = ({ dashboardId, tileId, queryId }) => {
-    const query = savedQueryToOpen(queryId);
-    if (!query) return;
-    revealAssignedPanel(app, dashboardId, tileId);
-    openQueryDocument(query);
-    // The tile was showing a rendered result, so the editor should too — and on
-    // the query's OWN saved view, or a chart panel would arrive as a raw table.
-    // A queryless (text) panel never exposes this action, so there is no run-less
-    // view-restore branch to mirror from saved-history.ts here.
-    //
-    // Gated on the tab that ACTUALLY opened, not on `query.sql`: `loadIntoNewTab`
-    // re-selects an existing tab for the same `savedId`, and that tab may hold an
-    // unsaved draft the saved document knows nothing about — including a DDL
-    // statement, which must never auto-run. A Spec-mode tab is skipped too, since
-    // `run` silently does nothing there.
-    const tab = app.activeTab();
-    if (tab.editorMode !== 'spec' && isAutoRunnable(tab.sqlDraft)) {
-      app.actions.run({ view: queryView(query) });
-    }
-  };
-
-  // #457 — opening a variable's option SQL is a Query-mode act for exactly the
-  // same reason opening a saved query is, and routes the same way.
-  //
-  // The variable is resolved through `dashboardVariables`, the SAME projection the
-  // Dashboards tree paints its rows from, so what opens always matches what was
-  // clicked — active, conflicted and orphaned rows alike. A name that no longer
-  // resolves (a click racing a repaint that has already dropped it) opens nothing
-  // at all, rather than a tab for a variable that does not exist.
-  app.openVariableTab = (dashboardId, variableName) => {
-    const variable = dashboardVariables(app.currentWorkspace, dashboardId)
-      .find((candidate) => candidate.name === variableName);
-    if (variable === undefined) return;
-    app.showQuerySurface();
-    // A newly inferred variable opens EMPTY; a configured one opens on its stored
-    // SQL. An orphan is configured by definition, so it opens on its SQL.
-    openVariableTab(app, { dashboardId, variableName }, variable.sql ?? '');
-    toEditorOnMobile();
-  };
-
-  // Adopt the surface the ROUTE describes. Used at boot, on Back/Forward, and
-  // after a workspace switch — the three moments the URL, not a click, decides
-  // the surface. Back/Forward INSIDE the Dashboard surface keeps whatever is
-  // explicitly selected: the URL carries no Dashboard id (#425 leaves URLs
-  // unchanged), so re-deriving one here would silently retarget the surface to
-  // the collection's first entry.
-  const adoptRouteMainSurface = (): void => {
-    const workspace = app.currentWorkspace;
-    if (app.sqlRoute.surface !== 'dashboard') { app.mainSurface = QUERY_SURFACE; return; }
-    const mode: DashboardSurfaceMode = app.sqlRoute.mode;
-    if (app.mainSurface.kind === 'dashboard') {
-      // #426: the mode change owes no new delivery, but the member the user
-      // navigated to survives a View/Edit switch — "switching View/Edit through
-      // Dashboard chrome preserves the current member where possible". The
-      // spread carries `currentMember`; `reconcileMainSurface` then drops it if
-      // committed truth no longer contains it.
-      app.mainSurface = reconcileMainSurface({ ...app.mainSurface, mode, pendingFocus: null }, workspace);
-      return;
-    }
-    // #471: the route says "a Dashboard" but carries no id, and the session no longer
-    // holds one (we are arriving from Query — typically Back out of a tile's
-    // Open-in-Workbench). The history ENTRY is the only thing that knows WHICH
-    // Dashboard this was, so it is consulted before the compatibility fallback:
-    // without it, Back reliably opened the collection's first Dashboard instead of
-    // the one the user left, at the top of the page.
-    const snapshot = readDashboardHistorySnapshot(win.history?.state, app.sqlRoute.workspaceKey);
-    if (snapshot) {
-      const restored = restoreDashboardSurface(snapshot, mode, workspace);
-      // A snapshot whose Dashboard is gone reconciles to Query; fall through to the
-      // compatibility entry only then, exactly as a boot with no snapshot does.
-      if (restored.kind === 'dashboard') { app.mainSurface = restored; return; }
-    }
-    const selectedId = workspace ? resolveCompatibilityDashboard(workspace).selectedId : null;
-    app.mainSurface = selectedId === null
-      ? QUERY_SURFACE
-      : {
-        kind: 'dashboard', dashboardId: selectedId, mode,
-        currentMember: null, pendingFocus: null, pendingScrollTop: null,
-      };
-  };
-
-  app.reloadDashboardRoute = () => {
-    // #424: fold the projected Dashboard back into the COLLECTION, preserving
-    // every other entry. A null projection means "this workspace has no
-    // Dashboard", which can only happen when the collection is already empty —
-    // never a reason to drop a stored Dashboard, so the array is left alone.
-    // #425: fold it back into the SELECTED entry, addressed by id. Writing the
-    // compatibility slot here would overwrite the collection's FIRST Dashboard
-    // while a different one is on screen. `replaceDashboard` returns null for a
-    // missing or ambiguous id, which leaves the collection untouched rather than
-    // guessing — the surface reconciles to Query mode on its next projection.
-    const selectedId = selectedDashboardId(app.mainSurface);
-    const foldProjection = (workspace: StoredWorkspaceV5): StoredWorkspaceV5 => {
-      if (!app.state.dashboard) return workspace;
-      if (selectedId === null) return withCompatibilityDashboard(workspace, app.state.dashboard);
-      return replaceDashboard(workspace, selectedId, app.state.dashboard) ?? workspace;
-    };
-    app.currentWorkspace = app.currentWorkspace
-      ? { ...foldProjection(app.currentWorkspace), queries: app.state.savedQueries }
-      : null;
-    app.renderDashboard();
-  };
+  // #588 phase 4 wave 4: the route locals + surface-generation guards,
+  // `writeRoute`, `loadWorkspaceOnBoot`, the `renderCurrentSurface` dispatch,
+  // `navigateSqlRoute`/`handleSqlPopState`, `syncSqlRoute`/
+  // `rewriteWorkspaceRoute`, `surfaceRouteKey`/`stampDashboardHistoryEntry`/
+  // `applyMainSurface`, `focusDashboardMember`, `openDashboard`/
+  // `showQuerySurface`/`showDashboardSurface`, the saved-query/panel/variable
+  // tab openers, `adoptRouteMainSurface`, and `reloadDashboardRoute` all now
+  // live in `application/surface-navigation.ts`'s `createSurfaceNavigation`
+  // (a pure extraction — every line moved verbatim, only `app.*`/`win`/`loc`/
+  // `doc` reads rewritten onto the `deps` thunks below). This shell supplies
+  // every `src/ui/**` touch point the moved code made (toast, tab loading,
+  // dashboard-tree reveal, dashboard scroll, render dispatch) as an INJECTED
+  // HOOK — `src/application/**` may not import `src/ui/**` at all, type-only
+  // imports included (build/check-boundaries.mjs). `surface: () => app` hands
+  // the module the live controller, narrowed structurally to
+  // `SurfaceStatePort` — mutations through it land on the real `app`, so
+  // nothing outside this file needs to change.
+  const nav = createSurfaceNavigation({
+    state: app.state,
+    surface: () => app,
+    repository: app.workspace,
+    session,
+    history: win.history,
+    basePath: () => conn.basePath,
+    locationHash: () => loc.hash || '',
+    locationSearch: () => loc.search,
+    hooks: {
+      applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
+      renderApp: () => app.renderApp(),
+      renderDashboard: () => app.renderDashboard(),
+      renderWorkspaceLoading: () => renderWorkspaceLoading(),
+      renderWorkspaceNotFound: () => renderWorkspaceNotFound(),
+      onCorruptWorkspace: (id) => { void resetCorruptWorkspace(id); },
+      retryPendingOAuthDocumentRecovery: () => { app.retryPendingOAuthDocumentRecovery(); },
+      closeShortcutDialog: () => app.closeShortcutDialog(),
+      resetShortcutChord: () => app.resetShortcutChord(),
+      isSignedIn: () => conn.isSignedIn(),
+      invalidateDashboardTree: () => app.invalidateDashboardTree(),
+      toast: (message, opts) => flashToast(message, { document: doc, action: opts?.action }),
+      revealAssignedPanel: (dashboardId, tileId) => revealAssignedPanel(app, dashboardId, tileId),
+      loadIntoNewTab: (query) => { loadIntoNewTab(app, { ...query }); },
+      openVariableTabUi: (binding, sql) => { openVariableTab(app, binding, sql); },
+      toEditorOnMobile: () => toEditorOnMobile(),
+      runAction: (opts) => { app.actions.run(opts); },
+      dashboardScrollTop: () => dashboardScrollTop(),
+      isAutoRunnableSql: (sql) => isAutoRunnable(sql),
+      // Four "self-dispatch" hooks (see surface-navigation.ts's own doc
+      // comment on them): read the LIVE `app.*` property at call time, so a
+      // test overriding e.g. `app.renderCurrentSurface = vi.fn()` is observed
+      // by every nav-internal cross-call exactly as the pre-extraction inline
+      // code was (every one of these four members was called via `app.foo()`
+      // property access from ANOTHER moved function, never a private local).
+      dispatchCurrentSurface: () => app.renderCurrentSurface(),
+      dispatchLoadWorkspaceOnBoot: () => app.loadWorkspaceOnBoot(),
+      dispatchShowQuerySurface: () => app.showQuerySurface(),
+      dispatchOpenDashboard: (request) => app.openDashboard(request),
+    },
+  });
+  app.nav = nav;
+  // Flat delegates for every wide-consumer member (dashboard.ts,
+  // dashboard-tree.ts, file-menu.ts, app-shell.ts, shortcuts.ts,
+  // saved-history.ts, tests) — `handleSqlPopState`/`focusDashboardMember`
+  // (router-private) and `syncSqlRoute`/`rewriteWorkspaceRoute` (repointed to
+  // main.ts/file-menu.ts) have NO flat delegate; reach them via `app.nav.*`.
+  app.navigateSqlRoute = nav.navigateSqlRoute;
+  app.renderCurrentSurface = nav.renderCurrentSurface;
+  app.loadWorkspaceOnBoot = nav.loadWorkspaceOnBoot;
+  app.reloadDashboardRoute = nav.reloadDashboardRoute;
+  app.openDashboard = nav.openDashboard;
+  app.showQuerySurface = nav.showQuerySurface;
+  app.showDashboardSurface = nav.showDashboardSurface;
+  app.openSavedQuery = nav.openSavedQuery;
+  app.openPanelQuery = nav.openPanelQuery;
+  app.openVariableTab = nav.openVariableTab;
+  app.captureSurfaceGeneration = nav.captureSurfaceGeneration;
+  app.isSurfaceGenerationCurrent = nav.isSurfaceGenerationCurrent;
+  app.refreshCurrentSurfaceAfterStale = nav.refreshCurrentSurfaceAfterStale;
 
   // --- actions registry --------------------------------------------------
   const withAuthenticatedExecution = <T>(operation: () => T): T | undefined =>
@@ -2495,7 +2167,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     renderResults(app);
   };
   if (typeof win.addEventListener === 'function') {
-    win.addEventListener('popstate', () => { void app.handleSqlPopState(); });
+    win.addEventListener('popstate', () => { void app.nav.handleSqlPopState(); });
   }
   return app;
 }

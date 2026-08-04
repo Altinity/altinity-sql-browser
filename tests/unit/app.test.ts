@@ -836,7 +836,7 @@ describe('createApp basics', () => {
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
 
     location.search = '?ws=recovery';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.activeTab().sqlDraft).toBe('SELECT newer in-memory edit');
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_KEY)).toBe(checkpoint);
     expect(store.getItem(OAUTH_DOCUMENT_RECOVERY_VALIDATED_CALLBACK_KEY)).not.toBeNull();
@@ -6596,7 +6596,7 @@ describe('unified /sql routing', () => {
 
   it('resynchronizes route state after bootstrap cleans an OAuth callback URL', () => {
     const app = createApp(env());
-    app.syncSqlRoute('?ws=ops&surface=dashboard&mode=view');
+    app.nav.syncSqlRoute('?ws=ops&surface=dashboard&mode=view');
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'ops', mode: 'view',
     });
@@ -6958,7 +6958,7 @@ describe('unified /sql routing', () => {
     it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.surfaceCommands = null;
-      expect(app.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
+      expect(app.nav.focusDashboardMember({ kind: 'tile', id: 't1' })).toBe('pending');
     });
 
     it('a legacy no-chooser entry point opens the compatibility Dashboard BY ID', () => {
@@ -7280,7 +7280,7 @@ describe('unified /sql routing', () => {
       app.renderCurrentSurface();
       expectSurface(app, 'dashboard');
       location.search = '?ws=ops';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // The still-mounted Query controls must stay live: the pre-#425 teardown on
       // this path disabled every control under the root, permanently.
       expectSurface(app, 'query');
@@ -7352,14 +7352,14 @@ describe('unified /sql routing', () => {
       const { app, location } = readyApp(['first', 'second'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'second', mode: 'edit' });
       location.search = '?ws=ops&surface=dashboard&mode=view';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // The URL carries no Dashboard id, so re-deriving one here would silently
       // retarget the surface to the collection's first entry.
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'second', mode: 'view', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
       location.search = '?ws=ops';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toEqual({ kind: 'query' });
     });
 
@@ -7392,7 +7392,7 @@ describe('unified /sql routing', () => {
       // "a Dashboard, in view mode".
       window.history.replaceState(leaving, '', '/sql?ws=ops&surface=dashboard&mode=view');
       location.search = '?ws=ops&surface=dashboard&mode=view';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toMatchObject({
         kind: 'dashboard', dashboardId: 'second', mode: 'view',
         // A restored entry owes no focus DELIVERY: the ring is not re-flashed. (The
@@ -7416,7 +7416,7 @@ describe('unified /sql routing', () => {
       );
       app.mainSurface = { kind: 'query' };
       location.search = '?ws=ops&surface=dashboard';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       // Falls back to the compatibility entry, exactly as a boot with no snapshot
       // does — never to the other workspace's remembered id.
       expect(app.mainSurface).toMatchObject({ dashboardId: 'first', pendingScrollTop: null });
@@ -7430,7 +7430,7 @@ describe('unified /sql routing', () => {
       );
       app.mainSurface = { kind: 'query' };
       location.search = '?ws=ops&surface=dashboard';
-      await app.handleSqlPopState();
+      await app.nav.handleSqlPopState();
       expect(app.mainSurface).toMatchObject({ dashboardId: 'first' });
     });
   });
@@ -7441,7 +7441,7 @@ describe('unified /sql routing', () => {
       origin: 'https://ch.example', pathname: '/sql',
       search: '?ws=old&surface=dashboard&mode=view', hash: '', host: 'ch.example',
     } as Location }));
-    app.rewriteWorkspaceRoute('new_workspace');
+    app.nav.rewriteWorkspaceRoute('new_workspace');
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'new_workspace', mode: 'view',
     });
@@ -7483,7 +7483,7 @@ describe('unified /sql routing', () => {
     );
     app.renderCurrentSurface = vi.fn();
     location.search = '?ws=second&surface=dashboard&mode=view';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.sqlRoute).toEqual({
       surface: 'dashboard', workspaceKey: 'second', mode: 'view',
     });
@@ -7868,9 +7868,9 @@ describe('unified /sql routing', () => {
     }));
     app.renderCurrentSurface = vi.fn();
     location.search = '?ws=b';
-    const backToB = app.handleSqlPopState();
+    const backToB = app.nav.handleSqlPopState();
     location.search = '?ws=c';
-    const forwardToC = app.handleSqlPopState();
+    const forwardToC = app.nav.handleSqlPopState();
     const c: StoredWorkspaceV5 = {
       storageVersion: 5, id: 'c', key: 'c', name: 'C', queries: [], dashboards: [],
     };
@@ -7902,7 +7902,7 @@ describe('unified /sql routing', () => {
     );
     location.search = '?ws=a&surface=dashboard&mode=view';
 
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
 
     expect(loadByKey).not.toHaveBeenCalled();
     expect(app.retryPendingOAuthDocumentRecovery).toHaveBeenCalledOnce();
@@ -7928,7 +7928,7 @@ describe('unified /sql routing', () => {
     app.retryPendingOAuthDocumentRecovery = vi.fn(() => ({ kind: 'absent' } as const));
     app.renderCurrentSurface = vi.fn();
 
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
 
     expect(app.workspace.loadByKey).toHaveBeenCalledWith('a');
     expect(app.currentWorkspace).toBe(workspace);
@@ -7953,7 +7953,7 @@ describe('unified /sql routing', () => {
     expect(app.state.shortcutsOpen.value).toBe(true);
     expect(document.querySelector('.modal-backdrop')).not.toBeNull();
     location.search = '?ws=a';
-    await app.handleSqlPopState();
+    await app.nav.handleSqlPopState();
     expect(app.state.shortcutsOpen.value).toBe(false);
     expect(document.querySelector('.modal-backdrop')).toBeNull();
     expect(qs(app.root, '.workbench')).not.toBeNull();
@@ -8298,11 +8298,11 @@ describe('unified /sql routing', () => {
       }) as typeof window.addEventListener,
     );
     const app = createApp(env());
-    app.handleSqlPopState = vi.fn(async () => {});
+    app.nav.handleSqlPopState = vi.fn(async () => {});
     expect(listener).not.toBeNull();
     listener!(new PopStateEvent('popstate'));
     await Promise.resolve();
-    expect(app.handleSqlPopState).toHaveBeenCalledOnce();
+    expect(app.nav.handleSqlPopState).toHaveBeenCalledOnce();
     addEventListener.mockRestore();
   });
 
