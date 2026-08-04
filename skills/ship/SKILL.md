@@ -1,208 +1,240 @@
 ---
 name: ship
-description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, implement code and tests, review, open a PR, and merge after approval; unattended runs may auto-merge only after a clean third ChatGPT review and green CI. Multi-phase attended work uses one PR and session per phase. Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, or `/ship ISSUE unattended`.
+description: Ship an altinity-sql-browser roadmap issue or phase end-to-end — resolve scope, plan against an invariant map, implement code and tests, run a budgeted readiness review, open a PR, obtain one clean exact-head ChatGPT review, and merge after approval (attended) or after strict certification (unattended). Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, `/ship ISSUE unattended`, or `/ship ISSUE1,ISSUE2 unattended`.
 ---
 
-# /ship — drive a roadmap issue (or one of its phases) through the full cycle
+# /ship — deliver an altinity-sql-browser issue
 
-This runs the ship cycle for the **altinity-sql-browser** repo; if the current working
-directory isn't that repo, stop and say so.
+Use only in the `altinity-sql-browser` repository. Otherwise stop and say so.
 
-Be coordinator. Run subagents with a model suited to the subtask: advanced model/reasoning
-for complicated work such as planning and review, a cheap model for simple operations like
-searching/editing files or GitHub queries.
+Follow `CLAUDE.md` (hard rules 1–5 and Working discipline) throughout. In attended mode,
+act as coordinator and implementer. In unattended mode, act only as coordinator and use
+fresh workers for implementation units.
 
-Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section). Proceed
-autonomously on the routine path; **stop and ask only at the points marked 🛑**. Unattended
-mode has no approval gates, including at merge, but its automatic-merge proof is stricter
-(see step 0 and `references/unattended.md`).
+Proceed autonomously except at points marked `STOP`. Unattended mode has no approval
+stops, but it must skip ambiguous or blocked work rather than invent decisions.
 
-> Sandbox note: `grep` in Bash is intercepted here — use `rg PATTERN > "$TMPDIR/out"` then
-> Read, never pipe to `grep`. Capture long command output to a file and Read it (e.g.
-> `npm test > "$TMPDIR/test.log" 2>&1`), and Read only the tail on green / only the matched
-> failures on red. The coverage table is long and is the biggest accidental context sink in
-> a run.
+## Operating rules
 
-> GitHub note: **use the authenticated `gh` CLI directly; never the GitHub connector** — its
-> collaborator preflight is known to fail for this Altinity organization repo. On this repo
-> a bare `gh issue view` and `gh pr edit` both error: read with `--json`, and edit PR/issue
-> bodies with `gh api -X PATCH`. Never build a body with `$(cat …)`/`sed` inside a quoted
-> heredoc — write the body to a file and pass `-F body=@<file>`.
+### GitHub and workspace
 
-> Parallel / worktree note: this skill assumes it **owns its working directory**. To run
-> several `/ship`s at once, launch each session with `claude --worktree <name>` — **never run
-> two `/ship`s in the same dir**. Only parallelize dependency-independent work.
+- Use the authenticated `gh` CLI directly for this repository — never the GitHub
+  connector MCP (its collaborator preflight fails for this org).
+- Bare `gh issue view` and `gh pr edit` error on this repo: read with `--json`, and edit
+  PR/issue bodies with `gh api -X PATCH` and `-F body=@<file>`. Never build a body with
+  `$(cat …)` inside a quoted heredoc — write it to a file.
+- Never force-push or mutate `main` unless explicitly authorized.
+- One `/ship` run owns one working directory. Parallel runs require separate worktrees
+  (`claude --worktree <name>`); parallelize only dependency-independent units with
+  disjoint expected file footprints.
+- After any agent batch returns, verify actual state with `git diff`, `git log`, and
+  `gh pr list` — never trust a self-report.
 
-> Subagent note: any `Agent` call this skill makes — planning, review, analysis — is
-> **read-only by default**, and inherits this entire file plus CLAUDE.md just by being spawned
-> mid-run. Inheriting these steps is not the same as being told to execute them. State the
-> boundary explicitly in every subagent prompt (no Edit/Write, no git/gh mutating commands, no
-> TaskCreate/TaskUpdate, no memory writes — return only the requested output), and prefer a
-> fresh non-`fork` agent for this kind of fan-out. **Steps 5–8 — reconcile, PR, the post-PR
-> ChatGPT second opinion, and the approval/merge stage — are performed by this session only, never
-> delegated.** The high-risk *plan*-stage `chatgpt-review` call in step 2
-> (`references/per-issue-cycle.md`) is different: it never touches git/gh, so a worker may run
-> it directly even in unattended mode — only the post-PR call in step 7 is session-only.
-> After any batch of subagents returns, verify with `git diff`, `git log`, and `gh pr list`
-> before trusting a self-report.
+### Subagents
 
-## 0 — Resolve the argument
+Planning and review agents are read-only unless explicitly assigned implementation work.
+State the boundary in every prompt:
+
+- no Edit or Write
+- no git or gh mutation
+- no task or memory mutation
+- return analysis only
+
+Use fresh, non-forked agents for independent review (a fork inherits this in-progress
+mutating workflow). Pick the model per subtask: inherited model for planning/review and
+high-risk work, a cheaper capable model for mechanical searches and edits. The
+coordinator alone owns remote GitHub mutations, reconciliation, PR creation,
+review-session coordination, approval handling, and merge.
+
+### Output capture
+
+`grep` in Bash is intercepted here — use `rg PATTERN > "$TMPDIR/out"` then Read. Capture
+long command output to files (`npm test > "$TMPDIR/test.log" 2>&1`); Read only the tail
+on green and the focused failure sections on red. The coverage table is the biggest
+accidental context sink in a run.
+
+## 0 — Resolve invocation
 
 | Invocation | Mode | Scope |
 |---|---|---|
-| `/ship 447` | attended | the **next unshipped phase** of #447 (or the whole issue if it has no phases) |
+| `/ship 447` | attended | next unshipped phase, or whole issue if unphased |
 | `/ship 447.2` | attended | phase 2 of #447, forced |
-| `/ship 447 unattended` | coordinator | all remaining phases of #447; auto-merge only after the third clean ChatGPT pass |
-| `/ship 424,425,426 unattended` | coordinator | several whole issues; same automatic-merge proof |
+| `/ship 447 unattended` | unattended | all remaining phases of #447 |
+| `/ship 424,425 unattended` | unattended | several whole issues |
 
-Attended is always the default. **Unattended requires the literal word** — never infer it.
+Attended is the default. **Unattended requires the literal word** — never infer it.
 
-For unattended, Read `references/unattended.md` now and follow it; it replaces steps 1, 6, 7
-and 8 below and reuses steps 2–5 as the worker contract.
+For unattended, Read `references/unattended.md` now and follow it; it replaces steps 1,
+6, 7 and 8 below and reuses steps 2–5 as the worker contract.
 
-## 1 — Orient, resolve the phase, set up the workspace
+## 1 — Orient and assemble the delivery contract
 
-**Load the issue to a file, not into context:**
+**Read `references/repo-footguns.md` now** — repo-specific operational knowledge that
+applies across steps 2–8.
+
+Load the issue body to a file, not into context:
 
 ```sh
 gh issue view <ISSUE> --json body -q .body > "$TMPDIR/issue-<ISSUE>.md"
 ```
 
-**Detect the phase structure**, in this order of precedence:
+Detect phases in this order of precedence:
 
-1. a `## Phases` checklist of `- [ ] N — title` rows → those are the phases;
-2. `### Phase N …` headings (e.g. `### Phase 1 / PR 1 — Hard removal…`, typically under a
-   `## Delivery phases` section) → those are the phases;
-3. neither → the issue is single-phase; ship it whole, exactly as before.
+1. a `## Phases` checklist of `- [ ] N — title` rows;
+2. `### Phase N` headings (typically under `## Delivery phases`);
+3. neither → single-phase; ship the issue whole.
 
-**Read the phase log** — the authoritative record of what has already shipped. Never infer
-state from PR titles: they go stale when a phase count is re-scoped mid-flight (#427 shipped
-PRs titled `(1/3)` and `(2/2)`).
+Find the authoritative `<!-- ship-log -->` comment — never infer phase state from PR
+titles (they go stale when phase counts are re-scoped mid-flight):
 
 ```sh
 gh api repos/{owner}/{repo}/issues/<ISSUE>/comments --paginate \
   --jq '.[] | select(.body | startswith("<!-- ship-log -->")) | .id' > "$TMPDIR/logid"
 ```
 
-If it exists, read that comment's body; the first phase not marked `shipped` is the target
-(unless `/ship <ISSUE>.<N>` forced one). If it doesn't exist, the target is phase 1.
+The target is the first phase not marked `shipped`, unless the invocation forces one.
+If no log exists, the target is phase 1.
 
-**Read only what this phase needs.** From `$TMPDIR/issue-<ISSUE>.md`, Read: the header
-(depends-on / supersedes / owner decisions), the phase list, the target phase's own section,
-its matching `### Phase N` subsection under `## Tests` if the issue splits tests that way,
-the global `## Acceptance criteria`, and `## Non-goals`. **Skip the other phases' detail** —
-it is spec you are not implementing this run.
+**Read only what this unit needs** from the issue file: the header (depends-on /
+supersedes / owner decisions), the phase list, the target phase's own section, its
+matching `### Phase N` subsection under `## Tests` if the issue splits tests that way,
+the global `## Acceptance criteria`, and `## Non-goals`. Skip other phases' detail.
 
-**Assemble the phase contract.** A phase's definition of done is the *union* of:
+**The delivery contract** is the union of: the phase's implement list, its per-phase
+`## Tests` subsection, any acceptance-gate blockquote in the phase section, the subset
+of global acceptance criteria this phase claims (name that subset explicitly, so the
+remainder is visibly deferred rather than silently dropped), and `## Non-goals`.
+Missing the per-phase `## Tests` subsection because it lives outside the phase heading
+is the most likely way to under-deliver a phase — check every time.
 
-- the phase section's own implement list;
-- the matching per-phase `## Tests` subsection, if the issue keeps tests in a separate section;
-- any acceptance-gate blockquote inside the phase section;
-- the subset of the global `## Acceptance criteria` this phase claims — **name that subset
-  explicitly in the plan**, so the remainder is visibly deferred rather than silently dropped;
-- `## Non-goals`, which always applies.
+`STOP` — check dependencies for *this unit*, not just the issue: the `Depends on:`
+header and anything the target phase's own section references. Blocked → say what
+blocks it and offer the highest unblocked unit instead.
 
-Missing the per-phase `## Tests` subsection because it lives outside the phase heading is the
-most likely way to under-deliver a phase. Check for it every time.
+### Branch model (once per issue, recorded in the ship log)
 
-**🛑 Check dependencies for *this phase*, not just the issue.** Phase-level blockers are real:
-a later phase can depend on an issue the earlier ones don't. Check the issue's `Depends on:`
-header *and* any issue referenced by the target phase's own section. Blocked → stop, say which
-phase is blocked on what, and offer the highest unblocked phase instead.
+> Can each phase land on `main` green **and** self-consistent — additive, behind a
+> flag, or pure-logic-then-wire?
 
-**🛑 Decide the branch model** (once per issue, recorded in the phase log):
+- **Yes → one branch and PR per phase off fresh `main`** (the default):
+  `git fetch origin && git checkout main && git pull && git checkout -b <type>/<slug>-<ISSUE>p<N>`
+- **No → one integration branch for the whole issue** off `origin/main`, one PR at the
+  end. Say so explicitly and record it in the ship log.
 
-> Can each phase land on `main` green **and** self-consistent — additive, behind a flag, or
-> pure-logic-then-wire?
+Single-phase issue: branch `<type>/<slug>-<ISSUE>` off `main` — or off the dependency
+branch if it builds on unmerged work. When a phase is subtractive, call out the revert
+cost (backing a deletion out of `main` alone is expensive) — a reason to raise it, not
+to silently switch models.
 
-- **Yes → one branch per phase off fresh `main`.** This is the default.
-  `git fetch && git checkout main && git pull && git checkout -b <type>/<slug>-<ISSUE>p<N>`.
-  Each phase gets its own PR and its own human approval gate before this session may merge it.
-- **No → one integration branch for the whole issue**, off `origin/main`, one PR at the end.
-  Say so explicitly and record it in the phase log.
-
-Call out the revert cost when a phase is subtractive: once a phase that *deletes* a subsystem
-is on `main`, backing it out alone is expensive. That is a reason to raise it with me, not a
-reason to silently switch models.
-
-For a single-phase issue: branch `<type>/<slug>-<ISSUE>` (e.g. `feat/webkit-e2e-69`), off
-`main` — or off the dependency branch if it builds on **unmerged** work.
-
-**Deps:** if `node_modules` is missing (fresh worktree), run `npm ci` before any `npm test` /
-`npm run build`. After a `git pull` on `main`, run `npm ci` immediately rather than waiting
-for `pretest` to fail on a newly merged dependency.
+Run `npm ci` after updating `main` when dependencies may have changed or `node_modules`
+is absent.
 
 ## 2–5 — The per-issue cycle
 
-**Read `references/per-issue-cycle.md` now**, before writing any plan or code, and follow it.
-It holds plan → implement → review → reconcile, and it is the same contract unattended workers
-are held to — one source of truth, so the two paths cannot drift.
+**Read `references/per-issue-cycle.md` now**, before writing any plan or code, and
+follow it. It holds plan → implement → readiness review → reconcile, including the risk
+classification, the invariant map, the review budgets, and the exact local gate. It is
+the same contract unattended workers are held to — one source of truth, so the two
+paths cannot drift.
 
-## 6 — PR
+## 6 — Create the PR
 
-- Performed by **this session only** — never delegate the commit/push/PR-create sequence.
-- Commit using the repo's footer convention (Co-Authored-By + Claude-Session).
+Performed by **this session only** — never delegate commit/push/PR-create.
+
+- Commit with the repo footer convention (Co-Authored-By + Claude-Session), then
   `git push -u origin <branch>`.
-- `gh pr create --base main` — title + body per `.github/PULL_REQUEST_TEMPLATE.md`.
-- Title: `<type>(#<ISSUE>): <summary>` — for a phase, append ` (phase <N>)`. Do **not** encode
-  a running count like `(2/3)`; the phase log owns the count and totals change.
-- Body: **`Closes #<ISSUE>`** only when this PR completes the *whole issue* — i.e. it is the
-  final phase. Every earlier phase uses **`Part of #<ISSUE>`**.
-- Tick the checklist (gate, layers, deps, CHANGELOG, reconcile). Report the **PR URL**.
+- `gh pr create --base main`, title + body per `.github/PULL_REQUEST_TEMPLATE.md`.
+- Title: `<type>(#<ISSUE>): <summary>`; append ` (phase <N>)` for phased work. Never a
+  running count like `(2/3)` — the ship log owns the count and totals change.
+- `Closes #<ISSUE>` only when this PR completes the whole issue; earlier phases use
+  `Part of #<ISSUE>`.
+- Body covers: contract coverage, invariant verification, sabotage cases, tests, build,
+  and e2e results. Tick the template checklist. Report the PR URL.
 
-## 7 — Third-party review (ChatGPT)
+## 7 — ChatGPT exact-head review
 
-Read `skills/chatgpt-review/SKILL.md`, write a focused review question to the approved
-temporary directory, then run `node skills/chatgpt-review/scripts/chatgpt-review.mjs pr
-<PR-URL> --question-file <file>`. Retain the returned JSON, especially its opaque `session`
-handle, reviewed SHA, and public comment URL. Verify every claim against the real repo before
-trusting it.
+Performed by this session only. Read `skills/chatgpt-review/SKILL.md`, write a focused
+question file to the approved temporary directory containing: the unit contract and
+acceptance subset, the invariant map, compatibility requirements, tests and sabotage
+cases, and the behaviors that need adversarial review. Then:
 
-- This is a **second opinion, not a gate** — a negative or contested verdict does not block
-  progress to step 8, but every claim you accept as real must be fixed here.
-- Apply real findings, commit (`fix(#<ISSUE>): address ChatGPT review feedback` or fold into
-  the PR's existing commits per the repo's amend policy), `npm test`, and `git push`. Then run
-  the same command with `--session <handle>` so ChatGPT fetches the new head and reassesses
-  every earlier finding in the original conversation. Each accepted-and-fixed pass gets its
-  own pushed commit and separately labelled public review comment. Stop early when a pass has
-  no accepted findings, and never exceed three total passes (initial plus two fix reviews).
-- If `chatgpt-review` reports it couldn't reach ChatGPT (agent Chrome down, network denied),
-  don't block the ship on it — note the skip in the merge-gate summary (step 8) and continue.
-- Note what you verified vs. dismissed in the phase log / PR comment so the human at the merge
-  gate sees it, not just a silent pass. Surface any findings still open after pass three and
-  include every returned public comment URL in the merge-gate summary.
+```sh
+node skills/chatgpt-review/scripts/chatgpt-review.mjs pr <PR-URL> --question-file <FILE>
+```
 
-## 8 — 🛑 Merge approval, then merge
+Retain the returned JSON: status, opaque `session` handle, reviewed SHA, and public
+comment URL. **Verify every substantive finding against the real repository before
+trusting it** — a second opinion, not a source of truth. Every finding ends in exactly
+one state: accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop
+one.
 
-Pause here and ask for explicit approval to merge. Do not merge merely because implementation,
-CI, or review is green. Once the user approves, this same session is authorized to merge the
-PR to `main`; the user does not need to run the merge manually.
+Fix pass: apply accepted findings, run the full local gate, commit, push, wait for
+green CI at the new head, then rerun with `--session <SESSION_HANDLE>` so ChatGPT
+reassesses every earlier finding in the same conversation. Each accepted-and-fixed pass
+gets its own pushed commit and separately labelled public review comment.
 
-1. Confirm the phase log comment from step 5 is already posted and names this PR.
-2. Summarise what shipped and give the PR link.
-3. `npm run local` to serve the just-built app for manual testing. If another process holds
-   the port, kill **your tracked PID** or the process bound to that port — never
-   `pkill -f "<launch command>"`, which kills other sessions' servers. Killing the tracked
-   npm PID can leave `python3 build/local.py` orphaned on 8900; check `lsof` and kill the
-   orphan too. A stale server already serving `dist/` picks up a fresh build per request, so
-   usually no restart is needed at all.
-4. If approval is withheld, leave the PR open and report the exact outstanding condition.
-5. After approval, re-read the PR head SHA and required checks so approval cannot race a new
-   push. Require all checks green, then run `gh pr merge <PR> --merge --delete-branch` (the
-   repository's established merge-commit convention). Verify the PR reports `MERGED` and that
-   `origin/main` contains the merged PR before marking the phase `shipped` in the phase log.
-6. **If phases remain, end with the session-reset instruction**, verbatim in substance:
+### Certification rule
 
-   > Phase `<N>` was merged as PR `<url>`. Start a **fresh session** — `/clear`, then
-   > `/ship <ISSUE>` — to pick up phase `<N+1>`. Don't resume this one with
-   > `claude --continue` / `--resume`; that restores this context instead of clearing it.
+A **certified head** is a completed ChatGPT review pass at the exact current PR head
+with no accepted actionable findings remaining.
 
-   Context does not reset on its own. Running `/ship <ISSUE>` again in *this* session stacks
-   the next phase's plan, implementation, test output and review on top of everything above,
-   which is what auto-compaction then eats unpredictably. The fresh session is safe **only
-   because step 5 wrote the handoff to the issue first** — this conversation is not the record.
+- Pass 1 clean at the current head → certified; stop reviewing.
+- Never exceed three total passes. Three is a **failure ceiling, not a ritual** — never
+  run an extra pass over an already-certified head.
+- **After certification, push nothing.** Any push voids the certification and burns
+  another pass — which is why all reconcile commits (step 5) land *before* the PR and
+  certification. Ship-log comment edits are fine; comments are not commits.
+- **Unattended:** certification is a hard merge requirement. No certified head after
+  three passes → leave the PR open and report the failed proof condition.
+- **Attended:** certification is the goal, but the human at the merge gate is the
+  authority. If ChatGPT is unreachable (agent Chrome down, network denied), disclose
+  the skip in the gate summary and continue. If the ceiling is reached with findings
+  still contested or unresolved, continue to the gate with them listed — explicit human
+  approval overrides.
 
-## After — friction → memory
+## 8 — `STOP` Attended merge gate
 
-If anything needed retries or surprised you (test / env / scope), save a memory so the next
-`/ship` doesn't repeat it. This session does the saving, not a subagent it spawned.
+Ask for explicit approval to merge. Do not merge merely because implementation, CI, and
+review are green. Summarize:
+
+- shipped behavior, PR URL, current head SHA
+- CI state
+- whether the head is certified; ChatGPT comment URLs
+- accepted, rejected, and **unresolved** findings — the human rules on unresolved ones
+- manual testing instructions
+
+Serve the app with `npm run local` for manual verification (see footguns for port/PID
+discipline). If approval is withheld, leave the PR open and report the exact
+outstanding condition.
+
+After approval:
+
+1. Re-read the PR head SHA — approval must not race a new push.
+2. Confirm the certified SHA still matches, or restate the disclosed skip/override.
+3. Confirm required checks are green at that head.
+4. `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit convention).
+5. Verify the PR reports `MERGED` and `origin/main` contains the merge.
+6. Update the ship-log row to `shipped`.
+
+If phases remain, end with this instruction in substance:
+
+> Phase `<N>` was merged as PR `<url>`. Start a **fresh session** — `/clear`, then
+> `/ship <ISSUE>` — for phase `<N+1>`. Don't resume this one with `--continue`/
+> `--resume`; that restores this context instead of clearing it.
+
+Context does not reset on its own; running `/ship` again in this session stacks a
+second phase's plan, tests, and reviews on top of this one, which auto-compaction then
+eats unpredictably. The fresh session is safe only because step 5 wrote the handoff to
+the issue first — this conversation is not the record.
+
+## 9 — Final report
+
+Report: unit status, PR and merge URLs, final SHA, CI state, tests/build/e2e results,
+sabotage verification, ChatGPT comment URLs with accepted/rejected/unresolved findings,
+skipped units, and ship-log updates.
+
+## 10 — Friction → memory
+
+If anything needed retries or surprised you (test / env / scope), save a concise memory
+so the next `/ship` doesn't repeat it. Record stable process knowledge, not transient
+review chronology. This session does the saving, never a subagent.
