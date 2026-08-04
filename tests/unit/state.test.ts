@@ -264,6 +264,53 @@ describe('createState', () => {
       }
     });
   });
+  // #591: the five remaining persisted-domain reads left after #587/#586
+  // (varValues, filterActive, varRecent, varRecentDisabled, history) now
+  // decode through core/state-codec.ts rather than trusting an `as` cast.
+  // These prove the WIRING (createState calls the decoder for each field) —
+  // the decoders' own behavior is unit-tested directly in
+  // tests/unit/state-codec.test.ts.
+  describe('createState — fail-closed persisted-domain decodes (#591)', () => {
+    it('varValues fails closed on a bad top level, and drops malformed entries', () => {
+      expect(createState(reader({ [KEYS.varValues]: 'oops' })).varValues).toEqual({});
+      expect(createState(reader({ [KEYS.varValues]: { a: 'x', b: 42 } })).varValues).toEqual({ a: 'x' });
+    });
+
+    it('filterActive fails closed on a bad top level', () => {
+      expect(createState(reader({ [KEYS.filterActive]: ['a'] })).filterActive).toEqual({});
+    });
+
+    it('varRecent fails closed on a bad top level, and drops malformed per-name entries', () => {
+      expect(createState(reader({ [KEYS.varRecent]: { version: 99 } })).varRecent)
+        .toEqual({ version: 1, nextSeq: 1, byName: {} });
+      const s = createState(reader({
+        [KEYS.varRecent]: {
+          version: 1, nextSeq: 4,
+          byName: { good: [{ value: 'a', seq: 1 }, { value: 2, seq: 2 }], bad: 'not-an-array' },
+        },
+      }));
+      expect(s.varRecent).toEqual({ version: 1, nextSeq: 4, byName: { good: [{ value: 'a', seq: 1 }] } });
+    });
+
+    it('varRecentDisabled fails closed to false for a non-boolean stored value', () => {
+      expect(createState(reader({ [KEYS.varRecentDisabled]: 'yes' })).varRecentDisabled).toBe(false);
+    });
+
+    it('history fails closed on a bad top level, and keeps only well-formed entries', () => {
+      expect(createState(reader({ [KEYS.history]: { not: 'array' } })).history).toEqual([]);
+      const s = createState(reader({
+        [KEYS.history]: [
+          { id: 'h1', sql: 'x', ts: 1, rows: 1, ms: 2 },
+          { id: 'bad-missing-sql', ts: 1, rows: 1, ms: 2 },
+          { id: 'h2', sql: 'y', ts: 2, rows: null, ms: 3 },
+        ],
+      }));
+      expect(s.history).toEqual([
+        { id: 'h1', sql: 'x', ts: 1, rows: 1, ms: 2 },
+        { id: 'h2', sql: 'y', ts: 2, rows: null, ms: 3 },
+      ]);
+    });
+  });
   // #586 — rightInspectorPx collapses cellDrawerPx/docPanePx into one
   // preference; a browser that already had either legacy value must keep it
   // across the upgrade rather than silently reset to the default.
@@ -340,6 +387,49 @@ describe('createState', () => {
     it('a leading-whitespace numeric value still parses (parseInt tolerates it, matching every other numeric pref read in this file)', () => {
       const s = createState(reader({ [KEYS.rightInspectorPx]: '  650' }));
       expect(s.rightInspectorPx).toBe(650);
+    });
+
+    // #591 (inherited from #586): `firstValidPx` used bare `parseInt` +
+    // `Number.isFinite`, which silently accepts a non-numeric tail
+    // (`parseInt` stops at the first invalid character rather than
+    // rejecting the whole string). Each lenient form below must now be
+    // REJECTED — only a complete trimmed, optionally-signed decimal integer
+    // is a valid candidate.
+    it('rejects each lenient parseInt form, falling through to a valid docPanePx', () => {
+      for (const lenient of ['420px', '1e3', '0x10', '12abc']) {
+        const s = createState(reader({
+          [KEYS.rightInspectorPx]: lenient,
+          [KEYS.docPanePx]: '420',
+        }));
+        expect(s.rightInspectorPx).toBe(420);
+      }
+    });
+
+    it('a corrupt-lenient canonical value falls through to a valid docPanePx', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '1e3',
+        [KEYS.docPanePx]: '420',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+    });
+
+    it('a corrupt canonical AND a corrupt docPanePx both fall through to a valid cellDrawerPx', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '0x10',
+        [KEYS.docPanePx]: '0x10',
+        [KEYS.cellDrawerPx]: '560',
+      }));
+      expect(s.rightInspectorPx).toBe(560);
+    });
+
+    it('all three lenient-corrupt candidates fall back to the 480 default, never NaN', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '420px',
+        [KEYS.docPanePx]: '1e3',
+        [KEYS.cellDrawerPx]: '0x10',
+      }));
+      expect(s.rightInspectorPx).toBe(480);
+      expect(Number.isNaN(s.rightInspectorPx)).toBe(false);
     });
   });
   it('defaults the reader to storage helpers', () => {

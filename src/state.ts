@@ -14,6 +14,12 @@ import {
   loadStr as loadStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
+import {
+  decodeStoredVarValues, decodeStoredFilterActive, decodeStoredRecentMap,
+  decodeStoredVarRecentDisabled, decodeStoredHistory, HISTORY_MAX_ENTRIES,
+} from './core/state-codec.js';
+import type { HistoryEntry } from './core/state-codec.js';
+import type { RecentMap } from './core/recent-values.js';
 import type { ResultSort } from './core/sort.js';
 // Type-only: `dashboard-tree-ui-state.ts` is a pure leaf with no imports of its
 // own, so naming its state shape here introduces no cycle.
@@ -317,34 +323,23 @@ export interface QueryTab {
   chSession?: string;
 }
 
-/** One executed-query history entry (most-recent first, capped at 50). */
-export interface HistoryEntry {
-  id: string;
-  sql: string;
-  ts: number;
-  /** Row count of the recorded run; null for raw-FORMAT results and scripts. */
-  rows: number | null;
-  ms: number;
-}
+// One executed-query history entry — moved to core/state-codec.ts (#591) so
+// the decode module owns its own type; re-exported here so every existing
+// importer of HistoryEntry-from-state keeps compiling unchanged (same
+// ResultSort → core/sort.ts precedent immediately below).
+export type { HistoryEntry } from './core/state-codec.js';
 
 // The global results-table sort — moved to core/sort.ts (#276 Phase 1) so
 // the pure sort module owns its own type; re-exported here so every existing
 // importer of ResultSort-from-state keeps compiling unchanged.
 export type { ResultSort } from './core/sort.js';
 
-/** One recorded recent value for a variable (core/recent-values.js). */
-export interface RecentValueEntry {
-  value: string;
-  /** Strictly-increasing global counter — one true recency order across names. */
-  seq: number;
-}
-
-/** The versioned per-variable MRU map persisted at `asb:varRecent` (#171). */
-export interface RecentMap {
-  version: number;
-  nextSeq: number;
-  byName: Record<string, RecentValueEntry[]>;
-}
+// One recorded recent value for a variable, and the versioned per-variable
+// MRU map persisted at `asb:varRecent` (#171) — both owned by
+// core/recent-values.ts; re-exported here so every existing importer of
+// RecentValueEntry/RecentMap-from-state keeps compiling unchanged (#591,
+// same ResultSort/HistoryEntry precedent above).
+export type { RecentValueEntry, RecentMap } from './core/recent-values.js';
 
 /** The complete application state `createState` builds. */
 export interface AppState {
@@ -647,13 +642,20 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
   // (e.g. a corrupted `"bad"`) both blocks a perfectly valid legacy fallback
   // AND survives as `NaN` through `clamp` (`Math.min(Math.max(NaN,320),
   // Infinity)` is `NaN`), which the shell then applies as a literal
-  // `"NaNpx"` width. Returns the first candidate that parses to a finite
-  // number (whatever its magnitude — the caller's own `clamp` still bounds
-  // it), or `480` if none does.
+  // `"NaNpx"` width.
+  // #591: "finite" alone was too lenient — `parseInt('420px', 10)` and
+  // `parseInt('1e3', 10)` both parse to a finite number by silently ignoring
+  // a non-numeric tail, and `parseInt('0x10', 10)` reads only the leading
+  // `0` (radix 10 stops at `x`). A candidate is only "valid" now if, after
+  // trimming surrounding whitespace, it is a COMPLETE optionally-signed
+  // decimal integer (`/^[+-]?\d+$/`) — no exponent, no hex, no trailing
+  // junk. Returns the first candidate that fully matches (whatever its
+  // magnitude — the caller's own `clamp` still bounds it), parsed with
+  // `parseInt`, or `480` if none does.
   const firstValidPx = (...raws: string[]): number => {
     for (const raw of raws) {
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n)) return n;
+      const t = raw.trim();
+      if (/^[+-]?\d+$/.test(t)) return parseInt(t, 10);
     }
     return 480;
   };
@@ -736,9 +738,11 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // name and shared across every tab/query, so a value typed once is reused
     // wherever the same variable appears. Persisted (asb:varValues) so it also
     // survives reloads. A plain object, mutated in place + re-saved by app.js.
-    // The `as` trusts the localStorage shape verbatim — no decoder exists
-    // today (unlike savedQueries).
-    varValues: read.loadJSON(KEYS.varValues, {}) as Record<string, string>,
+    // #591: fail-closed decode at the load boundary — a non-plain-object
+    // stored value resolves to {}, and any entry whose value isn't a string
+    // is dropped rather than trusted verbatim (unlike savedQueries, which
+    // already had a decoder before this phase).
+    varValues: decodeStoredVarValues(read.loadJSON(KEYS.varValues, {})),
     // Explicit filter activation for optional SQL blocks (#165), keyed by
     // param name and shared/persisted exactly like varValues (its own key;
     // never carried in share links — varValues aren't either). true ⇒ the
@@ -747,8 +751,8 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // value (blank ⇒ false, typed ⇒ true); a name with no entry derives its
     // activation from the stored value (effectiveFilterActive below), so
     // pre-#165 persisted values keep working on first load.
-    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
-    filterActive: read.loadJSON(KEYS.filterActive, {}) as Record<string, boolean>,
+    // #591: fail-closed decode at the load boundary — see varValues above.
+    filterActive: decodeStoredFilterActive(read.loadJSON(KEYS.filterActive, {})),
     // #447 removed `filterCurated` (the last-known curated Dashboard Filter
     // option bundles, #234): there are no curated filters to seed any more — a
     // Dashboard variable's field is a plain `{name:Type}` input, so nothing
@@ -758,13 +762,18 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // never from a keystroke — keyed by variable name and shared/persisted
     // exactly like varValues (its own key; never carried in share links).
     // See core/recent-values.js for the shape and its pure ops.
-    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
-    varRecent: read.loadJSON(KEYS.varRecent, emptyRecentMap()) as RecentMap,
+    // #591: fail-closed decode at the load boundary — a malformed top level
+    // (wrong version, non-integer nextSeq, missing byName, ...) resolves to
+    // a fresh emptyRecentMap(); a valid top level with malformed per-name
+    // entries keeps only the well-formed ones.
+    varRecent: decodeStoredRecentMap(read.loadJSON(KEYS.varRecent, emptyRecentMap())),
     // Disable-history preference (#171, "settings"): when true, new values
     // stop being recorded but existing history is retained until explicitly
     // cleared (Clear all recent values / per-field Clear recent).
-    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
-    varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false) as boolean,
+    // #591: fail-closed decode at the load boundary — strict `=== true`, so
+    // a stored non-boolean truthy value (e.g. `"true"`) fails closed to the
+    // documented `false` default rather than coercing.
+    varRecentDisabled: decodeStoredVarRecentDisabled(read.loadJSON(KEYS.varRecentDisabled, false)),
     // #587: fail-closed decode at the load boundary — anything other than a
     // recognized persisted value (missing, corrupt, or the registry's own
     // id) resolves to 'saved' (Library), the documented default.
@@ -782,8 +791,11 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // Which saved row (if any) is showing its inline edit form (saved-history.js).
     // Session-only, never persisted.
     editingSavedId: signal(null),
-    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
-    history: read.loadJSON(KEYS.history, []) as HistoryEntry[],
+    // #591: fail-closed decode at the load boundary — a non-array stored
+    // value resolves to []; malformed entries are dropped and the rest
+    // projected to exactly {id, sql, ts, rows, ms}, capped at
+    // HISTORY_MAX_ENTRIES (the same bound pushHistory enforces on write).
+    history: decodeStoredHistory(read.loadJSON(KEYS.history, [])),
     // The saved-query collection treated as a named document ("the Library").
     // Signals: the header title (name + unsaved-changes dot) repaints via an
     // effect that reads these. `libraryName` is persisted; `libraryDirty`
@@ -1430,7 +1442,7 @@ function pushHistory(
   const s = String(sql || '').trim();
   if (!s) return;
   state.history.unshift({ id: makeId('h', now), sql: s, ts: now, rows, ms });
-  state.history = state.history.slice(0, 50);
+  state.history = state.history.slice(0, HISTORY_MAX_ENTRIES);
   save(KEYS.history, state.history);
 }
 

@@ -99,6 +99,34 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Deliverable/AC6 makes binding; and the registry is two files
   (`core/side-panels.ts` + `ui/side-panel-registry.ts`), not the "(one file)"
   AC5 names, forced by this repo's core/no-DOM purity rule.
+- **Fail-closed decoders for the five remaining persisted-domain reads in
+  `createState`** (#591, phase 3 of the #593 refactor umbrella). Every
+  localStorage-backed field `state.ts` still trusted via a raw `as` cast —
+  `varValues`, `filterActive`, `varRecent`, `varRecentDisabled`, `history` —
+  now decodes through five new pure functions in `core/state-codec.ts`
+  (`decodeStoredVarValues`/`decodeStoredFilterActive`/`decodeStoredRecentMap`/
+  `decodeStoredVarRecentDisabled`/`decodeStoredHistory`), the same
+  `decodeStoredSavedQueries`/`decodeSidePanelKey` precedent #587 and #586
+  already established for `savedQueries` and `sidePanel`. Each decoder is a
+  total type-guard function over `unknown`: a malformed top level fails
+  closed to the field's documented default (a fresh object/array each call,
+  never shared/aliased), and a well-formed top level with malformed
+  individual entries drops only those entries rather than discarding the
+  whole value. `HistoryEntry` moves from `state.ts` to `core/state-codec.ts`
+  (re-exported, so every existing importer keeps compiling unchanged — the
+  same `ResultSort` → `core/sort.ts` precedent already in this file); its new
+  `HISTORY_MAX_ENTRIES` constant replaces the literal `50` both at decode
+  time and in `pushHistory`'s write-side cap, so the two can no longer drift.
+  Also fixes an inherited #586 finding: `firstValidPx` (the
+  `rightInspectorPx`/`docPanePx`/`cellDrawerPx` compat-read helper) used a
+  bare `parseInt` + `Number.isFinite`, which silently accepts a non-numeric
+  tail (`'420px'`, `'1e3'`) or reads only a leading digit (`'0x10'` → `0`) as
+  "valid" — it now requires a complete, optionally-signed decimal integer
+  (`/^[+-]?\d+$/` after trimming) before parsing, so a lenient-but-malformed
+  canonical value correctly falls through to a real legacy fallback instead
+  of a wrong number. No behavior change for well-formed persisted data; no
+  change to `editorPct`/`sideSplitPct`/`cellDrawerPx`/`docPanePx` numeric
+  clamping, `clamp` itself, or `decodeStoredSavedQueries`.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
