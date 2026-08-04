@@ -63,7 +63,7 @@ import { createDashboardChartInteractionController } from './dashboard-chart-int
 import type { DashboardChartInteractionController } from './dashboard-chart-interaction.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
-  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerVariableState,
+  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState,
   ViewerVariableOption,
 } from '../dashboard/application/dashboard-viewer-session.js';
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
@@ -76,6 +76,8 @@ import type { AuthoredDashboardStyle } from '../dashboard/layouts/grafana-grid-l
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
+import { dashboardRepaintPlan, seedRepaintMemo, valueString } from '../dashboard/application/dashboard-repaint-plan.js';
+import type { RepaintMemo } from '../dashboard/application/dashboard-repaint-plan.js';
 import { canWidenPanel, nextPanelPlacement, widenLabel } from '../dashboard/application/panel-widen.js';
 import { panelTileActions } from '../dashboard/application/panel-tile-actions.js';
 import type { PanelTileAction, PanelTileActionKind } from '../dashboard/application/panel-tile-actions.js';
@@ -98,7 +100,7 @@ import { withPendingFocus } from '../application/main-surface.js';
 import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
-  readDashboardVariableBag, writeDashboardVariableBag, variableBagSignature,
+  readDashboardVariableBag, writeDashboardVariableBag,
 } from '../dashboard/model/dashboard-variable-store.js';
 import type { DashboardVariableBag } from '../dashboard/model/dashboard-variable-store.js';
 import { loadJSON } from '../core/storage.js';
@@ -240,16 +242,6 @@ export interface DashboardApp {
    *  runtime crash, rather than removing the field outright. */
   prefs: Pick<AppPreferences, 'save'>;
 }
-
-const valueString = (value: unknown): string =>
-  (typeof value === 'string' ? value : value == null ? '' : String(value));
-
-/** #189: an array-safe stand-in for `valueString`, used ONLY by the variable-bar
- *  rebuild signature below — an array JSON-encodes (so a committed
- *  `['a','b']` is distinct from the joined string `"a,b"`, which
- *  `valueString`'s `String()` fallback would otherwise collapse it to);
- *  every other value keeps `valueString`'s own coercion, unchanged. */
-const sigValue = (value: unknown): string => (Array.isArray(value) ? JSON.stringify(value) : valueString(value));
 
 /** #291 review F4: `renderDashboard` can run more than once against the SAME
  *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
@@ -1917,7 +1909,11 @@ export async function renderDashboard(
         card.style.display = savedDisplay; // restore the card's own display (only forced when computed 'contents')
         touched.forEach((c) => { c.style.transition = ''; c.style.transform = ''; });
         touched.clear();
-        lastGridSig = ''; // defense-in-depth: force a full grid rebuild on the next publish
+        // defense-in-depth: force a full grid rebuild on the next publish. A
+        // revision bump, never a direct signature mutation (#589 wave 1) —
+        // `dashboardRepaintPlan` alone decides whether the bump is still
+        // unconsumed and a rebuild is owed.
+        gridStructureInvalidationRev += 1;
       };
       const onMove = (ev: PointerEvent): void => {
         if (!moving) {
@@ -2614,19 +2610,19 @@ export async function renderDashboard(
   }
 
   // ── Grid reconciliation from the flow model ───────────────────────────────
-  let lastLayoutSig = '';
-  function reconcileGrid(sview: DashboardViewState, layout: FlowLayoutModel): void {
+  // #589 wave 1: the rebuild DECISION and the structural signature both come
+  // from `dashboardRepaintPlan` now (`rebuild`/`structuralSig` below) — this
+  // function only commits `memo.layoutSig` at the exact point the
+  // pre-extraction code committed its own private `let`, immediately before
+  // performing the same rebuild.
+  function reconcileGrid(sview: DashboardViewState, layout: FlowLayoutModel, rebuild: boolean, structuralSig: string): void {
     const byId = new Map(sview.tiles.map((t) => [t.tileId, t]));
     for (const ts of sview.tiles) reconcileTile(ts);
-    const sig = JSON.stringify({
-      m: layout.mobile, c: layout.columns, p: layout.preset,
-      rows: layout.rows.map((r) => ({ k: r.kind, t: r.tiles.map((t) => [t.tileId, t.span]) })),
-    });
     // Rebuild the row STRUCTURE only when the flow model changes (a reorder,
     // preset, or mobile flip) — moving stable tile cards, so charts are never
     // thrashed.
-    if (sig !== lastLayoutSig) {
-      lastLayoutSig = sig;
+    if (rebuild) {
+      memo.layoutSig = structuralSig;
       // #291: undo any grafana-grid-only chrome a cached card picked up the
       // last time the grid engine was active (that reconciliation is gated
       // off entirely while flow renders, so it can't clean up after itself).
@@ -2722,24 +2718,24 @@ export async function renderDashboard(
     paintTileBody(ts, tileEl);
   }
 
-  let lastGridSig = '';
-  function reconcileGrafanaGrid(sview: DashboardViewState, gridModel: GrafanaGridLayoutModel): void {
+  // #589 wave 1: same shift as `reconcileGrid` above — the rebuild decision
+  // (including the grid-structure-invalidation-revision force) and the
+  // structural signature both come from `dashboardRepaintPlan`; this function
+  // only commits `memo.gridSig` at the point the pre-extraction code
+  // committed its own private `let`.
+  function reconcileGrafanaGrid(sview: DashboardViewState, gridModel: GrafanaGridLayoutModel, rebuild: boolean, structuralSig: string): void {
     const byId = new Map(sview.tiles.map((t) => [t.tileId, t]));
     for (const t of gridModel.tiles) {
       const ts = byId.get(t.tileId);
       if (ts) reconcileGridTile(ts);
     }
     currentGridColumns = gridModel.columns;
-    const sig = JSON.stringify({
-      c: gridModel.columns,
-      style: gridModel.style,
-      tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.heightUnits, t.previewHeightPx]),
-    });
     // Rebuild the host STRUCTURE only when the grid model changes (a reorder,
     // resize, delete, responsive clamp, or membership change) — moving stable
     // tile cards, so charts/KPI content are never thrashed mid-drag.
-    if (sig === lastGridSig) return;
-    lastGridSig = sig;
+    if (!rebuild) return;
+    memo.gridSig = structuralSig;
+    memo.consumedGridInvalidationRev = gridStructureInvalidationRev;
     grid.classList.toggle('is-report', gridModel.style === 'report');
     grid.classList.toggle('is-full', gridModel.style === 'full');
     grid.classList.add('dash-gg-grid');
@@ -2774,104 +2770,49 @@ export async function renderDashboard(
   }
 
   // ── Effect: reconcile on every publish (and on the mobile-breakpoint flip) ─
-  let lastMobile = state.isMobile.value;
-  // #291: the ENGINE rendered by the last reconciliation — a switch resets
-  // both engines' own change-detection signature caches so the next publish
-  // always rebuilds the host structure (clearing the OTHER engine's leftover
-  // chrome: `dash-gg-grid`/`dash-gg-tile`/height classes on a flow switch, or
-  // `is-report` on a grid switch) instead of a coincidental sig match
-  // silently skipping that cleanup.
-  let lastEngineRendered: 'flow' | 'grafana-grid' | null = null;
-  let barSig = '';
-  // #447 phase 2: a SEPARATE signature from `barSig` — option content, the
-  // option-backed statuses and the batch verdict never participate in `barSig`
-  // (see the effect below), so a change to any of them is detected here instead
-  // and applied to the EXISTING bar via `setVariableOptions` (no rebuild, so
-  // in-progress typing elsewhere survives an asynchronously-arriving batch).
-  //
-  // This replaces #360's `statusSig`, which had been dead since phase 1 removed
-  // the option-provider layer: nothing produced a per-field status any more, so
-  // it was assigned once and never read again.
-  let lastOptionsSig = '';
-  // #335: the wave `now` the time-range controls' closed labels were last
-  // resolved against — a NON-rebuild publish whose wave `now` advanced
-  // re-resolves those labels in place (a live relative range, no timers),
-  // without disturbing anything else. Tracked separately from `barSig` so a
-  // tile-progress tick (same wave `now`) never churns the labels. Seeded from
-  // the session's initial state (`null` before the first wave).
-  let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
-  // #303: the committed-variable bag for a published view, built exactly the way
-  // the persist step below and the seed just under it both need it.
-  // A multi-select variable's committed value is a real `string[]` and is
-  // persisted as one — `dashboard-variable-store.ts` has round-tripped arrays
-  // since #189 (`value: string | string[]`, with an array-aware coerce that
-  // drops non-string elements rather than stringifying them), so a selection
-  // survives a reload without ever becoming the joined `"a,b"` that
-  // `valueString`'s `String()` fallback would produce.
-  const persistBagOf = (variableStates: readonly ViewerVariableState[]): DashboardVariableBag => {
-    const bag: DashboardVariableBag = {};
-    for (const f of variableStates) {
-      bag[f.id] = {
-        value: Array.isArray(f.value) ? f.value.map(valueString) : valueString(f.value),
-        active: f.active,
-      };
-    }
-    return bag;
-  };
-  // #303: a SEPARATE signature from `barSig` above — that one also flips when
-  // curated options arrive (no committed value/active change), which would
-  // otherwise trigger a redundant write. Seeded from the session's OWN initial
-  // variable state (post-`initialVariables` seeding + defaults), not the raw stored
-  // `initialBag`, so the very first publish — which merely echoes that state —
-  // never writes: an empty/partial store would otherwise differ from the
-  // default-filled published bag and persist defaults on first open, freezing
-  // them against later Spec-editor changes to a variable's default.
-  let lastVariablePersistSig = variableBagSignature(persistBagOf(session.state.value.variableStates));
+  // #589 wave 1: the decision logic that used to live in this callback as a
+  // pile of private `let`s now lives in the pure `dashboardRepaintPlan`
+  // (dashboard/application/dashboard-repaint-plan.ts) — this effect's only
+  // job is to ask it what to do and commit each returned signature FIELD BY
+  // FIELD, at the exact point the pre-extraction code committed its own
+  // `let`, interleaved with the real side effect it guards. Deliberately
+  // never batch-assigned up front: if a side effect throws, only the memo
+  // fields whose side effects actually ran must have advanced (preserves the
+  // pre-extraction partial-failure semantics).
+  let gridStructureInvalidationRev = 0;
+  const memo: RepaintMemo = seedRepaintMemo({ mobileNow: state.isMobile.value, view: session.state.value });
   const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
+    const { plan, sigs } = dashboardRepaintPlan(memo, {
+      view: sview, mobileNow, gridInvalidationRev: gridStructureInvalidationRev,
+    });
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
     // grafana-grid has no `mobile` concept of its own (its responsive
     // behavior is the `containerWidth`-driven effective-columns clamp below).
-    if (sview.layout.engine === 'flow' && mobileNow !== lastMobile && mobileNow !== sview.layout.mobile) {
-      lastMobile = mobileNow;
+    if (plan.republishFlow) {
+      memo.mobile = mobileNow;
       syncSessionDocument(currentDoc);
       return;
     }
-    lastMobile = mobileNow;
+    memo.mobile = mobileNow;
     // Rebuild the shared variable bar only on a STRUCTURAL change (activation or
     // committed value) — not on a bare status flip, not on tile progress ticks,
     // and (#447 phase 2) NOT when an option list arrives. `status` and
     // `optionsRev` are both deliberately EXCLUDED: they are updated in the
     // existing DOM in place, never by a rebuild. That preserves the invariant
     // that an unchanged republish never disturbs in-progress typing.
-    //
-    // Excluding `optionsRev` matters more than excluding `status`. A rebuild is
-    // triggered by a user COMMIT, which is inherently typing-ending; the option
-    // batch instead lands ASYNCHRONOUSLY and can complete while the user is
-    // mid-keystroke in an unrelated field, so rebuilding on it would discard
-    // that input and silently cancel any open popover.
-    const sig = JSON.stringify(sview.variableStates.map((f) =>
-      [f.id, f.active, sigValue(f.value)]));
-    let rebuilt = false;
-    if (sig !== barSig) {
-      barSig = sig;
+    if (plan.rebuildBar) {
+      memo.barSig = sigs.barSig;
       rebuildVariableBar(sview);
-      rebuilt = true;
     }
     // #447 phase 2: push fresh option rows (and the batch's unavailable state)
     // into the selects the CURRENT bar already built. A rebuild above has just
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
-    // `optionsTruncated` is part of the signature, not just the payload: it
-    // changes how the control COMMITS (whether an off-list value is preserved),
-    // so a flip must reach it even in the contrived case where the option
-    // content it accompanies is byte-identical.
-    const optionsSig = JSON.stringify(sview.variableStates.map((f) =>
-      [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
-    if (!rebuilt && optionsSig !== lastOptionsSig) {
+    if (plan.pushOptions) {
       const states: Record<string, VariableOptionsUpdate> = {};
       for (const f of sview.variableStates) {
         if (!f.configured) continue;
@@ -2881,23 +2822,21 @@ export async function renderDashboard(
       }
       currentVariableBar?.setVariableOptions(states);
     }
-    lastOptionsSig = optionsSig;
-    // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
+    memo.optionsSig = sigs.optionsSig;
+    // #335: per-wave time-range label refresh. A rebuild above already
     // rebuilt every time-range control against this wave's `now` (assembled
     // into its `waveNowMs`); only a NON-rebuild publish whose wave `now`
     // advanced needs the closed labels re-resolved in place — a committed
     // relative range (`-1d` → `now`) moves per wave without any bar rebuild.
-    if (!rebuilt && sview.waveWallNowMs != null && sview.waveWallNowMs !== lastLabelWaveNowMs) {
-      currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs);
+    if (plan.refreshTimeRangeLabels) {
+      currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs!);
     }
-    lastLabelWaveNowMs = sview.waveWallNowMs;
+    memo.labelWaveNowMs = sigs.labelWaveNowMs;
     // #303: persist committed variable value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
-    const variableBag = persistBagOf(sview.variableStates);
-    const persistSig = variableBagSignature(variableBag);
-    if (persistSig !== lastVariablePersistSig) {
-      lastVariablePersistSig = persistSig;
-      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, variableBag));
+    if (plan.persistVars) {
+      memo.persistSig = sigs.persistSig;
+      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, sigs.persistBag));
     }
     tileCountLabel.textContent = sview.tileSearch.trim()
       ? `${sview.visibleTileCount} of ${sview.totalTileCount} tiles`
@@ -2922,7 +2861,13 @@ export async function renderDashboard(
         class: 'dash-config-diagnostic is-' + (d.severity ?? 'error'),
       }, d.message)),
     );
-    if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
+    // #291: an engine switch alone is not committed to the memo's structural
+    // signatures — the reconciler call below is unconditionally handed
+    // `plan.rebuildStructure` (which `dashboardRepaintPlan` already forces
+    // true on a switch, regardless of whether the ACTIVE engine's own
+    // signature happens to byte-match) and commits `memo.layoutSig`/
+    // `memo.gridSig` itself at the point it performs the rebuild.
+    if (plan.engineSwitched) memo.engineRendered = sview.layout.engine;
     activeEngine = sview.layout.engine;
     // #535: the widen button's gate AND its label, resynced on every publish. Not
     // folded into the render-mode branch below (which only fires on a grid
@@ -2952,8 +2897,11 @@ export async function renderDashboard(
         applyResizeHandleMode(tileEl, isFixedWidthStyle(sview.style));
       }
     }
-    if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
-    else reconcileGrid(sview, sview.layout);
+    if (sview.layout.engine === 'grafana-grid') {
+      reconcileGrafanaGrid(sview, sview.layout.grid, plan.rebuildStructure, sigs.structuralSig);
+    } else {
+      reconcileGrid(sview, sview.layout, plan.rebuildStructure, sigs.structuralSig);
+    }
     // #471: the tiles this publish just placed are what finally make the page tall
     // enough to hold a restored offset.
     applyOwedScroll();

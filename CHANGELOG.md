@@ -165,6 +165,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `refreshWorkspaceFromStore` are gone from the flat `App` bag (repointed to
   `app.nav.*`/`app.workspaceSession.*` at every production consumer); `App`
   gains `nav`/`workspaceSession`.
+- **Extracted `dashboardRepaintPlan` — pure repaint arbitration for the live
+  Dashboard surface** (#589 wave 1 of the #593 refactor umbrella; zero
+  functional change). The decision logic that used to live as a pile of
+  private `let` signature caches inside `ui/dashboard.ts`'s `renderDashboard`
+  `effect()` callback now lives in
+  `src/dashboard/application/dashboard-repaint-plan.ts`
+  (`dashboardRepaintPlan`/`seedRepaintMemo`/`dashboardPersistBag`/
+  `valueString`, moved verbatim) — pure, no DOM/signals imports, 100% covered.
+  `dashboard.ts` asks it what to do each publish and commits the returned
+  signatures onto one real `RepaintMemo` object **field-by-field, at the
+  exact point each corresponding side effect runs** (never batched up front),
+  preserving the pre-extraction partial-failure semantics: if one applier
+  throws (e.g. the variable-persist save seam), only the memo fields whose
+  side effects actually ran advance, and a later publish still owes whatever
+  didn't complete. The grid-drag-cancel path's direct `lastGridSig = ''`
+  signature reset is replaced by an explicit `gridStructureInvalidationRev`
+  counter the planner alone consumes, rather than any code outside it
+  reasoning about a raw signature value.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
