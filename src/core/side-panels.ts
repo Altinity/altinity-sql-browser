@@ -61,8 +61,20 @@ export type SidePanelId = (typeof SIDE_PANELS)[number]['id'];
 // element-union type `SIDE_PANELS` carries, and `PanelIdInPane<P>` extracts
 // the `id` of every element whose `pane` is `P` — so a new row's pane
 // assignment is the only thing that decides which union it joins, with no
-// second list to fall out of sync. `tests/types/side-panels.test-d.ts` pins
-// this against regressing back to hand-written literals.
+// second list to fall out of sync.
+//
+// `tests/types/side-panels.test-d.ts` pins coverage and disjointness of the
+// two derived unions AGAINST TODAY'S MANIFEST — not against a silent revert
+// to hand-written literals in isolation (PR #600 review, #587 finding 3): for
+// the current four-row manifest, hand-written `Extract<SidePanelId,
+// 'databases' | 'dashboards'>` literals and this derivation produce
+// IDENTICAL types, so that type-level test alone stays green either way. It
+// only goes red once a manifest row is added without extending whichever
+// union it should have joined — proving detection-after-expansion, not
+// detection-of-removal. Catching a plain revert with no accompanying
+// manifest change is `side-panel-source-contract.test.ts`'s job instead — its
+// "no literal panel-id allowlist in a type alias" check is a source-level,
+// best-effort regex over this file, not a type-level proof.
 type PanelSpec = (typeof SIDE_PANELS)[number];
 type PanelIdInPane<P extends SidePanelPane> = Extract<PanelSpec, { pane: P }>['id'];
 export type UpperPanelId = PanelIdInPane<'upper'>;

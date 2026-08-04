@@ -79,4 +79,48 @@ describe('#587 AC5 source contract: no panel id/label selection outside the regi
       expect(code).not.toMatch(new RegExp(`['"]${id}['"]`));
     }
   });
+
+  // #600 review finding 1 (round 2): the two checks above missed this — a
+  // concrete HOST ACCESSOR (`.databasesHost`/`.dashboardsHost`) is neither a
+  // `*PanelDef` symbol nor a quoted panel-id literal, so `app-shell.ts` could
+  // (and did) compose `schemaPane` by naming these two properties directly
+  // instead of deriving them from `registry.entries`, and neither check
+  // above caught it. This must go red the moment either accessor creeps back
+  // into this file's code (comments describing the invariant are stripped
+  // first, same as every other check in this suite).
+  it('app-shell.ts names no concrete upper-pane host accessor — the upper pane\'s hosts come from registry.entries, like the lower pane\'s', () => {
+    const code = codeOf('src/ui/app-shell.ts');
+    for (const accessor of ['.databasesHost', '.dashboardsHost']) {
+      expect(code).not.toContain(accessor);
+    }
+  });
+});
+
+// #587 finding 2/3 (PR #600 review, round 2): `tests/types/side-panels.test-d.ts`
+// pins coverage/disjointness of `UpperPanelId`/`LowerPanelId` against TODAY'S
+// manifest only — for the current four-row `SIDE_PANELS`, the derived unions
+// and the old hand-written `Extract<SidePanelId, 'databases' | 'dashboards'>`
+// literals produce IDENTICAL types, so that type-level test alone cannot
+// detect a plain revert to hand-written literals with no accompanying
+// manifest change. This is the source-level backstop for exactly that case.
+describe('#587 source contract: side-panels.ts derives its pane id unions, never a literal allowlist', () => {
+  it('side-panels.ts declares no type alias containing a literal panel-id string — UpperPanelId/LowerPanelId must stay derived from the manifest', () => {
+    const code = codeOf('src/core/side-panels.ts');
+    // Best-effort, not a real parser: matches each single-line `type Name<...>
+    // = ...;` declaration in this file (every one today IS single-line) and
+    // checks whether its body contains one of the four production panel ids
+    // as a quoted string literal — exactly the shape a hand-written
+    // `Extract<SidePanelId, 'databases' | 'dashboards'>`-style allowlist would
+    // have. A multi-line type alias would slip past this pattern; none exist
+    // in this file today, and generalizing further would need a real AST
+    // parse rather than a regex.
+    const typeAliasStatements = code.match(/\btype\s+[A-Za-z_]\w*(?:<[^=]*>)?\s*=\s*[^;]*;/g) ?? [];
+    expect(typeAliasStatements.length).toBeGreaterThan(0); // the pattern itself must still find something
+    const panelIds = ['databases', 'dashboards', 'library', 'history'];
+    for (const statement of typeAliasStatements) {
+      for (const id of panelIds) {
+        expect(statement).not.toContain(`'${id}'`);
+      }
+    }
+  });
 });

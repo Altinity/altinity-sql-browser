@@ -164,9 +164,21 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // `workbench-session.ts` (#587 AC5; PR #600 fixed this file's own prior
   // violation, where the four concrete defs were listed right here).
   const registry = buildProductionSidePanelRegistry(app, upper);
+  // #600 review finding 1 (round 2): `schemaPane` is composed from the
+  // registry's OWN upper-pane entries — never by naming
+  // `upper.databasesHost`/`upper.dashboardsHost` here — exactly like
+  // `savedPane` below already does for the lower pane (`lowerHosts`). A host
+  // named literally by this shell would still get a tab-row entry (the
+  // generic renderer reads `registry.entries` for that) but, for any FUTURE
+  // upper panel that isn't one of today's two, no route into the document:
+  // selecting it would hide the visible panel and reveal a host that was
+  // never appended anywhere. `upperEntries` is also read by the tab-row
+  // effect further down, so there is exactly one filtered view of the upper
+  // pane, not two that could disagree.
+  const upperEntries = registry.entries.filter((entry) => entry.pane === 'upper');
   app.dom.upperRoleTabs = h('div', { class: 'side-tabs upper-role-tabs' });
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
-    app.dom.upperRoleTabs, upper.databasesHost, upper.dashboardsHost);
+    app.dom.upperRoleTabs, ...upperEntries.map((entry) => entry.host));
 
   // The lower pane's tab row is a plain local element now (#587 — no AppDom
   // field: nothing outside this closure needs to address it by name; the
@@ -382,7 +394,8 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // own `tabAdornment()` (sidebar-upper.ts), read here only through the
   // generic renderer. Also exposes exactly one role host via the registry's
   // pane-scoped `showPanel` (replacing #426's own `upper.showRole`).
-  const upperEntries = registry.entries.filter((entry) => entry.pane === 'upper');
+  // `upperEntries` itself is declared once, above, alongside `schemaPane`'s
+  // own composition from the same filtered view.
   const selectUpperPanel = (id: SidePanelId): void => { state.upperRole.value = id as UpperPanelId; };
   disposers.push(effect(() => {
     state.upperRole.value;
