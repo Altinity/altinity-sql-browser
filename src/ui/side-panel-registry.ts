@@ -101,17 +101,23 @@ export interface SidePanelRegistry {
   entry(id: SidePanelId): SidePanelEntry;
   /**
    * Expose exactly one panel WITHIN ITS OWN PANE, hiding its pane siblings —
-   * never a global "exactly one of N", which would blank the other pane. A
-   * newly-shown panel's host un-hides, then `activate`/`render` run on it
-   * (#587 R2.6 freshness); a newly-hidden one's `deactivate` runs after.
-   * A no-op call (the panel is already active) still re-renders it, so an
-   * explicit re-activation always reflects current state.
+   * never a global "exactly one of N", which would blank the other pane.
+   * EVERY pane sibling's `deactivate` runs BEFORE the target's `activate`/
+   * `render` — a strict ordering, not an artifact of manifest/registration
+   * order (review finding 1: a single pass over `entries` let an outgoing
+   * panel's teardown, e.g. clearing a shared filter, run AFTER the incoming
+   * panel had already rendered against the stale value, whenever the target
+   * happened to be visited first). A no-op call (the panel is already
+   * active) still re-renders it, so an explicit re-activation always
+   * reflects current state.
    */
   showPanel(id: SidePanelId): void;
   /** The currently active panel id within `pane`. */
   activeId(pane: SidePanelPane): SidePanelId;
   /** Repaint the active LOWER-pane panel's body — the compatibility seam
-   *  `renderSavedHistory(app)` (17 call sites) delegates to this. */
+   *  `renderSavedHistory(app)` (10 call sites, counted with `rg`: 5 in
+   *  `saved-history.ts`, 4 in `app.ts`, 1 in `file-menu.ts` — excluding the
+   *  function's own definition and import lines) delegates to this. */
   refreshActiveSidePanels(): void;
   /** Dispatch `onRunComplete` to the active LOWER-pane panel ONLY, and only if
    *  it defines the hook (#587 AC3: a clean run always calls this — today only
@@ -160,19 +166,26 @@ export function buildSidePanelRegistry(defs: readonly SidePanelDef[]): SidePanel
 
   const showPanel = (id: SidePanelId): void => {
     const target = entry(id);
+    // Two passes, deliberately — see the ordering contract in this method's
+    // own interface doc above. Pass 1 tears down EVERY other visible sibling
+    // in the target's pane first, so a sibling's `deactivate` (which may
+    // clear state the target's own `render` reads, e.g. the shared library
+    // filter) can never run after the target has already painted. Pass 2
+    // then reveals/activates/renders the target, once every sibling's
+    // teardown above is guaranteed complete. A single pass over `entries`
+    // made this order-dependent on manifest position instead.
     for (const candidate of entries) {
-      if (candidate.pane !== target.pane) continue;
-      if (candidate.id === id) {
-        if (candidate.host.hidden) {
-          candidate.host.hidden = false;
-          candidate.mounted.activate?.();
-        }
-        candidate.mounted.render();
-      } else if (!candidate.host.hidden) {
+      if (candidate.pane !== target.pane || candidate.id === id) continue;
+      if (!candidate.host.hidden) {
         candidate.host.hidden = true;
         candidate.mounted.deactivate?.();
       }
     }
+    if (target.host.hidden) {
+      target.host.hidden = false;
+      target.mounted.activate?.();
+    }
+    target.mounted.render();
     activeByPane.set(target.pane, id);
   };
 

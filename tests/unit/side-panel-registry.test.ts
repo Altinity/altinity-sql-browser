@@ -160,6 +160,43 @@ describe('showPanel — pane-scoped exposure', () => {
   });
 });
 
+// #587 review finding 1: `showPanel` must run every non-target sibling's
+// `deactivate` BEFORE the target's `activate`/`render` — regardless of
+// whether the target is registered before or after its sibling. A test that
+// only counts calls (as `showPanel — pane-scoped exposure` above does) can't
+// tell a correctly-ordered single showPanel from an incorrectly-ordered one;
+// this records the actual call SEQUENCE and asserts its order.
+describe('showPanel — deactivate-before-activate ordering', () => {
+  it('deactivates every pane sibling before activating/rendering the target, even when the target is registered FIRST', () => {
+    const sequence: string[] = [];
+    const orderedDef = (id: SidePanelId): SidePanelDef => ({
+      id, pane: 'lower', label: id, icon: () => document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+      accessibleLabel: `Open ${id}`,
+      mount: (): MountedSidePanel => ({
+        render: () => { sequence.push(`${id}:render`); },
+        activate: () => { sequence.push(`${id}:activate`); },
+        deactivate: () => { sequence.push(`${id}:deactivate`); },
+        dispose: () => {},
+      }),
+    });
+    // `a` is FIRST in the manifest — mirrors the real bug's registration
+    // order (library-then-history) where the eventual TARGET of a switch is
+    // visited first by a naive single pass over `entries`.
+    const a = orderedDef('a' as SidePanelId);
+    const b = orderedDef('b' as SidePanelId);
+    const reg = buildSidePanelRegistry([a, b]);
+
+    reg.showPanel('b' as SidePanelId); // make `b` the active one, `a` hidden
+    sequence.length = 0; // discard this setup transition's own sequence
+
+    reg.showPanel('a' as SidePanelId); // switch back to `a` — the FIRST-registered entry
+    // `b`'s deactivate must be fully done before `a` activates/renders — a
+    // single pass in manifest order would activate/render `a` FIRST (it is
+    // visited first), then deactivate `b` afterward, reversing this order.
+    expect(sequence).toEqual(['b:deactivate', 'a:activate', 'a:render']);
+  });
+});
+
 // #587 R2.4/R2.6 — the persistent-host trap: a HIDDEN host must never show
 // stale DOM once activated again, but activity while genuinely hidden must
 // not force an unnecessary rebuild either.

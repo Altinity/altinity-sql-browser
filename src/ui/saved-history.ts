@@ -115,10 +115,12 @@ function libraryEntries(app: App): SavedQueryV2[] {
 }
 
 /**
- * Compatibility seam (#587): 17 call sites across the app used to call this
- * to repaint whichever lower panel was active — a star/delete/rename
- * completion, a Dashboard-membership projection bump, or the tab switch
- * itself. It now delegates to the mounted shell's registry, which resolves
+ * Compatibility seam (#587): 10 call sites across the app (5 in this file, 4
+ * in `app.ts`, 1 in `file-menu.ts` — counted with `rg`, excluding this
+ * definition and import lines) call this to repaint whichever lower panel is
+ * active — a star/delete/rename completion, a Dashboard-membership
+ * projection bump, or the tab switch itself. It now delegates to the mounted
+ * shell's registry, which resolves
  * "the active lower panel" itself; a no-op before the shell mounts or after
  * it is disposed (both real states — `app.shell` starts/ends `null`), never
  * a thrown error against a controller wiring that runs before any DOM exists.

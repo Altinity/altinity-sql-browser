@@ -52,17 +52,32 @@ describe('save()', () => {
 // constraint (reverting `save` to `unknown`) would fail `check:types`, not
 // just silently stop catching this at compile time.
 describe('save() — compile-time contract (#587 AC4)', () => {
-  it('accepts the two real SidePanelKey values, and rejects the registry id "library" at compile time', () => {
+  it('accepts the two real SidePanelKey values, and rejects the registry id "library" both at compile time and at the raw storage seam', () => {
     const deps = makeDeps();
     const prefs = createAppPreferences(deps);
     prefs.save('sidePanel', 'saved');
     prefs.save('sidePanel', 'history');
-    // @ts-expect-error — 'library' is the registry's OWN id, never a
-    // persisted `SidePanelKey` value (see `decodeSidePanelKey`'s downgrade-
-    // safety comment) — `prefs.save('sidePanel', 'library')` must not
-    // type-check.
-    prefs.save('sidePanel', 'library');
-    expect(deps.saveStr).toHaveBeenCalledTimes(3);
+    expect(deps.saveStr).toHaveBeenCalledTimes(2);
+    // The raw storage seam must never see the registry's OWN id "library" —
+    // `KEYS.sidePanel` only ever gets a real persisted `SidePanelKey`
+    // ('saved'/'history'). Asserted before the compile-time trap below, so
+    // this negative assertion is meaningful on its own rather than riding
+    // along with a write the trap itself performs.
+    expect(deps.saveStr).not.toHaveBeenCalledWith(KEYS.sidePanel, 'library');
+    // Compile-time-only trap, wrapped in a function that is never invoked —
+    // `tsc --noEmit` still type-checks an uncalled function body, so this
+    // stays a real compile error if the `PreferenceValues['sidePanel']`
+    // constraint regresses, without itself performing the very write this
+    // test forbids (that write is what the assertion above already ruled
+    // out, before this function is even defined).
+    const neverCalled = (): void => {
+      // @ts-expect-error — 'library' is the registry's OWN id, never a
+      // persisted `SidePanelKey` value (see `decodeSidePanelKey`'s downgrade-
+      // safety comment) — `prefs.save('sidePanel', 'library')` must not
+      // type-check.
+      prefs.save('sidePanel', 'library');
+    };
+    void neverCalled;
   });
 });
 

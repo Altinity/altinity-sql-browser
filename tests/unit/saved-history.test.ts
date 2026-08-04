@@ -11,7 +11,7 @@ import { makeApp as makeAppReal } from '../helpers/fake-app.js';
 import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
-import { setTabSpecDraft, toggleFavorite, deleteSaved } from '../../src/state.js';
+import { setTabSpecDraft, toggleFavorite, deleteSaved, recordHistory } from '../../src/state.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { AppShellHandle } from '../../src/ui/app-shell.js';
 import type { HistoryEntry } from '../../src/state.js';
@@ -773,6 +773,36 @@ describe('renderSavedHistory — search/filter', () => {
     click(qsa(savedTabsRow(app), '.side-tab')[1]); // → History
     expect(app.state.libraryFilter).toBe('');
   });
+
+  // #587 review finding 1: the ABOVE test only proves Library → History,
+  // where the OUTGOING panel (Library) happens to be visited first by a
+  // single-pass loop over `entries` (registered library-then-history,
+  // app-shell.ts). This is the missing mirror — History → Library, where the
+  // TARGET (Library) is visited first — and it must clear the filter and
+  // render unfiltered regardless of which side of the switch is which.
+  it('clears the filter when switching tabs (History → Library — order-independent of registration order)', () => {
+    const app = makeApp();
+    setSaved(app, [
+      { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false },
+      { id: 's2', name: 'Busiest airports', sql: 'SELECT origin, count() FROM flights', favorite: false },
+    ]);
+    app.state.sidePanel.value = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    const historyInput = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+    historyInput.value = 'select';
+    historyInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.state.libraryFilter).toBe('select');
+
+    click(qsa(savedTabsRow(app), '.side-tab')[0]); // → Library (registered FIRST)
+    expect(app.state.libraryFilter).toBe('');
+    const libraryInput = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+    expect(libraryInput.value).toBe('');
+    // Unfiltered: both library queries show, and NOT the stale-filter empty
+    // state (`No library queries match "select"`) the bug produced.
+    expect(names(app)).toHaveLength(2);
+    expect(savedList(app).textContent).not.toContain('No library queries match');
+  });
 });
 
 describe('drag a row into the editor', () => {
@@ -1016,5 +1046,60 @@ describe('#587: persistent-host ownership guard + branch coverage', () => {
     await flush();
     expect(app.state.savedQueries).toHaveLength(1); // not deleted
     expect(document.querySelector('.share-toast')).toBeNull();
+  });
+});
+
+// #587 review finding 3: `side-panel-registry.test.ts`'s own "activation
+// freshness" tests only ever exercise injected FAKE panels — they prove the
+// registry mechanism, but never touch the real `libraryPanelDef`/
+// `historyPanelDef` this file builds, or the real `notifyRunComplete` wiring.
+// A persistent hidden host showing stale DOM is exactly the bug #587 R2.6
+// exists to prevent, so these two prove it against the real panels, asserting
+// on RENDERED DOM (never `app.state.*`).
+describe('activation freshness — real Library/History panels (#587 R2.6)', () => {
+  it('history entries recorded while History is hidden are present in the DOM the moment History is activated', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved'; // Library active, History's host hidden
+    renderSavedHistory(app);
+    expect(savedList(app).textContent).not.toContain('SELECT 42');
+
+    // The real recording path (`state.ts`'s own `recordHistory`, exactly what
+    // a clean run calls through `app.recordHistory`) — never a direct
+    // `app.state.history` splice. Two calls (not one): `recordHistory`
+    // reassigns `state.history` to a freshly sliced array each time, so a
+    // SECOND call is what actually exposes a mount-time-captured stale
+    // reference to the array — a single call can look correct by accident
+    // (the first `unshift` still lands on whatever array object was live at
+    // that moment, before it gets copied).
+    recordHistory(
+      app.state,
+      { sqlDraft: 'SELECT 42', result: { rawText: null, rows: [{ x: 1 }], progress: { elapsed_ns: 5_000_000 } } },
+      app.saveJSON,
+    );
+    recordHistory(
+      app.state,
+      { sqlDraft: 'SELECT 43', result: { rawText: null, rows: [{ x: 1 }], progress: { elapsed_ns: 5_000_000 } } },
+      app.saveJSON,
+    );
+
+    app.state.sidePanel.value = 'history'; // activate History
+    expect(qsa(savedList(app), '.history-row')).toHaveLength(2);
+    expect(savedList(app).textContent).toContain('SELECT 42');
+    expect(savedList(app).textContent).toContain('SELECT 43');
+  });
+
+  it('a Library mutation made while Library is hidden is present in the DOM the moment Library is activated', async () => {
+    const app = makeApp();
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1', favorite: false }]);
+    app.state.sidePanel.value = 'history'; // History active, Library's host hidden
+    renderSavedHistory(app);
+
+    // The real mutation path (`state.ts`'s own `toggleFavorite`, through
+    // `app.mutateWorkspace` — exactly what the star button's onclick calls),
+    // never a direct `app.state.savedQueries` mutation.
+    await toggleFavorite(app.state, 's1', app.mutateWorkspace, app.specValidators);
+
+    app.state.sidePanel.value = 'saved'; // activate Library
+    expect(qs(savedList(app), '.sv-star').classList.contains('on')).toBe(true);
   });
 });

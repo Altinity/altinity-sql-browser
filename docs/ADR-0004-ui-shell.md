@@ -240,12 +240,13 @@ decisions verbatim in spirit (icon-as-factory, a separate `accessibleLabel`,
 pane-scoped exposure, a load-boundary persisted-key bridge) — this ADR's own
 salvage guidance above is what pointed at that branch.
 
-Two of #587's acceptance criteria are met in an ADAPTED form, both forced by
-constraints this ADR's own vanilla-shell stance already commits to, not by any
-new tradeoff:
+Two items from #587's plan landed in an ADAPTED form — AC5 below, and the
+mount-once-per-shell lifecycle decision further down — both forced by
+constraints this ADR's own vanilla-shell stance already commits to, not by
+any new tradeoff. AC4 itself landed literally, not adapted:
 
 - **AC4** ("the persisted-value union is derived from the registry, not
-  hand-maintained") is met literally, not just adapted — `app-preferences.ts`'s
+  hand-maintained") landed literally — `app-preferences.ts`'s
   `save` became generic over a `PreferenceValues` map keyed by
   `core/side-panels.ts`'s derived `SidePanelKey`, so a mismatched
   `prefs.save('sidePanel', 'library')` is a compile error.

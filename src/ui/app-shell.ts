@@ -489,7 +489,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     // `refreshActiveSidePanels` is NOT the registry's own bare method here —
     // it wraps `refreshLowerPane` (declared above, alongside this file's own
     // lower-pane effect) so the compatibility `renderSavedHistory(app)` seam
-    // (17 call sites, none of which bump a signal this shell's effects watch)
+    // (10 call sites, none of which bump a signal this shell's effects watch)
     // also repaints the Library tab's live count, not just the active body.
     sidePanels: { ...registry, refreshActiveSidePanels: refreshLowerPane },
     dispose: () => {
