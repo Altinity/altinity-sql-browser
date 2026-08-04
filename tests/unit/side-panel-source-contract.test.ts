@@ -106,20 +106,41 @@ describe('#587 AC5 source contract: no panel id/label selection outside the regi
 describe('#587 source contract: side-panels.ts derives its pane id unions, never a literal allowlist', () => {
   it('side-panels.ts declares no type alias containing a literal panel-id string — UpperPanelId/LowerPanelId must stay derived from the manifest', () => {
     const code = codeOf('src/core/side-panels.ts');
-    // Best-effort, not a real parser: matches each single-line `type Name<...>
-    // = ...;` declaration in this file (every one today IS single-line) and
-    // checks whether its body contains one of the four production panel ids
-    // as a quoted string literal — exactly the shape a hand-written
-    // `Extract<SidePanelId, 'databases' | 'dashboards'>`-style allowlist would
-    // have. A multi-line type alias would slip past this pattern; none exist
-    // in this file today, and generalizing further would need a real AST
-    // parse rather than a regex.
+    // Best-effort, not a real parser: matches each `type Name<...> = ...;`
+    // declaration in this file — INCLUDING a multi-line one, despite how that
+    // might look: `[^=]*`/`[^;]*` are negated character classes, and (unlike
+    // `.` without the `/s` flag) those DO match newlines, so a type alias
+    // whose `=`/body spans multiple lines is captured whole, not truncated at
+    // the first line break (verified against a literal multi-line sample
+    // before writing this comment — do not restate "multi-line slips past"
+    // without re-checking, since that claim was wrong once already here).
+    //
+    // What actually slips past unmatched: a generic parameter list carrying a
+    // DEFAULT type argument, e.g. `type Foo<T = SidePanelId> = ...;` — the
+    // optional `(?:<[^=]*>)?` group forbids `=` inside the angle brackets, so
+    // on a default-typed generic the group can't match either the `<...>`
+    // clause OR (falling back to its "absent" alternative) the identifier
+    // immediately followed by `<`, and the WHOLE statement fails to match.
+    // That drops it from `typeAliasStatements` entirely — not "matched but
+    // unflagged", but never inspected at all — so a literal panel id inside
+    // such an alias's body would go undetected. None of today's seven type
+    // aliases in this file declare a defaulted generic; catching that shape
+    // would need a real AST parse rather than a regex.
     const typeAliasStatements = code.match(/\btype\s+[A-Za-z_]\w*(?:<[^=]*>)?\s*=\s*[^;]*;/g) ?? [];
     expect(typeAliasStatements.length).toBeGreaterThan(0); // the pattern itself must still find something
     const panelIds = ['databases', 'dashboards', 'library', 'history'];
     for (const statement of typeAliasStatements) {
       for (const id of panelIds) {
+        // All three quoting styles TypeScript allows for a string literal
+        // type, not single-quotes only — `export type UpperPanelId =
+        // Extract<SidePanelId, "databases" | "dashboards">;` is an identical
+        // hand-written-allowlist regression that single-quote-only checking
+        // would miss outright (no lint/formatting script here enforces one
+        // quote style — see this repo's CLAUDE.md hard rule 4's dependency
+        // list; none of the seven is a linter).
         expect(statement).not.toContain(`'${id}'`);
+        expect(statement).not.toContain(`"${id}"`);
+        expect(statement).not.toContain(`\`${id}\``);
       }
     }
   });
