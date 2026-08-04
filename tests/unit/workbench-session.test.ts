@@ -89,7 +89,6 @@ function makeState(over: Partial<WorkbenchStateSlice> = {}): WorkbenchStateSlice
     forceExplain: false,
     resultRowLimit: 500,
     serverVersion: null,
-    sidePanel: signal('saved'),
     isMobile: signal(false),
     mobileView: signal('editor'),
     hasSelection: signal(false),
@@ -103,7 +102,7 @@ function makeState(over: Partial<WorkbenchStateSlice> = {}): WorkbenchStateSlice
 function makeHooks(over: Partial<WorkbenchHooks> = {}): WorkbenchHooks {
   return {
     renderResults: vi.fn(),
-    renderSavedHistory: vi.fn(),
+    onRunComplete: vi.fn(),
     cancelSchemaGraph: vi.fn(),
     loadSchema: vi.fn(),
     recordHistory: vi.fn(),
@@ -843,11 +842,21 @@ describe('createWorkbenchSession: runScript()', () => {
     await session.runScript(['SELECT 1'], 'SELECT 1');
     expect(h.hooks.recordBoundParams).not.toHaveBeenCalled();
     expect(h.state.history).toEqual([]);
-    expect(h.hooks.renderSavedHistory).not.toHaveBeenCalled();
+    expect(h.hooks.onRunComplete).not.toHaveBeenCalled();
   });
 
-  it('a clean run records one script history entry, and repaints History when open', async () => {
-    const h = makeHarness({ state: { sidePanel: signal('history') } });
+  // #587 AC3: `onRunComplete` fires UNCONDITIONALLY on every clean run now —
+  // this session dropped `sidePanel` from `WorkbenchStateSlice` entirely, so
+  // there is nothing left here to gate the call on. The OLD negative case
+  // ('a clean run does not repaint History when a different side panel is
+  // open') asserted the hook was NOT called when a different panel was
+  // open — that assertion is false at THIS layer by design now; the same
+  // behaviour (dispatch scoped to the active lower panel, and only if it
+  // defines the hook) is re-asserted at the layer that still knows what a
+  // "side panel" is: `side-panel-registry.test.ts`'s "notifyRunComplete
+  // dispatches onRunComplete only to the active lower panel" cases.
+  it('a clean run records one script history entry and calls onRunComplete unconditionally', async () => {
+    const h = makeHarness();
     h.execFakes.executeScript.mockImplementation(async (req: ScriptExecutionRequest) => {
       const entry = { sql: 'SELECT 1', status: 'rows' as const, columns: [], rows: [], truncated: false, preview: '', ms: 5 };
       req.onStatementResult(0, entry);
@@ -857,21 +866,8 @@ describe('createWorkbenchSession: runScript()', () => {
     await session.runScript(['SELECT 1'], 'SELECT 1; SELECT 1;');
     expect(h.state.history).toHaveLength(1);
     expect(h.state.history[0].sql).toBe('SELECT 1; SELECT 1;');
-    expect(h.hooks.renderSavedHistory).toHaveBeenCalled();
+    expect(h.hooks.onRunComplete).toHaveBeenCalled();
     expect(h.hooks.saveJSON).toHaveBeenCalled();
-  });
-
-  it('a clean run does not repaint History when a different side panel is open', async () => {
-    const h = makeHarness({ state: { sidePanel: signal('saved') } });
-    h.execFakes.executeScript.mockImplementation(async (req: ScriptExecutionRequest) => {
-      const entry = { sql: 'SELECT 1', status: 'ok' as const, ms: 5 };
-      req.onStatementResult(0, entry);
-      return { entries: [entry], aborted: false };
-    });
-    const session = createWorkbenchSession(h.deps);
-    await session.runScript(['SELECT 1'], 'SELECT 1;');
-    expect(h.state.history).toHaveLength(1);
-    expect(h.hooks.renderSavedHistory).not.toHaveBeenCalled();
   });
 
   it('sets `cancelled` on the script result when aborted', async () => {

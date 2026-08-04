@@ -20,19 +20,40 @@
 
 import type { SaveStr } from '../state.js';
 import { KEYS } from '../state.js';
+import type { SidePanelKey } from '../core/side-panels.js';
 
-/** The true-preference subset of state.ts's own `KEYS` map — every OTHER key
- *  there (saved/history/libraryName/varValues/filterActive/
- *  varRecent/varRecentDisabled) is a domain record with its own dedicated
- *  `save*` method on `App` (`saveJSON`/`saveVarValues`/`saveFilterActive`/…),
- *  untouched by this service. */
-export type PreferenceKey =
-  | 'theme' | 'sidebarPx' | 'editorPct' | 'sideSplitPct'
-  | 'sidePanel' | 'resultRowLimit'
+/**
+ * The true-preference subset of state.ts's own `KEYS` map, keyed by the VALUE
+ * each preference accepts — every OTHER key there (saved/history/libraryName/
+ * varValues/filterActive/varRecent/varRecentDisabled) is a domain record with
+ * its own dedicated `save*` method on `App`
+ * (`saveJSON`/`saveVarValues`/`saveFilterActive`/…), untouched by this
+ * service.
+ *
+ * #587 AC4: `sidePanel`'s value is `SidePanelKey` (from `core/side-panels.ts`,
+ * the registry's own derived persisted-key vocabulary), not `unknown` — so
+ * `prefs.save('sidePanel', 'library')` (the registry's OWN id, never a
+ * persisted value — see `decodeSidePanelKey`'s downgrade-safety comment) is a
+ * COMPILE error, not just a runtime discipline every call site has to
+ * maintain by hand.
+ */
+export interface PreferenceValues {
+  theme: string;
+  sidebarPx: number;
+  editorPct: number;
+  sideSplitPct: number;
+  sidePanel: SidePanelKey;
+  resultRowLimit: number;
   // #586 — the single canonical docked right-inspector width, replacing the
   // former cellDrawerPx/docPanePx pair (see splitters.ts's 'rightInspector'
   // axis and state.ts's compat-read `rightInspectorPx` comment).
-  | 'rightInspectorPx';
+  rightInspectorPx: number;
+}
+
+/** Kept as a type alias so existing `PreferenceKey`-typed imports/casts
+ *  (`app-shell.ts`'s dynamic splitter/drawer call sites) keep compiling
+ *  unchanged. */
+export type PreferenceKey = keyof PreferenceValues;
 
 /** The one state field this service reads/writes (`toggleTheme` only) — a
  *  plain settable property, not a signal (matches `AppState.theme`). */
@@ -52,8 +73,11 @@ export interface AppPreferences {
    *  directly now). This IS the service's write API: per-key typed setters
    *  were considered and dropped (review) — every real call site already
    *  holds a validated `{name, value}` pair, so a per-key surface would ship
-   *  with zero callers (CLAUDE.md rule 5: no speculative primitives). */
-  save(name: PreferenceKey, value: unknown): void;
+   *  with zero callers (CLAUDE.md rule 5: no speculative primitives).
+   *  Generic over `PreferenceValues` (#587 AC4): `value`'s type follows
+   *  `name`, so a mismatched pair (e.g. `save('sidePanel', 'library')`) is a
+   *  compile error rather than a runtime-only discipline. */
+  save<K extends PreferenceKey>(name: K, value: PreferenceValues[K]): void;
   /** Flips `state.theme` light↔dark AND persists it in one call (issue
    *  ruling — the one preference whose state mutation moves here, not just
    *  its persist half); returns the new value so the DOM-half caller
@@ -67,7 +91,7 @@ export interface AppPreferences {
 export function createAppPreferences(deps: AppPreferencesDeps): AppPreferences {
   const { state } = deps;
 
-  function save(name: PreferenceKey, value: unknown): void {
+  function save<K extends PreferenceKey>(name: K, value: PreferenceValues[K]): void {
     deps.saveStr(KEYS[name], String(value));
   }
 

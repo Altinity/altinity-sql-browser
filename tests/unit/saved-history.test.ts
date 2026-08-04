@@ -1,12 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderSavedHistory } from '../../src/ui/saved-history.js';
+import { effect } from '@preact/signals-core';
+import { renderSavedHistory, libraryPanelDef, historyPanelDef } from '../../src/ui/saved-history.js';
+import { buildSidePanelRegistry, renderSidePanelTabs } from '../../src/ui/side-panel-registry.js';
+import type { SidePanelRegistry, SidePanelId } from '../../src/ui/side-panel-registry.js';
+import { lowerIdForKey, sidePanelKeyFor } from '../../src/core/side-panels.js';
+import type { LowerPanelId } from '../../src/core/side-panels.js';
 import { LIBRARY_QUERY_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
-import { makeApp } from '../helpers/fake-app.js';
+import { makeApp as makeAppReal } from '../helpers/fake-app.js';
+import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import { setTabSpecDraft, toggleFavorite, deleteSaved } from '../../src/state.js';
 import type { App } from '../../src/ui/app.types.js';
+import type { AppShellHandle } from '../../src/ui/app-shell.js';
 import type { HistoryEntry } from '../../src/state.js';
 
 const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
@@ -30,20 +37,81 @@ const qsa = <T extends Element = HTMLElement>(root: ParentNode, selector: string
   [...root.querySelectorAll(selector)] as T[];
 const byTitle = (root: ParentNode, t: string): HTMLElement =>
   qsa(root, '.sv-act').find((b) => b.title === t) as HTMLElement;
-/** `app.dom.*` mounts are always present (`makeApp()`'s own dom stubs), or
- *  are deliberately cleared in a no-mount test — those tests never read
- *  through this helper. */
-const savedList = (app: App): HTMLElement => app.dom.savedList!;
-const savedTabsRow = (app: App): HTMLElement => app.dom.savedTabsRow!;
-const savedSearch = (app: App): HTMLElement => app.dom.savedSearch!;
+
+const lowerTabsRows = new WeakMap<App, HTMLElement>();
+
+/**
+ * #587: `fake-app.ts`'s `makeApp()` no longer builds `dom.savedList`/
+ * `savedSearch`/`savedTabsRow` — those fields are GONE from `AppDom`. This
+ * wraps the real `makeApp` to also build a real Library/History registry
+ * (mirroring app-shell.ts's own construction) and wire it to `app.shell`, so
+ * every EXISTING call site in this file (`makeApp()`/`makeApp({...})`) keeps
+ * working with no other change. The tab row + its ONE reactive effect are
+ * the SAME shape as app-shell.ts's own lower-pane effect (persist + set the
+ * signal on select; repaint the row + the active panel on any change) —
+ * built once and cached per `app` (`lowerTabsRows`), so a test's plain
+ * `app.state.sidePanel.value = 'history'` (unchanged throughout this file)
+ * keeps both the tab row and the registry's active panel in sync with no
+ * per-test call, and clicking a tab persists exactly like production.
+ */
+function mountSidePanels(app: App): SidePanelRegistry {
+  const registry = buildSidePanelRegistry([libraryPanelDef(app), historyPanelDef(app)]);
+  const row = document.createElement('div');
+  lowerTabsRows.set(app, row);
+  const selectLowerPanel = (id: SidePanelId): void => {
+    const key = sidePanelKeyFor(id as LowerPanelId);
+    app.prefs.save('sidePanel', key);
+    app.state.sidePanel.value = key;
+  };
+  const refreshLowerPane = (): void => {
+    const activeId = lowerIdForKey(app.state.sidePanel.value);
+    renderSidePanelTabs(row, registry.entries, activeId, selectLowerPanel);
+    registry.showPanel(activeId);
+  };
+  effect(refreshLowerPane);
+  // `Pick`-shaped: nothing in this file reads any OTHER `AppShellHandle`
+  // member through `app.shell`. `refreshActiveSidePanels` is overridden the
+  // SAME way app-shell.ts's real one is — it must also repaint the Library
+  // tab's live count, not just the active body (a star/delete/rename doesn't
+  // bump any signal the effect above depends on).
+  app.shell = { sidePanels: { ...registry, refreshActiveSidePanels: refreshLowerPane } } as unknown as AppShellHandle;
+  return registry;
+}
+
+function makeApp<O extends MakeAppOverrides = Record<string, never>>(over: O = {} as O) {
+  const app = makeAppReal(over);
+  mountSidePanels(app);
+  return app;
+}
+
+/** The ACTIVE lower panel's persistent host — the registry's own replacement
+ *  for the deleted `app.dom.savedList`/`savedSearch`/`savedTabsRow` fields. */
+const activeHost = (app: App): HTMLElement =>
+  app.shell!.sidePanels.entry(lowerIdForKey(app.state.sidePanel.value)).host;
+const savedList = (app: App): HTMLElement => qs(activeHost(app), '.saved-list');
+const savedSearch = (app: App): HTMLElement => qs(activeHost(app), '.saved-search');
+/** The tab row is no longer built by `saved-history.ts` at all (#587
+ *  deliverable 3) — it is app-shell.ts's own generic renderer now, cached
+ *  per `app` by `mountSidePanels` above. */
+const savedTabsRow = (app: App): HTMLElement => lowerTabsRows.get(app)!;
 
 describe('renderSavedHistory', () => {
-  it('no-ops without mounts', () => {
+  // #587 R2.5: the compatibility export is a safe no-op both BEFORE any shell
+  // has mounted and AFTER one has been disposed — `app.recordHistory` and the
+  // workbench's clean-run hook are wired at controller-construction time,
+  // well before `mountAppShell` ever runs, and must never throw against that.
+  it('is a safe no-op before any shell has mounted', () => {
+    // `makeAppReal` (not this file's own `makeApp` wrapper, which always
+    // mounts one) — the genuinely-unmounted state `appDefaults.shell: null`
+    // describes.
+    const app = makeAppReal();
+    expect(app.shell).toBeNull();
+    expect(() => renderSavedHistory(app)).not.toThrow();
+  });
+
+  it('is a safe no-op after the shell has been disposed', () => {
     const app = makeApp();
-    // `as`: fake-app's `dom.savedTabsRow` is a real HTMLElement in the fixture
-    // literal (never absent in practice) — this test exercises the defensive
-    // "no mount point" guard renderSavedHistory itself keeps.
-    (app.dom as { savedTabsRow: HTMLElement | undefined }).savedTabsRow = undefined;
+    app.shell = null; // mirrors app.ts's own `disposeShell`
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
@@ -632,12 +700,11 @@ describe('renderSavedHistory — search/filter', () => {
   const names = (app: App): (string | null)[] => qsa(savedList(app), '.saved-row .name').map((n) => n.textContent);
   const type = (app: App, v: string): void => { const i = input(app); i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); };
 
-  it('tolerates a missing search mount', () => {
-    const app = savedApp();
-    // `as`: same "defensive no-mount guard" convention as above.
-    (app.dom as { savedSearch: HTMLElement | undefined }).savedSearch = undefined;
-    expect(() => renderSavedHistory(app)).not.toThrow();
-  });
+  // #587: the "missing search mount" guard this test exercised is GONE
+  // structurally, not just untested — each panel's search box is a plain
+  // closure variable built once in `mount(host)` (`saved-history.ts`'s
+  // `mountLowerPanel`), never looked up through an optional `app.dom.*`
+  // field, so there is no longer a code path where it could be absent.
 
   it('collapses the search box when the active list is empty', () => {
     const app = makeApp();
@@ -860,5 +927,94 @@ describe('concurrent saved-query writes (#287 review fix)', () => {
     await Promise.all([pToggle, pDelete]);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']); // q2 stays deleted
     expect(queryFavorite(app.state.savedQueries[0])).toBe(true);      // q1 toggle applied
+  });
+});
+
+// #587: the ownership guard persistent hosts require, PLUS a few pre-existing
+// branches this file's own restructuring exposed as needing their own direct
+// case (they were previously reached incidentally through paths this phase
+// changed the shape of).
+describe('#587: persistent-host ownership guard + branch coverage', () => {
+  // Sabotage-checked (see the phase report): deleting the `if (!ownsTheList())
+  // return;` guard from either listener in `mountLowerPanel` turns this red.
+  it('a stale HIDDEN panel\'s search input cannot rewrite the shared filter or repaint the active list', () => {
+    const app = makeApp();
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    setSaved(app, [{ id: 's1', name: 'Alpha', sql: '1' }]);
+    // Activate History (builds + renders its own search input with a real
+    // `ownsTheList` listener), then switch back to Library — History's host
+    // is now hidden, but its input/listeners persist (#587 AC6: never rebuilt).
+    app.state.sidePanel.value = 'history';
+    app.state.sidePanel.value = 'saved';
+    renderSavedHistory(app);
+    const historyHost = app.shell!.sidePanels.entry('history').host;
+    expect(historyHost.hidden).toBe(true);
+    const historyInput = qs<HTMLInputElement>(historyHost, '.sv-search-input');
+    // A real browser never delivers an event to a `hidden` subtree — this is
+    // the one way (a dispatched event, exactly what this test does) it could
+    // still be reached.
+    historyInput.value = 'zzz';
+    historyInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.state.libraryFilter).toBe('');
+    expect(qsa(savedList(app), '.saved-row .name').map((n) => n.textContent)).toEqual(['Alpha']);
+    // The SAME guard covers `setFilter` (Escape / the × clear button), not
+    // just the plain `input` listener above — both wire through it.
+    historyInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(app.state.libraryFilter).toBe('');
+    expect(historyInput.value).toBe('zzz'); // never cleared — the guard returned first
+  });
+
+  it('the search input ignores every key except Escape', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Alpha', sql: '1' }]);
+    renderSavedHistory(app);
+    const searchInput = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+    searchInput.value = 'al';
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.state.libraryFilter).toBe('al');
+    searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    expect(app.state.libraryFilter).toBe('al'); // untouched — only Escape clears
+  });
+
+  it('the rename form\'s Name/Description fields ignore keys other than Enter/Escape (or a Cmd/Ctrl+Enter for Description)', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1' }]);
+    renderSavedHistory(app);
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const nameInput = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    const descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
+    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    // Neither key committed or cancelled — the form is still open.
+    expect(app.state.editingSavedId.value).toBe('s1');
+    expect(queryName(app.state.savedQueries[0])).toBe('Old');
+  });
+
+  const emptyDiagnosticsCommit = () => vi.fn(async () => ({ ok: false as const, diagnostics: [] }));
+
+  it('star surfaces no toast when the rejected commit carries no diagnostics', async () => {
+    const commit = emptyDiagnosticsCommit();
+    const app = makeApp({ workspace: { commit } });
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(document.querySelector('.share-toast')).toBeNull();
+  });
+
+  it('delete surfaces no toast when the rejected commit carries no diagnostics', async () => {
+    const commit = emptyDiagnosticsCommit();
+    const app = makeApp({ workspace: { commit } });
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1' }]);
+    renderSavedHistory(app);
+    byTitle(qs(savedList(app), '.saved-row'), 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
+    await flush();
+    expect(app.state.savedQueries).toHaveLength(1); // not deleted
+    expect(document.querySelector('.share-toast')).toBeNull();
   });
 });

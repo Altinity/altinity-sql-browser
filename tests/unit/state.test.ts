@@ -245,6 +245,25 @@ describe('createState', () => {
     expect(s.varRecent).toEqual({ version: 1, nextSeq: 3, byName: { d: [{ value: 'x', seq: 2 }] } });
     expect(s.varRecentDisabled).toBe(true);
   });
+  // #587: `sidePanel`'s load-boundary decode. Before this phase `state.ts`
+  // read the raw stored string with no validation at all, so an unrecognized
+  // value silently reached History's `renderSavedHistory` branch (fall-
+  // through of an `=== 'saved'` comparison) with NEITHER tab visually active
+  // — the bridge below closes that gap.
+  describe('sidePanel — fail-closed load-boundary decode (#587)', () => {
+    it('defaults to "saved" (Library) when nothing is persisted', () => {
+      expect(createState(reader()).sidePanel.value).toBe('saved');
+    });
+    it('round-trips the two recognized persisted values', () => {
+      expect(createState(reader({ [KEYS.sidePanel]: 'saved' })).sidePanel.value).toBe('saved');
+      expect(createState(reader({ [KEYS.sidePanel]: 'history' })).sidePanel.value).toBe('history');
+    });
+    it('fails closed to "saved" for garbage, INCLUDING the registry\'s own id "library"', () => {
+      for (const bad of ['library', 'nope', '', 'History']) {
+        expect(createState(reader({ [KEYS.sidePanel]: bad })).sidePanel.value).toBe('saved');
+      }
+    });
+  });
   // #586 — rightInspectorPx collapses cellDrawerPx/docPanePx into one
   // preference; a browser that already had either legacy value must keep it
   // across the upgrade rather than silently reset to the default.

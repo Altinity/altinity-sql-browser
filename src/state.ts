@@ -35,6 +35,8 @@ import type { LinkedTabSnapshot } from './workspace/workspace-sync.js';
 import { materializeQueryTimeRange } from './core/query-time-range.js';
 import type { QueryTimeRangeInferenceDiagnostic } from './core/query-time-range.js';
 import { deriveWorkspaceKey } from './core/workspace-key.js';
+import { decodeSidePanelKey } from './core/side-panels.js';
+import type { SidePanelKey, UpperPanelId } from './core/side-panels.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -385,16 +387,22 @@ export interface AppState {
   filterActive: Record<string, boolean>;
   varRecent: RecentMap;
   varRecentDisabled: boolean;
-  /** 'saved' | 'history' at every write site; typed string because the
-   * initial value is an undecoded localStorage read (`asb:sidePanel`). */
-  sidePanel: Signal<string>;
+  /** The lower sidebar pane's active panel, in the PERSISTED vocabulary
+   *  (`core/side-panels.ts`'s `SidePanelKey` — `'saved'` means the Library
+   *  panel, `'history'` means History; #427 renamed the visible label, not
+   *  the stored string). `createState` decodes the raw localStorage read
+   *  through `decodeSidePanelKey` (fail-closed) before this signal ever sees
+   *  it, so it only ever holds one of the two recognized values — never the
+   *  registry's own id `'library'` (#587 R2.9 downgrade-safety). */
+  sidePanel: Signal<SidePanelKey>;
   /**
    * #426 — the UPPER sidebar pane's role. Deliberately NOT persisted (unlike
    * `sidePanel`): the issue specifies "default to Databases for a fresh session",
    * which a localStorage-backed preference would break on every reload. Session
-   * UI state, never workspace JSON.
+   * UI state, never workspace JSON. `UpperPanelId` (#587) is DERIVED from the
+   * side-panel manifest rather than a hand-written union declared here.
    */
-  upperRole: Signal<'databases' | 'dashboards'>;
+  upperRole: Signal<UpperPanelId>;
   /**
    * #426 — the Dashboard tree's EXPLICIT repaint invalidation. The tree is a
    * projection of the committed workspace aggregate plus main-surface navigation
@@ -757,8 +765,11 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // cleared (Clear all recent values / per-field Clear recent).
     // The `as` trusts the localStorage shape verbatim — no decoder exists today.
     varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false) as boolean,
-    sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
-    upperRole: signal<'databases' | 'dashboards'>('databases'),
+    // #587: fail-closed decode at the load boundary — anything other than a
+    // recognized persisted value (missing, corrupt, or the registry's own
+    // id) resolves to 'saved' (Library), the documented default.
+    sidePanel: signal(decodeSidePanelKey(read.loadStr(KEYS.sidePanel, 'saved'))),
+    upperRole: signal<UpperPanelId>('databases'),
     dashboardTreeRevision: signal(0),
     dashboardTreeUi: new Map(),
     // The localStorage startup ingress: v1 entries become canonical v2 in

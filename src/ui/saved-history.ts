@@ -1,7 +1,19 @@
-// The bottom sidebar pane: a Saved / History switcher, a search box, and the
-// two lists. Saved items support favorite (star), inline rename (pencil) and
-// delete (trash). The search filters the active list (name/description/sql for
-// Library, sql for History); it re-renders only the list so typing keeps focus.
+// The bottom sidebar pane's two panels — Library and History (#587: two
+// registry entries, no longer a switcher this module builds itself). Saved
+// items support favorite (star), inline rename (pencil) and delete (trash).
+// The search filters the active list (name/description/sql for Library, sql
+// for History); it re-renders only the list so typing keeps focus.
+//
+// #587: `libraryPanelDef`/`historyPanelDef` are what `app-shell.ts` hands to
+// `buildSidePanelRegistry` — each panel gets its OWN persistent search+list
+// host, built once in `mount(host)` and never rebuilt. `state.libraryFilter`
+// stays ONE shared string (splitting it per panel is #487 phase 3's job, out
+// of scope here) — which is exactly why `ownsTheList` exists below: with two
+// PERSISTENT hosts, an event from the INACTIVE panel's leftover search input
+// would rewrite the shared filter and repaint the OTHER panel's list. A real
+// browser never delivers events to a `hidden` subtree, so this is a guard
+// against a host a future caller (or a test) can still reach directly, not a
+// redesign of the shared-filter decision.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -22,6 +34,7 @@ import { libraryQueries } from '../dashboard/model/query-ownership.js';
 import { openLibraryAssignMenu } from './library-assign-menu.js';
 import type { App } from './app.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.js';
 
 /** The `resultView` signal's value union (state.ts) — `launchView`/`'panel'`
  *  below are proven members of it (SAVED_VIEWS membership, or the queryless
@@ -101,84 +114,119 @@ function libraryEntries(app: App): SavedQueryV2[] {
   return app.state.savedQueries.filter((query) => libraryIds.has(query.id));
 }
 
+/**
+ * Compatibility seam (#587): 17 call sites across the app used to call this
+ * to repaint whichever lower panel was active — a star/delete/rename
+ * completion, a Dashboard-membership projection bump, or the tab switch
+ * itself. It now delegates to the mounted shell's registry, which resolves
+ * "the active lower panel" itself; a no-op before the shell mounts or after
+ * it is disposed (both real states — `app.shell` starts/ends `null`), never
+ * a thrown error against a controller wiring that runs before any DOM exists.
+ */
 export function renderSavedHistory(app: App): void {
-  const tabsRow = app.dom.savedTabsRow;
-  const list = app.dom.savedList;
-  if (!tabsRow || !list) return;
-  const state = app.state;
-  // #427: the count is the LIBRARY count, not every stored query — the owned
-  // copies are reachable through the Dashboard tree, not through this list.
-  const count = libraryEntries(app).length;
-
-  // Switching panes clears the search so each tab starts unfiltered. Clear the
-  // (plain) filter first, then set the sidePanel signal — its render effect runs
-  // synchronously on assignment and must see the cleared filter. No manual
-  // re-render call: the effect in createApp() repaints.
-  const switchTo = (panel: string): void => {
-    state.libraryFilter = '';
-    app.prefs.save('sidePanel', panel);
-    state.sidePanel.value = panel;
-  };
-
-  tabsRow.replaceChildren(
-    h('button', {
-      class: 'side-tab' + (state.sidePanel.value === 'saved' ? ' active' : ''),
-      onclick: () => switchTo('saved'),
-    }, Icon.layers(), h('span', null, 'Library'),
-      count ? h('span', { class: 'side-count' }, '· ' + count) : null),
-    h('button', {
-      class: 'side-tab' + (state.sidePanel.value === 'history' ? ' active' : ''),
-      onclick: () => switchTo('history'),
-    }, Icon.history(), h('span', null, 'History')),
-  );
-
-  renderSearch(app);
-  renderList(app);
+  app.shell?.sidePanels.refreshActiveSidePanels();
 }
 
-/** Re-render just the active list (called on every keystroke without rebuilding
- * the search input, so the caret/focus survive filtering). */
-function renderList(app: App): void {
-  // `!`: every caller (renderSavedHistory, renderSearch below) only reaches
-  // this after confirming `app.dom.savedList` is mounted.
-  const list = app.dom.savedList!;
-  list.replaceChildren();
-  if (app.state.sidePanel.value === 'saved') renderSaved(app, list);
-  else renderHistory(app, list);
+/** The Library tab's live count (#427: the LIBRARY count, not every stored
+ *  query — the owned copies are reachable through the Dashboard tree, not
+ *  through this list). `null` renders no adornment, exactly like today. */
+function libraryCountNode(app: App): Node | null {
+  const count = libraryEntries(app).length;
+  return count ? h('span', { class: 'side-count' }, '· ' + count) : null;
 }
 
 /**
- * Render the search box into `app.dom.savedSearch` (built once per full render;
- * a tab with no items shows nothing). Its `input` handler mutates
- * `state.libraryFilter` and re-renders only the list, so it stays focused.
+ * Build ONE lower-pane panel's persistent search+list pair and its
+ * `MountedSidePanel` controller. Shared by both Library and History
+ * (`isLibrary` is the only branch) — the DOM shape, search wiring, and
+ * ownership guard are otherwise identical.
  */
-function renderSearch(app: App): void {
-  const box = app.dom.savedSearch;
-  if (!box) return;
-  const state = app.state;
-  // Gated on the LIBRARY count (#427): a workspace whose every query is owned
-  // has an empty list, so a search box over it would filter nothing.
-  const hasItems = state.sidePanel.value === 'saved'
-    ? libraryEntries(app).length > 0
-    : state.history.length > 0;
-  box.replaceChildren();
-  if (!hasItems) return;
+function mountLowerPanel(app: App, host: HTMLElement, isLibrary: boolean): MountedSidePanel {
+  const search = h('div', { class: 'saved-search' });
+  const list = h('div', { class: 'saved-list' });
+  host.append(search, list);
 
-  const input = h('input', {
-    class: 'sv-search-input', type: 'text',
-    placeholder: state.sidePanel.value === 'saved' ? 'Search library queries…' : 'Search history…',
-    value: state.libraryFilter,
-  });
-  const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
-  const syncClear = (): void => { clear.style.display = input.value ? '' : 'none'; };
-  const setFilter = (v: string): void => { input.value = v; state.libraryFilter = v; syncClear(); renderList(app); };
+  const hasItems = (): boolean => (isLibrary ? libraryEntries(app).length > 0 : app.state.history.length > 0);
 
-  input.addEventListener('input', () => { state.libraryFilter = input.value; syncClear(); renderList(app); });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
-  clear.addEventListener('click', () => { setFilter(''); input.focus(); });
-  syncClear();
+  const renderList = (): void => {
+    list.replaceChildren();
+    if (isLibrary) renderSaved(app, list); else renderHistory(app, list);
+  };
 
-  box.append(h('span', { class: 'sv-search-icon' }, Icon.search()), input, clear);
+  // #587: with a PERSISTENT host, this panel's search input can still receive
+  // a dispatched event while hidden (a real browser never delivers one to a
+  // `display: none` subtree, but nothing before #587 needed to rely on that —
+  // there was only ever one shared pair). `state.libraryFilter` stays ONE
+  // shared string (splitting it per panel is #487 phase 3's job), so an event
+  // from the INACTIVE panel's stale input must not rewrite it or repaint the
+  // OTHER panel's list — `ownsTheList` is that guard, checked at the top of
+  // every handler it wires below.
+  const ownsTheList = (): boolean => !host.hidden;
+
+  const renderSearchBox = (): void => {
+    const state = app.state;
+    search.replaceChildren();
+    if (!hasItems()) return;
+
+    const input = h('input', {
+      class: 'sv-search-input', type: 'text',
+      placeholder: isLibrary ? 'Search library queries…' : 'Search history…',
+      value: state.libraryFilter,
+    });
+    const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
+    const syncClear = (): void => { clear.style.display = input.value ? '' : 'none'; };
+    const setFilter = (v: string): void => {
+      if (!ownsTheList()) return;
+      input.value = v; state.libraryFilter = v; syncClear(); renderList();
+    };
+
+    input.addEventListener('input', () => {
+      if (!ownsTheList()) return;
+      state.libraryFilter = input.value; syncClear(); renderList();
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
+    clear.addEventListener('click', () => { setFilter(''); input.focus(); });
+    syncClear();
+
+    search.append(h('span', { class: 'sv-search-icon' }, Icon.search()), input, clear);
+  };
+
+  const render = (): void => { renderSearchBox(); renderList(); };
+
+  return {
+    render,
+    // Switching panes clears the search so each tab starts unfiltered —
+    // matches the pre-#587 behaviour ('clears the filter when switching
+    // tabs'), just triggered by the panel becoming inactive rather than by
+    // the tab-row click handler itself (which no longer lives in this
+    // module — see `app-shell.ts`'s generic `onSelect`).
+    deactivate: () => { app.state.libraryFilter = ''; },
+    // #587 AC3: only History repaints after a clean run — dispatch itself is
+    // scoped to "the active lower panel" by the registry's `notifyRunComplete`,
+    // so this only ever fires while History is genuinely visible.
+    onRunComplete: isLibrary ? undefined : render,
+    dispose: () => {},
+  };
+}
+
+/** The registry's Library entry (#587 deliverable 1/3). */
+export function libraryPanelDef(app: App): SidePanelDef {
+  return {
+    id: 'library', pane: 'lower', label: 'Library', icon: Icon.layers,
+    accessibleLabel: 'Open Library navigation',
+    tabAdornment: () => libraryCountNode(app),
+    mount: (host) => mountLowerPanel(app, host, true),
+  };
+}
+
+/** The registry's History entry (#587 deliverable 1/3). No tab adornment —
+ *  History never carried a count. */
+export function historyPanelDef(app: App): SidePanelDef {
+  return {
+    id: 'history', pane: 'lower', label: 'History', icon: Icon.history,
+    accessibleLabel: 'Open query History',
+    mount: (host) => mountLowerPanel(app, host, false),
+  };
 }
 
 function renderSaved(app: App, list: HTMLElement): void {

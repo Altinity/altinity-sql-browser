@@ -263,3 +263,45 @@ describe('mountAppShell docked right-inspector (#586)', () => {
     });
   });
 });
+
+// #587 — the side-panel registry's lower-pane tab row: `app-shell.ts`'s own
+// `selectLowerPanel` (persist + set the signal on a real click), distinct
+// from `saved-history.test.ts`'s fixture-local stand-in for the same shape.
+describe('mountAppShell — side panel registry (#587)', () => {
+  it('clicking a lower-pane tab persists the choice and switches the active panel', () => {
+    const { app, handle } = mount();
+    const lowerRow = app.root!.querySelector('.saved-pane > .side-tabs')!;
+    // `renderSidePanelTabs` REPLACES the row's children on every repaint, so
+    // each click needs a fresh query — a captured button reference goes stale
+    // the moment the tab row re-renders.
+    const tabs = (): HTMLButtonElement[] => [...lowerRow.querySelectorAll<HTMLButtonElement>('.side-tab')];
+    expect(tabs()).toHaveLength(2);
+    expect(app.state.sidePanel.value).toBe('saved');
+
+    tabs()[1].click(); // History
+    expect(app.state.sidePanel.value).toBe('history');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'history');
+    expect(tabs()[1].classList.contains('active')).toBe(true);
+
+    tabs()[0].click(); // Library
+    expect(app.state.sidePanel.value).toBe('saved');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'saved');
+    handle.dispose();
+  });
+
+  it('clicking an upper-pane tab switches the role without persisting anything (#426, session-only)', () => {
+    const { app, handle } = mount();
+    const upperRow = app.dom.upperRoleTabs!;
+    const tabs = (): HTMLButtonElement[] => [...upperRow.querySelectorAll<HTMLButtonElement>('.side-tab')];
+    expect(tabs()).toHaveLength(2);
+    expect(app.state.upperRole.value).toBe('databases');
+
+    tabs()[1].click(); // Dashboards
+    expect(app.state.upperRole.value).toBe('dashboards');
+    expect(app.prefs.save).not.toHaveBeenCalledWith('upperRole', expect.anything());
+
+    tabs()[0].click(); // Databases
+    expect(app.state.upperRole.value).toBe('databases');
+    handle.dispose();
+  });
+});

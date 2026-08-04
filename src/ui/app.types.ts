@@ -38,6 +38,14 @@ import type { ExportService } from '../application/export-service.js';
 import type { QueryDocumentSession } from '../application/query-document-session.js';
 import type { SavedQueryService } from '../application/saved-query-service.js';
 import type { OAuthDocumentRecoveryRestoreResult } from '../application/oauth-document-recovery-session.js';
+// Type-only, and circular with `app-shell.ts` (which imports `App` from this
+// file) — TypeScript erases `import type` entirely, so this introduces no
+// runtime cycle. `AppShellHandle` is the ONE seam `app.shell` exposes: the
+// side-panel registry (`refreshActiveSidePanels`/`notifyRunComplete`), which
+// must be reachable from controller-construction time (before any shell
+// exists) through shell disposal — see `app-shell.ts`'s own header comment
+// and `saved-history.ts`'s `renderSavedHistory` compatibility export.
+import type { AppShellHandle } from './app-shell.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 // #457: the `mutateWorkspace` contract types are DECLARED in `state.ts`, beside
@@ -133,9 +141,11 @@ export interface AppDom {
   cancelInspectorDrag?: () => void;
   reclampInspectorWidth?: () => void;
   runElapsedEl?: HTMLElement;
-  savedList?: HTMLElement;
-  savedSearch?: HTMLElement;
-  savedTabsRow?: HTMLElement;
+  // #587: `savedList`/`savedSearch`/`savedTabsRow` are GONE — the Library and
+  // History panels each own a persistent host built by
+  // `side-panel-registry.ts`'s `buildSidePanelRegistry`, reachable via
+  // `app.shell.sidePanels`, not through named `AppDom` fields. Adding a new
+  // side panel needs no `AppDom` field at all (#587 AC5).
   schemaList?: HTMLElement;
   specEditorView?: EditorView;
   sqlEditorView?: EditorView;
@@ -261,6 +271,14 @@ export interface App {
   dom: AppDom;
   root: Element | null;
   document: Document;
+  /** #587 (#425/#586 precedent): the persistent app frame's handle, `null`
+   *  before the first `mountAppShell` call and after a teardown
+   *  (`ensureShell`/`disposeShell` in app.ts keep this mirrored). Exposes the
+   *  side-panel registry through `shell.sidePanels` — the seam
+   *  `saved-history.ts`'s `renderSavedHistory` compatibility export and the
+   *  workbench's clean-run hook address, both of which must stay safe to call
+   *  before any shell exists or after it is torn down. */
+  shell: AppShellHandle | null;
   /** Set by shared overlay primitives for the duration of their open lifecycle. */
   keyboardOwner: KeyboardOwner | null;
   /** Acquire exclusive application-keyboard ownership. The returned idempotent

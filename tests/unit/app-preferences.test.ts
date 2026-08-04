@@ -32,9 +32,14 @@ describe('save()', () => {
       ['sidePanel', 'history', 'history'],
       ['resultRowLimit', 1000, '1000'],
     ];
+    // `save` is deliberately generic (#587 AC4: `value`'s type follows
+    // `name`) — this loop exercises it dynamically across every key, which a
+    // generic signature can't type-check statically, so the call goes
+    // through an intentionally-untyped alias rather than `as never`.
+    const saveDynamic = prefs.save as (name: string, value: unknown) => void;
     for (const [name, value, expected] of cases) {
       deps.saveStr.mockClear();
-      prefs.save(name as never, value);
+      saveDynamic(name, value);
       expect(deps.saveStr).toHaveBeenCalledWith(KEYS[name], expected);
     }
   });

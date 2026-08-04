@@ -1,17 +1,24 @@
-// The UPPER sidebar pane's role switcher (#426): `Databases | Dashboards` over two
-// PERSISTENT hosts, exactly one exposed.
+// The UPPER sidebar pane's two panels (#426, registry-driven since #587):
+// Databases and Dashboards, over two PERSISTENT hosts, exactly one exposed at
+// a time by `side-panel-registry.ts`'s generic `showPanel`.
 //
-// The two hosts are built once and never rebuilt — switching roles only flips
-// `hidden`. That is what preserves, by construction rather than by restoration
-// logic: the schema search text and its input focus, schema expansion and
-// lazily-loaded columns, schema scroll position, and the Dashboard tree's own
-// search/expansion/scroll. It also means the upper pane's height, the splitter and
-// the sidebar width are untouched — they belong to the `.side-pane` this mounts
-// inside, which nothing here replaces.
+// The two hosts are built once and never rebuilt — switching panels only
+// flips `hidden` (the registry's job now, not this module's). That is what
+// preserves, by construction rather than by restoration logic: the schema
+// search text and its input focus, schema expansion and lazily-loaded
+// columns, schema scroll position, and the Dashboard tree's own
+// search/expansion/scroll. It also means the upper pane's height, the
+// splitter and the sidebar width are untouched — they belong to the
+// `.side-pane` this mounts inside, which nothing here replaces.
 //
-// The tab row reuses the lower switcher's `.side-tabs`/`.side-tab`/`.side-count`
-// vocabulary verbatim, as #426 asks and DESIGN.md requires (one tab/segmented
-// control language across the app).
+// #587: this module used to also own the upper tab row's vocabulary and
+// paint it directly (`renderUpperRoleTabs`, `NAV`-style `UpperRole` literals).
+// Both are gone — `databasesPanelDef`/`dashboardsPanelDef` below hand the
+// SAME label/icon/accessibleLabel/count facts to `side-panel-registry.ts`'s
+// generic tab row instead, so the upper and lower rows can never again
+// disagree about how a panel presents itself. This module keeps building the
+// two panel BODIES (the schema search+list host, the Dashboard search+tree
+// host) — the part no registry should take over.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -19,12 +26,11 @@ import { renderDashboardTree, cancelDashboardTreeClicks, type DashboardTreeApp }
 import { readTreeUi, setTreeSearch } from '../core/dashboard-tree-ui-state.js';
 import type { AppState } from '../state.js';
 import type { AppDom } from './app.types.js';
-
-export type UpperRole = 'databases' | 'dashboards';
+import type { MountedSidePanel, SidePanelDef } from './side-panel-registry.js';
 
 /** The slice of `app` this module reads. A real `App` satisfies it directly. */
 export interface SidebarUpperApp extends DashboardTreeApp {
-  dom: Pick<AppDom, 'dashboardTreeList' | 'schemaSearchInput' | 'schemaList' | 'upperRoleTabs' | 'dashboardSearchInput'>;
+  dom: Pick<AppDom, 'dashboardTreeList' | 'schemaSearchInput' | 'schemaList' | 'dashboardSearchInput'>;
   state: AppState;
 }
 
@@ -33,23 +39,19 @@ export interface SidebarUpperHandle {
   databasesHost: HTMLElement;
   /** The Dashboards host — Dashboard search + hierarchy tree. */
   dashboardsHost: HTMLElement;
-  /** Expose exactly one role. */
-  showRole(role: UpperRole): void;
 }
 
 /**
- * Build the upper pane's tab row and its two hosts. The caller supplies the
- * already-built Databases content (the schema search box and list, which
- * `app-shell.ts` still owns and which several other modules reach through
- * `app.dom`), so this module adds the switcher WITHOUT taking ownership of, or
+ * Build the upper pane's two hosts. The caller supplies the already-built
+ * Databases content (the schema search box and list, which `app-shell.ts`
+ * still owns and which several other modules reach through `app.dom`), so
+ * this module adds the Dashboards body WITHOUT taking ownership of, or
  * changing, any schema behaviour.
  */
 export function buildSidebarUpper(
   app: SidebarUpperApp, databasesContent: readonly Node[],
 ): SidebarUpperHandle {
   const state = app.state;
-
-  app.dom.upperRoleTabs = h('div', { class: 'side-tabs upper-role-tabs' });
 
   const databasesHost = h('div', { class: 'upper-role-host', 'data-role': 'databases' }, ...databasesContent);
 
@@ -73,51 +75,58 @@ export function buildSidebarUpper(
     role: 'tree',
     'aria-label': 'Dashboards',
   });
-  const dashboardsHost = h('div', { class: 'upper-role-host', 'data-role': 'dashboards', hidden: true },
+  // `hidden` is NOT set here — the registry normalizes every panel's initial
+  // visibility from the manifest's pane order at construction (#587).
+  const dashboardsHost = h('div', { class: 'upper-role-host', 'data-role': 'dashboards' },
     h('div', { class: 'schema-search' },
       h('div', { class: 'search-wrap' }, Icon.search(), app.dom.dashboardSearchInput)),
     app.dom.dashboardTreeList);
 
+  return { databasesHost, dashboardsHost };
+}
+
+/** The Databases tab's live count — omitted while the schema is still
+ *  loading or failed (a confident "· 0" during a load would be a lie),
+ *  exactly as `renderUpperRoleTabs` used to compute it. */
+function databasesCount(app: SidebarUpperApp): Node | null {
+  const schema = app.state.schema.value;
+  const count = app.state.schemaError.value || schema === null ? null : schema.length;
+  return count === null ? null : h('span', { class: 'side-count' }, '· ' + count);
+}
+
+/** The Dashboards tab's live count — always shown, including zero, exactly
+ *  as `renderUpperRoleTabs` used to compute it. */
+function dashboardsCount(app: SidebarUpperApp): Node {
+  const count = app.currentWorkspace?.dashboards?.length ?? 0;
+  return h('span', { class: 'side-count' }, '· ' + count);
+}
+
+/** The registry's Databases entry. Content already lives in `host` (this
+ *  module's own `databasesHost`, built above) — nothing to mount. */
+export function databasesPanelDef(app: SidebarUpperApp, host: HTMLElement): SidePanelDef {
   return {
-    databasesHost,
-    dashboardsHost,
-    showRole: (role) => {
-      databasesHost.hidden = role !== 'databases';
-      dashboardsHost.hidden = role !== 'dashboards';
-    },
+    id: 'databases', pane: 'upper', label: 'Databases', icon: Icon.database,
+    accessibleLabel: 'Open Databases navigation',
+    tabAdornment: () => databasesCount(app),
+    host,
+    mount: (): MountedSidePanel => ({ render: () => {}, dispose: () => {} }),
   };
 }
 
-/** Repaint the role tabs: active state plus each role's count. */
-export function renderUpperRoleTabs(app: SidebarUpperApp): void {
-  const row = app.dom.upperRoleTabs;
-  if (!row) return;
-  const state = app.state;
-  const active = state.upperRole.value;
-
-  // Omitted while the schema is still loading or failed — the lower switcher omits
-  // `.side-count` when there is no count to show, and a confident "· 0" during a
-  // load would be a lie.
-  const schema = state.schema.value;
-  const databaseCount = state.schemaError.value || schema === null ? null : schema.length;
-  const dashboardCount = app.currentWorkspace?.dashboards?.length ?? 0;
-
-  const tab = (role: UpperRole, label: string, icon: SVGElement, count: number | null): HTMLButtonElement =>
-    h('button', {
-      class: 'side-tab' + (active === role ? ' active' : ''),
-      type: 'button',
-      'aria-pressed': active === role ? 'true' : 'false',
-      onclick: () => {
-        // Changing role hides one tree and shows the other, so a deferred
-        // single-click must not land on the tree the user just left.
-        cancelDashboardTreeClicks(app);
-        state.upperRole.value = role;
-      },
-    }, icon, h('span', null, label),
-      count === null ? null : h('span', { class: 'side-count' }, '· ' + count));
-
-  row.replaceChildren(
-    tab('databases', 'Databases', Icon.database(), databaseCount),
-    tab('dashboards', 'Dashboards', Icon.dashboard(), dashboardCount),
-  );
+/** The registry's Dashboards entry. `render` repaints the tree (cheap and
+ *  idempotent — safe to call on every activation per #587 R2.6); `deactivate`
+ *  cancels a pending deferred single-click on the tree the user is leaving
+ *  (the same guard the old inline `onclick` handler ran before switching). */
+export function dashboardsPanelDef(app: SidebarUpperApp, host: HTMLElement): SidePanelDef {
+  return {
+    id: 'dashboards', pane: 'upper', label: 'Dashboards', icon: Icon.dashboard,
+    accessibleLabel: 'Open Dashboards navigation',
+    tabAdornment: () => dashboardsCount(app),
+    host,
+    mount: (): MountedSidePanel => ({
+      render: () => renderDashboardTree(app),
+      deactivate: () => cancelDashboardTreeClicks(app),
+      dispose: () => {},
+    }),
+  };
 }

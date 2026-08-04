@@ -66,8 +66,6 @@ export interface WorkbenchStateSlice {
   forceExplain: boolean;
   resultRowLimit: number;
   serverVersion: string | null;
-  /** Read by runScript's clean-run history branch ('history' ⇒ repaint). */
-  sidePanel: Signal<string>;
   isMobile: Signal<boolean>;
   mobileView: Signal<'tables' | 'editor' | 'results'>;
   /** Read by the Run-button effect (Run ↔ "Run selection" label). */
@@ -89,16 +87,23 @@ export interface WorkbenchStateSlice {
 export interface WorkbenchHooks {
   /** Per-chunk (run) + per-statement (runScript) results-pane repaint. */
   renderResults(): void;
-  /** runScript's clean-run history repaint when `sidePanel === 'history'`. */
-  renderSavedHistory(): void;
+  /**
+   * Called UNCONDITIONALLY after a clean script run records its history
+   * entry (#587 AC3: this session no longer knows a specific side-panel id
+   * exists, nor imports `state.sidePanel` at all — the decision of WHICH
+   * panel, if any, actually repaints belongs entirely to the hook's own
+   * wiring in `app.ts`, via the side-panel registry). Issue Deliverable 1
+   * names this `onRunComplete`; only the History panel defines a response to
+   * it today.
+   */
+  onRunComplete(): void;
   cancelSchemaGraph(): void;
   /** Fire-and-forget schema reload after schema-mutating SQL succeeds. */
   loadSchema(): void;
   /** Records a successful single-statement run in history (and, per the real
-   *  app.ts wrapper this replaces, repaints History when it's the open side
-   *  panel — that repaint is this hook's own responsibility, unlike
-   *  `renderSavedHistory` above which the session calls itself for the
-   *  script-history path). */
+   *  app.ts wrapper this replaces, notifies the side-panel registry itself —
+   *  that dispatch is this hook's own responsibility, unlike `onRunComplete`
+   *  above, which the session calls itself for the script-history path). */
   recordHistory(tab: QueryTab, sql?: string): void;
   recordBoundParams(bp: readonly BoundParamSnapshot[]): void;
   /** The #173 pipeline's single-source prepare, always in 'execute' mode (the
@@ -747,7 +752,10 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       // run(): no history for an aborted or failed script).
       if (!aborted && !entries.some((e) => e.status === 'error')) {
         recordScriptHistory(state, originalInput, scriptResult.elapsedMs!, hooks.saveJSON);
-        if (state.sidePanel.value === 'history') hooks.renderSavedHistory();
+        // #587 AC3: unconditional now — this session no longer string-compares
+        // a panel id (it doesn't import one at all); the hook's own wiring in
+        // app.ts decides whether/which panel actually repaints.
+        hooks.onRunComplete();
       }
       retireWave(operation);
     }
