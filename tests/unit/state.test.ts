@@ -431,6 +431,39 @@ describe('createState', () => {
       expect(s.rightInspectorPx).toBe(480);
       expect(Number.isNaN(s.rightInspectorPx)).toBe(false);
     });
+
+    // #591 finding 2: a complete digit string still overflows `parseInt`'s
+    // floating-point accumulation (`parseInt('9'.repeat(400), 10)` ===
+    // Infinity), so the regex alone isn't enough — an overflowing candidate
+    // must be rejected the same as a syntactically invalid one, not accepted
+    // as a literal Infinity that then wrongly beats a valid legacy fallback.
+    it('an overflowing canonical value is rejected in favor of a valid docPanePx fallback', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '9'.repeat(400),
+        [KEYS.docPanePx]: '420',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+      expect(Number.isFinite(s.rightInspectorPx)).toBe(true);
+    });
+
+    it('all three candidates overflowing/invalid falls through to the 480 default, never Infinity', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: '9'.repeat(400),
+        [KEYS.docPanePx]: 'also-bad',
+        [KEYS.cellDrawerPx]: '9'.repeat(400),
+      }));
+      expect(s.rightInspectorPx).toBe(480);
+      expect(Number.isFinite(s.rightInspectorPx)).toBe(true);
+    });
+
+    it('a negative-overflow candidate is rejected the same way, falling through to a valid fallback', () => {
+      const s = createState(reader({
+        [KEYS.rightInspectorPx]: `-${'9'.repeat(400)}`,
+        [KEYS.docPanePx]: '420',
+      }));
+      expect(s.rightInspectorPx).toBe(420);
+      expect(Number.isFinite(s.rightInspectorPx)).toBe(true);
+    });
   });
   it('defaults the reader to storage helpers', () => {
     vi.stubGlobal('localStorage', memStore({ [KEYS.theme]: 'light' }));

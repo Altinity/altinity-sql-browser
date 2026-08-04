@@ -91,6 +91,31 @@ describe('decodeStoredRecentMap (#591)', () => {
   it('returns a fresh fallback object on every failing call', () => {
     expect(decodeStoredRecentMap(null)).not.toBe(decodeStoredRecentMap(null));
   });
+
+  // Prototype-pollution guard: `byName[name] = filtered` on a plain object
+  // literal is a bracket ASSIGNMENT, so name === "__proto__" would invoke
+  // Object.prototype's __proto__ setter and swap the object's actual
+  // prototype instead of creating an own property — the entry then vanishes
+  // from Object.keys/normal enumeration and the result's prototype chain is
+  // corrupted. Built via Object.fromEntries (DefineOwnProperty), a
+  // "__proto__" name must survive as an ordinary own property with no
+  // prototype-chain side effect.
+  it('treats a "__proto__" name as an ordinary own property, not a prototype mutation', () => {
+    // A literal `__proto__:` key in object-literal syntax has its OWN special
+    // prototype-setting semantics in the language itself (it would set the
+    // literal's prototype rather than create a property) — a computed key
+    // (or JSON.parse, as real persisted values arrive) is required to build
+    // an input that actually carries "__proto__" as a genuine own property,
+    // the way a real localStorage-parsed value would.
+    const stored = JSON.parse(
+      '{"version":1,"nextSeq":5,"byName":{"__proto__":[{"value":"x","seq":1}],"safe":[{"value":"y","seq":2}]}}',
+    );
+    const result = decodeStoredRecentMap(stored);
+    expect(Object.getPrototypeOf(result.byName)).toBe(Object.prototype);
+    expect(Object.keys(result.byName)).toContain('__proto__');
+    expect(result.byName.__proto__).toEqual([{ value: 'x', seq: 1 }]);
+    expect(result.byName.safe).toEqual([{ value: 'y', seq: 2 }]);
+  });
 });
 
 describe('decodeStoredVarRecentDisabled (#591)', () => {

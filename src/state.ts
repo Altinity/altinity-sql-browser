@@ -652,10 +652,22 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
   // junk. Returns the first candidate that fully matches (whatever its
   // magnitude — the caller's own `clamp` still bounds it), parsed with
   // `parseInt`, or `480` if none does.
+  // #591 finding 2: a complete digit string can still overflow — `parseInt`
+  // accumulates in floating point, so `parseInt('9'.repeat(400), 10)` (and
+  // its `-`-prefixed form) returns `Infinity`/`-Infinity` despite matching
+  // the regex. Fed straight into `clamp(x, 320, Infinity)` at the call site,
+  // that produces a literal `Infinity` pixel width, and — because the
+  // overflowing candidate is checked first — it wrongly beats a perfectly
+  // valid legacy fallback. A candidate whose `parseInt` result isn't finite
+  // is therefore treated the same as a syntactically invalid one: rejected,
+  // falling through to the next candidate (or to 480).
   const firstValidPx = (...raws: string[]): number => {
     for (const raw of raws) {
       const t = raw.trim();
-      if (/^[+-]?\d+$/.test(t)) return parseInt(t, 10);
+      if (/^[+-]?\d+$/.test(t)) {
+        const n = parseInt(t, 10);
+        if (Number.isFinite(n)) return n;
+      }
     }
     return 480;
   };

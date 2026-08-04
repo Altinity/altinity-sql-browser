@@ -55,19 +55,26 @@ function isValidRecentEntry(e: unknown): e is RecentValueEntry {
  *  kept only if it is an array; within it, only entries shaped like a real
  *  `RecentValueEntry` survive; a name whose filtered list ends up empty is
  *  dropped entirely (mirrors `enforceTotalCap`, which never emits empty
- *  lists). */
+ *  lists). Built via `Object.fromEntries` rather than an imperative
+ *  `byName[name] = ...` loop: a persisted name of `"__proto__"` would
+ *  otherwise hit `Object.prototype`'s setter (`[[Set]]`) instead of creating
+ *  an own property, silently vanishing from `Object.keys`/normal enumeration
+ *  while corrupting the returned object's prototype chain. `Object.fromEntries`
+ *  uses `[[DefineOwnProperty]]`, so a `"__proto__"`-named entry survives as a
+ *  normal own property instead. */
 export function decodeStoredRecentMap(value: unknown): RecentMap {
   if (
     !isPlainObject(value) || value.version !== 1
     || !Number.isInteger(value.nextSeq) || (value.nextSeq as number) < 1
     || !isPlainObject(value.byName)
   ) return emptyRecentMap();
-  const byName: Record<string, RecentValueEntry[]> = {};
+  const entries: [string, RecentValueEntry[]][] = [];
   for (const [name, list] of Object.entries(value.byName)) {
     if (!Array.isArray(list)) continue;
     const filtered = list.filter(isValidRecentEntry).map((e) => ({ value: e.value, seq: e.seq }));
-    if (filtered.length) byName[name] = filtered;
+    if (filtered.length) entries.push([name, filtered]);
   }
+  const byName: Record<string, RecentValueEntry[]> = Object.fromEntries(entries);
   return { version: 1, nextSeq: value.nextSeq as number, byName };
 }
 
