@@ -18,7 +18,6 @@ import {
 } from '../workspace/workspace-dashboards.js';
 import type { SavedQueryV2, StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
-import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
@@ -57,17 +56,6 @@ import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
 import { closeInspector } from './inspector-host.js';
 import { renderSavedHistory } from './saved-history.js';
-import { applyFieldState, applyFieldWidth } from './var-field.js';
-import { buildRelativeTimeField } from './relative-time-field.js';
-import type { RelativeTimeField } from './relative-time-field.js';
-import { buildRecentField } from './recent-field.js';
-import type { RecentField } from './recent-field.js';
-import { buildEnumField } from './enum-field.js';
-import type { EnumField } from './enum-field.js';
-import { wireComboInput } from './combobox.js';
-import type { ComboField } from './combobox.js';
-import { recentOptions } from '../core/recent-values.js';
-import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
 import { mountInlineLogin, renderLogin } from './login.js';
 import type { InlineLoginHandle } from './login.js';
@@ -116,6 +104,7 @@ import {
 import type { SqlRoute } from '../core/sql-route.js';
 import { disposeFileMenuOverlays } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
+import { createVariableStrip } from './workbench/variable-strip.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
 import { mountWorkbenchShell } from './workbench/workbench-shell.js';
@@ -131,13 +120,6 @@ import { buildAppHeader } from './app-header.js';
  *  supplies `Chart`/`Dagre` (imported packages) via `env` directly. These are
  *  only the env-absent fallback reads below (`win.Chart`, `win.dagre`, …), kept
  *  narrow and all-optional so a plain `Window` still satisfies this widened type. */
-/** The var-strip's combobox-based field controller — whichever of
- *  `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` `ctl.kind`
- *  picks. Only `RelativeTimeField` actually declares `previewEl` (the #169
- *  live date preview `applyFieldState` points `aria-describedby` at); the
- *  intersection makes reading it a safe optional no-op for the other two
- *  control kinds, which never populate it. */
-type VarStripCombo = (EnumField | RecentField | RelativeTimeField) & { previewEl?: HTMLElement };
 
 interface WindowExtras {
   Chart?: unknown;
@@ -906,8 +888,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // suggestion inference, and the #171 recent-value + persistence policy —
   // now lives in `application/workbench-parameter-session.ts` (#276 Phase
   // 4B1), constructible without App/AppState/DOM. `renderVarStrip` (the DOM
-  // view, below) and the workbench-session hooks + export block (further
-  // down) call its methods directly; `app.params.hardenedVars` reads this
+  // view — #588 W1 extracted it into `ui/workbench/variable-strip.ts`) and
+  // the workbench-session hooks + export block (further down) call its
+  // methods directly; `app.params.hardenedVars` reads this
   // session's own `Set` directly (#276 Phase 5 deleted the flat
   // `App.hardenedVars` alias). `sessionParamsFor` above is `ch-session-params.ts`'s
   // `tab.chSession`/transport material, not parameter policy — Phase 4C's
@@ -1018,223 +1001,25 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Milliseconds since the running query started (0 when idle) — delegates to
   // the session's own private runT0 bookkeeping.
   app.elapsedMs = () => workbench.elapsedMs();
-  // hardenVar/inputGate (#170 review bookkeeping) now live on `params` (see
-  // its construction above) — setRunBtn's fallback and renderVarStrip's tail
-  // call `params.inputGate`/`params.hardenVar` directly.
-  function setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void {
-    if (!app.dom.runBtn) return;
-    // Disabled while running, or while any detected {name:Type} query variable
-    // is missing, invalid (#170), or fails to serialize (#170 review finding:
-    // the button's visible disabled state must match varGateBlocked's actual
-    // gate, which already blocks on missing+invalid+errors) — with a tooltip
-    // so the greyed-out button explains itself. Execution paths (run/
-    // runScript) enforce the same gate via varGateBlocked. A caller that
-    // already has the prepared source (renderVarStrip) passes its
-    // {missing, invalid, errors} to avoid re-preparing; otherwise we compute
-    // it here via inputGate — a merely 'incomplete' value (#170) stays
-    // display-only and doesn't grey out the button while still focused.
-    const tab = app.activeTab();
-    if (gate == null) {
-      // #465 review: a dashboard-variable tab's text is option SQL, not an
-      // ordinary parameterised query — the {name:Type} gate never applies to
-      // it (optionSqlDiagnostics, surfaced on Run, is its complete policy).
-      gate = running || !tab || variableDoc(tab) !== null
-        ? { missing: [], invalid: [], errors: [] }
-        : params.inputGate(params.tabAnalysis(tab.sqlDraft));
-    }
-    const blockers = gate.missing.concat(gate.invalid);
-    app.dom.runBtn!.disabled = running || blockers.length > 0 || gate.errors.length > 0;
-    app.dom.runBtn!.title = blockers.length
-      ? 'Enter a value for: ' + blockers.join(', ')
-      : gate.errors.length ? gate.errors[0] : '';
-    // "Run selection" while the editor has a non-empty selection (so the mode is
-    // discoverable); plain "Run" otherwise. Build the children and drop the null
-    // (replaceChildren would coerce a null arg into a "null" text node).
-    const label = running ? 'Running…' : (app.state.hasSelection.value ? 'Run selection' : 'Run');
-    app.dom.runBtn!.replaceChildren(
-      ...[Icon.play(), h('span', null, label),
-        running ? null : h('kbd', null, '⌘↵')].filter((c): c is SVGElement | HTMLElement => c != null));
-  }
-  app.setRunBtn = setRunBtn;
-  // Repaint the query-variable strip (#134) for the active tab. Values live in
-  // the shared, persisted `state.varValues` (keyed by variable name), so a value
-  // typed once is reused by every query that references the same variable and is
-  // restored on reload. The listed set comes from the all-active analysis view
-  // (#165): a param confined to /*[ ]*/ optional blocks stays listed — marked
-  // optional (blank allowed; blank keeps its blocks inactive) — while a param
-  // outside blocks stays required. Typing keeps `state.filterActive` in sync
-  // (blank ⇒ inactive, typed ⇒ active). Inputs rebuild only when the detected
-  // {name:Type} set changes (signature guard) — so typing in the SQL editor
-  // doesn't thrash the row or steal focus, and switching between tabs with the
-  // same variables keeps the (already-correct, shared) values in place. Always
-  // re-syncs the Run button's disabled/tooltip state.
-  //
-  // #172 v2 (schema-cache inference — the SUGGESTION tier) now lives on
-  // `params.inferredEnumOptions` (see its construction above) — pure over
-  // schema + analysis, no DOM.
-  function renderVarStrip(): void {
-    const strip = app.dom.varStrip;
-    if (!strip) return;
-    const tab = app.activeTab();
-    // #465 review: a dashboard-variable tab's own text is option SQL, not an
-    // ordinary parameterised query — the {name:Type} strip/gate never applies
-    // to it. A `{name:Type}` inside it is optionSqlDiagnostics' story to tell
-    // (surfaced in the results pane on Run), not an input field to fill in.
-    if (tab && variableDoc(tab) !== null) {
-      app.dom.varStripSig = '';
-      strip.replaceChildren();
-      strip.style.display = 'none';
-      setRunBtn(app.state.running.value);
-      return;
-    }
-    // One analysis per repaint (review F9): fieldControls, the #172 v2
-    // comparison scan, a rebuild's initial field paint, and the tail's Run-
-    // button gate all feed off this single pass instead of re-analyzing the
-    // same SQL a second time per editor keystroke.
-    const analysis = tab ? params.tabAnalysis(tab.sqlDraft) : null;
-    const vars = analysis ? fieldControls(analysis) : [];
-    // #172 v2 scans the tab SQL's ANALYSIS materialization (review F2): in
-    // the raw text a comparison inside a /*[ ]*/ optional block is one opaque
-    // comment span and could never match. `resolveComparisonColumnType`
-    // resolves each match's position against this same text. (Workbench-only
-    // — the Dashboard has no schema cache and gets v1 straight from the type.)
-    const scanSql = tab ? analysisView(tab.sqlDraft) : '';
-    const comparisonColumns = tab ? paramComparisonColumns(scanSql) : {};
-    // Each field's control kind + member list (shared enum > date-like > text
-    // priority; a type-conflicted field degrades to text — fieldControlKind).
-    const controls = vars.map((v) => fieldControlKind(v, params.inferredEnumOptions(v, scanSql, comparisonColumns)));
-    // The signature folds in each var's control kind and resolved enum
-    // options — not just name/type/optional — so a column landing on the
-    // idle-tick loader (loadColumns calls renderVarStrip on completion)
-    // upgrades a v2 field from plain input to the dropdown, and a type
-    // conflict appearing or resolving restyles the field, even though the
-    // {name:Type} set itself never changed.
-    const sig = vars.map((v, i) => {
-      const c = controls[i];
-      return v.name + ':' + v.type + (v.optional ? '?' : '') + (v.conflict ? '!' : '')
-        + ':' + c.kind + (c.enumOptions ? c.enumOptions.length : '');
-    }).join(',');
-    // The Run button's gate from this SAME analysis (review F9: setRunBtn's
-    // gate-less fallback would re-analyze the identical SQL). Lazy so the
-    // running / tab-less states (whose gate setRunBtn hard-empties anyway)
-    // skip the prepare entirely.
-    const runGate = () => (analysis && !app.state.running.value ? params.inputGate(analysis) : undefined);
-    if (sig !== app.dom.varStripSig) {
-      // A signature change while the user is focused INSIDE the strip would
-      // replaceChildren() every field out from under them — a background
-      // column load (loadColumns → renderVarStrip, the #172 v2 upgrade path)
-      // completing mid-typing would steal focus, wipe the in-progress text
-      // repaint, and destroy any open dropdown. Defer the rebuild until focus
-      // leaves the strip: the upgrade only matters on the NEXT interaction
-      // anyway. (Typing in the SQL editor also lands here on every keystroke,
-      // but then focus is in the editor, not the strip — no deferral.)
-      const active = doc.activeElement;
-      if (active && strip.contains(active)) {
-        app.dom.varStripRerenderPending = true;
-        if (!app.dom.varStripDeferHooked) {
-          app.dom.varStripDeferHooked = true;
-          // One listener for the strip's lifetime (the strip node itself is
-          // never replaced, only its children). `focusout` bubbles; when
-          // focus merely moves BETWEEN fields of the strip, relatedTarget is
-          // still inside it and the deferral holds.
-          strip.addEventListener('focusout', (e: FocusEvent) => {
-            if (!app.dom.varStripRerenderPending) return;
-            if (e.relatedTarget && strip.contains(e.relatedTarget as Node)) return;
-            app.dom.varStripRerenderPending = false;
-            renderVarStrip();
-          });
-        }
-        setRunBtn(app.state.running.value, runGate());
-        return;
-      }
-      app.dom.varStripRerenderPending = false;
-      app.dom.varStripSig = sig;
-      if (!vars.length) {
-        strip.replaceChildren();
-        strip.style.display = 'none';
-      } else {
-        strip.style.display = '';
-        // The freshly-(re)built strip paints each field's already-committed
-        // state ('execute' mode — no field is mid-typing right after a
-        // rebuild, e.g. a tab switch restoring a previously-invalid value).
-        const initialFields = params.prepareAnalyzedBatch(analysis!, wallNow(), 'execute').fields;
-        strip.replaceChildren(...vars.map((v, i) => {
-          // controls[i] (fieldControlKind above) picks the field's control:
-          // #172 enum members (v1 declared or v2 inferred) > #169 date-like
-          // preset combobox + live preview > plain text with recents (#171).
-          // The field stays free-text in every case (absolute values / non-
-          // members keep working); persistence/#170 validation stays exactly
-          // the shared logic below — the combobox only adds its own focus/
-          // keydown-nav/composition hooks, called first from the same
-          // handlers (wireComboInput; see relative-time-field.js's header
-          // comment on why this beats two independent listeners).
-          const ctl = controls[i];
-          // #173 acceptance (review F1): a type-conflicted field degrades to
-          // the plain text control (ctl.kind above) and says so visibly — a
-          // warning style distinct from is-invalid (the VALUE isn't wrong;
-          // the declarations disagree) plus a tooltip listing them.
-          const conflictNote = v.conflict
-            ? 'Conflicting type declarations: ' + v.conflict.join(' vs ') : null;
-          const baseTitle = v.name + ': ' + v.type
-            + (v.optional ? ' — optional: blank leaves its filter block out' : '')
-            + (conflictNote ? ' — ' + conflictNote : '');
-          let combo: VarStripCombo;
-          let input: HTMLInputElement;
-          const onValueInput = (): void => {
-            app.state.varValues[v.name] = input.value;
-            // Text controls sync activation with the value (#165).
-            app.state.filterActive[v.name] = input.value !== '';
-            params.saveVarValues();
-            params.saveFilterActive();
-            // Editing the value un-hardens it (#170 review): back to
-            // neutral, lenient behavior until it's committed again.
-            params.hardenedVars.delete(v.name);
-            // 'input' mode (#170): a plausible prefix stays neutral while
-            // the field is focused — only a value that's already certainly
-            // wrong shows the inline error here.
-            const inputBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
-            applyFieldState(input, inputBatch.fields[v.name], baseTitle, combo?.previewEl);
-            setRunBtn(app.state.running.value, inputBatch.sources[0]);
-          };
-          const onCommitHard = (): void => {
-            // Hardens 'incomplete' → 'invalid' on commit (#170).
-            const commitBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
-            params.hardenVar(v.name, commitBatch.fields[v.name]);
-            applyFieldState(input, commitBatch.fields[v.name], baseTitle, combo?.previewEl);
-            setRunBtn(app.state.running.value, commitBatch.sources[0]);
-          };
-          // #171: live-filtered recents for this field (type + typed text),
-          // called fresh on every dropdown open/keystroke — never a snapshot
-          // — so a value recorded by a run that completes without changing
-          // the strip's {name:Type} signature is never stale. (#160's
-          // curated-param opt-out hook: nothing to check yet — no curated
-          // param exists before #160 lands.)
-          const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, v.name, v.type, text);
-          const onClearRecent = (): void => params.clearVarRecent(v.name);
-          const fieldOpts = {
-            document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-            baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
-          };
-          if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions! });
-          else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow });
-          else combo = buildRecentField(fieldOpts);
-          input = combo.input;
-          // #345: a stable, type-appropriate width — set once per field
-          // build (never on keystroke), same rule the Dashboard/detached-view
-          // variable bar uses (variable-bar.js).
-          applyFieldWidth(input, v.type, ctl.kind === 'enum');
-          wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
-          if (conflictNote) input.classList.add('is-conflict');
-          params.hardenVar(v.name, initialFields[v.name]);
-          applyFieldState(input, initialFields[v.name], baseTitle, combo?.previewEl);
-          return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
-            h('span', { class: 'var-name' }, v.name), combo.el);
-        }));
-      }
-    }
-    setRunBtn(app.state.running.value, runGate());
-  }
-  app.renderVarStrip = renderVarStrip;
+  // The Workbench `{name:Type}` query-variable STRIP — `setRunBtn` (the Run
+  // button's disabled/tooltip/label sync) and `renderVarStrip` (the strip's
+  // DOM view) — now lives in `ui/workbench/variable-strip.ts` (#588 W1), a
+  // pure extraction: every line of the two functions moved verbatim, only
+  // `app.*`/`doc`/`params.*` reads rewritten onto the `deps` thunks below.
+  // `app.renderVarStrip`/`app.setRunBtn` stay flat one-line delegates — every
+  // existing consumer (`WorkbenchShellDeps`, the catalog's idle-tick hook,
+  // `onDocChange` above) keeps calling them exactly as before.
+  const variableStrip = createVariableStrip({
+    document: doc,
+    state: app.state,
+    activeTab: () => app.activeTab(),
+    params,
+    wallNow,
+    varStrip: () => app.dom.varStrip,
+    runBtn: () => app.dom.runBtn,
+  });
+  app.setRunBtn = (running, gate) => variableStrip.setRunBtn(running, gate);
+  app.renderVarStrip = () => variableStrip.renderVarStrip();
   // The Export button reflects both browser support (canExport) and whether an
   // export is already running — the button stays aria-disabled (not natively
   // disabled) in either case so its tooltip still shows on hover.

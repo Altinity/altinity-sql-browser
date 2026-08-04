@@ -108,9 +108,14 @@ export interface SchemaFocus {
 /** `app.dom` is reset wholesale (`{}`) at the top of every renderApp() call —
  * a stable dictionary of known-consumed keys, not a closed interface. Beyond
  * the keys other modules read (documented individually below), it also carries
- * every DOM ref + var-strip rebuild bookkeeping field app.ts's own renderApp()/
- * renderVarStrip() attach to `app.dom` (never read outside app.ts, but typed
- * here since AppDom is the one place `app.dom`'s shape is described). */
+ * every DOM ref app.ts's own renderApp() attaches to `app.dom` (never read
+ * outside app.ts, but typed here since AppDom is the one place `app.dom`'s
+ * shape is described). The var-strip's own rebuild bookkeeping
+ * (`sig`/`rerenderPending`/`hookedStrip`) is no longer here — #588 W1 moved
+ * `renderVarStrip`/`setRunBtn` into `ui/workbench/variable-strip.ts`, whose
+ * `createVariableStrip` controller now owns that bookkeeping as private
+ * closure state, keyed to strip-ELEMENT identity rather than riding along
+ * with `app.dom`'s wholesale reset (see that module's header comment). */
 export interface AppDom {
   fileBtn?: HTMLElement;
   libraryTitle?: HTMLElement;
@@ -151,8 +156,8 @@ export interface AppDom {
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;
 
-  // app.ts-internal only (renderApp()'s own mounted chrome + renderVarStrip()'s
-  // rebuild bookkeeping) — not read by any other module.
+  // app.ts-internal only (renderApp()'s own mounted chrome) — not read by
+  // any other module.
   banner?: HTMLElement;
   /** Stable in-shell mount for temporary authentication recovery controls. */
   authHost?: HTMLElement;
@@ -182,9 +187,6 @@ export interface AppDom {
   userBtn?: HTMLButtonElement;
   userMenu?: HTMLElement;
   varStrip?: HTMLElement;
-  varStripSig?: string;
-  varStripRerenderPending?: boolean;
-  varStripDeferHooked?: boolean;
 }
 
 /** The currently open UI primitive that has exclusive keyboard handling. */
@@ -435,8 +437,8 @@ export interface App {
    *  without App/AppState/DOM: analyze/prepare/gate/execution-view, the #170
    *  hardening bookkeeping, the #172 v2 schema-cache enum-suggestion
    *  inference, and the #171 recent-value + persistence policy.
-   *  `renderVarStrip`/`setRunBtn` (DOM) stay in app.ts, calling this
-   *  session's methods directly; the workbench-session hooks + the export
+   *  `renderVarStrip`/`setRunBtn` (DOM — #588 W1: `ui/workbench/variable-strip.ts`)
+   *  call this session's methods directly; the workbench-session hooks + the export
    *  block's direct calls are re-pointed here too. `saveVarValues`/
    *  `saveFilterActive`/`saveVarRecentDisabled`/`recordBoundParams`/
    *  `clearVarRecent`/`clearAllVarRecent`/`hardenedVars` have no flat `App`

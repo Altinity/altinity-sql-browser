@@ -2425,7 +2425,13 @@ describe('query run', () => {
     // incomplete→invalid hardening already relies on, now also reached via
     // the relative-time near-miss path (review finding #2's whole point: it
     // routes through the exact same states, not a bespoke gate).
-    app.dom.varStripSig = undefined; // force renderVarStrip to rebuild the strip
+    // #588 W1: the strip's rebuild-signature bookkeeping moved out of
+    // `app.dom` into `ui/workbench/variable-strip.ts`'s own controller-
+    // private state, so a test can no longer poke it directly to force a
+    // rebuild — add a second (harmless) variable instead, which changes the
+    // detected {name:Type} set and so legitimately triggers one. `from`
+    // stays the first declared variable, so `rebuiltInput` below is still it.
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}, {unused:UInt8}';
     app.renderVarStrip();
     expect(app.dom.runBtn!.disabled).toBe(true);
     const rebuiltInput = qs<HTMLInputElement>(app.dom.varStrip!, '.var-input');
