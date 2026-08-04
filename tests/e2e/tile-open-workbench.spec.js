@@ -361,7 +361,15 @@ test('widen doubles a grid tile\'s rendered width, preserves its height, then wr
   // until #564.
   expect(wide.width).toBeGreaterThan(before.width);
   expect(wide.height).toBe(before.height);
-  expect((await page.evaluate(() => window.__dashboard('sales'))).items['t-sales'])
+  // #599: the widen press applies OPTIMISTICALLY first (`runCommand`,
+  // src/ui/dashboard.ts) — the geometry above is already settled by the time
+  // `widen.click()` resolves, but the PERSISTED commit this reads is a
+  // separate, fire-and-forget `app.mutateWorkspace` call that lands later.
+  // Poll rather than reading it on the very next microtask, matching the same
+  // commit-republish race the later "narrow tile" test already guards
+  // against (its own "Read defensively" comment, below).
+  await expect.poll(async () => (await page.evaluate(() => window.__dashboard('sales')))
+    ?.items?.['t-sales'] ?? null)
     .toEqual({ grid: { span: 12, height: 2 } });
 
   // At the maximum the next press wraps to a single column.

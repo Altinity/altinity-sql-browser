@@ -153,11 +153,18 @@ test.describe('docked right-inspector dock-aware width (#586 findings 2a/2b)', (
     expect(Math.round(before.width)).toBe(500);
 
     await page.setViewportSize({ width: 900, height: 800 });
+    // #599: `setViewportSize` resolves as soon as the viewport is applied, but
+    // the DISPLAYED width above is recomputed by app-shell.ts's
+    // `reclampInspectorWidth`, run from a real `window` 'resize' event
+    // LISTENER — dispatched asynchronously relative to that resolution, and
+    // more likely to lose the race under parallel load. Poll for the settled
+    // width instead of reading it on the very next microtask.
+    await expect.poll(async () => Math.round((await inspectorHost.boundingBox()).width))
+      // Default sidebarPx (248) + 2 handles (14) reserved, minus CENTRE_MIN_PX
+      // (320): ceiling = 900-262-320 = 318, below the shared 320 floor — clamp
+      // floors it at 320 exactly.
+      .toBe(320);
     const after = await inspectorHost.boundingBox();
-    // Default sidebarPx (248) + 2 handles (14) reserved, minus CENTRE_MIN_PX
-    // (320): ceiling = 900-262-320 = 318, below the shared 320 floor — clamp
-    // floors it at 320 exactly.
-    expect(Math.round(after.width)).toBe(320);
     expect(after.width).toBeLessThan(before.width);
 
     test.info().annotations.push(
