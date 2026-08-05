@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope, spawn a fresh worker per unit, iterate each unit's plan through a ChatGPT review loop to approval (max 5 passes), implement code and tests, open one PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds. Stops for a human only when a review loop exhausts its passes or a merge proof fails. Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
+description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope, author and approve each plan with the selected Fable or ChatGPT planner workflow (max 5 review passes), implement code and tests, open one PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds. Stops for a human only when a review loop exhausts its passes or a merge proof fails. Invoke as `/ship ISSUE [--planner fable|chatgpt]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
 ---
 
 # /ship — deliver altinity-sql-browser issues autonomously
@@ -63,16 +63,19 @@ creation, every `chatgpt-review` invocation, and the merge.
 **Coding vs. planning model split.** Within a unit, coding/implementation work
 (the worker's implement step, the plan-review loop's finding-verification agents, the
 code-review loop's fix-accepted-findings agent) uses `sonnet`. Planning/plan-authoring
-work (the worker's initial plan-writing step, the plan-review loop's revise-the-plan
-agent) uses `fable` at `effort: "high"` — plans benefit from the deeper, more
-deliberate pass a planning-tuned model gives before code gets written against them.
-This split is wired into `references/plan-review-loop.workflow.mjs` and
-`references/code-review-pass.workflow.mjs`; keep it there when editing either script.
+work uses `fable` at `effort: "high"` in the default planner mode. With
+`--planner chatgpt`, ChatGPT owns every plan draft and revision while Fable/high owns
+the read-only approval decision; Sonnet still verifies every substantive finding.
+This split is wired into `references/plan-review-loop.workflow.mjs`,
+`references/chatgpt-plan-author-loop.workflow.mjs`, and
+`references/code-review-pass.workflow.mjs`; keep it there when editing those scripts.
 
 ### ChatGPT review loops
 
-- Both loops run as **Workflow scripts** — `references/plan-review-loop.workflow.mjs`
-  and `references/code-review-pass.workflow.mjs`, invoked by `scriptPath` per
+- The selected plan loop and the code loop run as **Workflow scripts** —
+  `references/plan-review-loop.workflow.mjs` or
+  `references/chatgpt-plan-author-loop.workflow.mjs`, then
+  `references/code-review-pass.workflow.mjs`, invoked by `scriptPath` per
   `references/review-loops.md`. Invoking `/ship` is the explicit multi-agent opt-in for
   these calls. The caps and the fail-closed verdict parsing are enforced by script and
   schema, not by prose.
@@ -80,14 +83,14 @@ This split is wired into `references/plan-review-loop.workflow.mjs` and
   `chatgpt-review` invocations, the coordinator launches them itself, and never runs
   two review workflows at once — workers and reviewers never invoke the skill, and
   parallel units queue for their review loops.
-- Both loops use a **verdict protocol**: the question file the coordinator writes
-  instructs the reviewer to end with exactly one line — `VERDICT: APPROVED` or
-  `VERDICT: REVISE` for a plan, `VERDICT: SHIP` or `VERDICT: REVISE` for a PR. A
-  missing or malformed verdict counts as REVISE (fail-closed), and the pass still
-  counts against the cap.
+- The default plan loop and code loop use a **verdict protocol**: the question file
+  instructs ChatGPT to end with exactly one `VERDICT:` line and malformed verdicts
+  fail closed. The ChatGPT-author loop instead uses the CLI's strict READY/BLOCKED
+  authoring protocol plus schema-constrained Fable verdicts. Every loop's pass still
+  counts against its cap.
 - **Every substantive finding is verified against the real repository before it is
-  trusted** — the loop workflows fan out one read-only verifier per finding; ChatGPT is
-  a second opinion, not a source of truth. Every finding ends in exactly one state:
+  trusted** — the loop workflows fan out one read-only verifier per finding; neither
+  ChatGPT nor Fable is a source of truth. Every finding ends in exactly one state:
   accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop one —
   the workflows return `accepted` and `rejected` lists; record them.
 
@@ -105,8 +108,11 @@ accidental context sink in a run.
 | `/ship 447` | all remaining phases of #447, or the whole issue if unphased |
 | `/ship 447.2` | phase 2 of #447 only, forced |
 | `/ship 424,425` | several whole issues |
+| `/ship 447 --planner chatgpt` | same scope, with ChatGPT authoring/revising and Fable/high approving the plan |
 
-The legacy word `unattended` is accepted and ignored — this is the only mode.
+Parse the invocation with `references/parse-invocation.mjs`. `--planner` accepts
+`fable` or `chatgpt` and defaults to `fable`, so every existing invocation remains
+behavior-compatible. The legacy word `unattended` is accepted and ignored.
 
 ## 1 — Orient and assemble the delivery contracts
 
@@ -169,7 +175,15 @@ decision.
 
 ## 2 — Per unit (repeat per wave)
 
-### 2.1 Spawn the planner — plan only, no code
+### 2.1 Establish the canonical plan path
+
+For every planner mode, assign the exact path `$TMPDIR/plan-<ISSUE>p<N>.md` (or
+`$TMPDIR/plan-<ISSUE>.md` unphased). The path is part of the review-session identity;
+never move, rename, or substitute it during the loop.
+
+**Default `fable` planner:** spawn the plan-only agent below. **ChatGPT planner:** do
+not spawn this initial planner; step 2.2's dedicated workflow owns every draft and
+revision.
 
 Fresh agent (`subagent_type: "general-purpose"`, **never `fork`** — a fork inherits
 this in-progress mutating workflow and can conclude it should finish the whole job).
@@ -201,16 +215,18 @@ The planner prompt must contain, explicitly:
 A planner that reports the unit ambiguous or dependent on an unrecorded decision →
 skip the unit, report the missing decision in the final report, move on.
 
-### 2.2 Plan review loop — one Workflow run, every unit, max 5 passes
+### 2.2 Plan author/review loop — one Workflow run, every unit, max 5 review passes
 
 **Read `references/review-loops.md`** (once per run) — it is the contract for both
 loops. The plan file **path** is the review-session identity; never move or rename it
 mid-loop (footguns).
 
-1. Write a context file to `$TMPDIR`: the unit contract and acceptance subset, focused
-   questions, and the verdict protocol — "End your review with exactly one line:
-   `VERDICT: APPROVED` or `VERDICT: REVISE`."
-2. Launch the whole loop as one Workflow and wait for its task notification:
+1. Write a context file to `$TMPDIR`: the issue URL, unit contract and acceptance
+   subset, and focused questions. For the default planner, also include the verdict
+   protocol — "End your review with exactly one line: `VERDICT: APPROVED` or
+   `VERDICT: REVISE`."
+2. Launch exactly one selected loop as a Workflow and wait for its task notification.
+   For the default `fable` planner:
 
    ```
    Workflow {
@@ -223,9 +239,28 @@ mid-loop (footguns).
    finding with parallel read-only agents, and folds accepted findings into the plan
    file in place (rejected ones become `## Review responses` rebuttals). The 5-pass
    cap is a loop bound in the script, not an instruction.
+   For `--planner chatgpt`:
+
+   ```
+   Workflow {
+     scriptPath: "skills/ship/references/chatgpt-plan-author-loop.workflow.mjs",
+     args: { issueUrl: "<canonical issue URL>", planFile: "<abs>",
+             contextFile: "<abs>", unitLabel: "#<ISSUE> phase <N>" }
+   }
+   ```
+
+   ChatGPT privately authors a complete standalone plan through `plan-author`; Fable
+   at high effort reviews it read-only against the actual repository. Sonnet read-only
+   agents verify every substantive Fable finding. Accepted findings and evidence-backed
+   rebuttals are passed back to ChatGPT, which atomically replaces the canonical plan
+   with a complete revision in the same conversation. The workflow performs at most
+   five Fable review passes. ChatGPT alone owns drafts and revisions; Fable/high alone
+   owns approval.
 3. `status: "approved"` → record the pass count and conversation URL for the ship log;
    proceed to 2.3.
-4. `status: "needs_human"` → **FULL STOP — human decision needed.** Present the latest
+4. `status: "blocked"` → skip the unit and report the concrete missing decision; do
+   not guess and do not treat this as a review-loop exhaustion.
+5. `status: "needs_human"` → **FULL STOP — human decision needed.** Present the latest
    plan, the returned `contested` findings, and the conversation URL, and ask the
    human: approve the latest plan, redirect, or skip the unit. Write no code for this
    unit before that decision. (`status: "error"` → read the workflow journal, then
@@ -235,9 +270,8 @@ mid-loop (footguns).
 
 Spawn a **fresh** coding agent (`subagent_type: "general-purpose"`, never `fork`,
 `model: "sonnet"` unless the wave plan marks the unit high-risk, in which case omit
-`model` to inherit yours) — do not resume the 2.1 planner; the plan file, not the
-planner's memory, is the handoff (the loop's revise agent edited it in place, so it
-already supersedes the planner's original draft). Parallel units get
+`model` to inherit yours) — do not resume any planner; the canonical plan file, not
+planner memory or ChatGPT chat text, is the handoff. Parallel units get
 `isolation: "worktree"`; a solo unit uses the main tree on `wip/<unit>-<slug>` off the
 current integration HEAD.
 
@@ -245,7 +279,7 @@ The coding-agent prompt must contain, explicitly:
 
 - the issue number, the phase (if any), and the instruction to read the approved plan
   file at its exact path and implement it verbatim — the plan is the definition of
-  done, not the issue body (the planner already reconciled the two);
+  done, not the issue body (the approved plan already reconciled the two);
 - **the mutation boundary**: Edit/Write + local `git commit` on its own branch only —
   no push, no PR, no `gh` mutations, no issue edits, no ship-log writes, no memory
   writes, no `CHANGELOG.md` beyond its own entry, no TaskCreate/TaskUpdate, and never

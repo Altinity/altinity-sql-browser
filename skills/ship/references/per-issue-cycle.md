@@ -71,9 +71,10 @@ a defect, one relocation at a time.
 
 ### Plan review
 
-Every plan — regardless of risk — goes through the ChatGPT plan review loop, which the
-coordinator runs as a Workflow (`SKILL.md` step 2.2, `references/review-loops.md`:
-exit on `VERDICT: APPROVED`, max 5 passes). The worker's part:
+Every plan — regardless of risk — goes through the selected plan Workflow (`SKILL.md`
+step 2.2, `references/review-loops.md`, max 5 review passes). In the default mode a
+Fable/high planner writes and revises while ChatGPT reviews. With `--planner chatgpt`,
+ChatGPT writes and revises while Fable/high approves. The worker's part in default mode:
 
 - write the plan to the exact file path the coordinator assigned, and return it —
   self-contained, because the loop's revise agent (not you) folds review findings into
@@ -82,6 +83,10 @@ exit on `VERDICT: APPROVED`, max 5 passes). The worker's part:
   supersedes what you wrote;
 - never invoke `chatgpt-review` yourself, and write no code before the coordinator
   reports the plan approved.
+
+In ChatGPT mode the author workflow fulfills the first bullet. The fresh implementation
+worker still re-reads the approved canonical plan and observes the same no-code-before-
+approval and no-`chatgpt-review` boundaries.
 
 ## 2 — Implement (inner loop)
 

@@ -8,13 +8,14 @@ export const EXIT_CODES = Object.freeze({
   chrome_unavailable: 5,
   ui_incompatible: 6,
   rate_limited: 7,
+  invalid_response: 8,
   invalid_request: 64,
   internal_error: 70,
 });
 
 const VALUE_FLAGS = new Set([
   '--question-file', '--session', '--timeout', '--format', '--repo', '--base',
-  '--cdp-url', '--diagnostics-dir',
+  '--cdp-url', '--diagnostics-dir', '--output-file',
 ]);
 const BOOL_FLAGS = new Set(['--publish', '--no-publish', '--working-tree', '--include-untracked']);
 
@@ -24,12 +25,13 @@ export function usage() {
   chatgpt-review.mjs pr <url> [--question-file <path>] [--session <handle>] [--no-publish] [--timeout 1800]
   chatgpt-review.mjs issue <url> [--question-file <path>] [--session <handle>] [--publish] [--timeout 1800]
   chatgpt-review.mjs plan <plan-file> [--question-file <path>] [--session <handle>] [--timeout 1800]
+  chatgpt-review.mjs plan-author <issue-url> --output-file <absolute-plan-path> --question-file <path> [--session <handle>] [--timeout 1800]
   chatgpt-review.mjs local [--repo <path>] [--base <ref>] [--working-tree] [--include-untracked] [--question-file <path>] [--session <handle>] [--timeout 1800]`;
 }
 
 export function parseArgs(argv, env = process.env) {
   const [mode, ...rest] = argv;
-  if (!['doctor', 'pr', 'issue', 'plan', 'local'].includes(mode)) {
+  if (!['doctor', 'pr', 'issue', 'plan', 'plan-author', 'local'].includes(mode)) {
     throw new CliError(`Unknown or missing command: ${mode ?? '(none)'}`);
   }
   const positional = [];
@@ -52,8 +54,13 @@ export function parseArgs(argv, env = process.env) {
   const timeout = Number(options.timeout ?? 1800);
   if (!Number.isFinite(timeout) || timeout <= 0) throw new CliError('--timeout must be a positive number of seconds');
   if (mode === 'doctor' && positional.length) throw new CliError('doctor takes no target');
-  if (['pr', 'issue', 'plan'].includes(mode) && positional.length !== 1) throw new CliError(`${mode} requires exactly one target`);
+  if (['pr', 'issue', 'plan', 'plan-author'].includes(mode) && positional.length !== 1) throw new CliError(`${mode} requires exactly one target`);
   if (mode === 'local' && positional.length) throw new CliError('local takes options, not a positional target');
+  if (mode === 'plan-author') {
+    if (!options.outputFile || !path.isAbsolute(options.outputFile)) throw new CliError('plan-author requires --output-file with an absolute path');
+    if (!options.questionFile) throw new CliError('plan-author requires --question-file');
+    if (options.publish || options.noPublish) throw new CliError('plan-author never accepts publication options');
+  }
   return {
     mode,
     target: positional[0] ? (mode === 'plan' ? path.resolve(positional[0]) : positional[0]) : undefined,

@@ -1,6 +1,6 @@
 # The review loops as Workflow scripts
 
-The plan loop (SKILL.md step 2.2) and each code review pass (step 3.5) run as Workflow
+The selected plan loop (SKILL.md step 2.2) and each code review pass (step 3.5) run as Workflow
 scripts, not as prose the coordinator follows by hand. The point is mechanical
 enforcement: the pass caps are `for`-loop bounds, the verdict is schema-validated
 (fail-closed to REVISE), finding verification fans out one read-only agent per finding,
@@ -9,7 +9,8 @@ and a crashed run resumes with `resumeFromRunId` instead of re-orienting.
 The scripts live next to this file and are invoked by `scriptPath` — never paste their
 bodies inline, and change them here so there is one copy:
 
-- `plan-review-loop.workflow.mjs` — the whole 5-pass plan loop in one run.
+- `plan-review-loop.workflow.mjs` — default mode: Fable/high authors and ChatGPT reviews.
+- `chatgpt-plan-author-loop.workflow.mjs` — `--planner chatgpt`: ChatGPT authors and Fable/high approves.
 - `code-review-pass.workflow.mjs` — exactly one PR review pass per run; the coordinator
   pushes, waits for CI, and re-invokes (the 3-pass cap is enforced by the
   `chatgpt-review` script itself).
@@ -18,15 +19,16 @@ These Workflow calls are part of this skill's contract — invoking `/ship` is t
 explicit multi-agent opt-in. Workflows run in the background: launch one, then wait for
 its task notification; do not poll and do not start other review work meanwhile.
 
-## Hard rules (both loops)
+## Hard rules (all loops)
 
 - **Coordinator-only, one at a time.** Agent Chrome is a single session; these
   workflows contain the only permitted `chatgpt-review` invocations, and the
   coordinator never runs two review workflows concurrently — parallel units queue for
   their review loops.
-- **The coordinator writes the question/context files first**, including the verdict
-  protocol line ("End your review with exactly one line: `VERDICT: …`"). The scripts
-  assume it is there; without it every pass fail-closes to REVISE.
+- **The coordinator writes the question/context files first.** Default plan review and
+  PR review contexts include their `VERDICT:` protocol. ChatGPT authoring context
+  instead carries the complete delivery contract; the CLI supplies its strict
+  READY/BLOCKED protocol.
 - **Findings are never silently dropped.** Every return carries `accepted` and
   `rejected` (with per-finding evidence); the coordinator records them in the ship log
   and final report. `rejected` entries become rebuttals, not deletions.
@@ -34,7 +36,7 @@ its task notification; do not poll and do not start other review work meanwhile.
   fix and revise agents carry stated mutation boundaries, but a prompt is not an
   enforced restriction.
 
-## Plan loop — `plan-review-loop.workflow.mjs`
+## Default plan loop — `plan-review-loop.workflow.mjs`
 
 ```
 Workflow {
@@ -59,6 +61,25 @@ Returns:
 | `approved` | `VERDICT: APPROVED` on pass ≤ 5 | record passes + conversation URL; tell the worker to re-read the plan file and implement |
 | `needs_human` | 5 passes without approval, or a pass stayed incomplete | **FULL STOP** — present `contested`, ask the human |
 | `error` | a runner agent died | inspect the workflow journal; re-invoke or stop |
+
+## ChatGPT-author plan loop — `chatgpt-plan-author-loop.workflow.mjs`
+
+```
+Workflow {
+  scriptPath: "skills/ship/references/chatgpt-plan-author-loop.workflow.mjs",
+  args: { issueUrl: "<canonical issue URL>", planFile: "<abs path>",
+          contextFile: "<abs path>", unitLabel: "#447 phase 2" }
+}
+```
+
+The canonical plan path never changes. Each pass calls private `plan-author`, has
+Fable/high review the resulting complete plan read-only against the repository, and
+fans out one Sonnet read-only verifier per substantive finding. Before the next pass,
+accepted findings and evidence-backed rebuttals are placed in revision context for
+ChatGPT, which returns a complete atomic replacement. The loop stops at the first
+Fable `APPROVED`, skips the unit on a concrete `BLOCKED`, and returns `needs_human`
+after five non-approved Fable passes or an authoring response that remains incomplete
+after bounded same-session retries.
 
 ## Code review pass — `code-review-pass.workflow.mjs`
 

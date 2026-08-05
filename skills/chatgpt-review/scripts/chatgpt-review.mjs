@@ -9,6 +9,7 @@ import { SessionStore } from './lib/state.mjs';
 import { collectLocalDiff, writePrivateTempFile } from './lib/diff.mjs';
 import { ChatGptBrowser, ReviewError, connectToChrome } from './lib/browser.mjs';
 import { exitCode, renderResult, resultDocument } from './lib/output.mjs';
+import { parsePlanAuthorResponse, replaceFileAtomically } from './lib/plan-author.mjs';
 
 export async function run(argv, dependencies = {}) {
   const started = Date.now();
@@ -82,12 +83,20 @@ export async function run(argv, dependencies = {}) {
     });
     const metadata = extractReportedMetadata(review.responseText);
     session = await store.write({ ...session, conversationUrl: review.conversationUrl, passCount: passNumber, lastResponseFingerprint: review.responseFingerprint ?? null, ...metadata });
+    let planResult = { plan_status: null, plan_file: null, blocker: null };
+    if (options.mode === 'plan-author') {
+      const parsed = parsePlanAuthorResponse(review.responseText);
+      const planFile = path.resolve(options.outputFile);
+      if (parsed.planStatus === 'ready') await replaceFileAtomically(planFile, parsed.plan);
+      planResult = { plan_status: parsed.planStatus, plan_file: planFile, blocker: parsed.blocker };
+    }
     return resultDocument({
       status: 'completed', response_text: review.responseText, session: session.handle,
       conversation_url: review.conversationUrl, elapsed_seconds: elapsed(started), pass_number: passNumber,
       requested_publication: options.requestedPublication,
       reported_reviewed_sha: metadata.reportedReviewedSha,
       reported_github_comment_url: metadata.reportedGithubCommentUrl,
+      ...planResult,
     });
   } catch (error) {
     const status = error.status ?? (error.code === 'ENOENT' ? 'invalid_request' : 'internal_error');
@@ -99,15 +108,26 @@ export async function run(argv, dependencies = {}) {
     return resultDocument({ status, response_text: error.partial ?? '', session: session?.handle ?? null,
       conversation_url: conversationUrl, elapsed_seconds: elapsed(started), pass_number: passNumber,
       requested_publication: options.requestedPublication, reported_reviewed_sha: partialMetadata.reportedReviewedSha,
-      reported_github_comment_url: partialMetadata.reportedGithubCommentUrl, error: error.message });
+      reported_github_comment_url: partialMetadata.reportedGithubCommentUrl,
+      plan_file: options.mode === 'plan-author' && options.outputFile ? path.resolve(options.outputFile) : null,
+      error: error.message });
   } finally {
     await cleanup();
   }
 }
 
 async function prepare(options) {
-  if (options.mode === 'pr' || options.mode === 'issue') {
-    const target = normalizeGithubTarget(options.target, options.mode);
+  if (options.mode === 'pr' || options.mode === 'issue' || options.mode === 'plan-author') {
+    const targetMode = options.mode === 'plan-author' ? 'issue' : options.mode;
+    const target = normalizeGithubTarget(options.target, targetMode);
+    if (options.mode === 'plan-author') {
+      const planFile = path.resolve(options.outputFile);
+      let uploadPath;
+      if (options.session) {
+        try { await fs.access(planFile); uploadPath = planFile; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      return { target, targetIdentity: `plan-author:${target.identity}:${planFile}`, uploadPath };
+    }
     return { target, targetIdentity: `${options.mode}:${target.identity}` };
   }
   if (options.mode === 'plan') {

@@ -10,6 +10,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Opt-in ChatGPT-authored `/ship` planning.** `/ship <scope> --planner chatgpt`
+  keeps the existing Fable-authored workflow as the default, but lets ChatGPT own
+  complete plan drafts and revisions while Fable/high performs repository-grounded
+  approval and Sonnet verifies each finding. The private `chatgpt-review plan-author`
+  command uses a strict READY/BLOCKED protocol, same-conversation pass-numbered
+  uploads, and atomic canonical-plan replacement so malformed or incomplete responses
+  cannot overwrite the last valid plan.
 - **ADR-0004: retain vanilla rendering, reject the Preact migration**
   (`docs/ADR-0004-ui-shell.md`; #577). Three tagged, never-merged evaluation
   states (S0 baseline, S1 vanilla right-inspector control, S2 Preact
