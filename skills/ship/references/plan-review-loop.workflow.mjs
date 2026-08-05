@@ -113,7 +113,7 @@ for (let pass = startPass; pass <= 5; pass++) {
 
   if (pass === 5) break
 
-  await agent(
+  const revise = await agent(
     `Revise the /ship unit plan file ${runArgs.planFile} IN PLACE — never move, rename, or copy it (its path is the review-session identity).\n` +
     `Accepted review findings — fold each into the plan (JSON): ${JSON.stringify(accepted)}\n` +
     `Rejected findings — record each under a "## Review responses" section at the end of the plan, one or two lines with its evidence (JSON): ${JSON.stringify(rejected)}\n` +
@@ -124,6 +124,23 @@ for (let pass = startPass; pass <= 5; pass++) {
     // (sonnet for coding/implementation, fable at high effort for planning/plan-authoring).
     { label: `revise after pass ${pass}`, phase: 'Revise', agentType: 'general-purpose', model: 'fable', effort: 'high' },
   )
+  if (!revise) {
+    // The agent died mid-edit (e.g. a transient API error) — it may have left the plan
+    // file partially edited and internally inconsistent. Retry once with the SAME
+    // accepted/rejected findings rather than silently advancing to the next review pass
+    // on an unknown, possibly half-revised plan.
+    const retry = await agent(
+      `A previous attempt to revise ${runArgs.planFile} for this same pass died mid-edit and may have left it partially/inconsistently edited — re-read the WHOLE file first, then finish reconciling it.\n` +
+      `Accepted review findings — fold each into the plan, and fix any partial/contradictory edit you find from the previous attempt (JSON): ${JSON.stringify(accepted)}\n` +
+      `Rejected findings — record each under a "## Review responses" section at the end of the plan, one or two lines with its evidence (JSON): ${JSON.stringify(rejected)}\n` +
+      'Keep the plan self-contained and consistent with skills/ship/references/per-issue-cycle.md step 1 (contract, risk classification, invariant map).\n' +
+      `Mutation boundary: Edit/Write on ${runArgs.planFile} ONLY. No other files, no git or gh mutations, no task or memory writes, no chatgpt-review invocations.`,
+      { label: `revise after pass ${pass} (retry)`, phase: 'Revise', agentType: 'general-purpose', model: 'fable', effort: 'high' },
+    )
+    if (!retry) {
+      return { status: 'error', reason: `revise agent died twice after pass ${pass} — plan file may be partially edited`, pass, session, conversationUrl, contested: lastContested }
+    }
+  }
 }
 
 return {
