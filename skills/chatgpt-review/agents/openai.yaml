@@ -1,4 +1,4 @@
 interface:
   display_name: "ChatGPT Review"
-  short_description: "Review code and plans through ChatGPT"
-  default_prompt: "Use $chatgpt-review to critically review this pull request."
+  short_description: "Review code and author plans through ChatGPT"
+  default_prompt: "Use $chatgpt-review to critically review this pull request or privately author its implementation plan."

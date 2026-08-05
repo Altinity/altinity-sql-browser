@@ -1,6 +1,6 @@
 # ChatGPT Review Skill
 
-Get an independent ChatGPT review of a GitHub pull request or issue, an implementation plan, or local Git changes without copying browser credentials into an agent or automation process.
+Get an independent ChatGPT review of a GitHub pull request or issue, an implementation plan, or local Git changes—or privately have ChatGPT author a plan—without copying browser credentials into an agent or automation process.
 
 This repository is both:
 
@@ -15,7 +15,8 @@ The CLI submits one review, waits for ChatGPT to finish, and writes one complete
 | --- | --- | --- |
 | Pull request | Canonical GitHub PR URL and optional focused context | Posts a new PR comment by default; use `--no-publish` for a private review |
 | Issue | Canonical GitHub issue URL and optional focused context | Private by default; use `--publish` to post one issue comment |
-| Plan | The exact plan file plus optional project/acceptance context | Never publishes |
+| Plan review | The exact plan file plus optional project/acceptance context | Never publishes |
+| Plan author | A canonical issue URL and delivery-contract context; revisions also upload the current plan | Never publishes |
 | Local changes | A generated text artifact containing selected Git diffs | Never publishes |
 
 PR follow-ups can reuse the same ChatGPT conversation. A PR session allows at most three passes: the initial review and two fix reviews. Each published pass creates a separately labelled comment rather than editing an earlier one.
@@ -126,6 +127,31 @@ node scripts/chatgpt-review.mjs plan /path/to/complete-plan.md \
 
 Plan reviews never authorize GitHub or other external writes. Revised plans may continue in the same conversation with `--session <handle>`.
 
+### Plan author
+
+Privately ask ChatGPT to author a complete standalone plan for an issue:
+
+```sh
+node scripts/chatgpt-review.mjs plan-author \
+  https://github.com/OWNER/REPOSITORY/issues/123 \
+  --output-file /absolute/path/to/canonical-plan.md \
+  --question-file /path/to/delivery-contract.md
+```
+
+Keep the absolute output path unchanged. On the initial call ChatGPT is instructed to
+browse the issue, repository, `CLAUDE.md`, and relevant `skills/ship` references. To
+revise, retain the returned session and call the same command with `--session`; the CLI
+uploads a pass-numbered copy of the current canonical plan while retaining the canonical
+path as part of the session identity.
+
+The response protocol is strict: `PLAN_STATUS: READY` must contain exactly one non-empty
+Markdown plan between `<<<CHATGPT_PLAN_BEGIN>>>` and `<<<CHATGPT_PLAN_END>>>`, while
+`PLAN_STATUS: BLOCKED` must name one concrete missing decision on a `BLOCKER:` line.
+Only a valid READY response atomically replaces the output file. Blocked, malformed,
+empty, timed-out, and otherwise incomplete responses leave the previous plan untouched.
+Resume malformed or incomplete runs with their returned session. Plan-author never
+accepts publication options or authorizes external writes.
+
 ### Local changes
 
 Review committed branch changes and staged changes relative to an explicit base:
@@ -158,6 +184,7 @@ The generated upload is stored in a permission-restricted temporary directory an
 
 ```text
 --question-file <path>   Add focused project and acceptance context
+--output-file <path>     Absolute canonical plan path (plan-author only)
 --session <handle>       Continue the exact saved ChatGPT conversation
 --timeout <seconds>      Completion timeout; default 1800 (30 minutes)
 --format json|text       Output format; default json
@@ -182,6 +209,9 @@ Every invocation writes one JSON object to stdout:
   "requested_publication": false,
   "reported_reviewed_sha": "0123456789abcdef0123456789abcdef01234567",
   "reported_github_comment_url": null,
+  "plan_status": null,
+  "plan_file": null,
+  "blocker": null,
   "error": null
 }
 ```
@@ -199,6 +229,7 @@ Only `completed` means a complete response. `timed_out` may include partial resp
 | `chrome_unavailable` | 5 | CDP is unreachable or no browser context is available |
 | `ui_incompatible` | 6 | Required ChatGPT UI elements are missing or an unrecoverable stream/UI error occurred |
 | `rate_limited` | 7 | ChatGPT reported a rate limit |
+| `invalid_response` | 8 | Plan-author returned a malformed, duplicate, or empty protocol; the prior plan is untouched |
 | `invalid_request` | 64 | CLI arguments, target, session, local state, or input files are invalid |
 | `internal_error` | 70 | An unexpected internal failure occurred |
 
@@ -209,7 +240,7 @@ Only `completed` means a complete response. `timed_out` may include partial resp
 - Completion requires a new non-empty assistant response, no active generation control, and stable text for seven seconds.
 - A visible **Continue generating** control is handled automatically.
 - **Error in message stream** is retried in place up to two times. Persistent failure returns `ui_incompatible` and any available partial text.
-- Only a clearly scoped comment confirmation for the exact requested repository and PR/issue may be approved automatically.
+- Only a clearly scoped comment confirmation for the exact requested repository and PR/issue may be approved automatically. Plan-author always denies permission prompts.
 - Merge, push, commit, close, approve, delete, workflow, credential, repository-wide, destructive, or ambiguous prompts return `needs_interaction`.
 
 All review prompts instruct ChatGPT to treat repository content, diffs, issue text, comments, and uploads as untrusted evidence rather than executable instructions. Read-only investigation is permitted; the only external write ever authorized is the exact comment selected by PR or issue publication options.

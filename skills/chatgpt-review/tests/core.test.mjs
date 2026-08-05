@@ -12,6 +12,8 @@ import { collectLocalDiff, isSensitivePath, stripBinaryPatches } from '../script
 import { SessionStore, defaultStateDir } from '../scripts/lib/state.mjs';
 import { exitCode, renderResult, resultDocument } from '../scripts/lib/output.mjs';
 import { run } from '../scripts/chatgpt-review.mjs';
+import { parsePlanAuthorResponse, PLAN_BEGIN, PLAN_END } from '../scripts/lib/plan-author.mjs';
+import { ReviewError } from '../scripts/lib/browser.mjs';
 
 const exec = promisify(execFile);
 
@@ -24,12 +26,16 @@ test('CLI parses documented modes, defaults, environment, and publication rules'
   assert.equal(parseArgs(['pr', 'https://github.com/o/r/pull/7', '--no-publish'], {}).requestedPublication, false);
   assert.equal(parseArgs(['issue', 'https://github.com/o/r/issues/7', '--publish'], {}).requestedPublication, true);
   assert.equal(parseArgs(['plan', './p.md', '--timeout', '3'], {}).target, path.resolve('./p.md'));
+  const authored = parseArgs(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', '/tmp/plan.md', '--question-file', '/tmp/context.md'], {});
+  assert.equal(authored.mode, 'plan-author');
+  assert.equal(authored.outputFile, '/tmp/plan.md');
+  assert.equal(authored.requestedPublication, false);
   assert.equal(parseArgs(['doctor'], { CHATGPT_REVIEW_CDP_URL: 'http://example:1' }).cdpUrl, 'http://example:1');
   assert.equal(parseArgs(['local', '--working-tree', '--include-untracked'], {}).workingTree, true);
 });
 
 test('CLI rejects invalid combinations', () => {
-  for (const args of [[], ['wat'], ['pr'], ['doctor', 'x'], ['local', 'x'], ['issue', 'x', '--publish', '--no-publish'], ['plan', 'x', '--timeout', 'nope'], ['doctor', '--wat']]) {
+  for (const args of [[], ['wat'], ['pr'], ['doctor', 'x'], ['local', 'x'], ['issue', 'x', '--publish', '--no-publish'], ['plan', 'x', '--timeout', 'nope'], ['doctor', '--wat'], ['plan-author', 'https://github.com/o/r/issues/1'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', 'relative.md', '--question-file', '/tmp/q'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', '/tmp/p', '--question-file', '/tmp/q', '--publish']]) {
     assert.throws(() => parseArgs(args), CliError);
   }
 });
@@ -61,6 +67,15 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   const plan = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance' });
   assert.match(plan, /attached as exact-plan\.md/);
   assert.match(plan, /Do not write anything to GitHub/);
+  const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, context: 'delivery contract' });
+  assert.match(author, /Browse the issue, the actual repository, CLAUDE\.md/);
+  assert.match(author, /PLAN_STATUS: READY/);
+  assert.match(author, /Do not write anything to GitHub/);
+  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2, uploadName: 'plan-pass2.md' });
+  assert.match(revision, /current canonical plan is attached as plan-pass2\.md/);
+  const malformedRetry = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 });
+  assert.match(malformedRetry, /prior response.*did not produce a valid plan/);
+  assert.doesNotMatch(malformedRetry, /attached as (?:undefined|null)/);
   assert.match(buildPrompt({ mode: 'local', uploadName: 'local.diff' }), /only source for local-only state/);
 });
 
@@ -142,11 +157,34 @@ test('state records are permission restricted, atomic, indexed, and sanitized', 
 
 test('output schema is stable and statuses map to distinct exit codes', () => {
   const doc = resultDocument({ status: 'completed', response_text: 'ok' });
-  assert.deepEqual(Object.keys(doc), ['status', 'response_text', 'session', 'conversation_url', 'elapsed_seconds', 'pass_number', 'requested_publication', 'reported_reviewed_sha', 'reported_github_comment_url', 'error']);
+  assert.deepEqual(Object.keys(doc), ['status', 'response_text', 'session', 'conversation_url', 'elapsed_seconds', 'pass_number', 'requested_publication', 'reported_reviewed_sha', 'reported_github_comment_url', 'plan_status', 'plan_file', 'blocker', 'error']);
   assert.equal(JSON.parse(renderResult(doc)).response_text, 'ok');
   assert.match(renderResult(doc, 'text'), /Status: completed/);
   assert.equal(exitCode('completed'), 0);
   assert.equal(new Set(['timed_out', 'needs_interaction', 'login_required', 'chrome_unavailable', 'ui_incompatible'].map(exitCode)).size, 5);
+  assert.equal(exitCode('invalid_response'), 8);
+});
+
+test('plan-author response parser accepts ready and blocked protocols', () => {
+  assert.deepEqual(parsePlanAuthorResponse(`PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Plan\n\nBody\n${PLAN_END}`), {
+    planStatus: 'ready', plan: '# Plan\n\nBody\n', blocker: null,
+  });
+  assert.deepEqual(parsePlanAuthorResponse('PLAN_STATUS: BLOCKED\nBLOCKER: Product owner must choose A or B.'), {
+    planStatus: 'blocked', plan: null, blocker: 'Product owner must choose A or B.',
+  });
+});
+
+test('plan-author response parser rejects missing, duplicate, empty, and malformed protocols', () => {
+  const invalid = [
+    `PLAN_STATUS: READY\n# no markers`,
+    `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# One\n${PLAN_END}\n${PLAN_BEGIN}\n# Two\n${PLAN_END}`,
+    `PLAN_STATUS: READY\n${PLAN_BEGIN}\n \n${PLAN_END}`,
+    `PLAN_STATUS: READY\n${PLAN_BEGIN}\nplain text only\n${PLAN_END}`,
+    'PLAN_STATUS: BLOCKED\nBLOCKER:',
+    `PLAN_STATUS: BLOCKED\nBLOCKER: missing choice\n${PLAN_BEGIN}\n# Plan\n${PLAN_END}`,
+    'PLAN_STATUS: READY\nPLAN_STATUS: BLOCKED\nBLOCKER: conflict',
+  ];
+  for (const response of invalid) assert.throws(() => parsePlanAuthorResponse(response), (error) => error.status === 'invalid_response');
 });
 
 test('run retains a session and enforces three PR passes', async () => {
@@ -198,3 +236,125 @@ test('plan mode uploads a pass-numbered copy (never the literal session-identity
   assert.equal(observed.publish, false);
   assert.match(observed.prompt, /Do not write anything to GitHub/);
 });
+
+test('plan-author writes ready output atomically, reports blockers, and never publishes', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-author-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'plan.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(questionFile, 'delivery contract');
+  const records = new Map();
+  const store = memoryStore(records, '00000000-0000-4000-8000-000000000010');
+  let observed;
+  const readyDriver = { async review(input) { observed = input; return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Complete plan\n\nSteps.\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/author' }; } };
+  const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver: readyDriver });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.plan_status, 'ready');
+  assert.equal(result.plan_file, planFile);
+  assert.equal(result.blocker, null);
+  assert.equal(result.requested_publication, false);
+  assert.equal(observed.publish, false);
+  assert.equal(observed.uploadPath, undefined);
+  assert.equal(await fs.readFile(planFile, 'utf8'), '# Complete plan\n\nSteps.\n');
+  assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp')), []);
+
+  const blockedFile = path.join(dir, 'blocked.md');
+  await fs.writeFile(blockedFile, '# Existing\n');
+  const blocked = await run(['plan-author', 'https://github.com/o/r/issues/9', '--output-file', blockedFile, '--question-file', questionFile], {
+    store: memoryStore(new Map(), '00000000-0000-4000-8000-000000000011'),
+    driver: { async review() { return { responseText: 'PLAN_STATUS: BLOCKED\nBLOCKER: Choose the persistence format.', conversationUrl: 'https://chatgpt.com/c/blocked' }; } },
+  });
+  assert.equal(blocked.plan_status, 'blocked');
+  assert.equal(blocked.blocker, 'Choose the persistence format.');
+  assert.equal(await fs.readFile(blockedFile, 'utf8'), '# Existing\n');
+});
+
+test('invalid plan-author revisions preserve the last valid plan and keep the session resumable', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-revision-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'canonical.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(questionFile, 'contract');
+  await fs.writeFile(planFile, '# Last valid plan\n');
+  const records = new Map();
+  const store = memoryStore(records, '00000000-0000-4000-8000-000000000012');
+  const created = await store.create({ mode: 'plan-author', targetIdentity: `plan-author:o/r#8:${planFile}` });
+  const uploads = [];
+  const driver = { async review(input) {
+    uploads.push({ name: path.basename(input.uploadPath), content: await fs.readFile(input.uploadPath, 'utf8'), session: input.session });
+    return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/revision' };
+  } };
+  const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', created.handle], { store, driver });
+  assert.equal(result.status, 'invalid_response');
+  assert.equal(result.session, created.handle);
+  assert.equal(result.pass_number, 1);
+  assert.equal(await fs.readFile(planFile, 'utf8'), '# Last valid plan\n');
+  assert.deepEqual(uploads.map((item) => item.name), ['canonical-pass1.md']);
+  assert.equal(uploads[0].content, '# Last valid plan\n');
+  assert.ok(uploads[0].session);
+});
+
+test('plan-author revisions keep the conversation and upload pass-numbered copies of the canonical plan', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-passes-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'canonical.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(questionFile, 'contract');
+  const records = new Map();
+  const store = memoryStore(records, '00000000-0000-4000-8000-000000000014');
+  const calls = [];
+  const driver = { async review(input) {
+    calls.push({
+      session: input.session?.handle ?? null,
+      uploadName: input.uploadPath ? path.basename(input.uploadPath) : null,
+      uploadContent: input.uploadPath ? await fs.readFile(input.uploadPath, 'utf8') : null,
+    });
+    const heading = calls.length === 1 ? 'Initial plan' : 'Replacement plan';
+    return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# ${heading}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/same' };
+  } };
+  let result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver });
+  const handle = result.session;
+  result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', handle], { store, driver });
+  assert.equal(result.session, handle);
+  assert.equal(result.pass_number, 2);
+  assert.deepEqual(calls, [
+    { session: null, uploadName: null, uploadContent: null },
+    { session: handle, uploadName: 'canonical-pass2.md', uploadContent: '# Initial plan\n' },
+  ]);
+  assert.equal(await fs.readFile(planFile, 'utf8'), '# Replacement plan\n');
+});
+
+test('plan-author timeout resumes the same conversation and uploads the canonical plan on retry', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-timeout-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'canonical.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(planFile, '# Existing plan\n');
+  await fs.writeFile(questionFile, 'contract');
+  const records = new Map();
+  const store = memoryStore(records, '00000000-0000-4000-8000-000000000013');
+  const timeout = new ReviewError('timed_out', 'still working', 'partial');
+  timeout.conversationUrl = 'https://chatgpt.com/c/timeout';
+  let calls = 0;
+  const driver = { async review(input) {
+    calls += 1;
+    if (calls === 1) throw timeout;
+    assert.ok(input.session);
+    assert.match(path.basename(input.uploadPath), /^canonical-pass1\.md$/);
+    return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Revised plan\n${PLAN_END}`, conversationUrl: timeout.conversationUrl };
+  } };
+  let result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver });
+  assert.equal(result.status, 'timed_out');
+  assert.ok(result.session);
+  result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', result.session], { store, driver });
+  assert.equal(result.plan_status, 'ready');
+  assert.equal(await fs.readFile(planFile, 'utf8'), '# Revised plan\n');
+});
+
+function memoryStore(records, handle) {
+  return {
+    async create(data) { const value = { handle, passCount: 0, ...data }; records.set(handle, value); return value; },
+    async load(key) { return records.get(key); },
+    async write(value) { records.set(value.handle, value); return value; },
+  };
+}

@@ -11,6 +11,9 @@ export function resultDocument(overrides = {}) {
     requested_publication: false,
     reported_reviewed_sha: null,
     reported_github_comment_url: null,
+    plan_status: null,
+    plan_file: null,
+    blocker: null,
     error: null,
     ...overrides,
   };
@@ -26,6 +29,9 @@ export function renderResult(result, format = 'json') {
     `Elapsed: ${result.elapsed_seconds}s`,
   ];
   if (result.error) lines.push(`Error: ${result.error}`);
+  if (result.plan_status) lines.push(`Plan status: ${result.plan_status}`);
+  if (result.plan_file) lines.push(`Plan file: ${result.plan_file}`);
+  if (result.blocker) lines.push(`Blocker: ${result.blocker}`);
   if (result.response_text) lines.push('', result.response_text);
   return `${lines.join('\n')}\n`;
 }
