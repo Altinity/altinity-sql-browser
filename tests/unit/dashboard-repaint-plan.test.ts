@@ -154,7 +154,7 @@ describe('dashboardRepaintPlan — first publish (unchanged initial view)', () =
     });
     // sigs still advance so the caller has fresh values to commit.
     expect(sigs.labelWaveNowMs).toBe(500);
-    expect(sigs.optionsSig).toBe(JSON.stringify([[false, 0, 'idle', null, false]]));
+    expect(sigs.optionsSig).toBe(JSON.stringify([['n', false, 0, 'idle', null, false]]));
   });
 });
 

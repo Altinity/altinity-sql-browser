@@ -198,6 +198,130 @@ describe('dashboard-repaint-plan wiring — fault injection during a persist+str
   });
 });
 
+// #589 finding 2 regression: on an engine switch, `ui/dashboard.ts` must
+// reset BOTH `memo.layoutSig`/`memo.gridSig` to `''` — not just commit
+// `memo.engineRendered` — at the exact point it consumes
+// `plan.engineSwitched`, mirroring the pre-extraction
+// `git show origin/main:src/ui/dashboard.ts` (~line 2925), which did this
+// unconditionally, ALL THREE in one statement, before the reconciler ran.
+// Without that reset, a throw inside the reconciler's own tile loop — before
+// it reaches its own `memo.gridSig = structuralSig` commit — leaves
+// `engineRendered` eagerly advanced but the structural sig untouched; if the
+// NEXT publish's freshly-computed structural sig happens to coincide with
+// that untouched value (exactly what happens on a switch back to an
+// unchanged layout), the coincidence masks the still-owed rebuild — the
+// #291 bug class the original defensive reset existed to prevent.
+//
+// A genuine grid → flow → grid round trip can't be driven through the real
+// `renderDashboard` DOM surface: the File-style layout menu (the only wired
+// `change-layout` trigger) offers exclusively grafana-grid-shaped options —
+// 'Grid'/'Full'/'Report'/'2 columns'/'3 columns' (#321 dropped the flow
+// entries from the menu) — and no exposed app/command-port surface accepts
+// an arbitrary `DashboardCommand`, so a test cannot dispatch
+// `{ type: 'flow', ... }` directly even though `dashboard-commands.ts` still
+// fully supports it. The only other route to a flow-typed document,
+// `app.onWorkspaceExternallyChanged`, rebuilds the whole route
+// (`session.destroy(); app.renderDashboard()`), which reseeds `memo` from
+// scratch — destroying the very state this bug is about.
+//
+// So this proof manufactures the SAME precondition a real engine switch
+// creates — `plan.engineSwitched`/`plan.rebuildStructure` both true on a
+// publish whose structural signature does NOT actually change — by stubbing
+// only `dashboardRepaintPlan`'s OUTPUT (never its real grid/flow switching
+// logic, which is already proved directly against the pure function in
+// `dashboard-repaint-plan.test.ts`, "forces rebuildStructure on a switch even
+// when ... byte-match a stale remembered one"). Every line of `ui/dashboard.ts`
+// itself — including the exact commit statement under test — runs for real
+// and unmocked. A second mock arms exactly one throw inside the REAL
+// reconciler's per-tile loop (a KPI tile's content is recomputed by
+// `kpiContent`/`resolvePanel` on every publish, unlike a plain tile's
+// `paintPanel`, which skips repainting on an unchanged `rows` reference — so
+// a KPI tile is the only reliable way to force that call on a publish whose
+// data has not changed), landing the throw BEFORE the reconciler's own sig
+// commit, exactly reproducing the ordering a genuine engine-switch throw
+// would hit.
+describe('dashboard-repaint-plan wiring — engine-switch throw-path sig reset (finding 2, #589)', () => {
+  it('a throw on a forced engine-switch publish still leaves the grid chrome rebuild owed on the next publish, and the next publish performs it', async () => {
+    vi.resetModules();
+    let forceSwitch = false;
+    let armThrow = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        dashboardRepaintPlan: (memo: never, input: never) => {
+          const out = real.dashboardRepaintPlan(memo, input);
+          if (!forceSwitch) return out;
+          return { ...out, plan: { ...out.plan, engineSwitched: true, rebuildStructure: true } };
+        },
+      };
+    });
+    vi.doMock('../../src/core/panel-cfg.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/core/panel-cfg.js')>();
+      return {
+        ...real,
+        resolvePanel: (...args: Parameters<typeof real.resolvePanel>) => {
+          if (!armThrow) return real.resolvePanel(...args);
+          armThrow = false;
+          throw new Error('injected reconciliation fault');
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, {
+        workspace: wsWith({
+          queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+          tiles: [{ id: 't1', queryId: 'k1' }],
+          layout: { type: 'grafana-grid', version: 1, items: {} },
+        }),
+      });
+      await render();
+      const grid = qs<HTMLElement>(app.root, '.dash-grid');
+      expect(grid.classList.contains('dash-gg-grid')).toBe(true); // settled: real grid chrome present
+
+      const replaceChildren = vi.spyOn(grid, 'replaceChildren');
+      replaceChildren.mockClear();
+
+      // The critical publish: `dashboardRepaintPlan` is stubbed to report an
+      // engine switch (forcing `ui/dashboard.ts`'s real commit line to run)
+      // on a publish whose real structural signature has not changed, and
+      // the reconciler's per-tile loop is armed to throw before it reaches
+      // its own sig commit — triggered via the tile search box, a purely
+      // synchronous, layout-independent action (mirrors the existing
+      // fault-injection test above), so the throw propagates synchronously
+      // out of this dispatch rather than surfacing as a promise rejection.
+      forceSwitch = true;
+      armThrow = true;
+      const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+      search.value = 'k';
+      let threw = false;
+      try {
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true); // sanity: the injected fault genuinely fired
+      expect(armThrow).toBe(false); // ...and fired exactly once
+      forceSwitch = false; // later publishes report the plan's REAL decision
+      // The reconciler never reached its chrome-rebuild block.
+      expect(replaceChildren).not.toHaveBeenCalled();
+
+      // A later, unrelated, purely synchronous publish (clearing the search)
+      // still owes the rebuild the throwing publish never performed — prove
+      // it actually happens now.
+      search.value = '';
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(replaceChildren).toHaveBeenCalledTimes(1);
+      expect(grid.classList.contains('dash-gg-grid')).toBe(true); // chrome genuinely rebuilt, not just coincidentally already correct
+    } finally {
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.doUnmock('../../src/core/panel-cfg.js');
+      vi.resetModules();
+    }
+  });
+});
+
 describe('dashboard-repaint-plan wiring — the effect consumes the plan, not a recomputed decision', () => {
   const flowWorkspace = () => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],

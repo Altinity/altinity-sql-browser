@@ -2244,7 +2244,10 @@ export async function renderDashboard(
   // structural signature both come from `dashboardRepaintPlan`; this function
   // only commits `memo.gridSig` at the point the pre-extraction code
   // committed its own private `let`.
-  function reconcileGrafanaGrid(sview: DashboardViewState, gridModel: GrafanaGridLayoutModel, rebuild: boolean, structuralSig: string): void {
+  function reconcileGrafanaGrid(
+    sview: DashboardViewState, gridModel: GrafanaGridLayoutModel, rebuild: boolean, structuralSig: string,
+    consumedGridInvalidationRev: number,
+  ): void {
     const byId = new Map(sview.tiles.map((t) => [t.tileId, t]));
     for (const t of gridModel.tiles) {
       const ts = byId.get(t.tileId);
@@ -2256,7 +2259,7 @@ export async function renderDashboard(
     // tile cards, so charts/KPI content are never thrashed mid-drag.
     if (!rebuild) return;
     memo.gridSig = structuralSig;
-    memo.consumedGridInvalidationRev = gridStructureInvalidationRev;
+    memo.consumedGridInvalidationRev = consumedGridInvalidationRev;
     grid.classList.toggle('is-report', gridModel.style === 'report');
     grid.classList.toggle('is-full', gridModel.style === 'full');
     grid.classList.add('dash-gg-grid');
@@ -2338,8 +2341,17 @@ export async function renderDashboard(
   const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
+    // Snapshotted once here — the exact value `dashboardRepaintPlan`'s input
+    // carried this publish — and threaded through to `reconcileGrafanaGrid`'s
+    // own commit below, rather than that commit re-reading the live
+    // module-level `gridStructureInvalidationRev` a second time. Nothing
+    // bumps the counter synchronously mid-effect today, so the two reads are
+    // always equal in practice, but committing the CONSUMED input (not
+    // whatever the live counter happens to hold by the time the reconciler
+    // runs) is the defensively-correct value regardless.
+    const consumedGridInvalidationRev = gridStructureInvalidationRev;
     const { plan, sigs } = dashboardRepaintPlan(memo, {
-      view: sview, mobileNow, gridInvalidationRev: gridStructureInvalidationRev,
+      view: sview, mobileNow, gridInvalidationRev: consumedGridInvalidationRev,
     });
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
@@ -2415,13 +2427,16 @@ export async function renderDashboard(
         class: 'dash-config-diagnostic is-' + (d.severity ?? 'error'),
       }, d.message)),
     );
-    // #291: an engine switch alone is not committed to the memo's structural
-    // signatures — the reconciler call below is unconditionally handed
-    // `plan.rebuildStructure` (which `dashboardRepaintPlan` already forces
-    // true on a switch, regardless of whether the ACTIVE engine's own
-    // signature happens to byte-match) and commits `memo.layoutSig`/
-    // `memo.gridSig` itself at the point it performs the rebuild.
-    if (plan.engineSwitched) memo.engineRendered = sview.layout.engine;
+    // #291: on an engine switch, both structural sigs are reset here,
+    // unconditionally, BEFORE the reconciler call below — matching the
+    // pre-extraction code exactly. This is not redundant with the reconciler
+    // committing `memo.layoutSig`/`memo.gridSig` itself at the point it
+    // performs the rebuild: if the reconciler's own tile-processing loop
+    // throws before reaching that commit, this eager reset is what's already
+    // left `''` in the memo, so the NEXT publish's sig-mismatch check still
+    // forces the rebuild it owes — independent of whether `engineSwitched`
+    // has already been consumed by this (throwing) publish.
+    if (plan.engineSwitched) { memo.layoutSig = ''; memo.gridSig = ''; memo.engineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
     // #535: the widen button's gate AND its label, resynced on every publish. Not
     // folded into the render-mode branch below (which only fires on a grid
@@ -2452,7 +2467,7 @@ export async function renderDashboard(
       }
     }
     if (sview.layout.engine === 'grafana-grid') {
-      reconcileGrafanaGrid(sview, sview.layout.grid, plan.rebuildStructure, sigs.structuralSig);
+      reconcileGrafanaGrid(sview, sview.layout.grid, plan.rebuildStructure, sigs.structuralSig, consumedGridInvalidationRev);
     } else {
       reconcileGrid(sview, sview.layout, plan.rebuildStructure, sigs.structuralSig);
     }

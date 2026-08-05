@@ -156,9 +156,9 @@ export interface TileGestureController {
    *  pre-extraction code's own `gridWin` guard). Edit mode only — callers
    *  gate this the same way they already gate `wireTileDrag`. */
   installModifierCue(): void;
-  /** Tear down everything this controller owns: cancel whichever gesture
-   *  currently holds the shared cancel slot (if any), and remove the
-   *  modifier-cue listeners (if installed) — in that order, matching
+  /** Tear down everything this controller owns: remove the modifier-cue
+   *  listeners (if installed), then cancel whichever gesture currently holds
+   *  the shared cancel slot (if any) — in that order, matching
    *  `disposeDashboardSurface`'s pre-extraction teardown order. Does NOT
    *  remove the permanent per-card/per-handle listeners `wireTileDrag`/
    *  `wireGridResize` install once at tile-build time: those have no

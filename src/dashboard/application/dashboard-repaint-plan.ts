@@ -199,7 +199,7 @@ export function dashboardRepaintPlan(
   // silently cancel any open popover. Only pushed when the bar SURVIVED this
   // publish — a rebuild above has just taken the newest options along with it.
   const optionsSig = JSON.stringify(view.variableStates.map((f) =>
-    [f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
+    [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
   const pushOptions = !rebuildBar && optionsSig !== memo.optionsSig;
 
   // #335: per-wave time-range label refresh. A rebuild (`barSig` change)
