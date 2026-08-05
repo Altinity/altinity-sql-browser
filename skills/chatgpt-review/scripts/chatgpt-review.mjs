@@ -34,7 +34,8 @@ export async function run(argv, dependencies = {}) {
     }
 
     const prepared = await prepare(options);
-    cleanup = prepared.cleanup ?? cleanup;
+    const prepareCleanup = prepared.cleanup ?? (async () => {});
+    cleanup = prepareCleanup;
     if (options.session) {
       session = await store.load(options.session);
       if (session.mode !== options.mode || session.targetIdentity !== prepared.targetIdentity) throw new CliError('Session does not match this mode and target');
@@ -43,6 +44,23 @@ export async function run(argv, dependencies = {}) {
     }
     passNumber = (session.passCount ?? 0) + 1;
     if (options.mode === 'pr' && passNumber > 3) throw new CliError('PR review sessions permit at most three total passes');
+
+    // Name each pass's upload distinctly (plan-590-pass4.md, not plan-590.md every time) — the
+    // plan/diff file's own path must never move (it is the plan-review-loop's session identity),
+    // so we upload a same-content, differently-named COPY. Reusing one literal filename across
+    // many passes made ChatGPT's own upload UI collision-rename it (plan-590(9).md) after enough
+    // retries, which is confusing and unrelated to the real pass count.
+    let uploadPath = prepared.uploadPath;
+    if (uploadPath) {
+      const ext = path.extname(uploadPath);
+      const base = path.basename(uploadPath, ext);
+      const content = await fs.readFile(uploadPath, 'utf8');
+      const renamed = await writePrivateTempFile(`${base}-pass${passNumber}${ext}`, content);
+      uploadPath = renamed.filename;
+      const uploadCleanup = renamed.cleanup;
+      cleanup = async () => { await uploadCleanup(); await prepareCleanup(); };
+    }
+
     const context = options.questionFile ? await fs.readFile(path.resolve(options.questionFile), 'utf8') : '';
     const prompt = buildPrompt({
       mode: options.mode,
@@ -51,19 +69,19 @@ export async function run(argv, dependencies = {}) {
       publish: options.requestedPublication,
       pass: passNumber,
       previousSha: session.reportedReviewedSha,
-      uploadName: prepared.uploadPath ? path.basename(prepared.uploadPath) : null,
+      uploadName: uploadPath ? path.basename(uploadPath) : null,
     });
     const review = await driver.review({
       session: options.session ? session : null,
       prompt,
-      uploadPath: prepared.uploadPath,
+      uploadPath,
       timeoutMs: options.timeoutMs,
       target: prepared.target,
       publish: options.requestedPublication,
       diagnosticsDir: options.diagnosticsDir ? path.resolve(options.diagnosticsDir) : null,
     });
     const metadata = extractReportedMetadata(review.responseText);
-    session = await store.write({ ...session, conversationUrl: review.conversationUrl, passCount: passNumber, ...metadata });
+    session = await store.write({ ...session, conversationUrl: review.conversationUrl, passCount: passNumber, lastResponseFingerprint: review.responseFingerprint ?? null, ...metadata });
     return resultDocument({
       status: 'completed', response_text: review.responseText, session: session.handle,
       conversation_url: review.conversationUrl, elapsed_seconds: elapsed(started), pass_number: passNumber,

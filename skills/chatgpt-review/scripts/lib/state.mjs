@@ -67,6 +67,6 @@ export class SessionStore {
 }
 
 function sanitize(record) {
-  const allowed = ['handle', 'mode', 'targetIdentity', 'canonicalUrl', 'conversationUrl', 'passCount', 'createdAt', 'updatedAt', 'reportedReviewedSha', 'reportedGithubCommentUrl'];
+  const allowed = ['handle', 'mode', 'targetIdentity', 'canonicalUrl', 'conversationUrl', 'passCount', 'lastResponseFingerprint', 'createdAt', 'updatedAt', 'reportedReviewedSha', 'reportedGithubCommentUrl'];
   return Object.fromEntries(allowed.filter((key) => record[key] !== undefined).map((key) => [key, record[key]]));
 }

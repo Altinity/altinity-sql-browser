@@ -108,6 +108,44 @@ test('session retry recovers an uncollected response without sending a duplicate
   assert.equal(composer.value, undefined);
 });
 
+test('fresh submission detects a new response even when DOM pruning keeps the assistant-message count flat', async () => {
+  let sent = false;
+  const composer = new Element();
+  const send = new Element({ onClick: () => { sent = true; } });
+  // Simulates ChatGPT virtualizing old turns out of the DOM: the assistant locator always
+  // returns exactly one element (a fixed-size window), but its content is the STALE prior
+  // answer until submit, then the NEW one — never two elements at once, so a count-based
+  // before/after check could never observe growth.
+  const page = new Page('https://chatgpt.com/', {
+    [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send],
+    [SELECTORS.assistant[0]]: () => [new Element({ text: sent ? 'brand new answer' : 'stale old answer' })],
+  });
+  const driver = driverWith(page);
+  const result = await driver.review({ prompt: 'review', timeoutMs: 20, target: null, publish: false });
+  assert.equal(result.responseText, 'brand new answer');
+});
+
+test('recovery via stored fingerprint detects an uncollected response under DOM pruning, without a generation indicator', async () => {
+  let sent = false;
+  const composer = new Element();
+  const page = new Page('https://chatgpt.com/c/recover-pruned', {
+    [SELECTORS.composer[0]]: [composer],
+    [SELECTORS.send[0]]: [new Element({ onClick: () => { sent = true; } })],
+    [SELECTORS.assistant[0]]: [new Element({ text: 'new uncollected answer' })],
+  });
+  const driver = driverWith(page);
+  const result = await driver.review({
+    // passCount/fingerprint reflect an earlier, DIFFERENT response never seen live on this
+    // page — simulating a prior invocation that crashed after ChatGPT answered but before it
+    // recorded anything. Absolute message count plays no part in this decision.
+    session: { conversationUrl: page.url(), passCount: 3, lastResponseFingerprint: 'stale-fingerprint-from-a-different-answer' },
+    prompt: 'must not send', timeoutMs: 20, target: null, publish: false,
+  });
+  assert.equal(result.responseText, 'new uncollected answer');
+  assert.equal(result.recovered, true);
+  assert.equal(sent, false);
+});
+
 test('submission waits for ChatGPT to replace its temporary conversation URL', async () => {
   const page = readyPage();
   page.currentUrl = 'https://chatgpt.com/c/WEB:temporary';
@@ -125,7 +163,7 @@ test('continue generating is clicked harmlessly', async () => {
   const button = new Element({ onClick: (self) => { self.visible = false; } });
   const page = readyPage({ [SELECTORS.continue[0]]: [button], [SELECTORS.assistant[0]]: [new Element({ text: 'done' })] });
   const driver = driverWith(page);
-  assert.equal(await driver.waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }), 'done');
+  assert.equal(await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }), 'done');
   assert.equal(button.visible, false);
 });
 
@@ -138,7 +176,7 @@ test('message stream failures use Retry without completing or creating a new pro
     [SELECTORS.streamRetry[0]]: () => failed ? [retry] : [],
     [SELECTORS.assistant[0]]: () => [new Element({ text: failed ? 'Error in message stream\nRetry' : 'complete answer' })],
   });
-  assert.equal(await driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }), 'complete answer');
+  assert.equal(await driverWith(page).waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }), 'complete answer');
   assert.equal(retries, 1);
 });
 
@@ -151,7 +189,7 @@ test('persistent message stream failure is typed after two retries', async () =>
     [SELECTORS.assistant[0]]: [new Element({ text: 'Error in message stream\nRetry' })],
   });
   await assert.rejects(
-    () => driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }),
+    () => driverWith(page).waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }),
     (error) => error.status === 'ui_incompatible' && /after two automatic retries/.test(error.message),
   );
   assert.equal(retries, 2);
@@ -163,11 +201,11 @@ test('login failure, UI drift, rate limit, and timeout are typed', async () => {
   const drift = new Page();
   await assert.rejects(() => driverWith(drift).assertReady(drift), (error) => error.status === 'ui_incompatible');
   const rate = readyPage({ [SELECTORS.rateLimit[0]]: [new Element()] });
-  await assert.rejects(() => driverWith(rate).waitForCompletion(rate, { before: 0, timeoutMs: 2 }), (error) => error.status === 'rate_limited');
+  await assert.rejects(() => driverWith(rate).waitForCompletion(rate, { before: '', timeoutMs: 2 }), (error) => error.status === 'rate_limited');
   const uiError = readyPage({ [SELECTORS.error[0]]: [new Element({ text: 'Something went wrong' })] });
-  await assert.rejects(() => driverWith(uiError).waitForCompletion(uiError, { before: 0, timeoutMs: 2 }), (error) => error.status === 'ui_incompatible');
+  await assert.rejects(() => driverWith(uiError).waitForCompletion(uiError, { before: '', timeoutMs: 2 }), (error) => error.status === 'ui_incompatible');
   const timeout = readyPage();
-  await assert.rejects(() => driverWith(timeout).waitForCompletion(timeout, { before: 0, timeoutMs: 2 }), (error) => error.status === 'timed_out');
+  await assert.rejects(() => driverWith(timeout).waitForCompletion(timeout, { before: '', timeoutMs: 2 }), (error) => error.status === 'timed_out');
 });
 
 test('empty and status live-region alerts do not abort an active review', async () => {
@@ -175,7 +213,7 @@ test('empty and status live-region alerts do not abort an active review', async 
     [SELECTORS.alert[0]]: [new Element({ text: '' }), new Element({ text: 'ChatGPT is working' })],
     [SELECTORS.assistant[0]]: [new Element({ text: 'complete answer' })],
   });
-  assert.equal(await driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 20, publish: false }), 'complete answer');
+  assert.equal(await driverWith(page).waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }), 'complete answer');
 });
 
 test('live-region alerts are fatal only when their text identifies a real failure', async () => {
@@ -184,7 +222,7 @@ test('live-region alerts are fatal only when their text identifies a real failur
   assert.deepEqual(classifyAlertText('Too many requests; try again later'), { status: 'rate_limited', message: 'Too many requests; try again later' });
   assert.deepEqual(classifyAlertText('Something went wrong'), { status: 'ui_incompatible', message: 'Something went wrong' });
   const page = readyPage({ [SELECTORS.alert[0]]: [new Element({ text: 'There was an error generating a response' })] });
-  await assert.rejects(() => driverWith(page).waitForCompletion(page, { before: 0, timeoutMs: 2 }), (error) => error.status === 'ui_incompatible');
+  await assert.rejects(() => driverWith(page).waitForCompletion(page, { before: '', timeoutMs: 2 }), (error) => error.status === 'ui_incompatible');
 });
 
 test('only a scoped comment permission is automatically approvable', () => {
