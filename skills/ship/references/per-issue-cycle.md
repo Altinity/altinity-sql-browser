@@ -71,13 +71,15 @@ a defect, one relocation at a time.
 
 ### Plan review
 
-Every plan — regardless of risk — goes through the coordinator-run ChatGPT plan review
-loop (`SKILL.md` step 2.2: exit on `VERDICT: APPROVED`, max 5 passes). The worker's
-part of the loop:
+Every plan — regardless of risk — goes through the ChatGPT plan review loop, which the
+coordinator runs as a Workflow (`SKILL.md` step 2.2, `references/review-loops.md`:
+exit on `VERDICT: APPROVED`, max 5 passes). The worker's part:
 
-- write the plan to the exact file path the coordinator assigned, and return it;
-- on REVISE findings the coordinator relays, revise that file **in place** — the path
-  is the review-session identity (footguns) — and return again;
+- write the plan to the exact file path the coordinator assigned, and return it —
+  self-contained, because the loop's revise agent (not you) folds review findings into
+  that file in place;
+- when told the plan is approved, **re-read the plan file before implementing** — it
+  supersedes what you wrote;
 - never invoke `chatgpt-review` yourself, and write no code before the coordinator
   reports the plan approved.
 
