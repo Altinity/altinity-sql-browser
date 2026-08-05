@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChatGptBrowser, ReviewError, SELECTORS, classifyAlertText, classifyPermission, connectToChrome } from '../scripts/lib/browser.mjs';
+import { ChatGptBrowser, ReviewError, SELECTORS, classifyAlertText, classifyPermission, connectToChrome, fingerprintText } from '../scripts/lib/browser.mjs';
 
 class Element {
   constructor({ text = '', visible = true, onClick, nested = {} } = {}) { this.text = text; this.visible = visible; this.onClick = onClick; this.nested = nested; }
@@ -186,6 +186,38 @@ test('a completed response prefers the copied Markdown source over the rendered 
   const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false });
   assert.equal(text, 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>');
   assert.deepEqual(context.grantedWith[0], ['clipboard-read', 'clipboard-write']);
+});
+
+test('a completed response is fingerprinted by its plain rendered tail even when Markdown is returned, so a later resume is not misdetected as newly uncollected', async () => {
+  // review() stores responseFingerprint for staleness detection on a LATER call, which
+  // compares it against latestAssistantText() (plain, cheap) on that later call. If the
+  // fingerprint were instead computed from the upgraded Markdown responseText, it could
+  // never match that later plain-text comparison for the identical message — making every
+  // resumed session look like it has an unread response forever.
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  let stage = 0; // 0: nothing sent yet, 1: first reply present, 2: second reply present
+  const composer = new Element();
+  const send = new Element({ onClick: () => { stage += 1; } });
+  const firstText = 'PLAN_STATUS: READY rendered without markdown syntax';
+  const secondText = 'a later, different reply';
+  const page = new Page('https://chatgpt.com/', {
+    [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send],
+    [SELECTORS.assistant[0]]: () => stage === 0 ? [] : [new Element({ text: stage === 1 ? firstText : secondText })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>' });
+  const context = new Context([], page);
+  const driver = driverWith(page, context);
+
+  const first = await driver.review({ prompt: 'author', timeoutMs: 20, target: null, publish: false });
+  assert.equal(first.responseFingerprint, fingerprintText(firstText));
+
+  const second = await driver.review({
+    session: { conversationUrl: page.url(), lastResponseFingerprint: first.responseFingerprint },
+    prompt: 'revise', timeoutMs: 20, target: null, publish: false,
+  });
+  assert.equal(second.recovered, false);
+  assert.equal(stage, 2);
 });
 
 test('missing copy control, denied permission, or a hung clipboard read fall back to the rendered text without hanging', async () => {

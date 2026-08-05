@@ -94,7 +94,12 @@ export class ChatGptBrowser {
       if (session && hasUncollected) {
         this.stderr.write('Recovering an uncollected ChatGPT response...\n');
         const responseText = await this.waitForCompletion(page, { before: null, timeoutMs, target, publish });
-        return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true, responseFingerprint: fingerprintText(responseText) };
+        // Fingerprint the plain rendered tail, not responseText (which may now be the
+        // upgraded Markdown from copyLatestAssistantMarkdown) — a future call's staleness
+        // check compares against THIS stored value using latestAssistantText's same plain
+        // representation, so fingerprinting a different representation of the identical
+        // message would make every later resume spuriously look "uncollected" forever.
+        return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true, responseFingerprint: fingerprintText(await this.latestAssistantText(page)) };
       }
       if (uploadPath) await this.upload(page, uploadPath);
       const before = currentTail;
@@ -102,7 +107,7 @@ export class ChatGptBrowser {
       await this.waitForPermanentConversationUrl(page);
       this.stderr.write('Waiting for ChatGPT response...\n');
       const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish });
-      return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false, responseFingerprint: fingerprintText(responseText) };
+      return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false, responseFingerprint: fingerprintText(await this.latestAssistantText(page)) };
     } catch (error) {
       error.conversationUrl = page.url();
       if (diagnosticsDir) await this.captureDiagnostics(page, diagnosticsDir, error).catch(() => {});
