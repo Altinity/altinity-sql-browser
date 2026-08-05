@@ -8,7 +8,7 @@
 // that env var themselves (this module has no side effect at import time).
 
 import { runCurrent } from './current-adapter.js';
-import { createOfficialConnection, runOfficial } from './official-adapter.js';
+import { createOfficialConnection, runOfficial, type OfficialConnection } from './official-adapter.js';
 import type { SpikeCredential } from './types.js';
 import type { PrecisionCase } from './expected-values.js';
 
@@ -31,12 +31,21 @@ export interface PrecisionCaseResult {
  * (or `null` for JSON null) alongside the independent expectation. A
  * capability-gated case whose query fails outright (e.g. `JSON` type absent
  * on an older server) is recorded with `skippedReason`, never silently
- * dropped or force-passed. */
+ * dropped or force-passed.
+ *
+ * `officialConn` (optional): reuse ONE pre-built `OfficialConnection` across
+ * every case in a corpus run instead of constructing a fresh client per
+ * case — matches the "one official client per connection config" invariant
+ * (plan §7/§11) for the whole-corpus caller (`live-precision.test.ts`),
+ * which passes the SAME connection for all ~40 cases. Omitted, this
+ * constructs one itself (kept as the default so this function still works
+ * standalone / from a REPL, matching its pre-existing signature). */
 export async function runPrecisionCase(
   kase: PrecisionCase,
   baseUrl: string,
   credential: SpikeCredential,
   realFetch: typeof fetch,
+  officialConn?: OfficialConnection,
 ): Promise<PrecisionCaseResult> {
   const sql = `SELECT ${kase.select}`;
   const base: Omit<PrecisionCaseResult, 'currentValue' | 'officialValue' | 'currentMatchesExpected' | 'officialMatchesExpected' | 'currentMatchesOfficial'> = {
@@ -63,7 +72,7 @@ export async function runPrecisionCase(
   }
 
   try {
-    const conn = createOfficialConnection(baseUrl, realFetch);
+    const conn = officialConn || createOfficialConnection(baseUrl, realFetch);
     const { outcome } = await runOfficial(conn, {
       sql, format: 'Table', credential, origin: 'same-origin', consume: 'rows', queryId: `precision-official-${kase.id}`,
     });

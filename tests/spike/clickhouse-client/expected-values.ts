@@ -41,10 +41,37 @@ export const PRECISION_CORPUS: PrecisionCase[] = [
   { id: 'int128-min', category: 'signed-integers', select: "CAST('-170141183460469231731687303715884105728' AS Int128) AS v", chType: 'Int128', expected: '-170141183460469231731687303715884105728', because: '-2^127, the documented Int128 minimum' },
   { id: 'int256-max', category: 'signed-integers', select: "CAST('57896044618658097711785492504343953926634992332820282019728792003956564819967' AS Int256) AS v", chType: 'Int256', expected: '57896044618658097711785492504343953926634992332820282019728792003956564819967', because: '2^255-1, the documented Int256 maximum' },
   // ── Decimals ───────────────────────────────────────────────────────────
-  { id: 'decimal32-trailing-zeros', category: 'decimals', select: "CAST('1.2000' AS Decimal32(4)) AS v", chType: 'Decimal32(4)', expected: '1.2000', because: 'Decimal serialization preserves declared scale, including trailing zeros' },
+  // CORRECTED against a real server by the live precision corpus
+  // (live-precision.test.ts, plan §17) — issue #585 Phase 0's
+  // support-minimum/live-matrix sub-task. The ORIGINAL literal expectation
+  // here ('1.2000') was authored from ClickHouse type documentation without
+  // ever running against a real server (exactly the gap plan §17 exists to
+  // close): a real server (verified on ClickHouse 26.6.2.160, and confirmed
+  // NOT format-specific — identical in TSV/JSON/Pretty/JSONStrings*) trims
+  // ALL trailing fractional zeros from a Decimal's text serialization
+  // regardless of its declared scale, for EVERY Decimal width (Decimal32
+  // through Decimal256, CAST-from-string, a numeric literal, and a real
+  // table column all agree) — the declared scale governs internal storage
+  // and rounding, not trailing-zero padding in text output. This case still
+  // proves what it always meant to (decimal round-trip fidelity survives
+  // normalization) — the id and select are kept so it is still the corpus's
+  // one case deliberately targeting a value WITH trailing zeros; only the
+  // expectation now matches verified reality.
+  { id: 'decimal32-trailing-zeros', category: 'decimals', select: "CAST('1.2000' AS Decimal32(4)) AS v", chType: 'Decimal32(4)', expected: '1.2', because: 'ClickHouse trims trailing fractional zeros from Decimal text serialization regardless of declared scale (verified live against 26.6.2.160 in TSV/JSON/Pretty/JSONStrings* alike) — declared scale governs rounding/storage, not zero-padding on output' },
   { id: 'decimal64-negative', category: 'decimals', select: "CAST('-123456789.123456' AS Decimal64(6)) AS v", chType: 'Decimal64(6)', expected: '-123456789.123456', because: 'authored literal, sign + scale preserved' },
   { id: 'decimal128-large', category: 'decimals', select: "CAST('123456789012345678901234.123456789012' AS Decimal128(12)) AS v", chType: 'Decimal128(12)', expected: '123456789012345678901234.123456789012', because: 'authored literal exceeding float64 precision' },
-  { id: 'decimal256-large', category: 'decimals', select: "CAST('12345678901234567890123456789012345678901234567890123456789012345678.1234567890123456789012345678901234567890' AS Decimal256(40)) AS v", chType: 'Decimal256(40)', expected: '12345678901234567890123456789012345678901234567890123456789012345678.1234567890123456789012345678901234567890', because: 'authored literal at Decimal256 scale' },
+  // CORRECTED against a real server (same live-precision.test.ts run as
+  // above): the ORIGINAL literal had 78 integer digits + 40 fractional
+  // digits = 118 total, far over Decimal256's documented 76-digit maximum
+  // total precision — a real server rejects it outright
+  // (Code: 69. ARGUMENT_OUT_OF_BOUND), which would otherwise abort the
+  // WHOLE corpus run before any other case's mismatch could even be
+  // observed (runPrecisionCase rethrows a non-capability-gated query
+  // error). Reduced to 28 integer + 40 fractional = 68 total digits — safely
+  // under the 76-digit ceiling — and deliberately ending in a non-zero
+  // fractional digit, so this case is unaffected by the trailing-zero
+  // trimming documented on decimal32-trailing-zeros above.
+  { id: 'decimal256-large', category: 'decimals', select: "CAST('1234567890123456789012345678.1234567890123456789012345678901234567891' AS Decimal256(40)) AS v", chType: 'Decimal256(40)', expected: '1234567890123456789012345678.1234567890123456789012345678901234567891', because: 'authored literal at Decimal256 scale, within its documented 76-digit total-precision ceiling (28 integer + 40 fractional = 68 digits) and verified round-trip-exact live against 26.6.2.160' },
   // ── Dates ──────────────────────────────────────────────────────────────
   { id: 'date-ordinary', category: 'dates', select: "CAST('2024-02-29' AS Date) AS v", chType: 'Date', expected: '2024-02-29', because: 'leap-day literal, ISO date serialization' },
   { id: 'date32-pre-epoch', category: 'dates', select: "CAST('1950-06-15' AS Date32) AS v", chType: 'Date32', expected: '1950-06-15', because: 'Date32 supports pre-1970 dates (documented range from 1900)' },
