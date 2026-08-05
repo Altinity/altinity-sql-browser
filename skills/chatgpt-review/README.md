@@ -16,7 +16,7 @@ The CLI submits one review, waits for ChatGPT to finish, and writes one complete
 | Pull request | Canonical GitHub PR URL and optional focused context | Posts a new PR comment by default; use `--no-publish` for a private review |
 | Issue | Canonical GitHub issue URL and optional focused context | Private by default; use `--publish` to post one issue comment |
 | Plan review | The exact plan file plus optional project/acceptance context | Never publishes |
-| Plan author | A canonical issue URL and delivery-contract context; revisions also upload the current plan | Never publishes |
+| Plan author | A canonical issue URL and delivery-contract context; revisions reference the plan you already wrote earlier in the same conversation, no re-upload | Never publishes |
 | Local changes | A generated text artifact containing selected Git diffs | Never publishes |
 
 PR follow-ups can reuse the same ChatGPT conversation. A PR session allows at most three passes: the initial review and two fix reviews. Each published pass creates a separately labelled comment rather than editing an earlier one.
@@ -141,8 +141,10 @@ node scripts/chatgpt-review.mjs plan-author \
 Keep the absolute output path unchanged. On the initial call ChatGPT is instructed to
 browse the issue, repository, `CLAUDE.md`, and relevant `skills/ship` references. To
 revise, retain the returned session and call the same command with `--session`; the CLI
-uploads a pass-numbered copy of the current canonical plan while retaining the canonical
-path as part of the session identity.
+sends a follow-up message in the same conversation pointing ChatGPT back at the plan it
+already wrote, rather than re-uploading it — a revision pass's prompt can already run to
+tens of KB of accumulated review context, and ChatGPT's own prior message is the same
+content anyway. The canonical output path stays part of the session identity regardless.
 
 The response protocol is strict: `PLAN_STATUS: READY` must contain exactly one non-empty
 Markdown plan between `<<<CHATGPT_PLAN_BEGIN>>>` and `<<<CHATGPT_PLAN_END>>>`, while

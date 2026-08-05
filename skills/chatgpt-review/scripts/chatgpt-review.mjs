@@ -121,12 +121,12 @@ async function prepare(options) {
     const targetMode = options.mode === 'plan-author' ? 'issue' : options.mode;
     const target = normalizeGithubTarget(options.target, targetMode);
     if (options.mode === 'plan-author') {
+      // No attachment: a revision pass is a follow-up message in the SAME conversation
+      // ChatGPT just wrote the plan in, so it already has the exact current text without
+      // one. Re-uploading it every pass only adds a redundant multi-tens-of-KB payload to
+      // an already-large composer fill (see the fillAndSend timeout fix).
       const planFile = path.resolve(options.outputFile);
-      let uploadPath;
-      if (options.session) {
-        try { await fs.access(planFile); uploadPath = planFile; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      }
-      return { target, targetIdentity: `plan-author:${target.identity}:${planFile}`, uploadPath };
+      return { target, targetIdentity: `plan-author:${target.identity}:${planFile}` };
     }
     return { target, targetIdentity: `${options.mode}:${target.identity}` };
   }

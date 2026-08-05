@@ -71,11 +71,9 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   assert.match(author, /Browse the issue, the actual repository, CLAUDE\.md/);
   assert.match(author, /PLAN_STATUS: READY/);
   assert.match(author, /Do not write anything to GitHub/);
-  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2, uploadName: 'plan-pass2.md' });
-  assert.match(revision, /current canonical plan is attached as plan-pass2\.md/);
-  const malformedRetry = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 });
-  assert.match(malformedRetry, /prior response.*did not produce a valid plan/);
-  assert.doesNotMatch(malformedRetry, /attached as (?:undefined|null)/);
+  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 });
+  assert.match(revision, /that you produced in your own most recent message above in this conversation/);
+  assert.doesNotMatch(revision, /attached as/);
   assert.match(buildPrompt({ mode: 'local', uploadName: 'local.diff' }), /only source for local-only state/);
 });
 
@@ -299,9 +297,12 @@ test('invalid plan-author revisions preserve the last valid plan and keep the se
   const records = new Map();
   const store = memoryStore(records, '00000000-0000-4000-8000-000000000012');
   const created = await store.create({ mode: 'plan-author', targetIdentity: `plan-author:o/r#8:${planFile}` });
-  const uploads = [];
+  const sessions = [];
   const driver = { async review(input) {
-    uploads.push({ name: path.basename(input.uploadPath), content: await fs.readFile(input.uploadPath, 'utf8'), session: input.session });
+    sessions.push(input.session);
+    // No attachment: a revision is a follow-up message in the SAME conversation, not a
+    // re-supplied file.
+    assert.equal(input.uploadPath, undefined);
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/revision' };
   } };
   const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', created.handle], { store, driver });
@@ -309,12 +310,10 @@ test('invalid plan-author revisions preserve the last valid plan and keep the se
   assert.equal(result.session, created.handle);
   assert.equal(result.pass_number, 1);
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Last valid plan\n');
-  assert.deepEqual(uploads.map((item) => item.name), ['canonical-pass1.md']);
-  assert.equal(uploads[0].content, '# Last valid plan\n');
-  assert.ok(uploads[0].session);
+  assert.ok(sessions[0]);
 });
 
-test('plan-author revisions keep the conversation and upload pass-numbered copies of the canonical plan', async (t) => {
+test('plan-author revisions reuse the conversation by session handle alone, without any attachment', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-passes-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const planFile = path.join(dir, 'canonical.md');
@@ -324,11 +323,7 @@ test('plan-author revisions keep the conversation and upload pass-numbered copie
   const store = memoryStore(records, '00000000-0000-4000-8000-000000000014');
   const calls = [];
   const driver = { async review(input) {
-    calls.push({
-      session: input.session?.handle ?? null,
-      uploadName: input.uploadPath ? path.basename(input.uploadPath) : null,
-      uploadContent: input.uploadPath ? await fs.readFile(input.uploadPath, 'utf8') : null,
-    });
+    calls.push({ session: input.session?.handle ?? null, uploadPath: input.uploadPath ?? null });
     const heading = calls.length === 1 ? 'Initial plan' : 'Replacement plan';
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# ${heading}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/same' };
   } };
@@ -338,13 +333,13 @@ test('plan-author revisions keep the conversation and upload pass-numbered copie
   assert.equal(result.session, handle);
   assert.equal(result.pass_number, 2);
   assert.deepEqual(calls, [
-    { session: null, uploadName: null, uploadContent: null },
-    { session: handle, uploadName: 'canonical-pass2.md', uploadContent: '# Initial plan\n' },
+    { session: null, uploadPath: null },
+    { session: handle, uploadPath: null },
   ]);
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Replacement plan\n');
 });
 
-test('plan-author timeout resumes the same conversation and uploads the canonical plan on retry', async (t) => {
+test('plan-author timeout resumes the same conversation on retry, without any attachment', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-timeout-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const planFile = path.join(dir, 'canonical.md');
@@ -360,7 +355,7 @@ test('plan-author timeout resumes the same conversation and uploads the canonica
     calls += 1;
     if (calls === 1) throw timeout;
     assert.ok(input.session);
-    assert.match(path.basename(input.uploadPath), /^canonical-pass1\.md$/);
+    assert.equal(input.uploadPath, undefined);
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Revised plan\n${PLAN_END}`, conversationUrl: timeout.conversationUrl };
   } };
   let result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver });
