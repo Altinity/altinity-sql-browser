@@ -65,7 +65,11 @@ creation, every `chatgpt-review` invocation, and the merge.
 code-review loop's fix-accepted-findings agent) uses `sonnet`. Planning/plan-authoring
 work uses `fable` at `effort: "high"` in the default planner mode. With
 `--planner chatgpt`, ChatGPT owns every plan draft and revision while Fable/high owns
-the read-only approval decision; Sonnet still verifies every substantive finding.
+the read-only approval decision. ChatGPT verifies Fable's own findings itself while
+revising — it is the plan's sole author and reviser, and it already performs this kind
+of live check unprompted (e.g. confirming an exact npm package version) — so this loop
+has no separate Sonnet fact-check pass on Fable's findings the way the default plan
+loop and the code review loop do on theirs.
 This split is wired into `references/plan-review-loop.workflow.mjs`,
 `references/chatgpt-plan-author-loop.workflow.mjs`, and
 `references/code-review-pass.workflow.mjs`; keep it there when editing those scripts.
@@ -89,10 +93,16 @@ This split is wired into `references/plan-review-loop.workflow.mjs`,
   authoring protocol plus schema-constrained Fable verdicts. Every loop's pass still
   counts against its cap.
 - **Every substantive finding is verified against the real repository before it is
-  trusted** — the loop workflows fan out one read-only verifier per finding; neither
-  ChatGPT nor Fable is a source of truth. Every finding ends in exactly one state:
-  accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop one —
-  the workflows return `accepted` and `rejected` lists; record them.
+  trusted, by whichever party owns the plan/PR being revised** — never the critic who
+  raised it. In the default plan loop and the code review loop that's a separate
+  read-only Sonnet verifier per finding, since Fable there is the reviewer of ChatGPT's
+  own PR/plan review; in the ChatGPT-author loop, ChatGPT itself (the plan's sole
+  author/reviser) verifies each Fable finding while revising, since Fable is read-only
+  and cannot confirm exact repository state. Either way, every finding ends in exactly
+  one state — accepted-and-fixed, rejected-with-reason, or unresolved — never silently
+  dropped: the default/code loops return `accepted` and `rejected` lists to record; the
+  ChatGPT-author loop's rejections land as `## Review responses` entries in the plan
+  itself, and a `needs_human` outcome there carries the round's raw `findings`.
 
 ### Output capture
 
@@ -250,18 +260,21 @@ mid-loop (footguns).
    ```
 
    ChatGPT privately authors a complete standalone plan through `plan-author`; Fable
-   at high effort reviews it read-only against the actual repository. Sonnet read-only
-   agents verify every substantive Fable finding. Accepted findings and evidence-backed
-   rebuttals are passed back to ChatGPT, which atomically replaces the canonical plan
-   with a complete revision in the same conversation. The workflow performs at most
-   five Fable review passes. ChatGPT alone owns drafts and revisions; Fable/high alone
-   owns approval.
+   at high effort reviews it read-only against the actual repository. Fable's raw
+   findings — labelled unverified, since Fable cannot confirm exact repository state —
+   are passed straight back to ChatGPT, which verifies each one itself (it already does
+   this kind of live check unprompted) and atomically replaces the canonical plan with
+   a complete revision in the same conversation, recording anything it rejects under
+   `## Review responses`. The workflow performs at most five Fable review passes.
+   ChatGPT alone owns drafts, revisions, and verifying findings against them; Fable/high
+   alone owns approval.
 3. `status: "approved"` → record the pass count and conversation URL for the ship log;
    proceed to 2.3.
 4. `status: "blocked"` → skip the unit and report the concrete missing decision; do
    not guess and do not treat this as a review-loop exhaustion.
 5. `status: "needs_human"` → **FULL STOP — human decision needed.** Present the latest
-   plan, the returned `contested` findings, and the conversation URL, and ask the
+   plan, the last pass's returned findings (`contested` from the default loop,
+   `findings` from the ChatGPT-author loop), and the conversation URL, and ask the
    human: approve the latest plan, redirect, or skip the unit. Write no code for this
    unit before that decision. (`status: "error"` → read the workflow journal, then
    re-invoke or stop.)
