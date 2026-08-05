@@ -1,14 +1,16 @@
-# The per-issue cycle — steps 2–5
+# The per-unit cycle
 
-Steps 2–5 of `/ship`. This is the **single source of truth** for how one unit of work
-(a whole issue, or one phase of one) gets built. The attended flow follows it directly;
-unattended workers are held to it verbatim. Change it here, never in a copy.
+The **single source of truth** for how one unit of work (a whole issue, or one phase of
+one) gets built. Workers are held to it verbatim; the coordinator flow that wraps it —
+worker spawning, both ChatGPT review loops, integration, and the merge gate — is
+`SKILL.md`. Change it here, never in a copy.
 
-Where this file says "the unit", read the delivery contract assembled in step 1: the
-implement list, the per-phase `## Tests` subsection, the acceptance gate, and the named
-subset of global acceptance criteria. `references/repo-footguns.md` applies throughout.
+Where this file says "the unit", read the delivery contract assembled in `SKILL.md`
+step 1: the implement list, the per-phase `## Tests` subsection, the acceptance gate,
+and the named subset of global acceptance criteria. `references/repo-footguns.md`
+applies throughout.
 
-## 2 — Plan
+## 1 — Plan
 
 **Always write the plan — nothing skips this, however small or well-specified.**
 Produce it before touching code. State:
@@ -25,10 +27,10 @@ Produce it before touching code. State:
 - **risk classification** (below);
 - **invariant map** for medium- and high-risk work (below).
 
-`STOP` — if the unit is ambiguous, under-specified, or needs a decision not already
-recorded (issue body / ADRs / CLAUDE.md), stop and ask. This is a settled-architecture
-project — don't invent decisions. (Unattended: skip the unit and report the missing
-decision instead.)
+If the unit is ambiguous, under-specified, or needs a decision not already recorded
+(issue body / ADRs / CLAUDE.md), do not invent one — return the missing decision
+instead of a plan; the coordinator skips the unit and reports it. This is a
+settled-architecture project.
 
 ### Risk classification
 
@@ -67,35 +69,19 @@ source of truth", "exhaustive", "never", or "exactly once" without showing how i
 enforced — a claim without enforcement is exactly what review rounds later discover as
 a defect, one relocation at a time.
 
-### Plan review budget
+### Plan review
 
-Do not stack overlapping plan reviews.
+Every plan — regardless of risk — goes through the coordinator-run ChatGPT plan review
+loop (`SKILL.md` step 2.2: exit on `VERDICT: APPROVED`, max 5 passes). The worker's
+part of the loop:
 
-- **Low:** none.
-- **Medium:** exactly one `chatgpt-review` plan-mode pass (procedure below), run by
-  default — cheap enough that a worker can invoke it directly even in unattended mode,
-  and it catches architecture gaps a solo planning pass misses. Skip only if ChatGPT is
-  unreachable (agent Chrome down, network denied); disclose the skip in the plan and
-  continue — same escape hatch High already has.
-- **High:** exactly one independent plan review. Choose **one**:
-  1. a read-only internal `Plan` agent (boundary stated), or
-  2. `chatgpt-review` in plan mode (procedure below).
+- write the plan to the exact file path the coordinator assigned, and return it;
+- on REVISE findings the coordinator relays, revise that file **in place** — the path
+  is the review-session identity (footguns) — and return again;
+- never invoke `chatgpt-review` yourself, and write no code before the coordinator
+  reports the plan approved.
 
-  Prefer ChatGPT plan review for especially uncertain, externally constrained, or
-  unattended work; prefer the internal Plan agent when repository context suffices.
-
-**`chatgpt-review` plan-mode procedure:** write the complete plan to a file under the
-approved temporary directory, the contract/acceptance subset/focused questions to a
-context file, then
-`node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file> --question-file <context-file>`.
-It uploads exactly the plan file and cannot request a GitHub write, so a worker may run
-it directly even in unattended mode. Verify every substantive claim against the real
-repo before folding it in.
-
-For attended high-risk work, `STOP`: post the revised plan and wait for approval
-(reviewed on mobile — keep it self-contained).
-
-## 3 — Implement (inner loop)
+## 2 — Implement (inner loop)
 
 Write the code **and its tests in the same change** (hard rule 1).
 
@@ -143,14 +129,14 @@ A sabotage that everything survives means the invariant is unenforced — fix th
 enforcement, not the test. Restore sabotaged uncommitted files from saved bytes, never
 with `git checkout --` (it deletes uncommitted fixes).
 
-## 4 — Author-side readiness review
+## 3 — Author-side readiness review
 
-Internal review prepares the PR for external review. It is not a ritual and must not
-duplicate the ChatGPT review.
+Internal review prepares the branch for external review. It is not a ritual and must
+not duplicate the ChatGPT code review.
 
 ### Readiness checklist
 
-Before opening a PR, verify:
+Before handing the unit back, verify:
 
 1. Every contract item maps to code or a test.
 2. Every invariant has enforcement and a sabotage case.
@@ -211,12 +197,13 @@ If two review rounds find variants of one root cause, revise the invariant map b
 writing another fix. Fixes that relocate a defect are how a one-pass review becomes
 four.
 
-## 5 — Reconcile (before the PR — and before certification)
+## 4 — Reconcile (before the PR — and before certification)
 
-Every commit this step produces must land **now**: a post-certification commit voids
-the exact-head review and burns another pass.
+Every commit this step produces must land **before the PR is certified**: a
+post-certification commit voids the exact-head review and burns another pass.
 
-- Update `CHANGELOG.md` under `[Unreleased]` when required.
+- Update `CHANGELOG.md` under `[Unreleased]` when required (the worker writes its own
+  unit's entry; the coordinator dedupes across units).
 - Update the relevant ADR addendum for architecture changes.
 - Reconcile the issue's Goal/Acceptance text when implementation deliberately changed it.
 - Close or reconcile superseded issues — when the unit that owns that result lands, not
@@ -224,20 +211,18 @@ the exact-head review and burns another pass.
 - Out-of-scope bug or footgun spotted → a **separate** issue labelled `inbox`
   (file:line + why deferred); never fold it into this PR.
 
-### The ship log — write it BEFORE the approval/merge stage
+### The ship log — coordinator-owned, written before the PR
 
-For a multi-phase issue this is the **handoff**, not bookkeeping. The next phase runs
-in a cleared session that knows nothing about this one — decisions taken under
-ambiguity, deviations, why a test is shaped the way it is. If that only lives in the
-conversation, `/clear` destroys it and the next phase re-derives it wrong.
+Workers never touch it. For a multi-phase issue this is the **handoff**, not
+bookkeeping: later units run in fresh worker contexts that know nothing about this one
+— decisions taken under ambiguity, deviations, why a test is shaped the way it is. If
+that only lives in a conversation, it is lost and the next unit re-derives it wrong.
 
 Maintain exactly one comment on the issue, in this format:
 
 ```markdown
 <!-- ship-log -->
 ## Ship log — #<ISSUE>
-
-Branch model: one PR per phase off `main`   <!-- or: single integration branch -->
 
 | Phase | Status | PR |
 |---|---|---|
@@ -251,6 +236,7 @@ Branch model: one PR per phase off `main`   <!-- or: single integration branch -
 - **Deviations from the spec** and why: …
 - **Deferred acceptance criteria:** bullets 5, 6, 9 → phase 2
 - **Follow-ups filed:** #453 (`inbox`)
+- **Plan review:** approved on pass <n>, conversation <url>
 - **Review outcome:** certified head <sha> / findings accepted-rejected-unresolved
 ```
 

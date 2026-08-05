@@ -52,9 +52,10 @@ verification.
 - Preserve user-owned dirty-tree changes.
 - Track planned work in GitHub issues, not internal files under published `docs/`.
 - File high-signal out-of-scope bugs with the `inbox` label.
-- In attended `/ship`, ask for explicit merge approval, then the same session may
-  merge the PR. In explicit unattended mode, do not ask: auto-merge only after a
-  clean third ChatGPT pass at the current head and green required checks.
+- `/ship` never asks to merge on success: it auto-merges once a certified ChatGPT
+  review exists at the exact PR head with required checks green. It stops for a
+  human decision only when a review loop exhausts its passes (5 for plans, 3 for
+  code) or another merge proof condition fails.
 - Save genuinely surprising environment/test friction as project memory.
 
 Canonical source: [`CLAUDE.md`](../CLAUDE.md),

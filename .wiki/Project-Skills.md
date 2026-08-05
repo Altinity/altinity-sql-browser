@@ -5,12 +5,15 @@ Back to [[Home]]. Related: [[Development-Workflow]], [[Operations-Memory]].
 The canonical project skills are tracked under the repo-root **`skills/`**
 directory (promoted from `.claude/skills` 2026-07-30, #b4cd83b):
 
-- `ship` — plan, implement, test, review, reconcile, and open a PR for one issue.
-  Attended runs ask before merging and may perform the approved merge; unattended
-  runs have no merge prompt and auto-merge only after a clean third ChatGPT pass
-  at the current head plus green CI. Multi-phase attended work uses one PR per
-  phase; the old separate `ship-phase` skill now just forwards to `/ship`.
-- `ship-phase` — deprecated alias that forwards to `/ship <issue> unattended`.
+- `ship` — autonomously deliver one or more issues/phases: a coordinator spawns a
+  fresh worker per unit, iterates each unit's plan through a ChatGPT review loop
+  to approval (max 5 passes), integrates the implementation onto one branch,
+  opens one PR, and iterates a ChatGPT code review loop to certification (max 3
+  passes). It auto-merges without asking when every proof condition holds
+  (certified head at the exact PR SHA, green required checks, branch protection
+  permits) and stops for a human decision only when a review loop exhausts its
+  passes or a merge proof fails. The old attended/unattended split and the
+  separate `ship-phase` alias were removed 2026-08-05.
 - `sql-browser-dashboard` — turns an already-known SQL/result-column
   investigation into a validated `PortableBundleV2` Dashboard bundle and
   publishes it through the `save_dashboard` MCP tool (or leaves it as a
@@ -33,13 +36,14 @@ copies:
 ```
 
 Keep `skills/` canonical. Edit each skill once there; do not replace the
-symlinks with copies. `ship`/`ship-phase` can mutate git/GitHub and are only to
-be invoked when explicitly requested.
+symlinks with copies. `ship` can mutate git/GitHub and is only to be invoked
+when explicitly requested.
 
 The skill instructions also require isolation for concurrent shipping, full unit
 and build gates, explicit read-only boundaries for review helpers, and reconciliation
-of roadmap/ADR/changelog. Automatic merge is limited to explicit unattended runs
-that satisfy the three-pass review and current-head CI proof.
+of roadmap/ADR/changelog. `/ship` merges automatically only when a certified
+ChatGPT review exists at the exact PR head with required checks green; any
+failed proof condition halts for a human decision instead.
 
 ## Local-only development skills
 
@@ -51,7 +55,7 @@ Some skills are **vendored dev tools kept local, not committed** to the repo:
   docs are tracked. Install it locally to run `/impeccable`; nothing in CI or
   the shipped artifact depends on it.
 
-Rule: `ship`, `ship-phase`, `chatgpt-review`, and `sql-browser-dashboard`
+Rule: `ship`, `chatgpt-review`, and `sql-browser-dashboard`
 (project workflow skills) are committed under `skills/`. Large general-purpose
 skills like `impeccable` stay local and are documented here. The old global
 instruction-only `chatgpt-review` is retained as a recoverable timestamped
