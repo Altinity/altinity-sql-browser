@@ -15,6 +15,11 @@ export const SELECTORS = Object.freeze({
   send: ['[data-testid="send-button"]', 'button[aria-label*="Send"]', 'button[type="submit"]'],
   fileInput: ['input[type="file"]'],
   assistant: ['[data-message-author-role="assistant"]'],
+  // The assistant turn's own action row is an accessible group distinct from the user
+  // turn's "Your message actions" group — scoping to it (rather than a page-wide
+  // querySelector) is what keeps this from grabbing the wrong turn's copy control.
+  responseActions: ['[role="group"][aria-label="Response actions" i]'],
+  responseCopyButton: ['[data-testid="copy-turn-action-button"]', 'button[aria-label*="Copy" i]'],
   stop: ['[data-testid="stop-button"]', 'button[aria-label*="Stop"]'],
   continue: ['button:has-text("Continue generating")', 'button:has-text("Continue")'],
   responseActions: ['button[aria-label*="Good response"]', 'button[aria-label*="Bad response"]', 'button[aria-label*="Copy"]'],
@@ -130,7 +135,16 @@ export class ChatGptBrowser {
   async fillAndSend(page, prompt) {
     const composer = await firstVisible(page, SELECTORS.composer);
     if (!composer) throw new ReviewError('ui_incompatible', 'ChatGPT composer disappeared before submission');
-    await composer.fill(prompt);
+    // A very long prior response can leave the page mid-reflow/virtualization for a
+    // while after it looks visible, so a single .fill() can hit Playwright's own
+    // actionability timeout even though assertReady just confirmed visibility. Retry
+    // the fill a few times rather than fail the whole pass on that transient busy state.
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try { await composer.fill(prompt); lastError = null; break; }
+      catch (error) { lastError = error; await this.sleep(2000); }
+    }
+    if (lastError) throw lastError;
     const send = await firstVisible(page, SELECTORS.send);
     if (send) await send.click();
     else await composer.press('Enter');
@@ -149,6 +163,36 @@ export class ChatGptBrowser {
     const messages = page.locator(SELECTORS.assistant[0]);
     const count = await messages.count();
     return count ? (await messages.nth(count - 1).innerText()).trim() : '';
+  }
+
+  // .innerText() on the rendered message strips Markdown syntax entirely (a heading
+  // renders as an <h1>-<h6> with no literal '#', a code span as styled text with no
+  // literal backtick), so any caller that needs the actual Markdown source — notably
+  // plan-author's heading/delimiter validation — cannot use it. ChatGPT's own "Copy
+  // message" control on the response's action row copies the raw Markdown to the
+  // system clipboard; this reads that back. Best-effort: returns null on anything
+  // that goes wrong (no such button, permission denial, or the read simply taking
+  // too long) so callers can fall back to the innerText tail instead of failing or,
+  // worse, hanging on an unattended native clipboard-permission prompt.
+  async copyLatestAssistantMarkdown(page) {
+    try {
+      const group = page.locator(SELECTORS.responseActions[0]).last();
+      if (!(await group.count().catch(() => 0))) return null;
+      const button = group.locator(SELECTORS.responseCopyButton[0]).first();
+      if (!(await button.count().catch(() => 0))) return null;
+      const context = this.browser.contexts()[0];
+      await context?.grantPermissions?.(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })?.catch(() => {});
+      await button.click();
+      await this.sleep(150);
+      // Attach the fallback race in this order — read's rejection handler attached
+      // before bailAfter is even constructed — so a same-tick resolution (as in tests
+      // with a synchronous fake clock) resolves via the real read, not the timeout,
+      // while a genuinely hung clipboard permission prompt still bails after 4s.
+      const read = page.evaluate(() => navigator.clipboard.readText()).catch(() => null);
+      const bailAfter = this.sleep(4000).then(() => null);
+      const text = await Promise.race([read, bailAfter]);
+      return text || null;
+    } catch { return null; }
   }
 
   async waitForCompletion(page, { before, timeoutMs, target, publish }) {
@@ -196,7 +240,10 @@ export class ChatGptBrowser {
       const generating = await anyVisible(page, SELECTORS.stop);
       if (text && text === lastText) stableSince ??= this.now();
       else { lastText = text; stableSince = text ? this.now() : null; }
-      if (text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) return text;
+      if (text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) {
+        const markdown = await this.copyLatestAssistantMarkdown(page);
+        return markdown || text;
+      }
       await this.sleep(this.pollMs);
     }
     throw new ReviewError('timed_out', 'Timed out before ChatGPT produced a stable completed response', lastText);
