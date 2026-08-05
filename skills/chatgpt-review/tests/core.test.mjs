@@ -184,6 +184,16 @@ test('plan-author response parser tolerates a trailing web-search citation footn
   assert.deepEqual(parsePlanAuthorResponse(withFootnote), { planStatus: 'ready', plan: '# Plan\n\nBody\n', blocker: null });
 });
 
+test('plan-author response parser tolerates PLAN_END landing indented at the end of a nested list item', () => {
+  // Reproduced live on issue #585 phase 0's pass-3 revision: PLAN_END was the last line of
+  // a nested Markdown bullet and copied with two spaces of list indentation still attached
+  // ("  <<<CHATGPT_PLAN_END>>>"), which the old exact-line-start regex rejected outright.
+  const indented = `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Plan\n\n* item\n  * nested, ending the plan\n  ${PLAN_END}`;
+  assert.deepEqual(parsePlanAuthorResponse(indented), {
+    planStatus: 'ready', plan: '# Plan\n\n* item\n  * nested, ending the plan\n', blocker: null,
+  });
+});
+
 test('plan-author response parser rejects missing, duplicate, empty, and malformed protocols', () => {
   const invalid = [
     `PLAN_STATUS: READY\n# no markers`,
