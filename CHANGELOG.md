@@ -165,6 +165,88 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `refreshWorkspaceFromStore` are gone from the flat `App` bag (repointed to
   `app.nav.*`/`app.workspaceSession.*` at every production consumer); `App`
   gains `nav`/`workspaceSession`.
+- **Extracted `dashboardRepaintPlan` + `createTileGestureController` out of
+  `renderDashboard`'s closure** (#589, phase 5 of the #593 refactor umbrella,
+  3 waves plus 3 rounds of ChatGPT-review fixes; zero functional change).
+  `dashboard.ts` shrank from 3,228 to 2,772 lines (-456, -14.1%) — the wave-3
+  measurement was -509, but a subsequent correctness fix (restoring
+  compute/apply interleaving across all six repaint decisions so a throw
+  computing a later decision can never strand an earlier one's already-decided
+  side effect, exactly matching pre-extraction ordering) added back ~53 lines
+  of explicit per-decision orchestration, landing below AC4's ~500–700-line
+  target. Reported honestly rather than restated to fit the band; the optional
+  tile-chrome extraction stays out of scope for this issue regardless.
+  - **Wave 1** — the repaint-decision logic that used to live as a pile of
+    private `let` signature caches inside `renderDashboard`'s `effect()`
+    callback now lives in `src/dashboard/application/dashboard-repaint-plan.ts`
+    (`dashboardRepaintPlan`/`seedRepaintMemo`/`dashboardPersistBag`/
+    `valueString`, moved verbatim) — pure, no DOM/signals imports, 100%
+    covered. `dashboard.ts` asks it what to do each publish and commits the
+    returned signatures onto one real `RepaintMemo` object **field-by-field,
+    at the exact point each corresponding side effect runs** (never batched up
+    front), preserving the pre-extraction partial-failure semantics: if one
+    applier throws (e.g. the variable-persist save seam), only the memo fields
+    whose side effects actually ran advance, and a later publish still owes
+    whatever didn't complete. The grid-drag-cancel path's direct
+    `lastGridSig = ''` signature reset is replaced by an explicit
+    `gridStructureInvalidationRev` counter the planner alone consumes, rather
+    than any code outside it reasoning about a raw signature value.
+    (ChatGPT-review follow-up: the module is decomposed into six granular
+    pure functions — `planRepublishFlow`/`planBarRebuild`/`planOptionsPush`/
+    `planLabelRefresh`/`planPersist`/`planStructuralRebuild` — one per
+    decision, so `dashboard.ts` can compute-and-apply each one immediately
+    before computing the next, matching pre-extraction ordering exactly. The
+    `dashboardRepaintPlan` composition above remains as a directly-tested
+    convenience surface; production calls the six functions directly. A
+    dedicated test proves the two stay equivalent.)
+  - **Wave 2** — `wireTileDrag`/`wireGridResize`/the modifier-cue install (the
+    Dashboard's corner-drag resize, Command/Ctrl-drag reorder, and ⌘/Ctrl
+    modifier cue) now live in `src/ui/dashboard-tile-gestures.ts` behind an
+    injected `TileGestureDeps` seam (document/grid/runCommand/activeEngine/
+    currentStyle/gridColumns/gridPlacement/measuredGridWidth/tileOrder/
+    renderedSurface/scrollHost/invalidateGridStructure); `dashboard.ts`
+    constructs one fresh controller per render and calls
+    `gestures.wireTileDrag`/`gestures.wireGridResize`/
+    `gestures.installModifierCue` from the same call sites the pre-extraction
+    functions were. Deliberately preserves — not "fixes" — two pre-existing
+    latent defects a naive reading of "one gesture at a time" would not
+    expect, both filed to the `inbox` for separate follow-up: (A) mixed
+    drag/resize concurrency — a resize has no cross-gesture guard against an
+    active drag (or vice versa) and no dedicated resize-vs-resize guard
+    either; the shared "currently cancellable gesture" slot is last-writer-wins
+    and self-clearing; neither gesture filters its window
+    `pointermove`/`pointerup` listeners by `pointerId`; (B) a drag snapshots
+    the active engine ONCE at pointerdown into its reflow-path choice while
+    its rendered-surface lookups keep reading the engine live for the rest of
+    that same gesture, so the two can disagree after a mid-drag engine flip.
+    Filed as #606 and #607 respectively. `tests/unit/dashboard.test.ts`
+    gained a dedicated "tile gesture concurrency characterization" suite
+    pinning both down;
+    `tests/unit/dashboard-tile-gestures.test.ts` covers the extracted module
+    directly (100/100/97.74/100 stmts/funcs/branches/lines).
+  - **Wave 3** — migrated `dashboard.test.ts`'s DOM-simulation gesture/resize-
+    cancel mechanics assertions onto the waves 1–2 direct unit tests now that
+    they cover the same ground more thoroughly: fully redundant blocks
+    (no-arm/non-primary-press/action-chrome/display:contents gating, the
+    modkey keydown/keyup/blur toggle, the flow point-hit-test drop-target
+    mechanics, the pointercancel/blur/Escape/lostpointercapture resize-cancel
+    variants, the grid clamp-to-columns-remaining math, the mid-drag
+    floating/placeholder mechanics) were deleted outright; a handful were
+    thinned to the one "production wiring" case per behavior the plan calls
+    for (a real ⌘/Ctrl drag persists a reorder through `app.workspace.commit`;
+    a real resize persists placement and survives reconciliation; a route
+    rerender's teardown hook — not `dispose()` directly — cancels an in-flight
+    gesture). Nothing with unique production-only value was touched: KPI-band
+    regrouping, Full-view/fixed-width persistence round-trips, the real-browser
+    placeholder/FLIP regressions, and the full `#338` auto-scroll suite (topbar
+    offset, flow-engine interplay, scroll-frame-only recompute) all stay, since
+    none of it is redundant with the new modules' isolated-DOM unit tests.
+    Net result: `dashboard.test.ts` closes at 6,484 lines — 3 lines *below*
+    its 6,487-line pre-Wave-1 baseline, net of the +205 lines waves 1–2 added
+    for the new modules' own characterization/consumption tests (i.e. wave 3
+    retired ~208 lines of assertions the direct unit tests now make
+    redundant) — satisfying AC5, with the full suite still green at the
+    100/95/90/100 per-file coverage floors.
 
 ### Changed
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent

@@ -27,7 +27,13 @@ wires up: workspace persistence/cross-tab sync
 navigation (`src/application/surface-navigation.js`), the Workbench variable
 strip (`src/ui/workbench/variable-strip.js`), and the save/conflict cluster
 (`src/ui/workbench/save-controller.js`) — `src/application/*` may never import
-`src/ui/`, mechanically enforced by `build/check-boundaries.mjs`.
+`src/ui/`, mechanically enforced by `build/check-boundaries.mjs`. The
+Dashboard's own render module (`src/ui/dashboard.js`, `renderDashboard`)
+follows the same pattern at a smaller scale: its repaint-decision logic is the
+pure `src/dashboard/application/dashboard-repaint-plan.js`, and its pointer-
+gesture handling (corner-drag resize, Command/Ctrl-drag reorder, modifier cue)
+is `src/ui/dashboard-tile-gestures.js`'s `createTileGestureController`, built
+fresh per render behind an injected `TileGestureDeps` seam (#589).
 
 ## Side-effect seams
 

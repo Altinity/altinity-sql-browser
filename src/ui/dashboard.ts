@@ -37,10 +37,6 @@ import { flashToast } from './toast.js';
 import { renderResolvedPanel } from './panels.js';
 import { openCellDetail } from './results.js';
 import type { ResultsApp } from './results.js';
-import { movedPastThreshold, hitTestTile, resolveOverlapInsertIndex, flipDelta } from '../core/tile-reorder.js';
-import type { TileRect } from '../core/tile-reorder.js';
-import { createDragAutoScroll } from '../core/dashboard-autoscroll.js';
-import type { DragAutoScrollController, DragAutoScrollTarget, FrameScheduler } from '../core/dashboard-autoscroll.js';
 import { isQuerylessPanel, resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
@@ -61,21 +57,27 @@ import type { DashboardTimeRangeGroup, TimeRangeRecent } from '../core/time-rang
 import { chartColors } from '../core/chart-data.js';
 import { createDashboardChartInteractionController } from './dashboard-chart-interaction.js';
 import type { DashboardChartInteractionController } from './dashboard-chart-interaction.js';
+import { createTileGestureController } from './dashboard-tile-gestures.js';
+import type { TileGestureController } from './dashboard-tile-gestures.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
-  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState, ViewerVariableState,
+  DashboardViewerSession, DashboardViewState, DashboardStyle, ViewerTileState,
   ViewerVariableOption,
 } from '../dashboard/application/dashboard-viewer-session.js';
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
 import {
-  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, GRID_HEIGHT_UNIT_MAX, GRID_HEIGHT_UNIT_MIN,
-  contentBoxWidth, gridHeightUnitsToPx, gridPlacementAt, snapGridHeight, snapGridSpan, stylePlacementAt,
+  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS,
+  contentBoxWidth, gridHeightUnitsToPx, gridPlacementAt, stylePlacementAt,
 } from '../dashboard/layouts/grafana-grid-layout.js';
-import type { AuthoredDashboardStyle } from '../dashboard/layouts/grafana-grid-layout.js';
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
+import {
+  seedRepaintMemo, valueString,
+  planRepublishFlow, planBarRebuild, planOptionsPush, planLabelRefresh, planPersist, planStructuralRebuild,
+} from '../dashboard/application/dashboard-repaint-plan.js';
+import type { RepaintMemo } from '../dashboard/application/dashboard-repaint-plan.js';
 import { canWidenPanel, nextPanelPlacement, widenLabel } from '../dashboard/application/panel-widen.js';
 import { panelTileActions } from '../dashboard/application/panel-tile-actions.js';
 import type { PanelTileAction, PanelTileActionKind } from '../dashboard/application/panel-tile-actions.js';
@@ -98,7 +100,7 @@ import { withPendingFocus } from '../application/main-surface.js';
 import type { DashboardFocusOutcome } from './shortcuts.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import {
-  readDashboardVariableBag, writeDashboardVariableBag, variableBagSignature,
+  readDashboardVariableBag, writeDashboardVariableBag,
 } from '../dashboard/model/dashboard-variable-store.js';
 import type { DashboardVariableBag } from '../dashboard/model/dashboard-variable-store.js';
 import { loadJSON } from '../core/storage.js';
@@ -241,16 +243,6 @@ export interface DashboardApp {
   prefs: Pick<AppPreferences, 'save'>;
 }
 
-const valueString = (value: unknown): string =>
-  (typeof value === 'string' ? value : value == null ? '' : String(value));
-
-/** #189: an array-safe stand-in for `valueString`, used ONLY by the variable-bar
- *  rebuild signature below — an array JSON-encodes (so a committed
- *  `['a','b']` is distinct from the joined string `"a,b"`, which
- *  `valueString`'s `String()` fallback would otherwise collapse it to);
- *  every other value keeps `valueString`'s own coercion, unchanged. */
-const sigValue = (value: unknown): string => (Array.isArray(value) ? JSON.stringify(value) : valueString(value));
-
 /** #291 review F4: `renderDashboard` can run more than once against the SAME
  *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
  *  an import-commit while already on `/dashboard` (file-menu.ts's Import
@@ -259,16 +251,17 @@ const sigValue = (value: unknown): string => (Array.isArray(value) ? JSON.string
  *  stack listeners that all still close over their own render's now-stale
  *  `session`/`currentDoc`/`containerWidthPx`. */
 let installedGridResizeListener: { win: Window; handler: () => void } | null = null;
-// #332: the window-level ⌘/Ctrl-held cursor-affordance listeners (mirrors the
-// grid-resize listener's teardown model — removed at the START of the next
-// renderDashboard call, since this module never observes page teardown).
-let installedModifierListeners:
-  | { win: Window; onKeyDown: (e: KeyboardEvent) => void; onKeyUp: (e: KeyboardEvent) => void; onBlur: () => void }
-  | null = null;
-// An in-flight move owns window/document listeners and pointer capture. A new
-// route render must cancel it before replacing the page so no stale gesture can
-// commit into the newly-rendered Dashboard.
-let installedGestureCancel: (() => void) | null = null;
+// #589 wave 2: the ⌘/Ctrl modifier-cue listeners and the in-flight-gesture
+// cancel hook (an in-flight move/resize owns window/document listeners and
+// pointer capture; a new route render must cancel it before replacing the
+// page so no stale gesture can commit into the newly-rendered Dashboard) both
+// used to be separate module-level teardown slots here. Both now live inside
+// `createTileGestureController` (dashboard-tile-gestures.ts), which owns that
+// state internally — this is the one handle `disposeDashboardSurface` needs to
+// tear the whole thing down, mirroring the grid-resize listener's own
+// removed-at-the-START-of-the-next-`renderDashboard`-call teardown model
+// (this module never observes page teardown).
+let installedTileGestures: TileGestureController | null = null;
 let installedDashboardChartInteraction: DashboardChartInteractionController | null = null;
 let installedDashboardCleanup: (() => void) | null = null;
 // #425: the shell-owned host this surface last rendered into. The host itself
@@ -291,14 +284,8 @@ export function disposeDashboardSurface(): void {
     installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
     installedGridResizeListener = null;
   }
-  if (installedModifierListeners) {
-    const m = installedModifierListeners;
-    m.win.removeEventListener('keydown', m.onKeyDown);
-    m.win.removeEventListener('keyup', m.onKeyUp);
-    m.win.removeEventListener('blur', m.onBlur);
-    installedModifierListeners = null;
-  }
-  if (installedGestureCancel) installedGestureCancel();
+  installedTileGestures?.dispose();
+  installedTileGestures = null;
   installedDashboardCleanup?.();
   installedDashboardCleanup = null;
   installedNavHighlightClear?.();
@@ -1361,20 +1348,11 @@ export async function renderDashboard(
   // Flow KPI tiles do not render their cached `.dash-tile` card. Their
   // `.dash-kpi-member` host is the structural/movement surface instead.
   const flowKpiHosts = new Map<string, HTMLElement>();
-  // #332: the origin card of a just-completed move whose synthesized click must be
-  // swallowed once (see wireTileDrag). Module-to-gesture, not per-card.
-  //
-  // #471: the arming now EXPIRES on its own (see `onUp`). `onUp` cannot know whether
-  // a click will follow — only a release back over the origin card produces one — so
-  // before this the flag could stay armed indefinitely after a cross-tile or
-  // empty-space release and eat an unrelated later click on that card. Clearing it on
-  // the next pointerdown was not enough: a KEYBOARD activation (Enter/Space on a tile
-  // action) dispatches a click with NO pointer event before it, so the very first
-  // keyboard press after such a drag did nothing at all.
-  let clickSuppressCard: HTMLElement | null = null;
-  // #332: at most one tile-drag gesture at a time — a second pointerdown while
-  // one is armed is ignored, so two live listener sets can't cross-contaminate.
-  let gestureActive = false;
+  // #589 wave 2: the click-suppress flag (#332/#471), the drag-armed flag
+  // (renamed `dragActive` in its new home — it never implied controller-wide
+  // mutual exclusion, only "one drag at a time"), and the ⌘/Ctrl modifier-held
+  // flag below all now live inside `createTileGestureController`
+  // (dashboard-tile-gestures.ts), which `gestures` (constructed below) owns.
   // #291: which engine is active as of the last publish — read by the grid-
   // only resize handler (built once per tile in `ensureTileEl`, below, and
   // cached across engine switches) so a cached card's grid chrome stays
@@ -1393,9 +1371,6 @@ export async function renderDashboard(
   // removal hands its focus to comes from here (`neighbourTileId`). Empty until the
   // first publish, which is also the earliest a removal can be triggered.
   let publishedTileIds: string[] = [];
-  // Retained from the window keyboard stream because WebKit may omit a held
-  // Control key from a subsequent pointer event.
-  let reorderModifierHeld = false;
   // The tile's LAST rendered grid placement (span/height/colStart) — read at
   // the start of a corner-drag so the drag continues from the actual
   // rendered values, not a stale/default guess. `colStart` (#291 review F3)
@@ -1408,14 +1383,6 @@ export async function renderDashboard(
   // default before the first grid publish (never read before one, same
   // reasoning as `activeEngine` above).
   let currentGridColumns = GRAFANA_GRID_MAX_COLUMNS;
-
-  // #291 height-units follow-up: height is a direct inline px style (from
-  // numeric row units, `gridHeightUnitsToPx`), NOT a `.dash-gg-h-*` class —
-  // there is no fixed tier vocabulary left to enumerate as CSS classes once
-  // height is a 1..16 numeric range.
-  function setGridHeightPx(card: HTMLElement, heightUnits: number): void {
-    card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
-  }
 
   // #321: the resize handle's accessible label/title reflects the CURRENT
   // render mode ('tiles' = two-dimensional resize, 'full' = vertical-only) —
@@ -1532,459 +1499,12 @@ export async function renderDashboard(
     btn.setAttribute('aria-label', label + ': ' + ts.title);
   }
 
-  // #291 corner-drag resize (Workbench edit mode + grafana-grid engine only):
-  // pointer math stays a THIN adapter over the pure `snapGridSpan`/
-  // `snapGridHeight` (grafana-grid-layout.ts, rule 5) — live preview via
-  // inline style/class during the drag, one `update-placement` dispatch on
-  // pointerup. A no-op while flow is active (`activeEngine` guard) even
-  // though the handle DOM always exists once built (CSS hides it under the
-  // ancestor `.dash-gg-grid` scope; this is the interaction-level backstop).
-  //
-  // #291 review F3 (pin-during-drag): the tile is PINNED to an explicit
-  // `grid-column: ${colStart+1} / span N` for the whole gesture, rather than
-  // just `span N` (which lets the browser's own auto-placement re-decide the
-  // tile's position on every span change). Without the pin, growing the span
-  // mid-drag could make the tile SELF-WRAP to a new row via auto-placement —
-  // after which `rect` (captured once at pointerdown) no longer describes the
-  // tile's actual position, so every subsequent snap — including the FINAL
-  // persisted one at pointerup — was measured against a stale rect. Pinning
-  // means the tile can never move mid-drag, so `rect` stays valid throughout.
-  // The tradeoff: an explicit start means a span that overflows the columns
-  // remaining at THIS start would demand phantom implicit tracks (the same
-  // overflow failure mode as F1) instead of wrapping — so both the live
-  // preview and the persisted span are clamped to `columns - colStart` for
-  // the gesture. Widening further than that needs a second drag after the
-  // next repack (deterministic beats a jumpy mid-drag reflow).
-  // Full/Report vertical-only resize: each style has a fixed effective width,
-  // so horizontal pointer movement is
-  // ignored entirely (no `grid-column` re-pin: the card IS full width, there
-  // is no sub-span to preview), and the pointerup dispatch re-sends the
-  // update writes only that style's `{height}` map. Grid keeps the two-axis
-  // resize and its independent `{span,height}` map.
-  function wireGridResize(tileId: string, handle: HTMLElement, card: HTMLElement): void {
-    handle.addEventListener('pointerdown', (event: Event) => {
-      if (activeEngine !== 'grafana-grid') return;
-      const start = event as PointerEvent;
-      if (start.button !== 0) return;
-      start.preventDefault();
-      start.stopPropagation(); // never let the resize handle start a card drag
-      const fixedWidth = currentDashboardStyle === 'full' || currentDashboardStyle === 'report';
-      if (currentDashboardStyle === 'columns-2' || currentDashboardStyle === 'columns-3') return;
-      const columns = Math.max(1, currentGridColumns);
-      const placement = gridPlacementByTile.get(tileId);
-      const colStart = placement ? placement.colStart : 0;
-      const persistedSpan = placement ? placement.persistedSpan : columns;
-      // The columns actually available at this tile's pinned start — the
-      // clamp ceiling for both the live preview and the persisted span
-      // (tiles mode only — full view never touches span).
-      const maxSpan = Math.max(1, columns - colStart);
-      let curSpan = Math.min(placement ? placement.span : columns, maxSpan);
-      let curHeight = placement ? placement.heightUnits : DEFAULT_GRID_HEIGHT_UNITS;
-      const savedGridColumn = card.style.gridColumn;
-      const savedHeight = card.style.height;
-      if (!fixedWidth) card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
-      const rect = card.getBoundingClientRect();
-      const colWidthPx = (measuredGridWidth() - GRID_GAP_PX * (columns - 1)) / columns;
-      card.classList.add('dash-gg-resizing');
-      const win = doc.defaultView || window;
-      const move = (ev: PointerEvent): void => {
-        if (!fixedWidth) {
-          const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
-          if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
-        }
-        const height = snapGridHeight(ev.clientY - rect.top);
-        if (height !== curHeight) { curHeight = height; setGridHeightPx(card, height); }
-      };
-      const cleanup = (commit: boolean): void => {
-        card.classList.remove('dash-gg-resizing');
-        win.removeEventListener('pointermove', move as EventListener);
-        win.removeEventListener('pointerup', up as EventListener);
-        win.removeEventListener('pointercancel', cancel as EventListener);
-        win.removeEventListener('blur', cancel);
-        doc.removeEventListener('keydown', onKey, true);
-        handle.removeEventListener('lostpointercapture', cancel as EventListener);
-        if (installedGestureCancel === cancel) installedGestureCancel = null;
-        if (typeof handle.hasPointerCapture === 'function' && handle.hasPointerCapture(start.pointerId)) {
-          handle.releasePointerCapture(start.pointerId);
-        }
-        if (!commit) {
-          card.style.gridColumn = savedGridColumn;
-          card.style.height = savedHeight;
-          return;
-        }
-        const style = currentDashboardStyle as AuthoredDashboardStyle;
-        runCommand({
-          type: 'update-placement',
-          tileId,
-          style,
-          placement: fixedWidth ? { height: curHeight } : { span: curSpan, height: curHeight },
-        });
-      };
-      const up = (): void => cleanup(true);
-      const cancel = (): void => cleanup(false);
-      const onKey = (ev: KeyboardEvent): void => { if (ev.key === 'Escape') cancel(); };
-      win.addEventListener('pointermove', move as EventListener);
-      win.addEventListener('pointerup', up as EventListener);
-      win.addEventListener('pointercancel', cancel as EventListener);
-      win.addEventListener('blur', cancel);
-      doc.addEventListener('keydown', onKey, true);
-      handle.addEventListener('lostpointercapture', cancel as EventListener);
-      if (typeof handle.setPointerCapture === 'function') handle.setPointerCapture(start.pointerId);
-      installedGestureCancel = cancel;
-    });
-    handle.addEventListener('keydown', (event: Event) => {
-      if (activeEngine !== 'grafana-grid') return;
-      const key = event as KeyboardEvent;
-      const placement = gridPlacementByTile.get(tileId)!;
-      const fixedWidth = currentDashboardStyle === 'full' || currentDashboardStyle === 'report';
-      if (currentDashboardStyle === 'columns-2' || currentDashboardStyle === 'columns-3') return;
-      let span = placement.persistedSpan;
-      let height = placement.heightUnits;
-      if (key.key === 'ArrowUp') height = Math.max(GRID_HEIGHT_UNIT_MIN, height - 1);
-      else if (key.key === 'ArrowDown') height = Math.min(GRID_HEIGHT_UNIT_MAX, height + 1);
-      // Keyboard span edits tune the authored placement, not the responsive
-      // effective span. A saved 12-column tile rendered in a 4-column narrow
-      // grid therefore moves 12→11 on ArrowLeft and stays 12 on ArrowRight;
-      // it never jumps to the visible clamp (3/4) and loses desktop intent.
-      else if (!fixedWidth && key.key === 'ArrowLeft') span = Math.max(1, placement.persistedSpan - 1);
-      else if (!fixedWidth && key.key === 'ArrowRight') span = Math.min(GRAFANA_GRID_MAX_COLUMNS, placement.persistedSpan + 1);
-      else return;
-      key.preventDefault();
-      if (span === placement.persistedSpan && height === placement.heightUnits) return;
-      runCommand({
-        type: 'update-placement',
-        tileId,
-        style: currentDashboardStyle as AuthoredDashboardStyle,
-        placement: fixedWidth ? { height } : { span, height },
-      });
-    });
-  }
-
-  // #332 tile reorder — pointer drag, NOT native HTML5 drag (a plain body drag
-  // must select text, never reorder). A drag STARTS from the top-left grip with
-  // no modifier, OR from anywhere on the body with ⌘/Ctrl held (the schema-graph
-  // modifier model). On the grafana-grid engine the dragged tile lifts and
-  // follows the pointer while the siblings reflow live to open a gap; the move
-  // commits to whichever slot the dragged tile overlaps most
-  // (`resolveOverlapInsertIndex`, core/tile-reorder.ts, max-overlap — no area
-  // threshold, so a short tile like a KPI still resolves correctly against a
-  // taller neighbor); it snaps back when it still overlaps its own origin
-  // slot most, or overlaps nothing. The flow engine keeps the simpler
-  // point-hit-test path (its KPI tiles render detached in a band, with no
-  // coherent grid slot to reflow into).
-  // A completed move dispatches the same atomic `move-tile` command exactly once;
-  // a cancelled move (pointercancel / window blur / Escape) leaves the document,
-  // revision, and fallback untouched. Read-only never wires it.
-  const prefersReducedMotion = (): boolean =>
-    (doc.defaultView || window).matchMedia('(prefers-reduced-motion: reduce)').matches;
-  function wireTileDrag(tileId: string, card: HTMLElement): void {
-    // A completed move synthesizes a `click` on the origin card only when the
-    // release lands back on it (a cross-tile release fires no native click —
-    // different down/up targets). This capture-phase guard swallows that one
-    // click so a table cell / log field / link under it is not activated.
-    card.addEventListener('click', (event) => {
-      if (clickSuppressCard === card) { event.stopPropagation(); event.preventDefault(); clickSuppressCard = null; }
-    }, true);
-    const onPointerDown: EventListener = (event) => {
-      const pe = event as PointerEvent;
-      if (pe.button !== 0) return; // primary button only
-      // A fresh gesture never inherits a stale suppress. Belt and braces next to the
-      // timestamp window above — this covers a pointer gesture that begins inside
-      // the window, which the window alone would still swallow.
-      clickSuppressCard = null;
-      // Every head control owns its own gesture — the resize handle (which also
-      // stops propagation), the inline widen, and the `⋯` that holds the rest — so
-      // a press on one never starts a move. `.dash-tile-open` is View-mode-only,
-      // where this handler is never wired at all; it stays listed because a flow
-      // KPI band member's card is reused across a mode change within one session's
-      // cached `tileEls`.
-      const target = pe.target as Element;
-      if (target.closest('.dash-gg-resize, .dash-tile-open, .dash-tile-widen, .dash-tile-menu')) return;
-      // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
-      // A plain body press does neither → left alone for text selection.
-      const fromGrip = !!target.closest('.dash-gg-grip');
-      // WebKit can leave `ctrlKey` false on pointer events synthesized while
-      // Control is held. Its modifier-state query remains authoritative, so
-      // use both representations for the cross-browser body-drag shortcut.
-      const hasReorderModifier = (input: PointerEvent): boolean => reorderModifierHeld || input.metaKey || input.ctrlKey
-        || input.getModifierState?.('Meta') || input.getModifierState?.('Control');
-      const modified = hasReorderModifier(pe);
-      if (!fromGrip && !modified) return;
-      if (gestureActive) return; // one drag at a time — ignore a second concurrent pointer
-      pe.preventDefault(); // suppress the text selection this press would otherwise start
-      gestureActive = true;
-      // Live reflow (float + placeholder + FLIP) is grafana-grid only; flow uses
-      // the point-hit-test path. `activeEngine` is stable for the gesture.
-      const liveReflow = activeEngine === 'grafana-grid';
-      const startX = pe.clientX;
-      const startY = pe.clientY;
-      let moving = false;
-      let rects: TileRect[] = [];
-      let dropId: string | null = null;               // flow path: outlined hover target
-      let placeholder: HTMLElement | null = null;      // grid path: holds the dragged tile's slot
-      let savedHeight = '';                            // grid path: the card's grid height inline style
-      let savedDisplay = '';                           // both paths: the card's inline display, restored after the float
-      let lastReflowId: string | null = null;          // grid path: last resolved insertion slot
-      const touched = new Set<HTMLElement>();           // grid path: siblings carrying a FLIP transform
-      const win = doc.defaultView || window;
-      const renderedSurface = (id: string): HTMLElement => {
-        const flowHost = activeEngine === 'flow' ? flowKpiHosts.get(id) : undefined;
-        return flowHost ?? tileEls.get(id)!.card;
-      };
-      const surfaceRect = (surface: HTMLElement): DOMRect => {
-        const own = surface.getBoundingClientRect();
-        if (!surface.classList.contains('dash-kpi-member')) return own;
-        const childRects = [...surface.children].map((child) => child.getBoundingClientRect());
-        const left = Math.min(...childRects.map((r) => r.left));
-        const top = Math.min(...childRects.map((r) => r.top));
-        const right = Math.max(...childRects.map((r) => r.right));
-        const bottom = Math.max(...childRects.map((r) => r.bottom));
-        return new DOMRect(left, top, right - left, bottom - top);
-      };
-      const hitRects = (tileId2: string, surface: HTMLElement): TileRect[] => {
-        const nodes = surface.classList.contains('dash-kpi-member') ? [...surface.children] : [surface];
-        return nodes.map((node) => {
-          const r = node.getBoundingClientRect();
-          return { tileId: tileId2, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-        });
-      };
-      // #338: edge auto-scroll while a move is active. `wireTileDrag` runs
-      // BEFORE `.dash-page` is inserted (app.root!.replaceChildren happens
-      // once, later, at the end of renderDashboard), so the scroll host and
-      // its sticky topbar are resolved here, at pointerdown runtime, when the
-      // page IS mounted. A `scrollEl === null` (e.g. a test fixture with no
-      // `.dash-page`) degrades cleanly: `autoScroll` stays null and
-      // `currentRects()` always returns the unadjusted home rects.
-      const scrollEl = app.root!.querySelector('.dash-page') as HTMLElement | null;
-      const topbar = scrollEl?.querySelector('.dash-topbar') as HTMLElement | null;
-      let scrollTop0 = 0;
-      let autoScroll: DragAutoScrollController | null = null;
-      let lastPointerX = startX;
-      let lastPointerY = startY;
-      // Candidate HOME rects, shifted by however far the page has scrolled
-      // since `beginMove` captured them — the floating dragged card is
-      // position:fixed (viewport-anchored), so it never needs this
-      // adjustment; only the STATIONARY siblings' captured rects go stale as
-      // the page scrolls under them.
-      const currentRects = (): TileRect[] => {
-        const dy = (scrollEl ? scrollEl.scrollTop : 0) - scrollTop0;
-        if (dy === 0) return rects;
-        return rects.map((r) => ({ ...r, top: r.top - dy, bottom: r.bottom - dy }));
-      };
-      const gridTiles = (): HTMLElement[] =>
-        [...grid.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.classList.contains('dash-gg-tile'));
-      const setDrop = (id: string | null): void => {
-        if (id === dropId) return;
-        if (dropId) renderedSurface(dropId).classList.remove('dash-drop-target');
-        dropId = id;
-        if (id && id !== tileId) renderedSurface(id).classList.add('dash-drop-target');
-      };
-      // Move the placeholder so the dragged tile PREVIEWS at the exact final
-      // index the commit will splice it to. `move-tile` does splice(from,1) then
-      // splice(toIndex,0,moved), so `moved` lands AT index `toIndex` (= the
-      // overlapped tile's index) — "the dragged tile takes the slot it overlaps".
-      // Among the other cards (currentDoc order minus the dragged one), that is
-      // insertion position `targetIndex`; sibs[targetIndex] is the card that
-      // follows the gap (undefined → append, i.e. dropping onto the last slot).
-      // A null / own-slot resolve returns the gap to the dragged tile's home.
-      const reflowTo = (id: string | null): void => {
-        if (id === lastReflowId) return;
-        lastReflowId = id;
-        const sibs = gridTiles().filter((c) => c !== card);
-        let ref: Element | null;
-        if (id && id !== tileId) {
-          const targetIndex = currentDoc.tiles.findIndex((t) => t.id === id);
-          ref = sibs[targetIndex] ?? null; // null → append to the grid (last slot)
-        } else {
-          ref = card; // snap-back preview: gap returns to the dragged tile's home slot
-        }
-        const first = sibs.map((c) => c.getBoundingClientRect());
-        grid.insertBefore(placeholder!, ref);
-        const animate = !prefersReducedMotion();
-        sibs.forEach((c, i) => {
-          const { dx, dy } = flipDelta(first[i], c.getBoundingClientRect());
-          c.style.transition = 'none';
-          c.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
-          touched.add(c);
-        });
-        void grid.offsetWidth; // flush the inverted transforms before playing them back to 0
-        touched.forEach((c) => { c.style.transition = animate ? 'transform 160ms ease' : ''; c.style.transform = ''; });
-      };
-      // #338: the single resolution body shared by a real pointermove AND an
-      // auto-scroll animation frame (which has no new pointer event of its
-      // own — the pointer is stationary while tiles scroll underneath it).
-      // `px`/`py` are the LATEST known pointer coords; `currentRects()` folds
-      // in however far the page has scrolled since `beginMove`.
-      const resolveFromPointer = (px: number, py: number): void => {
-        if (liveReflow) {
-          const floating = card.getBoundingClientRect();
-          reflowTo(resolveOverlapInsertIndex(floating, currentRects()));
-        } else {
-          setDrop(hitTestTile(currentRects(), px, py));
-        }
-      };
-      const beginMove = (): void => {
-        moving = true;
-        grid.classList.add('dash-reordering'); // user-select:none + grabbing, only now
-        scrollTop0 = scrollEl ? scrollEl.scrollTop : 0;
-        // Capture every grid-placed tile's home rect once, in canonical order —
-        // overlap/hit-testing always measures against these home positions, so a
-        // live sibling shift never feeds back into the decision.
-        rects = currentDoc.tiles.flatMap((t) => {
-          const c = renderedSurface(t.id);
-          // Every rendered movement surface is attached to this grid: ordinary
-          // cards directly, KPI members through their band/stream ancestors.
-          return hitRects(t.id, c);
-        });
-        // Capture the card's HOME rect and inline styles BEFORE inserting the
-        // grid placeholder: `grid.insertBefore(placeholder, card)` displaces
-        // the card into the NEXT grid cell, so reading getBoundingClientRect()
-        // after it would capture the shifted (wrong-column) left and the
-        // floated tile would sit a column off from the cursor horizontally
-        // (real-browser only — happy-dom ignores grid placement).
-        const r0 = surfaceRect(card);
-        savedHeight = card.style.height;
-        savedDisplay = card.style.display;
-        if (liveReflow) {
-          // Insert a same-size placeholder in the card's slot so the grid can
-          // FLIP-reflow into the gap; the flow path has no slot grid, so no
-          // placeholder there — the remaining flow tiles simply reflow to
-          // close the gap while the dragged tile floats above them.
-          placeholder = h('div', { class: 'dash-tile-placeholder' });
-          placeholder.style.gridColumn = card.style.gridColumn;
-          placeholder.style.height = card.style.height;
-          grid.insertBefore(placeholder, card);
-        }
-        // Lift the card to a fixed follower — BOTH engines float, so the
-        // dragged tile stays under the cursor even while #338 auto-scroll
-        // moves the page underneath it (a flow tile left position:static
-        // would otherwise scroll off-screen with the rest of the content).
-        // The card stays a DOM child of its container (position:fixed pulls
-        // it out of flow in place — simpler cleanup than reparenting).
-        // Defensive: a KPI-band card's WRAPPER is display:contents, not the
-        // card itself, but if some path ever leaves the card's own computed
-        // display as 'contents' it can't be position:fixed meaningfully —
-        // force a real box for the duration of the drag.
-        if (win.getComputedStyle(card).display === 'contents') {
-          // A flow KPI query may own several KPI cards. Preserve the stream's
-          // row/wrap geometry inside the temporary physical wrapper.
-          card.style.display = card.classList.contains('dash-kpi-member') ? 'flex' : 'block';
-        }
-        card.classList.add('dash-floating');
-        card.style.position = 'fixed';
-        card.style.left = r0.left + 'px';
-        card.style.top = r0.top + 'px';
-        card.style.width = r0.width + 'px';
-        card.style.height = r0.height + 'px';
-        card.style.zIndex = '40';
-        // #338: while the drag is active, the pointer nearing the top/bottom
-        // edge of the visible `.dash-page` viewport auto-scrolls it — both
-        // engines (a grid live-reflow AND a flow reorder can both need more
-        // room than the viewport shows). No scroll host (e.g. a fixture with
-        // no `.dash-page`) → no auto-scroll, everything else is unaffected.
-        if (scrollEl) {
-          const el = scrollEl;
-          const target: DragAutoScrollTarget = {
-            visibleTop: () => el.getBoundingClientRect().top + (topbar ? topbar.offsetHeight : 0),
-            visibleBottom: () => el.getBoundingClientRect().bottom,
-            scrollBy: (dy: number): number => {
-              const before = el.scrollTop;
-              const max = Math.max(0, el.scrollHeight - el.clientHeight);
-              el.scrollTop = Math.max(0, Math.min(max, before + dy));
-              return el.scrollTop - before;
-            },
-            canScrollUp: () => el.scrollTop > 0,
-            canScrollDown: () => el.scrollTop < Math.max(0, el.scrollHeight - el.clientHeight),
-          };
-          const scheduler: FrameScheduler = {
-            request: (cb) => win.requestAnimationFrame(cb),
-            cancel: (h2) => win.cancelAnimationFrame(h2),
-          };
-          autoScroll = createDragAutoScroll(target, scheduler, {
-            reducedMotion: prefersReducedMotion(),
-            onScrollFrame: () => resolveFromPointer(lastPointerX, lastPointerY),
-          });
-        }
-      };
-      const restoreDrag = (): void => {
-        // Deterministic, synchronous DOM restore — never rely on the signature-
-        // gated reconcile (a snap-back leaves currentDoc unchanged, so the next
-        // publish would early-return without rebuilding the DOM the drag mutated).
-        if (placeholder) { placeholder.remove(); placeholder = null; }
-        card.classList.remove('dash-floating');
-        card.style.position = card.style.left = card.style.top = card.style.width = card.style.zIndex = card.style.transform = '';
-        card.style.height = savedHeight; // restore the grid height inline style (not clear it)
-        card.style.display = savedDisplay; // restore the card's own display (only forced when computed 'contents')
-        touched.forEach((c) => { c.style.transition = ''; c.style.transform = ''; });
-        touched.clear();
-        lastGridSig = ''; // defense-in-depth: force a full grid rebuild on the next publish
-      };
-      const onMove = (ev: PointerEvent): void => {
-        if (!moving) {
-          if (!movedPastThreshold(ev.clientX - startX, ev.clientY - startY)) return;
-          beginMove();
-        }
-        lastPointerX = ev.clientX;
-        lastPointerY = ev.clientY;
-        card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)'; // both engines float and follow the cursor
-        resolveFromPointer(ev.clientX, ev.clientY);
-        // Latest pointer Y (viewport coords — unaffected by scroll, the card
-        // is position:fixed) drives the edge-proximity check every move, on
-        // top of whatever a running auto-scroll frame already applied.
-        autoScroll?.setPointerY(ev.clientY);
-      };
-      const cleanup = (): void => {
-        win.removeEventListener('pointermove', onMove as EventListener);
-        win.removeEventListener('pointerup', onUp as EventListener);
-        win.removeEventListener('pointercancel', onCancel as EventListener);
-        win.removeEventListener('blur', onCancel);
-        doc.removeEventListener('keydown', onKey, true);
-        card.removeEventListener('lostpointercapture', onCancel as EventListener);
-        autoScroll?.stop();
-        autoScroll = null;
-        if (moving) { restoreDrag(); setDrop(null); }
-        grid.classList.remove('dash-reordering');
-        gestureActive = false;
-        if (installedGestureCancel === cleanup) installedGestureCancel = null;
-        if (typeof card.hasPointerCapture === 'function' && card.hasPointerCapture(pe.pointerId)) {
-          card.releasePointerCapture(pe.pointerId);
-        }
-      };
-      const onUp = (ev: PointerEvent): void => {
-        const wasMoving = moving;
-        const targetId = !wasMoving ? null
-          : liveReflow ? resolveOverlapInsertIndex(card.getBoundingClientRect(), currentRects())
-            : hitTestTile(currentRects(), ev.clientX, ev.clientY);
-        cleanup();
-        if (!wasMoving) return; // never crossed the threshold: leave the click alone
-        // A completed drag that releases back over its origin card synthesizes a
-        // real click on it (same down/up target) — swallow it so no cell/link/
-        // preview fires.
-        clickSuppressCard = card;
-        // #471: and a release ANYWHERE ELSE synthesizes no origin click at all, so
-        // nothing would ever consume this. The synthesized click, when there is one,
-        // is dispatched in the same input task as the release — so a zero-delay timer
-        // runs strictly after it, and disarms the flag before any later click can meet
-        // it. That later click may have no pointerdown to clear it (Enter on a focused
-        // tile action), which is exactly the case a pointerdown-only reset missed.
-        win.setTimeout(() => { if (clickSuppressCard === card) clickSuppressCard = null; }, 0);
-        if (targetId && targetId !== tileId) {
-          runCommand({ type: 'move-tile', tileId, toIndex: currentDoc.tiles.map((t) => t.id).indexOf(targetId) });
-        }
-      };
-      const onCancel = (): void => cleanup(); // pointercancel / window blur — cancel, never dispatch
-      const onKey = (ev: KeyboardEvent): void => { if (ev.key === 'Escape') cleanup(); };
-      win.addEventListener('pointermove', onMove as EventListener);
-      win.addEventListener('pointerup', onUp as EventListener);
-      win.addEventListener('pointercancel', onCancel as EventListener);
-      win.addEventListener('blur', onCancel);
-      doc.addEventListener('keydown', onKey, true);
-      card.addEventListener('lostpointercapture', onCancel as EventListener);
-      if (typeof card.setPointerCapture === 'function') card.setPointerCapture(pe.pointerId);
-      installedGestureCancel = cleanup;
-    };
-    card.addEventListener('pointerdown', onPointerDown);
-  }
+  // #589 wave 2: `wireGridResize`/`wireTileDrag` (and the private
+  // `prefersReducedMotion` helper they shared) now live inside
+  // `createTileGestureController` (dashboard-tile-gestures.ts) — this module
+  // only constructs the controller (`gestures`, below `gridStructureInvalidationRev`)
+  // and calls `gestures.wireGridResize`/`gestures.wireTileDrag` from the same
+  // tile-build call sites the pre-extraction functions were called from.
 
   // #332: a Dashboard Text (Markdown) tile is click/keyboard-openable into the
   // SAME shared cell-detail drawer (the full Markdown, resizable, over the doc
@@ -2389,8 +1909,8 @@ export async function renderDashboard(
       class: 'dash-tile' + (readOnly ? ' is-view' : ''),
       title: !readOnly && ts.isKpi ? 'Command/Ctrl-drag to move' : undefined,
     }, head, body, foot, resizeHandle);
-    if (!readOnly) wireTileDrag(ts.tileId, card);
-    if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
+    if (!readOnly) gestures.wireTileDrag(ts.tileId, card);
+    if (resizeHandle) gestures.wireGridResize(ts.tileId, resizeHandle, card);
     const tileEl: TileEl = {
       card, headingName, headingDescription, body, foot,
       panelState: null, destroy: null, paintedRows: null, resizeHandle, widenBtn,
@@ -2614,19 +2134,19 @@ export async function renderDashboard(
   }
 
   // ── Grid reconciliation from the flow model ───────────────────────────────
-  let lastLayoutSig = '';
-  function reconcileGrid(sview: DashboardViewState, layout: FlowLayoutModel): void {
+  // #589 wave 1: the rebuild DECISION and the structural signature both come
+  // from `planStructuralRebuild` now (`rebuild`/`structuralSig` below) — this
+  // function only commits `memo.layoutSig` at the exact point the
+  // pre-extraction code committed its own private `let`, immediately before
+  // performing the same rebuild.
+  function reconcileGrid(sview: DashboardViewState, layout: FlowLayoutModel, rebuild: boolean, structuralSig: string): void {
     const byId = new Map(sview.tiles.map((t) => [t.tileId, t]));
     for (const ts of sview.tiles) reconcileTile(ts);
-    const sig = JSON.stringify({
-      m: layout.mobile, c: layout.columns, p: layout.preset,
-      rows: layout.rows.map((r) => ({ k: r.kind, t: r.tiles.map((t) => [t.tileId, t.span]) })),
-    });
     // Rebuild the row STRUCTURE only when the flow model changes (a reorder,
     // preset, or mobile flip) — moving stable tile cards, so charts are never
     // thrashed.
-    if (sig !== lastLayoutSig) {
-      lastLayoutSig = sig;
+    if (rebuild) {
+      memo.layoutSig = structuralSig;
       // #291: undo any grafana-grid-only chrome a cached card picked up the
       // last time the grid engine was active (that reconciliation is gated
       // off entirely while flow renders, so it can't clean up after itself).
@@ -2648,7 +2168,7 @@ export async function renderDashboard(
             // content paint below, not here: this host is `display: contents`, so the
             // button has to live inside a CARD, and the cards do not exist yet.
             flowKpiHosts.set(member.tileId, host);
-            if (!readOnly) wireTileDrag(member.tileId, host);
+            if (!readOnly) gestures.wireTileDrag(member.tileId, host);
             stream.appendChild(host);
           }
           return h('div', { class: 'dash-row dash-kpi-band' }, stream);
@@ -2722,24 +2242,27 @@ export async function renderDashboard(
     paintTileBody(ts, tileEl);
   }
 
-  let lastGridSig = '';
-  function reconcileGrafanaGrid(sview: DashboardViewState, gridModel: GrafanaGridLayoutModel): void {
+  // #589 wave 1: same shift as `reconcileGrid` above — the rebuild decision
+  // (including the grid-structure-invalidation-revision force) and the
+  // structural signature both come from `planStructuralRebuild`; this function
+  // only commits `memo.gridSig` at the point the pre-extraction code
+  // committed its own private `let`.
+  function reconcileGrafanaGrid(
+    sview: DashboardViewState, gridModel: GrafanaGridLayoutModel, rebuild: boolean, structuralSig: string,
+    consumedGridInvalidationRev: number,
+  ): void {
     const byId = new Map(sview.tiles.map((t) => [t.tileId, t]));
     for (const t of gridModel.tiles) {
       const ts = byId.get(t.tileId);
       if (ts) reconcileGridTile(ts);
     }
     currentGridColumns = gridModel.columns;
-    const sig = JSON.stringify({
-      c: gridModel.columns,
-      style: gridModel.style,
-      tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.heightUnits, t.previewHeightPx]),
-    });
     // Rebuild the host STRUCTURE only when the grid model changes (a reorder,
     // resize, delete, responsive clamp, or membership change) — moving stable
     // tile cards, so charts/KPI content are never thrashed mid-drag.
-    if (sig === lastGridSig) return;
-    lastGridSig = sig;
+    if (!rebuild) return;
+    memo.gridSig = structuralSig;
+    memo.consumedGridInvalidationRev = consumedGridInvalidationRev;
     grid.classList.toggle('is-report', gridModel.style === 'report');
     grid.classList.toggle('is-full', gridModel.style === 'full');
     grid.classList.add('dash-gg-grid');
@@ -2774,104 +2297,120 @@ export async function renderDashboard(
   }
 
   // ── Effect: reconcile on every publish (and on the mobile-breakpoint flip) ─
-  let lastMobile = state.isMobile.value;
-  // #291: the ENGINE rendered by the last reconciliation — a switch resets
-  // both engines' own change-detection signature caches so the next publish
-  // always rebuilds the host structure (clearing the OTHER engine's leftover
-  // chrome: `dash-gg-grid`/`dash-gg-tile`/height classes on a flow switch, or
-  // `is-report` on a grid switch) instead of a coincidental sig match
-  // silently skipping that cleanup.
-  let lastEngineRendered: 'flow' | 'grafana-grid' | null = null;
-  let barSig = '';
-  // #447 phase 2: a SEPARATE signature from `barSig` — option content, the
-  // option-backed statuses and the batch verdict never participate in `barSig`
-  // (see the effect below), so a change to any of them is detected here instead
-  // and applied to the EXISTING bar via `setVariableOptions` (no rebuild, so
-  // in-progress typing elsewhere survives an asynchronously-arriving batch).
-  //
-  // This replaces #360's `statusSig`, which had been dead since phase 1 removed
-  // the option-provider layer: nothing produced a per-field status any more, so
-  // it was assigned once and never read again.
-  let lastOptionsSig = '';
-  // #335: the wave `now` the time-range controls' closed labels were last
-  // resolved against — a NON-rebuild publish whose wave `now` advanced
-  // re-resolves those labels in place (a live relative range, no timers),
-  // without disturbing anything else. Tracked separately from `barSig` so a
-  // tile-progress tick (same wave `now`) never churns the labels. Seeded from
-  // the session's initial state (`null` before the first wave).
-  let lastLabelWaveNowMs: number | null = session.state.value.waveWallNowMs;
-  // #303: the committed-variable bag for a published view, built exactly the way
-  // the persist step below and the seed just under it both need it.
-  // A multi-select variable's committed value is a real `string[]` and is
-  // persisted as one — `dashboard-variable-store.ts` has round-tripped arrays
-  // since #189 (`value: string | string[]`, with an array-aware coerce that
-  // drops non-string elements rather than stringifying them), so a selection
-  // survives a reload without ever becoming the joined `"a,b"` that
-  // `valueString`'s `String()` fallback would produce.
-  const persistBagOf = (variableStates: readonly ViewerVariableState[]): DashboardVariableBag => {
-    const bag: DashboardVariableBag = {};
-    for (const f of variableStates) {
-      bag[f.id] = {
-        value: Array.isArray(f.value) ? f.value.map(valueString) : valueString(f.value),
-        active: f.active,
-      };
-    }
-    return bag;
-  };
-  // #303: a SEPARATE signature from `barSig` above — that one also flips when
-  // curated options arrive (no committed value/active change), which would
-  // otherwise trigger a redundant write. Seeded from the session's OWN initial
-  // variable state (post-`initialVariables` seeding + defaults), not the raw stored
-  // `initialBag`, so the very first publish — which merely echoes that state —
-  // never writes: an empty/partial store would otherwise differ from the
-  // default-filled published bag and persist defaults on first open, freezing
-  // them against later Spec-editor changes to a variable's default.
-  let lastVariablePersistSig = variableBagSignature(persistBagOf(session.state.value.variableStates));
+  // #589 wave 1: the decision logic that used to live in this callback as a
+  // pile of private `let`s now lives in the pure `dashboard-repaint-plan.ts`
+  // module — this effect's only job is to ask it what to do, one decision at
+  // a time, and commit each returned signature at the exact point the
+  // pre-extraction code committed its own `let`, interleaved with the real
+  // side effect it guards. Deliberately never batch-assigned up front: if a
+  // side effect throws, only the memo fields whose side effects actually ran
+  // must have advanced (preserves the pre-extraction partial-failure
+  // semantics).
+  // #589 pass 2 (ChatGPT review finding 1): this effect calls the six
+  // granular `plan*` functions (`planRepublishFlow`/`planBarRebuild`/
+  // `planOptionsPush`/`planLabelRefresh`/`planPersist`/`planStructuralRebuild`)
+  // ONE AT A TIME, in this exact order, applying each decision's side effect
+  // immediately before computing the next — NEVER the batched
+  // `dashboardRepaintPlan` (which computes every decision before returning
+  // and would let a throw computing, say, the persist decision suppress the
+  // bar-rebuild/options-push/label-refresh side effects that a batched call
+  // had already decided but not yet applied). `dashboardRepaintPlan` remains
+  // exported for direct unit testing only — see its module doc.
+  // #589 wave 2: declared here, ABOVE the controller construction just below
+  // (which needs it in scope for `invalidateGridStructure`'s closure) and
+  // above the effect (whose first synchronous run reads it via the `plan*`
+  // calls below) — same ordering constraint wave 1 already established for
+  // `memo`/the effect: nothing here reads it before the effect runs, but
+  // keeping the declaration textually first is the least surprising order
+  // for both readers.
+  let gridStructureInvalidationRev = 0;
+  // #589 wave 2: constructed here, BEFORE the effect — `ensureTileEl` (used by
+  // both `reconcileGrid`/`reconcileGrafanaGrid`, called from the effect's
+  // first synchronous run) calls `gestures.wireTileDrag`/
+  // `gestures.wireGridResize`, so the controller must already exist by then.
+  const gestures: TileGestureController = createTileGestureController({
+    document: doc,
+    grid,
+    runCommand,
+    activeEngine: () => activeEngine,
+    currentStyle: () => currentDashboardStyle,
+    gridColumns: () => currentGridColumns,
+    gridPlacement: (tileId) => gridPlacementByTile.get(tileId),
+    measuredGridWidth,
+    tileOrder: () => currentDoc.tiles.map((t) => t.id),
+    // LIVE on every call (not just at gesture start) — re-reads `activeEngine`
+    // fresh each time, exactly as the pre-extraction `renderedSurface` closure
+    // did. See dashboard-tile-gestures.ts's module doc comment for why this is
+    // deliberately a DIFFERENT read discipline than `activeEngine` above.
+    renderedSurface: (id) => {
+      const flowHost = activeEngine === 'flow' ? flowKpiHosts.get(id) : undefined;
+      return flowHost ?? tileEls.get(id)!.card;
+    },
+    scrollHost: () => app.root!.querySelector('.dash-page') as HTMLElement | null,
+    invalidateGridStructure: () => { gridStructureInvalidationRev += 1; },
+  });
+  installedTileGestures = gestures;
+  const memo: RepaintMemo = seedRepaintMemo({ mobileNow: state.isMobile.value, view: session.state.value });
   const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
+    // #589 ChatGPT review: commit `memo.mobile` FIRST, unconditionally, as the
+    // literal first statement of this effect body (right after reading
+    // `sview`/`mobileNow`) — matching pre-extraction exactly (`lastMobile =
+    // mobileNow` was the absolute first statement in BOTH branches there,
+    // before `barSig`/`optionsSig`/the persist bag were ever computed).
+    // `priorMobile` is captured before the commit and handed to
+    // `planRepublishFlow` in place of the (now-already-advanced)
+    // `memo.mobile`, so its OWN comparison still sees the value mobile held
+    // BEFORE this publish — exactly what it read when the commit happened
+    // later. This way a throw anywhere later in this effect (e.g.
+    // `dashboardPersistBag`'s `String()` over a pathological variable value,
+    // inside `planPersist`) can never leave `memo.mobile` stale, the same
+    // class of partial-failure bug already fixed for engine switches.
+    const priorMobile = memo.mobile;
+    memo.mobile = mobileNow;
+    // Snapshotted once here — the exact value this publish's `plan*` calls
+    // see — and threaded through to `reconcileGrafanaGrid`'s own commit
+    // below, rather than that commit re-reading the live module-level
+    // `gridStructureInvalidationRev` a second time. Nothing bumps the counter
+    // synchronously mid-effect today, so the two reads are always equal in
+    // practice, but committing the CONSUMED input (not whatever the live
+    // counter happens to hold by the time the reconciler runs) is the
+    // defensively-correct value regardless.
+    const consumedGridInvalidationRev = gridStructureInvalidationRev;
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
     // grafana-grid has no `mobile` concept of its own (its responsive
     // behavior is the `containerWidth`-driven effective-columns clamp below).
-    if (sview.layout.engine === 'flow' && mobileNow !== lastMobile && mobileNow !== sview.layout.mobile) {
-      lastMobile = mobileNow;
+    if (planRepublishFlow({ mobile: priorMobile }, sview, mobileNow).republishFlow) {
       syncSessionDocument(currentDoc);
       return;
     }
-    lastMobile = mobileNow;
+    // #589 pass 2 (finding 1): each decision below is computed and APPLIED
+    // immediately, before the next decision is even computed — never all
+    // computed up front — so a throw computing a LATER decision (most
+    // plausibly `planPersist`, see its doc comment) can never prevent an
+    // EARLIER decision's side effect, already decided, from running. This
+    // is the exact interleaving order the pre-extraction code used.
+
     // Rebuild the shared variable bar only on a STRUCTURAL change (activation or
     // committed value) — not on a bare status flip, not on tile progress ticks,
     // and (#447 phase 2) NOT when an option list arrives. `status` and
     // `optionsRev` are both deliberately EXCLUDED: they are updated in the
     // existing DOM in place, never by a rebuild. That preserves the invariant
     // that an unchanged republish never disturbs in-progress typing.
-    //
-    // Excluding `optionsRev` matters more than excluding `status`. A rebuild is
-    // triggered by a user COMMIT, which is inherently typing-ending; the option
-    // batch instead lands ASYNCHRONOUSLY and can complete while the user is
-    // mid-keystroke in an unrelated field, so rebuilding on it would discard
-    // that input and silently cancel any open popover.
-    const sig = JSON.stringify(sview.variableStates.map((f) =>
-      [f.id, f.active, sigValue(f.value)]));
-    let rebuilt = false;
-    if (sig !== barSig) {
-      barSig = sig;
+    const { rebuildBar, barSig } = planBarRebuild(memo, sview);
+    if (rebuildBar) {
+      memo.barSig = barSig;
       rebuildVariableBar(sview);
-      rebuilt = true;
     }
     // #447 phase 2: push fresh option rows (and the batch's unavailable state)
     // into the selects the CURRENT bar already built. A rebuild above has just
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
-    // `optionsTruncated` is part of the signature, not just the payload: it
-    // changes how the control COMMITS (whether an off-list value is preserved),
-    // so a flip must reach it even in the contrived case where the option
-    // content it accompanies is byte-identical.
-    const optionsSig = JSON.stringify(sview.variableStates.map((f) =>
-      [f.id, f.configured, f.optionsRev, f.status, f.optionsError, f.optionsTruncated]));
-    if (!rebuilt && optionsSig !== lastOptionsSig) {
+    const { pushOptions, optionsSig } = planOptionsPush(memo, sview, rebuildBar);
+    if (pushOptions) {
       const states: Record<string, VariableOptionsUpdate> = {};
       for (const f of sview.variableStates) {
         if (!f.configured) continue;
@@ -2881,23 +2420,23 @@ export async function renderDashboard(
       }
       currentVariableBar?.setVariableOptions(states);
     }
-    lastOptionsSig = optionsSig;
-    // #335: per-wave time-range label refresh. A rebuild (`sig` change) already
+    memo.optionsSig = optionsSig;
+    // #335: per-wave time-range label refresh. A rebuild above already
     // rebuilt every time-range control against this wave's `now` (assembled
     // into its `waveNowMs`); only a NON-rebuild publish whose wave `now`
     // advanced needs the closed labels re-resolved in place — a committed
     // relative range (`-1d` → `now`) moves per wave without any bar rebuild.
-    if (!rebuilt && sview.waveWallNowMs != null && sview.waveWallNowMs !== lastLabelWaveNowMs) {
-      currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs);
+    const { refreshTimeRangeLabels, labelWaveNowMs } = planLabelRefresh(memo, sview, rebuildBar);
+    if (refreshTimeRangeLabels) {
+      currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs!);
     }
-    lastLabelWaveNowMs = sview.waveWallNowMs;
+    memo.labelWaveNowMs = labelWaveNowMs;
     // #303: persist committed variable value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
-    const variableBag = persistBagOf(sview.variableStates);
-    const persistSig = variableBagSignature(variableBag);
-    if (persistSig !== lastVariablePersistSig) {
-      lastVariablePersistSig = persistSig;
-      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, variableBag));
+    const { persistVars, persistBag, persistSig } = planPersist(memo, sview);
+    if (persistVars) {
+      memo.persistSig = persistSig;
+      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, persistBag));
     }
     tileCountLabel.textContent = sview.tileSearch.trim()
       ? `${sview.visibleTileCount} of ${sview.totalTileCount} tiles`
@@ -2922,7 +2461,20 @@ export async function renderDashboard(
         class: 'dash-config-diagnostic is-' + (d.severity ?? 'error'),
       }, d.message)),
     );
-    if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
+    // #291: on an engine switch, both structural sigs are reset here,
+    // unconditionally, BEFORE the reconciler call below — matching the
+    // pre-extraction code exactly. This is not redundant with the reconciler
+    // committing `memo.layoutSig`/`memo.gridSig` itself at the point it
+    // performs the rebuild: if the reconciler's own tile-processing loop
+    // throws before reaching that commit, this eager reset is what's already
+    // left `''` in the memo, so the NEXT publish's sig-mismatch check still
+    // forces the rebuild it owes — independent of whether `engineSwitched`
+    // has already been consumed by this (throwing) publish. Computed last,
+    // right before it's applied, same as every other decision above (#589
+    // pass 2 finding 1) — `planStructuralRebuild` doesn't own `memo`
+    // mutation, so it can't perform this reset itself; only the caller can.
+    const { engineSwitched, rebuildStructure, structuralSig } = planStructuralRebuild(memo, sview, consumedGridInvalidationRev);
+    if (engineSwitched) { memo.layoutSig = ''; memo.gridSig = ''; memo.engineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
     // #535: the widen button's gate AND its label, resynced on every publish. Not
     // folded into the render-mode branch below (which only fires on a grid
@@ -2952,8 +2504,11 @@ export async function renderDashboard(
         applyResizeHandleMode(tileEl, isFixedWidthStyle(sview.style));
       }
     }
-    if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
-    else reconcileGrid(sview, sview.layout);
+    if (sview.layout.engine === 'grafana-grid') {
+      reconcileGrafanaGrid(sview, sview.layout.grid, rebuildStructure, structuralSig, consumedGridInvalidationRev);
+    } else {
+      reconcileGrid(sview, sview.layout, rebuildStructure, structuralSig);
+    }
     // #471: the tiles this publish just placed are what finally make the page tall
     // enough to hold a restored offset.
     applyOwedScroll();
@@ -3076,24 +2631,13 @@ export async function renderDashboard(
   // #332: while ⌘/Ctrl is held the grid shows the grab affordance over its
   // tiles (CSS `.dash-grid.modkey`), the same cursor cue the schema graph uses.
   // Edit mode only — a read-only view is never reorderable, so it never leaks
-  // the affordance. Torn down at the next renderDashboard (see top of fn).
-  if (gridWin && !readOnly) {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.metaKey || e.ctrlKey || e.key === 'Meta' || e.key === 'Control') {
-        reorderModifierHeld = true;
-        grid.classList.add('modkey');
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent): void => {
-      reorderModifierHeld = e.metaKey || e.ctrlKey;
-      if (!reorderModifierHeld) grid.classList.remove('modkey');
-    };
-    const onBlur = (): void => { reorderModifierHeld = false; grid.classList.remove('modkey'); };
-    gridWin.addEventListener('keydown', onKeyDown);
-    gridWin.addEventListener('keyup', onKeyUp);
-    gridWin.addEventListener('blur', onBlur);
-    installedModifierListeners = { win: gridWin, onKeyDown, onKeyUp, onBlur };
-  }
+  // the affordance. Torn down at the next renderDashboard (`disposeDashboardSurface`
+  // → `gestures.dispose()`, see top of fn). #589 wave 2: the listeners
+  // themselves now live inside `createTileGestureController`
+  // (dashboard-tile-gestures.ts) — it derives its own window from
+  // `deps.document.defaultView` and no-ops if that is null, the same fallback
+  // `gridWin` gated on here before this extraction.
+  if (!readOnly) gestures.installModifierCue();
 
   // #425 — deliver the navigation focus target at the deterministic point where
   // the node it names actually exists and is stable. Both are straight-line
