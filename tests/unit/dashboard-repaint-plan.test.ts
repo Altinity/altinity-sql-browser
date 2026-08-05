@@ -5,8 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   dashboardRepaintPlan, seedRepaintMemo, dashboardPersistBag, valueString,
+  planRepublishFlow, planBarRebuild, planOptionsPush, planLabelRefresh, planPersist, planStructuralRebuild,
 } from '../../src/dashboard/application/dashboard-repaint-plan.js';
-import type { RepaintMemo, RepaintSigs } from '../../src/dashboard/application/dashboard-repaint-plan.js';
+import type { RepaintMemo, RepaintPlan, RepaintSigs } from '../../src/dashboard/application/dashboard-repaint-plan.js';
 import type { DashboardViewState, ViewerVariableState } from '../../src/dashboard/application/dashboard-viewer-session.js';
 import type { GrafanaGridTileRender } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import type { FlowTileRender } from '../../src/dashboard/layouts/flow-layout.js';
@@ -74,6 +75,94 @@ function settle(memo: RepaintMemo, view: DashboardViewState, mobileNow: boolean,
   }
   return next;
 }
+
+/** #589 pass 3 (ChatGPT review finding A): mirrors `ui/dashboard.ts`'s ACTUAL
+ *  production call sequence exactly — the six granular `plan*` functions,
+ *  called and threaded in the same order production uses (`rebuildBar` —
+ *  this SAME publish's own, already-decided value — feeds BOTH
+ *  `planOptionsPush` and `planLabelRefresh`) — independently written here,
+ *  never by delegating to `dashboardRepaintPlan` itself. `dashboardRepaintPlan`
+ *  and this helper are TWO independently-maintained "protocols" for the same
+ *  decision logic (see the module doc on `dashboardRepaintPlan` in
+ *  `dashboard-repaint-plan.ts`): if `dashboardRepaintPlan`'s own internal
+ *  composition ever drifts from this exact sequence — a swapped call order,
+ *  the wrong prior value threaded into one of the six calls, a decision
+ *  dropped or duplicated — this helper's result stops matching
+ *  `dashboardRepaintPlan`'s own, and the "protocol equivalence" describe
+ *  block below (which is the ONLY place that comparison happens) catches it.
+ *  Every OTHER test in this file exercises `dashboardRepaintPlan` alone and
+ *  cannot see this divergence at all — this is not a redundant proof. Scoped
+ *  to the non-`republishFlow` sequence on purpose: production returns
+ *  immediately after `planRepublishFlow` on that branch without computing
+ *  bar/options/label/persist/structural state at all (see
+ *  `dashboardRepaintPlan`'s own module doc), so there is no "production
+ *  sequence" for this helper to mirror there — that branch is already
+ *  covered by the dedicated `republishFlow` describe block above. */
+function manualRepaint(
+  memo: Readonly<RepaintMemo>,
+  input: { view: DashboardViewState; mobileNow: boolean; gridInvalidationRev: number },
+): { plan: RepaintPlan; sigs: RepaintSigs } {
+  const { view, mobileNow, gridInvalidationRev } = input;
+  const { republishFlow } = planRepublishFlow(memo, view, mobileNow);
+  if (republishFlow) {
+    throw new Error('manualRepaint: republishFlow is out of scope for the protocol-equivalence proof — see its own describe block instead');
+  }
+  const { rebuildBar, barSig } = planBarRebuild(memo, view);
+  const { pushOptions, optionsSig } = planOptionsPush(memo, view, rebuildBar);
+  const { refreshTimeRangeLabels, labelWaveNowMs } = planLabelRefresh(memo, view, rebuildBar);
+  const { persistVars, persistBag, persistSig } = planPersist(memo, view);
+  const { engineSwitched, rebuildStructure, structuralSig } = planStructuralRebuild(memo, view, gridInvalidationRev);
+  return {
+    plan: {
+      republishFlow: false, rebuildBar, pushOptions, refreshTimeRangeLabels,
+      persistVars, engineSwitched, rebuildStructure,
+    },
+    sigs: { barSig, optionsSig, labelWaveNowMs, persistBag, persistSig, structuralSig },
+  };
+}
+
+// #589 pass 3 (ChatGPT review finding A): `dashboardRepaintPlan` composes the
+// six granular `plan*` functions itself; `ui/dashboard.ts`'s production
+// effect calls the SAME six functions directly, in the same order, with the
+// same argument threading (see `dashboard-repaint-plan.ts`'s module doc).
+// Every OTHER test in this file (and the "sole authority"/"compute-apply
+// interleaving" tests in `dashboard-repaint-integration.test.ts`) exercises
+// ONE of those two call paths in isolation — neither can see the other drift
+// out of sync. This block is the ONLY test that calls BOTH paths against the
+// IDENTICAL memo/input and asserts their results are byte-identical, for a
+// representative set of inputs spanning every decision this module makes.
+describe('dashboardRepaintPlan — protocol equivalence with the granular plan* sequence ui/dashboard.ts actually calls (finding A, #589 pass 3)', () => {
+  it('a plain unchanged republish', () => {
+    const v1 = baseView({ variableStates: [variable({ id: 'n', value: '1', active: true })] });
+    const memo = settle(seedRepaintMemo({ mobileNow: false, view: v1 }), v1, false, 0);
+    const input = { view: v1, mobileNow: false, gridInvalidationRev: 0 };
+    expect(dashboardRepaintPlan(memo, input)).toEqual(manualRepaint(memo, input));
+  });
+
+  it('a bar-rebuild-triggering publish', () => {
+    const v1 = baseView({ variableStates: [variable({ id: 'n', value: '1', active: true })] });
+    const memo = settle(seedRepaintMemo({ mobileNow: false, view: v1 }), v1, false, 0);
+    const v2 = baseView({ variableStates: [variable({ id: 'n', value: '2', active: true })] });
+    const input = { view: v2, mobileNow: false, gridInvalidationRev: 0 };
+    expect(dashboardRepaintPlan(memo, input)).toEqual(manualRepaint(memo, input));
+  });
+
+  it('an engine-switch publish', () => {
+    const fv = baseView({ variableStates: [variable({ id: 'n', value: '1', active: true })] });
+    const memo = settle(seedRepaintMemo({ mobileNow: false, view: fv }), fv, false, 0);
+    const gv = gridView([gridTile({ tileId: 't1', span: 6, heightUnits: 2 })]);
+    const input = { view: gv, mobileNow: false, gridInvalidationRev: 0 };
+    expect(dashboardRepaintPlan(memo, input)).toEqual(manualRepaint(memo, input));
+  });
+
+  it('a persist-triggering publish with an array-valued variable', () => {
+    const v1 = baseView({ variableStates: [variable({ id: 'n', value: 'a', active: true })] });
+    const memo = settle(seedRepaintMemo({ mobileNow: false, view: v1 }), v1, false, 0);
+    const v2 = baseView({ variableStates: [variable({ id: 'n', value: ['a', 'b'], active: true })] });
+    const input = { view: v2, mobileNow: false, gridInvalidationRev: 0 };
+    expect(dashboardRepaintPlan(memo, input)).toEqual(manualRepaint(memo, input));
+  });
+});
 
 describe('valueString', () => {
   it('passes a string through, coerces nullish to empty, and stringifies everything else', () => {

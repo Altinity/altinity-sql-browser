@@ -1205,3 +1205,216 @@ describe('dashboard-repaint-plan wiring — refreshTimeRangeLabels is the effect
     }
   });
 });
+
+// #589 pass 3 (ChatGPT review finding B): the "compute/apply interleaving"
+// proof above (~line 856) only covers ONE stage boundary — a bar rebuild
+// already applied survives a SAME-publish `planPersist` throw. It says
+// nothing about the two stages that sit BETWEEN bar and persist in
+// production order (`ui/dashboard.ts`'s effect: bar, then options, then
+// labels, then persist, then structural) — `planOptionsPush` and
+// `planLabelRefresh`. A regression that re-batched or reordered JUST those
+// two middle stages relative to persist would leave the existing test green.
+//
+// `planOptionsPush`/`planLabelRefresh` are BOTH gated `!rebuildBar` (see
+// their own doc comments in `dashboard-repaint-plan.ts`) — a committed
+// value/active change (the existing test's trigger, which always sets
+// `rebuildBar: true`) can therefore never make either of them fire on the
+// SAME publish. So this gap can't be closed by strengthening that same
+// test's trigger; it needs a publish where `rebuildBar` is false and
+// `pushOptions`/`refreshTimeRangeLabels` are genuinely live instead —
+// `session.refresh()` never touches committed variable state, so every
+// publish it produces has `rebuildBar: false` by construction.
+//
+// Each test below tags every publish with a monotonic generation number —
+// bumped by a wrapped `planBarRebuild`, the ONE decision `ui/dashboard.ts`
+// calls first in EVERY publish, before options/label/persist, so its call
+// count is a reliable per-publish boundary marker independent of any
+// reordering AMONG options/label/persist (the exact regression class this
+// proof targets). The spy-wrapped `setVariableOptions`/
+// `refreshTimeRangeLabels` record the generation they were REALLY called in;
+// the mocked `planPersist` throws only once armed, and only when the
+// recorded generation matches the CURRENT generation at the moment persist
+// itself is called. This is deliberately NOT the same as recomputing the
+// decision from `memo` at persist-call time — after a CORRECT (bar, options,
+// labels, persist) sequence, `ui/dashboard.ts` has already committed
+// `memo.optionsSig`/`memo.labelWaveNowMs` for this publish before ever
+// calling `planPersist`, so a recompute against the live `memo` at that point
+// always reads "unchanged" and could never observe the real mismatch — it
+// would need to compare against the PRE-publish memo, which is exactly what
+// generation-tagging the REAL side-effect call sidesteps: it needs no
+// `memo` at all, so the comparison is correct regardless of what
+// `ui/dashboard.ts` has already committed by the time persist runs.
+// Generation-tagging also survives the fact that ONE user click produces
+// SEVERAL real publishes internally (`session.refresh()` calls `publish()`
+// repeatedly — once eagerly, then again per tile-lifecycle transition, then
+// once more once the option batch lands) — a same-publish proof that instead
+// tracked only "was it EVER applied before this throw" would be fooled by a
+// regression that reorders persist ahead of options/labels WITHIN one
+// publish, because the side effect would still (correctly) apply on a LATER
+// publish before persist ever throws on it — passing for the wrong reason.
+// Generation-tagging closes that gap: a reordered publish never matches its
+// OWN generation, so the throw would never fire and `expect(threw).toBe(true)`
+// would fail outright — this was confirmed by sabotage-verification (see the
+// #589 pass 3 PR description) before finalizing this technique.
+describe('dashboard-repaint-plan wiring — compute/apply interleaving: options-push and label-refresh each survive a same-publish persist throw (finding B, #589 pass 3)', () => {
+  const userWorkspace = () => wsWith({
+    queries: [q('q1', 'SELECT 1 WHERE u IN {user:Array(String)}')],
+    tiles: [{ id: 't1', queryId: 'q1' }],
+    variableConfigs: { user: { sql: 'SELECT a, b FROM users' } },
+  });
+
+  it('pushOptions has already applied its real side effect before a same-publish persist throw', async () => {
+    vi.resetModules();
+    let publishGen = 0;
+    let optionsSpy: ReturnType<typeof vi.fn> | undefined;
+    let pushedAtGen = -1;
+    vi.doMock('../../src/ui/variable-bar.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/ui/variable-bar.js')>();
+      return {
+        ...real,
+        buildVariableBar: (...args: Parameters<typeof real.buildVariableBar>) => {
+          const handle = real.buildVariableBar(...args);
+          const setVariableOptions = vi.fn((...cbArgs: Parameters<typeof handle.setVariableOptions>) => {
+            pushedAtGen = publishGen;
+            return handle.setVariableOptions(...cbArgs);
+          });
+          optionsSpy = setVariableOptions;
+          return { ...handle, setVariableOptions };
+        },
+      };
+    });
+    let armed = false;
+    let thrown = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        planBarRebuild: (memo: never, view: never) => {
+          publishGen += 1;
+          return real.planBarRebuild(memo, view);
+        },
+        planPersist: (memo: never, view: never) => {
+          if (armed && !thrown && pushedAtGen === publishGen) {
+            thrown = true;
+            throw new Error('injected persist-decision fault');
+          }
+          return real.planPersist(memo, view);
+        },
+      };
+    });
+    let optionRows = [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo']];
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, {
+        responder: (sql) => (sql.includes('__variable_name')
+          ? {
+            columns: [{ name: '__variable_name', type: 'String' }, { name: 'v', type: 'String' }, { name: 'l', type: 'String' }],
+            rows: optionRows,
+          }
+          : { columns: [{ name: 'n', type: 'UInt8' }], rows: [[1]] }),
+        workspace: userWorkspace(),
+      });
+      await render(); // mount settles — every publish from here on carries rebuildBar:false (no committed-value change ever happens in this test)
+      armed = true;
+      optionsSpy!.mockClear();
+      // A genuinely NEW option batch (`optionsSig` differs) — no variable
+      // value/active change, so `rebuildBar` stays false and `pushOptions`
+      // goes live on the publish that lands it.
+      optionRows = [['user', 'ada', 'Ada'], ['user', 'bo', 'Bo'], ['user', 'cy', 'Cy']];
+      let threw = false;
+      try {
+        await (qs<HTMLButtonElement>(app.root, '.dash-refresh').onclick as (() => Promise<void>) | null)?.();
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true); // sanity: the injected fault genuinely fired
+      expect(thrown).toBe(true); // ...on the exact publish where pushOptions applied for real
+
+      const saveJSON = app.saveJSON as ReturnType<typeof vi.fn>;
+      // The persist decision never got a chance to apply.
+      expect(saveJSON).not.toHaveBeenCalled();
+      // ...but the option push — computed AND APPLIED before the persist
+      // decision was even computed, per production order (bar, then
+      // options, then labels, then persist) — already ran for real on this
+      // SAME publish, despite the throw immediately after it.
+      expect(optionsSpy).toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('../../src/ui/variable-bar.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+
+  it('refreshTimeRangeLabels has already applied its real side effect before a same-publish persist throw', async () => {
+    vi.resetModules();
+    let publishGen = 0;
+    let labelSpy: ReturnType<typeof vi.fn> | undefined;
+    let refreshedAtGen = -1;
+    vi.doMock('../../src/ui/variable-bar.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/ui/variable-bar.js')>();
+      return {
+        ...real,
+        buildVariableBar: (...args: Parameters<typeof real.buildVariableBar>) => {
+          const handle = real.buildVariableBar(...args);
+          const refreshTimeRangeLabels = vi.fn((...cbArgs: Parameters<typeof handle.refreshTimeRangeLabels>) => {
+            refreshedAtGen = publishGen;
+            return handle.refreshTimeRangeLabels(...cbArgs);
+          });
+          labelSpy = refreshTimeRangeLabels;
+          return { ...handle, refreshTimeRangeLabels };
+        },
+      };
+    });
+    let armed = false;
+    let thrown = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        // Same generation-tagging technique as the pushOptions test above.
+        planBarRebuild: (memo: never, view: never) => {
+          publishGen += 1;
+          return real.planBarRebuild(memo, view);
+        },
+        planPersist: (memo: never, view: never) => {
+          if (armed && !thrown && refreshedAtGen === publishGen) {
+            thrown = true;
+            throw new Error('injected persist-decision fault');
+          }
+          return real.planPersist(memo, view);
+        },
+      };
+    });
+    let wallNowMs = 0;
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace(), wallNow: () => wallNowMs });
+      await render(); // mount settles
+      armed = true;
+      labelSpy!.mockClear();
+      // The wave clock genuinely advances — no committed-value change, so
+      // `rebuildBar` stays false and `refreshTimeRangeLabels` goes live.
+      wallNowMs = 1000;
+      let threw = false;
+      try {
+        await (qs<HTMLButtonElement>(app.root, '.dash-refresh').onclick as (() => Promise<void>) | null)?.();
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true); // sanity: the injected fault genuinely fired
+      expect(thrown).toBe(true); // ...on the exact publish where refreshTimeRangeLabels applied for real
+
+      const saveJSON = app.saveJSON as ReturnType<typeof vi.fn>;
+      // The persist decision never got a chance to apply.
+      expect(saveJSON).not.toHaveBeenCalled();
+      // ...but the label refresh — computed AND APPLIED before the persist
+      // decision was even computed — already ran for real on this SAME
+      // publish, with the genuinely advanced wave-clock value.
+      expect(labelSpy).toHaveBeenCalledWith(1000);
+    } finally {
+      vi.doUnmock('../../src/ui/variable-bar.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+});
