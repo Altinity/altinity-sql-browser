@@ -11,6 +11,13 @@ import { createApp } from '../../src/ui/app.js';
 // namespace object rather than caching a value at import time).
 import * as dashboardTreeModule from '../../src/ui/dashboard-tree.js';
 import * as sidePanelRegistryModule from '../../src/ui/side-panel-registry.js';
+// #590 Issue Test #4 / invariant (b): `commitUi`'s call to `renderDashboardTree`
+// (dashboard-tree.ts) is a SAME-module reference, invisible to a spy on the
+// `dashboardTreeModule` namespace above — `deriveDashboardTree`
+// (application/dashboard-tree-model.ts) is the cross-module call
+// `renderDashboardTree` makes exactly once per invocation regardless of
+// caller, so spying on it counts both the imperative and reactive paths.
+import * as dashboardTreeModelModule from '../../src/application/dashboard-tree-model.js';
 import { withPendingFocus, withoutPendingFocus } from '../../src/application/main-surface.js';
 import { bootstrap } from '../../src/main.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
@@ -8873,6 +8880,71 @@ describe('#590 — reactive committed-workspace / main-surface signals', () => {
 
     expect(keyA).not.toBe(keyB);
     expect(treeSpy.mock.calls.length).toBe(before + 2);
+  });
+
+  // ---------------------------------------------------------------------
+  // Issue Test #4 / invariant (b) — `dashboardTreeUi` stays deliberately
+  // NON-reactive (a plain `Map`, never a `Signal<Map<...>>`). `commitUi`
+  // (dashboard-tree.ts) and the reactive tree EFFECT converge on the exact
+  // same `renderDashboardTree` function, so a DOM-content assertion alone
+  // cannot distinguish "one correct imperative repaint" from "one
+  // imperative repaint plus one erroneous reactive re-run" — both leave the
+  // same final DOM. A counting discipline is the only thing that catches a
+  // regression that made `dashboardTreeUi` reactive (e.g. wrapping it in a
+  // `Signal<Map<...>>` and having the tree effect read `.value`): the UI op
+  // below would then produce TWO tree repaints instead of one, and the
+  // direct Map mutation would produce a spurious one instead of zero.
+  // ---------------------------------------------------------------------
+
+  it('Issue Test #4 / invariant (b): a UI-driven expansion repaints the tree exactly once and nothing else; a direct dashboardTreeUi Map mutation repaints nothing', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = await mountedQueryApp(ws);
+    // Make the Dashboards role the visible upper pane, matching how a real
+    // user reaches the chevron (not load-bearing for the click itself under
+    // happy-dom, but keeps the fixture honest about what it's driving).
+    app.state.upperRole.value = 'dashboards';
+    const chev = app.dom.dashboardTreeList!.querySelector<HTMLButtonElement>('.dash-tree-chev');
+    expect(chev).not.toBeNull();
+
+    // Counting `renderDashboardTree` itself would miss `commitUi`'s call:
+    // `commitUi` and `renderDashboardTree` live in the SAME module
+    // (dashboard-tree.ts), so that call is a local binding reference, not a
+    // call through the module's live ESM export binding — `vi.spyOn`'s
+    // namespace patch (the technique this file's other repaint-counting
+    // tests rely on for cross-module calls, e.g. from app-shell.ts) cannot
+    // intercept a same-module self-call. `deriveDashboardTree`
+    // (application/dashboard-tree-model.ts) is a genuinely CROSS-module
+    // call `renderDashboardTree` makes exactly once per invocation
+    // regardless of caller, so spying on it counts BOTH the imperative
+    // (`commitUi`) and the reactive-effect paths uniformly.
+    const deriveSpy = vi.spyOn(dashboardTreeModelModule, 'deriveDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const upperCount = (): number => (tabsSpy.mock.calls as unknown[][])
+      .filter((call) => call[0] === app.dom.upperRoleTabs).length;
+    const lowerCount = (): number => tabsSpy.mock.calls.length - upperCount();
+    const before = { tree: deriveSpy.mock.calls.length, upper: upperCount(), lower: lowerCount() };
+
+    // (i) A UI-driven op (the chevron toggle — #429's `toggleFromChevron` →
+    // `commitUi`) produces EXACTLY ONE tree repaint (`commitUi`'s own
+    // imperative call — a second one would be the reactive effect ALSO
+    // firing, which #426 already established would be wrong: expansion is
+    // deliberately not a workspace/navigation trigger) and ZERO upper-tab/
+    // lower-pane repaints (neither depends on `dashboardTreeUi`).
+    chev!.click();
+    expect(deriveSpy.mock.calls.length - before.tree).toBe(1);
+    expect(upperCount() - before.upper).toBe(0);
+    expect(lowerCount() - before.lower).toBe(0);
+
+    // (ii) A direct Map mutation with NO UI op produces zero repaints
+    // anywhere — `dashboardTreeUi` is a plain field; nothing subscribes to
+    // it, by design (#426's search-caret/scroll-thrash rationale).
+    const afterClick = { tree: deriveSpy.mock.calls.length, upper: upperCount(), lower: lowerCount() };
+    app.state.dashboardTreeUi.set('w', readTreeUi(app.state.dashboardTreeUi, 'w'));
+    expect(deriveSpy.mock.calls.length - afterClick.tree).toBe(0);
+    expect(upperCount() - afterClick.upper).toBe(0);
+    expect(lowerCount() - afterClick.lower).toBe(0);
   });
 
   // ---------------------------------------------------------------------
