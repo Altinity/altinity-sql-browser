@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Author', detail: 'ChatGPT writes or replaces the canonical plan privately' },
     { title: 'Review', detail: 'Fable/high reviews the plan read-only against the repository' },
-    { title: 'Verify', detail: 'one Sonnet read-only verifier per substantive finding' },
+    { title: 'Prepare', detail: 'fold Fable\'s raw findings into revision context for ChatGPT to verify and incorporate itself' },
   ],
 }
 
@@ -37,10 +37,6 @@ const REVIEW_SCHEMA = {
     } } },
   },
 }
-const VERIFY_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['accepted', 'reason'],
-  properties: { accepted: { type: 'boolean' }, reason: { type: 'string' } },
-}
 const CONTEXT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['written'],
   properties: { written: { type: 'boolean' } },
@@ -51,7 +47,7 @@ const label = runArgs.unitLabel ?? runArgs.issueUrl
 let session = runArgs.session ?? null
 let conversationUrl = runArgs.conversationUrl ?? null
 let authorContextFile = runArgs.contextFile
-let lastContested = { accepted: [], rejected: [] }
+let lastFindings = []
 
 for (let pass = 1; pass <= 5; pass++) {
   log(`ChatGPT plan authoring / Fable review pass ${pass}/5 — ${label}`)
@@ -80,26 +76,25 @@ for (let pass = 1; pass <= 5; pass++) {
   }
   if (review.verdict === 'APPROVED') return { status: 'approved', passes: pass, session, conversationUrl }
 
-  const verified = (await parallel(review.findings.map((finding, index) => () =>
-    agent(
-      `Adversarially verify this Fable plan-review finding against the ACTUAL repository and canonical plan.\nFinding: ${finding.claim}\nTarget: ${finding.where}\nPlan: ${runArgs.planFile}\nContext: ${runArgs.contextFile}\naccepted=true only when concrete repository, contract, or plan evidence supports it; cite file:line or plan-section evidence either way. ${READ_ONLY}`,
-      { label: `verify finding ${index + 1}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: 'sonnet' },
-    ).then(result => ({ finding, accepted: result.accepted, reason: result.reason })),
-  ))).filter(Boolean)
-  const accepted = verified.filter(item => item.accepted)
-  const rejected = verified.filter(item => !item.accepted)
-  lastContested = { accepted, rejected }
+  lastFindings = review.findings
   if (pass === 5) break
 
+  // Fable is read-only and does not have live access to confirm exact repository state,
+  // registry contents, or line numbers — its findings are unverified claims, not settled
+  // fact. ChatGPT is the plan's sole author and reviser; rather than a separate Sonnet
+  // pass fact-checking Fable before handing ChatGPT a pre-filtered accept/reject list,
+  // ChatGPT verifies each finding itself (it already does this kind of live check when
+  // revising — e.g. looking up an exact npm package version) and decides whether to fold
+  // it in or reject it, recording either outcome so nothing is silently dropped.
   const nextContext = `${runArgs.contextFile}.chatgpt-revision-${pass + 1}.md`
   const contextWrite = await agent(
-    `Create ${nextContext} as a complete revision context. Copy the full original delivery contract from ${runArgs.contextFile}, then append a section "Fable review pass ${pass}" containing these accepted findings to incorporate: ${JSON.stringify(accepted)} and these evidence-backed rebuttals to rejected findings: ${JSON.stringify(rejected)}. If neither list has entries, explicitly require a complete reassessment with concrete findings. Mutation boundary: Write ${nextContext} only; no other file, git, gh, task, memory, or chatgpt-review mutation.`,
-    { label: `prepare revision context ${pass + 1}`, phase: 'Verify', schema: CONTEXT_SCHEMA, model: 'sonnet' },
+    `Create ${nextContext} as a complete revision context. Copy the full original delivery contract from ${runArgs.contextFile}, then append a section "Fable review pass ${pass} — unverified findings" containing these raw findings from an independent read-only reviewer: ${JSON.stringify(review.findings)}. Precede them with this instruction verbatim: "These are UNVERIFIED claims from a reviewer with no live access to confirm exact repository state, registry contents, or line numbers. Before incorporating any finding, verify it yourself against the actual issue, the real repository, and current external sources (e.g. package registries) as needed. Fold in only what you confirm is correct and material. For any finding you determine is wrong, outdated, or already addressed, do not incorporate it — instead add a one-or-two-line entry under a '##' + ' Review responses' section at the end of the plan explaining why, citing your own verification evidence." Mutation boundary: Write ${nextContext} only; no other file, git, gh, task, memory, or chatgpt-review mutation.`,
+    { label: `prepare revision context ${pass + 1}`, phase: 'Prepare', schema: CONTEXT_SCHEMA, model: 'sonnet' },
   )
   if (!contextWrite?.written) return { status: 'error', reason: 'could not prepare ChatGPT revision context', pass, session, conversationUrl }
   authorContextFile = nextContext
 }
 
-return { status: 'needs_human', reason: 'no Fable APPROVED verdict after 5 passes', passes: 5, session, conversationUrl, contested: lastContested }
+return { status: 'needs_human', reason: 'no Fable APPROVED verdict after 5 passes', passes: 5, session, conversationUrl, findings: lastFindings }
 
 function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\''")}'` }

@@ -29,9 +29,14 @@ its task notification; do not poll and do not start other review work meanwhile.
   PR review contexts include their `VERDICT:` protocol. ChatGPT authoring context
   instead carries the complete delivery contract; the CLI supplies its strict
   READY/BLOCKED protocol.
-- **Findings are never silently dropped.** Every return carries `accepted` and
-  `rejected` (with per-finding evidence); the coordinator records them in the ship log
-  and final report. `rejected` entries become rebuttals, not deletions.
+- **Findings are never silently dropped.** In the default plan loop and the code
+  review loop, every return carries `accepted` and `rejected` (with per-finding
+  evidence) from an independent Sonnet fact-check; the coordinator records them in the
+  ship log and final report, and `rejected` entries become rebuttals, not deletions. In
+  the ChatGPT-author plan loop there is no separate fact-check pass — ChatGPT verifies
+  Fable's findings itself while revising, and a rejected one must still land as a `##
+  Review responses` entry in the plan (not a return field); a `needs_human` outcome
+  there carries the last round's raw `findings` for the coordinator to present.
 - **Verify the tree after every workflow** (`git diff`, `git log`, `gh pr list`) — the
   fix and revise agents carry stated mutation boundaries, but a prompt is not an
   enforced restriction.
@@ -74,12 +79,19 @@ Workflow {
 
 The canonical plan path never changes. Each pass calls private `plan-author`, has
 Fable/high review the resulting complete plan read-only against the repository, and
-fans out one Sonnet read-only verifier per substantive finding. Before the next pass,
-accepted findings and evidence-backed rebuttals are placed in revision context for
-ChatGPT, which returns a complete atomic replacement. The loop stops at the first
-Fable `APPROVED`, skips the unit on a concrete `BLOCKED`, and returns `needs_human`
-after five non-approved Fable passes or an authoring response that remains incomplete
-after bounded same-session retries.
+passes Fable's raw findings — explicitly labelled unverified — straight into the next
+revision's context. Unlike the default loop, there is no separate Sonnet fact-check
+pass here: ChatGPT is the plan's sole author and reviser, and it verifies each finding
+itself against the actual issue/repository/external sources (it already does this kind
+of live check unprompted, e.g. looking up an exact npm package version) before folding
+it in. A finding it determines is wrong or already addressed gets rejected the same way
+the default loop's revise agent does — a one-or-two-line entry under `## Review
+responses` at the end of the plan, not a silent drop; that section is where a rejected
+finding's evidence lives for this loop, since there is no `rejected` return value. The
+loop stops at the first Fable `APPROVED`, skips the unit on a concrete `BLOCKED`, and
+returns `needs_human` (with the last round's raw `findings`, not an accepted/rejected
+split) after five non-approved Fable passes or an authoring response that remains
+incomplete after bounded same-session retries.
 
 ## Code review pass — `code-review-pass.workflow.mjs`
 
