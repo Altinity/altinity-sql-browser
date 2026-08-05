@@ -45,9 +45,12 @@ Workflow {
 
 `planFile` is the review-session identity — the loop's revise agent edits it in place
 and the path must never change mid-loop. Inside each pass: one serialized
-`chatgpt-review plan` run (with one resume-retry on an incomplete status), parallel
-read-only verification of every finding, then a revise agent that folds accepted
-findings into the plan and records rejected ones under `## Review responses`.
+`chatgpt-review plan` run — foreground Bash, `--timeout 540` per call (the Bash tool's
+own foreground ceiling is 10 minutes; a review pass commonly takes 10-25 minutes, so
+the runner agent resumes with `--session <handle>` for up to 4 total attempts rather
+than one) — then parallel read-only verification of every finding, then a revise agent
+that folds accepted findings into the plan and records rejected ones under
+`## Review responses`.
 
 Returns:
 
@@ -78,7 +81,7 @@ Coordinator loop per pass (max 3; the CLI errors on pass 4):
 | `fixed-await-push` | accepted findings fixed, gate green, local commits made | verify the diff yourself, push, wait for green CI keyed on the head SHA, re-invoke with `pass+1` and the returned `session` |
 | `no-accepted-findings` | REVISE, but nothing survived verification | append the rebuttals to the question file; re-invoke (spends a pass) — or go to the gate's FULL STOP if this repeats |
 | `fix-failed` | fix agent died or could not reach a green gate | **FULL STOP** at the gate with the gate tail |
-| `needs_human` | pass incomplete after the resume-retry | **FULL STOP** at the gate |
+| `needs_human` | pass still incomplete after 4 resume attempts | **FULL STOP** at the gate |
 | `error` | runner agent died | inspect the journal; the pass may have published — check the PR before re-invoking |
 
 The workflow never pushes: `fixed-await-push` commits stay local until the coordinator
