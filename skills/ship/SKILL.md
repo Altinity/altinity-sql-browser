@@ -60,6 +60,15 @@ the model per subtask: inherited model for high-risk work, `sonnet` for ordinary
 and reviews. The coordinator alone owns remote GitHub mutations, reconciliation, PR
 creation, every `chatgpt-review` invocation, and the merge.
 
+**Coding vs. planning model split.** Within a unit, coding/implementation work
+(the worker's implement step, the plan-review loop's finding-verification agents, the
+code-review loop's fix-accepted-findings agent) uses `sonnet`. Planning/plan-authoring
+work (the worker's initial plan-writing step, the plan-review loop's revise-the-plan
+agent) uses `fable` at `effort: "high"` — plans benefit from the deeper, more
+deliberate pass a planning-tuned model gives before code gets written against them.
+This split is wired into `references/plan-review-loop.workflow.mjs` and
+`references/code-review-pass.workflow.mjs`; keep it there when editing either script.
+
 ### ChatGPT review loops
 
 - Both loops run as **Workflow scripts** — `references/plan-review-loop.workflow.mjs`
@@ -160,37 +169,36 @@ decision.
 
 ## 2 — Per unit (repeat per wave)
 
-### 2.1 Spawn the worker — plan first, no code
+### 2.1 Spawn the planner — plan only, no code
 
 Fresh agent (`subagent_type: "general-purpose"`, **never `fork`** — a fork inherits
 this in-progress mutating workflow and can conclude it should finish the whole job).
-`model: "sonnet"` unless the wave plan marks the unit high-risk, in which case omit
-`model` to inherit yours. Parallel workers get `isolation: "worktree"`; a solo worker
-may use the main tree on `wip/<unit>-<slug>` off the current integration HEAD.
+`model: "fable"`, `effort: "high"` — planning is a distinct role from implementation
+(see "Coding vs. planning model split" above) and this agent's only deliverable is the
+plan; it is never resumed for implementation (2.3 spawns a separate, fresh coding
+agent instead). Parallel planners still get `isolation: "worktree"` if the unit's
+later implementation will need it; a solo unit may target the main tree on
+`wip/<unit>-<slug>` off the current integration HEAD (the coding agent in 2.3 checks
+out the same branch).
 
-The worker prompt must contain, explicitly:
+The planner prompt must contain, explicitly:
 
 - the issue number, the phase (if any), and the instruction to load the body with
   `gh issue view <n> --json body -q .body` and treat the **assembled delivery
   contract** as the definition of done — implement list + `## Tests` subsection +
   acceptance gate + named subset of global criteria;
-- **the mutation boundary**: Edit/Write + local `git commit` on its own branch only —
-  no push, no PR, no `gh` mutations, no issue edits, no ship-log writes, no memory
-  writes, no `CHANGELOG.md` beyond its own entry, no TaskCreate/TaskUpdate, and never
-  invoke `chatgpt-review` (the coordinator owns all review sessions);
-- the instruction to follow `skills/ship/references/per-issue-cycle.md` steps 1–3 and
-  the CHANGELOG part of step 4 — **the ship log is yours, not the worker's** — plus
+- **the mutation boundary**: this agent only ever writes the plan file below — no
+  Edit/Write to any repo file, no git or `gh` mutations, no issue edits, no ship-log
+  writes, no memory writes, no TaskCreate/TaskUpdate, and never invoke
+  `chatgpt-review` (the coordinator owns all review sessions);
+- the instruction to follow `skills/ship/references/per-issue-cycle.md` step 1 plus
   `references/repo-footguns.md`;
-- **its first deliverable is the plan only**: write the plan (cycle step 1) to the
-  exact path `$TMPDIR/plan-<ISSUE>p<N>.md` (or `$TMPDIR/plan-<ISSUE>.md` unphased),
-  return the plan summary and that path **without writing any code**, then wait for
-  plan approval via `SendMessage`;
-- commit message `<type>(#<ISSUE>): <summary>` + the repo footer convention;
-- what to return after implementing: invariant map, files touched, gate/e2e output
-  tail, sabotage-case results, and the contract checklist with each item ticked or
-  explained.
+- **its only deliverable is the plan**: write it (cycle step 1) to the exact path
+  `$TMPDIR/plan-<ISSUE>p<N>.md` (or `$TMPDIR/plan-<ISSUE>.md` unphased), return the
+  plan summary and that path **without writing any code**. This agent is not resumed
+  afterward — 2.3 spawns a separate, fresh coding agent once the plan is approved.
 
-A worker that reports the unit ambiguous or dependent on an unrecorded decision →
+A planner that reports the unit ambiguous or dependent on an unrecorded decision →
 skip the unit, report the missing decision in the final report, move on.
 
 ### 2.2 Plan review loop — one Workflow run, every unit, max 5 passes
@@ -225,9 +233,29 @@ mid-loop (footguns).
 
 ### 2.3 Implement
 
-`SendMessage` the worker (**check out its branch first**, footguns): plan approved —
-**re-read the plan file; the loop's revise agent edited it and the file supersedes
-your draft** — implement now (cycle steps 2–3 plus its CHANGELOG entry).
+Spawn a **fresh** coding agent (`subagent_type: "general-purpose"`, never `fork`,
+`model: "sonnet"` unless the wave plan marks the unit high-risk, in which case omit
+`model` to inherit yours) — do not resume the 2.1 planner; the plan file, not the
+planner's memory, is the handoff (the loop's revise agent edited it in place, so it
+already supersedes the planner's original draft). Parallel units get
+`isolation: "worktree"`; a solo unit uses the main tree on `wip/<unit>-<slug>` off the
+current integration HEAD.
+
+The coding-agent prompt must contain, explicitly:
+
+- the issue number, the phase (if any), and the instruction to read the approved plan
+  file at its exact path and implement it verbatim — the plan is the definition of
+  done, not the issue body (the planner already reconciled the two);
+- **the mutation boundary**: Edit/Write + local `git commit` on its own branch only —
+  no push, no PR, no `gh` mutations, no issue edits, no ship-log writes, no memory
+  writes, no `CHANGELOG.md` beyond its own entry, no TaskCreate/TaskUpdate, and never
+  invoke `chatgpt-review` (the coordinator owns all review sessions);
+- the instruction to follow `skills/ship/references/per-issue-cycle.md` steps 2–3 and
+  the CHANGELOG part of step 4 — **the ship log is yours, not the worker's** — plus
+  `references/repo-footguns.md`;
+- commit message `<type>(#<ISSUE>): <summary>` + the repo footer convention;
+- what to return: invariant map, files touched, gate/e2e output tail, sabotage-case
+  results, and the contract checklist with each item ticked or explained.
 
 ### 2.4 Verify, review, integrate, log
 
