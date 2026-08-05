@@ -28,7 +28,12 @@ export function parsePlanAuthorResponse(text) {
   }
 
   if (beginCount !== 1 || endCount !== 1) throw new InvalidPlanResponseError('A ready response requires exactly one plan delimiter pair');
-  const readyPattern = new RegExp(`^PLAN_STATUS:\\s*READY\\s*\\r?\\n${escapeRegex(PLAN_BEGIN)}\\r?\\n([\\s\\S]*?)\\r?\\n${escapeRegex(PLAN_END)}$`);
+  // Trailing content after PLAN_END (e.g. a web-search citation footnote ChatGPT appends
+  // when it looked something up while authoring — exactly the behavior a "verify the exact
+  // npm version" finding asks for) is harmless: the begin/end-count check above already
+  // guarantees there is no second delimited plan hiding in it. Only the START is anchored —
+  // PLAN_STATUS/BEGIN must still be the very first thing, so a rogue preamble still fails.
+  const readyPattern = new RegExp(`^PLAN_STATUS:\\s*READY\\s*\\r?\\n${escapeRegex(PLAN_BEGIN)}\\r?\\n([\\s\\S]*?)\\r?\\n${escapeRegex(PLAN_END)}[\\s\\S]*$`);
   const match = normalized.match(readyPattern);
   if (!match) throw new InvalidPlanResponseError('A ready response must contain only one ordered, line-delimited plan');
   const plan = match[1].trim();

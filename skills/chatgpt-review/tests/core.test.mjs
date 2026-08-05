@@ -174,6 +174,16 @@ test('plan-author response parser accepts ready and blocked protocols', () => {
   });
 });
 
+test('plan-author response parser tolerates a trailing web-search citation footnote after PLAN_END', () => {
+  // ChatGPT appends a link footnote after the delimited plan when it looked something up
+  // while authoring (e.g. verifying an exact npm package version, which is exactly the
+  // behavior a "check the real version" review finding asks for) — reproduced live on
+  // issue #585 phase 0's revision. The delimiter-count check already guarantees no second
+  // plan is hiding in that trailing text, so it must not fail the whole response.
+  const withFootnote = `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Plan\n\nBody\n${PLAN_END}\n\n[1]: https://www.npmjs.com/package/%40clickhouse/client-web "client-web"`;
+  assert.deepEqual(parsePlanAuthorResponse(withFootnote), { planStatus: 'ready', plan: '# Plan\n\nBody\n', blocker: null });
+});
+
 test('plan-author response parser rejects missing, duplicate, empty, and malformed protocols', () => {
   const invalid = [
     `PLAN_STATUS: READY\n# no markers`,
