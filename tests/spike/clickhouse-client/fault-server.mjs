@@ -269,6 +269,88 @@ export function startFaultServer() {
         res.end();
         return;
       }
+      case 'slow-headers': {
+        // Headers themselves are delayed (plan §18 "cancel awaiting headers";
+        // §21 "timeout") — unlike 'delayed-headers-scheduled-rows', where
+        // headers arrive immediately and only ROWS are delayed. A caller-side
+        // abort fired before this resolves proves "cancellation without
+        // offline/auth mutation"; the official client's own connection-level
+        // `request_timeout` (which only guards up to headers — see
+        // `web_connection.js`'s `request()`, `clearTimeout` right after
+        // `fetchFn` resolves) fires here too, distinctly from an AbortError.
+        await sleep(2000);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write(ndjson({ meta: [{ name: 'n', type: 'String' }] }));
+        res.write(ndjson({ row: { n: 'too-late' } }));
+        res.end();
+        return;
+      }
+      case 'read-reset-then-success': {
+        // Plan §23 "Connection resets": "read may retry once" — attempt 1
+        // resets mid-stream (after headers+one row, matching
+        // 'post-header-connection-reset''s shape); attempt 2 completes
+        // normally. Distinct fixture name from 'post-header-connection-reset'
+        // (which always resets, every attempt) because that one instead
+        // proves the ambiguous-write NO-retry case, where a second attempt
+        // must never happen.
+        const attempt = (attemptCounts.get(fixture) || 0) + 1;
+        attemptCounts.set(fixture, attempt);
+        if (attempt === 1) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.write(ndjson({ meta: [{ name: 'n', type: 'String' }] }));
+          res.write(ndjson({ row: { n: 'before-reset' } }));
+          req.socket.destroy();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write(ndjson({ meta: [{ name: 'n', type: 'String' }] }));
+        res.write(ndjson({ row: { n: 'ok-after-retry' } }));
+        res.end();
+        return;
+      }
+      case 'totals-extremes': {
+        // Plan §18 "totals/extremes": neither adapter's `StreamLine` folding
+        // recognizes `{totals}`/`{extremes}`/`{rows_before_limit_at_least}`
+        // lines today (`core/stream.ts`'s `applyStreamLine` only matches
+        // meta/row/progress/exception) — this fixture proves BOTH adapters
+        // tolerate them as a silent no-op (never misparsed as a row, never an
+        // error) rather than asserting the harness itself understands them
+        // (a documented current-behavior gap, not adopted new parsing).
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write(ndjson({ meta: [{ name: 'n', type: 'String' }] }));
+        res.write(ndjson({ row: { n: '1' } }));
+        res.write(ndjson({ row: { n: '2' } }));
+        res.write(ndjson({ totals: { n: '3' } }));
+        res.write(ndjson({ extremes: { min: { n: '1' }, max: { n: '2' } } }));
+        res.write(ndjson({ rows_before_limit_at_least: 2 }));
+        res.write(ndjson({ progress: { read_rows: '2', read_bytes: '2', total_rows_to_read: '2', elapsed_ns: '1000' } }));
+        res.end();
+        return;
+      }
+      case 'raw-tsv-fixed': {
+        res.writeHead(200, { 'content-type': 'text/tab-separated-values' });
+        res.end('a\tb\n1\tx\n2\ty\n');
+        return;
+      }
+      case 'raw-csv-fixed': {
+        res.writeHead(200, { 'content-type': 'text/csv' });
+        res.end('"a","b"\n"1","x"\n"2","y"\n');
+        return;
+      }
+      case 'raw-json-fixed': {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"meta":[{"name":"a","type":"String"}],"data":[{"a":"1"},{"a":"2"}]}\n');
+        return;
+      }
+      case 'no-output': {
+        // Plan §18 "no-output command": an INSERT/DDL-shaped response — 200,
+        // no body at all (matching a real ClickHouse `command()`/no-output
+        // acknowledgement) — proves `command()` drains/discards without
+        // hanging and issues exactly one request.
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end();
+        return;
+      }
       default: {
         res.writeHead(404, { 'content-type': 'text/plain' });
         res.end('unknown fixture: ' + fixture);
@@ -287,6 +369,26 @@ export function startFaultServer() {
         resetAttemptCounts: () => attemptCounts.clear(),
         close: () => new Promise((res2) => server.close(() => res2())),
       });
+    });
+  });
+}
+
+/**
+ * Bind an ephemeral loopback server, read back its assigned port, then close
+ * it immediately — the returned `baseUrl` therefore reliably rejects any
+ * connection attempt (ECONNREFUSED) without needing real network access,
+ * for the "offline rejection is classified distinctly from an HTTP query
+ * error" scenario (plan §18/§21). Kept in this `.mjs` file (not
+ * `parity.test.ts`) so no spike `.ts` file needs a `node:http` import —
+ * matching every other Node-only usage in this spike (`@types/node` stays
+ * an unrelated, un-taken repository-wide decision, per plan §8).
+ */
+export function closedLoopbackUrl() {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(`http://127.0.0.1:${port}`));
     });
   });
 }

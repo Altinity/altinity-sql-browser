@@ -35,6 +35,16 @@ export interface EpochFence {
   /** How many times a request was rejected at the fetch boundary for being
    *  stale — the epoch-flip race's proof of effect. */
   readonly staleRejections: number;
+  /** How many times a delegated fetch's RESPONSE arrived after the epoch had
+   *  already turned (plan §21 "stale response": "no replacement lifecycle or
+   *  auth mutation") — this checkpoint doesn't reject the response (the
+   *  original caller's data is still theirs to read), it only proves a
+   *  post-response checkpoint EXISTS and fires, so a future Phase 1 adapter
+   *  wiring a real lifecycle callback (`onTransportConnected`-equivalent)
+   *  would have somewhere to gate it, exactly like `ch-client.ts`'s own
+   *  `authedFetch` gates `ctx.authConfirmed`/`onTransportConnected` on the
+   *  same check immediately after its `fetch` resolves. */
+  readonly staleResponses: number;
 }
 
 /** Extract `query_id` from a ClickHouse HTTP request URL's query string —
@@ -65,6 +75,7 @@ export function createEpochFence(getCurrentEpoch: () => number, realFetch: typeo
   const registered = new Map<string, number>();
   let delegatedCalls = 0;
   let staleRejections = 0;
+  let staleResponses = 0;
 
   function register(queryId: string, expectedEpoch: number): boolean {
     if (getCurrentEpoch() !== expectedEpoch) return false;
@@ -80,7 +91,15 @@ export function createEpochFence(getCurrentEpoch: () => number, realFetch: typeo
       throw new StaleEpochError();
     }
     delegatedCalls += 1;
-    return realFetch(input, init);
+    const resp = await realFetch(input, init);
+    // Post-response checkpoint (plan §21 "stale response"): the epoch may
+    // have turned WHILE this fetch was in flight. The response still belongs
+    // to its original caller (never discarded/rejected here — see the
+    // `staleResponses` docstring), but this proves the checkpoint fires.
+    if (expectedEpoch !== undefined && getCurrentEpoch() !== expectedEpoch) {
+      staleResponses += 1;
+    }
+    return resp;
   }) as typeof fetch;
 
   return {
@@ -88,6 +107,7 @@ export function createEpochFence(getCurrentEpoch: () => number, realFetch: typeo
     unregister(queryId: string) { registered.delete(queryId); },
     guardedFetch,
     get delegatedCalls() { return delegatedCalls; },
+    get staleResponses() { return staleResponses; },
     get staleRejections() { return staleRejections; },
   };
 }

@@ -17,13 +17,35 @@ export interface SpikeRequest {
    *  mirroring `RunQueryOptions.format` in `src/net/ch-client.ts`. */
   format: 'Table' | 'KPI' | string;
   /** ClickHouse HTTP query-string settings (e.g. `max_result_rows`,
-   *  `result_overflow_mode`, `wait_end_of_query`). */
+   *  `result_overflow_mode`, `wait_end_of_query`) — sent as BARE query-string
+   *  keys (no prefix) by both adapters: the current adapter merges them
+   *  straight into `runQuery`'s own `params` bag (which `chUrl` sends
+   *  verbatim); the official adapter passes them as `clickhouse_settings`,
+   *  which `toSearchParams` also emits as bare keys. */
   settings?: Record<string, string | number>;
-  /** Native ClickHouse query parameters (`param_<name>`). */
-  params?: Record<string, string | number>;
-  /** Force multipart param encoding instead of URL query-string params. */
+  /** Native ClickHouse query parameters, keyed by BARE name (no `param_`
+   *  prefix — each adapter adds it independently: the current adapter
+   *  prefixes each key itself before merging into `runQuery`'s `params` bag;
+   *  the official adapter passes this object as `query_params`, and the
+   *  vendor library's own `toSearchParams`/`formatQueryParams` add the
+   *  `param_` prefix and format the value). A value may be a plain
+   *  scalar or an array of scalars (the official client's own array-literal
+   *  formatting — quoted elements, `[a,b]` — is mirrored by
+   *  `formatNativeParamValue` in `current-adapter.ts` so both sides produce
+   *  the identical wire string for an array-valued native parameter). */
+  params?: Record<string, string | number | (string | number)[]>;
+  /** Force multipart param encoding instead of URL query-string params
+   *  (`use_multipart_params`). Only the official client's `query()` honors
+   *  this — `exec()`/`command()` never send `query_params` as multipart
+   *  (verified against installed 1.23.1's `WebConnection.runExec`), so this
+   *  field only has an observable effect when `format` is `'KPI'`. */
   multipart?: boolean;
-  role?: string;
+  /** Automatic multipart promotion once the URL-encoded `query_params`
+   *  length exceeds the vendor library's own budget (`use_multipart_params_auto`,
+   *  4096 chars in installed 1.23.1). Same `query()`-only restriction as
+   *  `multipart` above. */
+  multipartAuto?: boolean;
+  role?: string | string[];
   /** Logical ClickHouse session id — omitted means session-less. */
   sessionId?: string;
   /** Caller-supplied query_id, allocated BEFORE execution (plan §7/§18 "query

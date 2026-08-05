@@ -35,6 +35,34 @@ export function credentialAuthHeader(credential: SpikeCredential): string {
   }
 }
 
+/** Optional hooks `makeCurrentCtx` wires onto `ChCtx`'s own epoch/lifecycle
+ * seam (plan §21's "stale before request" / "stale during refresh" /
+ * "stale response" cases need REAL `ch-client.ts` epoch fencing exercised
+ * through `authedFetch`, not a harness reimplementation of it). Every field
+ * is optional and defaults to the pre-existing no-op behavior, so no
+ * existing call site needs to change. */
+export interface CurrentCtxHooks {
+  currentEpoch?: () => number;
+  onSignedOut?: (detail?: string, expectedEpoch?: number) => void;
+  onTransportConnected?: () => void;
+  onTransportOffline?: (error?: unknown) => void;
+  /** Overrides the default no-op `refresh()` — a test drives this to return
+   *  `true` after simulating a token refresh (plan's "refresh then retry"),
+   *  optionally delaying/mutating shared state first (plan's "stale during
+   *  refresh"). */
+  refresh?: () => Promise<boolean>;
+  /** Overrides the default constant-token `getToken()` — lets a test observe
+   *  how many times a token was actually read (e.g. to prove a stale-epoch
+   *  refresh's resolved token is never re-read for the delegate fetch). */
+  getToken?: () => Promise<string | null>;
+  /** Fires the instant a delegate fetch RESOLVES — before `runCurrent`'s own
+   *  `lastResponse` capture and before `authedFetch`'s own post-fetch epoch
+   *  check runs (plan §21 "stale response"). A test flips a shared epoch
+   *  variable here to deterministically land the flip in that exact window,
+   *  with no timing race. */
+  onFetchResponse?: (resp: Response) => void;
+}
+
 /** Build a `ChCtx` bound to one `SpikeRequest`'s credential and origin, using
  * the real production `fetch` seam contract. `onFetch` is called once per
  * underlying fetch invocation (constructor/fetch-count invariants);
@@ -42,7 +70,10 @@ export function credentialAuthHeader(credential: SpikeCredential): string {
  * instrumentation at the already-injected fetch boundary, not a second
  * request path: production's `RunQueryResult` doesn't surface headers to
  * `runQuery`'s caller, so this is how the harness reads them without
- * reimplementing `runQuery`'s own request/parsing logic. */
+ * reimplementing `runQuery`'s own request/parsing logic. `hooks` (optional)
+ * wires the real epoch/lifecycle seam (`CurrentCtxHooks`, above) — omitted
+ * entirely preserves the exact previous behavior (no epoch hook, `refresh()`
+ * always resolves false, `onSignedOut` a no-op). */
 export function makeCurrentCtx(
   request: SpikeRequest,
   baseUrl: string,
@@ -50,6 +81,7 @@ export function makeCurrentCtx(
   onFetch?: () => void,
   onResponse?: (resp: Response) => void,
   initialAuthConfirmed?: boolean,
+  hooks?: CurrentCtxHooks,
 ): ChCtx {
   const authHeader = credentialAuthHeader(request.credential);
   return {
@@ -60,25 +92,80 @@ export function makeCurrentCtx(
       onResponse?.(resp);
       return resp;
     }) as typeof fetch,
-    getToken: async () => authHeader.replace(/^(Bearer|Basic) /, ''),
-    refresh: async () => false,
-    onSignedOut: () => {},
+    getToken: hooks?.getToken || (async () => authHeader.replace(/^(Bearer|Basic) /, '')),
+    refresh: hooks?.refresh || (async () => false),
+    onSignedOut: hooks?.onSignedOut || (() => {}),
     authHeader: () => authHeader,
     authConfirmed: initialAuthConfirmed,
+    currentEpoch: hooks?.currentEpoch,
+    onTransportConnected: hooks?.onTransportConnected,
+    onTransportOffline: hooks?.onTransportOffline,
   };
 }
 
+/** Format one native-query-parameter VALUE exactly as installed 1.23.1's own
+ * `formatQueryParams` would (`dist/common/data_formatter/format_query_params.js`):
+ * a top-level scalar is stringified as-is (no quoting); an array wraps each
+ * element in single quotes and joins with `,` inside `[...]` (the vendor
+ * library's `isInArrayOrTuple: true, wrapStringInQuotes: true` branch).
+ * Restricted, on purpose, to exactly the shapes this spike's fixtures use
+ * (digit-string / number scalars and arrays of them — no escaping of
+ * tab/newline/quote/backslash, which the real vendor formatter also handles
+ * but no spike fixture exercises) — `ch-client.ts`'s own `params` field has
+ * no array-value concept at all, so the CURRENT adapter must pre-format an
+ * array-valued native parameter into the exact wire string itself before
+ * handing it to `runQuery`'s plain `Record<string, string|number>` params
+ * bag; the OFFICIAL adapter instead hands the array straight to
+ * `query_params` and lets the vendor library's own formatter do this. A
+ * match between the two proves this hand-written mirror is correct — see
+ * the "URL parameters" scenario in `parity.test.ts`. */
+export function formatNativeParamValue(value: string | number | (string | number)[]): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => `'${v}'`).join(',')}]`;
+  }
+  return String(value);
+}
+
+/** Fold a `SpikeRequest`'s settings/native-params/role/session into the flat
+ * `Record<string, string|number>` bag `ch-client.ts`'s `runQuery`/
+ * `exportQuery` accept — settings ride as bare keys (matching the official
+ * adapter's `clickhouse_settings`); native params are prefixed `param_`
+ * here (the CURRENT side's own responsibility — see `formatNativeParamValue`'s
+ * docstring for why the official side instead delegates this to the vendor
+ * library); `role`/`sessionId` become the same `role`/`session_id` bare keys
+ * the official client's own `toSearchParams` emits (array-valued `role` is
+ * deliberately unsupported here — `ch-client.ts`'s params bag cannot repeat a
+ * key, so every spike scenario exercising `role` uses a single string). */
+function nativeParamsForCurrent(request: SpikeRequest): Record<string, string | number> {
+  const out: Record<string, string | number> = { ...(request.settings || {}) };
+  for (const [k, v] of Object.entries(request.params || {})) {
+    out[`param_${k}`] = formatNativeParamValue(v);
+  }
+  if (typeof request.role === 'string') out.role = request.role;
+  if (request.sessionId) out.session_id = request.sessionId;
+  return out;
+}
+
 /** Run one `SpikeRequest` through the real production `runQuery`/`exportQuery`
- * functions, folding the result into the normalized `SpikeOutcome` vocabulary. */
+ * functions, folding the result into the normalized `SpikeOutcome` vocabulary.
+ * `hooks` (optional) wires `ChCtx`'s real epoch/lifecycle seam — see
+ * `CurrentCtxHooks`. */
 export async function runCurrent(
   request: SpikeRequest,
   baseUrl: string,
   realFetch: typeof fetch,
   initialAuthConfirmed?: boolean,
+  hooks?: CurrentCtxHooks,
 ): Promise<AdapterRunResult> {
   let fetchCalls = 0;
   let lastResponse: Response | null = null;
-  const ctx = makeCurrentCtx(request, baseUrl, realFetch, () => { fetchCalls += 1; }, (resp) => { lastResponse = resp; }, initialAuthConfirmed);
+  const ctx = makeCurrentCtx(
+    request, baseUrl, realFetch,
+    () => { fetchCalls += 1; },
+    (resp) => { lastResponse = resp; hooks?.onFetchResponse?.(resp); },
+    initialAuthConfirmed,
+    hooks,
+  );
   const outcome: SpikeOutcome = emptyOutcome();
   const t0 = Date.now();
 
@@ -88,7 +175,7 @@ export async function runCurrent(
         queryId: request.queryId,
         signal: request.signal,
         format: request.format === 'Table' || request.format === 'KPI' ? undefined : request.format,
-        params: request.params,
+        params: nativeParamsForCurrent(request),
       });
       outcome.httpStatus = resp.status;
       outcome.responseHeaders = Object.fromEntries(resp.headers.entries());
@@ -117,7 +204,7 @@ export async function runCurrent(
       format: request.format,
       queryId: request.queryId,
       signal: request.signal,
-      params: { ...(request.settings || {}), ...(request.params || {}) },
+      params: nativeParamsForCurrent(request),
       onLine: (line) => {
         applyStreamLine(line, result);
         if (line.row && !firstRow) { firstRow = true; outcome.firstRowAtMs = Date.now() - t0; }

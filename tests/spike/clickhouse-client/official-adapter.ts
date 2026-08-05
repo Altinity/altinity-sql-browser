@@ -2,10 +2,23 @@
 // ONLY module in this repository that imports `@clickhouse/client-web`.
 // Constructs one client per connection configuration (never per request or
 // refresh — plan's "One official client per connection config" invariant),
-// injects fetch, supplies complete per-request authentication via
-// `http_headers` (never a client-level default), and exposes only the
-// test-owned normalized `SpikeOutcome` — the official result/error types
-// (`ClickHouseError`, `ExecResult`, …) never escape this file.
+// injects fetch, supplies complete per-request authentication via the
+// vendor client's own per-call `auth` field (never a client-level default),
+// and exposes only the test-owned normalized `SpikeOutcome` — the official
+// result/error types (`ClickHouseError`, `ExecResult`, …) never escape this
+// file.
+//
+// EMPIRICAL FINDING (recorded in docs/evidence/585/critical-questions.md):
+// per-request `http_headers.Authorization` does NOT override the credential
+// in installed 1.23.1. `WebConnection#defaultHeadersWithOverride` spreads
+// `http_headers` first, then unconditionally sets `Authorization:
+// authHeader` LAST — where `authHeader` is derived from `params.auth` (or
+// the client-level default when `params.auth` is absent), clobbering
+// whatever `Authorization` a caller supplied via `http_headers`. The correct
+// per-request override is the `auth` field
+// (`{username,password}`/`{access_token}`), which THIS file uses
+// (`officialAuthFor`, below) — `http_headers` remains available for
+// genuinely EXTRA headers, never for Authorization.
 //
 // Format decision (plan §16, proven in `format-type-probe.ts`):
 //   * KPI            -> `query({ format: 'JSONEachRowWithProgress' })` — the
@@ -26,7 +39,6 @@ import { isProgressRow, isRow } from '@clickhouse/client-web';
 import type { AdapterRunResult, SpikeCredential, SpikeRequest, SpikeOutcome } from './types.js';
 import { emptyOutcome, IncrementalSha256 } from './normalize.js';
 import { bridgeNdjsonProgress } from './progress-bridge.js';
-import { credentialAuthHeader } from './current-adapter.js';
 
 export interface OfficialConnection {
   client: ClickHouseClient;
@@ -35,12 +47,17 @@ export interface OfficialConnection {
 }
 
 /** Construct ONE official client for `baseUrl`, with `realFetch` injected and
- * fetch-call counting wired in. The client-level `auth`/`http_headers` are
- * left at a non-secret, deliberately-invalid default (plan §21 "Per-request
- * auth": "Construct one official client with a non-secret invalid default
- * credential") — every real request supplies its own `http_headers`
- * override, so the default is never authoritative. */
-export function createOfficialConnection(baseUrl: string, realFetch: typeof fetch): OfficialConnection {
+ * fetch-call counting wired in. The client-level `auth` is left at a
+ * non-secret, deliberately-invalid default (plan §21 "Per-request auth":
+ * "Construct one official client with a non-secret invalid default
+ * credential") — every real request supplies its own per-call `auth`
+ * override (see `officialAuthFor`), so the default is never authoritative.
+ * `requestTimeoutMs`
+ * (optional) sets the vendor client's own `request_timeout` (default 30s) —
+ * used by the "timeout" scenario to prove the official client's connection-
+ * level timeout produces a distinct `Error("Timeout error.")`, never an
+ * `AbortError`, unlike a caller-driven `abort_signal`. */
+export function createOfficialConnection(baseUrl: string, realFetch: typeof fetch, requestTimeoutMs?: number): OfficialConnection {
   let fetchCalls = 0;
   const countingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     fetchCalls += 1;
@@ -51,6 +68,7 @@ export function createOfficialConnection(baseUrl: string, realFetch: typeof fetc
     username: 'asb-spike-default-invalid',
     password: 'asb-spike-default-invalid',
     fetch: countingFetch,
+    ...(requestTimeoutMs !== undefined ? { request_timeout: requestTimeoutMs } : {}),
   });
   return {
     client,
@@ -59,8 +77,27 @@ export function createOfficialConnection(baseUrl: string, realFetch: typeof fetc
   };
 }
 
-function httpHeadersFor(credential: SpikeCredential): Record<string, string> {
-  return { Authorization: credentialAuthHeader(credential) };
+/** The vendor client's own per-call credential-override shape (`BaseQueryParams.auth`)
+ * for one `SpikeCredential` — see this file's header comment for why this,
+ * and not `http_headers`, is the correct per-request override in installed
+ * 1.23.1. `'jwt-as-basic'` maps to `{username,password}` with the JWT AS the
+ * password (Basic scheme) — matching the app's own JWT-as-Basic-password
+ * pattern (`ch-client.ts`'s `authHeader` seam), never `access_token` (which
+ * is Bearer-scheme only). `'invalid'` maps to a non-secret, deliberately
+ * wrong credential distinct from the connection's own default, so a test can
+ * tell "the override was honored" apart from "the default leaked through". */
+export function officialAuthFor(credential: SpikeCredential): { username: string; password: string } | { access_token: string } {
+  switch (credential.kind) {
+    case 'basic':
+      return { username: credential.username, password: credential.password };
+    case 'bearer':
+      return { access_token: credential.token };
+    case 'jwt-as-basic':
+      return { username: credential.username, password: credential.jwt };
+    case 'invalid':
+    default:
+      return { username: 'asb-spike-per-request-invalid', password: 'asb-spike-per-request-invalid' };
+  }
 }
 
 function classifyError(e: unknown, outcome: SpikeOutcome, signal?: AbortSignal): void {
@@ -81,8 +118,23 @@ function classifyError(e: unknown, outcome: SpikeOutcome, signal?: AbortSignal):
  * itself performs zero client construction. */
 export async function runOfficial(conn: OfficialConnection, request: SpikeRequest): Promise<AdapterRunResult> {
   const outcome: SpikeOutcome = emptyOutcome();
+  // Pre-flight abort guard (plan §22 "pre-aborted before request: no fetch
+  // side effect") — EMPIRICALLY VERIFIED (see docs/evidence/585/
+  // critical-questions.md): installed 1.23.1's exec()/query()/command() do
+  // NOT check `abort_signal.aborted` up front; `web_connection.js`'s
+  // `request()` only reacts to a FUTURE 'abort' EVENT via
+  // `params.abort_signal.onabort = ...`, so an ALREADY-aborted signal is
+  // silently ignored and the request reaches the network unchanged (proven:
+  // a pre-aborted `exec()` against a real server resolves normally and the
+  // server records the hit). This adapter-side guard is the narrow fix a
+  // real Phase 1 adapter would also need — the same shape as the epoch
+  // fence's own adapter-side checkpoint #1 in `guarded-fetch.ts`.
+  if (request.signal?.aborted) {
+    outcome.cancelled = true;
+    return { outcome, constructorCalls: conn.constructorCalls, fetchCalls: 0 };
+  }
   const t0 = Date.now();
-  const http_headers = httpHeadersFor(request.credential);
+  const auth = officialAuthFor(request.credential);
   const fetchCallsBefore = conn.fetchCalls;
 
   try {
@@ -99,8 +151,18 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
         session_id: request.sessionId,
         role: request.role,
         abort_signal: request.signal,
-        http_headers,
+        auth,
+        clickhouse_settings: request.settings,
+        // NOTE (plan §18 "forced multipart"/"automatic multipart"): installed
+        // 1.23.1's `exec()`/`command()` never honor `use_multipart_params(_auto)`
+        // at all — only `query()` does (verified against
+        // `dist/connection/web_connection.js`'s `runExec` vs. `query`). These
+        // two fields are still threaded through here for parameter-shape
+        // parity with `query()` below, but they are a documented no-op on
+        // this branch — the multipart scenarios in `parity.test.ts` exercise
+        // `query()` directly for exactly this reason.
         use_multipart_params: request.multipart,
+        use_multipart_params_auto: request.multipartAuto,
         query_params: request.params,
       });
       outcome.queryId = res.query_id;
@@ -126,8 +188,12 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
         session_id: request.sessionId,
         role: request.role,
         abort_signal: request.signal,
-        http_headers,
+        auth,
+        clickhouse_settings: request.settings,
+        // Only `query()` (this branch) honors multipart promotion in
+        // installed 1.23.1 — see the `exec()` branch's note above.
         use_multipart_params: request.multipart,
+        use_multipart_params_auto: request.multipartAuto,
         query_params: request.params,
       });
       outcome.queryId = rs.query_id;
@@ -166,8 +232,12 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
         session_id: request.sessionId,
         role: request.role,
         abort_signal: request.signal,
-        http_headers,
+        auth,
+        clickhouse_settings: request.settings,
+        // Documented no-op on exec() in installed 1.23.1 — see the raw
+        // branch's note above.
         use_multipart_params: request.multipart,
+        use_multipart_params_auto: request.multipartAuto,
         query_params: request.params,
       });
       outcome.queryId = res.query_id;
@@ -205,6 +275,64 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
   };
 }
 
+// ── Spike-only official-side refresh driver ─────────────────────────────────
+// Plan §21 "refresh then retry" / "stale during refresh": the vendor client
+// has NO refresh policy of its own (per-request `auth` is the whole
+// auth surface — see `runOfficial` above), so a comparable "one refresh, one
+// replay" policy has to be driven by the CALLER, exactly like `ch-client.ts`'s
+// own `authedFetch` drives it around the injected `fetch` seam. This is
+// SPIKE-ONLY experiment code (plan §21's "If [it] becomes a second general
+// request implementation, fail auth/epoch parity" — this narrow, single-retry
+// driver is not that: it is the Phase 1 candidate shape for this one policy,
+// not a second transport). Never adopted as-is; a future Phase 1 adapter
+// would fold an equivalent policy into its own request path.
+
+export interface RefreshDrivenResult {
+  outcome: SpikeOutcome;
+  /** How many times the official client's method was actually invoked. */
+  attempts: number;
+  /** How many times `refresh()` was called. */
+  refreshCalls: number;
+}
+
+/** Run `request` once; on a classified authentication failure (the fault
+ * server's `AUTHENTICATION_FAILED`/code 516, matching `401-then-success`'s
+ * fixture body), call `refresh()` exactly once and — if it yields a
+ * replacement credential — replay the SAME request with that credential,
+ * exactly once, mirroring `authedFetch`'s own `attempt === 0` bound. If
+ * `isCurrentEpoch()` returns false immediately after `refresh()` resolves
+ * (the "stale during refresh" race), the replacement credential is NEVER
+ * read or replayed — this proves the same "no replacement credential or
+ * lifecycle mutation" invariant `ch-client.ts`'s own `staleEpochAbort` guards,
+ * on the official adapter's own retry path. */
+export async function runOfficialRefreshThenRetry(
+  conn: OfficialConnection,
+  request: SpikeRequest,
+  refresh: () => Promise<SpikeCredential | null>,
+  isCurrentEpoch: () => boolean,
+): Promise<RefreshDrivenResult> {
+  let attempts = 0;
+  let refreshCalls = 0;
+  let credential = request.credential;
+  for (;;) {
+    attempts += 1;
+    const attemptResult = await runOfficial(conn, { ...request, credential });
+    const authFailure = attemptResult.outcome.chCode === 516;
+    if (!authFailure || attempts > 1) {
+      return { outcome: attemptResult.outcome, attempts, refreshCalls };
+    }
+    refreshCalls += 1;
+    const next = await refresh();
+    if (!isCurrentEpoch()) {
+      const stale = emptyOutcome();
+      stale.cancelled = true;
+      return { outcome: stale, attempts, refreshCalls };
+    }
+    if (!next) return { outcome: attemptResult.outcome, attempts, refreshCalls };
+    credential = next;
+  }
+}
+
 // ── QueryExecutionService shim ──────────────────────────────────────────────
 // Plan §23 "Overlap two requests in one session and feed official-spike
 // outcomes through existing QueryExecutionService" / invariant map's "Retry
@@ -229,8 +357,8 @@ import type { ChCtx, RunQueryOptions, RunQueryResult } from '../../../src/net/ch
 export function makeOfficialRunQueryShim(conn: OfficialConnection, credentialFor: (ctx: ChCtx) => SpikeCredential) {
   return async function officialRunQueryShim(ctx: ChCtx, sql: string, o: RunQueryOptions = {}): Promise<RunQueryResult> {
     const fmt = o.format || 'Table';
-    const http_headers = { Authorization: credentialAuthHeader(credentialFor(ctx)) };
-    const common = { query_id: o.queryId, abort_signal: o.signal, http_headers, query_params: o.params };
+    const auth = officialAuthFor(credentialFor(ctx));
+    const common = { query_id: o.queryId, abort_signal: o.signal, auth, query_params: o.params };
 
     if (fmt === 'Table') {
       const fullSql = `${sql}\nFORMAT JSONStringsEachRowWithProgress`;
