@@ -167,9 +167,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   gains `nav`/`workspaceSession`.
 - **Extracted `dashboardRepaintPlan` + `createTileGestureController` out of
   `renderDashboard`'s closure** (#589, phase 5 of the #593 refactor umbrella,
-  3 waves; zero functional change). `dashboard.ts` shrank from 3,228 to 2,719
-  lines (-509, -15.8%) — within AC4's ~500–700-line target without the
-  optional tile-chrome extraction, which stays out of scope for this issue.
+  3 waves plus 3 rounds of ChatGPT-review fixes; zero functional change).
+  `dashboard.ts` shrank from 3,228 to 2,772 lines (-456, -14.1%) — the wave-3
+  measurement was -509, but a subsequent correctness fix (restoring
+  compute/apply interleaving across all six repaint decisions so a throw
+  computing a later decision can never strand an earlier one's already-decided
+  side effect, exactly matching pre-extraction ordering) added back ~53 lines
+  of explicit per-decision orchestration, landing below AC4's ~500–700-line
+  target. Reported honestly rather than restated to fit the band; the optional
+  tile-chrome extraction stays out of scope for this issue regardless.
   - **Wave 1** — the repaint-decision logic that used to live as a pile of
     private `let` signature caches inside `renderDashboard`'s `effect()`
     callback now lives in `src/dashboard/application/dashboard-repaint-plan.ts`
@@ -185,6 +191,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     `lastGridSig = ''` signature reset is replaced by an explicit
     `gridStructureInvalidationRev` counter the planner alone consumes, rather
     than any code outside it reasoning about a raw signature value.
+    (ChatGPT-review follow-up: the module is decomposed into six granular
+    pure functions — `planRepublishFlow`/`planBarRebuild`/`planOptionsPush`/
+    `planLabelRefresh`/`planPersist`/`planStructuralRebuild` — one per
+    decision, so `dashboard.ts` can compute-and-apply each one immediately
+    before computing the next, matching pre-extraction ordering exactly. The
+    `dashboardRepaintPlan` composition above remains as a directly-tested
+    convenience surface; production calls the six functions directly. A
+    dedicated test proves the two stay equivalent.)
   - **Wave 2** — `wireTileDrag`/`wireGridResize`/the modifier-cue install (the
     Dashboard's corner-drag resize, Command/Ctrl-drag reorder, and ⌘/Ctrl
     modifier cue) now live in `src/ui/dashboard-tile-gestures.ts` behind an
@@ -205,8 +219,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     the active engine ONCE at pointerdown into its reflow-path choice while
     its rendered-surface lookups keep reading the engine live for the rest of
     that same gesture, so the two can disagree after a mid-drag engine flip.
-    `tests/unit/dashboard.test.ts` gained a dedicated "tile gesture
-    concurrency characterization" suite pinning both down;
+    Filed as #606 and #607 respectively. `tests/unit/dashboard.test.ts`
+    gained a dedicated "tile gesture concurrency characterization" suite
+    pinning both down;
     `tests/unit/dashboard-tile-gestures.test.ts` covers the extracted module
     directly (100/100/97.74/100 stmts/funcs/branches/lines).
   - **Wave 3** — migrated `dashboard.test.ts`'s DOM-simulation gesture/resize-
