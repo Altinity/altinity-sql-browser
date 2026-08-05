@@ -243,19 +243,24 @@ test('missing copy control, denied permission, or a hung clipboard read fall bac
   assert.equal(await driverWith(hungPage).waitForCompletion(hungPage, { before: '', timeoutMs: 20 }), 'plain answer');
 });
 
-test('composer fill is retried through a transient post-response busy state', async () => {
+test('composer fill is given real headroom and retried once through a transient failure', async () => {
   let attempts = 0;
+  let lastTimeout;
   const composer = new Element();
-  composer.fill = async (value) => {
+  composer.fill = async (value, options) => {
     attempts += 1;
-    if (attempts < 3) throw new Error('locator.fill: Timeout 30000ms exceeded');
+    lastTimeout = options?.timeout;
+    if (attempts < 2) throw new Error('locator.fill: Timeout 30000ms exceeded');
     composer.value = value;
   };
   const send = new Element();
   const page = readyPage({ [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send] });
   await driverWith(page).fillAndSend(page, 'prompt text');
-  assert.equal(attempts, 3);
+  assert.equal(attempts, 2);
   assert.equal(composer.value, 'prompt text');
+  // The point of this fix: a large prompt reproducibly needs longer than Playwright's
+  // 30s default, not just a retry at the same short timeout.
+  assert.ok(lastTimeout > 30_000);
 });
 
 test('composer fill gives up and throws after exhausting its retries', async () => {

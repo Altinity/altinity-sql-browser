@@ -140,13 +140,15 @@ export class ChatGptBrowser {
   async fillAndSend(page, prompt) {
     const composer = await firstVisible(page, SELECTORS.composer);
     if (!composer) throw new ReviewError('ui_incompatible', 'ChatGPT composer disappeared before submission');
-    // A very long prior response can leave the page mid-reflow/virtualization for a
-    // while after it looks visible, so a single .fill() can hit Playwright's own
-    // actionability timeout even though assertReady just confirmed visibility. Retry
-    // the fill a few times rather than fail the whole pass on that transient busy state.
+    // A large prompt (a full delivery contract plus accumulated review context can run
+    // tens of KB) reproducibly takes longer than Playwright's default 30s actionability
+    // wait for .fill() to insert into ChatGPT's rich-text composer — not a transient
+    // "busy" blip: three quick retries at the default timeout hit the identical timeout
+    // three times in a row (observed live, twice, on issue #585 phase 0's revision
+    // passes). Give the single attempt real headroom instead of retrying too fast to help.
     let lastError;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try { await composer.fill(prompt); lastError = null; break; }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { await composer.fill(prompt, { timeout: 120_000 }); lastError = null; break; }
       catch (error) { lastError = error; await this.sleep(2000); }
     }
     if (lastError) throw lastError;
