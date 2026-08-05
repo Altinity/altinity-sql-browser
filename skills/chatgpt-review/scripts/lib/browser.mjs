@@ -1,5 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
+
+// ChatGPT virtualizes/prunes older turns out of the DOM in long conversations, so a raw
+// element COUNT of assistant messages does not grow monotonically — it can plateau or even
+// drop as old turns are unmounted. Tracking "is there a new response" by content fingerprint
+// of the current LAST assistant message (instead of by count) survives that pruning.
+export function fingerprintText(text) {
+  return text ? crypto.createHash('sha256').update(text).digest('hex') : null;
+}
 
 export const SELECTORS = Object.freeze({
   composer: ['[data-testid="prompt-textarea"]', '#prompt-textarea', 'textarea[placeholder*="Message"]', '[contenteditable="true"][role="textbox"]'],
@@ -73,21 +82,22 @@ export class ChatGptBrowser {
     const { page, reopened } = await this.pageFor(session);
     try {
       await this.assertReady(page);
-      const existingCount = await this.assistantCount(page);
       const generationActive = await anyVisible(page, SELECTORS.stop);
-      const recordedPasses = session?.passCount ?? 0;
-      if (session && (generationActive || existingCount > recordedPasses)) {
-        this.stderr.write(`Recovering an uncollected ChatGPT response (recorded passes: ${recordedPasses})...\n`);
-        const responseText = await this.waitForCompletion(page, { before: recordedPasses, timeoutMs, target, publish });
-        return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true };
+      const currentTail = await this.latestAssistantText(page);
+      const recordedFingerprint = session?.lastResponseFingerprint ?? null;
+      const hasUncollected = generationActive || (Boolean(currentTail) && fingerprintText(currentTail) !== recordedFingerprint);
+      if (session && hasUncollected) {
+        this.stderr.write('Recovering an uncollected ChatGPT response...\n');
+        const responseText = await this.waitForCompletion(page, { before: null, timeoutMs, target, publish });
+        return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true, responseFingerprint: fingerprintText(responseText) };
       }
       if (uploadPath) await this.upload(page, uploadPath);
-      const before = await this.assistantCount(page);
+      const before = currentTail;
       await this.fillAndSend(page, prompt);
       await this.waitForPermanentConversationUrl(page);
-      this.stderr.write(`Waiting for ChatGPT response (assistant messages before submit: ${before})...\n`);
+      this.stderr.write('Waiting for ChatGPT response...\n');
       const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish });
-      return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false };
+      return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false, responseFingerprint: fingerprintText(responseText) };
     } catch (error) {
       error.conversationUrl = page.url();
       if (diagnosticsDir) await this.captureDiagnostics(page, diagnosticsDir, error).catch(() => {});
@@ -124,10 +134,6 @@ export class ChatGptBrowser {
     const send = await firstVisible(page, SELECTORS.send);
     if (send) await send.click();
     else await composer.press('Enter');
-  }
-
-  async assistantCount(page) {
-    return page.locator(SELECTORS.assistant[0]).count();
   }
 
   async waitForPermanentConversationUrl(page) {
@@ -181,12 +187,16 @@ export class ChatGptBrowser {
       await this.handlePermission(page, target, publish);
       const continuation = await firstVisible(page, SELECTORS.continue);
       if (continuation) { await continuation.click(); stableSince = null; }
-      const count = await this.assistantCount(page);
-      const text = count > before ? await this.latestAssistantText(page) : '';
+      const currentText = await this.latestAssistantText(page);
+      // before === null means "recovering an uncollected response" — accept whatever is
+      // already there. Otherwise before is the pre-submission baseline text (possibly '');
+      // only a DIFFERENT tail counts as the new response. Content-based, not count-based,
+      // so DOM pruning of older turns in a long conversation cannot spuriously suppress it.
+      const text = (before === null || currentText !== before) ? currentText : '';
       const generating = await anyVisible(page, SELECTORS.stop);
       if (text && text === lastText) stableSince ??= this.now();
       else { lastText = text; stableSince = text ? this.now() : null; }
-      if (count > before && text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) return text;
+      if (text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) return text;
       await this.sleep(this.pollMs);
     }
     throw new ReviewError('timed_out', 'Timed out before ChatGPT produced a stable completed response', lastText);

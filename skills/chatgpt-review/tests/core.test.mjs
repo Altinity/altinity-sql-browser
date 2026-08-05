@@ -168,7 +168,7 @@ test('run retains a session and enforces three PR passes', async () => {
   assert.match(result.error, /at most three/);
 });
 
-test('plan mode uploads exactly the supplied file and never authorizes publication', async (t) => {
+test('plan mode uploads a pass-numbered copy (never the literal session-identity path) and never authorizes publication', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-review-plan-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const planFile = path.join(dir, 'complete-plan.md');
@@ -178,10 +178,23 @@ test('plan mode uploads exactly the supplied file and never authorizes publicati
     async create(data) { return { handle: '00000000-0000-4000-8000-000000000002', passCount: 0, ...data }; },
     async write(value) { return value; },
   };
-  const driver = { async review(input) { observed = input; return { responseText: 'review', conversationUrl: 'https://chatgpt.com/c/plan' }; } };
+  let uploadContentAtCallTime;
+  const driver = {
+    async review(input) {
+      observed = input;
+      // Must read here: the temp copy is cleaned up in run()'s `finally` before it returns.
+      uploadContentAtCallTime = await fs.readFile(input.uploadPath, 'utf8');
+      return { responseText: 'review', conversationUrl: 'https://chatgpt.com/c/plan' };
+    },
+  };
   const result = await run(['plan', planFile], { store, driver });
   assert.equal(result.status, 'completed');
-  assert.equal(observed.uploadPath, planFile);
+  // The plan file's own path is the review-session identity and must never be the literal
+  // upload target — re-uploading one unchanging filename every pass is what caused ChatGPT's
+  // own UI to collision-rename it (plan-590(9).md) after enough retries.
+  assert.notEqual(observed.uploadPath, planFile);
+  assert.match(path.basename(observed.uploadPath), /^complete-plan-pass1\.md$/);
+  assert.equal(uploadContentAtCallTime, '# Complete plan\n');
   assert.equal(observed.publish, false);
   assert.match(observed.prompt, /Do not write anything to GitHub/);
 });
