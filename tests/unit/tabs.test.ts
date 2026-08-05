@@ -6,6 +6,7 @@ import {
 } from '../../src/ui/tabs.js';
 import { tabPanel, variableDoc } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
+import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
@@ -100,7 +101,7 @@ describe('renderTabs', () => {
       id: 'w1', key: 'workspace', name: 'Workspace', storageVersion: 5,
       queries: [],
       dashboards: [{ id: 'ops', title: 'ClickHouse Operations', tiles: [{ id: 'tile', queryId: 'd1' }] }],
-    } as unknown as typeof app.currentWorkspace;
+    } as unknown as StoredWorkspaceV5;
     app.state.tabs.value = [
       { id: 't1', name: 'Overview', savedId: 'library', dirtySql: true, dirtySpec: false } as QueryTab,
       { id: 't2', name: 'Overview', savedId: 'd1', dirtySql: false, dirtySpec: false, externalState: 'conflict' } as QueryTab,

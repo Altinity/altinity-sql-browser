@@ -433,8 +433,14 @@ function workspaceDashboards(app: App): readonly DashboardDocumentV2[] {
 function afterLibraryChange(app: App): void {
   // Dashboard shares the application header, but none of the Workbench body
   // chrome below exists. Re-render its route after any allowed header/File
-  // mutation (rename, New dashboard, or Import dashboard).
-  if (app.sqlRoute.surface === 'dashboard') { app.reloadDashboardRoute(); return; }
+  // mutation (rename, New dashboard, or Import dashboard). #590 §1.6:
+  // render-only — the commit already published the aggregate once (through
+  // `applyCommittedWorkspace`, inside `mutateWorkspace`), so this must not
+  // publish a second time (the deleted `reloadDashboardRoute` used to fold
+  // `state.dashboard` back and reassign `app.currentWorkspace`
+  // unconditionally, which — once the field is signal-backed — would be a
+  // SECOND `committedWorkspace` settlement for one logical commit).
+  if (app.sqlRoute.surface === 'dashboard') { app.renderCurrentSurface(); return; }
   app.updateSaveBtn();
   // Always defined by the time a file-menu action can run (post-boot,
   // post-first-renderApp()) — app.types.ts only marks it optional because it's

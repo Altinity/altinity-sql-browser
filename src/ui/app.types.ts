@@ -27,6 +27,7 @@ import type { AppPreferences } from '../application/app-preferences.js';
 import type {
   DashboardSurfaceMode, MainSurfaceState, OpenDashboardRequest, WorkspaceRouteStatus,
 } from '../application/main-surface.js';
+import type { ReadonlySignal } from '@preact/signals-core';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
@@ -542,8 +543,20 @@ export interface App {
    *  cleared on sign-out, re-validated against every committed workspace, and
    *  identified only by `DashboardDocumentV2.id` — never by collection position.
    *  It is also the ONE writer of the `/sql` route's surface/mode, so the URL is
-   *  always derived from this and the two can never disagree. */
-  mainSurface: MainSurfaceState;
+   *  always derived from this and the two can never disagree.
+   *
+   *  #590 — signal-backed ACCESSOR pair (peeking getter, notifying setter):
+   *  the getter returns the CURRENT value without subscribing (peek
+   *  semantics, identical to a plain field read); the setter is the ONLY
+   *  public write path and is what makes the write itself the notification —
+   *  no separate invalidation call exists any more. This is the live-but-
+   *  UNTRACKED compatibility surface; the ONLY read that establishes an
+   *  effect dependency is `app.treeNavigation.value` below. The private
+   *  signal backing this accessor has no public `ReadonlySignal` member of
+   *  its own (zero production consumers need the whole surface — see
+   *  `treeNavigation`'s own doc comment). */
+  get mainSurface(): MainSurfaceState;
+  set mainSurface(surface: MainSurfaceState);
   /** #425 — the one application-level Dashboard navigation entry point. Resolves
    *  the Dashboard by exact id in the active workspace; a missing or duplicate id
    *  is reported through the shared diagnostic path and changes no state. Never
@@ -553,10 +566,6 @@ export interface App {
    *  surface command port — no rebuild, no rerun, no extra history entry — rather
    *  than the full re-render #425 used to deliver it. */
   openDashboard(request: OpenDashboardRequest): void;
-  /** #426 — bump the Dashboard tree's explicit repaint invalidation. The tree
-   *  projects the committed workspace aggregate plus main-surface navigation
-   *  state, neither of which is a signal. */
-  invalidateDashboardTree(): void;
   /** #425 — return to the preserved Query surface (editor + result drawer). */
   showQuerySurface(): void;
   /** #425 — the legacy no-chooser Dashboard entry point: resolves the
@@ -590,7 +599,44 @@ export interface App {
   openVariableTab(dashboardId: string, variableName: string): void;
   /** Current canonical `/sql` route and the live workspace resolved for it. */
   sqlRoute: SqlRoute;
-  currentWorkspace: StoredWorkspaceV5 | null;
+  /**
+   * #590 — signal-backed ACCESSOR pair, ASYMMETRIC by design (TS 4.3
+   * divergent get/set types): the getter returns `StoredWorkspaceV5 | null`
+   * (peek semantics — a live-but-untracked compatibility read), but the
+   * setter accepts `StoredWorkspaceV5` ONLY. A transitional `null`
+   * publication is not part of this general writable port at all — it is a
+   * named departure operation owned by the surface-retirement coordinator
+   * (`src/ui/app.ts` §1.9), which writes the closure-private signal
+   * directly. `app.currentWorkspace = null` therefore fails to compile
+   * anywhere outside that coordinator (see
+   * `tests/unit/app.test.ts`'s `@ts-expect-error` fixture). The setter is
+   * the ONLY public write path, and the write itself is the notification —
+   * see `committedWorkspace` below for the tracked read.
+   */
+  get currentWorkspace(): StoredWorkspaceV5 | null;
+  set currentWorkspace(workspace: StoredWorkspaceV5);
+  /** #590 — the committed aggregate's TRACKED read: the ONLY member whose
+   *  `.value` read establishes an effect dependency (three subscribers today
+   *  — the tab-count/tree/lower-pane effects in `app-shell.ts`). Every real
+   *  projection (boot, a committed mutation, an external refresh, a
+   *  workspace switch, and the retirement coordinator's transitional `null`)
+   *  writes the private signal this projects — see `app.currentWorkspace`'s
+   *  own doc comment for the untracked compatibility read/write pair. A
+   *  `ReadonlySignal`, never a `Signal`: a public mutable member would let
+   *  any caller bypass the setter (`app.committedWorkspace.value = x`),
+   *  foreclosing the setter ever growing more logic — proven by a
+   *  `@ts-expect-error` fixture (this file's own gate). */
+  readonly committedWorkspace: ReadonlySignal<StoredWorkspaceV5 | null>;
+  /** #590 — a `computed` STRUCTURAL key over exactly the main-surface fields
+   *  the Dashboard tree reads (`kind`/`dashboardId`/`currentMember`) — never
+   *  the whole `MainSurfaceState`. The tree effect is the key's one
+   *  subscriber; the one-shot delivery fields (`pendingFocus`/
+   *  `pendingScrollTop`) are deliberately excluded, so consuming them
+   *  notifies nothing. The private main-surface signal itself has NO public
+   *  `ReadonlySignal` member (a zero-consumer primitive today — hard rule
+   *  5) — subscribe through this key, or peek `app.mainSurface` for the
+   *  full surface. */
+  readonly treeNavigation: ReadonlySignal<string>;
   workspaceRouteStatus: WorkspaceRouteStatus;
   /** Route-local commands registered by the mounted surface. They are cleared
    * before every transition, so a disposed Dashboard viewer cannot be called. */
@@ -608,9 +654,6 @@ export interface App {
    * canonicalization use replace. Flat delegate onto `app.nav` (#588 phase 4
    * wave 4) for its wide production consumer set. */
   navigateSqlRoute(route: SqlRoute, method: 'push' | 'replace'): Promise<void>;
-  /** Repaint Dashboard after an in-tab import, retaining its route mode. Flat
-   * delegate onto `app.nav` (#588 phase 4 wave 4). */
-  reloadDashboardRoute(): void;
   /** Resolve the explicit or implicit route workspace and, when it
    *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
    *  `dashboard`, `workspaceId`, `libraryName`) so the whole app (not only
@@ -698,8 +741,7 @@ export interface App {
    *  member (`navigateSqlRoute`/`openDashboard`/`showQuerySurface`/
    *  `showDashboardSurface`/`openSavedQuery`/`openPanelQuery`/
    *  `openVariableTab`/`renderCurrentSurface`/`loadWorkspaceOnBoot`/
-   *  `reloadDashboardRoute`/the generation-guard trio) keeps its flat
-   *  delegate onto this session. */
+   *  the generation-guard trio) keeps its flat delegate onto this session. */
   nav: SurfaceNavigation;
 
   actions: ActionsRegistry;

@@ -175,10 +175,12 @@
       .map((tab) => ({ name: tab.name, sql: tab.sqlDraft, ...tab.doc }));
 
     window.__select = (dashboardId, member = null) => {
+      // #590: the assignment itself is the notification now — `app.mainSurface`
+      // is a signal-backed accessor, and `app.invalidateDashboardTree()` no
+      // longer exists.
       app.mainSurface = dashboardId === null
         ? { kind: 'query' }
         : { kind: 'dashboard', dashboardId, mode: 'edit', currentMember: member, pendingFocus: null };
-      app.invalidateDashboardTree();
     };
     // #428: read COMMITTED truth back out of the store, so an assignment test
     // asserts what was persisted rather than what the projection happens to show.

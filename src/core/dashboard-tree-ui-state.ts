@@ -17,10 +17,11 @@
 // Deliberately NOT a signal, matching `state.libraryFilter`'s precedent
 // (`src/state.ts`): if a repaint effect observed this state, every keystroke in
 // the search box and every scroll frame would repaint the tree — losing the caret
-// on the first and doing pointless work on the second. The tree's ONE reactive
-// input is `state.dashboardTreeRevision` (workspace projection / navigation
-// changes); every change to the state below is followed by the view re-rendering
-// its own row list directly, exactly as `saved-history.ts` does.
+// on the first and doing pointless work on the second. The tree's reactive
+// inputs (#590) are `app.committedWorkspace` (the committed aggregate) and
+// `app.treeNavigation` (a computed structural key over main-surface
+// navigation); every change to the state below is followed by the view
+// re-rendering its own row list directly, exactly as `saved-history.ts` does.
 //
 // Every function is copy-on-write, so a caller can never observe a half-updated
 // value and each returned state is safe to compare by identity.

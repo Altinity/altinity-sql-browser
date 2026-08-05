@@ -9,7 +9,11 @@
 // TS otherwise can't resolve at all.
 declare module 'node:fs' {
   function readFileSync(path: string, encoding: string): string;
-  export { readFileSync };
+  // #590: `tests/unit/surface-lifecycle-arch.test.ts` walks `src/**`
+  // recursively (Node 18.17+/20.1+ `recursive: true`, returning plain
+  // relative-path strings — no `Dirent`/`statSync` needed).
+  function readdirSync(path: string, options: { recursive: true }): string[];
+  export { readFileSync, readdirSync };
 }
 declare module 'node:url' {
   function fileURLToPath(url: string): string;

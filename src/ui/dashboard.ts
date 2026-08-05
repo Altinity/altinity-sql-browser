@@ -184,7 +184,14 @@ export interface DashboardApp {
   wallNow(): number;
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
-  currentWorkspace: StoredWorkspaceV5 | null;
+  // #590 decision 16: no write to this field exists anywhere in this module
+  // (grep-verified) — narrowed to `readonly` so a `DashboardApp`-typed
+  // reference cannot reopen the null-write hole the accessor's asymmetric
+  // setter closes (pass-8 finding: TS checks accessor-vs-writable
+  // assignability via the GETTER's type, so an un-narrowed re-declaration
+  // would still compile `port.currentWorkspace = null` and invoke the real
+  // setter at runtime).
+  readonly currentWorkspace: StoredWorkspaceV5 | null;
   sqlRoute: SqlRoute;
   /** #425 — the selected-Dashboard session state this render projects, and the
    *  navigation API its own View/Edit control transitions through. (#471's per-tile
@@ -244,9 +251,10 @@ export interface DashboardApp {
 }
 
 /** #291 review F4: `renderDashboard` can run more than once against the SAME
- *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
- *  an import-commit while already on `/dashboard` (file-menu.ts's Import
- *  flow). Module-level so a later call can find and remove the PRIOR call's
+ *  window — `app.renderCurrentSurface()` (#590 §1.6 — the render-only
+ *  replacement for the deleted `app.reloadDashboardRoute()`) re-invokes it in
+ *  place after an import-commit while already on `/dashboard` (file-menu.ts's
+ *  Import flow). Module-level so a later call can find and remove the PRIOR call's
  *  resize listener before installing its own; without this, repeated renders
  *  stack listeners that all still close over their own render's now-stale
  *  `session`/`currentDoc`/`containerWidthPx`. */
@@ -2610,7 +2618,7 @@ export async function renderDashboard(
   // #291 review F4: unlike a repeatedly-opened modal (e.g. the EXPLAIN graph
   // overlay), the Dashboard page is normally a single full-page navigation —
   // BUT `renderDashboard` can still run again against this SAME window
-  // in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
+  // in place (`app.renderCurrentSurface()`, #590 §1.6, re-invoked from
   // file-menu.ts's Import flow while already on `/dashboard`). This module
   // never disconnects/observes page teardown, so the listener installed here
   // is removed at the START of the NEXT `renderDashboard` call instead (see

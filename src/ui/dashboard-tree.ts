@@ -77,8 +77,16 @@ import type { MainSurfaceState, OpenDashboardRequest } from '../application/main
 export interface DashboardTreeApp {
   dom: Pick<AppDom, 'dashboardTreeList' | 'dashboardSearchInput'>;
   state: AppState;
-  /** Read-only: the tree is a projection of the COMMITTED aggregate. */
-  currentWorkspace: TreeWorkspace | null;
+  /** Read-only: the tree is a projection of the COMMITTED aggregate. #590
+   *  decision 16: this was documented read-only but not TYPE `readonly` — a
+   *  fourth structural re-declaration of `currentWorkspace` the plan's own
+   *  grep missed (`SurfaceStatePort`/`DashboardApp`/`TabsApp` were narrowed;
+   *  this one was not). No write exists anywhere in this module
+   *  (grep-verified), and leaving it writable would let a
+   *  `DashboardTreeApp`-typed reference compile `app.currentWorkspace =
+   *  null` and invoke the real setter at runtime (pass-8 finding) — closed
+   *  here for the same reason the other three ports were narrowed. */
+  readonly currentWorkspace: TreeWorkspace | null;
   mainSurface: MainSurfaceState;
   openDashboard(request: OpenDashboardRequest): void;
   openSavedQuery(queryId: string): void;

@@ -64,7 +64,17 @@ function fakePort(outcome: 'ok' | 'pending' | 'missing'): SurfaceCommandPort {
  *  `createSurfaceNavigation(deps)` returns, but the hooks are never CALLED
  *  until well after that (same forward-reference pattern app.ts uses
  *  throughout createApp). */
-function makeHooks(navRef: { current?: SurfaceNavigation }, port: SurfaceStatePort) {
+/** #590 decision 16: `SurfaceStatePort.currentWorkspace`/`.workspaceRouteStatus`
+ *  are `readonly` on the real port (this module's own production writes to
+ *  both are gone). This test module still needs to MUTATE its own `port`
+ *  fixture directly (simulating what the app-side retirement coordinator/
+ *  `applyCommittedWorkspace` would do) — a mapped type stripping `readonly`
+ *  gives back a fully-writable mirror for exactly that purpose, without
+ *  reopening the real port's own write hole (`nav`'s production code below
+ *  still only ever receives the `readonly`-typed `SurfaceStatePort`). */
+type MutablePort = { -readonly [K in keyof SurfaceStatePort]: SurfaceStatePort[K] };
+
+function makeHooks(navRef: { current?: SurfaceNavigation }, port: MutablePort) {
   return {
     // Mirrors app.ts's real `applyCommittedWorkspace`'s ONE relevant effect
     // for this module's own purposes: projecting the committed workspace onto
@@ -77,14 +87,23 @@ function makeHooks(navRef: { current?: SurfaceNavigation }, port: SurfaceStatePo
     }),
     renderApp: vi.fn(),
     renderDashboard: vi.fn(),
-    renderWorkspaceLoading: vi.fn(),
-    renderWorkspaceNotFound: vi.fn(),
+    // #590 §1.9 — mirrors the app-side retirement coordinator's fixed
+    // write order (status FIRST, §1.7) for the mocked hooks this module
+    // calls; the real disposing render/DOM is app.ts's own territory.
+    retireToWorkspaceLoading: vi.fn(() => {
+      port.workspaceRouteStatus = 'loading';
+      port.currentWorkspace = null;
+    }),
+    retireToWorkspaceFailure: vi.fn((status: 'not-found' | 'error') => {
+      port.workspaceRouteStatus = status;
+      port.currentWorkspace = null;
+    }),
+    rerenderRetiredSurface: vi.fn(),
     onCorruptWorkspace: vi.fn(),
     retryPendingOAuthDocumentRecovery: vi.fn(),
     closeShortcutDialog: vi.fn(),
     resetShortcutChord: vi.fn(),
     isSignedIn: vi.fn(() => true),
-    invalidateDashboardTree: vi.fn(),
     toast: vi.fn(),
     revealAssignedPanel: vi.fn(),
     loadIntoNewTab: vi.fn(),
@@ -108,7 +127,7 @@ function setup(over: {
   const state: AppState = createState({ loadStr: (_k, d) => d, loadJSON: (_k, d) => d });
   if (over.state?.savedQueries) state.savedQueries = over.state.savedQueries;
 
-  const port: SurfaceStatePort = {
+  const port: MutablePort = {
     sqlRoute: { surface: 'workspace', workspaceKey: null },
     mainSurface: QUERY_SURFACE,
     currentWorkspace: null,
@@ -386,7 +405,7 @@ describe('I-10: same-workspace popstate is a surface transition, not a teardown'
     // Neither the loading placeholder nor a currentWorkspace/status reset
     // fires — both are the signals `ensureShell`/`disposeShell` (app.ts) use
     // to decide whether the persistent shell must be rebuilt.
-    expect(hooks.renderWorkspaceLoading).not.toHaveBeenCalled();
+    expect(hooks.retireToWorkspaceLoading).not.toHaveBeenCalled();
     expect(port.workspaceRouteStatus).toBe('ready');
     expect(port.currentWorkspace).toBe(ws);
     expect(hooks.dispatchCurrentSurface).toHaveBeenCalledTimes(1);
@@ -599,11 +618,17 @@ describe('openDashboard — remaining branches', () => {
       currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null, pendingScrollTop: null,
     };
 
+    const previousSurface = port.mainSurface;
     nav.openDashboard({ dashboardId: 'a', mode: 'edit' });
 
+    // #590: no explicit invalidation hook exists any more — the tree
+    // observes the write itself. This module's job is only to prove nav
+    // wrote a FRESH `mainSurface` object (the write that, under signals,
+    // notifies the tree effect); the reactive settlement itself is proven
+    // in app.test.ts against a real `createApp()`.
+    expect(port.mainSurface).not.toBe(previousSurface);
     expect(port.mainSurface).toMatchObject({ currentMember: null });
     expect(hooks.dispatchCurrentSurface).not.toHaveBeenCalled();
-    expect(hooks.invalidateDashboardTree).toHaveBeenCalled();
   });
 
   it('a "missing" in-place outcome is non-destructive and reports variable-specific wording', () => {
@@ -814,76 +839,13 @@ describe('adoptRouteMainSurface branches', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// reloadDashboardRoute branches
-// ---------------------------------------------------------------------------
-
-describe('reloadDashboardRoute branches', () => {
-  it('folds the projection into the selected Dashboard by id, preserving every other entry', () => {
-    const ws = workspace([dash('first'), dash('second')]);
-    const { nav, port, state, hooks } = setup();
-    port.currentWorkspace = ws;
-    port.mainSurface = {
-      kind: 'dashboard', dashboardId: 'second', mode: 'edit',
-      currentMember: null, pendingFocus: null, pendingScrollTop: null,
-    };
-    state.dashboard = { ...dash('second'), revision: 7 };
-
-    nav.reloadDashboardRoute();
-
-    expect(port.currentWorkspace!.dashboards.map((d) => [d.id, d.revision])).toEqual([['first', 1], ['second', 7]]);
-    expect(hooks.renderDashboard).toHaveBeenCalledTimes(1);
-  });
-
-  it('folds into the compatibility slot when nothing is selected', () => {
-    const ws = workspace([dash('first'), dash('second')]);
-    const { nav, port, state } = setup();
-    port.currentWorkspace = ws;
-    port.mainSurface = QUERY_SURFACE;
-    state.dashboard = { ...dash('imported'), revision: 4 };
-
-    nav.reloadDashboardRoute();
-
-    expect(port.currentWorkspace!.dashboards.map((d) => d.id)).toEqual(['imported', 'second']);
-  });
-
-  it('leaves the collection untouched when there is no projection to fold', () => {
-    const ws = workspace([dash('first')]);
-    const { nav, port, state } = setup();
-    port.currentWorkspace = ws;
-    port.mainSurface = QUERY_SURFACE;
-    state.dashboard = null;
-
-    nav.reloadDashboardRoute();
-
-    expect(port.currentWorkspace!.dashboards).toEqual([dash('first')]);
-  });
-
-  it('leaves the collection untouched when the selection is gone (no guessed fold target)', () => {
-    const only = dash('first');
-    const { nav, port, state } = setup();
-    port.currentWorkspace = workspace([only]);
-    port.mainSurface = {
-      kind: 'dashboard', dashboardId: 'deleted', mode: 'edit',
-      currentMember: null, pendingFocus: null, pendingScrollTop: null,
-    };
-    state.dashboard = { ...only, id: 'deleted', revision: 9 };
-
-    nav.reloadDashboardRoute();
-
-    expect(port.currentWorkspace!.dashboards).toEqual([only]);
-  });
-
-  it('with no current workspace, currentWorkspace stays null and the render hook still fires', () => {
-    const { nav, port, hooks } = setup();
-    port.currentWorkspace = null;
-
-    nav.reloadDashboardRoute();
-
-    expect(port.currentWorkspace).toBeNull();
-    expect(hooks.renderDashboard).toHaveBeenCalledTimes(1);
-  });
-});
+// #590 §1.6: `reloadDashboardRoute` is deleted outright (the fold-and-
+// reassign it performed was a second `committedWorkspace` publication per
+// Dashboard-route File-menu commit, breaking the exact-once settlement
+// invariant once `currentWorkspace` is signal-backed) — its "branches"
+// describe block above went with it. The render-only replacement
+// (`app.renderCurrentSurface()`) is covered by file-menu.test.ts's Dashboard
+// branch and app.test.ts's real File-menu Dashboard-route settlement test.
 
 // ---------------------------------------------------------------------------
 // Coverage sweep — remaining direct members / branches
@@ -925,17 +887,19 @@ describe('coverage sweep — remaining branches', () => {
     expect(hooks.renderDashboard).not.toHaveBeenCalled();
   });
 
-  it('renderCurrentSurface dispatches to renderWorkspaceNotFound when not ready with no workspace', () => {
+  it('renderCurrentSurface dispatches to the publication-free re-render when not ready with no workspace', () => {
+    // #590: the status/null pair was already published by whichever
+    // retirement op got there first — this dispatch only re-renders.
     const { nav, hooks } = setup();
     nav.renderCurrentSurface();
-    expect(hooks.renderWorkspaceNotFound).toHaveBeenCalledTimes(1);
+    expect(hooks.rerenderRetiredSurface).toHaveBeenCalledTimes(1);
   });
 
-  it('renderCurrentSurface dispatches to renderWorkspaceLoading while loading', () => {
+  it('renderCurrentSurface dispatches to the publication-free re-render while loading', () => {
     const { nav, port, hooks } = setup();
     port.workspaceRouteStatus = 'loading';
     nav.renderCurrentSurface();
-    expect(hooks.renderWorkspaceLoading).toHaveBeenCalledTimes(1);
+    expect(hooks.rerenderRetiredSurface).toHaveBeenCalledTimes(1);
   });
 
   it('showDashboardSurface with no selection opens the legacy no-chooser entry point directly (push)', () => {
@@ -952,7 +916,13 @@ describe('coverage sweep — remaining branches', () => {
 
     expect(port.sqlRoute).toEqual({ surface: 'dashboard', workspaceKey: 'w', mode: 'edit' });
     expect(history.pushState).toHaveBeenCalledTimes(1);
-    expect(hooks.invalidateDashboardTree).toHaveBeenCalledTimes(1);
+    // #590 decision 12 / §1 audit table: `kind` is provably `'query'` already
+    // in this branch, so the write is a same-reference no-op on the frozen
+    // `QUERY_SURFACE` singleton — a real signal would notify NOTHING (proven
+    // against a real `createApp()` in app.test.ts / surface-navigation
+    // `treeNavigation` coverage); this module's own proxy for that is the
+    // reference staying byte-identical.
+    expect(port.mainSurface).toBe(QUERY_SURFACE);
     expect(hooks.dispatchCurrentSurface).toHaveBeenCalledTimes(1);
   });
 
