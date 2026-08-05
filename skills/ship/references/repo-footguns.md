@@ -66,14 +66,21 @@ repo; when one bites anyway, update this file in the same change.
 
 ## ChatGPT review (`chatgpt-review`)
 
-- Agent Chrome is **one session**: the coordinator runs every `chatgpt-review`
-  invocation itself and serializes them. Parallel workers must never invoke the skill —
+- Agent Chrome is **one session**: the only permitted `chatgpt-review` invocations
+  live inside the two review-loop workflows (`references/review-loops.md`), launched
+  by the coordinator one at a time. Parallel workers must never invoke the skill —
   two concurrent runs corrupt each other's conversation.
 - A plan review session's identity is the plan file's **absolute path**
-  (`plan:<path>`). Revise the same file in place across passes; a moved or renamed
-  plan file silently starts a new conversation and loses the reviewer's history.
-- The 3-pass cap is script-enforced for `pr` mode only; the 5-pass plan cap exists
-  only in the skill text — count passes yourself.
+  (`plan:<path>`). The loop's revise agent edits the same file in place across passes;
+  a moved or renamed plan file silently starts a new conversation and loses the
+  reviewer's history.
+- The 3-pass cap is script-enforced for `pr` mode only; the 5-pass plan cap is a loop
+  bound in `plan-review-loop.workflow.mjs` — do not add passes around either.
+- Review workflows run in the **background**: launch, then wait for the task
+  notification — never poll, never start a second review workflow meanwhile. Before
+  diagnosing an empty or odd workflow return, Read the run's `journal.jsonl` (path in
+  the Workflow tool result); a `pr`-mode pass may have published its PR comment even
+  when the run errored.
 
 ## Local server (`npm run local`)
 

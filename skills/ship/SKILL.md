@@ -62,16 +62,25 @@ creation, every `chatgpt-review` invocation, and the merge.
 
 ### ChatGPT review loops
 
-- Agent Chrome is a **single session**: the coordinator runs every `chatgpt-review`
-  invocation itself and serializes them — workers and reviewers never invoke the skill,
-  and parallel units take their review passes one at a time.
-- Both loops use a **verdict protocol**: the question file instructs the reviewer to end
-  with exactly one line — `VERDICT: APPROVED` or `VERDICT: REVISE` for a plan,
-  `VERDICT: SHIP` or `VERDICT: REVISE` for a PR. A missing or malformed verdict counts
-  as REVISE (fail-closed), and the pass still counts against the cap.
-- **Verify every substantive finding against the real repository before trusting it** —
+- Both loops run as **Workflow scripts** — `references/plan-review-loop.workflow.mjs`
+  and `references/code-review-pass.workflow.mjs`, invoked by `scriptPath` per
+  `references/review-loops.md`. Invoking `/ship` is the explicit multi-agent opt-in for
+  these calls. The caps and the fail-closed verdict parsing are enforced by script and
+  schema, not by prose.
+- Agent Chrome is a **single session**: the review workflows contain the only permitted
+  `chatgpt-review` invocations, the coordinator launches them itself, and never runs
+  two review workflows at once — workers and reviewers never invoke the skill, and
+  parallel units queue for their review loops.
+- Both loops use a **verdict protocol**: the question file the coordinator writes
+  instructs the reviewer to end with exactly one line — `VERDICT: APPROVED` or
+  `VERDICT: REVISE` for a plan, `VERDICT: SHIP` or `VERDICT: REVISE` for a PR. A
+  missing or malformed verdict counts as REVISE (fail-closed), and the pass still
+  counts against the cap.
+- **Every substantive finding is verified against the real repository before it is
+  trusted** — the loop workflows fan out one read-only verifier per finding; ChatGPT is
   a second opinion, not a source of truth. Every finding ends in exactly one state:
-  accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop one.
+  accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop one —
+  the workflows return `accepted` and `rejected` lists; record them.
 
 ### Output capture
 
@@ -184,37 +193,41 @@ The worker prompt must contain, explicitly:
 A worker that reports the unit ambiguous or dependent on an unrecorded decision →
 skip the unit, report the missing decision in the final report, move on.
 
-### 2.2 Plan review loop — coordinator-run, every unit, max 5 passes
+### 2.2 Plan review loop — one Workflow run, every unit, max 5 passes
 
-The plan file **path** is the review-session identity — the worker revises the same
-file in place; never move or rename it mid-loop (footguns).
+**Read `references/review-loops.md`** (once per run) — it is the contract for both
+loops. The plan file **path** is the review-session identity; never move or rename it
+mid-loop (footguns).
 
 1. Write a context file to `$TMPDIR`: the unit contract and acceptance subset, focused
    questions, and the verdict protocol — "End your review with exactly one line:
    `VERDICT: APPROVED` or `VERDICT: REVISE`."
-2. Run (plan mode never publishes):
+2. Launch the whole loop as one Workflow and wait for its task notification:
 
-   ```sh
-   node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file> --question-file <context-file>
+   ```
+   Workflow {
+     scriptPath: "skills/ship/references/plan-review-loop.workflow.mjs",
+     args: { planFile: "<abs>", contextFile: "<abs>", unitLabel: "#<ISSUE> phase <N>" }
+   }
    ```
 
-   Later passes: the same command plus `--session <handle>` so the reviewer reassesses
-   in the same conversation.
-3. `VERDICT: REVISE` → verify each finding against the repo; send the accepted ones to
-   the worker (`SendMessage` — **check out its branch first**, footguns); the worker
-   revises the plan file in place; rerun.
-4. `VERDICT: APPROVED` → record the pass count and conversation URL for the ship log;
+   Inside, each pass runs one serialized `chatgpt-review plan` call, verifies every
+   finding with parallel read-only agents, and folds accepted findings into the plan
+   file in place (rejected ones become `## Review responses` rebuttals). The 5-pass
+   cap is a loop bound in the script, not an instruction.
+3. `status: "approved"` → record the pass count and conversation URL for the ship log;
    proceed to 2.3.
-
-**Cap: 5 total passes per unit** (skill-enforced; the script caps only `pr` mode).
-Not approved after 5 → **FULL STOP — human decision needed.** Present the latest plan,
-the contested points, and the conversation URL, and ask the human: approve the latest
-plan, redirect, or skip the unit. Write no code for this unit before that decision.
+4. `status: "needs_human"` → **FULL STOP — human decision needed.** Present the latest
+   plan, the returned `contested` findings, and the conversation URL, and ask the
+   human: approve the latest plan, redirect, or skip the unit. Write no code for this
+   unit before that decision. (`status: "error"` → read the workflow journal, then
+   re-invoke or stop.)
 
 ### 2.3 Implement
 
-`SendMessage` the worker: plan approved — implement now (cycle steps 2–3 plus its
-CHANGELOG entry).
+`SendMessage` the worker (**check out its branch first**, footguns): plan approved —
+**re-read the plan file; the loop's revise agent edited it and the file supersedes
+your draft** — implement now (cycle steps 2–3 plus its CHANGELOG entry).
 
 ### 2.4 Verify, review, integrate, log
 
@@ -256,30 +269,42 @@ review agents on this repo have edited files despite an explicit report-only bou
    verification, sabotage cases, tests, build, and e2e results; a per-unit summary
    table; `Closes #<n>` per fully completed issue (`Part of #<n>` for partial or
    skipped); the repo PR footer.
-5. **Code review loop — max 3 passes.** Write a question file to `$TMPDIR`: the unit
-   contracts and acceptance subsets, the invariant maps, compatibility requirements,
-   tests and sabotage cases, the behaviors that need adversarial review, and the
-   verdict protocol — "End your review with exactly one line: `VERDICT: SHIP` or
-   `VERDICT: REVISE`." Then:
+5. **Code review loop — max 3 passes, one Workflow run per pass.** Write a question
+   file to `$TMPDIR`: the unit contracts and acceptance subsets, the invariant maps,
+   compatibility requirements, tests and sabotage cases, the behaviors that need
+   adversarial review, and the verdict protocol — "End your review with exactly one
+   line: `VERDICT: SHIP` or `VERDICT: REVISE`." Then, with the integration branch
+   checked out in the main tree, per pass:
 
-   ```sh
-   node skills/chatgpt-review/scripts/chatgpt-review.mjs pr <PR-URL> --question-file <FILE>
+   ```
+   Workflow {
+     scriptPath: "skills/ship/references/code-review-pass.workflow.mjs",
+     args: { prUrl, questionFile, session: <handle|null>, pass: <n>,
+             integrationBranch: "<branch>", issueRef: "<issue>" }
+   }
    ```
 
-   Retain the returned JSON: status, opaque `session` handle, reviewed SHA, and public
-   comment URL.
+   The pass reviews (publishing a PR comment), verifies every finding with parallel
+   read-only agents, and — when findings are accepted — applies the fixes with tests,
+   loops the full local gate to green, and commits **locally only**. Act on the return
+   per the table in `references/review-loops.md`:
 
-   Fix pass: apply accepted findings, run the full local gate, commit, push, wait for
-   green CI at the new head, then rerun with `--session <handle>` so ChatGPT reassesses
-   every earlier finding in the same conversation. Each fix pass gets its own pushed
-   commit and separately labelled public review comment.
+   - `fixed-await-push` → diff the commits yourself, push, wait for green CI keyed on
+     the head SHA, re-invoke with `pass+1` and the returned `session` handle so
+     ChatGPT reassesses every earlier finding in the same conversation. Each fix pass
+     gets its own pushed commit and separately labelled public review comment.
+   - `no-accepted-findings` → append the rebuttals to the question file and re-invoke
+     (spends a pass).
+   - `fix-failed`, `needs_human`, `error` → treat as a failed proof condition at the
+     gate (step 3.6).
 
-   A **certified head** is a completed pass whose reviewed SHA equals the current PR
-   head, verdict `SHIP`, and no accepted actionable findings remaining.
+   A **certified head** is a `certified-pending-proofs` return (completed pass,
+   verdict `SHIP`, no accepted findings) whose reviewed SHA equals the current PR
+   head.
 
    - First clean pass at the current head → certified; stop reviewing. Never re-review
      an already-certified head — three is a failure ceiling, not a ritual (and the
-     script enforces the cap for `pr` mode).
+     `chatgpt-review` script enforces the cap for `pr` mode).
    - **After certification, push nothing.** Any push voids the certification and burns
      another pass — which is why all reconcile commits landed in step 3.3. Ship-log
      comment edits are fine; comments are not commits.

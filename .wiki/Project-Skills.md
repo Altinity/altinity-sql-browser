@@ -12,8 +12,13 @@ directory (promoted from `.claude/skills` 2026-07-30, #b4cd83b):
   passes). It auto-merges without asking when every proof condition holds
   (certified head at the exact PR SHA, green required checks, branch protection
   permits) and stops for a human decision only when a review loop exhausts its
-  passes or a merge proof fails. The old attended/unattended split and the
-  separate `ship-phase` alias were removed 2026-08-05.
+  passes or a merge proof fails. Both review loops run as Workflow scripts
+  (`skills/ship/references/*.workflow.mjs`, contract in
+  `references/review-loops.md`), so the pass caps are loop bounds and the
+  verdicts are schema-validated rather than prose-enforced; finding
+  verification fans out one read-only agent per finding. The old
+  attended/unattended split and the separate `ship-phase` alias were removed
+  2026-08-05.
 - `sql-browser-dashboard` — turns an already-known SQL/result-column
   investigation into a validated `PortableBundleV2` Dashboard bundle and
   publishes it through the `save_dashboard` MCP tool (or leaves it as a
