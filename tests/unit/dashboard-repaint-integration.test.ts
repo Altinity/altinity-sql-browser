@@ -107,7 +107,10 @@ const wsWith = (over: WsOver = {}): StoredWorkspaceV5 => ({
  *  function so the planner-consumption tests can pass a dynamically imported,
  *  freshly-mocked module graph while the fault-injection/array-payload tests
  *  use the real static import above. */
-function dashApp(renderFn: RenderDashboardFn, opts: { workspace: StoredWorkspaceV5; responder?: ExecResponder }) {
+function dashApp(
+  renderFn: RenderDashboardFn,
+  opts: { workspace: StoredWorkspaceV5; responder?: ExecResponder; wallNow?: () => number },
+) {
   const executeRead = makeExec(opts.responder);
   let current: StoredWorkspaceV5 = opts.workspace;
   const commit = vi.fn(async (candidate: StoredWorkspaceV5) => {
@@ -123,6 +126,11 @@ function dashApp(renderFn: RenderDashboardFn, opts: { workspace: StoredWorkspace
     currentWorkspace: current,
     workspaceRouteStatus: 'ready',
     sqlRoute: { surface: 'dashboard', workspaceKey: current.key, mode: 'edit' },
+    // #589 pass 2 finding 2: the `refreshTimeRangeLabels` sole-authority proof
+    // needs the wave wall clock to genuinely advance across two refreshes —
+    // `makeApp`'s own default (`wallNow: () => 0`) is fixed, so a fixture
+    // that cares passes a real counter through here.
+    ...(opts.wallNow ? { wallNow: opts.wallNow } : {}),
   }) as TestApp;
   const headerSlot = document.createElement('div');
   const host = document.createElement('div');
@@ -252,15 +260,19 @@ describe('dashboard-repaint-plan wiring — fault injection during a persist+str
 // scratch — destroying the very state this bug is about.
 //
 // So this proof manufactures the SAME precondition a real engine switch
-// creates — `plan.engineSwitched`/`plan.rebuildStructure` both true on a
-// publish whose structural signature does NOT actually change — by stubbing
-// only `dashboardRepaintPlan`'s OUTPUT (never its real grid/flow switching
-// logic, which is already proved directly against the pure function in
+// creates — `engineSwitched`/`rebuildStructure` both true on a publish whose
+// structural signature does NOT actually change — by stubbing only
+// `planStructuralRebuild`'s OUTPUT (never its real grid/flow switching logic,
+// which is already proved directly against the pure function in
 // `dashboard-repaint-plan.test.ts`, "forces rebuildStructure on a switch even
-// when ... byte-match a stale remembered one"). Every line of `ui/dashboard.ts`
-// itself — including the exact commit statement under test — runs for real
-// and unmocked. A second mock arms exactly one throw inside the REAL
-// reconciler's per-tile loop (a KPI tile's content is recomputed by
+// when ... byte-match a stale remembered one"). `planStructuralRebuild` is
+// the function `ui/dashboard.ts`'s effect actually calls in production since
+// #589 pass 2's interleaving fix (finding 1) — the batched
+// `dashboardRepaintPlan` is no longer on the production call path, so
+// stubbing IT would no longer reach the real effect at all. Every line of
+// `ui/dashboard.ts` itself — including the exact commit statement under test
+// — runs for real and unmocked. A second mock arms exactly one throw inside
+// the REAL reconciler's per-tile loop (a KPI tile's content is recomputed by
 // `kpiContent`/`resolvePanel` on every publish, unlike a plain tile's
 // `paintPanel`, which skips repainting on an unchanged `rows` reference — so
 // a KPI tile is the only reliable way to force that call on a publish whose
@@ -276,10 +288,10 @@ describe('dashboard-repaint-plan wiring — engine-switch throw-path sig reset (
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
+        planStructuralRebuild: (memo: never, view: never, gridInvalidationRev: never) => {
+          const out = real.planStructuralRebuild(memo, view, gridInvalidationRev);
           if (!forceSwitch) return out;
-          return { ...out, plan: { ...out.plan, engineSwitched: true, rebuildStructure: true } };
+          return { ...out, engineSwitched: true, rebuildStructure: true };
         },
       };
     });
@@ -349,32 +361,34 @@ describe('dashboard-repaint-plan wiring — engine-switch throw-path sig reset (
   });
 });
 
-// #589 ChatGPT review finding 1(a): the extracted effect used to call
-// `dashboardRepaintPlan` FIRST and only commit `memo.mobile = mobileNow`
-// after it returned — so a throw anywhere inside the planner (e.g. the
-// persist-bag computation over a pathological variable value) left
-// `memo.mobile` stale, unlike the pre-extraction code, where `lastMobile =
-// mobileNow` was the literal first statement of the effect body, in BOTH
-// branches, before any throw-prone computation ran. The fix commits
-// `memo.mobile` unconditionally BEFORE calling the planner (passing it a
-// shallow copy carrying the PRIOR mobile value for its own `republishFlow`
-// comparison).
+// #589 ChatGPT review finding 1(a): the extracted effect used to call the
+// planner FIRST and only commit `memo.mobile = mobileNow` after it returned
+// — so a throw anywhere inside the planner (e.g. the persist-bag computation
+// over a pathological variable value) left `memo.mobile` stale, unlike the
+// pre-extraction code, where `lastMobile = mobileNow` was the literal first
+// statement of the effect body, in BOTH branches, before any throw-prone
+// computation ran. The fix commits `memo.mobile` unconditionally BEFORE
+// calling `planRepublishFlow` (passing it `{ mobile: priorMobile }` for its
+// own comparison).
 //
 // `memo` itself is private to `ui/dashboard.ts` — there's no accessor to read
-// it from outside. But `dashboardRepaintPlan` is a real module-level export,
-// mockable exactly like every other sabotage test in this file, and its
-// FIRST ARGUMENT on any given call is whatever `memo.mobile` was worth AT
-// THAT MOMENT — a snapshot of live state, taken for free by any mock wrapper.
-// (A first attempt tried to observe this indirectly, through whether a LATER
-// publish's `republishFlow` fires again — that turned out not to work: the
-// viewer session's `buildState` reads the live `isMobile()` breakpoint fresh
-// on EVERY publish for EVERY reason, so `view.layout.mobile` self-heals the
-// moment any later session action runs, independently of `memo.mobile`
-// entirely, and masks the very divergence this test needs. Capturing the
-// ARGUMENT sidesteps that: it reads `memo.mobile` directly, before the
-// planner does anything with it, so the self-heal is irrelevant.)
+// it from outside. But `planRepublishFlow` (the granular function
+// `ui/dashboard.ts`'s effect actually calls first, per #589 pass 2's
+// interleaving fix — finding 1) is a real module-level export, mockable
+// exactly like every other sabotage test in this file, and its FIRST
+// ARGUMENT on any given call is `{ mobile: <whatever memo.mobile was worth
+// AT THAT MOMENT> }` — a snapshot of live state, taken for free by any mock
+// wrapper. (A first attempt tried to observe this indirectly, through
+// whether a LATER publish's `republishFlow` fires again — that turned out
+// not to work: the viewer session's `buildState` reads the live
+// `isMobile()` breakpoint fresh on EVERY publish for EVERY reason, so
+// `view.layout.mobile` self-heals the moment any later session action runs,
+// independently of `memo.mobile` entirely, and masks the very divergence
+// this test needs. Capturing the ARGUMENT sidesteps that: it reads
+// `memo.mobile` directly, before the planner does anything with it, so the
+// self-heal is irrelevant.)
 //
-// So: arm `dashboardRepaintPlan` to throw exactly once, on the publish where
+// So: arm `planRepublishFlow` to throw exactly once, on the publish where
 // the mobile breakpoint flips (simulating a throw inside the real planner's
 // heavier computation, without needing to poison a real variable value
 // through the whole DOM/session stack — that poisoned-value proof is done
@@ -396,10 +410,10 @@ describe('dashboard-repaint-plan wiring — memo.mobile commits before the plann
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
+        planRepublishFlow: (memo: never, view: never, mobileNow: never) => {
           capturedMobiles.push((memo as { mobile: boolean }).mobile);
           if (armThrow) { armThrow = false; throw new Error('injected planner fault'); }
-          return real.dashboardRepaintPlan(memo, input);
+          return real.planRepublishFlow(memo, view, mobileNow);
         },
       };
     });
@@ -451,14 +465,14 @@ describe('dashboard-repaint-plan wiring — the effect consumes the plan, not a 
       let calls = 0;
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
+        planBarRebuild: (memo: never, view: never) => {
+          const out = real.planBarRebuild(memo, view);
           calls += 1;
           // Leave the FIRST publish alone (it must genuinely build the bar —
           // there is nothing to prove "suppressed" against otherwise); force
           // every publish after that to never rebuild.
           if (calls === 1) return out;
-          return { ...out, plan: { ...out.plan, rebuildBar: false } };
+          return { ...out, rebuildBar: false };
         },
       };
     });
@@ -492,9 +506,9 @@ describe('dashboard-repaint-plan wiring — the effect consumes the plan, not a 
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
-          return { ...out, plan: { ...out.plan, rebuildBar: true } };
+        planBarRebuild: (memo: never, view: never) => {
+          const out = real.planBarRebuild(memo, view);
+          return { ...out, rebuildBar: true };
         },
       };
     });
@@ -525,6 +539,11 @@ describe('dashboard-repaint-plan wiring — the effect consumes the plan, not a 
 // reality, in both directions) to `persistVars`, `rebuildStructure`, and
 // `pushOptions` — the three most behaviorally significant flags beyond
 // `rebuildBar`.
+// #589 pass 2: each block below mocks the GRANULAR `plan*` function that
+// `ui/dashboard.ts`'s effect actually calls for that flag now (finding 1's
+// interleaving fix moved production off the batched `dashboardRepaintPlan`
+// entirely) — mocking the batched function would no longer reach the real
+// effect at all.
 describe('dashboard-repaint-plan wiring — persistVars is the effect\'s sole authority for the save seam', () => {
   it('a stubbed persistVars:false suppresses the save despite a genuinely committed value change', async () => {
     vi.resetModules();
@@ -532,9 +551,9 @@ describe('dashboard-repaint-plan wiring — persistVars is the effect\'s sole au
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
-          return { ...out, plan: { ...out.plan, persistVars: false } };
+        planPersist: (memo: never, view: never) => {
+          const out = real.planPersist(memo, view);
+          return { ...out, persistVars: false };
         },
       };
     });
@@ -566,11 +585,11 @@ describe('dashboard-repaint-plan wiring — persistVars is the effect\'s sole au
       let calls = 0;
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
+        planPersist: (memo: never, view: never) => {
+          const out = real.planPersist(memo, view);
           calls += 1;
           if (calls === 1) return out; // the first publish must genuinely settle
-          return { ...out, plan: { ...out.plan, persistVars: true } };
+          return { ...out, persistVars: true };
         },
       };
     });
@@ -601,11 +620,11 @@ describe('dashboard-repaint-plan wiring — rebuildStructure is the effect\'s so
       let calls = 0;
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
+        planStructuralRebuild: (memo: never, view: never, gridInvalidationRev: never) => {
+          const out = real.planStructuralRebuild(memo, view, gridInvalidationRev);
           calls += 1;
           if (calls === 1) return out; // the first publish must genuinely build the grid
-          return { ...out, plan: { ...out.plan, rebuildStructure: false } };
+          return { ...out, rebuildStructure: false };
         },
       };
     });
@@ -633,9 +652,9 @@ describe('dashboard-repaint-plan wiring — rebuildStructure is the effect\'s so
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
-          return { ...out, plan: { ...out.plan, rebuildStructure: true } };
+        planStructuralRebuild: (memo: never, view: never, gridInvalidationRev: never) => {
+          const out = real.planStructuralRebuild(memo, view, gridInvalidationRev);
+          return { ...out, rebuildStructure: true };
         },
       };
     });
@@ -694,9 +713,9 @@ describe('dashboard-repaint-plan wiring — pushOptions is the effect\'s sole au
       const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
-          return { ...out, plan: { ...out.plan, pushOptions: false } };
+        planOptionsPush: (memo: never, view: never, rebuildBar: never) => {
+          const out = real.planOptionsPush(memo, view, rebuildBar);
+          return { ...out, pushOptions: false };
         },
       };
     });
@@ -736,11 +755,11 @@ describe('dashboard-repaint-plan wiring — pushOptions is the effect\'s sole au
       let calls = 0;
       return {
         ...real,
-        dashboardRepaintPlan: (memo: never, input: never) => {
-          const out = real.dashboardRepaintPlan(memo, input);
+        planOptionsPush: (memo: never, view: never, rebuildBar: never) => {
+          const out = real.planOptionsPush(memo, view, rebuildBar);
           calls += 1;
           if (calls === 1) return out; // the first publish must genuinely settle
-          return { ...out, plan: { ...out.plan, pushOptions: true } };
+          return { ...out, pushOptions: true };
         },
       };
     });
@@ -831,5 +850,358 @@ describe('dashboard-repaint-plan wiring — the persisted payload is the COMPLET
         m: { value: '', active: false },
       },
     });
+  });
+});
+
+// #589 pass 2 (ChatGPT review finding 1) — THE regression proof for this
+// round. Pre-fix, `ui/dashboard.ts` called ONE batched `dashboardRepaintPlan`
+// that computes bar/options/label/persist/structural ALL before returning —
+// so a throw inside its persist computation (which calls
+// `dashboardPersistBag`'s `valueString`/`String()` over every variable's
+// `unknown` value, a real throw surface for a pathological value) propagated
+// out of the WHOLE call before `ui/dashboard.ts` ever got to apply the bar
+// rebuild it had already, separately, decided on. The fix splits that batch
+// into six granular `plan*` functions (`dashboard-repaint-plan.ts`) that
+// `ui/dashboard.ts`'s effect now calls and applies ONE AT A TIME, in
+// production order — bar, then options, then labels, then persist, then
+// structural — matching the pre-extraction interleaving exactly.
+//
+// This test poisons ONLY the persist decision — mocking `planPersist` to
+// throw on exactly the one publish under test, standing in for a real
+// pathological variable value reaching `dashboardPersistBag` (already proven
+// directly at the pure-function level in `dashboard-repaint-plan.test.ts`,
+// "the persist bag is never computed on the republishFlow branch" — a
+// related but distinct proof) — on a publish that ALSO genuinely commits a
+// new variable value, which triggers `rebuildBar`, an EARLIER decision in
+// production order. If the interleaving fix holds, the bar rebuild's real
+// DOM effect (a fresh `.var-field input` node, per `rebuildVariableBar`) is
+// already in place despite the persist decision throwing immediately after.
+describe('dashboard-repaint-plan wiring — compute/apply interleaving: a throw computing a LATER decision never undoes an EARLIER one already applied (finding 1, #589 pass 2)', () => {
+  it('the bar rebuild triggered by a committed value change has already run before the SAME publish\'s persist-decision computation throws', async () => {
+    vi.resetModules();
+    let armThrow = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        planPersist: (memo: never, view: never) => {
+          if (armThrow) { armThrow = false; throw new Error('injected persist-decision fault'); }
+          return real.planPersist(memo, view);
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace() });
+      await render();
+      const before = variableInput(app);
+
+      // `session.applyVariable` is async, so the synchronous throw deep
+      // inside the signal-triggered effect surfaces as this commit's promise
+      // REJECTING (mirrors the existing fault-injection test at the top of
+      // this file) — captured explicitly so the throw is provably real
+      // without failing the run on an "unhandled rejection".
+      const rejections: unknown[] = [];
+      const onRejection = (reason: unknown, promise: Promise<unknown>): void => {
+        rejections.push(reason);
+        promise.catch(() => {});
+      };
+      process.prependListener('unhandledRejection', onRejection);
+      armThrow = true;
+      try {
+        before.value = '9';
+        before.dispatchEvent(new Event('input', { bubbles: true }));
+        before.dispatchEvent(new Event('blur', { bubbles: true }));
+        await flush(); await flush();
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+      expect(rejections).toHaveLength(1); // the injected fault genuinely fired
+      expect(armThrow).toBe(false); // ...exactly once
+
+      const saveJSON = app.saveJSON as ReturnType<typeof vi.fn>;
+      // The persist decision never got a chance to apply — it threw before
+      // `ui/dashboard.ts` could even read a `persistVars` flag for it.
+      expect(saveJSON).not.toHaveBeenCalled();
+      // ...but the bar rebuild — computed AND APPLIED before the persist
+      // decision was even computed, per production order — already ran for
+      // this SAME publish, despite the throw immediately after it. Its DOM
+      // proof: the control was genuinely rebuilt (a fresh node), not the
+      // SAME node merely echoing the user's own uncommitted keystroke.
+      expect(variableInput(app)).not.toBe(before);
+    } finally {
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+});
+
+// #589 pass 2 (ChatGPT review finding 2) — the "false" direction completing
+// the two-directional `engineSwitched` proof. The "engine-switch throw-path
+// sig reset" describe block above forces `engineSwitched`/`rebuildStructure`
+// TRUE when reality says false (combined with a throw, for a different
+// purpose) — that already stands as this proof's "true" direction. This test
+// is the "false" direction: force `engineSwitched:false` specifically on the
+// publish where reality genuinely needs it — the very FIRST publish, which
+// always reports `engineSwitched: true` per `seedRepaintMemo`'s
+// `engineRendered: null` seed (there is no real grid<->flow round trip
+// drivable through this harness's DOM surface at all — see that describe
+// block's own long comment on why).
+//
+// `engineSwitched`'s only observable side effect that ISN'T already
+// `rebuildStructure`'s own job is the eager `memo.engineRendered =
+// sview.layout.engine` commit (`ui/dashboard.ts`, beside `plan.engineSwitched`
+// — now the granular `planStructuralRebuild`'s `engineSwitched` result).
+// Suppressing it on the very first publish leaves `memo.engineRendered`
+// stuck at its seeded `null` forever: `rebuildStructure`, `structuralSig`,
+// and the reconciler are all left REAL/unmocked for the rest of this test —
+// so the divergence this test observes is caused ONLY by the missing commit,
+// nothing else.
+describe('dashboard-repaint-plan wiring — engineSwitched\'s own commit is the effect\'s sole authority for engineRendered (finding 2 addendum, #589 pass 2)', () => {
+  it('a stubbed engineSwitched:false on the very first publish leaves engineRendered uncommitted, so a later unrelated publish keeps re-detecting a "switch" and redundantly rebuilds the chrome', async () => {
+    vi.resetModules();
+    // Mounting a Dashboard runs more than one publish before it settles (the
+    // initial synchronous publish, then at least one more once the tile
+    // wave's async `executeRead` resolves) — every one of them must be
+    // sabotaged, or a LATER publish still inside `render()`'s mount would
+    // commit `memo.engineRendered` for real and defeat the whole test before
+    // the tile-search step ever runs. `allowReal` is flipped by the TEST
+    // itself, only once mount has fully settled.
+    let allowReal = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        planStructuralRebuild: (memo: never, view: never, gridInvalidationRev: never) => {
+          const out = real.planStructuralRebuild(memo, view, gridInvalidationRev);
+          if (allowReal) return out;
+          return { ...out, engineSwitched: false };
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: gridWorkspace() });
+      await render(); // mount: every publish sabotaged, but rebuildStructure stayed real (true) — mounts fine
+      allowReal = true; // mount settled — every publish AFTER this point sees the REAL engineSwitched
+      const grid = qs<HTMLElement>(app.root, '.dash-grid');
+      expect(grid.classList.contains('dash-gg-grid')).toBe(true); // real chrome present despite the suppressed commit
+
+      const replaceChildren = vi.spyOn(grid, 'replaceChildren');
+      replaceChildren.mockClear();
+      // A later, unrelated, purely synchronous publish (tile search) —
+      // nothing about the grid model changed. With `engineSwitched` genuinely
+      // committed on mount, `memo.engineRendered` would now read
+      // 'grafana-grid', this publish's REAL (unmocked from here on)
+      // `engineSwitched` would be false, and nothing would rebuild. Because
+      // the mount publish's commit was suppressed, `memo.engineRendered` is
+      // STILL `null` — the real, unmocked `planStructuralRebuild` computes
+      // `engineSwitched = 'grafana-grid' !== null` as true YET AGAIN,
+      // forcing a redundant rebuild that has nothing to do with
+      // `rebuildStructure`'s own (separately, already-proven) sabotage.
+      const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+      search.value = 'q';
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(replaceChildren).toHaveBeenCalled(); // the suppressed commit, not reality, is why this fired again
+    } finally {
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+});
+
+// #589 pass 2 (ChatGPT review finding 2) — the two-directional sole-authority
+// proof for `republishFlow`, using the same mock-sabotage technique as the
+// other six blocks above. `republishFlow`'s own distinguishing side effect is
+// the session resync (`syncSessionDocument` → `session.syncDocument`) — wrap
+// the REAL `createDashboardViewerSession` so the returned session's
+// `syncDocument` is independently spy-able (the same technique as
+// `pushOptions`'s `mockVariableBarOptionsSpy` above, applied to a different
+// seam).
+describe('dashboard-repaint-plan wiring — republishFlow is the effect\'s sole authority for the session resync', () => {
+  function mockSessionSyncDocumentSpy(): { spy: () => ReturnType<typeof vi.fn> | undefined } {
+    let spy: ReturnType<typeof vi.fn> | undefined;
+    vi.doMock('../../src/dashboard/application/dashboard-viewer-session.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-viewer-session.js')>();
+      return {
+        ...real,
+        createDashboardViewerSession: (...args: Parameters<typeof real.createDashboardViewerSession>) => {
+          const session = real.createDashboardViewerSession(...args);
+          const syncDocument = vi.fn(session.syncDocument);
+          spy = syncDocument;
+          return { ...session, syncDocument };
+        },
+      };
+    });
+    return { spy: () => spy };
+  }
+
+  it('a stubbed republishFlow:false suppresses the session resync despite a genuine mobile-breakpoint flip', async () => {
+    vi.resetModules();
+    const { spy } = mockSessionSyncDocumentSpy();
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      let calls = 0;
+      return {
+        ...real,
+        planRepublishFlow: (memo: never, view: never, mobileNow: never) => {
+          const out = real.planRepublishFlow(memo, view, mobileNow);
+          calls += 1;
+          if (calls === 1) return out; // the first publish must genuinely settle
+          return { republishFlow: false };
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace() });
+      await render(); // settles: flow engine, mobile initially false
+      spy()!.mockClear();
+      // A genuine republishFlow-eligible publish: flow engine, mobileNow
+      // flips, and the flow model itself hasn't caught up yet (same trigger
+      // as the "finding 1a" describe block above).
+      app.state.isMobile.value = true;
+      expect(spy()).not.toHaveBeenCalled(); // suppressed — the stub, not the genuine flip, decided
+    } finally {
+      vi.doUnmock('../../src/dashboard/application/dashboard-viewer-session.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+
+  it('a stubbed republishFlow:true forces a session resync even though the mobile breakpoint never moved', async () => {
+    vi.resetModules();
+    const { spy } = mockSessionSyncDocumentSpy();
+    // `allowForce` is flipped by the TEST itself only once mount has fully
+    // settled (mounting runs more than one publish — the initial synchronous
+    // one, then at least one more once the tile wave's async `executeRead`
+    // resolves — forcing `true` during any of those would be indistinguishable
+    // noise). `forced` then ensures the force fires EXACTLY once after that:
+    // `syncSessionDocument`'s own resync republishes the session, re-running
+    // this same effect, and forcing `true` again on THAT recursive run (with
+    // `mobileNow` still unchanged) would force it forever, looping.
+    let allowForce = false;
+    let forced = false;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        planRepublishFlow: (memo: never, view: never, mobileNow: never) => {
+          const out = real.planRepublishFlow(memo, view, mobileNow);
+          if (!allowForce || forced) return out;
+          forced = true;
+          return { republishFlow: true };
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace() });
+      await render();
+      allowForce = true; // mount settled — the NEXT publish is the one under test
+      spy()!.mockClear();
+      // A publish triggered by tile search alone — the mobile breakpoint
+      // never moved.
+      const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+      search.value = 'q';
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(spy()).toHaveBeenCalledTimes(1); // resynced anyway — the stub, not reality, drove it
+    } finally {
+      vi.doUnmock('../../src/dashboard/application/dashboard-viewer-session.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+});
+
+// #589 pass 2 (ChatGPT review finding 2) — the two-directional sole-authority
+// proof for `refreshTimeRangeLabels`, completing the set alongside
+// `rebuildBar`/`persistVars`/`rebuildStructure`/`pushOptions` above and
+// `republishFlow`/`engineSwitched` just above this block.
+describe('dashboard-repaint-plan wiring — refreshTimeRangeLabels is the effect\'s sole authority for the in-place label refresh', () => {
+  /** Wraps the REAL `buildVariableBar` so the wrapped bar's
+   *  `refreshTimeRangeLabels` is independently spy-able — same technique as
+   *  `pushOptions`'s `mockVariableBarOptionsSpy` above, against a different
+   *  method on the same handle. */
+  function mockVariableBarRefreshLabelsSpy(): { spy: () => ReturnType<typeof vi.fn> | undefined } {
+    let spy: ReturnType<typeof vi.fn> | undefined;
+    vi.doMock('../../src/ui/variable-bar.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/ui/variable-bar.js')>();
+      return {
+        ...real,
+        buildVariableBar: (...args: Parameters<typeof real.buildVariableBar>) => {
+          const handle = real.buildVariableBar(...args);
+          const refreshTimeRangeLabels = vi.fn(handle.refreshTimeRangeLabels);
+          spy = refreshTimeRangeLabels;
+          return { ...handle, refreshTimeRangeLabels };
+        },
+      };
+    });
+    return { spy: () => spy };
+  }
+
+  it('a stubbed refreshTimeRangeLabels:false suppresses the label refresh despite the wave clock genuinely advancing', async () => {
+    vi.resetModules();
+    const { spy } = mockVariableBarRefreshLabelsSpy();
+    let wallNowMs = 0;
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      let calls = 0;
+      return {
+        ...real,
+        planLabelRefresh: (memo: never, view: never, rebuildBar: never) => {
+          const out = real.planLabelRefresh(memo, view, rebuildBar);
+          calls += 1;
+          if (calls === 1) return out; // the first publish must genuinely settle
+          return { ...out, refreshTimeRangeLabels: false };
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace(), wallNow: () => wallNowMs });
+      await render();
+      spy()!.mockClear();
+      // A genuine wave-clock advance with no committed-variable change: a
+      // plain refresh (no rebuildBar) whose wall clock has moved.
+      wallNowMs = 1000;
+      await (qs<HTMLButtonElement>(app.root, '.dash-refresh').onclick as (() => Promise<void>) | null)?.();
+      expect(spy()).not.toHaveBeenCalled(); // suppressed — the stub, not the real wave-clock advance, decided
+    } finally {
+      vi.doUnmock('../../src/ui/variable-bar.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
+  });
+
+  it('a stubbed refreshTimeRangeLabels:true forces the label refresh even though the wave clock has not moved', async () => {
+    vi.resetModules();
+    const { spy } = mockVariableBarRefreshLabelsSpy();
+    vi.doMock('../../src/dashboard/application/dashboard-repaint-plan.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../../src/dashboard/application/dashboard-repaint-plan.js')>();
+      return {
+        ...real,
+        planLabelRefresh: (memo: never, view: never, rebuildBar: never) => {
+          const out = real.planLabelRefresh(memo, view, rebuildBar);
+          return { ...out, refreshTimeRangeLabels: true };
+        },
+      };
+    });
+    try {
+      const { renderDashboard: mockedRender } = await import('../../src/ui/dashboard.js');
+      const { app, render } = dashApp(mockedRender, { workspace: flowWorkspace() });
+      await render();
+      spy()!.mockClear();
+      // A publish triggered by tile search alone — the wave clock is
+      // untouched (fake-app's default `wallNow` is a fixed `() => 0`).
+      const search = qs<HTMLInputElement>(app.root, '.dash-tile-search');
+      search.value = 'q';
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(spy()).toHaveBeenCalled(); // refreshed anyway — the stub, not reality, drove it
+    } finally {
+      vi.doUnmock('../../src/ui/variable-bar.js');
+      vi.doUnmock('../../src/dashboard/application/dashboard-repaint-plan.js');
+      vi.resetModules();
+    }
   });
 });

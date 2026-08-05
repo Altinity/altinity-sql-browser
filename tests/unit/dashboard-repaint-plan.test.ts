@@ -215,12 +215,15 @@ describe('dashboardRepaintPlan — republishFlow (mobile breakpoint flip)', () =
 });
 
 // #589 ChatGPT review finding 1(b): `sigs` on the `republishFlow` branch is
-// entirely discarded by the caller (`dashboard.ts` returns immediately after
-// `republishFlow` without ever reading `sigs.persistBag` — the only consumer
-// is the `plan.persistVars` block, and `persistVars` is always `false` here),
-// so computing the real persist bag on this branch was pure waste plus
-// unnecessary throw exposure: `dashboardPersistBag` calls `String()` on every
-// variable's `unknown` value, which can throw for a pathological value. These
+// entirely discarded by any caller — in production (#589 pass 2, finding 1)
+// `dashboard.ts` doesn't even call this composed function any more; it calls
+// the granular `planRepublishFlow` directly and returns immediately after
+// `republishFlow` without computing bar/options/label/persist/structural
+// state at all. So computing the real persist bag on this branch (which this
+// test file still exercises directly, as `dashboardRepaintPlan`'s own
+// direct-unit-test surface) was pure waste plus unnecessary throw exposure:
+// `dashboardPersistBag` calls `String()` on every variable's `unknown`
+// value, which can throw for a pathological value. These
 // two tests are a matched pair over the SAME poisoned value: the first proves
 // the poisoned value is never reached when `republishFlow` is true (a real
 // proof, not vacuous, only because the second test proves that exact value

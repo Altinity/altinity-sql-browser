@@ -73,7 +73,10 @@ import {
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
-import { dashboardRepaintPlan, seedRepaintMemo, valueString } from '../dashboard/application/dashboard-repaint-plan.js';
+import {
+  seedRepaintMemo, valueString,
+  planRepublishFlow, planBarRebuild, planOptionsPush, planLabelRefresh, planPersist, planStructuralRebuild,
+} from '../dashboard/application/dashboard-repaint-plan.js';
 import type { RepaintMemo } from '../dashboard/application/dashboard-repaint-plan.js';
 import { canWidenPanel, nextPanelPlacement, widenLabel } from '../dashboard/application/panel-widen.js';
 import { panelTileActions } from '../dashboard/application/panel-tile-actions.js';
@@ -2132,7 +2135,7 @@ export async function renderDashboard(
 
   // ── Grid reconciliation from the flow model ───────────────────────────────
   // #589 wave 1: the rebuild DECISION and the structural signature both come
-  // from `dashboardRepaintPlan` now (`rebuild`/`structuralSig` below) — this
+  // from `planStructuralRebuild` now (`rebuild`/`structuralSig` below) — this
   // function only commits `memo.layoutSig` at the exact point the
   // pre-extraction code committed its own private `let`, immediately before
   // performing the same rebuild.
@@ -2241,7 +2244,7 @@ export async function renderDashboard(
 
   // #589 wave 1: same shift as `reconcileGrid` above — the rebuild decision
   // (including the grid-structure-invalidation-revision force) and the
-  // structural signature both come from `dashboardRepaintPlan`; this function
+  // structural signature both come from `planStructuralRebuild`; this function
   // only commits `memo.gridSig` at the point the pre-extraction code
   // committed its own private `let`.
   function reconcileGrafanaGrid(
@@ -2295,21 +2298,31 @@ export async function renderDashboard(
 
   // ── Effect: reconcile on every publish (and on the mobile-breakpoint flip) ─
   // #589 wave 1: the decision logic that used to live in this callback as a
-  // pile of private `let`s now lives in the pure `dashboardRepaintPlan`
-  // (dashboard/application/dashboard-repaint-plan.ts) — this effect's only
-  // job is to ask it what to do and commit each returned signature FIELD BY
-  // FIELD, at the exact point the pre-extraction code committed its own
-  // `let`, interleaved with the real side effect it guards. Deliberately
-  // never batch-assigned up front: if a side effect throws, only the memo
-  // fields whose side effects actually ran must have advanced (preserves the
-  // pre-extraction partial-failure semantics).
+  // pile of private `let`s now lives in the pure `dashboard-repaint-plan.ts`
+  // module — this effect's only job is to ask it what to do, one decision at
+  // a time, and commit each returned signature at the exact point the
+  // pre-extraction code committed its own `let`, interleaved with the real
+  // side effect it guards. Deliberately never batch-assigned up front: if a
+  // side effect throws, only the memo fields whose side effects actually ran
+  // must have advanced (preserves the pre-extraction partial-failure
+  // semantics).
+  // #589 pass 2 (ChatGPT review finding 1): this effect calls the six
+  // granular `plan*` functions (`planRepublishFlow`/`planBarRebuild`/
+  // `planOptionsPush`/`planLabelRefresh`/`planPersist`/`planStructuralRebuild`)
+  // ONE AT A TIME, in this exact order, applying each decision's side effect
+  // immediately before computing the next — NEVER the batched
+  // `dashboardRepaintPlan` (which computes every decision before returning
+  // and would let a throw computing, say, the persist decision suppress the
+  // bar-rebuild/options-push/label-refresh side effects that a batched call
+  // had already decided but not yet applied). `dashboardRepaintPlan` remains
+  // exported for direct unit testing only — see its module doc.
   // #589 wave 2: declared here, ABOVE the controller construction just below
   // (which needs it in scope for `invalidateGridStructure`'s closure) and
-  // above the effect (whose first synchronous run reads it via
-  // `dashboardRepaintPlan`, below) — same ordering constraint wave 1 already
-  // established for `memo`/the effect: nothing here reads it before the
-  // effect runs, but keeping the declaration textually first is the least
-  // surprising order for both readers.
+  // above the effect (whose first synchronous run reads it via the `plan*`
+  // calls below) — same ordering constraint wave 1 already established for
+  // `memo`/the effect: nothing here reads it before the effect runs, but
+  // keeping the declaration textually first is the least surprising order
+  // for both readers.
   let gridStructureInvalidationRev = 0;
   // #589 wave 2: constructed here, BEFORE the effect — `ensureTileEl` (used by
   // both `reconcileGrid`/`reconcileGrafanaGrid`, called from the effect's
@@ -2347,44 +2360,48 @@ export async function renderDashboard(
     // mobileNow` was the absolute first statement in BOTH branches there,
     // before `barSig`/`optionsSig`/the persist bag were ever computed).
     // `priorMobile` is captured before the commit and handed to
-    // `dashboardRepaintPlan` in place of the (now-already-advanced)
-    // `memo.mobile`, so the planner's OWN `republishFlow` comparison still
-    // sees the value mobile held BEFORE this publish — exactly what it read
-    // when the commit happened later. This way a throw anywhere later in this
-    // effect (e.g. `dashboardPersistBag`'s `String()` over a pathological
-    // variable value, inside the planner) can never leave `memo.mobile`
-    // stale, the same class of partial-failure bug already fixed for engine
-    // switches.
+    // `planRepublishFlow` in place of the (now-already-advanced)
+    // `memo.mobile`, so its OWN comparison still sees the value mobile held
+    // BEFORE this publish — exactly what it read when the commit happened
+    // later. This way a throw anywhere later in this effect (e.g.
+    // `dashboardPersistBag`'s `String()` over a pathological variable value,
+    // inside `planPersist`) can never leave `memo.mobile` stale, the same
+    // class of partial-failure bug already fixed for engine switches.
     const priorMobile = memo.mobile;
     memo.mobile = mobileNow;
-    // Snapshotted once here — the exact value `dashboardRepaintPlan`'s input
-    // carried this publish — and threaded through to `reconcileGrafanaGrid`'s
-    // own commit below, rather than that commit re-reading the live
-    // module-level `gridStructureInvalidationRev` a second time. Nothing
-    // bumps the counter synchronously mid-effect today, so the two reads are
-    // always equal in practice, but committing the CONSUMED input (not
-    // whatever the live counter happens to hold by the time the reconciler
-    // runs) is the defensively-correct value regardless.
+    // Snapshotted once here — the exact value this publish's `plan*` calls
+    // see — and threaded through to `reconcileGrafanaGrid`'s own commit
+    // below, rather than that commit re-reading the live module-level
+    // `gridStructureInvalidationRev` a second time. Nothing bumps the counter
+    // synchronously mid-effect today, so the two reads are always equal in
+    // practice, but committing the CONSUMED input (not whatever the live
+    // counter happens to hold by the time the reconciler runs) is the
+    // defensively-correct value regardless.
     const consumedGridInvalidationRev = gridStructureInvalidationRev;
-    const { plan, sigs } = dashboardRepaintPlan({ ...memo, mobile: priorMobile }, {
-      view: sview, mobileNow, gridInvalidationRev: consumedGridInvalidationRev,
-    });
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
     // grafana-grid has no `mobile` concept of its own (its responsive
     // behavior is the `containerWidth`-driven effective-columns clamp below).
-    if (plan.republishFlow) {
+    if (planRepublishFlow({ mobile: priorMobile }, sview, mobileNow).republishFlow) {
       syncSessionDocument(currentDoc);
       return;
     }
+    // #589 pass 2 (finding 1): each decision below is computed and APPLIED
+    // immediately, before the next decision is even computed — never all
+    // computed up front — so a throw computing a LATER decision (most
+    // plausibly `planPersist`, see its doc comment) can never prevent an
+    // EARLIER decision's side effect, already decided, from running. This
+    // is the exact interleaving order the pre-extraction code used.
+
     // Rebuild the shared variable bar only on a STRUCTURAL change (activation or
     // committed value) — not on a bare status flip, not on tile progress ticks,
     // and (#447 phase 2) NOT when an option list arrives. `status` and
     // `optionsRev` are both deliberately EXCLUDED: they are updated in the
     // existing DOM in place, never by a rebuild. That preserves the invariant
     // that an unchanged republish never disturbs in-progress typing.
-    if (plan.rebuildBar) {
-      memo.barSig = sigs.barSig;
+    const { rebuildBar, barSig } = planBarRebuild(memo, sview);
+    if (rebuildBar) {
+      memo.barSig = barSig;
       rebuildVariableBar(sview);
     }
     // #447 phase 2: push fresh option rows (and the batch's unavailable state)
@@ -2392,7 +2409,8 @@ export async function renderDashboard(
     // taken the newest options along with it, so this only runs when the bar
     // survived — and only when option content or the batch verdict actually
     // moved, so an unchanged republish touches nothing.
-    if (plan.pushOptions) {
+    const { pushOptions, optionsSig } = planOptionsPush(memo, sview, rebuildBar);
+    if (pushOptions) {
       const states: Record<string, VariableOptionsUpdate> = {};
       for (const f of sview.variableStates) {
         if (!f.configured) continue;
@@ -2402,21 +2420,23 @@ export async function renderDashboard(
       }
       currentVariableBar?.setVariableOptions(states);
     }
-    memo.optionsSig = sigs.optionsSig;
+    memo.optionsSig = optionsSig;
     // #335: per-wave time-range label refresh. A rebuild above already
     // rebuilt every time-range control against this wave's `now` (assembled
     // into its `waveNowMs`); only a NON-rebuild publish whose wave `now`
     // advanced needs the closed labels re-resolved in place — a committed
     // relative range (`-1d` → `now`) moves per wave without any bar rebuild.
-    if (plan.refreshTimeRangeLabels) {
+    const { refreshTimeRangeLabels, labelWaveNowMs } = planLabelRefresh(memo, sview, rebuildBar);
+    if (refreshTimeRangeLabels) {
       currentVariableBar?.refreshTimeRangeLabels(sview.waveWallNowMs!);
     }
-    memo.labelWaveNowMs = sigs.labelWaveNowMs;
+    memo.labelWaveNowMs = labelWaveNowMs;
     // #303: persist committed variable value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
-    if (plan.persistVars) {
-      memo.persistSig = sigs.persistSig;
-      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, sigs.persistBag));
+    const { persistVars, persistBag, persistSig } = planPersist(memo, sview);
+    if (persistVars) {
+      memo.persistSig = persistSig;
+      app.saveJSON(KEYS.dashFilters, writeDashboardVariableBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, persistBag));
     }
     tileCountLabel.textContent = sview.tileSearch.trim()
       ? `${sview.visibleTileCount} of ${sview.totalTileCount} tiles`
@@ -2449,8 +2469,12 @@ export async function renderDashboard(
     // throws before reaching that commit, this eager reset is what's already
     // left `''` in the memo, so the NEXT publish's sig-mismatch check still
     // forces the rebuild it owes — independent of whether `engineSwitched`
-    // has already been consumed by this (throwing) publish.
-    if (plan.engineSwitched) { memo.layoutSig = ''; memo.gridSig = ''; memo.engineRendered = sview.layout.engine; }
+    // has already been consumed by this (throwing) publish. Computed last,
+    // right before it's applied, same as every other decision above (#589
+    // pass 2 finding 1) — `planStructuralRebuild` doesn't own `memo`
+    // mutation, so it can't perform this reset itself; only the caller can.
+    const { engineSwitched, rebuildStructure, structuralSig } = planStructuralRebuild(memo, sview, consumedGridInvalidationRev);
+    if (engineSwitched) { memo.layoutSig = ''; memo.gridSig = ''; memo.engineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
     // #535: the widen button's gate AND its label, resynced on every publish. Not
     // folded into the render-mode branch below (which only fires on a grid
@@ -2481,9 +2505,9 @@ export async function renderDashboard(
       }
     }
     if (sview.layout.engine === 'grafana-grid') {
-      reconcileGrafanaGrid(sview, sview.layout.grid, plan.rebuildStructure, sigs.structuralSig, consumedGridInvalidationRev);
+      reconcileGrafanaGrid(sview, sview.layout.grid, rebuildStructure, structuralSig, consumedGridInvalidationRev);
     } else {
-      reconcileGrid(sview, sview.layout, plan.rebuildStructure, sigs.structuralSig);
+      reconcileGrid(sview, sview.layout, rebuildStructure, structuralSig);
     }
     // #471: the tiles this publish just placed are what finally make the page tall
     // enough to hold a restored offset.
