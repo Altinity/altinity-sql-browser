@@ -44,6 +44,15 @@ without migration, shared API/type changes, or non-trivial fixture/e2e impact.
 dependency/framework swap, complex ordering/concurrency/cancellation/rollback, large
 cross-cutting refactor, or under-determined architecture.
 
+**If High, also state whether the unit is Large** — likely to exceed what one coding
+agent can complete well in a single session (a wide file footprint, several
+independent subsystems, external infra such as Docker/live servers/real browsers) —
+with a one-line justification. This flag, not risk alone, decides whether the
+coordinator decomposes implementation (`SKILL.md` step 2.3,
+`references/decompose-and-implement-loop.workflow.mjs`) instead of spawning one
+implementer. Most units are not Large; do not default to it, and do not infer it from
+risk alone — a High-risk unit can still be small (e.g. a narrow auth fix).
+
 ### Invariant map
 
 For medium- and high-risk work, include:

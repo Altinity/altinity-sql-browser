@@ -281,12 +281,39 @@ mid-loop (footguns).
 
 ### 2.3 Implement
 
-Spawn a **fresh** coding agent (`subagent_type: "general-purpose"`, never `fork`,
-`model: "sonnet"` unless the wave plan marks the unit high-risk, in which case omit
-`model` to inherit yours) — do not resume any planner; the canonical plan file, not
-planner memory or ChatGPT chat text, is the handoff. Parallel units get
-`isolation: "worktree"`; a solo unit uses the main tree on `wip/<unit>-<slug>` off the
-current integration HEAD.
+**High risk + Large unit → decompose instead of one implementer.** If the approved
+plan's own risk classification (`per-issue-cycle.md`) states High risk **and** Large,
+do not spawn a single implementation agent for the whole plan — a unit that size
+reliably exhausts one agent's context before finishing (observed live: a ~30-file,
+Docker/live-server/browser-matrix unit hit ~65% context after its first commit). Run:
+
+```
+Workflow {
+  scriptPath: "skills/ship/references/decompose-and-implement-loop.workflow.mjs",
+  args: { planFile: "<abs>", branch: "<wip branch>", issueRef: "#<ISSUE> phase <N>" }
+}
+```
+
+Fable/high reads the plan **and the actual repository state already on the branch**
+(so it excludes whatever a prior partial attempt already committed) and proposes an
+ordered, dependency-respecting sub-task breakdown, sized so one coding agent can
+plausibly finish each in one session. The script then runs one fresh Sonnet agent per
+sub-task, strictly **sequentially** on the same branch (not parallel worktrees —
+sub-task file-scope disjointness is a declared claim, not a verified guarantee, and
+the point is giving each chunk fresh context, not wall-clock speed). Each sub-task
+commits before the next starts. If a running single-agent attempt already exists and
+is approaching its own limit, stop it at a clean commit boundary (`TaskStop`, verify
+`git status` is clean first) before invoking this loop — its committed work becomes
+what the decomposition step reads as already-done. Treat the loop's `error` status
+(a sub-task's agent died) the same as any implementation failure: inspect, fix or
+resume, re-verify — do not silently skip the remaining sub-tasks.
+
+**Otherwise** (the common case), spawn a **fresh** coding agent (`subagent_type:
+"general-purpose"`, never `fork`, `model: "sonnet"` unless the wave plan marks the unit
+high-risk, in which case omit `model` to inherit yours) — do not resume any planner;
+the canonical plan file, not planner memory or ChatGPT chat text, is the handoff.
+Parallel units get `isolation: "worktree"`; a solo unit uses the main tree on
+`wip/<unit>-<slug>` off the current integration HEAD.
 
 The coding-agent prompt must contain, explicitly:
 
