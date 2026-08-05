@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChatGptBrowser, ReviewError, SELECTORS, classifyAlertText, classifyPermission, connectToChrome } from '../scripts/lib/browser.mjs';
+import { ChatGptBrowser, ReviewError, SELECTORS, classifyAlertText, classifyPermission, connectToChrome, fingerprintText } from '../scripts/lib/browser.mjs';
 
 class Element {
   constructor({ text = '', visible = true, onClick, nested = {} } = {}) { this.text = text; this.visible = visible; this.onClick = onClick; this.nested = nested; }
@@ -16,6 +16,7 @@ class Element {
 class Locator {
   constructor(elements) { this.elements = elements; }
   first() { return this.elements[0] ?? new Missing(); }
+  last() { return this.elements[this.elements.length - 1] ?? new Missing(); }
   nth(index) { return this.elements[index] ?? new Missing(); }
   async count() { return this.elements.length; }
 }
@@ -24,23 +25,25 @@ class Missing extends Element {
   async count() { return 0; }
 }
 class Page {
-  constructor(url = 'https://chatgpt.com/', map = {}) { this.currentUrl = url; this.map = map; this.front = false; }
+  constructor(url = 'https://chatgpt.com/', map = {}, { evaluate } = {}) { this.currentUrl = url; this.map = map; this.front = false; this._evaluate = evaluate; }
   url() { return this.currentUrl; }
   locator(selector) { const value = this.map[selector]; return new Locator(typeof value === 'function' ? value() : value ?? []); }
   async goto(url) { this.currentUrl = url; }
   async bringToFront() { this.front = true; }
   async waitForLoadState() {}
+  async evaluate(fn) { return this._evaluate ? this._evaluate() : fn(); }
 }
 class Context {
-  constructor(pages = [], fresh = new Page()) { this.items = pages; this.fresh = fresh; }
+  constructor(pages = [], fresh = new Page(), { grantPermissions } = {}) { this.items = pages; this.fresh = fresh; this._grantPermissions = grantPermissions; }
   pages() { return this.items; }
   async newPage() { this.items.push(this.fresh); return this.fresh; }
+  async grantPermissions(...args) { this.grantedWith = args; return this._grantPermissions ? this._grantPermissions(...args) : undefined; }
 }
 function driverWith(page, context = new Context([], page), clock = { value: 0 }) {
   return new ChatGptBrowser({ browser: { contexts: () => [context] }, now: () => clock.value, sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, stderr: { write() {} } });
 }
-function readyPage(extra = {}) {
-  return new Page('https://chatgpt.com/', { [SELECTORS.composer[0]]: [new Element()], [SELECTORS.fileInput[0]]: [new Element({ visible: false })], ...extra });
+function readyPage(extra = {}, pageOptions = {}) {
+  return new Page('https://chatgpt.com/', { [SELECTORS.composer[0]]: [new Element()], [SELECTORS.fileInput[0]]: [new Element({ visible: false })], ...extra }, pageOptions);
 }
 
 test('fresh, same-tab, and reopened conversation selection work', async () => {
@@ -165,6 +168,106 @@ test('continue generating is clicked harmlessly', async () => {
   const driver = driverWith(page);
   assert.equal(await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }), 'done');
   assert.equal(button.visible, false);
+});
+
+test('a completed response prefers the copied Markdown source over the rendered plain text', async () => {
+  // .innerText() on a rendered heading never contains the literal '#' — this is what the
+  // plan-author heading check needs and innerText can never supply. The response's own
+  // action row (a distinct accessible group from the *user* turn's) exposes the real
+  // Markdown via its copy control; this proves that path wins when available.
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: 'PLAN_STATUS: READY rendered without markdown syntax' })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>' });
+  const context = new Context([page], readyPage());
+  const driver = driverWith(page, context);
+  const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false });
+  assert.equal(text, 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>');
+  assert.deepEqual(context.grantedWith[0], ['clipboard-read', 'clipboard-write']);
+});
+
+test('a completed response is fingerprinted by its plain rendered tail even when Markdown is returned, so a later resume is not misdetected as newly uncollected', async () => {
+  // review() stores responseFingerprint for staleness detection on a LATER call, which
+  // compares it against latestAssistantText() (plain, cheap) on that later call. If the
+  // fingerprint were instead computed from the upgraded Markdown responseText, it could
+  // never match that later plain-text comparison for the identical message — making every
+  // resumed session look like it has an unread response forever.
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  let stage = 0; // 0: nothing sent yet, 1: first reply present, 2: second reply present
+  const composer = new Element();
+  const send = new Element({ onClick: () => { stage += 1; } });
+  const firstText = 'PLAN_STATUS: READY rendered without markdown syntax';
+  const secondText = 'a later, different reply';
+  const page = new Page('https://chatgpt.com/', {
+    [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send],
+    [SELECTORS.assistant[0]]: () => stage === 0 ? [] : [new Element({ text: stage === 1 ? firstText : secondText })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>' });
+  const context = new Context([], page);
+  const driver = driverWith(page, context);
+
+  const first = await driver.review({ prompt: 'author', timeoutMs: 20, target: null, publish: false });
+  assert.equal(first.responseFingerprint, fingerprintText(firstText));
+
+  const second = await driver.review({
+    session: { conversationUrl: page.url(), lastResponseFingerprint: first.responseFingerprint },
+    prompt: 'revise', timeoutMs: 20, target: null, publish: false,
+  });
+  assert.equal(second.recovered, false);
+  assert.equal(stage, 2);
+});
+
+test('missing copy control, denied permission, or a hung clipboard read fall back to the rendered text without hanging', async () => {
+  const noGroupPage = readyPage({ [SELECTORS.assistant[0]]: [new Element({ text: 'plain answer' })] });
+  assert.equal(await driverWith(noGroupPage).waitForCompletion(noGroupPage, { before: '', timeoutMs: 20 }), 'plain answer');
+
+  const emptyGroup = new Element({ nested: {} });
+  const noButtonPage = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: 'plain answer' })],
+    [SELECTORS.responseActions[0]]: [emptyGroup],
+  });
+  assert.equal(await driverWith(noButtonPage).waitForCompletion(noButtonPage, { before: '', timeoutMs: 20 }), 'plain answer');
+
+  // Simulates the real failure this fixes: Chrome shows a native, out-of-page clipboard
+  // permission prompt that nothing will ever click, so navigator.clipboard.readText()
+  // never settles. The bounded race must still resolve the whole pass.
+  const hungButton = new Element();
+  const hungGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [hungButton] } });
+  const hungPage = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: 'plain answer' })],
+    [SELECTORS.responseActions[0]]: [hungGroup],
+  }, { evaluate: () => new Promise(() => {}) });
+  assert.equal(await driverWith(hungPage).waitForCompletion(hungPage, { before: '', timeoutMs: 20 }), 'plain answer');
+});
+
+test('composer fill is given real headroom and retried once through a transient failure', async () => {
+  let attempts = 0;
+  let lastTimeout;
+  const composer = new Element();
+  composer.fill = async (value, options) => {
+    attempts += 1;
+    lastTimeout = options?.timeout;
+    if (attempts < 2) throw new Error('locator.fill: Timeout 30000ms exceeded');
+    composer.value = value;
+  };
+  const send = new Element();
+  const page = readyPage({ [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send] });
+  await driverWith(page).fillAndSend(page, 'prompt text');
+  assert.equal(attempts, 2);
+  assert.equal(composer.value, 'prompt text');
+  // The point of this fix: a large prompt reproducibly needs longer than Playwright's
+  // 30s default, not just a retry at the same short timeout.
+  assert.ok(lastTimeout > 30_000);
+});
+
+test('composer fill gives up and throws after exhausting its retries', async () => {
+  const composer = new Element();
+  composer.fill = async () => { throw new Error('locator.fill: Timeout 30000ms exceeded'); };
+  const page = readyPage({ [SELECTORS.composer[0]]: [composer] });
+  await assert.rejects(() => driverWith(page).fillAndSend(page, 'prompt text'), /Timeout 30000ms exceeded/);
 });
 
 test('message stream failures use Retry without completing or creating a new prompt', async () => {
